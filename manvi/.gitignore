@@ -59,3 +59,4 @@ node_modules/
 .ruff_cache/
 .DS_Store
 Thumbs.db
+bin/
