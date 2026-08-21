@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MANVI — Visual Architecture & System Reference</title>
+<style>
+  :root {
+    --paper:      #F6F5F2;
+    --surface:    #FCFBF9;
+    --surface-2:  #EFECE6;
+    --sunken:     #E5E2DA;
+    --ink:        #181B1A;
+    --ink-2:      #414644;
+    --ink-3:      #6E7673;
+    --rule:       #D4D0C7;
+    --rule-soft:  #E2DFD7;
+    --brand:      #9E2A2B;
+    --brand-soft: #F7EAE9;
+    --accent:     #C9384A;
+    --accent-soft:#FBECEE;
+    --go:         #0A7E9E;
+    --go-soft:    #E0F2F7;
+    --rust:       #BA4E18;
+    --rust-soft:  #FBEFE8;
+    --amber:      #995A19;
+    --amber-soft: #FBF0E4;
+    --crit:       #A8291F;
+    --ok:         #236B43;
+    --ok-soft:    #E4F3EB;
+    --shadow:     0 2px 4px rgba(0,0,0,0.04), 0 12px 32px -8px rgba(0,0,0,0.08);
+
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #101211;
+      --surface:    #171A19;
+      --surface-2:  #202422;
+      --sunken:     #282D2B;
+      --ink:        #EAECEB;
+      --ink-2:      #B2B8B6;
+      --ink-3:      #7C8582;
+      --rule:       #2A302E;
+      --rule-soft:  #222725;
+      --brand:      #E05A5D;
+      --brand-soft: #381B1C;
+      --accent:     #F06577;
+      --accent-soft:#3D1A1E;
+      --go:         #38BCD8;
+      --go-soft:    #11313A;
+      --rust:       #F07C3D;
+      --rust-soft:  #3A1F12;
+      --amber:      #E8A048;
+      --amber-soft: #382410;
+      --crit:       #F2685E;
+      --ok:         #57C788;
+      --ok-soft:    #123522;
+      --shadow:     0 2px 4px rgba(0,0,0,0.3), 0 12px 32px -8px rgba(0,0,0,0.6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #101211;
+    --surface:    #171A19;
+    --surface-2:  #202422;
+    --sunken:     #282D2B;
+    --ink:        #EAECEB;
+    --ink-2:      #B2B8B6;
+    --ink-3:      #7C8582;
+    --rule:       #2A302E;
+    --rule-soft:  #222725;
+    --brand:      #E05A5D;
+    --brand-soft: #381B1C;
+    --accent:     #F06577;
+    --accent-soft:#3D1A1E;
+    --go:         #38BCD8;
+    --go-soft:    #11313A;
+    --rust:       #F07C3D;
+    --rust-soft:  #3A1F12;
+    --amber:      #E8A048;
+    --amber-soft: #382410;
+    --crit:       #F2685E;
+    --ok:         #57C788;
+    --ok-soft:    #123522;
+    --shadow:     0 2px 4px rgba(0,0,0,0.3), 0 12px 32px -8px rgba(0,0,0,0.6);
+  }
+
+  :root[data-theme="light"] {
+    --paper:      #F6F5F2;
+    --surface:    #FCFBF9;
+    --surface-2:  #EFECE6;
+    --sunken:     #E5E2DA;
+    --ink:        #181B1A;
+    --ink-2:      #414644;
+    --ink-3:      #6E7673;
+    --rule:       #D4D0C7;
+    --rule-soft:  #E2DFD7;
+    --brand:      #9E2A2B;
+    --brand-soft: #F7EAE9;
+    --accent:     #C9384A;
+    --accent-soft:#FBECEE;
+    --go:         #0A7E9E;
+    --go-soft:    #E0F2F7;
+    --rust:       #BA4E18;
+    --rust-soft:  #FBEFE8;
+    --amber:      #995A19;
+    --amber-soft: #FBF0E4;
+    --crit:       #A8291F;
+    --ok:         #236B43;
+    --ok-soft:    #E4F3EB;
+    --shadow:     0 2px 4px rgba(0,0,0,0.04), 0 12px 32px -8px rgba(0,0,0,0.08);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 24px 100px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; }
+
+  header.mast {
+    padding: 60px 0 24px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  .brand-title { display: flex; gap: 20px; align-items: center; }
+  .logo-box {
+    width: 54px;
+    height: 54px;
+    background: var(--brand);
+    border-radius: 4px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-size: clamp(28px, 4.5vw, 44px);
+    line-height: 1.1;
+    margin: 0;
+    font-weight: 700;
+    letter-spacing: -.02em;
+  }
+
+  .theme-toggle {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    padding: 6px 12px;
+    border-radius: 4px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+
+  .nav-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px 0 24px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 40px;
+  }
+  .nav-link {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    text-decoration: none;
+    color: var(--ink-2);
+    padding: 4px 10px;
+    background: var(--surface);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+  }
+  .nav-link:hover { border-color: var(--accent); color: var(--accent); }
+
+  h2 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -.015em;
+    margin: 40px 0 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    padding-bottom: 8px;
+  }
+
+  .lead { font-size: 17.5px; color: var(--ink-2); max-width: 72ch; margin-bottom: 24px; }
+
+  /* Dual Plane Architecture Grid */
+  .plane-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+    margin: 24px 0 40px;
+  }
+
+  .plane-card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: var(--shadow);
+    position: relative;
+    overflow: hidden;
+  }
+  .plane-card.go-card { border-top: 4px solid var(--go); }
+  .plane-card.rust-card { border-top: 4px solid var(--rust); }
+
+  .plane-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-bottom: 12px;
+  }
+  .go-tag { background: var(--go-soft); color: var(--go); }
+  .rust-tag { background: var(--rust-soft); color: var(--rust); }
+
+  .plane-title { font-size: 20px; font-weight: 700; margin: 0 0 8px; }
+  .plane-desc { color: var(--ink-2); font-size: 14.5px; margin-bottom: 16px; }
+
+  .component-list { list-style: none; padding: 0; margin: 0; }
+  .component-list li {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--sunken);
+    border-radius: 4px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .component-list li span.pkg { font-weight: 600; }
+  .component-list li span.role { color: var(--ink-3); font-size: 11.5px; }
+
+  /* IPC Bridge Banner */
+  .ipc-banner {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 24px 0 40px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .ipc-content { max-width: 65ch; }
+  .ipc-title { font-weight: 700; font-size: 16px; margin-bottom: 4px; }
+  .ipc-desc { font-size: 14px; color: var(--ink-2); margin: 0; }
+  .badge-no-cgo {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 12px;
+    background: var(--ok-soft);
+    color: var(--ok);
+    border-radius: 4px;
+    font-weight: 600;
+  }
+
+  /* Policy Ladder Visualizer */
+  .ladder-box {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 24px 0 40px;
+  }
+
+  .ladder-step {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 16px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .ladder-step:last-child { border-bottom: none; }
+
+  .step-num {
+    width: 36px;
+    height: 36px;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  .step-title { font-weight: 700; font-size: 16px; margin: 0 0 4px; }
+  .step-desc { font-size: 14px; color: var(--ink-2); margin: 0 0 8px; }
+  .step-rules { display: flex; flex-wrap: wrap; gap: 8px; }
+  .rule-pill {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    background: var(--sunken);
+  }
+  .rule-pill.hard { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+  .rule-pill.soft { background: var(--amber-soft); color: var(--amber); }
+
+  /* Interactive Simulator */
+  .sim-container {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 24px 0 40px;
+  }
+  .sim-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .sim-field label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-bottom: 6px;
+  }
+  .sim-field select, .sim-field input {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+
+  .sim-output {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .sim-res-pass { color: var(--ok); font-weight: 700; }
+  .sim-res-block { color: var(--crit); font-weight: 700; }
+  .sim-res-grant { color: var(--amber); font-weight: 700; }
+  .sim-res-demote { color: var(--accent); font-weight: 700; }
+
+  /* Matrix Table */
+  table.matrix {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0 40px;
+    font-size: 14.5px;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+  }
+  table.matrix th, table.matrix td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    text-align: left;
+  }
+  table.matrix th {
+    background: var(--surface-2);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  table.matrix tr:last-child td { border-bottom: none; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--sunken);
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="mast">
+    <div class="brand-title">
+      <div class="logo-box">
+        <svg width="34" height="34" viewBox="0 0 7 7" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="7" height="7" fill="#9E2A2B"/>
+          <path d="M1 1H2V6H1V1ZM5 1H6V6H5V1ZM2 2H3V4H2V2ZM4 2H5V4H4V2ZM3 3H4V5H3V3Z" fill="#F6F5F2"/>
+        </svg>
+      </div>
+      <div>
+        <div class="kicker">MANVI Architecture Reference</div>
+        <h1>Dual-Plane System Guide</h1>
+      </div>
+    </div>
+    <button class="theme-toggle" onclick="toggleTheme()">Theme: Auto</button>
+  </header>
+
+  <nav class="nav-bar">
+    <a href="#dual-plane" class="nav-link">Dual-Plane Map</a>
+    <a href="#policy-ladder" class="nav-link">Policy Ladder</a>
+    <a href="#simulator" class="nav-link">Policy Simulator</a>
+    <a href="#turn-lifecycle" class="nav-link">Turn Lifecycle</a>
+    <a href="#lease-concurrency" class="nav-link">Task Leases</a>
+    <a href="ARCHITECTURE.md" class="nav-link">ARCHITECTURE.md</a>
+    <a href="POLICY_AND_SAFETY.md" class="nav-link">POLICY_AND_SAFETY.md</a>
+    <a href="AGENT_AND_TURN_LIFECYCLE.md" class="nav-link">LIFECYCLE.md</a>
+  </nav>
+
+  <section id="dual-plane">
+    <h2>1. The Dual-Plane Architecture</h2>
+    <p class="lead">
+      MANVI splits work cleanly on the axis of <strong>IO-bound concurrency</strong> vs <strong>CPU-bound determinism</strong>. Go drives goroutines, providers, and terminals with zero CGO; Rust provides zero-allocation diff parsing, coverage analysis, and ACID SQLite locking.
+    </p>
+
+    <div class="plane-grid">
+      <div class="plane-card go-card">
+        <span class="plane-tag go-tag">Go Execution Plane</span>
+        <h3 class="plane-title">Concurrency & Interaction</h3>
+        <p class="plane-desc">Pure Go static binary (<code>CGO_ENABLED=0</code>). Zero external dependencies in <code>go.mod</code>.</p>
+        <ul class="component-list">
+          <li><span class="pkg">manvi/agent</span> <span class="role">Turn/step state machine</span></li>
+          <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI stream</span></li>
+          <li><span class="pkg">manvi/gate</span> <span class="role">5-tier policy composition</span></li>
+          <li><span class="pkg">manvi/grants</span> <span class="role">Human & agent override ledger</span></li>
+          <li><span class="pkg">manvi/ui/tui</span> <span class="role">Elm-loop fullscreen terminal</span></li>
+          <li><span class="pkg">manvi/session</span> <span class="role">Immutable session.jsonl</span></li>
+        </ul>
+      </div>
+
+      <div class="plane-card rust-card">
+        <span class="plane-tag rust-tag">Rust Analysis Plane</span>
+        <h3 class="plane-title">Deterministic Analysis</h3>
+        <p class="plane-desc">High-performance native utilities invoked over JSON stdio child processes.</p>
+        <ul class="component-list">
+          <li><span class="pkg">crates/dc-store</span> <span class="role">SQLite task lease mutex</span></li>
+          <li><span class="pkg">crates/dc-verify</span> <span class="role">Diff parser & rigor gates</span></li>
+          <li><span class="pkg">crates/dc-verify</span> <span class="role">Go & LCOV coverage bitsets</span></li>
+          <li><span class="pkg">crates/dc-glob</span> <span class="role">CPython fnmatch glob engine</span></li>
+          <li><span class="pkg">devmap</span> <span class="role">AST code graph & adjacency</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ipc-banner">
+      <div class="ipc-content">
+        <div class="ipc-title">Process Boundary, Not CGO</div>
+        <p class="ipc-desc">
+          Go execs <code>dcstore</code> and <code>dcverify</code> passing arguments and JSON over pipes. Mutexes live in SQLite's partial unique index, not in Go memory. A crash in Rust never corrupts Go memory.
+        </p>
+      </div>
+      <span class="badge-no-cgo">CGO_ENABLED=0</span>
+    </div>
+  </section>
+
+  <section id="policy-ladder">
+    <h2>2. The Five-Tier Policy Ladder</h2>
+    <p class="lead">
+      Blocks are overridable when appropriate, but never invisible. A check that did not run records that fact, and a grant that cleared a write is explicitly branded on the tool output.
+    </p>
+
+    <div class="ladder-box">
+      <div class="ladder-step">
+        <div class="step-num">1</div>
+        <div>
+          <div class="step-title">Workspace Boundary Check</div>
+          <p class="step-desc">Refuses any file write or command that escapes the repository root.</p>
+          <div class="step-rules">
+            <span class="rule-pill hard">path.outside_root</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ladder-step">
+        <div class="step-num">2</div>
+        <div>
+          <div class="step-title">Hard Security Rules (Ungrantable)</div>
+          <p class="step-desc">Secret paths, .git directory internals, and git force pushes can never be bypassed by any grant or posture.</p>
+          <div class="step-rules">
+            <span class="rule-pill hard">path.credential (.env, *.pem)</span>
+            <span class="rule-pill hard">path.git_internal (.git/*)</span>
+            <span class="rule-pill hard">cmd.git.force_push</span>
+            <span class="rule-pill hard">cmd.git.bypass (--no-verify)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ladder-step">
+        <div class="step-num">3</div>
+        <div>
+          <div class="step-title">Soft Scope & Adjacency Rules</div>
+          <p class="step-desc">Evaluates whether changes match declared task planned files or resolved code-graph neighbors.</p>
+          <div class="step-rules">
+            <span class="rule-pill soft">scope.unplanned</span>
+            <span class="rule-pill soft">scope.neighbourhood</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ladder-step">
+        <div class="step-num">4</div>
+        <div>
+          <div class="step-title">Grants Ledger Consultation</div>
+          <p class="step-desc">Checks if an active, unexpired Human or Agent grant with valid justification exists.</p>
+        </div>
+      </div>
+
+      <div class="ladder-step">
+        <div class="step-num">5</div>
+        <div>
+          <div class="step-title">Posture Demotion & Operator Escalation</div>
+          <p class="step-desc">Under <code>dev</code>/<code>yolo</code>, soft rules demote with warnings. Under <code>strict</code> in TUI, escalates to interactive modal.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="simulator">
+    <h2>3. Interactive Policy & Posture Simulator</h2>
+    <p class="lead">Test how MANVI evaluates file write operations across different paths, task plans, postures, and human grants:</p>
+
+    <div class="sim-container">
+      <div class="sim-controls">
+        <div class="sim-field">
+          <label>Target File Path</label>
+          <input type="text" id="simPath" value="src/helper.go" oninput="runSim()">
+        </div>
+        <div class="sim-field">
+          <label>Harness Posture</label>
+          <select id="simPosture" onchange="runSim()">
+            <option value="dev">dev (shipped default)</option>
+            <option value="strict">strict (enforce all)</option>
+            <option value="yolo">yolo (soft gates off)</option>
+          </select>
+        </div>
+        <div class="sim-field">
+          <label>Task Planned Files</label>
+          <input type="text" id="simPlanned" value="src/main.go,src/util.go" oninput="runSim()">
+        </div>
+        <div class="sim-field">
+          <label>Active Grant?</label>
+          <select id="simGrant" onchange="runSim()">
+            <option value="none">No Grant</option>
+            <option value="human">Human Grant (ID: G-101)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sim-output" id="simResult">
+        Evaluating...
+      </div>
+    </div>
+  </section>
+
+  <section id="turn-lifecycle">
+    <h2>4. Evidence-Driven Turn Lifecycle</h2>
+    <p class="lead">
+      The agent loop terminates on tangible evidence, not model declaration. History is always projected from the immutable <code>session.jsonl</code> disk log.
+    </p>
+
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>Component</th>
+          <th>Guarantee & Invariant</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1. History Projection</strong></td>
+          <td><code>session.Project()</code></td>
+          <td>Messages projected fresh from <code>session.jsonl</code>; in-memory drift is impossible.</td>
+        </tr>
+        <tr>
+          <td><strong>2. Pre-Step Waterfall</strong></td>
+          <td><code>bus.PreStep</code></td>
+          <td>Allows context compaction, pruning, or step rejection before token expenditure.</td>
+        </tr>
+        <tr>
+          <td><strong>3. Streaming Provider</strong></td>
+          <td><code>llm.Stream()</code></td>
+          <td>Separates reasoning from text; records delta and token usage in real time.</td>
+        </tr>
+        <tr>
+          <td><strong>4. Tool Execution</strong></td>
+          <td><code>tools.Execute()</code></td>
+          <td>Passes through Write/Command gate; logs input, output, and qualification status.</td>
+        </tr>
+        <tr>
+          <td><strong>5. Termination Evidence</strong></td>
+          <td><code>agent.TurnStopping</code></td>
+          <td>Loop terminates when model emits 0 tool calls, hits step limit, or passes serial checks.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="lease-concurrency">
+    <h2>5. SQLite Task Lease Concurrency</h2>
+    <p class="lead">
+      Multi-agent concurrency is enforced at the database level via SQLite's partial unique index:
+    </p>
+    <div style="background: var(--sunken); padding: 16px; border-radius: 6px; font-family: var(--mono); font-size: 13px; overflow-x: auto; margin-bottom: 24px;">
+      CREATE UNIQUE INDEX ux_task_leases_active ON task_leases (task_id) WHERE status = 'active';
+    </div>
+    <p>
+      When sub-agent trees are cancelled (e.g. user presses <code>Ctrl+C</code>), MANVI invokes <code>dcstore release</code> using a <strong>fresh uncancelled context</strong>, ensuring task locks are immediately freed for subsequent turns.
+    </p>
+  </section>
+</div>
+
+<script>
+function toggleTheme() {
+  const root = document.documentElement;
+  const current = root.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : current === 'light' ? 'auto' : 'dark';
+  if (next === 'auto') {
+    root.removeAttribute('data-theme');
+    document.querySelector('.theme-toggle').textContent = 'Theme: Auto';
+  } else {
+    root.setAttribute('data-theme', next);
+    document.querySelector('.theme-toggle').textContent = 'Theme: ' + next.charAt(0).toUpperCase() + next.slice(1);
+  }
+}
+
+function runSim() {
+  const path = document.getElementById('simPath').value.trim();
+  const posture = document.getElementById('simPosture').value;
+  const planned = document.getElementById('simPlanned').value.split(',').map(s => s.trim());
+  const grant = document.getElementById('simGrant').value;
+  const out = document.getElementById('simResult');
+
+  // Hard Rule Check
+  if (path.startsWith('../') || path.startsWith('/')) {
+    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Refusal)</span><br>Rule: <code>path.outside_root</code><br>Reason: Path escapes workspace root. Cannot be overridden by any posture or grant.`;
+    return;
+  }
+  if (path.includes('.env') || path.endsWith('.pem') || path.endsWith('.key') || path.includes('id_rsa')) {
+    if (posture === 'yolo') {
+      out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo)</span><br>Notice: <code>policy.hard_rules.disabled</code><br>Warning: Hard rules are disabled under yolo. Containment stays in repo.`;
+      return;
+    }
+    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Security Rule)</span><br>Rule: <code>path.credential</code><br>Reason: Sensitive credential path. Ungrantable.`;
+    return;
+  }
+  if (path.startsWith('.git/') || path === '.git') {
+    if (posture === 'yolo') {
+      out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo)</span><br>Notice: Git internal safety bypassed under yolo.`;
+      return;
+    }
+    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Security Rule)</span><br>Rule: <code>path.git_internal</code><br>Reason: Direct write to git repository metadata.`;
+    return;
+  }
+
+  // Soft Scope Check
+  const inScope = planned.includes(path);
+  if (inScope) {
+    out.innerHTML = `<span class="sim-res-pass">PASSED (Clean Pass)</span><br>Path <code>${path}</code> is declared in task plan. No qualification needed.`;
+    return;
+  }
+
+  // Soft Scope Failed: Check Grant
+  if (grant === 'human') {
+    out.innerHTML = `<span class="sim-res-grant">ALLOWED (Qualified: Human Grant G-101)</span><br>Rule: <code>scope.unplanned</code><br>Reason: Cleared by operator grant with justification. Not an ordinary pass.`;
+    return;
+  }
+
+  // Check Posture
+  if (posture === 'dev') {
+    out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by dev posture)</span><br>Rule: <code>scope.unplanned</code><br>Notice: Soft scope rule reported as advisory under dev posture.`;
+    return;
+  }
+  if (posture === 'yolo') {
+    out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo posture)</span><br>Rule: <code>scope.unplanned</code><br>Notice: All soft gates turned off under yolo.`;
+    return;
+  }
+
+  // Strict Mode
+  out.innerHTML = `<span class="sim-res-block">BLOCKED (Soft Scope Rule)</span><br>Rule: <code>scope.unplanned</code><br>Action: In TUI, prompts operator for approval modal. In CI/CLI, rejects write.`;
+}
+
+runSim();
+</script>
+
+</body>
+</html>

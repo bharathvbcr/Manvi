@@ -1,0 +1,689 @@
+<title>Seam Harness Build Plan</title>
+<style>
+  :root {
+    --paper:      #F5F4F1;
+    --surface:    #FCFBF9;
+    --sunken:     #EAE8E3;
+    --ink:        #1B1E1D;
+    --ink-2:      #454A48;
+    --ink-3:      #757C79;
+    --rule:       #D6D3CC;
+    --rule-soft:  #E4E1DB;
+    --verd:       #16645A;
+    --verd-soft:  #DCEBE7;
+    --amber:      #97561A;
+    --amber-soft: #F5E7D8;
+    --crit:       #9B2C22;
+    --ok:         #2C6B45;
+
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #121413;
+      --surface:    #1A1D1C;
+      --sunken:     #232726;
+      --ink:        #E9EBEA;
+      --ink-2:      #B4BAB8;
+      --ink-3:      #808886;
+      --rule:       #2E3331;
+      --rule-soft:  #252A28;
+      --verd:       #57BFAE;
+      --verd-soft:  #133029;
+      --amber:      #D79A55;
+      --amber-soft: #33240F;
+      --crit:       #E07C70;
+      --ok:         #63BC8B;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #121413;
+    --surface:    #1A1D1C;
+    --sunken:     #232726;
+    --ink:        #E9EBEA;
+    --ink-2:      #B4BAB8;
+    --ink-3:      #808886;
+    --rule:       #2E3331;
+    --rule-soft:  #252A28;
+    --verd:       #57BFAE;
+    --verd-soft:  #133029;
+    --amber:      #D79A55;
+    --amber-soft: #33240F;
+    --crit:       #E07C70;
+    --ok:         #63BC8B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 20px 110px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  /* masthead */
+  header.mast {
+    padding: 70px 0 30px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--verd);
+    margin: 0 0 20px;
+  }
+  h1 {
+    font-size: clamp(33px, 5.6vw, 52px);
+    line-height: 1.03;
+    letter-spacing: -.026em;
+    font-weight: 700;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  .standfirst {
+    font-size: 18.5px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 30px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--ink-3);
+    padding: 16px 0 46px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 52px;
+  }
+  .meta-strip b { color: var(--ink-2); font-weight: 500; }
+
+  section { margin: 0 0 62px; }
+  .col { max-width: 68ch; }
+
+  h2 {
+    font-size: 25px;
+    letter-spacing: -.016em;
+    font-weight: 690;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .sub { color: var(--ink-3); font-size: 15px; margin: 0 0 26px; max-width: 64ch; }
+  h3 { font-size: 17px; font-weight: 660; margin: 30px 0 8px; letter-spacing: -.006em; }
+  h4 {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    margin: 24px 0 8px;
+  }
+  p { margin: 0 0 15px; max-width: 68ch; }
+  ul, ol { margin: 0 0 15px; padding-left: 21px; max-width: 68ch; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-3); }
+  a { color: var(--verd); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--verd); outline-offset: 3px; border-radius: 2px; }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--sunken);
+    padding: .1em .36em;
+    border-radius: 3px;
+  }
+  strong { font-weight: 660; }
+
+  /* callouts */
+  .note {
+    border-left: 4px solid var(--verd);
+    background: var(--verd-soft);
+    border-radius: 0 4px 4px 0;
+    padding: 17px 20px;
+    margin: 24px 0;
+    max-width: 72ch;
+  }
+  .note.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .lbl {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--verd);
+    margin-bottom: 7px;
+  }
+  .note.warn .lbl { color: var(--amber); }
+
+  /* tables */
+  .scroller { overflow-x: auto; margin: 22px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 620px;
+    font-size: 14.7px;
+    background: var(--surface);
+  }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    border-bottom: 1.5px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.k { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  .rowname { font-weight: 620; }
+  .mark { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+  .yes { color: var(--ok); } .no { color: var(--crit); } .part { color: var(--amber); }
+
+  /* code */
+  pre {
+    background: var(--sunken);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13.2px;
+    line-height: 1.6;
+    margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .c { color: var(--ink-3); }
+  .kw { color: var(--verd); }
+
+  /* seam cards */
+  .seams { display: grid; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr)); gap: 14px; margin: 24px 0; }
+  .seam {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--verd);
+    border-radius: 3px;
+    padding: 18px 19px;
+  }
+  .seam .key {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--verd);
+    display: block;
+    margin-bottom: 5px;
+  }
+  .seam h3 { margin: 0 0 7px; font-size: 16px; }
+  .seam p { font-size: 14.3px; color: var(--ink-2); margin: 0; }
+  .seam.opt { border-top-color: var(--ink-3); }
+  .seam.opt .key { color: var(--ink-3); }
+
+  /* phases */
+  .phase {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 26px;
+    padding: 26px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .phase:last-of-type { border-bottom: 1px solid var(--rule); }
+  .phase-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--verd);
+    padding-top: 3px;
+  }
+  .phase-id .n {
+    display: block;
+    font-size: 30px;
+    letter-spacing: -.02em;
+    color: var(--ink);
+    line-height: 1;
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .phase h3 { margin: 0 0 8px; font-size: 18px; }
+  .phase p { margin-bottom: 10px; }
+  .donewhen {
+    font-size: 14px;
+    color: var(--ink-2);
+    background: var(--sunken);
+    border-radius: 3px;
+    padding: 10px 13px;
+    margin: 12px 0 0;
+    max-width: 68ch;
+  }
+  .donewhen b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  figure { margin: 28px 0; }
+  .frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 22px 18px;
+    overflow-x: auto;
+  }
+  figure svg { display: block; width: 100%; height: auto; min-width: 520px; }
+  figcaption { font-size: 13.5px; color: var(--ink-3); margin-top: 11px; max-width: 64ch; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 64px;
+    padding-top: 20px;
+    font-size: 13.5px;
+    color: var(--ink-3);
+  }
+  footer p { max-width: 76ch; }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Build plan · parameter_golf</p>
+  <h1>Seam Harness Build Plan</h1>
+  <p class="standfirst">A lightweight multi-provider agent harness in Go and Rust, borrowing DeepSeek Harness's plugin model — a service registry, declared injection, typed events, and reversible effects — without borrowing its 453,000 lines.</p>
+</header>
+
+<div class="meta-strip">
+  <span><b>Host</b> Go</span>
+  <span><b>Plugin SDK</b> Rust → WASM</span>
+  <span><b>Providers</b> Claude · Gemini · local</span>
+  <span><b>Pattern source</b> deepseek-ai/deepseek-harness (MIT)</span>
+  <span><b>Target</b> ~8k LOC</span>
+</div>
+
+<section class="col">
+  <h2>What we take, and what we leave</h2>
+  <p class="sub">dsh is roughly 453,000 lines of TypeScript across ~219 workspace packages, in developer preview with breaking changes expected. You asked for lightweight. So this is a port of the <em>ideas</em>, at about 2% of the scope.</p>
+
+  <p><strong>Take:</strong> the Cordis plugin contract, the three-role seam definition, the durable session log with its one invariant, the turn/step event flow, and the provider-neutral content-block vocabulary. These are the load-bearing designs and they're all small.</p>
+
+  <p><strong>Leave:</strong> the web UI, the 219-package split, profiles/bundles as a distribution format, the generated-SDK "code mode", E2B sandboxing, projections and projection caches, telemetry backends, skill providers, and the ACP surface. Every one of those is a real feature and none is on your critical path.</p>
+
+  <div class="note warn">
+    <span class="lbl">Read this before copying anything</span>
+    <p>dsh is four days old and its README says plainly there will be compatibility-breaking changes. Treat it as a design reference to read, not a dependency to track. Copy the shapes into your own types; don't try to stay compatible with a preview API.</p>
+  </div>
+</section>
+
+<section>
+  <h2>The five ideas, ported</h2>
+  <p class="sub">Cordis states its model in five points. Two of them rely on TypeScript features neither Go nor Rust has, so those need a different mechanism — and one of them lands <em>better</em> in Rust than in the original.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Cordis idea</th><th>Go</th><th>Rust</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="rowname">Plugin is a service with <code>inject</code> + <code>apply(ctx)</code></td>
+          <td><code>Plugin</code> interface: <code>Name()</code>, <code>Deps() []string</code>, <code>Apply(*Ctx) (Dispose, error)</code></td>
+          <td><code>trait Plugin</code> with <code>DEPS: &amp;[&amp;str]</code> and <code>fn apply(&amp;self, cx: &amp;Ctx) -&gt; Result&lt;Guard&gt;</code></td>
+        </tr>
+        <tr>
+          <td class="rowname">Context is a repository of services keyed <code>ctx.&lt;key&gt;</code></td>
+          <td><code>map[string]any</code> + package-level generic <code>Resolve[T](cx, key)</code> — Go can't put type params on methods</td>
+          <td><code>HashMap&lt;TypeId, Arc&lt;dyn Any + Send + Sync&gt;&gt;</code> — the classic type-map; <code>TypeId</code> beats string keys</td>
+        </tr>
+        <tr>
+          <td class="rowname">Dependency via <code>inject</code>, load order from requirements</td>
+          <td>Topological sort over <code>Deps()</code> at boot; cycle is a boot error, not a hang</td>
+          <td>Same, with <code>inventory</code> for compile-time plugin registration</td>
+        </tr>
+        <tr>
+          <td class="rowname">Typed events, four dispatch modes</td>
+          <td>Generic bus: <code>On[E](bus, fn)</code> / <code>Emit[E]</code> / <code>Waterfall[E]</code>. No declaration merging — events are concrete types in one package</td>
+          <td>Same shape; <code>tower::Layer</code> + <code>Service</code> is already exactly the waterfall pattern</td>
+        </tr>
+        <tr>
+          <td class="rowname">Registrations are reversible effects</td>
+          <td>Return a <code>Dispose func() error</code>; host unwinds LIFO. Discipline, same as TS</td>
+          <td><span class="mark yes">Better</span> — <code>Drop</code> makes teardown a type-system guarantee, not a convention</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Cordis says "every registration should have a disposer" as a rule authors must follow. In Rust that rule is enforced by the compiler: a registration returns a guard, and dropping the guard unwinds it. This is the one place the port improves on the original, and it's a decent argument for putting policy plugins on the Rust side eventually.</p>
+
+  <h4>The seam definition — keep this strictly</h4>
+  <p>dsh defines a seam as three roles: a <strong>Service Definition</strong> declaring the interface, a <strong>Service Provider</strong> implementing it, and a <strong>Consumer</strong> using it. A package holding one role alone is not a seam. Adopt this literally — it's what stops "plugin architecture" from decaying into a folder of loosely related files. In Go, that means the interface lives in its own package that neither implementation nor consumer owns.</p>
+</section>
+
+<section>
+  <h2>The plugin mechanism problem</h2>
+  <p class="sub">"Everything is a plugin, replaceable from configuration" is easy on Node. Neither Go nor Rust can load code dynamically in-process without serious caveats, so this needs three tiers instead of one.</p>
+
+  <div class="note warn">
+    <span class="lbl">Why not dynamic loading</span>
+    <p>Go's <code>plugin</code> package requires the identical toolchain and identical dependency versions between host and plugin, has no unload, and is effectively Linux-only in practice. Rust has no stable ABI, so <code>dylib</code> plugins break across compiler versions. Neither is a foundation to build on — plan around this rather than discovering it in month two.</p>
+  </div>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 760 260" role="img" aria-label="Three plugin tiers: compiled-in registry, WASM sandboxed tools, and out-of-process MCP servers, all mounting onto one service registry.">
+        <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+          <rect x="200" y="14" width="360" height="46" rx="3" fill="var(--verd-soft)" stroke="var(--verd)" stroke-width="1.6"/>
+          <text x="380" y="34" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Service registry + event bus</text>
+          <text x="380" y="50" text-anchor="middle" font-size="10.5" fill="var(--verd)">Go host · topo-sorted boot · LIFO teardown</text>
+
+          <g stroke="var(--rule)" stroke-width="1.3" fill="none">
+            <path d="M300,60 L150,104"/><path d="M380,60 L380,104"/><path d="M460,60 L610,104"/>
+          </g>
+
+          <g font-size="11.5">
+            <rect x="30" y="106" width="240" height="118" rx="3" fill="var(--surface)" stroke="var(--verd)" stroke-width="1.3"/>
+            <text x="44" y="126" font-size="10" letter-spacing="1.2" fill="var(--verd)">TIER 1 · TRUSTED</text>
+            <text x="44" y="146" font-size="13" font-weight="600" fill="var(--ink)">Compiled in</text>
+            <text x="44" y="166" fill="var(--ink-2)">providers, agent loop,</text>
+            <text x="44" y="182" fill="var(--ink-2)">session log, registry</text>
+            <text x="44" y="204" fill="var(--ink-3)" font-size="10.5">Go init() · Rust inventory</text>
+
+            <rect x="286" y="106" width="188" height="118" rx="3" fill="var(--surface)" stroke="var(--amber)" stroke-width="1.3"/>
+            <text x="300" y="126" font-size="10" letter-spacing="1.2" fill="var(--amber)">TIER 2 · SANDBOXED</text>
+            <text x="300" y="146" font-size="13" font-weight="600" fill="var(--ink)">WASM</text>
+            <text x="300" y="166" fill="var(--ink-2)">untrusted tools,</text>
+            <text x="300" y="182" fill="var(--ink-2)">generated code</text>
+            <text x="300" y="204" fill="var(--ink-3)" font-size="10.5">wazero ← Rust guest</text>
+
+            <rect x="490" y="106" width="240" height="118" rx="3" fill="var(--surface)" stroke="var(--ink-3)" stroke-width="1.3"/>
+            <text x="504" y="126" font-size="10" letter-spacing="1.2" fill="var(--ink-3)">TIER 3 · OUT OF TREE</text>
+            <text x="504" y="146" font-size="13" font-weight="600" fill="var(--ink)">MCP subprocess</text>
+            <text x="504" y="166" fill="var(--ink-2)">dev map, third-party,</text>
+            <text x="504" y="182" fill="var(--ink-2)">any language</text>
+            <text x="504" y="204" fill="var(--ink-3)" font-size="10.5">stdio · already standard</text>
+          </g>
+
+          <text x="380" y="248" text-anchor="middle" font-size="10.5" fill="var(--ink-3)">all three mount the same Plugin contract — the tier is a deployment detail</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>One contract, three delivery mechanisms. A tool moves between tiers without its consumers noticing, which is the actual payoff of the seam discipline.</figcaption>
+  </figure>
+
+  <p><strong>Tier 1 carries the weight.</strong> "Replaceable from configuration" does not require dynamic loading — it requires that every service is resolved by key and selected by config. A compiled-in registry where <code>llm.provider: gemini</code> swaps the adapter gives you the whole benefit with none of the ABI pain.</p>
+
+  <div class="note">
+    <span class="lbl">Verified constraint · Tier 2</span>
+    <p>wazero supports WASI Preview 1 and has Preview 2 component-model integration only in an experimental package. <strong>Do not build the plugin ABI on the component model yet.</strong> Use core WASM plus WASI p1 with a hand-rolled JSON-over-linear-memory calling convention: two exported functions (<code>alloc</code>, <code>invoke</code>) and a length-prefixed buffer. It's unglamorous, it's stable today, and it's about 150 lines on each side. Revisit components when wazero's support leaves experimental.</p>
+  </div>
+</section>
+
+<section>
+  <h2>The seams to build</h2>
+  <p class="sub">Seven. dsh has roughly forty; these are the ones without which nothing runs.</p>
+
+  <div class="seams">
+    <div class="seam">
+      <span class="key">cx.llm</span>
+      <h3>Provider registry</h3>
+      <p>Named adapters behind one streaming interface. Claude, Gemini, local OpenAI-compatible. The heart of this plan.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.sessions</span>
+      <h3>Session log</h3>
+      <p>Append-only event log. The source of truth for what the model saw. Everything else projects from it.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.tools</span>
+      <h3>Tool registry</h3>
+      <p>Schemas plus a guarded execution pipeline with pre/execute/post waterfalls — where approval and policy attach.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.systemPrompt</span>
+      <h3>Prompt assembly</h3>
+      <p>Sections registered by plugins, composed per step. Stops the system prompt becoming one hardcoded string.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.agentLoop</span>
+      <h3>Loop driver</h3>
+      <p>The default turn/step driver. Pluggable so a planner loop and a builder loop can differ without forking the host.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.agents</span>
+      <h3>Agent registry</h3>
+      <p>Live agent handles, inbox, status, cancellation. Where fan-out and sub-agent spawn live.</p>
+    </div>
+    <div class="seam">
+      <span class="key">cx.credentials</span>
+      <h3>Credentials</h3>
+      <p>Keys resolved per provider, never in config files. Thin, but a seam from day one — retrofitting it is painful.</p>
+    </div>
+    <div class="seam opt">
+      <span class="key">cx.subprocess</span>
+      <h3>Subprocess <span style="font-weight:400;color:var(--ink-3)">— later</span></h3>
+      <p>Shell execution behind an interface so local, container, and WASM backends swap. Add at Phase 5.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Multi-provider: the part that's actually hard</h2>
+  <p class="sub">Fanning out to Claude and Gemini is not "write two HTTP clients." The difficulty is that provider-private state has to survive a round trip through a provider-neutral log.</p>
+
+  <p>Start from dsh's content-block vocabulary, which is already provider-neutral and well chosen:</p>
+
+<pre><code><span class="c">// Provider-neutral. Every adapter maps to and from these.</span>
+type ContentBlock interface{ blockType() string }
+
+TextBlock       { Text string }
+ReasoningBlock  { ... }  <span class="c">// thinking, distinct from visible text</span>
+ImageBlock      { ... }
+ToolCallBlock   { ID CallID; Name string; Arguments json.RawMessage }
+ToolResultBlock { ToolCallID CallID; Content []ContentBlock; IsError bool }</code></pre>
+
+  <p>Now the trap. Anthropic requires thinking blocks be echoed back <strong>unchanged</strong> on the same model, and other models drop them. Gemini has its own equivalents. A naive neutral log destroys this state and you get subtle, hard-to-trace quality loss — or 400s.</p>
+
+  <p>dsh solves it with provenance carrying adapter-private replay data, exposed <em>only</em> when the adapter owns both the historical and the target provider:</p>
+
+<pre><code>type AssistantProvenance struct {
+    Provider string
+    Model    string
+    <span class="c">// Lossless adapter state needed to replay the provider response.
+    // Handed to an adapter ONLY when it owns both the historical
+    // provider and the target provider. Otherwise: dropped.</span>
+    ReplayState json.RawMessage
+}</code></pre>
+
+  <div class="note">
+    <span class="lbl">Steal this one</span>
+    <p>Of everything in dsh, <code>replayState</code> gated on adapter ownership is the highest-value idea for a multi-provider harness, and it's maybe 40 lines. It lets the log stay neutral while each provider keeps its lossless state, and it makes cross-provider handoff explicitly lossy rather than accidentally lossy.</p>
+  </div>
+
+  <h3>Adapters to write</h3>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Adapter</th><th>Package</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="rowname">Claude</td><td class="k">github.com/anthropics/anthropic-sdk-go</td><td>Official. Thinking blocks into <code>ReasoningBlock</code> + <code>ReplayState</code>. Effort maps to the capability descriptor.</td></tr>
+        <tr><td class="rowname">Gemini</td><td class="k">google.golang.org/genai</td><td>Official and GA. Note the old <code>cloud.google.com/go/vertexai/genai</code> is deprecated and past its removal date — don't start there.</td></tr>
+        <tr><td class="rowname">Local</td><td class="k">net/http</td><td>OpenAI-compatible against <code>127.0.0.1:8000/v1</code> — your existing Qwen/MLX server. Zero marginal cost per token.</td></tr>
+        <tr><td class="rowname">Replay</td><td class="k">internal</td><td>Deterministic fixture playback. Build this <em>second</em>, before the real adapters — it's what makes the loop testable without burning tokens.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Each adapter also declares a capability descriptor — context window, whether it supports reasoning, tool-calling shape, effort levels — so the loop can refuse an impossible request at assembly time instead of discovering it in a 400.</p>
+</section>
+
+<section>
+  <h2>Turn flow and the event set</h2>
+  <p class="sub">Port dsh's flow directly. It's the most carefully designed part and there's no reason to invent a different one.</p>
+
+<pre><code>turn/start
+  claim next-step input + one queued message
+  assemble prompt sections + tool schemas
+  -&gt; agent/pre-step        <span class="kw">waterfall</span>   reject | rewrite messages
+     step/start
+     agent/request         <span class="kw">waterfall</span>
+     llm/stream            <span class="kw">waterfall</span>   -&gt; assistant/chunk* -&gt; assistant/message
+     tool/call*
+       tools/pre-execute   <span class="kw">waterfall</span>   approval, policy, budget
+       tools/execute       <span class="kw">waterfall</span>
+       tools/post-execute  <span class="kw">waterfall</span>   redaction, truncation
+     tool/result*
+     step/end
+  -&gt; agent/turn-stopping   <span class="kw">serial</span>
+turn/end</code></pre>
+
+  <p>The four waterfalls are the whole extension story. A waterfall listener receives <code>(args, next)</code>: call <code>next()</code> to delegate, return without it to short-circuit and own the decision. That's around-middleware, and it maps cleanly onto Go's standard middleware idiom and onto <code>tower::Layer</code> in Rust.</p>
+
+  <p>Concretely, your approval gate is a <code>tools/pre-execute</code> listener that short-circuits; your DevCouncil policy check is another one beside it; neither needs to know the loop exists.</p>
+
+  <div class="note">
+    <span class="lbl">Port this invariant verbatim</span>
+    <p><strong>Model-visible means logged.</strong> Anything that reaches a model request must be reconstructable from the session log, asserted at runtime. This is the difference between a harness you can audit and one you can only watch. It also lands exactly on your DevCouncil provenance story — a task's evidence chain becomes a projection of the log rather than a second thing to maintain.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Phases</h2>
+  <p class="sub">Each is useful standing alone, and each has a check you can actually run. Stop whenever the harness is doing what you need.</p>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">1</span>Core</div>
+    <div>
+      <h3>Registry, events, effects</h3>
+      <p>The Cordis kernel in Go and nothing else: service registry with generic <code>Resolve</code>, topo-sorted boot over declared deps, the typed event bus with four dispatch modes, LIFO teardown. No LLM, no tools.</p>
+      <p class="donewhen"><b>Done when</b> Two fake plugins, one depending on the other, boot in dependency order regardless of config order, and unloading the dependency unwinds both registrations in reverse.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">2</span>Log</div>
+    <div>
+      <h3>Session log + replay adapter</h3>
+      <p>Append-only event log, <code>deriveMessages()</code> projection, and the replay provider reading recorded fixtures. Build the fake provider before the real ones so every later phase is testable offline and for free.</p>
+      <p class="donewhen"><b>Done when</b> A recorded session replays to a byte-identical message projection, and the model-visible-means-logged invariant fails loudly on a deliberately unlogged injection.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">3</span>Loop</div>
+    <div>
+      <h3>Turn/step driver + tool pipeline</h3>
+      <p>The flow above, with all four waterfalls wired. Two tools only: <code>read</code> and <code>bash</code>. An approval listener on <code>tools/pre-execute</code> proves the seam.</p>
+      <p class="donewhen"><b>Done when</b> A replayed session drives a full multi-step turn with tool calls, and denying at <code>tools/pre-execute</code> short-circuits without the loop knowing why.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">4</span>Providers</div>
+    <div>
+      <h3>Claude, Gemini, local</h3>
+      <p>Three real adapters behind <code>cx.llm</code>, plus provenance and <code>ReplayState</code>. Capability descriptors so impossible requests fail at assembly.</p>
+      <p class="donewhen"><b>Done when</b> The same session runs on all three by config change alone, and a Claude-then-Gemini handoff drops reasoning state explicitly and logs that it did — rather than silently corrupting history.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">5</span>Fan-out</div>
+    <div>
+      <h3>Sub-agents and orchestration</h3>
+      <p><code>cx.agents</code> with live handles, inbox, cancellation. Fan-out via <code>errgroup</code>, results merged in plain Go — not by another model call. Deterministic spawn cap in code, not in a prompt.</p>
+      <p class="donewhen"><b>Done when</b> N searchers on cheap models run concurrently, one failure doesn't take the batch down, and cancelling the parent cancels every child within a bounded time.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">6</span>Rust</div>
+    <div>
+      <h3>WASM plugin SDK</h3>
+      <p>wazero host, the two-function ABI, and a Rust guest crate that makes writing a tool a matter of implementing one trait. Port one real tool across as proof.</p>
+      <p class="donewhen"><b>Done when</b> A Rust tool compiled to WASM runs with no filesystem or network capability granted, and attempting either fails cleanly rather than escaping.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">7</span>Wire</div>
+    <div>
+      <h3>DevCouncil and Dev Map</h3>
+      <p>Tier-3 MCP or subprocess plugins exposing <code>map_query</code>, <code>map_trace</code>, <code>map_dead</code>, <code>graph_ctx</code>, and the task lifecycle. State stays in DevCouncil; the harness never keeps a second copy.</p>
+      <p class="donewhen"><b>Done when</b> <code>dev map dead</code> exiting 3 on a stale index surfaces to the agent as a tool error, not as an empty result.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Repo layout</h2>
+  <p class="sub">One Go module, one Rust workspace. Package boundaries follow the seam rule — definition, provider, and consumer never live together.</p>
+
+<pre><code>manvi/
+  cmd/manvi/                <span class="c">CLI entry, profile loading</span>
+  core/
+    plugin/                 <span class="c">Plugin, Ctx, Registry, Resolve[T]  — tier 1 kernel</span>
+    bus/                    <span class="c">On/Emit/Waterfall/Serial/Parallel</span>
+    session/                <span class="c">SessionEvent log + deriveMessages   [cx.sessions]</span>
+  llm/
+    llm/                    <span class="c">DEFINITION: Message, ContentBlock, Provider  [cx.llm]</span>
+    claude/  gemini/        <span class="c">PROVIDERS</span>
+    local/   replay/        <span class="c">PROVIDERS</span>
+  agent/
+    tools/                  <span class="c">DEFINITION: registry + pipeline      [cx.tools]</span>
+    loop/                   <span class="c">PROVIDER: default driver             [cx.agentLoop]</span>
+    agents/                 <span class="c">live handles, fan-out                [cx.agents]</span>
+    prompt/                 <span class="c">section assembly                     [cx.systemPrompt]</span>
+  plugins/
+    tool-fs/ tool-bash/     <span class="c">tier 1 tools</span>
+    wasm-host/              <span class="c">tier 2: wazero runtime + ABI</span>
+    mcp-client/             <span class="c">tier 3: subprocess plugins</span>
+    devcouncil/             <span class="c">dev CLI bridge</span>
+
+plugin-sdk-rs/              <span class="c">Rust workspace</span>
+  harness-plugin/           <span class="c">guest trait + ABI glue, compiles to wasm32-wasip1</span>
+  examples/tool-example/</code></pre>
+</section>
+
+<section class="col">
+  <h2>Where this goes wrong</h2>
+  <p class="sub">The three failure modes worth naming up front.</p>
+
+  <h3>Building the plugin system before you have two plugins</h3>
+  <p>Abstraction with one implementation is guesswork. Phase 1 mandates two fake plugins for exactly this reason, and the provider seam only earns its shape once Claude and Gemini are both behind it. If you find yourself designing tier-2 WASM ABI details in week one, that's the smell.</p>
+
+  <h3>Porting dsh's package granularity</h3>
+  <p>219 packages is right for a project with many contributors and a public plugin ecosystem. At your scale it's overhead that buys nothing. Seven seams, roughly a dozen packages. The seam rule — definition, provider, consumer split — is what you're preserving; the count is not.</p>
+
+  <h3>Letting the harness own state DevCouncil already owns</h3>
+  <p>Tasks, goals, gaps, verification evidence, and write policy already exist in this repo with a lease model and a policy gate. The harness should read and write them through the boundary, never mirror them. Two task tables that drift is a worse failure than no harness at all.</p>
+
+  <div class="note warn">
+    <span class="lbl">Open question</span>
+    <p>This plan puts the host in Go and Rust in tier 2 only, which is the split that has a clear technical reason behind it. If you want Rust higher up — the whole kernel, with Go only for provider SDKs — that's defensible too, but it costs you the official Anthropic SDK and the supplied agent loop, and the seam then runs across a process boundary instead of a sandbox boundary. Worth settling before Phase 1, because it changes Phase 1.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Architecture facts are from the DeepSeek Harness docs at <code>deepseek-ai/deepseek-harness</code> (MIT, developer preview) — <code>docs/architecture.md</code>, <code>docs/cordis-primer.md</code>, <code>docs/capability-seams.md</code>, and <code>docs/subsystems/llm-streaming.md</code>, read directly from the repository. wazero's component-model status and the <code>google.golang.org/genai</code> package are from current upstream documentation. Phase estimates and the Go/Rust mappings are design judgement, not measurement. dsh is four days old and explicitly unstable — re-read its docs before implementing against anything quoted here.</p>
+</footer>
+
+</div>

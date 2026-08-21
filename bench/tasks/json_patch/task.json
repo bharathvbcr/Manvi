@@ -1,0 +1,3 @@
+{"name":"json_patch","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_patch.py","SPEC.md"],"timeout":60,
+ "blurb":"RFC 6901/6902 JSON Pointer + Patch: ~0/~1, array -, move-into-self, test, no mutation"}

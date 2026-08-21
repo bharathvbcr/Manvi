@@ -1,0 +1,3 @@
+{"name":"classfix","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_slug.py"],"timeout":120,
+ "blurb":"fix the general contract, not just the three example inputs"}

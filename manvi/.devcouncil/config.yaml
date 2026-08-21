@@ -1,0 +1,21 @@
+# Committed harness settings. The environment still wins over anything here.
+
+# Model selection
+llm.local.model: qwen3.8:27b-mlx
+
+# Reasoning configuration
+llm.local.supports_reasoning: true
+llm.effort: high
+# llm.local.assume_reasoning_prefill deliberately unset. Both local servers
+# here deliver reasoning on its own channel — omlx as reasoning_content, ollama
+# as reasoning — so the content stream is the answer, outside any thinking tag.
+# Declaring a prefill made the filter start inside a block that never closed and
+# file every answer as reasoning; the turn then returned nothing. Verified
+# 2026-08-19 against both servers. Set it only for a server that genuinely
+# begins generation inside <think> without sending the opening tag.
+
+# Qwen 3.8 27B tuned sampling parameters (from generation_config.json and developer docs)
+llm.local.temperature: 0.7
+llm.local.top_p: 0.95
+llm.local.top_k: 20
+llm.local.repetition_penalty: 1.0

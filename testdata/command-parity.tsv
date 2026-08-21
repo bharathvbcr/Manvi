@@ -1,0 +1,259 @@
+# section	command	result  — generated from DevCouncil's TaskPolicyEngine; regenerate with scripts/gen-command-parity.py
+# task allowed_commands: pytest * | go test * | make build | .venv/bin/dev *
+# global allowed_commands: npm install
+NORM		
+NORM	   	
+NORM	dev status	dev status
+NORM	dev status --json	dev status --json
+NORM	dev tasks	dev tasks
+NORM	dev next-task	dev next-task
+NORM	dev checkout TASK-001	dev checkout TASK-001
+NORM	dev approve	dev approve
+NORM	git status	git status
+NORM	git diff	git diff
+NORM	git diff --stat	git diff --stat
+NORM	echo hello	echo hello
+NORM	true	true
+NORM	:	:
+NORM	dev map	dev map
+NORM	dev map query foo	dev map query foo
+NORM	dev graph query foo	dev graph query foo
+NORM	dev doctor	dev doctor
+NORM	dev release TASK-001	dev release TASK-001
+NORM	dev scope update	dev scope update
+NORM	dev run-cmd pytest	dev run-cmd pytest
+NORM	pytest tests/	pytest tests/
+NORM	python -m pytest tests/ -q	python -m pytest tests/ -q
+NORM	uv run pytest tests/	uv run pytest tests/
+NORM	uv run dev map	uv run dev map
+NORM	uv run --project . dev map	uv run dev map
+NORM	uv run --directory /repo dev status	uv run dev status
+NORM	uv run -p /repo dev map query x	uv run dev map query x
+NORM	.venv/bin/dev map	dev map
+NORM	/abs/path/.venv/bin/dev status	dev status
+NORM	./scripts/dev map	dev map
+NORM	DevCouncil/dev map	DevCouncil/dev map
+NORM	devcouncil status	dev status
+NORM	dev map > /tmp/out.json	dev map
+NORM	dev map >> /tmp/out.json	dev map
+NORM	dev map 2> /tmp/err	dev map
+NORM	dev map 2>&1	dev map
+NORM	cd repo	cd repo
+NORM	cd repo && dev map	cd repo && dev map
+NORM	pushd /tmp	pushd /tmp
+NORM	popd	popd
+NORM	cdx something	cdx something
+NORM	rm -rf /	rm -rf /
+NORM	npm install	npm install
+NORM	make build	make build
+NORM	cargo test	cargo test
+NORM	go test ./...	go test ./...
+NORM	git commit -m 'x'	git commit -m 'x'
+NORM	git commit --no-verify -m 'x'	git commit --no-verify -m 'x'
+NORM	git commit --no-gpg-sign -m 'x'	git commit --no-gpg-sign -m 'x'
+NORM	git reset --hard main	git reset --hard main
+NORM	git reset --hard origin/main	git reset --hard origin/main
+NORM	git reset --hard origin/master	git reset --hard origin/master
+NORM	git reset --hard HEAD~1	git reset --hard HEAD~1
+NORM	git push origin --force	git push origin --force
+NORM	git push origin --force-with-lease	git push origin --force-with-lease
+NORM	git push -f origin feature	git push -f origin feature
+NORM	git push origin +HEAD:master	git push origin +HEAD:master
+NORM	git push origin +refs/heads/x:refs/heads/y	git push origin +refs/heads/x:refs/heads/y
+NORM	git push origin main	git push origin main
+NORM	git push origin HEAD:main	git push origin HEAD:main
+NORM	git push origin master:refs/heads/master	git push origin master:refs/heads/master
+NORM	git push origin feature	git push origin feature
+NORM	GIT PUSH ORIGIN --FORCE	GIT PUSH ORIGIN --FORCE
+ALLOW_TASK		deny
+ALLOW_TASK	   	deny
+ALLOW_TASK	dev status	allow
+ALLOW_TASK	dev status --json	allow
+ALLOW_TASK	dev tasks	allow
+ALLOW_TASK	dev next-task	allow
+ALLOW_TASK	dev checkout TASK-001	allow
+ALLOW_TASK	dev approve	allow
+ALLOW_TASK	git status	allow
+ALLOW_TASK	git diff	allow
+ALLOW_TASK	git diff --stat	allow
+ALLOW_TASK	echo hello	allow
+ALLOW_TASK	true	allow
+ALLOW_TASK	:	allow
+ALLOW_TASK	dev map	allow
+ALLOW_TASK	dev map query foo	allow
+ALLOW_TASK	dev graph query foo	allow
+ALLOW_TASK	dev doctor	allow
+ALLOW_TASK	dev release TASK-001	allow
+ALLOW_TASK	dev scope update	allow
+ALLOW_TASK	dev run-cmd pytest	allow
+ALLOW_TASK	pytest tests/	allow
+ALLOW_TASK	python -m pytest tests/ -q	allow
+ALLOW_TASK	uv run pytest tests/	allow
+ALLOW_TASK	uv run dev map	allow
+ALLOW_TASK	uv run --project . dev map	allow
+ALLOW_TASK	uv run --directory /repo dev status	allow
+ALLOW_TASK	uv run -p /repo dev map query x	allow
+ALLOW_TASK	.venv/bin/dev map	allow
+ALLOW_TASK	/abs/path/.venv/bin/dev status	allow
+ALLOW_TASK	./scripts/dev map	allow
+ALLOW_TASK	DevCouncil/dev map	deny
+ALLOW_TASK	devcouncil status	allow
+ALLOW_TASK	dev map > /tmp/out.json	allow
+ALLOW_TASK	dev map >> /tmp/out.json	allow
+ALLOW_TASK	dev map 2> /tmp/err	allow
+ALLOW_TASK	dev map 2>&1	allow
+ALLOW_TASK	cd repo	allow
+ALLOW_TASK	cd repo && dev map	allow
+ALLOW_TASK	pushd /tmp	allow
+ALLOW_TASK	popd	allow
+ALLOW_TASK	cdx something	deny
+ALLOW_TASK	rm -rf /	deny
+ALLOW_TASK	npm install	allow
+ALLOW_TASK	make build	allow
+ALLOW_TASK	cargo test	deny
+ALLOW_TASK	go test ./...	allow
+ALLOW_TASK	git commit -m 'x'	deny
+ALLOW_TASK	git commit --no-verify -m 'x'	deny
+ALLOW_TASK	git commit --no-gpg-sign -m 'x'	deny
+ALLOW_TASK	git reset --hard main	deny
+ALLOW_TASK	git reset --hard origin/main	deny
+ALLOW_TASK	git reset --hard origin/master	deny
+ALLOW_TASK	git reset --hard HEAD~1	deny
+ALLOW_TASK	git push origin --force	deny
+ALLOW_TASK	git push origin --force-with-lease	deny
+ALLOW_TASK	git push -f origin feature	deny
+ALLOW_TASK	git push origin +HEAD:master	deny
+ALLOW_TASK	git push origin +refs/heads/x:refs/heads/y	deny
+ALLOW_TASK	git push origin main	deny
+ALLOW_TASK	git push origin HEAD:main	deny
+ALLOW_TASK	git push origin master:refs/heads/master	deny
+ALLOW_TASK	git push origin feature	deny
+ALLOW_TASK	GIT PUSH ORIGIN --FORCE	deny
+ALLOW_NOTASK		deny
+ALLOW_NOTASK	   	deny
+ALLOW_NOTASK	dev status	allow
+ALLOW_NOTASK	dev status --json	allow
+ALLOW_NOTASK	dev tasks	allow
+ALLOW_NOTASK	dev next-task	allow
+ALLOW_NOTASK	dev checkout TASK-001	allow
+ALLOW_NOTASK	dev approve	allow
+ALLOW_NOTASK	git status	allow
+ALLOW_NOTASK	git diff	allow
+ALLOW_NOTASK	git diff --stat	allow
+ALLOW_NOTASK	echo hello	allow
+ALLOW_NOTASK	true	allow
+ALLOW_NOTASK	:	allow
+ALLOW_NOTASK	dev map	allow
+ALLOW_NOTASK	dev map query foo	allow
+ALLOW_NOTASK	dev graph query foo	allow
+ALLOW_NOTASK	dev doctor	allow
+ALLOW_NOTASK	dev release TASK-001	allow
+ALLOW_NOTASK	dev scope update	allow
+ALLOW_NOTASK	dev run-cmd pytest	allow
+ALLOW_NOTASK	pytest tests/	allow
+ALLOW_NOTASK	python -m pytest tests/ -q	allow
+ALLOW_NOTASK	uv run pytest tests/	allow
+ALLOW_NOTASK	uv run dev map	allow
+ALLOW_NOTASK	uv run --project . dev map	allow
+ALLOW_NOTASK	uv run --directory /repo dev status	allow
+ALLOW_NOTASK	uv run -p /repo dev map query x	allow
+ALLOW_NOTASK	.venv/bin/dev map	allow
+ALLOW_NOTASK	/abs/path/.venv/bin/dev status	allow
+ALLOW_NOTASK	./scripts/dev map	allow
+ALLOW_NOTASK	DevCouncil/dev map	deny
+ALLOW_NOTASK	devcouncil status	allow
+ALLOW_NOTASK	dev map > /tmp/out.json	allow
+ALLOW_NOTASK	dev map >> /tmp/out.json	allow
+ALLOW_NOTASK	dev map 2> /tmp/err	allow
+ALLOW_NOTASK	dev map 2>&1	allow
+ALLOW_NOTASK	cd repo	allow
+ALLOW_NOTASK	cd repo && dev map	allow
+ALLOW_NOTASK	pushd /tmp	allow
+ALLOW_NOTASK	popd	allow
+ALLOW_NOTASK	cdx something	deny
+ALLOW_NOTASK	rm -rf /	deny
+ALLOW_NOTASK	npm install	deny
+ALLOW_NOTASK	make build	deny
+ALLOW_NOTASK	cargo test	deny
+ALLOW_NOTASK	go test ./...	deny
+ALLOW_NOTASK	git commit -m 'x'	deny
+ALLOW_NOTASK	git commit --no-verify -m 'x'	deny
+ALLOW_NOTASK	git commit --no-gpg-sign -m 'x'	deny
+ALLOW_NOTASK	git reset --hard main	deny
+ALLOW_NOTASK	git reset --hard origin/main	deny
+ALLOW_NOTASK	git reset --hard origin/master	deny
+ALLOW_NOTASK	git reset --hard HEAD~1	deny
+ALLOW_NOTASK	git push origin --force	deny
+ALLOW_NOTASK	git push origin --force-with-lease	deny
+ALLOW_NOTASK	git push -f origin feature	deny
+ALLOW_NOTASK	git push origin +HEAD:master	deny
+ALLOW_NOTASK	git push origin +refs/heads/x:refs/heads/y	deny
+ALLOW_NOTASK	git push origin main	deny
+ALLOW_NOTASK	git push origin HEAD:main	deny
+ALLOW_NOTASK	git push origin master:refs/heads/master	deny
+ALLOW_NOTASK	git push origin feature	deny
+ALLOW_NOTASK	GIT PUSH ORIGIN --FORCE	deny
+GIT		allow
+GIT	   	allow
+GIT	dev status	allow
+GIT	dev status --json	allow
+GIT	dev tasks	allow
+GIT	dev next-task	allow
+GIT	dev checkout TASK-001	allow
+GIT	dev approve	allow
+GIT	git status	allow
+GIT	git diff	allow
+GIT	git diff --stat	allow
+GIT	echo hello	allow
+GIT	true	allow
+GIT	:	allow
+GIT	dev map	allow
+GIT	dev map query foo	allow
+GIT	dev graph query foo	allow
+GIT	dev doctor	allow
+GIT	dev release TASK-001	allow
+GIT	dev scope update	allow
+GIT	dev run-cmd pytest	allow
+GIT	pytest tests/	allow
+GIT	python -m pytest tests/ -q	allow
+GIT	uv run pytest tests/	allow
+GIT	uv run dev map	allow
+GIT	uv run --project . dev map	allow
+GIT	uv run --directory /repo dev status	allow
+GIT	uv run -p /repo dev map query x	allow
+GIT	.venv/bin/dev map	allow
+GIT	/abs/path/.venv/bin/dev status	allow
+GIT	./scripts/dev map	allow
+GIT	DevCouncil/dev map	allow
+GIT	devcouncil status	allow
+GIT	dev map > /tmp/out.json	allow
+GIT	dev map >> /tmp/out.json	allow
+GIT	dev map 2> /tmp/err	allow
+GIT	dev map 2>&1	allow
+GIT	cd repo	allow
+GIT	cd repo && dev map	allow
+GIT	pushd /tmp	allow
+GIT	popd	allow
+GIT	cdx something	allow
+GIT	rm -rf /	allow
+GIT	npm install	allow
+GIT	make build	allow
+GIT	cargo test	allow
+GIT	go test ./...	allow
+GIT	git commit -m 'x'	allow
+GIT	git commit --no-verify -m 'x'	deny
+GIT	git commit --no-gpg-sign -m 'x'	deny
+GIT	git reset --hard main	deny
+GIT	git reset --hard origin/main	deny
+GIT	git reset --hard origin/master	deny
+GIT	git reset --hard HEAD~1	allow
+GIT	git push origin --force	deny
+GIT	git push origin --force-with-lease	deny
+GIT	git push -f origin feature	deny
+GIT	git push origin +HEAD:master	deny
+GIT	git push origin +refs/heads/x:refs/heads/y	deny
+GIT	git push origin main	warn
+GIT	git push origin HEAD:main	warn
+GIT	git push origin master:refs/heads/master	warn
+GIT	git push origin feature	allow
+GIT	GIT PUSH ORIGIN --FORCE	deny

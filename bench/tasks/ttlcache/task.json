@@ -1,0 +1,3 @@
+{"name":"ttlcache","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_cache.py"],"timeout":120,
+ "blurb":"LRU+TTL cache: recency is never refreshed and expired entries still hold capacity"}

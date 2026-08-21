@@ -1,0 +1,3 @@
+{"name":"pratt_parse","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_parse.py","SPEC.md"],"timeout":60,
+ "blurb":"Pratt parser: unary vs ^ vs postfix factorial, integer div toward zero, right-assoc power"}

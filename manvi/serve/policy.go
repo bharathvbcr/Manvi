@@ -1,0 +1,208 @@
+package serve
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"manvi/dc"
+	"manvi/policy"
+)
+
+// Posture decides what a policy denial means when there is no DevCouncil task.
+//
+// The gates were written for a harness that always has one: EvaluateFileChange
+// and EvaluateCommand both reach a `task == nil` rung and deny there, with
+// RuleNoTask and RuleCommandNoLease. That is right for DevCouncil, where a
+// missing lease is a real error, and wrong for an embedding host — an editor,
+// an IDE, a desktop app — which has no task model to be missing. Run unchanged
+// in such a host, the gates deny every write and every command, and the host's
+// only options are to ignore them entirely or to not use them.
+//
+// So the taskless case is made explicit rather than left to the caller to work
+// around. The split is not invented for this: the ladder already separates the
+// rules that protect the repository and its credentials, which run *before*
+// the task rung and carry Severity Hard, from the rules that describe a task's
+// declared scope, which run after and carry Severity Soft. A host without
+// tasks wants exactly the first set.
+type Posture string
+
+// hostScopeID names the synthesised task a host's declared scope travels as.
+//
+// It is a fixed, obviously-not-a-task-id string so that a decision carrying it
+// is recognisable as a host scope wherever one surfaces — a log line, an audit,
+// a grant ledger — rather than being mistaken for a real DevCouncil task that
+// nobody can find.
+const hostScopeID = "host-scope"
+
+const (
+	// PostureDevCouncil is the harness's own posture: a task is required, and
+	// its absence is a denial.
+	PostureDevCouncil Posture = "devcouncil"
+	// PostureHost is for an embedding host with no task model. Hard rules are
+	// enforced unchanged; a Soft denial — which is only ever a statement about
+	// a task's scope — is demoted to an allow that records why.
+	//
+	// The demotion is recorded in Decision.Demoted, so it is not the same
+	// value as a clean allow: Decision.Clean() stays false, and a host or an
+	// audit that summarises a run cannot mistake "no task model here" for "the
+	// rules passed".
+	PostureHost Posture = "host"
+)
+
+// demote resolves a decision under the posture.
+//
+// Only Soft denials move. A Hard denial is by definition one no task scope
+// could authorise — a write to .env, a path outside the root, a force push
+// over a protected branch — and those are the rules the host is embedding the
+// gate *for*. A Warn already allows and is passed through with its note.
+func (p Posture) demote(d policy.Decision, reason string) policy.Decision {
+	if p != PostureHost || d.Action != policy.Deny || d.Severity != policy.Soft {
+		return d
+	}
+	demoted := d
+	demoted.Action = policy.Allow
+	demoted.Demoted = reason
+	// Rule and Severity are deliberately preserved. The decision still records
+	// which rung fired, so a host that later grows a task model can find every
+	// place this posture was carrying it.
+	return demoted
+}
+
+// FileCheckParams is one file-write evaluation.
+type FileCheckParams struct {
+	// Root is the project root every path is resolved against. Required: the
+	// outside-root rung is meaningless without it, and defaulting it to the
+	// process working directory would silently evaluate against whatever
+	// directory the host happened to spawn the sidecar from.
+	Root string `json:"root"`
+	// Path is the file the host is about to write, absolute or root-relative.
+	Path string `json:"path"`
+	// Op is create, modify, delete, or write. Empty means write — the
+	// unspecialised form a tool reports when it does not know which it is.
+	Op string `json:"op,omitempty"`
+	// Internal exempts the caller from the restricted-path rung, for writes
+	// the harness itself makes into its own state directory. A host should
+	// leave it false; it is not a general escape hatch.
+	Internal bool `json:"internal,omitempty"`
+}
+
+// CommandCheckParams is one shell-command evaluation.
+type CommandCheckParams struct {
+	// Command is the command line as it would be run.
+	Command string `json:"command"`
+	// AllowedCommands is the host's own allowlist, in fnmatch form.
+	AllowedCommands []string `json:"allowed_commands,omitempty"`
+	// EnforceAllowlist keeps "not in any allowlist" a denial under
+	// PostureHost, instead of demoting it.
+	//
+	// The allowlist reaches the ladder as a synthesised task, not as
+	// CommandGate.GlobalAllowedCommands. That field looks like the right one
+	// and is not: the ladder consults it only *after* the `task == nil` rung
+	// has already denied, so with no task a global allowlist can never match.
+	// That is not an oversight to route around — the parity fixture pins
+	// `ALLOW_NOTASK npm install deny` against DevCouncil's own engine with
+	// `npm install` as the global allowlist, so the incumbent behaves the same
+	// way and manvi is faithful to it. What a host declares here is a scope,
+	// which is what a task *is*, so it is passed as one.
+	//
+	// It defaults to false, and that default is a deliberate statement about
+	// what this gate is for in a host. A host that runs shell commands at all
+	// already has some model of what it will run; dropping manvi's allowlist
+	// on top of it would refuse commands the host's own UI offers, which reads
+	// as a broken feature rather than as a safety decision. What the host gains
+	// with this off is the *hard* command rules — force push, protected-branch
+	// reset, --no-verify — which nothing in a typical host checks and which
+	// destroy the evidence other gates reason about.
+	//
+	// A host that wants the full ladder sets this true and supplies a real
+	// allowlist. That is a tightening, so it is opt-in rather than default.
+	EnforceAllowlist bool `json:"enforce_allowlist,omitempty"`
+}
+
+// checkFile evaluates one write.
+func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
+	var p FileCheckParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, badRequest("policy.check.file params: %v", err)
+	}
+	if p.Root == "" {
+		return nil, badRequest("policy.check.file requires a root; without one the outside-root rung cannot run")
+	}
+	if p.Path == "" {
+		return nil, badRequest("policy.check.file requires a path")
+	}
+
+	op, err := parseOperation(p.Op)
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+
+	gate := policy.FileGate{
+		Root: p.Root,
+		// Subsystems is nil: the neighbour rung needs a repo map the host has
+		// not built, and the gate already marks the decision Degraded when it
+		// cannot run rather than pretending it did.
+		Subsystems:     nil,
+		AllowNeighbors: s.allowNeighbors,
+		// The same-directory fallback needs planned files to measure against
+		// and this surface has no task at all, so the ladder stops at
+		// task.absent long before it could run. Named rather than defaulted, so
+		// the reason it is off is on the page beside the rung it belongs to.
+		AllowSameDir: false,
+		HardRules:    s.hardRules,
+	}
+	d := gate.EvaluateFileChange(p.Path, nil, op, p.Internal)
+	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host"), nil
+}
+
+// checkCommand evaluates one command.
+func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
+	var p CommandCheckParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, badRequest("policy.check.command params: %v", err)
+	}
+
+	gate := policy.CommandGate{HardRules: s.hardRules}
+
+	// The host's declared scope, carried as the task the ladder expects. With
+	// no task at all the ladder stops at RuleCommandNoLease and never reaches
+	// an allowlist rung, so a host could neither widen nor narrow what it
+	// runs. An empty AllowedCommands is a real value here: it means the host
+	// declared nothing, and the ladder ends at RuleCommandNotAllowed — Soft,
+	// and therefore demoted below unless the host asked for enforcement.
+	scope := &dc.Task{
+		ID:              hostScopeID,
+		Title:           "embedding host scope",
+		AllowedCommands: p.AllowedCommands,
+	}
+	d := gate.EvaluateCommand(p.Command, scope)
+
+	// An empty command has nothing to run and nothing to grant; it is Hard, so
+	// it never reaches the demotion below. Stated here because it is the one
+	// command outcome a host might expect to be demoted and must not be.
+	if p.EnforceAllowlist {
+		return d, nil
+	}
+	return s.posture.demote(d, "serve.posture=host: allowlist not enforced (enforce_allowlist=false)"), nil
+}
+
+// parseOperation maps the wire spelling to dc.Operation, refusing anything
+// else rather than defaulting.
+//
+// A silently-defaulted operation is the failure this prevents: "delete"
+// misread as "write" evaluates a delete against the create/modify rung and can
+// allow it.
+func parseOperation(raw string) (dc.Operation, error) {
+	switch raw {
+	case "", string(dc.OpWrite):
+		return dc.OpWrite, nil
+	case string(dc.OpCreate):
+		return dc.OpCreate, nil
+	case string(dc.OpModify):
+		return dc.OpModify, nil
+	case string(dc.OpDelete):
+		return dc.OpDelete, nil
+	default:
+		return "", fmt.Errorf("unknown file operation %q (want create, modify, delete, or write)", raw)
+	}
+}

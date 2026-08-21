@@ -1,0 +1,3 @@
+{"name":"intervals","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_intervals.py","SPEC.md"],"timeout":120,
+ "blurb":"half-open interval algebra; three functions, all buggy, checked against a point-set oracle"}

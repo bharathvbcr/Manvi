@@ -1,0 +1,3 @@
+{"name":"globmatch","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_glob.py","SPEC.md"],"timeout":120,
+ "blurb":"implement fnmatch-compatible globbing from a spec, no re/fnmatch allowed, checked on ~2300 pairs"}

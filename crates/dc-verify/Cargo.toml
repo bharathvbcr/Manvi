@@ -1,0 +1,12 @@
+[package]
+name = "dc-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic verifier core: diff parsing and planned-scope classification"
+
+[dependencies]
+dc-glob = { path = "../dc-glob" }
+
+[lints]
+workspace = true

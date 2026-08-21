@@ -1,0 +1,3 @@
+{"name":"cryptic","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_invoice.py"],"timeout":120,
+ "blurb":"a KeyError whose real cause is a typo in a different file"}

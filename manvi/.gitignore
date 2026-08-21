@@ -1,0 +1,61 @@
+# DevCouncil local state
+.devcouncil/*
+!.devcouncil/
+!.devcouncil/config.yaml
+
+# Local AI coding agents
+.agents/
+.codex/
+.aider*
+.gemini/
+.claude*
+.cursor/
+.openhands/
+.opencode/
+.conductor/
+.antigravity/
+.warp/
+.grok/
+
+# Secrets and local databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Temporary, log, and dump artifacts
+logs/
+log/
+tmp/
+temp/
+.tmp/
+.temp/
+scratch/
+dumps/
+dump/
+*.tmp
+*.temp
+*.log
+*.dmp
+*.dump
+*.bak
+*.swp
+*_results.txt
+*_log.txt
+*_output.txt
+
+# Environment, dependency, and cache directories
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.env
+.env.local
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db

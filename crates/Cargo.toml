@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["dc-glob", "dc-store", "dc-verify"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# No external dependencies yet, deliberately. Every crate added here is a
+# dependency-audit surface paid for weekly; the analysis plane earns its first
+# one when a task needs it (tree-sitter, rusqlite), not before.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

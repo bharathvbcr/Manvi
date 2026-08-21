@@ -1,0 +1,811 @@
+<title>Rust or Go for the Harness</title>
+<style>
+  :root {
+    --paper:        #F2F4F5;
+    --surface:      #FBFCFC;
+    --surface-2:    #E8ECEE;
+    --ink:          #14191C;
+    --ink-2:        #3D474D;
+    --ink-3:        #6B767D;
+    --rule:         #D2D9DC;
+    --rule-soft:    #E2E7E9;
+    --go:           #0A7E9E;
+    --go-soft:      #DCEFF5;
+    --rust:         #B4501F;
+    --rust-soft:    #F6E5DA;
+    --warn:         #8A5A00;
+    --warn-soft:    #F7EBD2;
+    --stop:         #A32118;
+    --go-good:      #1F6B45;
+    --shadow:       0 1px 2px rgba(20,25,28,.06), 0 8px 24px -12px rgba(20,25,28,.18);
+
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1315;
+      --surface:    #161C1F;
+      --surface-2:  #1E262A;
+      --ink:        #E8EDEF;
+      --ink-2:      #B2BEC3;
+      --ink-3:      #7E8C93;
+      --rule:       #2A3438;
+      --rule-soft:  #212A2E;
+      --go:         #43BBDC;
+      --go-soft:    #10333E;
+      --rust:       #E8874F;
+      --rust-soft:  #3A2114;
+      --warn:       #D9A441;
+      --warn-soft:  #3A2E12;
+      --stop:       #E8756A;
+      --go-good:    #5CBF8C;
+      --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0E1315;
+    --surface:    #161C1F;
+    --surface-2:  #1E262A;
+    --ink:        #E8EDEF;
+    --ink-2:      #B2BEC3;
+    --ink-3:      #7E8C93;
+    --rule:       #2A3438;
+    --rule-soft:  #212A2E;
+    --go:         #43BBDC;
+    --go-soft:    #10333E;
+    --rust:       #E8874F;
+    --rust-soft:  #3A2114;
+    --warn:       #D9A441;
+    --warn-soft:  #3A2E12;
+    --stop:       #E8756A;
+    --go-good:    #5CBF8C;
+    --shadow:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 20px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; }
+  .col  { max-width: 68ch; }
+
+  /* ---------- masthead ---------- */
+  header.mast {
+    padding: 64px 0 34px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 46px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(34px, 6vw, 54px);
+    line-height: 1.04;
+    letter-spacing: -.024em;
+    font-weight: 720;
+    text-wrap: balance;
+    margin: 0 0 18px;
+  }
+  .standfirst {
+    font-size: 19px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 60ch;
+    margin: 0;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin: 0 0 60px; }
+  h2 {
+    font-size: 25px;
+    letter-spacing: -.015em;
+    font-weight: 690;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h2 + .sub {
+    color: var(--ink-3);
+    font-size: 15px;
+    margin: 0 0 26px;
+    max-width: 62ch;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 660;
+    letter-spacing: -.005em;
+    margin: 32px 0 8px;
+  }
+  p { margin: 0 0 15px; }
+  a { color: var(--go); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--go);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--surface-2);
+    padding: .12em .38em;
+    border-radius: 3px;
+  }
+  strong { font-weight: 660; }
+
+  /* ---------- verdict ---------- */
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 5px solid var(--go);
+    border-radius: 4px;
+    padding: 26px 28px;
+    box-shadow: var(--shadow);
+    margin-bottom: 22px;
+  }
+  .verdict .eyebrow { color: var(--go); margin-bottom: 10px; }
+  .verdict p:last-child { margin-bottom: 0; }
+  .verdict .headline {
+    font-size: 21px;
+    font-weight: 680;
+    letter-spacing: -.012em;
+    margin: 0 0 12px;
+  }
+
+  .caveat {
+    background: var(--rust-soft);
+    border: 1px solid var(--rust);
+    border-radius: 4px;
+    padding: 20px 22px;
+  }
+  .caveat .eyebrow { color: var(--rust); margin-bottom: 8px; }
+  .caveat p:last-child { margin-bottom: 0; }
+
+  .flag {
+    background: var(--warn-soft);
+    border-left: 4px solid var(--warn);
+    border-radius: 0 4px 4px 0;
+    padding: 16px 20px;
+    margin: 24px 0;
+    font-size: 15.5px;
+  }
+  .flag p:last-child { margin-bottom: 0; }
+  .flag .lbl {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--warn);
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  /* ---------- tables ---------- */
+  .scroller { overflow-x: auto; margin: 24px 0; border-radius: 4px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+    font-size: 14.8px;
+    background: var(--surface);
+  }
+  th, td {
+    text-align: left;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1.5px solid var(--rule);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th.lang-go, td.go-col   { border-left: 3px solid var(--go); }
+  th.lang-rust, td.rust-col { border-left: 3px solid var(--rust); }
+  .row-head { font-weight: 620; white-space: nowrap; }
+
+  .mark { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+  .yes  { color: var(--go-good); }
+  .no   { color: var(--stop); }
+  .part { color: var(--warn); }
+
+  /* ---------- two-up ---------- */
+  .two-up {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 18px;
+    margin: 26px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 22px;
+  }
+  .card.go-card   { border-top: 4px solid var(--go); }
+  .card.rust-card { border-top: 4px solid var(--rust); }
+  .card h3 { margin-top: 0; font-size: 18px; }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+  .card .tag {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 10px;
+  }
+  .go-card .tag { color: var(--go); }
+  .rust-card .tag { color: var(--rust); }
+
+  ul, ol { margin: 0 0 15px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-3); }
+
+  /* ---------- diagram ---------- */
+  figure { margin: 30px 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--ink-3);
+    margin-top: 12px;
+    max-width: 62ch;
+  }
+  .diagram-frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 24px 20px;
+    overflow-x: auto;
+  }
+
+  /* ---------- code ---------- */
+  pre {
+    background: var(--surface-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13.4px;
+    line-height: 1.62;
+    margin: 18px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .cmt { color: var(--ink-3); }
+
+  /* ---------- steps ---------- */
+  ol.steps { list-style: none; padding: 0; counter-reset: s; margin: 22px 0 0; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 16px;
+    padding: 16px 0;
+    border-top: 1px solid var(--rule-soft);
+    margin: 0;
+  }
+  ol.steps > li::before {
+    content: counter(s);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--go);
+    border: 1px solid var(--go);
+    border-radius: 50%;
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    margin-top: 2px;
+  }
+  ol.steps h3 { margin: 0 0 4px; font-size: 16px; }
+  ol.steps p { margin: 0; font-size: 15px; color: var(--ink-2); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 70px;
+    padding-top: 22px;
+    font-size: 13.5px;
+    color: var(--ink-3);
+  }
+  footer a { color: var(--ink-3); }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Harness architecture · parameter_golf</p>
+  <h1>Rust or Go for the Harness</h1>
+  <p class="standfirst">Building a self-hosted multi-agent coding harness — planner, search fan-out, orchestrator, builders. Which language actually gets you there faster, what open source already exists, and what you should not rebuild.</p>
+</header>
+
+<section class="col">
+  <div class="verdict">
+    <p class="eyebrow">Verdict</p>
+    <p class="headline">Go, by a wide margin — mostly because of what already exists, not because of the language.</p>
+    <p>Anthropic ships an official Go SDK with a built-in agentic tool-runner loop. There is no official Rust SDK. That single fact means the Go harness starts at "wire up tools and orchestration" while the Rust harness starts at "write an SSE parser and a tool-schema deriver." Add Google's ADK-Go 2.0 (graph workflow engine, sub-agents, A2A) and ByteDance's Eino, and Go has two mature multi-agent frameworks that map onto your topology almost directly.</p>
+  </div>
+
+  <div class="caveat">
+    <p class="eyebrow">Where Rust genuinely wins</p>
+    <p>One place, and it's real: <strong>sandboxed tool execution</strong>. AutoAgents runs tools in a WASM sandbox — if you want builder agents executing generated code without trusting it, that's a capability Go has no equivalent for. Also worth weighing if you intend to embed the harness into <code>Rust_MLKit/</code> rather than run it as a separate process.</p>
+  </div>
+
+  <p>The performance argument for Rust does not apply here. A coding harness is IO-bound on model tokens — a builder agent spends 99% of wall time waiting for the API. The 5× memory and 25–44% latency figures cited for Rust agent frameworks are measuring the wrong axis for this workload.</p>
+</section>
+
+<section>
+  <h2>First, a model-naming correction</h2>
+  <p class="sub">Your design names "3.7 Flash" as the cheap fan-out worker. That isn't an Anthropic model — <em>Flash</em> is Google's naming. Here is the actual roster to assign roles from.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Model ID</th><th class="num">In / Out per MTok</th><th class="num">Context</th><th>Role in your topology</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>claude-fable-5</code></td><td class="num">$10 / $50</td><td class="num">1M</td><td>Planner. Most capable; thinking always on. Requires 30-day data retention.</td></tr>
+        <tr><td><code>claude-opus-5</code></td><td class="num">$5 / $25</td><td class="num">1M</td><td>Orchestrator and builders. Thinking on by default.</td></tr>
+        <tr><td><code>claude-sonnet-5</code></td><td class="num">$3 / $15</td><td class="num">1M</td><td>Mid-tier builders where Opus is overkill.</td></tr>
+        <tr><td><code>claude-haiku-4-5</code></td><td class="num">$1 / $5</td><td class="num">200K</td><td><strong>This is your "Flash."</strong> Search fan-out and sub-builders.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="flag">
+    <span class="lbl">Cost shape</span>
+    <p>Search fan-out is where the money goes — many agents reading many files. Haiku at $1/MTok input versus Opus at $5 makes a 5× difference on exactly the workload you fan out the most. Keep the 200K context in mind: a Haiku searcher can't hold what an Opus orchestrator can, so give each one a narrow, self-contained question.</p>
+  </div>
+
+  <h3>If Gemini Flash is deliberate, not a slip</h3>
+  <p>Flash is Google's line, and using it for cheap fan-out alongside Claude for building is a reasonable cost architecture. But it makes the harness <strong>multi-provider</strong>, and that shifts the framework decision:</p>
+  <ul>
+    <li>The Anthropic Go SDK is Anthropic-only. Multi-provider means you write a provider abstraction, or adopt a framework that already has one.</li>
+    <li><strong>ADK-Go gets substantially stronger</strong> — it's Google's own kit, so Gemini support is first-class, and it's explicitly model-agnostic for Claude.</li>
+    <li><strong>Eino</strong> already integrates OpenAI, Claude, Gemini, and Ollama behind one ChatModel interface.</li>
+    <li>On the Rust side this is the one thing <strong>rig</strong> is genuinely best at — 20+ providers behind a single interface is its core value proposition.</li>
+  </ul>
+  <p>Verify current Gemini model IDs, pricing, and context limits against Google's own documentation before wiring anything — I'm not asserting them here.</p>
+</section>
+
+<section>
+  <h2>Difficulty, line by line</h2>
+  <p class="sub">What you inherit versus what you write yourself, for the specific harness you described.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Capability</th><th class="lang-go">Go</th><th class="lang-rust">Rust</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="row-head">Official Anthropic SDK</td>
+          <td class="go-col"><span class="mark yes">YES</span> — <code>anthropic-sdk-go</code></td>
+          <td class="rust-col"><span class="mark no">NO</span> — raw HTTP or a community crate</td>
+        </tr>
+        <tr>
+          <td class="row-head">Agentic loop supplied</td>
+          <td class="go-col"><span class="mark yes">YES</span> — <code>Beta.Messages.NewToolRunner</code> → <code>RunToCompletion(ctx)</code></td>
+          <td class="rust-col"><span class="mark no">NO</span> — hand-write the <code>stop_reason == "tool_use"</code> loop</td>
+        </tr>
+        <tr>
+          <td class="row-head">Tool schema from types</td>
+          <td class="go-col"><span class="mark yes">YES</span> — <code>jsonschema</code> struct tags</td>
+          <td class="rust-col"><span class="mark part">PARTIAL</span> — rig derive macros, or write JSON by hand</td>
+        </tr>
+        <tr>
+          <td class="row-head">Multi-agent orchestration primitives</td>
+          <td class="go-col"><span class="mark yes">YES</span> — ADK-Go graph engine; Eino DeepAgent</td>
+          <td class="rust-col"><span class="mark part">PARTIAL</span> — AutoAgents (actor-based); rig has none</td>
+        </tr>
+        <tr>
+          <td class="row-head">Fan-out concurrency ergonomics</td>
+          <td class="go-col"><span class="mark yes">YES</span> — goroutines + channels, <code>errgroup</code></td>
+          <td class="rust-col"><span class="mark part">PARTIAL</span> — tokio + <code>Arc&lt;Mutex&gt;</code>, or an actor runtime</td>
+        </tr>
+        <tr>
+          <td class="row-head">Self-hosted Managed-Agents worker</td>
+          <td class="go-col"><span class="mark yes">YES</span> — one of only three supported languages</td>
+          <td class="rust-col"><span class="mark no">NO</span> — not available</td>
+        </tr>
+        <tr>
+          <td class="row-head">Sandboxed tool execution</td>
+          <td class="go-col"><span class="mark part">PARTIAL</span> — containers or subprocess isolation, yours to build</td>
+          <td class="rust-col"><span class="mark yes">YES</span> — AutoAgents ships a WASM runtime</td>
+        </tr>
+        <tr>
+          <td class="row-head">Single static binary, no GC</td>
+          <td class="go-col"><span class="mark part">PARTIAL</span> — static binary, but GC</td>
+          <td class="rust-col"><span class="mark yes">YES</span></td>
+        </tr>
+        <tr>
+          <td class="row-head">Rough effort to a working harness</td>
+          <td class="go-col num"><strong>1–2k LOC</strong> on top of the SDK</td>
+          <td class="rust-col num"><strong>3–6k LOC</strong>, plus the protocol layer</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="font-size:14.5px;color:var(--ink-3);max-width:62ch">The LOC figures are my estimate for the orchestrator + tool layer + subagent spawn, not a measured benchmark. The ratio is the point, not the absolute numbers.</p>
+</section>
+
+<section>
+  <h2>The open-source field</h2>
+  <p class="sub">Everything below is Apache-2.0 or MIT. Star counts are as reported by GitHub at the time of writing.</p>
+
+  <div class="two-up">
+    <div class="card go-card">
+      <span class="tag">Go</span>
+      <h3>Google ADK-Go</h3>
+      <p><strong>~8.7k ★ · Apache-2.0.</strong> The closest fit to your design. Version 2.0 added a graph-based workflow engine as a first-class way to compose multi-agent applications, plus built-in human-in-the-loop and dynamic orchestration. Supports the A2A protocol for agent-to-agent collaboration, MCP tools, and modular sub-agent composition.</p>
+      <p>If you want the orchestrator → planner → builder topology handed to you rather than assembled, start here.</p>
+    </div>
+
+    <div class="card go-card">
+      <span class="tag">Go</span>
+      <h3>CloudWeGo Eino</h3>
+      <p><strong>~12.7k ★ · Apache-2.0 · ByteDance.</strong> The most-starred Go AI framework. Composable components (ChatModel, Tool, Retriever, ChatTemplate) wired into graphs and workflows, with its own <em>ADK layer</em> on top: DeepAgent multi-agent coordination, ReAct loops, human-in-the-loop interrupt/resume, and <strong>state checkpointing</strong>.</p>
+      <p>Checkpointing is the differentiator for long orchestrator runs — an overnight build that dies at hour three resumes instead of restarting.</p>
+    </div>
+
+    <div class="card rust-card">
+      <span class="tag">Rust</span>
+      <h3>rig</h3>
+      <p><strong>~8.3k ★ · MIT.</strong> The de-facto Rust LLM library. 20+ providers behind one interface, 10+ vector stores, streaming, OpenTelemetry. Split into <code>rig-core</code> (provider-agnostic contracts) and <code>rig-agent</code> (builder runtime).</p>
+      <p><strong>Single-agent by design.</strong> No built-in orchestrator — multi-agent patterns are composed manually. You'd be building your topology on top, not with it.</p>
+    </div>
+
+    <div class="card rust-card">
+      <span class="tag">Rust</span>
+      <h3>AutoAgents</h3>
+      <p><strong>~734 ★ · MIT/Apache-2.0 · Ractor actor model.</strong> The only Rust option with real multi-agent primitives: typed pub/sub messaging, environment lifecycle management, ReAct executor, sliding-window memory, MCP examples, OpenTelemetry.</p>
+      <p>The standout feature is a <strong>sandboxed WASM runtime for tool execution</strong>. Much smaller community than the Go options — weigh that against the sandboxing.</p>
+    </div>
+
+    <div class="card rust-card">
+      <span class="tag">Rust</span>
+      <h3>ADK-Rust · Swiftide</h3>
+      <p><strong>ADK-Rust</strong> (zavora-ai, community — not Google) mirrors the ADK shape in Rust with models, tools, memory, MCP/A2A/ACP, and realtime voice. <strong>Swiftide</strong> offers an agent harness plus typed task graphs and streaming RAG pipelines.</p>
+      <p>Both are plausible; neither has the adoption of rig or the Go pair. Verify current maintenance before committing.</p>
+    </div>
+
+    <div class="card go-card">
+      <span class="tag">Go · Reference</span>
+      <h3>Anthropic Go SDK direct</h3>
+      <p><strong>Apache-2.0 · first-party.</strong> The zero-framework option. <code>toolrunner.NewBetaToolFromJSONSchema</code> defines tools, <code>client.Beta.Messages.NewToolRunner(...)</code> drives the loop, <code>.RunToCompletion(ctx)</code> runs it out. You write the orchestration; the SDK writes the loop.</p>
+      <p>For a harness you want to stay <em>lightweight</em>, this plus <code>errgroup</code> may beat either framework.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Your topology, and the one constraint that bites</h2>
+  <p class="sub">Planner fans out searchers, orchestrator breaks down tasks, builders spawn sub-builders and report back. Here is what that looks like with models assigned.</p>
+
+  <figure>
+    <div class="diagram-frame">
+      <svg viewBox="0 0 880 420" role="img" aria-label="Agent topology: planner fans out to search agents, feeds an orchestrator that decomposes tasks for builders, each of which spawns sub-builders that report back.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5">
+
+          <!-- depth labels -->
+          <g fill="var(--ink-3)" font-size="10" letter-spacing="1.4">
+            <text x="8" y="46">PLAN</text>
+            <text x="8" y="146">SEARCH</text>
+            <text x="8" y="246">DECOMPOSE</text>
+            <text x="8" y="346">BUILD</text>
+          </g>
+
+          <!-- planner -->
+          <rect x="330" y="22" width="220" height="42" rx="4" fill="var(--rust-soft)" stroke="var(--rust)" stroke-width="1.5"/>
+          <text x="440" y="41" text-anchor="middle" fill="var(--ink)" font-size="12.5" font-weight="600">Planner</text>
+          <text x="440" y="56" text-anchor="middle" fill="var(--rust)">claude-fable-5 · effort xhigh</text>
+
+          <!-- edges plan -> search -->
+          <g stroke="var(--rule)" stroke-width="1.4" fill="none" color="var(--ink-3)" marker-end="url(#ar)">
+            <path d="M400,66 L180,116"/>
+            <path d="M424,66 L330,116"/>
+            <path d="M456,66 L550,116"/>
+            <path d="M480,66 L700,116"/>
+          </g>
+
+          <!-- searchers -->
+          <g>
+            <rect x="110" y="118" width="140" height="40" rx="4" fill="var(--go-soft)" stroke="var(--go)" stroke-width="1.3"/>
+            <text x="180" y="134" text-anchor="middle" fill="var(--ink)" font-size="12">Search agent</text>
+            <text x="180" y="148" text-anchor="middle" fill="var(--go)" font-size="10">haiku-4-5</text>
+
+            <rect x="260" y="118" width="140" height="40" rx="4" fill="var(--go-soft)" stroke="var(--go)" stroke-width="1.3"/>
+            <text x="330" y="134" text-anchor="middle" fill="var(--ink)" font-size="12">Search agent</text>
+            <text x="330" y="148" text-anchor="middle" fill="var(--go)" font-size="10">haiku-4-5</text>
+
+            <rect x="480" y="118" width="140" height="40" rx="4" fill="var(--go-soft)" stroke="var(--go)" stroke-width="1.3"/>
+            <text x="550" y="134" text-anchor="middle" fill="var(--ink)" font-size="12">Search agent</text>
+            <text x="550" y="148" text-anchor="middle" fill="var(--go)" font-size="10">haiku-4-5</text>
+
+            <rect x="630" y="118" width="140" height="40" rx="4" fill="var(--go-soft)" stroke="var(--go)" stroke-width="1.3"/>
+            <text x="700" y="134" text-anchor="middle" fill="var(--ink)" font-size="12">Search agent</text>
+            <text x="700" y="148" text-anchor="middle" fill="var(--go)" font-size="10">haiku-4-5</text>
+          </g>
+          <text x="790" y="142" fill="var(--ink-3)" font-size="10.5">dev map · grep · read</text>
+
+          <!-- edges search -> orchestrator -->
+          <g stroke="var(--rule)" stroke-width="1.4" fill="none" color="var(--ink-3)" marker-end="url(#ar)">
+            <path d="M180,160 L390,218"/>
+            <path d="M330,160 L420,218"/>
+            <path d="M550,160 L462,218"/>
+            <path d="M700,160 L492,218"/>
+          </g>
+
+          <!-- orchestrator -->
+          <rect x="310" y="220" width="260" height="44" rx="4" fill="var(--surface-2)" stroke="var(--ink-2)" stroke-width="1.6"/>
+          <text x="440" y="239" text-anchor="middle" fill="var(--ink)" font-size="12.5" font-weight="600">Orchestrator</text>
+          <text x="440" y="254" text-anchor="middle" fill="var(--ink-2)">claude-opus-5 · creates + assigns tasks</text>
+
+          <!-- edges orchestrator -> builders -->
+          <g stroke="var(--rule)" stroke-width="1.4" fill="none" color="var(--ink-3)" marker-end="url(#ar)">
+            <path d="M390,266 L250,318"/>
+            <path d="M440,266 L440,318"/>
+            <path d="M490,266 L630,318"/>
+          </g>
+
+          <!-- builders -->
+          <g>
+            <rect x="170" y="320" width="160" height="42" rx="4" fill="var(--surface)" stroke="var(--ink-2)" stroke-width="1.3"/>
+            <text x="250" y="337" text-anchor="middle" fill="var(--ink)" font-size="12">Builder</text>
+            <text x="250" y="351" text-anchor="middle" fill="var(--ink-3)" font-size="10">opus-5 · xhigh</text>
+
+            <rect x="360" y="320" width="160" height="42" rx="4" fill="var(--surface)" stroke="var(--ink-2)" stroke-width="1.3"/>
+            <text x="440" y="337" text-anchor="middle" fill="var(--ink)" font-size="12">Builder</text>
+            <text x="440" y="351" text-anchor="middle" fill="var(--ink-3)" font-size="10">opus-5 · xhigh</text>
+
+            <rect x="550" y="320" width="160" height="42" rx="4" fill="var(--surface)" stroke="var(--ink-2)" stroke-width="1.3"/>
+            <text x="630" y="337" text-anchor="middle" fill="var(--ink)" font-size="12">Builder</text>
+            <text x="630" y="351" text-anchor="middle" fill="var(--ink-3)" font-size="10">opus-5 · xhigh</text>
+          </g>
+
+          <!-- sub-builders, depth 2 -->
+          <g stroke="var(--rust)" stroke-width="1.3" stroke-dasharray="4 3" fill="none" color="var(--rust)" marker-end="url(#ar)">
+            <path d="M215,364 L200,392"/>
+            <path d="M285,364 L300,392"/>
+            <path d="M405,364 L390,392"/>
+            <path d="M475,364 L490,392"/>
+            <path d="M595,364 L580,392"/>
+            <path d="M665,364 L680,392"/>
+          </g>
+          <g fill="var(--rust)" font-size="10">
+            <text x="200" y="405" text-anchor="middle">haiku</text>
+            <text x="300" y="405" text-anchor="middle">haiku</text>
+            <text x="390" y="405" text-anchor="middle">haiku</text>
+            <text x="490" y="405" text-anchor="middle">haiku</text>
+            <text x="580" y="405" text-anchor="middle">haiku</text>
+            <text x="680" y="405" text-anchor="middle">haiku</text>
+          </g>
+          <text x="790" y="400" fill="var(--rust)" font-size="10.5">depth 2 — self-host only</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Solid edges are single-level delegation. The dashed edges — builders spawning their own sub-builders — are the part that decides your architecture, because they are depth 2.</figcaption>
+  </figure>
+
+  <div class="flag">
+    <span class="lbl">The constraint</span>
+    <p>Anthropic's Managed Agents supports <strong>one level of delegation only</strong>: a roster member must not itself carry a <code>multiagent</code> roster, and that's enforced at agent-save time, not silently flattened. Your builders-spawn-sub-builders design is depth 2. If you want it, you self-host the harness — which is what you were asking about anyway. Just know that "use Managed Agents instead" is not a shortcut that gets you this topology.</p>
+  </div>
+
+  <p>The other reason to self-host: <code>dev map</code> and your repo live on your machine. Managed Agents runs tools in an Anthropic-hosted container by default. You'd need a <em>self-hosted sandbox</em> environment plus a polling worker — and the worker helpers exist in Python, TypeScript, and Go only. Another Go point; Rust has no path here at all.</p>
+</section>
+
+<section>
+  <h2>Don't rebuild tasks, goals, or gap detection</h2>
+  <p class="sub">This repo already has the task layer. Building a second one inside the harness gives you two sources of truth that drift.</p>
+
+  <p>DevCouncil already implements the state machine your design describes. From <code>dev --help</code> in this workspace:</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Your feature</th><th>Already exists as</th><th>What it does</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-head">Tasks</td><td><code>dev plan</code> · <code>next-task</code> · <code>checkout</code> · <code>run</code> · <code>show</code></td><td>Full task lifecycle with leases, so two builders can't grab the same task.</td></tr>
+        <tr><td class="row-head">Goals</td><td><code>dev map --goal &lt;text&gt;</code> · <code>dev plan</code></td><td>Goal text drives candidate-file ranking in the repo map.</td></tr>
+        <tr><td class="row-head">System prompts</td><td><code>dev prompt</code></td><td>Generates a scope-constrained prompt for a specific task.</td></tr>
+        <tr><td class="row-head">Gap detection</td><td><code>dev gaps</code> · <code>dev check</code></td><td>Lists blocking and advisory verification gaps; audits changes for scope, risks, missing edge cases, secrets.</td></tr>
+        <tr><td class="row-head">Hypothesis → repair</td><td><code>dev repair</code></td><td>Converts blocking gaps into repair tasks using LLM inference. This <em>is</em> your hypothesis generator.</td></tr>
+        <tr><td class="row-head">Verification</td><td><code>dev verify</code> · <code>provenance</code> · <code>baseline</code></td><td>Per-task verification with diff-coverage evidence.</td></tr>
+        <tr><td class="row-head">Write gating</td><td><code>dev write</code> · <code>apply-patch</code> · <code>policy-check</code></td><td>Policy-enforced writes — the safety layer for autonomous builders.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>There are also DevCouncil MCP tools already exposed (<code>devcouncil_status</code>, <code>devcouncil_checkout_task</code>, <code>devcouncil_verify_task</code>). The cleanest split:</p>
+
+  <div class="two-up">
+    <div class="card go-card">
+      <span class="tag">Harness owns</span>
+      <h3>Execution</h3>
+      <p>The agent loop, model routing, fan-out concurrency, context budgets, streaming, retries, tool dispatch, and the orchestrator's decision of <em>who runs next</em>.</p>
+    </div>
+    <div class="card rust-card">
+      <span class="tag">DevCouncil owns</span>
+      <h3>State</h3>
+      <p>Tasks, leases, goals, gaps, verification evidence, provenance, write policy. The harness reads and writes it through the CLI or the MCP tools — it never keeps its own copy.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Wiring Dev Map in as tools</h2>
+  <p class="sub">Subprocess-shelling a CLI is trivial in either language. What matters is the tool descriptions and one failure mode.</p>
+
+  <p>Four tools cover the search agents' needs. Every one of these already emits JSON with <code>--json</code>:</p>
+
+<pre><code><span class="cmt">// Prescriptive descriptions — say WHEN to call, not just what it does.
+// Current models under-reach for tools described only by function.</span>
+
+map_query   → dev map query &lt;symbol|path&gt; --json
+              "Call this first when you need a symbol's definition, callers,
+               callees, and importers. Faster and more complete than grep."
+
+map_trace   → dev map trace &lt;a&gt; &lt;b&gt; --json
+              "Call this when you need to know whether and how one symbol
+               reaches another — before claiming code is connected."
+
+map_dead    → dev map dead --json --confidence extracted
+              "Call this before deleting anything. 'extracted' is verified;
+               'inferred' is a guess and must not be treated as proof."
+
+graph_ctx   → dev graph-context &lt;files...&gt;
+              "Call this when reviewing a change set, to pull the
+               code-review-graph context for the touched files."</code></pre>
+
+  <div class="flag">
+    <span class="lbl">Fail loud, not quiet</span>
+    <p><code>dev map dead</code> <strong>exits 3 when the index was built from a different commit than HEAD</strong> — deliberately, so stale results can't pass as evidence. Your harness must surface that exit code as a tool error with <code>is_error: true</code>, not swallow it and return an empty list. A check that could not run must never look like a check that ran and passed. Same rule for <code>graph_degraded</code> and empty <code>entry_roots</code> in the repo map: report the degradation to the agent rather than letting it reason over a silently broken graph.</p>
+  </div>
+
+  <p>Give the search agents <code>map_query</code>, <code>map_trace</code>, <code>grep</code>, <code>glob</code>, and <code>read</code> — read-only, nothing that mutates. Builders get those plus <code>dev write</code> / <code>dev apply-patch</code>, so every mutation passes through the existing policy gate rather than a raw file write.</p>
+</section>
+
+<section>
+  <h2>Blending Rust and Go</h2>
+  <p class="sub">It works, and there's exactly one seam worth using. But it closes capability gaps, not community gaps — those it makes worse.</p>
+
+  <p>The two languages' gaps here are <strong>complementary and non-overlapping</strong>, which is what makes a clean split possible at all:</p>
+
+  <div class="two-up">
+    <div class="card rust-card">
+      <span class="tag">Rust can't</span>
+      <h3>Talk to model APIs</h3>
+      <p>No official SDK, no supplied agentic loop, no self-hosted worker.</p>
+    </div>
+    <div class="card go-card">
+      <span class="tag">Go can't</span>
+      <h3>Sandbox untrusted code</h3>
+      <p>No WASM tool runtime; isolation is yours to build with containers or subprocesses.</p>
+    </div>
+  </div>
+
+  <p>Neither side needs the other's missing capability, so the boundary never has to be crossed twice. Go owns everything that talks to a model; Rust owns anything that executes code you don't trust.</p>
+
+  <h3>Use WASM as the seam. Do not use cgo.</h3>
+
+  <p>cgo is the tempting answer and the wrong one. It costs you the properties that made Go attractive in the first place:</p>
+  <ul>
+    <li>Cross-compilation stops being <code>GOOS=linux GOARCH=arm64 go build</code> — you need a C toolchain for every target, or Zig as a stand-in.</li>
+    <li><code>CGO_ENABLED=1</code> gives up the drop-anywhere static binary. Distroless and scratch images mean pinning glibc or moving to musl and accepting the behavioral differences.</li>
+    <li>Every foreign call routes through <code>runtime.cgocall</code>, transitioning the goroutine through <code>entersyscall</code>/<code>exitsyscall</code>.</li>
+  </ul>
+
+  <p><strong>wazero</strong> avoids all of it: a pure-Go, zero-dependency WebAssembly runtime, so <code>CGO_ENABLED=0</code> and simple cross-compilation both survive. It has been 1.0 since March 2023 and is the default WASM runtime across the Go ecosystem — Trivy, Cilium, Tetragon, dapr, k6, and Open Policy Agent all embed it.</p>
+
+  <p>So the architecture isn't really "two languages running side by side." It's <strong>Go as the host, Rust as a compile target</strong>:</p>
+
+<pre><code><span class="cmt">Go binary (single static artifact, CGO_ENABLED=0)
+├── Anthropic / Gemini clients ....... official SDKs
+├── orchestrator + fan-out ........... goroutines, errgroup
+├── DevCouncil state ................. subprocess → dev CLI
+└── wazero runtime
+    └── tool.wasm .................... compiled from Rust
+        capability-sandboxed: no syscalls unless granted</span></code></pre>
+
+  <p>You get Rust's sandboxing inside one Go binary — no second process, no cgo, no lost static build.</p>
+
+  <div class="flag">
+    <span class="lbl">The part that doesn't work</span>
+    <p>A blend does not merge communities — it <strong>doubles</strong> them. You'd carry the Go module ecosystem <em>and</em> the Rust crate ecosystem, two CI toolchains, two dependency-audit surfaces, and a WASM ABI contract to version between them. The capability gaps you close are one-time wins; the ecosystem cost is paid every week, and for a solo developer it usually dominates. "Blend to get both communities' tools" is the one goal this architecture cannot deliver.</p>
+  </div>
+
+  <h3>You already have three seams doing most of this work</h3>
+  <p>Before adding a language, check which gap isn't already covered by a boundary in this repo:</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Existing boundary</th><th>What crosses it</th><th>Does a Rust component help?</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="row-head">Subprocess → <code>dev</code> CLI</td><td>Repo map, code graph, tasks, gaps, verification</td><td><span class="mark no">NO</span> — Python already, and not the bottleneck</td></tr>
+        <tr><td class="row-head">HTTP → <code>127.0.0.1:8000/v1</code></td><td>Local Qwen / MLX inference, OpenAI-compatible</td><td><span class="mark no">NO</span> — already an HTTP boundary</td></tr>
+        <tr><td class="row-head">MCP protocol</td><td>Any tool server, any language</td><td><span class="mark no">NO</span> — language-agnostic by design</td></tr>
+        <tr><td class="row-head">wazero / WASM</td><td>Untrusted tool execution</td><td><span class="mark yes">YES</span> — the real gap</td></tr>
+        <tr><td class="row-head">In-process FFI</td><td><code>Rust_MLKit</code> called directly</td><td><span class="mark part">MAYBE</span> — only if HTTP latency to the local server actually hurts</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Your local-model story in particular needs no Rust seam: <code>scripts/serve_qwen.py</code> already exposes an OpenAI-compatible endpoint, so the Go harness routes fan-out to a local model over plain HTTP for zero marginal cost per token.</p>
+
+  <p><strong>Recommendation:</strong> build Go-only, and keep wazero as a documented escape hatch. Add Rust when you have a specific tool that must execute untrusted generated code, or when you want <code>Rust_MLKit</code> in-process rather than behind HTTP. Adding it before then buys complexity against a gap you haven't hit.</p>
+</section>
+
+<section>
+  <h2>What I'd actually build</h2>
+  <p class="sub">Ordered so each step is useful on its own and you can stop at any point.</p>
+
+  <ol class="steps">
+    <li>
+      <div>
+        <h3>Single-agent Go loop against the SDK tool runner</h3>
+        <p>One agent, the four Dev Map tools, no orchestration. Proves the tool layer and the exit-code handling. A few hundred lines.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Search fan-out with <code>errgroup</code></h3>
+        <p>N Haiku agents on independent questions, results collected and deduped in plain Go — not by another model call. This is the step where Go's concurrency story pays for itself.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Orchestrator backed by DevCouncil</h3>
+        <p>Opus reads the search digest, calls <code>dev plan</code> / <code>next-task</code>, and hands scoped tasks to builders. State lives in DevCouncil's SQLite, not in the harness.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Builders with depth-2 spawn</h3>
+        <p>Cap the spawn count deterministically. Opus 5 delegates readily — an explicit ceiling in code beats a prompt instruction.</p>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Only now consider a framework — or a second language</h3>
+        <p>If checkpointing and resume become the bottleneck, port to Eino. If the graph topology gets unwieldy, or you commit to multi-provider with Gemini, port to ADK-Go 2.0. If builders start executing generated code, add wazero and a Rust tool module. You'll know which by then — and you'll have a working harness either way.</p>
+      </div>
+    </li>
+  </ol>
+
+  <p style="margin-top:34px">Skipping straight to a framework is the main way this goes wrong. Both Eino and ADK-Go are large surfaces, and "lightweight, fast harness" is the thing you asked for. The Anthropic Go SDK plus <code>errgroup</code> plus DevCouncil is already most of the design.</p>
+</section>
+
+<footer>
+  <p>Framework details are from each project's own repository and documentation; model IDs, pricing, and the delegation-depth constraint are from current Anthropic API documentation. Star counts and version numbers move — re-check before committing. The LOC estimates are judgement, not measurement. DevCouncil command inventory verified against <code>dev --help</code> in this workspace.</p>
+</footer>
+
+</div>

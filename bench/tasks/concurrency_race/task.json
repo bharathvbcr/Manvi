@@ -1,0 +1,3 @@
+{"name":"concurrency_race","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_queue.py"],"timeout":60,
+ "blurb":"fix deadlock and lost-wakeup in a multi-threaded bounded queue without breaking FIFO"}

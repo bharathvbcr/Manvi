@@ -1,0 +1,3 @@
+{"name":"parser","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_kv.py","SPEC.md"],"timeout":120,
+ "blurb":"implement a config parser to a written spec, including quoting and errors"}

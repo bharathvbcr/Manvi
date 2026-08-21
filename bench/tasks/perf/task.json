@@ -1,0 +1,3 @@
+{"name":"perf","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_perf.py"],"timeout":120,
+ "blurb":"turn an O(n^2) prefix-pair count into something that meets a time budget"}

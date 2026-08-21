@@ -1,0 +1,93 @@
+{
+  "cells": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "role": "strong",
+      "n_repeats": 5,
+      "rates": {
+        "0": 0.5,
+        "1": 0.75,
+        "2": 0.25,
+        "3": 0.5,
+        "4": 0.625
+      },
+      "mean": 0.525,
+      "lo": 0.375,
+      "hi": 0.65
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "role": "strong",
+      "n_repeats": 5,
+      "rates": {
+        "0": 0.75,
+        "1": 0.5,
+        "2": 0.875,
+        "3": 0.625,
+        "4": 0.375
+      },
+      "mean": 0.625,
+      "lo": 0.475,
+      "hi": 0.775
+    },
+    "qwen3.8:27b|baseline": {
+      "role": "mid",
+      "n_repeats": 5,
+      "rates": {
+        "0": 0.5,
+        "1": 0.75,
+        "2": 0.875,
+        "3": 0.75,
+        "4": 0.875
+      },
+      "mean": 0.75,
+      "lo": 0.625,
+      "hi": 0.85
+    },
+    "qwen3.8:27b|full": {
+      "role": "mid",
+      "n_repeats": 5,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 0.875
+      },
+      "mean": 0.975,
+      "lo": 0.925,
+      "hi": 1.0
+    }
+  },
+  "deltas": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "role": "strong",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.1,
+      "lo": -0.175,
+      "hi": 0.375
+    },
+    "qwen3.8:27b|baseline": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.225,
+      "lo": 0.1,
+      "hi": 0.375
+    }
+  },
+  "interaction": {
+    "_note": "missing weak or strong arm"
+  }
+}

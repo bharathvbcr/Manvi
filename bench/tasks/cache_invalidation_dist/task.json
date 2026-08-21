@@ -1,0 +1,3 @@
+{"name":"cache_invalidation_dist","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_dist.py","SPEC.md"],"timeout":60,
+ "blurb":"distributed cache coherence with split-brain recovery; last-(clock,nid) wins, tombstones included"}

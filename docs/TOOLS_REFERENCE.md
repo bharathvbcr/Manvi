@@ -1,0 +1,110 @@
+# DevCouncil Native Tool Suite Reference
+
+MANVI implements all 23 DevCouncil development tools natively in Go and Rust. Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+
+---
+
+## Tool Category Summary
+
+| Category | Count | Primary Purpose |
+|---|---|---|
+| **Task Lifecycle** | 5 | Discover tasks, manage exclusive SQLite leases, and track progress. |
+| **Guarded Mutation & Workspace** | 9 | Read/write files, apply exact-match patches, run audited commands, and query directories. |
+| **Multi-Agent Coordination** | 1 | Dispatch and coordinate concurrent sub-agent execution pools. |
+| **Override Seam** | 1 | Request audited Human or Agent overrides for soft policy denials. |
+| **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
+| **Code Graph & Navigation** | 3 | Query AST symbol definitions, detect dead code, and analyze blast radii. |
+
+---
+
+## Detailed Tool Specifications
+
+### 1. Task Lifecycle Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_next_task` | Read-only | *None* | Discovers the next ready, unallocated task in the project task queue. |
+| `devcouncil_get_task` | Read-only | `task_id` (string) | Inspects declared task specification, planned files, forbidden paths, and requirements. |
+| `devcouncil_checkout_task` | Write | `task_id` (string), `owner` (string), `ttl` (string, optional) | Claims an exclusive ACID lease on a task in SQLite. Required before modifying files in strict mode. |
+| `devcouncil_renew_lease` | Write | `task_id` (string), `token` (string), `ttl` (string, optional) | Extends an active lease TTL prior to expiration. |
+| `devcouncil_release_task` | Write | `task_id` (string), `token` (string) | Relinquishes held lease upon task completion or abandonment. |
+
+---
+
+### 2. Guarded Mutation & Workspace Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_policy_check_write` | Read-only | `path` (string), `task_id` (string, optional) | Probes the write gate policy without touching the filesystem. Returns decision and rule provenance. |
+| `devcouncil_read_file` | Read-only | `path` (string), `offset` (int, opt), `limit` (int, opt) | Reads file contents safely from within the workspace root. |
+| `devcouncil_write_file` | Write | `path` (string), `content` (string), `task_id` (string, optional) | Performs an atomic write passing the 5-tier policy gate. Requires active lease under strict posture. |
+| `devcouncil_patch_file` | Write | `path` (string), `target` (string), `replacement` (string), `start_line` (int), `end_line` (int) | Performs targeted exact-block substring replacement bounded by line numbers. Fails closed on ambiguity. |
+| `devcouncil_delete_file` | Write | `path` (string), `task_id` (string, optional) | Safely deletes a file after passing policy gate and lease checks. |
+| `devcouncil_exec_command` | Write | `command` (string), `task_id` (string, optional), `timeout` (string, opt) | Executes shell commands guarded by the command gate and safety allowlists. |
+| `devcouncil_list_dir` | Read-only | `path` (string), `recursive` (bool, optional) | Lists directory contents, file types, and sizes. |
+| `devcouncil_find_files` | Read-only | `pattern` (string), `path` (string, optional) | Fast glob pattern matching (`*.go`, `src/**/*.rs`) for workspace discovery. |
+| `devcouncil_grep` | Read-only | `query` (string), `path` (string, optional), `case_sensitive` (bool) | Regex and literal pattern searching across files in workspace. |
+
+---
+
+### 3. Multi-Agent Coordination Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_spawn_subagents` | Write | `subagents` (array of agent configs) | Concurrently dispatches sub-agents in a bounded worker pool. Manages child leases and cleans up held locks on cancellation. |
+
+---
+
+### 4. Override Seam Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_request_override` | Write | `rule` (string), `target` (string), `reason` (string), `ttl` (string, optional) | Requests a scoped, audited Human or Agent grant for soft policy blocks (e.g. `scope.unplanned`). |
+
+---
+
+### 5. Verification & Evidence Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_get_diff` | Read-only | `task_id` (string, optional) | Inspects the current working-tree git unified diff for the active task. |
+| `devcouncil_verify_task` | Read-only | `task_id` (string) | Runs the Rust `dc-verify` engine: checks scope conformance, anti-stub rigor gates, and diff coverage. |
+| `devcouncil_get_gaps` | Read-only | `task_id` (string) | Enumerates outstanding verification gaps blocking task acceptance. |
+| `devcouncil_get_next_actions` | Read-only | `task_id` (string) | Returns machine-routable typed repair actions for identified verification gaps. |
+
+---
+
+### 6. Code Graph & Navigation Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_graph_query` | Read-only | `symbol` (string), `kind` (string, optional) | Searches AST symbol definitions and references with file paths and line spans. |
+| `devcouncil_code_dead` | Read-only | `path` (string, optional) | Identifies callerless dead code functions and structs with exemption annotations. |
+| `devcouncil_graph_context` | Read-only | `path` (string) | Performs blast-radius analysis: lists incoming callers and outgoing dependencies. |
+
+---
+
+## Direct CLI Tool Invocation
+
+You can invoke any native tool directly from the CLI via `manvi tool`:
+
+```bash
+# Read a file
+manvi tool devcouncil_read_file --json '{"path": "cmd/manvi/main.go"}'
+
+# Find Go files
+manvi tool devcouncil_find_files --json '{"pattern": "**/*.go"}'
+
+# Verify active task
+manvi tool devcouncil_verify_task --json '{"task_id": "TASK-001"}'
+```
+
+---
+
+## Tool Execution Lifecycle & Qualification
+
+Every tool execution follows a 4-phase pipeline:
+1. **`tools/pre-execute`**: Schema validation, context deadline check, and argument normalization.
+2. **Policy Gate Evaluation**: Evaluates Write Gate or Command Gate rules against active task scope and grants.
+3. **Native Tool Body Execution**: Dispatches directly in Go or calls Rust analysis binaries over stdio IPC.
+4. **`tools/post-execute` Qualification**: Attaches outcome metadata (`Passed`, `Blocked`, `Granted`, `Demoted`, `Degraded`) and appends result to the append-only `session.jsonl` log.

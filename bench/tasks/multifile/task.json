@@ -1,0 +1,3 @@
+{"name":"multifile","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_store.py"],"timeout":120,
+ "blurb":"stale index entries after update; the fix spans two modules"}

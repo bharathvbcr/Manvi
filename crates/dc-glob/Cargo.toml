@@ -1,0 +1,9 @@
+[package]
+name = "dc-glob"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python fnmatch semantics, shared by the harness's analysis plane"
+
+[lints]
+workspace = true

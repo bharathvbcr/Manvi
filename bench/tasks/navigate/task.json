@@ -1,0 +1,3 @@
+{"name":"navigate","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_report.py"],"timeout":120,
+ "blurb":"wrong totals in a 6-module package; the cause is a double conversion two files from the symptom"}

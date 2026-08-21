@@ -1,0 +1,3 @@
+{"name":"binsearch","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_search.py"],"timeout":20,
+ "blurb":"fix an off-by-one that makes a binary search hang"}

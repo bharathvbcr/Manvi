@@ -1,0 +1,3 @@
+{"name":"nfa_match","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_nfa.py","SPEC.md"],"timeout":60,
+ "blurb":"Thompson-style regex fullmatch: | * + ? () ., no re, checked against an oracle"}

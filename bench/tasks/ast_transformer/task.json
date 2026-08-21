@@ -1,0 +1,3 @@
+{"name":"ast_transformer","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_rewrite.py","SPEC.md"],"timeout":60,
+ "blurb":"desugar async for / async with per a formal spec, including break-aclose and aexit suppression"}

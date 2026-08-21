@@ -1,0 +1,3 @@
+{"name":"envbuild","kind":"shell","hidden":"hidden_test.sh",
+ "protect":["test_stats.sh"],"timeout":180,
+ "blurb":"build script names a compiler that is not installed, plus a loop bug in C"}

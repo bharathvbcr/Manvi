@@ -1,0 +1,764 @@
+<title>DevCouncil Execution Harness</title>
+<style>
+  :root {
+    --paper:      #F5F4F1;
+    --surface:    #FCFBF9;
+    --sunken:     #EAE8E3;
+    --ink:        #1B1E1D;
+    --ink-2:      #454A48;
+    --ink-3:      #757C79;
+    --rule:       #D6D3CC;
+    --rule-soft:  #E4E1DB;
+    --verd:       #16645A;
+    --verd-soft:  #DCEBE7;
+    --amber:      #97561A;
+    --amber-soft: #F5E7D8;
+    --crit:       #9B2C22;
+    --ok:         #2C6B45;
+
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #121413;
+      --surface:    #1A1D1C;
+      --sunken:     #232726;
+      --ink:        #E9EBEA;
+      --ink-2:      #B4BAB8;
+      --ink-3:      #808886;
+      --rule:       #2E3331;
+      --rule-soft:  #252A28;
+      --verd:       #57BFAE;
+      --verd-soft:  #133029;
+      --amber:      #D79A55;
+      --amber-soft: #33240F;
+      --crit:       #E07C70;
+      --ok:         #63BC8B;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #121413;
+    --surface:    #1A1D1C;
+    --sunken:     #232726;
+    --ink:        #E9EBEA;
+    --ink-2:      #B4BAB8;
+    --ink-3:      #808886;
+    --rule:       #2E3331;
+    --rule-soft:  #252A28;
+    --verd:       #57BFAE;
+    --verd-soft:  #133029;
+    --amber:      #D79A55;
+    --amber-soft: #33240F;
+    --crit:       #E07C70;
+    --ok:         #63BC8B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 20px 110px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  header.mast {
+    padding: 70px 0 30px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--verd);
+    margin: 0 0 20px;
+  }
+  h1 {
+    font-size: clamp(33px, 5.6vw, 52px);
+    line-height: 1.03;
+    letter-spacing: -.026em;
+    font-weight: 700;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  .standfirst {
+    font-size: 18.5px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 30px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--ink-3);
+    padding: 16px 0 46px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 52px;
+  }
+  .meta-strip b { color: var(--ink-2); font-weight: 500; }
+
+  section { margin: 0 0 62px; }
+  .col { max-width: 68ch; }
+
+  h2 {
+    font-size: 25px;
+    letter-spacing: -.016em;
+    font-weight: 690;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .sub { color: var(--ink-3); font-size: 15px; margin: 0 0 26px; max-width: 64ch; }
+  h3 { font-size: 17px; font-weight: 660; margin: 30px 0 8px; letter-spacing: -.006em; }
+  h4 {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    margin: 24px 0 8px;
+  }
+  p { margin: 0 0 15px; max-width: 68ch; }
+  ul, ol { margin: 0 0 15px; padding-left: 21px; max-width: 68ch; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-3); }
+  a { color: var(--verd); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--verd); outline-offset: 3px; border-radius: 2px; }
+  code {
+    font-family: var(--mono);
+    font-size: .87em;
+    background: var(--sunken);
+    padding: .1em .36em;
+    border-radius: 3px;
+  }
+  strong { font-weight: 660; }
+
+  .note {
+    border-left: 4px solid var(--verd);
+    background: var(--verd-soft);
+    border-radius: 0 4px 4px 0;
+    padding: 17px 20px;
+    margin: 24px 0;
+    max-width: 72ch;
+  }
+  .note.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .lbl {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--verd);
+    margin-bottom: 7px;
+  }
+  .note.warn .lbl { color: var(--amber); }
+
+  .scroller { overflow-x: auto; margin: 22px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 620px;
+    font-size: 14.7px;
+    background: var(--surface);
+  }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    border-bottom: 1.5px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.k { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  .rowname { font-weight: 620; }
+  .mark { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+  .yes { color: var(--ok); } .no { color: var(--crit); } .part { color: var(--amber); }
+
+  pre {
+    background: var(--sunken);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13.2px;
+    line-height: 1.6;
+    margin: 16px 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .c { color: var(--ink-3); }
+  .kw { color: var(--verd); }
+
+  .seams { display: grid; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr)); gap: 14px; margin: 24px 0; }
+  .seam {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--verd);
+    border-radius: 3px;
+    padding: 18px 19px;
+  }
+  .seam .key {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--verd);
+    display: block;
+    margin-bottom: 5px;
+  }
+  .seam h3 { margin: 0 0 7px; font-size: 16px; }
+  .seam p { font-size: 14.3px; color: var(--ink-2); margin: 0; }
+  .seam.opt { border-top-color: var(--ink-3); }
+  .seam.opt .key { color: var(--ink-3); }
+
+  .phase {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 26px;
+    padding: 26px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .phase:last-of-type { border-bottom: 1px solid var(--rule); }
+  .phase-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--verd);
+    padding-top: 3px;
+  }
+  .phase-id .n {
+    display: block;
+    font-size: 30px;
+    letter-spacing: -.02em;
+    color: var(--ink);
+    line-height: 1;
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .phase h3 { margin: 0 0 8px; font-size: 18px; }
+  .phase p { margin-bottom: 10px; }
+  .donewhen {
+    font-size: 14px;
+    color: var(--ink-2);
+    background: var(--sunken);
+    border-radius: 3px;
+    padding: 10px 13px;
+    margin: 12px 0 0;
+    max-width: 68ch;
+  }
+  .donewhen b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  figure { margin: 28px 0; }
+  .frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 22px 18px;
+    overflow-x: auto;
+  }
+  figcaption { font-size: 13.5px; color: var(--ink-3); margin-top: 11px; max-width: 64ch; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 64px;
+    padding-top: 20px;
+    font-size: 13.5px;
+    color: var(--ink-3);
+  }
+  footer p { max-width: 76ch; }
+</style>
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Development strategy · Dev_Harness</p>
+  <h1>DevCouncil Execution Harness</h1>
+  <p class="standfirst">A harness written only in Go and Rust that runs DevCouncil's tools natively rather than shelling out to them — ported function by function, governed by one flag registry, and built around an override seam that lets a human or an agent clear a block without anyone editing the gate.</p>
+</header>
+
+<div class="meta-strip">
+  <span><b>Languages</b> Go + Rust only</span>
+  <span><b>DevCouncil tools</b> native, not bridged</span>
+  <span><b>Control</b> one flag registry</span>
+  <span><b>Blocks</b> overridable, never invisible</span>
+  <span><b>Status</b> phases 0–3 landed</span>
+</div>
+
+<section class="col">
+  <h2>What the goal changed</h2>
+  <p class="sub">An earlier draft of this plan kept Python for the planning council and reached DevCouncil through a subprocess bridge. Building in Go and Rust only, with the tools integrated natively, removes both of those — and that is a different architecture, not a stricter version of the same one.</p>
+
+  <p>Three consequences follow directly, and everything below is downstream of them.</p>
+
+  <p><strong>There is no third plane.</strong> Python stops being a runtime and becomes two other things: the reference implementation each port is derived from, and the generator of the fixtures that prove the port correct. That is a real role and the work depends on it, but nothing in the harness executes it.</p>
+
+  <p><strong>Native integration means owning the semantics, not the transport.</strong> Shelling out to <code>dev verify</code> is one line of Go. Reproducing what the verifier decides — the ladder order, the glob dialect, the tri-state resolutions, the four lease codes — is the actual work, and it is where a port silently diverges. So the port order is set by which semantics are hardest to get right and most expensive to get wrong, not by which commands are called most often.</p>
+
+  <p><strong>A gate you cannot open is a gate people work around.</strong> Autonomous builders hit legitimate blocks constantly: a helper file the plan did not enumerate, a lockfile that genuinely must change. Without a sanctioned way through, the pressure goes somewhere worse — enforcement switched off wholesale, or the plan padded with speculative scope. The override seam exists so the answer to a block is a recorded exception rather than a disabled rule.</p>
+
+  <div class="note">
+    <span class="lbl">The invariant that survives every change above</span>
+    <p><strong>A check that did not run must never look like a check that ran and passed.</strong> It is why an override produces an allow that still names the rule it cleared, why a disabled feature is reported on every run that used it, why a decision reached without the repo map records that fact, and why a malformed diff returns an error instead of an empty file list.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Two planes</h2>
+  <p class="sub">The split is the same axis as before — CPU-bound determinism against IO-bound concurrency — but now it partitions everything rather than most things.</p>
+
+  <div class="seams">
+    <div class="seam">
+      <span class="key">execution plane · Go</span>
+      <h3>What runs</h3>
+      <p>Agent loop, providers, fan-out, process supervision, task and lease state, the write gate, the flag registry, the override ledger, MCP transport. Waiting on tokens and coordinating concurrency.</p>
+    </div>
+    <div class="seam">
+      <span class="key">analysis plane · Rust</span>
+      <h3>What decides</h3>
+      <p>Diff parsing, scope classification, coverage intersection, stub and effort heuristics, extraction, resolution, liveness. Deterministic, CPU-bound, byte-identical output required.</p>
+    </div>
+    <div class="seam opt">
+      <span class="key">reference · Python</span>
+      <h3>What proves it</h3>
+      <p>Not a runtime. The incumbent each port is read from, and the authority that generates parity fixtures. It stays installed on the developer's machine and ships in nothing.</p>
+    </div>
+  </div>
+
+  <p>The two existing language decisions in these repositories were already consistent with this and neither document said so. <code>rust-port/PLAN.md §5</code> argues Rust for the map engine — tree-sitter's canonical binding, <code>rusqlite</code>, <code>rayon</code>, and the cgo tax on every node visit. <code>docs/01-language-decision.html</code> argues Go for the harness — official SDKs, a supplied agent loop, goroutines for fan-out. Different workloads, same axis, no conflict.</p>
+</section>
+
+<section>
+  <h2>What is built</h2>
+  <p class="sub">Phases 0 through 3 have landed. Everything in this table compiles, is tested, and is gated by <code>./verify.sh</code>: 40 Go tests and 32 Rust tests, held to 938 parity cases generated from the Python incumbent and three interop tests that drive both languages against one <code>state.sqlite</code>.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Plane</th><th>What it is</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="k">core/plugin</td><td>Go</td>
+          <td>The kernel: services resolved by key, boot ordered by declared requirements, LIFO teardown. Providing an undeclared service or resolving an undeclared dependency is a boot error, so the dependency graph is enforced rather than documented.</td>
+        </tr>
+        <tr>
+          <td class="k">internal/fnmatch</td><td>Go</td>
+          <td>Python <code>fnmatch</code> semantics. Go's <code>path.Match</code> will not let <code>*</code> cross a <code>/</code> and every DevCouncil path rule assumes it does.</td>
+        </tr>
+        <tr>
+          <td class="k">policy</td><td>Go</td>
+          <td>The write gate, ported ladder-rung for ladder-rung, plus the two fields an override seam needs: a stable rule ID and a severity that says whether the rule is negotiable.</td>
+        </tr>
+        <tr>
+          <td class="k">policy (commands)</td><td>Go</td>
+          <td>The shell-command ladder and the git-safety rules, held to 256 parity cases driven through DevCouncil's own engine. Folds safety into the single entry point the incumbent splits in two.</td>
+        </tr>
+        <tr>
+          <td class="k">grants</td><td>Go</td>
+          <td>The override seam. Human and agent authorities, scoped and time-bounded exceptions, hard rules refused twice on independent paths.</td>
+        </tr>
+        <tr>
+          <td class="k">flags</td><td>Go</td>
+          <td>The master registry. Typed, layered, origin-tracked; an unknown key is an error and a moved safety flag is reported on every run that used it.</td>
+        </tr>
+        <tr>
+          <td class="k">gate</td><td>Go</td>
+          <td>The consumer that composes the three, and the run report that distinguishes a clean pass from a granted one from a demoted one.</td>
+        </tr>
+        <tr>
+          <td class="k">crates/dc-glob</td><td>Rust</td>
+          <td>The same glob dialect for the analysis plane, dependency-free.</td>
+        </tr>
+        <tr>
+          <td class="k">crates/dc-store</td><td>Rust</td>
+          <td>Tasks and leases on DevCouncil's own SQLite file. The four lease codes, lazy TTL expiry, and force-steal — with mutual exclusion resting on the partial unique index rather than on the check-then-insert above it.</td>
+        </tr>
+        <tr>
+          <td class="k">crates/dc-verify</td><td>Rust</td>
+          <td>Unified-diff parsing to new-file line numbers, and scope classification against planned globs. A malformed diff is an error, never an empty parse.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>The device that keeps the two planes honest</h3>
+  <p>Both languages implement the glob dialect, and a divergence between them would not crash — it would make the write gate and the orphan-diff check quietly disagree about which paths are in scope, in one language only. So neither implementation owns the contract: <code>scripts/gen-fnmatch-parity.py</code> generates <code>testdata/fnmatch-parity.tsv</code> from CPython, and both suites read that one file. 682 cases today. <code>verify.sh</code> also asserts the fixture's size, because a fixture that failed to load would let both suites pass while checking nothing.</p>
+
+  <h4>Not yet ported — named rather than implied</h4>
+  <ul>
+    <li><strong>The council, reporting, OKF, and the remaining tools.</strong> Roughly sixty of the seventy-six MCP tools have no port yet.</li>
+        <li><strong>Everything above the gate</strong> — session log, turn driver, providers, fan-out, and the remaining DevCouncil tools.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>How Rust came to own the store</h2>
+  <p class="sub">Native task and lease state means reading DevCouncil's SQLite store, and Go has no SQLite in its standard library. Three options, genuinely different architectures — this is the one taken and what it costs.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Verdict</th><th>Reasoning</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="rowname">Rust owns the store<br><span class="k">rusqlite</span></td>
+          <td class="mark yes">chosen</td>
+          <td>No new Go dependency, and one SQLite build across both planes — pinned to 0.31, the same line <code>rust-port</code> already carries. Costs a boundary crossing on every lease check, which the harness does not have anywhere else yet.</td>
+        </tr>
+        <tr>
+          <td class="rowname">Pure-Go driver<br><span class="k">modernc.org/sqlite</span></td>
+          <td class="mark part">not taken</td>
+          <td>Simplest code and no boundary, but a large new dependency on the execution plane and two SQLite implementations in one repository once <code>devmap</code> is linked.</td>
+        </tr>
+        <tr>
+          <td class="rowname">cgo driver</td>
+          <td class="mark no">rejected earlier</td>
+          <td>Forfeits static linking and simple cross-compilation — the properties Go was chosen for in the first place.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <span class="lbl">What the port had to get right, and nearly did not</span>
+    <p><strong>Mutual exclusion lives in the database, not in the code.</strong> A partial unique index — <code>ON task_leases (task_id) WHERE status = 'active'</code> — is what makes two builders racing for one task resolve to a single winner. The <code>active_for_task</code> check before the insert only produces a friendlier error. A port that kept the check and dropped the index would pass every single-threaded test and hand two agents the same working tree. Twelve threads through twelve connections to one file now prove exactly one acquire succeeds.</p>
+  </div>
+
+  <p>The second trap is lazy expiry: reading a lease past its TTL marks it stale as a side effect, so expiry is observed on read and a reader must be prepared to write. And an unreadable timestamp is an error rather than a shrug — treating it as "not expired" would turn one corrupt row into a task nobody can ever take again.</p>
+
+  <h3>The gate that actually mattered</h3>
+  <p>Self-consistency proves nothing about a migration. During cutover <code>dev tasks</code> and the harness read the same file, so the real test drives both: Rust acquires and DevCouncil's own <code>TaskLeaseRepository</code> reads it back, then the reverse, then an expired lease that both sides must agree is dead. Breaking the timestamp format Rust writes fails two of the three — which is how a timestamp divergence would have surfaced instead of quietly letting the two disagree about when a lease died.</p>
+
+  <p>Those tests skip when DevCouncil is not importable, so <code>verify.sh</code> reports interop coverage separately rather than letting a green suite imply it ran.</p>
+</section>
+
+<section>
+  <h2>Port order</h2>
+  <p class="sub">"Important" means: on the critical path of every turn, deterministic enough to port faithfully, and expensive to get subtly wrong. Ranked, with the reason each earns its place.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Function</th><th>Plane</th><th>Why here</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="k">1</td><td class="rowname">File write policy</td><td>Go</td><td class="mark yes">Ported. Every mutation passes it; it is the seam the override attaches to; and its glob dialect is the subtlest thing in the subsystem.</td></tr>
+        <tr><td class="k">2</td><td class="rowname">Diff parsing + scope classification</td><td>Rust</td><td class="mark yes">Ported. Every verification gate reads its input from here, so an error is invisible everywhere above it.</td></tr>
+        <tr><td class="k">3</td><td class="rowname">Command policy + git safety</td><td>Go</td><td class="mark yes">Ported. Bypass flags, force pushes and protected-branch resets are hard rules; the allowlist rungs are soft.</td></tr>
+        <tr><td class="k">4</td><td class="rowname">Task and lease state</td><td>Rust</td><td class="mark yes">Ported. The concurrency primitive, with the four failure codes an agent branches on and cross-language interop proven against one file.</td></tr>
+        <tr><td class="k">5</td><td class="rowname">Verifier gates</td><td>Rust</td><td>Coverage intersection, stub and effort heuristics, secret scanning. Deterministic, fixture-testable, no LLM.</td></tr>
+        <tr><td class="k">6</td><td class="rowname">Gaps and next-actions</td><td>Go</td><td>The typed contract the repair loop routes on. A projection over verification results, so it follows them.</td></tr>
+        <tr><td class="k">7</td><td class="rowname">Prompt assembly</td><td>Go</td><td>Scoped task prompt, skills, and the rigor section hard tasks add.</td></tr>
+        <tr><td class="k">8</td><td class="rowname">Code intelligence</td><td>Rust</td><td>Largely exists as <code>devmap</code>. Linked as a crate rather than reached over a socket, since the harness owns the process.</td></tr>
+        <tr><td class="k">9</td><td class="rowname">Planning council</td><td>Go</td><td>Last, and it is only N model calls plus an arbitration prompt — which is fan-out the harness needs anyway. Its late position is about churn, not difficulty: prompt-shaped work changes weekly and porting it early means porting it twice.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>The override seam</h2>
+  <p class="sub">An override is not a way to make a block disappear. It is a way to make it accountable — which is a different mechanism, and a much safer one.</p>
+
+  <p>The policy ladder already sorts itself into two kinds of rule, and the port makes that structure explicit rather than inventing one. The rungs that fire <em>before</em> a task is consulted protect the repository, its credentials, and the agent client configs; no task scope authorises them and no grant clears them. The rungs that fire <em>after</em> are statements about this task's declared scope — and DevCouncil's own denial message for the commonest one already points at the remedy, "Expand scope with <code>dev scope update</code>".</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Rule</th><th>Severity</th><th>Human may clear</th><th>Agent may clear</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="k">path.outside_root</td><td>hard</td><td class="mark no">no</td><td class="mark no">no</td></tr>
+        <tr><td class="k">path.secret</td><td>hard</td><td class="mark no">no</td><td class="mark no">no</td></tr>
+        <tr><td class="k">path.restricted</td><td>hard</td><td class="mark no">no</td><td class="mark no">no</td></tr>
+        <tr><td class="k">task.absent</td><td>soft</td><td class="mark yes">yes</td><td class="mark no">no</td></tr>
+        <tr><td class="k">task.forbidden_change</td><td>soft</td><td class="mark yes">yes</td><td class="mark no">no</td></tr>
+        <tr><td class="k">scope.unplanned</td><td>soft</td><td class="mark yes">yes</td><td class="mark yes">yes</td></tr>
+        <tr><td class="k">scope.read_only</td><td>soft</td><td class="mark yes">yes</td><td class="mark no">no</td></tr>
+        <tr><td class="k">scope.operation</td><td>soft</td><td class="mark yes">yes</td><td class="mark no">no</td></tr>
+        <tr><td class="k">path.protected_write</td><td>warn</td><td class="mark yes">yes</td><td class="mark yes">yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Exactly one denial is agent-grantable, and it is the one the incumbent already tells the agent to resolve by widening scope. The others encode a decision someone else made deliberately — a file the planner marked read-only, a path the plan forbade, work attempted with no lease at all. An agent overruling those is an agent editing its own instructions.</p>
+
+  <h3>What bounds a grant</h3>
+  <ul>
+    <li><strong>Hard rules are refused twice</strong>, on independent paths: at issue time, and again when a grant is applied. The one boundary that must not leak gets two checks rather than one.</li>
+    <li><strong>An agent grant is confined to its own lease's task</strong> and defaults to single-use. Reaching into another task's scope is refused even for a grantable rule.</li>
+    <li><strong>Time-bounded by authority</strong> — 15 minutes for an agent, 8 hours for a human, both configurable and both ceilings rather than defaults.</li>
+    <li><strong>A reason is required</strong>, because a grant nobody can review later is not worth recording.</li>
+    <li><strong>The narrowest sufficient scope is the default.</strong> The harness builds the grant request from the decision itself — this rule, this path, this task — so widening it is a deliberate act.</li>
+  </ul>
+
+  <div class="note">
+    <span class="lbl">The property that makes this safe rather than convenient</span>
+    <p>A granted decision reports <code>allow</code>, and never reports as a clean pass. It keeps the rule that fired, the grant ID, the grantor, and the justification. The run report separates writes that passed on the rules from writes that passed on a grant, so an evidence report can say <em>"verified, with two scope exceptions granted by the operator"</em> — which is a different and more useful claim than "verified".</p>
+  </div>
+</section>
+
+<section>
+  <h2>The master registry</h2>
+  <p class="sub">Every feature toggle and tunable in one typed, self-describing place — with three properties that separate a settings registry from a bag of booleans.</p>
+
+  <div class="seams">
+    <div class="seam">
+      <span class="key">fails loud</span>
+      <h3>Unknown keys are errors</h3>
+      <p>A mistyped key in a config file or an unparseable environment value is reported, never ignored. <code>MANVI_POLICY_FILE_MODE=advisery</code> stops the process; it does not silently leave enforcement on and the operator believing otherwise.</p>
+    </div>
+    <div class="seam">
+      <span class="key">explains itself</span>
+      <h3>Values carry their origin</h3>
+      <p>Override beats environment beats config beats default, and every lookup returns which layer won. "Why is enforcement off?" is answerable without guessing.</p>
+    </div>
+    <div class="seam">
+      <span class="key">bounded by authority</span>
+      <h3>Not everyone may turn everything off</h3>
+      <p>Flags are startup-only, human-only, or agent-settable. Safety flags cannot be declared agent-settable at all — that is a compile-time-adjacent error caught when the catalogue is registered.</p>
+    </div>
+  </div>
+
+  <p>The registry's most useful output is <code>Weakened()</code>: every safety flag currently off its default, with the origin that moved it. It rides in the run report, so a green result produced under relaxed configuration cannot be summarised as a strict one. Turning a check off is allowed; making it look like the check passed is not.</p>
+
+  <pre><code><span class="c"># Gate strictness, mirroring DevCouncil's gates.mode vocabulary</span>
+policy.file.mode          enforce | advisory | off   <span class="c">safety, human-only</span>
+policy.command.mode       enforce | advisory | off   <span class="c">safety, human-only</span>
+policy.hard_rules.enabled true                       <span class="c">safety, startup-only</span>
+
+<span class="c"># The override seam</span>
+grants.agent.enabled      true                       <span class="c">safety, human-only</span>
+grants.agent.max_ttl      15m                        <span class="c">safety, human-only</span>
+grants.require_reason     true                       <span class="c">safety, human-only</span>
+
+<span class="c"># Migration switches — how a port is promoted, and rolled back</span>
+devcouncil.surface        native | bridge
+codeintel.engine          rust | python | auto
+
+<span class="c"># Providers</span>
+llm.provider.xai.enabled  false
+llm.xai.base_url          ""                         <span class="c">deliberately unset</span></code></pre>
+
+  <p>Advisory and off never demote a hard denial. An operator saying they do not want scope enforcement is not an operator asking to write to <code>.env</code>, and conflating those is how a mode switch becomes a security hole.</p>
+</section>
+
+<section>
+  <h2>Providers, including Grok</h2>
+  <p class="sub">Grok exists in DevCouncil today as a coding-CLI executor — <code>grok -p</code>, hooks, MCP config in <code>.grok/config.toml</code>. Wanting Grok <em>models</em> is a different capability, and it lands at a different seam.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Surface</th><th>What it is</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="rowname">Grok as an executor</td>
+          <td>The harness launches Grok Build as a subprocess to implement a task, then verifies the result. Grok owns the loop.</td>
+          <td>Exists in DevCouncil; ports as one of several executor adapters.</td>
+        </tr>
+        <tr>
+          <td class="rowname">Grok as a provider</td>
+          <td>xAI behind <code>cx.llm</code> alongside Claude and Gemini. The harness owns the loop and Grok is a model it routes roles to.</td>
+          <td><span class="mark part">New.</span> Flags are defined; the adapter is Phase 5.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Both are worth having and they are not substitutes. The second is what makes Grok available for cheap fan-out or as a second opinion in the council, which is where a multi-provider harness earns its cost.</p>
+
+  <div class="note warn">
+    <span class="lbl">Deliberately unspecified here</span>
+    <p><code>llm.xai.base_url</code> ships empty and no xAI model ID appears anywhere in the flag catalogue or this document. Endpoints, model identifiers, context limits, and whether the API is OpenAI-compatible must be read from xAI's current documentation at the time the adapter is written. A plausible default baked in now would be a guess wearing the costume of a fact, and would be discovered as a 404 rather than as a missing setting.</p>
+  </div>
+
+  <p>The structural bet is that the local OpenAI-compatible adapter and the xAI adapter share a transport and differ in base URL, auth, and capability descriptor — which is why both are flags rather than separate code paths. That bet is cheap to unwind if the documentation says otherwise.</p>
+</section>
+
+<section>
+  <h2>Phases</h2>
+  <p class="sub">Each ends in a command that can fail. The first two are done; <code>./verify.sh</code> is that command today.</p>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">0</span>Fixtures</div>
+    <div>
+      <h3>Ground truth before code <span class="mark yes">— landed</span></h3>
+      <p>Generate parity fixtures from the Python incumbent for every semantic the port must reproduce. The glob dialect first, because it underlies every path rule in the subsystem.</p>
+      <p class="donewhen"><b>Done when</b> Both language implementations read one CPython-generated fixture, and the gate asserts the fixture's size so a failed load cannot pass as a clean run. <em>682 cases.</em></p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">1</span>Kernel + gate</div>
+    <div>
+      <h3>Registry, write policy, overrides, flags <span class="mark yes">— landed</span></h3>
+      <p>The plugin kernel, the ported file-write ladder, the grant ledger, and the flag registry — with the consumer that composes them and a run report that keeps their interactions legible.</p>
+      <p class="donewhen"><b>Done when</b> Two fake plugins boot in dependency order regardless of config order and unwind in reverse; a secret path is refused to a human grantor; an agent clears its own unplanned-scope block once and is refused the second time; and advisory mode demotes a soft denial while leaving a hard one intact. <em>52 tests.</em></p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">2</span>State</div>
+    <div>
+      <h3>Tasks and leases, natively <span class="mark yes">— landed</span></h3>
+      <p>The four lease codes and their recovery actions, lazy TTL expiry, renewal that refuses to resurrect a dead lease, and a force-steal reserved for human intervention — in Rust, on DevCouncil's own SQLite file.</p>
+      <p class="donewhen"><b>Done when</b> Twelve threads racing one task through twelve connections produce exactly one winner and eleven <code>lease_held_by_other</code>; and the Rust store and DevCouncil's own repository agree on ownership and expiry against the same <code>state.sqlite</code>. <em>15 tests, 3 of them driving both languages.</em></p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">3</span>Commands</div>
+    <div>
+      <h3>Shell gate and git safety <span class="mark yes">— landed</span></h3>
+      <p>The allowlist, its <code>uv run</code> and <code>cd</code> unwrapping, redirect stripping, and the git-safety rules. Bypass flags, force pushes and protected-branch hard resets are hard severity: they protect the verification gates themselves, and a force push can erase the evidence the whole system reasons about.</p>
+      <p>One deliberate divergence, and it only tightens. The incumbent exposes the allowlist and git safety as two entry points, so a caller invoking only the first gets no git safety — and a task listing <code>git *</code> in its allowed commands would sail a force push straight through. The port folds safety into the front of the single entry point.</p>
+      <p class="donewhen"><b>Done when</b> A parity corpus produces identical decisions in Go and in the Python engine. <em>256 cases across normalisation, the allowlist with and without a lease, and git safety — every one generated by driving DevCouncil's own <code>TaskPolicyEngine</code>, and each verified to fail against a deliberately mutated port.</em></p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">4</span>Loop</div>
+    <div>
+      <h3>Session log and turn driver</h3>
+      <p>Append-only log with the model-visible-means-logged invariant asserted at runtime, the turn/step driver, and the four waterfalls. The gate mounts as a pre-execute listener rather than being called from the loop.</p>
+      <p class="donewhen"><b>Done when</b> A recorded session replays to a byte-identical message projection; a deliberately unlogged injection fails loudly; and denying at pre-execute short-circuits without the loop knowing why.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">5</span>Providers</div>
+    <div>
+      <h3>Claude, Gemini, xAI, local</h3>
+      <p>Adapters behind one streaming interface, with provenance carrying adapter-private replay state handed over only when one adapter owns both the historical and the target provider. Capability descriptors so an impossible request fails at assembly rather than as a 400.</p>
+      <p class="donewhen"><b>Done when</b> One session runs on every enabled provider by config change alone, and a cross-provider handoff drops reasoning state explicitly and logs that it did.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">6</span>Verify</div>
+    <div>
+      <h3>The evidence gates, in Rust</h3>
+      <p>Coverage intersection over the parsed diff, stub and effort heuristics, secret scanning, and the typed next-actions contract the repair loop routes on.</p>
+      <p class="donewhen"><b>Done when</b> A frozen corpus of recorded diffs produces the same verdicts and the same gap identifiers as the Python verifier, with every divergence enumerated and accepted individually.</p>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-id"><span class="n">7</span>Fan-out</div>
+    <div>
+      <h3>Sub-agents on the task DAG</h3>
+      <p>Live agent handles, cancellation, and a spawn ceiling that lives in code rather than in a prompt. Leases are the mutual-exclusion primitive; the harness does not invent a second one.</p>
+      <p class="donewhen"><b>Done when</b> N searchers run concurrently and one failure does not take the batch down, and cancelling a parent <em>releases</em> every child lease within a bounded time rather than leaving tasks locked until TTL expiry.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Migration discipline</h2>
+  <p class="sub">Five rules. Each was paid for by an incident already recorded in these repositories, which is why they are here rather than a generic checklist.</p>
+
+  <h3>1. A fallback that absorbs every failure is indistinguishable from no migration</h3>
+  <p>Seven DevCouncil consumers were documented as Rust-primary with a Python fallback. They were Python-only in practice: the client pointed at the Python schema, the Rust store failed closed on it, and every call took the fallback — on every invocation, since the pass landed. The code was correct; the behaviour was a no-op. <strong>Count the primary path and fail the build when the count is zero.</strong> The <code>codeintel.engine</code> and <code>devcouncil.surface</code> flags exist to make which path ran an explicit, reportable fact.</p>
+
+  <h3>2. Availability requires evidence, not absence of error</h3>
+  <p>An empty store answered "available" and returned zero results — and zero is a valid answer to almost every code-intelligence question, so nothing looked wrong. Availability now requires a committed generation and a non-zero node count. Every boundary the harness crosses gets the same test.</p>
+
+  <h3>3. Unknown is not verified zero</h3>
+  <p>A caller that cannot distinguish "no dead symbols" from "the analysis did not run" will eventually treat the second as proof of the first. Resolution state crosses the boundary intact rather than being flattened into an empty list — which is the same rule the <code>Degraded</code> field on every policy decision implements.</p>
+
+  <h3>4. Divergence is enumerated and accepted, never zeroed</h3>
+  <p>The Rust port's ledger records thirty-odd deliberate differences from the Python baseline, each with a justification and a test — including one where correctness of the graph's join key was chosen <em>over</em> bug-for-bug parity. A migration whose gate is "zero diffs" will either stall forever or quietly suppress the diffs. The gate is "every diff has a name and an owner."</p>
+
+  <h3>5. Replace in the same change; never accumulate</h3>
+  <p>A port that lands beside what it replaces doubles the surface permanently. Each phase above names what it retires. Where a rollback switch exists it is a flag with a reported value, not a second implementation kept warm indefinitely.</p>
+</section>
+
+<section>
+  <h2>Corrections to the existing documents</h2>
+  <p class="sub">Reading the four document sets together surfaces places where they disagree with each other or with measurement.</p>
+
+  <div class="scroller">
+    <table>
+      <thead>
+        <tr><th>Document</th><th>Says</th><th>Correction</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="k">docs/project-status.md</td>
+          <td>Rust map engine: "5 of 35 grammars linked"</td>
+          <td><span class="mark part">Stale.</span> The port's own ledger re-measured on 2026-08-17: <code>extract_treesitter</code> links <strong>32 grammars</strong>, and 34 of the 35 frozen specs reach a real one — ArkTS routes to <code>typescript</code>, Metal to <code>cpp</code>. Only VB.NET has none. The maturity table understates the port substantially.</td>
+        </tr>
+        <tr>
+          <td class="k">Dev_Harness/README.md</td>
+          <td>"DevCouncil in <code>../parameter_golf</code>"</td>
+          <td><span class="mark no">Wrong path</span>, now fixed. The repository is <code>../DevCouncil</code>. Both sibling documents also carry a <code>parameter_golf</code> kicker from the workspace they were written in.</td>
+        </tr>
+        <tr>
+          <td class="k">docs/02-build-plan.html</td>
+          <td>Rust confined to tier 2 (WASM); DevCouncil wired in at Phase 7</td>
+          <td><span class="mark part">Superseded.</span> Rust is a full plane, entering through compiled-in crates rather than a sandbox, and DevCouncil is the workload rather than the last integration step.</td>
+        </tr>
+        <tr>
+          <td class="k">This document, earlier draft</td>
+          <td>Three planes, with Python retaining the council; DevCouncil reached over a tier-3 bridge</td>
+          <td><span class="mark no">Replaced</span> by the current goal. Python is a reference implementation and a fixture source; nothing in the harness executes it.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Where this goes wrong</h2>
+  <p class="sub">Four failure modes, named up front so they are recognisable when they start.</p>
+
+  <h3>The port diverges silently</h3>
+  <p>This is the dominant risk and it has already been demonstrated once in miniature: Go's <code>path.Match</code> and Python's <code>fnmatch</code> disagree about a single character, and taking the obvious standard-library function would have narrowed every secret-path rule without any test failing. The countermeasure is that no port lands without a fixture generated from the incumbent. A port whose correctness rests on reading the original carefully is a port that is already wrong somewhere.</p>
+
+  <h3>Overrides become the path of least resistance</h3>
+  <p>If granting is easier than fixing scope, scope stops being maintained and the ledger fills with exceptions nobody reads. The counter-pressures are built in — single-use agent grants, short TTLs, required reasons, and a run report that separates granted passes from clean ones — but the real signal is the trend. A rising grant rate is a planning problem showing up in the gate, and should be read that way rather than tuned away.</p>
+
+  <h3>The flag registry becomes a way to avoid decisions</h3>
+  <p>Every hard question can be deferred by adding a flag, and a registry with a hundred entries is a configuration surface nobody understands and every deployment sets differently. A flag should exist because two deployments genuinely need different answers — not because the right default was hard to choose.</p>
+
+  <h3>The rewrite outruns the thing it replaces</h3>
+  <p>DevCouncil is 93,941 lines and under active development. A port that targets a moving incumbent while the incumbent keeps moving never converges. This is what the port order is for: each item is a bounded surface with a frozen fixture set, and finishing one before starting the next is what keeps the target still.</p>
+</section>
+
+<footer>
+  <p>DevCouncil facts are from its documentation and source in this workspace, with the 76-tool count, the line counts, and the policy ladder read directly from the code rather than quoted. Port status and every SC-numbered incident are from <code>rust-port/STATUS.md</code>, <code>PLAN.md</code>, <code>CONSUMERS.md</code>, and <code>DIVERGENCES.md</code>. The kernel shape, turn flow, and provider seam are from <code>docs/01-language-decision.html</code>, <code>docs/02-build-plan.html</code>, and the vendored DeepSeek Harness reference. Grok's current integration is from <code>docs/coding-cli-integration.md</code> and the executor registry; no xAI endpoint or model identifier is asserted anywhere here.</p>
+  <p>Test and line counts are measured from this repository at the time of writing. The phase ordering, the severity classification, and the grant authority model are design judgement. No durations are estimated: what each phase is <em>done when</em> is the commitment, and the Rust port's own experience — 34–46 weeks projected against a subsystem whose audit had opened half the code — is the honest shape of a schedule estimate at this stage.</p>
+</footer>
+
+</div>

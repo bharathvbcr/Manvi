@@ -1,0 +1,34 @@
+# manvi settings for this repository.
+#
+# A flat mapping of dotted setting names to scalar values; run `manvi flags`
+# to see every name, its value, and which layer that value came from. The
+# environment beats this file, so MANVI_<FLAG> still overrides any line here
+# for one run without editing anything.
+#
+# This is the one file under .devcouncil/ that belongs in a commit — the store,
+# the index, the grant ledger and the code graph are all ignored.
+
+# Model selection
+llm.local.model: qwen3.8:27b-mlx
+
+# Reasoning configuration
+llm.local.supports_reasoning: true
+llm.effort: high
+# llm.local.assume_reasoning_prefill is deliberately NOT set.
+#
+# It declares that the server's template ends the prompt with a bare <think>,
+# so generation starts inside the block and only the closing tag is emitted.
+# The Ollama server this repository resolves to does the opposite: it delivers
+# reasoning on its own channel, so what arrives on the content channel is
+# already the answer. Declared against that server, the filter starts inside a
+# thinking block that never closes and files every answer as reasoning — turns
+# then end with no answer at all.
+#
+# `manvi probe local` reports the contradiction by name, and it was the only
+# failing gate in ./verify.sh while this line was set.
+
+# Qwen 3.8 27B tuned sampling parameters (from generation_config.json and developer docs)
+llm.local.temperature: 0.7
+llm.local.top_p: 0.95
+llm.local.top_k: 20
+llm.local.repetition_penalty: 1.0

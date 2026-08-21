@@ -1,0 +1,3 @@
+{"name":"state_machine_fuzz","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_proto.py","SPEC.md"],"timeout":60,
+ "blurb":"incremental binary protocol parser: CRC, seq, fragments, resync; verified by a stateful fuzzer"}

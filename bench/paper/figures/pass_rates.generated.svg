@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360" font-family="Helvetica, Arial, sans-serif">
+<rect width="720" height="360" fill="#fff"/>
+<text x="360" y="28" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Pass rate (n repeats, bootstrap 95% CI)</text>
+<line x1="80" y1="300" x2="680" y2="300" stroke="#222"/>
+<line x1="80" y1="80" x2="80" y2="300" stroke="#222"/>
+<rect x="110.0" y="184.5" width="54" height="115.5" fill="#2f6fed"/>
+<line x1="137.0" y1="217.5" x2="137.0" y2="157.0" stroke="#111" stroke-width="1.5"/>
+<text x="137.0" y="318" text-anchor="middle" font-size="9" fill="#333">Ornith-1.5-3 baseline</text>
+<text x="137.0" y="178.5" text-anchor="middle" font-size="10" fill="#111">52.5</text>
+<rect x="240.0" y="162.5" width="54" height="137.5" fill="#9bb8f5"/>
+<line x1="267.0" y1="195.5" x2="267.0" y2="129.5" stroke="#111" stroke-width="1.5"/>
+<text x="267.0" y="318" text-anchor="middle" font-size="9" fill="#333">Ornith-1.5-3 full</text>
+<text x="267.0" y="156.5" text-anchor="middle" font-size="10" fill="#111">62.5</text>
+<rect x="370.0" y="135.0" width="54" height="165.0" fill="#c45c26"/>
+<line x1="397.0" y1="162.5" x2="397.0" y2="113.0" stroke="#111" stroke-width="1.5"/>
+<text x="397.0" y="318" text-anchor="middle" font-size="9" fill="#333">qwen3.8 baseline</text>
+<text x="397.0" y="129.0" text-anchor="middle" font-size="10" fill="#111">75.0</text>
+<rect x="500.0" y="85.5" width="54" height="214.5" fill="#e0b89a"/>
+<line x1="527.0" y1="96.5" x2="527.0" y2="80.0" stroke="#111" stroke-width="1.5"/>
+<text x="527.0" y="318" text-anchor="middle" font-size="9" fill="#333">qwen3.8 full</text>
+<text x="527.0" y="79.5" text-anchor="middle" font-size="10" fill="#111">97.5</text>
+</svg>

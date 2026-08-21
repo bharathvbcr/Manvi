@@ -1,0 +1,3 @@
+{"name":"ot_transform","kind":"python","hidden":"hidden_test.py",
+ "protect":["test_ot.py","SPEC.md"],"timeout":60,
+ "blurb":"operational transform for concurrent ins/del; site-id tie-break; convergence"}
