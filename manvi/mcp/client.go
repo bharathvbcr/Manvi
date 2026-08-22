@@ -37,14 +37,30 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan *Response
 
-	initOnce     sync.Once
+	initMu       sync.Mutex
 	initResult   *InitializeResult
 	initErr      error
+	initTried    bool
 	closed       atomic.Bool
 	doneCh       chan struct{}
 	serverErrors []string
 	errMu        sync.Mutex
 }
+
+const (
+	// maxStdoutLine bounds one JSON-RPC frame from the server. A line past it
+	// is skipped with a recorded diagnostic rather than allowed to end the
+	// session: the next line may be perfectly good.
+	maxStdoutLine = 16 << 20
+	// defaultCallTimeout applies to calls made on a context with no deadline.
+	// An unbounded wait on a wedged server freezes the whole tool surface;
+	// operators who need longer set Timeout in the server config.
+	defaultCallTimeout = 120 * time.Second
+	// writeTimeout bounds how long a stdin write may block. A child that
+	// stopped draining its stdin while its stdout stays alive would otherwise
+	// hold writerMu forever and freeze every other call in the queue.
+	writeTimeout = 5 * time.Second
+)
 
 // NewClient spawns a new MCP server subprocess and connects stdio pipes.
 func NewClient(cfg ServerConfig) (*Client, error) {
@@ -105,6 +121,9 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 // stderrLoop records stderr diagnostics from the MCP server.
 func (c *Client) stderrLoop() {
 	scanner := bufio.NewScanner(c.stderr)
+	// Diagnostics are worth keeping only while they are small; a server
+	// emitting megabyte log lines must not grow this buffer without bound.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		c.errMu.Lock()
@@ -113,24 +132,107 @@ func (c *Client) stderrLoop() {
 		}
 		c.errMu.Unlock()
 	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
+		c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
+	}
+}
+
+// recordError appends a diagnostic from one of the reader goroutines.
+func (c *Client) recordError(msg string) {
+	c.errMu.Lock()
+	if len(c.serverErrors) < 100 {
+		c.serverErrors = append(c.serverErrors, msg)
+	}
+	c.errMu.Unlock()
+}
+
+// Alive reports whether the server process is still producing stdout. A client
+// whose read loop has ended is dead regardless of whether anyone called Close:
+// the Manager uses this to replace a crashed server instead of handing out a
+// corpse to every later call.
+func (c *Client) Alive() bool {
+	select {
+	case <-c.doneCh:
+		return false
+	default:
+		return true
+	}
+}
+
+// Done exposes the channel closed when the server's stdout ends.
+func (c *Client) Done() <-chan struct{} { return c.doneCh }
+
+// readLimitedLine returns one newline-terminated frame without its terminator.
+// The final unterminated frame at EOF counts as a line, matching the
+// bufio.Scanner semantics this replaced. A frame longer than limit is drained
+// to its terminator and reported as errLineTooLarge rather than ending the
+// stream: one runaway frame must not convert a healthy session into permanent
+// tool failure.
+type errLineTooLarge struct{}
+
+func (errLineTooLarge) Error() string {
+	return fmt.Sprintf("server emitted a frame exceeding %d bytes", maxStdoutLine)
+}
+
+func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		switch {
+		case err == nil:
+			return append(buf, chunk...), nil
+		case err == bufio.ErrBufferFull:
+			buf = append(buf, chunk...)
+			if len(buf) > limit {
+				drainToNewline(r)
+				return nil, errLineTooLarge{}
+			}
+		case err == io.EOF:
+			if len(buf)+len(chunk) > 0 {
+				return append(buf, chunk...), nil
+			}
+			return nil, io.EOF
+		default:
+			return append(buf, chunk...), err
+		}
+	}
+}
+
+// drainToNewline consumes through the next newline so a skipped oversized
+// frame cannot leave its tail to be parsed as phantom responses.
+func drainToNewline(r *bufio.Reader) {
+	for {
+		_, err := r.ReadSlice('\n')
+		if err == nil || (err != nil && err != bufio.ErrBufferFull) {
+			return
+		}
+	}
 }
 
 // readLoop processes incoming JSON-RPC lines from the server.
 func (c *Client) readLoop() {
 	defer close(c.doneCh)
-	scanner := bufio.NewScanner(c.stdout)
-	// Allow large tool output buffers (up to 16MB)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 16*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	reader := bufio.NewReaderSize(c.stdout, 64*1024)
+	for {
+		line, err := readLimitedLine(reader, maxStdoutLine)
+		switch {
+		case err == nil:
+		case errors.As(err, new(errLineTooLarge)):
+			c.recordError(err.Error())
+			continue
+		case err == io.EOF:
+		default:
+			c.recordError(fmt.Sprintf("stdout reader failed: %v", err))
+		}
+		if err != nil {
+			break
+		}
 		if len(line) == 0 {
 			continue
 		}
 
 		var resp Response
-		if err := json.Unmarshal(line, &resp); err != nil {
+		if json.Unmarshal(line, &resp) != nil {
 			continue
 		}
 
@@ -170,9 +272,26 @@ func (c *Client) readLoop() {
 }
 
 // Call performs a synchronous JSON-RPC request/response roundtrip.
+//
+// A caller context without a deadline is bounded by cfg.Timeout, or
+// defaultCallTimeout when that is unset: an unbounded wait on a wedged server
+// would freeze the whole tool surface, and nothing in this protocol is worth
+// waiting forever for.
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
 	if c.closed.Load() {
 		return errors.New("mcp: client is closed")
+	}
+	if !c.Alive() {
+		return fmt.Errorf("mcp: server %s has exited", c.cfg.Name)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		ceiling := c.cfg.Timeout
+		if ceiling <= 0 {
+			ceiling = defaultCallTimeout
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ceiling)
+		defer cancel()
 	}
 
 	id := c.reqCounter.Add(1)
@@ -204,11 +323,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	c.pending[id] = respCh
 	c.pendingMu.Unlock()
 
-	c.writerMu.Lock()
-	_, writeErr := c.stdin.Write(data)
-	c.writerMu.Unlock()
-
-	if writeErr != nil {
+	if writeErr := c.writeFrame(data); writeErr != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
@@ -239,10 +354,36 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}
 }
 
+// writeFrame writes one newline-terminated frame under the writer lock, with
+// the write itself bounded: a child that stopped draining its stdin would
+// otherwise hold writerMu forever and freeze every other call in the queue.
+// The goroutine a timed-out write leaves behind drains on its own; the pipe is
+// closed by Close either way.
+func (c *Client) writeFrame(data []byte) error {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, werr := c.stdin.Write(data)
+		errCh <- werr
+	}()
+
+	select {
+	case werr := <-errCh:
+		return werr
+	case <-time.After(writeTimeout):
+		return fmt.Errorf("stdin write did not complete within %s (server not reading)", writeTimeout)
+	}
+}
+
 // Notify sends a one-way notification without waiting for a response.
 func (c *Client) Notify(method string, params any) error {
 	if c.closed.Load() {
 		return errors.New("mcp: client is closed")
+	}
+	if !c.Alive() {
+		return fmt.Errorf("mcp: server %s has exited", c.cfg.Name)
 	}
 
 	var paramsRaw json.RawMessage
@@ -266,38 +407,51 @@ func (c *Client) Notify(method string, params any) error {
 	}
 	data = append(data, '\n')
 
-	c.writerMu.Lock()
-	defer c.writerMu.Unlock()
-	_, writeErr := c.stdin.Write(data)
-	return writeErr
+	return c.writeFrame(data)
 }
 
 // Initialize performs the MCP handshake.
+//
+// A failed attempt does not poison the client: the handshake is retried on the
+// next call. The sync.Once this replaced kept the first error forever — a
+// single cancelled context during startup would have left every later call
+// failing with a stale failure even after the server came up.
 func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
-	c.initOnce.Do(func() {
-		params := InitializeParams{
-			ProtocolVersion: ProtocolVersionLatest,
-			Capabilities: ClientCapabilities{
-				Roots: &RootsCapability{ListChanged: true},
-			},
-			ClientInfo: Implementation{
-				Name:    "manvi",
-				Version: "1.0.0",
-			},
-		}
+	c.initMu.Lock()
+	defer c.initMu.Unlock()
+	if c.initTried && c.initErr == nil {
+		return c.initResult, nil
+	}
 
-		var res InitializeResult
-		if err := c.Call(ctx, "initialize", params, &res); err != nil {
-			c.initErr = err
-			return
-		}
-		c.initResult = &res
+	params := InitializeParams{
+		ProtocolVersion: ProtocolVersionLatest,
+		Capabilities: ClientCapabilities{
+			Roots: &RootsCapability{ListChanged: true},
+		},
+		ClientInfo: Implementation{
+			Name:    "manvi",
+			Version: "1.0.0",
+		},
+	}
 
-		// Send initialized notification
-		_ = c.Notify("notifications/initialized", map[string]any{})
-	})
+	var res InitializeResult
+	if err := c.Call(ctx, "initialize", params, &res); err != nil {
+		c.initErr = err
+		c.initTried = false // a later call may retry; the server may recover
+		return nil, err
+	}
+	c.initResult = &res
+	c.initErr = nil
+	c.initTried = true
 
-	return c.initResult, c.initErr
+	// Send initialized notification
+	if err := c.Notify("notifications/initialized", map[string]any{}); err != nil {
+		c.initErr = err
+		c.initTried = false
+		return nil, fmt.Errorf("mcp: notifying initialization to %s: %w", c.cfg.Name, err)
+	}
+
+	return c.initResult, nil
 }
 
 // ListTools returns all tools offered by the MCP server.
@@ -383,6 +537,12 @@ func (c *Client) Close() error {
 	case <-time.After(1500 * time.Millisecond):
 		if c.cmd != nil && c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
+		}
+		// A kill without a reap leaves the wait-goroutine running and a
+		// zombie on the table; give it a bounded second chance.
+		select {
+		case <-done:
+		case <-time.After(time.Second):
 		}
 	}
 

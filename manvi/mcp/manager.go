@@ -260,6 +260,11 @@ func (m *Manager) AutoDiscover(ctx context.Context) error {
 }
 
 // Client returns an active client for a named server, connecting lazily if needed.
+//
+// A cached client that has died — its stdout ended without anyone calling
+// Close, the signature of a crash — is replaced rather than returned. Handing
+// out a corpse converted one bad server frame into permanent tool failure for
+// the rest of the session.
 func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	if !m.Enabled() {
 		return nil, m.unavailable()
@@ -267,8 +272,12 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if client, ok := m.clients[name]; ok && !client.closed.Load() {
-		return client, nil
+	if client, ok := m.clients[name]; ok {
+		if client.Alive() {
+			return client, nil
+		}
+		_ = client.Close()
+		delete(m.clients, name)
 	}
 
 	cfg, ok := m.configs[name]
