@@ -115,6 +115,14 @@ func (g *Gate) EvaluateWrite(path string, task *dc.Task, op dc.Operation) (polic
 // the policy ladder decides, a grant may clear a soft denial, and the mode flag
 // may demote one. Identical composition to EvaluateWrite, so an operator does
 // not have to learn two models.
+//
+// Matching normalises away trailing redirections so allowlist entries stay
+// single-clause, which means an approved command can still carry a redirect
+// the ladder never looked at. Each target is therefore evaluated here as the
+// write it actually is, through exactly the path a WriteFile call faces. A
+// blocked target denies the command; a demoted one follows the operator's own
+// file-mode posture, so this cannot contradict how the harness treats direct
+// writes to the same path.
 func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, error) {
 	mode, modeOrigin, err := flags.EffectiveGateMode(g.Flags, flags.PolicyCommandMode)
 	if err != nil {
@@ -130,7 +138,42 @@ func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, 
 		HardRules:             hardRules,
 	}.EvaluateCommand(command, task)
 
+	if decision.Action != policy.Deny {
+		targets, opaque, err := policy.RedirectTargets(command)
+		if err != nil {
+			return policy.Decision{}, err
+		}
+		if opaque {
+			return policy.Decision{Action: policy.Deny,
+				Rule:     policy.RuleCommandSubstitution,
+				Severity: policy.Hard,
+				Reason: "A redirection target carries an expansion only the shell can resolve " +
+					"and was judged as an unverifiable write.",
+				Target: command,
+				TaskID: taskIDOf(task),
+			}, nil
+		}
+		for _, target := range targets {
+			written, err := g.EvaluateWrite(target, task, dc.OpWrite)
+			if err != nil {
+				return policy.Decision{}, err
+			}
+			if written.Blocked() {
+				written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
+					target, written.Reason)
+				return written, nil
+			}
+		}
+	}
+
 	return g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode), nil
+}
+
+func taskIDOf(task *dc.Task) string {
+	if task == nil {
+		return ""
+	}
+	return task.ID
 }
 
 // settle applies the override ledger and then the gate mode, and records the
