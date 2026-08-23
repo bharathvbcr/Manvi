@@ -12,7 +12,8 @@ from collections import OrderedDict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.stats import (aligned_deltas, bootstrap_ci, capability_arms, interaction,
-                      mean, pass_rates_by_repeat, role_of)
+                      mean, pass_rates_by_repeat, role_of, usable_rows)
+from mh.runtime import is_starved_episode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
@@ -21,7 +22,7 @@ ABLATIONS = ("baseline", "no-envboot", "no-verifygate",
              "no-nativetools")
 
 
-def load(filter_sub=None, tag=None):
+def load(filter_sub=None, tag=None, exclude=()):
     runs = []
     if not os.path.isdir(RESULTS):
         return runs
@@ -30,6 +31,8 @@ def load(filter_sub=None, tag=None):
         if not os.path.isfile(p):
             continue
         if filter_sub and filter_sub not in d:
+            continue
+        if any(x and x in d for x in exclude):
             continue
         if tag and not d.endswith("__" + tag):
             continue
@@ -83,13 +86,19 @@ def stats_report(runs):
         rates = pass_rates_by_repeat(cell["rows"])
         xs = list(rates.values())
         ci = bootstrap_ci(xs)
+        n_starved = sum(1 for r in cell["rows"] if is_starved_episode(r))
+        usable = usable_rows(cell["rows"])
         report["cells"][f"{model}|{cfg}"] = {
             "role": role_of(model),
             "n_repeats": len(xs),
+            "n": len(cell["rows"]),
+            "n_usable": len(usable),
+            "n_starved": n_starved,
             "rates": rates,
             "mean": ci[0], "lo": ci[1], "hi": ci[2],
         }
-        print(f"{model:<42} {cfg:<16} {len(xs):>3}  {_fmt_ci(ci)}")
+        warn = f"  STARVED={n_starved} excluded" if n_starved else ""
+        print(f"{model:<42} {cfg:<16} {len(xs):>3}  {_fmt_ci(ci)}{warn}")
 
     for (model, cfg), cell in cells.items():
         key = f"{model}|{cfg}"
@@ -185,8 +194,13 @@ def main():
                     help="only directories ending in __TAG")
     ap.add_argument("--json-out", default="",
                     help="write the stats report as JSON")
+    ap.add_argument("--exclude", action="append", default=[], metavar="SUBSTR",
+                    help="skip result directories containing SUBSTR; repeatable. "
+                         "An arm excluded from a reported grid must be declared in "
+                         "the writeup -- silently dropping one is how a capped "
+                         "sample gets presented as complete coverage.")
     args = ap.parse_args()
-    runs = load(args.filter, args.tag or None)
+    runs = load(args.filter, args.tag or None, tuple(args.exclude))
     if not runs:
         print("no results yet")
         return

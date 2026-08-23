@@ -1,22 +1,131 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360" font-family="Helvetica, Arial, sans-serif">
-<rect width="720" height="360" fill="#fff"/>
-<text x="360" y="28" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Pass rate (n repeats, bootstrap 95% CI)</text>
-<line x1="80" y1="300" x2="680" y2="300" stroke="#222"/>
-<line x1="80" y1="80" x2="80" y2="300" stroke="#222"/>
-<rect x="110.0" y="184.5" width="54" height="115.5" fill="#2f6fed"/>
-<line x1="137.0" y1="217.5" x2="137.0" y2="157.0" stroke="#111" stroke-width="1.5"/>
-<text x="137.0" y="318" text-anchor="middle" font-size="9" fill="#333">Ornith-1.5-3 baseline</text>
-<text x="137.0" y="178.5" text-anchor="middle" font-size="10" fill="#111">52.5</text>
-<rect x="240.0" y="162.5" width="54" height="137.5" fill="#9bb8f5"/>
-<line x1="267.0" y1="195.5" x2="267.0" y2="129.5" stroke="#111" stroke-width="1.5"/>
-<text x="267.0" y="318" text-anchor="middle" font-size="9" fill="#333">Ornith-1.5-3 full</text>
-<text x="267.0" y="156.5" text-anchor="middle" font-size="10" fill="#111">62.5</text>
-<rect x="370.0" y="135.0" width="54" height="165.0" fill="#c45c26"/>
-<line x1="397.0" y1="162.5" x2="397.0" y2="113.0" stroke="#111" stroke-width="1.5"/>
-<text x="397.0" y="318" text-anchor="middle" font-size="9" fill="#333">qwen3.8 baseline</text>
-<text x="397.0" y="129.0" text-anchor="middle" font-size="10" fill="#111">75.0</text>
-<rect x="500.0" y="85.5" width="54" height="214.5" fill="#e0b89a"/>
-<line x1="527.0" y1="96.5" x2="527.0" y2="80.0" stroke="#111" stroke-width="1.5"/>
-<text x="527.0" y="318" text-anchor="middle" font-size="9" fill="#333">qwen3.8 full</text>
-<text x="527.0" y="79.5" text-anchor="middle" font-size="10" fill="#111">97.5</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" font-family="Helvetica, Arial, sans-serif">
+<rect width="760" height="380" fill="#fff"/>
+<text x="380" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Pass rate by (model, configuration), bootstrap 95% CI</text>
+<text x="380" y="44" text-anchor="middle" font-size="11" fill="#555">40 episodes per cell (8 tasks &#215; 5 pinned seeds). Generated from stats-hard.json.</text>
+<line x1="80" y1="300.0" x2="720" y2="300.0" stroke="#eee"/>
+<text x="72" y="304.0" text-anchor="end" font-size="10" fill="#444">0</text>
+<line x1="80" y1="247.5" x2="720" y2="247.5" stroke="#eee"/>
+<text x="72" y="251.5" text-anchor="end" font-size="10" fill="#444">25</text>
+<line x1="80" y1="195.0" x2="720" y2="195.0" stroke="#eee"/>
+<text x="72" y="199.0" text-anchor="end" font-size="10" fill="#444">50</text>
+<line x1="80" y1="142.5" x2="720" y2="142.5" stroke="#eee"/>
+<text x="72" y="146.5" text-anchor="end" font-size="10" fill="#444">75</text>
+<line x1="80" y1="90.0" x2="720" y2="90.0" stroke="#eee"/>
+<text x="72" y="94.0" text-anchor="end" font-size="10" fill="#444">100</text>
+<text x="30" y="200" transform="rotate(-90 30 200)" font-size="11" fill="#333">pass rate (%)</text>
+<line x1="80" y1="300" x2="720" y2="300" stroke="#222"/>
+<line x1="80" y1="90" x2="80" y2="300" stroke="#222"/>
+<rect x="92.0" y="100.5" width="22.7" height="199.5" fill="#2f6fed" fill-opacity="1"/>
+<line x1="103.4" y1="111.0" x2="103.4" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="100.4" y1="111.0" x2="106.4" y2="111.0" stroke="#111" stroke-width="1.4"/>
+<line x1="100.4" y1="90.0" x2="106.4" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="103.4" y="85.0" text-anchor="middle" font-size="9" fill="#111">95.0</text>
+<text x="103.4" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 103.4 308.0)">full</text>
+<rect x="126.4" y="111.0" width="22.7" height="189.0" fill="#2f6fed" fill-opacity="1"/>
+<line x1="137.8" y1="126.8" x2="137.8" y2="95.2" stroke="#111" stroke-width="1.4"/>
+<line x1="134.8" y1="126.8" x2="140.8" y2="126.8" stroke="#111" stroke-width="1.4"/>
+<line x1="134.8" y1="95.2" x2="140.8" y2="95.2" stroke="#111" stroke-width="1.4"/>
+<text x="137.8" y="90.2" text-anchor="middle" font-size="9" fill="#111">90.0</text>
+<text x="137.8" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 137.8 308.0)">baseline</text>
+<rect x="160.9" y="100.5" width="22.7" height="199.5" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="172.3" y1="111.0" x2="172.3" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="169.3" y1="111.0" x2="175.3" y2="111.0" stroke="#111" stroke-width="1.4"/>
+<line x1="169.3" y1="90.0" x2="175.3" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="172.3" y="85.0" text-anchor="middle" font-size="9" fill="#111">95.0</text>
+<text x="172.3" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 172.3 308.0)">no-envboot</text>
+<rect x="195.3" y="95.2" width="22.7" height="204.8" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="206.7" y1="105.8" x2="206.7" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="203.7" y1="105.8" x2="209.7" y2="105.8" stroke="#111" stroke-width="1.4"/>
+<line x1="203.7" y1="90.0" x2="209.7" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="206.7" y="85.0" text-anchor="middle" font-size="9" fill="#111">97.5</text>
+<text x="206.7" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 206.7 308.0)">no-nativetools</text>
+<rect x="229.8" y="105.8" width="22.7" height="194.2" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="241.1" y1="126.8" x2="241.1" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="238.1" y1="126.8" x2="244.1" y2="126.8" stroke="#111" stroke-width="1.4"/>
+<line x1="238.1" y1="90.0" x2="244.1" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="241.1" y="85.0" text-anchor="middle" font-size="9" fill="#111">92.5</text>
+<text x="241.1" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 241.1 308.0)">no-outcap</text>
+<rect x="264.2" y="95.2" width="22.7" height="204.8" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="275.6" y1="105.8" x2="275.6" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="272.6" y1="105.8" x2="278.6" y2="105.8" stroke="#111" stroke-width="1.4"/>
+<line x1="272.6" y1="90.0" x2="278.6" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="275.6" y="85.0" text-anchor="middle" font-size="9" fill="#111">97.5</text>
+<text x="275.6" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 275.6 308.0)">no-checklist</text>
+<rect x="298.7" y="126.8" width="22.7" height="173.2" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="310.0" y1="163.5" x2="310.0" y2="95.2" stroke="#111" stroke-width="1.4"/>
+<line x1="307.0" y1="163.5" x2="313.0" y2="163.5" stroke="#111" stroke-width="1.4"/>
+<line x1="307.0" y1="95.2" x2="313.0" y2="95.2" stroke="#111" stroke-width="1.4"/>
+<text x="310.0" y="90.2" text-anchor="middle" font-size="9" fill="#111">82.5</text>
+<text x="310.0" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 310.0 308.0)">no-verifygate</text>
+<rect x="333.1" y="90.0" width="22.7" height="210.0" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="344.5" y1="90.0" x2="344.5" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="341.5" y1="90.0" x2="347.5" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="341.5" y1="90.0" x2="347.5" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="344.5" y="85.0" text-anchor="middle" font-size="9" fill="#111">100.0</text>
+<text x="344.5" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 344.5 308.0)">no-loopbreak</text>
+<rect x="367.6" y="95.2" width="22.7" height="204.8" fill="#2f6fed" fill-opacity="0.55"/>
+<line x1="378.9" y1="105.8" x2="378.9" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<line x1="375.9" y1="105.8" x2="381.9" y2="105.8" stroke="#111" stroke-width="1.4"/>
+<line x1="375.9" y1="90.0" x2="381.9" y2="90.0" stroke="#111" stroke-width="1.4"/>
+<text x="378.9" y="85.0" text-anchor="middle" font-size="9" fill="#111">97.5</text>
+<text x="378.9" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 378.9 308.0)">no-groundfs</text>
+<line x1="395.8" y1="90" x2="395.8" y2="326" stroke="#bbb" stroke-dasharray="2,3"/>
+<rect x="402.0" y="163.5" width="22.7" height="136.5" fill="#c45c26" fill-opacity="1"/>
+<line x1="413.4" y1="184.5" x2="413.4" y2="142.5" stroke="#111" stroke-width="1.4"/>
+<line x1="410.4" y1="184.5" x2="416.4" y2="184.5" stroke="#111" stroke-width="1.4"/>
+<line x1="410.4" y1="142.5" x2="416.4" y2="142.5" stroke="#111" stroke-width="1.4"/>
+<text x="413.4" y="137.5" text-anchor="middle" font-size="9" fill="#111">65.0</text>
+<text x="413.4" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 413.4 308.0)">full</text>
+<rect x="436.4" y="179.2" width="22.7" height="120.8" fill="#c45c26" fill-opacity="1"/>
+<line x1="447.8" y1="195.0" x2="447.8" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<line x1="444.8" y1="195.0" x2="450.8" y2="195.0" stroke="#111" stroke-width="1.4"/>
+<line x1="444.8" y1="158.2" x2="450.8" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<text x="447.8" y="153.2" text-anchor="middle" font-size="9" fill="#111">57.5</text>
+<text x="447.8" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 447.8 308.0)">baseline</text>
+<rect x="470.9" y="179.2" width="22.7" height="120.8" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="482.3" y1="189.8" x2="482.3" y2="168.8" stroke="#111" stroke-width="1.4"/>
+<line x1="479.3" y1="189.8" x2="485.3" y2="189.8" stroke="#111" stroke-width="1.4"/>
+<line x1="479.3" y1="168.8" x2="485.3" y2="168.8" stroke="#111" stroke-width="1.4"/>
+<text x="482.3" y="163.8" text-anchor="middle" font-size="9" fill="#111">57.5</text>
+<text x="482.3" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 482.3 308.0)">no-envboot</text>
+<rect x="505.3" y="184.5" width="22.7" height="115.5" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="516.7" y1="216.0" x2="516.7" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<line x1="513.7" y1="216.0" x2="519.7" y2="216.0" stroke="#111" stroke-width="1.4"/>
+<line x1="513.7" y1="158.2" x2="519.7" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<text x="516.7" y="153.2" text-anchor="middle" font-size="9" fill="#111">55.0</text>
+<text x="516.7" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 516.7 308.0)">no-nativetools</text>
+<rect x="539.8" y="142.5" width="22.7" height="157.5" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="551.1" y1="158.2" x2="551.1" y2="126.8" stroke="#111" stroke-width="1.4"/>
+<line x1="548.1" y1="158.2" x2="554.1" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<line x1="548.1" y1="126.8" x2="554.1" y2="126.8" stroke="#111" stroke-width="1.4"/>
+<text x="551.1" y="121.8" text-anchor="middle" font-size="9" fill="#111">75.0</text>
+<text x="551.1" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 551.1 308.0)">no-outcap</text>
+<rect x="574.2" y="147.8" width="22.7" height="152.2" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="585.6" y1="158.2" x2="585.6" y2="142.5" stroke="#111" stroke-width="1.4"/>
+<line x1="582.6" y1="158.2" x2="588.6" y2="158.2" stroke="#111" stroke-width="1.4"/>
+<line x1="582.6" y1="142.5" x2="588.6" y2="142.5" stroke="#111" stroke-width="1.4"/>
+<text x="585.6" y="137.5" text-anchor="middle" font-size="9" fill="#111">72.5</text>
+<text x="585.6" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 585.6 308.0)">no-checklist</text>
+<rect x="608.7" y="168.8" width="22.7" height="131.2" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="620.0" y1="184.5" x2="620.0" y2="153.0" stroke="#111" stroke-width="1.4"/>
+<line x1="617.0" y1="184.5" x2="623.0" y2="184.5" stroke="#111" stroke-width="1.4"/>
+<line x1="617.0" y1="153.0" x2="623.0" y2="153.0" stroke="#111" stroke-width="1.4"/>
+<text x="620.0" y="148.0" text-anchor="middle" font-size="9" fill="#111">62.5</text>
+<text x="620.0" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 620.0 308.0)">no-verifygate</text>
+<rect x="643.1" y="168.8" width="22.7" height="131.2" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="654.5" y1="189.8" x2="654.5" y2="147.8" stroke="#111" stroke-width="1.4"/>
+<line x1="651.5" y1="189.8" x2="657.5" y2="189.8" stroke="#111" stroke-width="1.4"/>
+<line x1="651.5" y1="147.8" x2="657.5" y2="147.8" stroke="#111" stroke-width="1.4"/>
+<text x="654.5" y="142.8" text-anchor="middle" font-size="9" fill="#111">62.5</text>
+<text x="654.5" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 654.5 308.0)">no-loopbreak</text>
+<rect x="677.6" y="158.2" width="22.7" height="141.8" fill="#c45c26" fill-opacity="0.55"/>
+<line x1="688.9" y1="168.8" x2="688.9" y2="147.8" stroke="#111" stroke-width="1.4"/>
+<line x1="685.9" y1="168.8" x2="691.9" y2="168.8" stroke="#111" stroke-width="1.4"/>
+<line x1="685.9" y1="147.8" x2="691.9" y2="147.8" stroke="#111" stroke-width="1.4"/>
+<text x="688.9" y="142.8" text-anchor="middle" font-size="9" fill="#111">67.5</text>
+<text x="688.9" y="308.0" text-anchor="end" font-size="9" fill="#333" transform="rotate(-45 688.9 308.0)">no-groundfs</text>
+<rect x="90" y="62" width="10" height="10" fill="#2f6fed"/>
+<text x="106" y="71" font-size="10" fill="#333">qwen3.8</text>
+<rect x="250" y="62" width="10" height="10" fill="#c45c26"/>
+<text x="266" y="71" font-size="10" fill="#333">Ornith-1.5-3</text>
 </svg>

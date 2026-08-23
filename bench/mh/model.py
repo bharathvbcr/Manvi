@@ -7,6 +7,7 @@ returns nothing. So we read every spelling we have ever seen and coerce argument
 from either a dict or a JSON string.
 """
 import json
+import random
 import time
 import urllib.error
 import urllib.request
@@ -149,6 +150,8 @@ class GeminiClient:
         self.num_predict = num_predict or 16384
         self.timeout = timeout
         self.seed = seed
+        # The endpoint takes a discrete thinking level, not a temperature.
+        self.thinking_level = "high" if think else "low"
         self.api_key = _get_gemini_api_key()
         if not self.api_key:
             raise ModelError("No Gemini credential found (set GEMINI_API_KEY or .env.local)")
@@ -161,9 +164,37 @@ class GeminiClient:
         if seed is not None:
             self.options["seed"] = seed
 
-    def chat(self, messages, tools=None, retries=5):
+    # This endpoint returns HTTP 500 on a large fraction of substantial
+    # tool-call generations -- measured at roughly 71% of requests for
+    # gemini-3.7-flash, and not rate limiting (45 s spacing did not help).
+    # Sibling models on the same endpoint show no 500s at all. The retry budget
+    # below is sized for that measured failure rate rather than for a healthy
+    # service; without it a multi-step episode almost never finishes.
+    # Measured: 45 s spacing between attempts did NOT improve the success rate
+    # (2/6) over back-to-back attempts (1/5). These 500s are not load-related, so
+    # backing off buys nothing -- it only converts a fast failure into a slow one.
+    # An earlier 60 s-cap backoff spent 57 minutes of a single episode asleep for
+    # 76 output tokens. Retry quickly and often instead; failed attempts return no
+    # usage block and so cost wall-clock rather than tokens.
+    DEFAULT_RETRIES = 16
+    BACKOFF_CAP_S = 5.0
+
+    def chat(self, messages, tools=None, retries=None):
+        if retries is None:
+            retries = self.DEFAULT_RETRIES
+        # The wire shape below is not guessed. It matches a recorded capture of a
+        # working MANVI run against this endpoint (bench/results/live-gemini/
+        # gemini-wire.log): 1371 function_call items paired 1:1 with 1371
+        # function_result items, every function_call carrying a non-empty
+        # thought signature, and store=false throughout.
+        #
+        # The previous version of this method emitted function_result entries
+        # with no preceding function_call and no signature, so the server saw
+        # results for calls it had never been told about. The model lost its own
+        # action history every turn and degenerated into prose, which the harness
+        # then scored as no_tool_call. That is what produced the 315-episode
+        # gemini arm with zero `finished` stops.
         system_instruction = ""
-        has_tool_results = any(m.get("role") == "tool" for m in messages)
         call_names = {}
         for msg in messages:
             if msg.get("role") == "assistant":
@@ -185,11 +216,35 @@ class GeminiClient:
                         "content": [{"type": "text", "text": content}]
                     })
             elif role == "assistant":
-                if not has_tool_results and content:
+                calls = msg.get("tool_calls") or []
+                # A turn that only talked still belongs in the history; a turn
+                # that acted is represented by its function_call items, which is
+                # how the recorded working traffic carries assistant state.
+                if content and not calls:
                     wire_input.append({
                         "type": "model_output",
                         "content": [{"type": "text", "text": content}]
                     })
+                for i, tc in enumerate(calls):
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments", tc.get("args"))
+                    if isinstance(args, str):
+                        args = _coerce_args(args)
+                    if not isinstance(args, dict):
+                        args = {}
+                    item = {
+                        "type": "function_call",
+                        "id": tc.get("id") or f"call_{i}",
+                        "name": fn.get("name") or tc.get("name") or "tool",
+                        "arguments": args,
+                    }
+                    # Required by this endpoint for multi-turn tool use: every
+                    # function_call in the recorded capture carries one. Omitting
+                    # it drops the model's own reasoning thread between turns.
+                    sig = tc.get("signature")
+                    if sig:
+                        item["signature"] = sig
+                    wire_input.append(item)
             elif role == "tool":
                 call_id = msg.get("tool_call_id") or "call_0"
                 name = msg.get("name") or call_names.get(call_id) or "tool"
@@ -211,6 +266,27 @@ class GeminiClient:
                     "parameters": fn.get("parameters", {}),
                 })
 
+        # generation_config carries thinking_level and NOTHING else.
+        #
+        # This is not a style choice. Measured against the live endpoint on a
+        # generation large enough to matter (a ~100-line file written through a
+        # tool call):
+        #
+        #   {"temperature":.., "max_output_tokens":..}   -> HTTP 500
+        #   {"max_output_tokens":..}                     -> HTTP 500
+        #   {}  / omitted                                -> HTTP 500, or a
+        #                                                   completed interaction
+        #                                                   with 0 output tokens
+        #   {"thinking_level":"high"}                    -> 1 tool call, 5511 out tok
+        #   {"thinking_level":"low"}                     -> 1 tool call, 5069 out tok
+        #   {"thinking_level":"high","max_output_tokens":..} -> HTTP 500
+        #
+        # It also matches the recorded working capture, where 302 of 303
+        # requests sent exactly {"thinking_level": ...} and nothing else.
+        #
+        # The cost is that this arm cannot honour the suite's temperature or
+        # num_predict. That is a declared protocol deviation, not an oversight:
+        # the endpoint rejects both.
         body = {
             "model": self.model,
             "input": wire_input,
@@ -218,8 +294,7 @@ class GeminiClient:
             "store": False,
             "stream": True,
             "generation_config": {
-                "temperature": self.temperature,
-                "max_output_tokens": self.num_predict,
+                "thinking_level": self.thinking_level,
             }
         }
         if wire_tools:
@@ -322,8 +397,28 @@ class GeminiClient:
                         "signature": thought_sig,
                     })
 
+                # A completed interaction that produced no tool call, no text
+                # and zero output tokens is a degenerate response, not the model
+                # electing to stay silent. Returning it as an empty Reply makes
+                # the harness see "no tool call", nudge, get another empty, and
+                # stop the episode with no_tool_call -- which is how a transient
+                # API degeneracy becomes a scored harness failure. The recorded
+                # working capture has zero such responses in 263 completions
+                # (minimum output was 13 tokens), so treating this as retryable
+                # matches what a healthy stream looks like.
+                content_text = "".join(content_parts)
+                if not tool_calls and not content_text.strip() and not total_out:
+                    last = ModelError(
+                        "empty interaction: completed with no tool call, no text "
+                        "and 0 output tokens")
+                    if attempt < retries:
+                        base = min(self.BACKOFF_CAP_S, 0.5 * 2.0 ** attempt)
+                        time.sleep(base * (0.5 + random.random() * 0.5))
+                        continue
+                    raise last
+
                 return Reply(
-                    content="".join(content_parts),
+                    content=content_text,
                     reasoning=thought_sig,
                     tool_calls=tool_calls,
                     raw={"stream_completed": saw_completion},
@@ -341,7 +436,11 @@ class GeminiClient:
             except (urllib.error.URLError, TimeoutError, OSError, ModelError) as e:
                 last = e if isinstance(e, ModelError) else ModelError(f"{type(e).__name__}: {e}")
             if attempt < retries:
-                time.sleep(min(30, 2 ** (attempt + 1)))
+                # Jitter matters here: a grid runs cells back to back against the
+                # same endpoint, and a bare power-of-two backoff re-synchronises
+                # every retry onto the same instants.
+                base = min(self.BACKOFF_CAP_S, 0.5 * 2.0 ** attempt)
+                time.sleep(base * (0.5 + random.random() * 0.5))
         else:
             raise last or ModelError("chat failed")
 
