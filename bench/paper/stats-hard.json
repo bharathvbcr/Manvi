@@ -1,65 +1,413 @@
 {
   "cells": {
     "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
-      "role": "strong",
+      "role": "mid",
       "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
       "rates": {
         "0": 0.5,
-        "1": 0.75,
-        "2": 0.25,
-        "3": 0.5,
-        "4": 0.625
+        "1": 0.625,
+        "2": 0.5,
+        "3": 0.75,
+        "4": 0.5
       },
-      "mean": 0.525,
-      "lo": 0.375,
-      "hi": 0.65
+      "mean": 0.575,
+      "lo": 0.5,
+      "hi": 0.675
     },
     "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
-      "role": "strong",
+      "role": "mid",
       "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
       "rates": {
         "0": 0.75,
         "1": 0.5,
-        "2": 0.875,
+        "2": 0.75,
+        "3": 0.75,
+        "4": 0.5
+      },
+      "mean": 0.65,
+      "lo": 0.55,
+      "hi": 0.75
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.75,
+        "2": 0.75,
         "3": 0.625,
-        "4": 0.375
+        "4": 0.75
+      },
+      "mean": 0.725,
+      "lo": 0.675,
+      "hi": 0.75
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.5,
+        "1": 0.625,
+        "2": 0.5,
+        "3": 0.625,
+        "4": 0.625
+      },
+      "mean": 0.575,
+      "lo": 0.525,
+      "hi": 0.625
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.625,
+        "1": 0.75,
+        "2": 0.75,
+        "3": 0.625,
+        "4": 0.625
+      },
+      "mean": 0.675,
+      "lo": 0.625,
+      "hi": 0.725
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.75,
+        "2": 0.5,
+        "3": 0.5,
+        "4": 0.625
       },
       "mean": 0.625,
-      "lo": 0.475,
-      "hi": 0.775
+      "lo": 0.525,
+      "hi": 0.725
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.625,
+        "1": 0.625,
+        "2": 0.5,
+        "3": 0.25,
+        "4": 0.75
+      },
+      "mean": 0.55,
+      "lo": 0.4,
+      "hi": 0.675
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.625,
+        "2": 0.875,
+        "3": 0.75,
+        "4": 0.75
+      },
+      "mean": 0.75,
+      "lo": 0.675,
+      "hi": 0.825
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.625,
+        "2": 0.625,
+        "3": 0.625,
+        "4": 0.5
+      },
+      "mean": 0.625,
+      "lo": 0.55,
+      "hi": 0.7
     },
     "qwen3.8:27b|baseline": {
       "role": "mid",
       "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
       "rates": {
-        "0": 0.5,
-        "1": 0.75,
+        "0": 0.75,
+        "1": 0.875,
         "2": 0.875,
-        "3": 0.75,
-        "4": 0.875
+        "3": 1.0,
+        "4": 1.0
       },
-      "mean": 0.75,
-      "lo": 0.625,
-      "hi": 0.85
+      "mean": 0.9,
+      "lo": 0.825,
+      "hi": 0.975
     },
     "qwen3.8:27b|full": {
       "role": "mid",
       "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.875,
+        "1": 0.875,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.9,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-checklist": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.975,
+      "lo": 0.925,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-envboot": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 0.875,
+        "4": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.9,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.875,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.975,
+      "lo": 0.925,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
       "rates": {
         "0": 1.0,
         "1": 1.0,
         "2": 1.0,
         "3": 1.0,
-        "4": 0.875
+        "4": 1.0
+      },
+      "mean": 1.0,
+      "lo": 1.0,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 1.0,
+        "4": 1.0
       },
       "mean": 0.975,
       "lo": 0.925,
       "hi": 1.0
+    },
+    "qwen3.8:27b|no-outcap": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.875,
+        "2": 0.75,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.925,
+      "lo": 0.825,
+      "hi": 1.0
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "rates": {
+        "0": 0.875,
+        "1": 1.0,
+        "2": 0.5,
+        "3": 0.75,
+        "4": 1.0
+      },
+      "mean": 0.825,
+      "lo": 0.65,
+      "hi": 0.975
     }
   },
   "deltas": {
     "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
-      "role": "strong",
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.075,
+      "lo": -0.05,
+      "hi": 0.2
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.075,
+      "lo": -0.075,
+      "hi": 0.225
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": -0.05,
+      "hi": 0.1
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.075,
+      "lo": -0.2,
+      "hi": 0.05
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": -0.15,
+      "hi": 0.2
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.1,
+      "lo": -0.175,
+      "hi": -0.025
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.025,
+      "lo": -0.15,
+      "hi": 0.1
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "role": "mid",
       "n": 5,
       "reps": [
         0,
@@ -69,8 +417,8 @@
         4
       ],
       "mean": 0.1,
-      "lo": -0.175,
-      "hi": 0.375
+      "lo": -0.125,
+      "hi": 0.325
     },
     "qwen3.8:27b|baseline": {
       "role": "mid",
@@ -82,12 +430,872 @@
         3,
         4
       ],
-      "mean": 0.225,
-      "lo": 0.1,
-      "hi": 0.375
+      "mean": 0.05,
+      "lo": 0.0,
+      "hi": 0.1
+    },
+    "qwen3.8:27b|no-envboot": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.0,
+      "lo": -0.1,
+      "hi": 0.1
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.125,
+      "lo": -0.05,
+      "hi": 0.35
+    },
+    "qwen3.8:27b|no-checklist": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.025,
+      "lo": -0.1,
+      "hi": 0.05
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.05,
+      "lo": -0.1,
+      "hi": 0.0
+    },
+    "qwen3.8:27b|no-outcap": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": -0.075,
+      "hi": 0.15
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.025,
+      "lo": -0.075,
+      "hi": 0.0
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.025,
+      "lo": -0.1,
+      "hi": 0.05
     }
   },
   "interaction": {
-    "_note": "missing weak or strong arm"
+    "_arms": {
+      "weaker": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+      "stronger": "qwen3.8:27b",
+      "weaker_full_mean": 0.65,
+      "stronger_full_mean": 0.95
+    },
+    "baseline": {
+      "delta_weak_minus_strong": 0.024999999999999994,
+      "lo": -0.125,
+      "hi": 0.17500000000000002,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-envboot": {
+      "delta_weak_minus_strong": 0.075,
+      "lo": -0.1,
+      "hi": 0.25,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-verifygate": {
+      "delta_weak_minus_strong": -0.1,
+      "lo": -0.325,
+      "hi": 0.1,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-checklist": {
+      "delta_weak_minus_strong": -0.049999999999999996,
+      "lo": -0.2,
+      "hi": 0.1,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-loopbreak": {
+      "delta_weak_minus_strong": 0.07500000000000001,
+      "lo": -0.1,
+      "hi": 0.25,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-outcap": {
+      "delta_weak_minus_strong": -0.125,
+      "lo": -0.275,
+      "hi": 0.0,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-groundfs": {
+      "delta_weak_minus_strong": 0.0,
+      "lo": -0.15,
+      "hi": 0.125,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-nativetools": {
+      "delta_weak_minus_strong": 0.125,
+      "lo": -0.125,
+      "hi": 0.375,
+      "detectable": false,
+      "underpowered": true
+    }
+  },
+  "per_task": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 1,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 4,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 3,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 1,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 0,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 3,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 4,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 4,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 0,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 3,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 1,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 4,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 2,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 4,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 4,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 3,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 3,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 4,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 2,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "ast_transformer": {
+        "passed": 1,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 4,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 0,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 4,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 0,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 1,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 4,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 3,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 2,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 3,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 2,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|baseline": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 2,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|full": {
+      "ast_transformer": {
+        "passed": 3,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-checklist": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-envboot": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 4,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-outcap": {
+      "ast_transformer": {
+        "passed": 3,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "ast_transformer": {
+        "passed": 3,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 3,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 4,
+        "n": 5
+      }
+    }
+  },
+  "stops": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "context_exhausted": 10,
+      "finished": 21,
+      "error:ModelError": 9
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "context_exhausted": 14,
+      "finished": 22,
+      "error:ModelError": 4
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "error:ModelError": 6,
+      "finished": 23,
+      "context_exhausted": 11
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "context_exhausted": 15,
+      "finished": 21,
+      "error:ModelError": 4
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "context_exhausted": 7,
+      "error:ModelError": 10,
+      "finished": 23
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "context_exhausted": 14,
+      "finished": 21,
+      "error:ModelError": 5
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "context_exhausted": 11,
+      "finished": 20,
+      "error:ModelError": 9
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "context_exhausted": 9,
+      "finished": 27,
+      "error:ModelError": 4
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "context_exhausted": 15,
+      "error:ModelError": 5,
+      "finished": 20
+    },
+    "qwen3.8:27b|baseline": {
+      "finished": 38,
+      "context_exhausted": 1,
+      "error:ModelError": 1
+    },
+    "qwen3.8:27b|full": {
+      "context_exhausted": 2,
+      "finished": 38
+    },
+    "qwen3.8:27b|no-checklist": {
+      "context_exhausted": 2,
+      "finished": 38
+    },
+    "qwen3.8:27b|no-envboot": {
+      "finished": 35,
+      "context_exhausted": 5
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "finished": 35,
+      "context_exhausted": 4,
+      "error:ModelError": 1
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "finished": 37,
+      "context_exhausted": 3
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "finished": 37,
+      "wall_timeout": 1,
+      "context_exhausted": 2
+    },
+    "qwen3.8:27b|no-outcap": {
+      "finished": 36,
+      "error:ModelError": 1,
+      "context_exhausted": 3
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "finished": 38,
+      "context_exhausted": 2
+    }
   }
 }
