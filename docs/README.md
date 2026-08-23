@@ -22,7 +22,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Technical Architecture Specification**](ARCHITECTURE.md)  
   Dual-plane partition (Go IO/concurrency vs Rust CPU/determinism), stdio JSON IPC protocol, session log invariants, and complete package map.
 - [**Policy & Safety Engine Specification**](POLICY_AND_SAFETY.md)  
-  5-Tier Policy Ladder, 5 outcome states (`Passed`, `Blocked`, `Granted`, `Demoted`, `Degraded`), Write Gate, Command Gate, and Grants Ledger.
+  6-rung policy ladder, 5 outcome states (`Passed`, `Blocked`, `Granted`, `Demoted`, `Degraded`), Write Gate, Command Gate, and Grants Ledger.
 - [**Agent & Turn Lifecycle Specification**](AGENT_AND_TURN_LIFECYCLE.md)  
   Turn execution loop, tool waterfalls (`pre-execute`, `post-execute`), append-only context compaction, SQLite task leases, and clean cancellation.
 - [**Architectural Trade-offs**](TRADE_OFFS.md)  

@@ -168,7 +168,7 @@ flowchart TD
     B2 -- "Clear" --> B3{"Soft rules:<br/>planned scope, AST neighborhood"}
     B3 -- "Pass" --> Clean["PASSED ✓ clean"]
     B3 -- "Violated" --> B4{"Valid unexpired grant?"}
-    B4 -- "Yes" => Granted["GRANTED ✓ [granted]<br/>carries Grant ID"]
+    B4 -- "Yes" --> Granted["GRANTED ✓ [granted]<br/>carries Grant ID"]
     B4 -- "No" --> B5{"Posture: dev / yolo?"}
     B5 -- "Yes" --> Demoted["DEMOTED ✓ [demoted]"]
     B5 -- "strict" --> B6{"Attended TUI approver?"}

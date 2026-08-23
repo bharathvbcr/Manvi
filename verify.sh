@@ -4,11 +4,18 @@
 #
 #   ./verify.sh          format check, vet/clippy, and both test suites
 #   ./verify.sh --fix    rewrite formatting in place first
+#   ./verify.sh --race   the Go suite again under the race detector
 set -euo pipefail
 
 cd "$(dirname "$0")"
 FIX=0
-[[ "${1:-}" == "--fix" ]] && FIX=1
+RACE=0
+case "${1:-}" in
+  --fix)  FIX=1 ;;
+  --race) RACE=1 ;;
+  "")     ;;
+  *)      printf 'usage: %s [--fix|--race]\n' "$0" >&2; exit 2 ;;
+esac
 
 # The Go plane is built and tested with cgo off, because "no cgo" is a claim
 # this repository makes in four source comments and in its own architecture
@@ -47,6 +54,19 @@ fi
 
 # A package whose tests all skip still prints "ok". Count what actually ran in
 # the packages that cross the process boundary, so a silent skip cannot pass.
+# The race detector needs cgo, which the default gate deliberately turns off:
+# CGO_ENABLED=0 is a claim this repository makes, so the default run has to be
+# the shipped configuration. That left `go test -race ./...` — the first thing a
+# reviewer of a concurrency-heavy Go project runs — outside every gate, and it
+# was not clean: TestConcurrentQueriesDoNotInterfere wedged a full run for ten
+# minutes and failed 2 of 5 isolated runs, because forking a shell two dozen
+# times over does not survive the race runtime on macOS. Opt-in, but gated.
+if (( RACE )); then
+  step "Go — race detector"
+  (cd manvi && CGO_ENABLED=1 go test -race -count=1 -timeout 900s ./...) || fail "go test -race"
+  printf '    covered: every package under the race detector, with cgo on\n'
+fi
+
 step "Go — cross-boundary coverage"
 for pkg in ./dc/store ./devcouncil; do
   ran="$( (cd manvi && go test -count=1 -v "$pkg" 2>/dev/null) | grep -c '^--- PASS' || true )"
@@ -229,6 +249,43 @@ fi
 # The mark in assets/ is generated from the same grid the TUI draws. A hand-edit
 # to either would give the published asset and the splash screen two different
 # marks, so the asset is regenerated here and compared rather than trusted.
+# The documentation is a declaration layer, and it was the one nothing checked.
+# Five drifted claims were found in one audit — tool counts of 37 and 23 against
+# a registry of 44, a fixture "776 cases" that held 775, and a ladder called
+# 5-Tier that the README drew with six rungs. Each was true when written. The
+# guard re-reads them against the artifact that decides the answer, so the class
+# fails here rather than in front of a reader.
+# A fuzz target is only a target if a runner can find it. `go test -fuzz=X ./pkg`
+# answers "no fuzz tests to fuzz" and exits 0 when X is not in pkg — so a runner
+# pointed at the wrong package reports success while executing nothing, which is
+# how this repository's own fuzz sweep once recorded three passes for targets it
+# never ran. Enumerate what is declared, and make each one prove it is reachable
+# where it lives.
+step "Fuzz targets — every declared target is reachable"
+fuzz_declared=0
+fuzz_missing=""
+while IFS= read -r decl; do
+  file="${decl%%:*}"
+  fn="${decl##*:}"
+  pkg="./$(dirname "${file#manvi/}")"
+  fuzz_declared=$(( fuzz_declared + 1 ))
+  # Capture before matching. Piping `go test` into `grep -q` lets grep exit on
+  # the first match, `go test` take SIGPIPE, and `set -o pipefail` report the
+  # pipeline as failed — which would mark every reachable target unreachable.
+  listing="$( (cd manvi && go test -list "^${fn}\$" "$pkg" 2>/dev/null) || true )"
+  if ! printf '%s\n' "$listing" | grep -qx "$fn"; then
+    fuzz_missing="${fuzz_missing} ${pkg}:${fn}"
+  fi
+done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' | sed -E 's/^([^:]+):[0-9]+:func (Fuzz[A-Za-z0-9_]+).*/\1:\2/')
+(( fuzz_declared >= 10 )) || fail "only ${fuzz_declared} fuzz targets found; the sweep is not looking at the harness"
+[[ -z "$fuzz_missing" ]] || fail "declared but not reachable in their own package:${fuzz_missing}"
+printf '    covered: all %s declared fuzz targets are reachable where they are defined\n' "$fuzz_declared"
+
+step "Docs — every stated count is the measured count"
+docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented' 2>/dev/null) | grep -c '^--- PASS' || true )"
+(( docs_ran == 6 )) || fail "the documentation contract ran only ${docs_ran} of 6 checks"
+printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links and subcommands all agree with the code\n'
+
 step "Brand — the published mark is the drawn mark"
 logo_bin="$(mktemp -d)/manvi"
 (cd manvi && go build -o "$logo_bin" ./cmd/manvi) || fail "building manvi"

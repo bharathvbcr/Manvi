@@ -174,12 +174,15 @@ func TestCancellationIsPromptAndReported(t *testing.T) {
 // turn can have several in flight. Run under -race this is also the check that
 // the client holds no mutable state it shares between them.
 func TestConcurrentQueriesDoNotInterfere(t *testing.T) {
-	c := fake(t, map[string]string{
+	// forkSafeFake, not fake: two dozen simultaneous forks of `/bin/sh` under
+	// -race is a combination the race runtime does not survive on macOS, and
+	// this test is the only one that produces it. See racefake_test.go.
+	c := forkSafeFake(t, map[string]string{
 		"status": healthyStatus,
 		"search": `{"items":[{"file_path":"a.go","symbol_name":"Alpha"}],"hidden":2}`,
 		"deps":   `{"items":[{"source_file":"a.go","target_file":"b.go"}],"hidden":0}`,
 		"dead":   `{"items":[{"file_path":"a.go","symbol_name":"Unused"}],"hidden":0}`,
-	})
+	}, nil)
 
 	const workers = 24
 	var wg sync.WaitGroup

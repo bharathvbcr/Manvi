@@ -957,6 +957,35 @@ func assertShape[T any](command string, items []T) error {
 // refused to index. Dropping it turned a partial index into one that read as
 // complete. Callers that have nothing to say about stderr ignore it; the ones
 // that do run it through readNotices.
+// runBounded runs one subprocess invocation under the caller's deadline and
+// reports whether the deadline won.
+//
+// It exists because exec's own bounds do not cover the whole call.
+// exec.CommandContext arms its killer only once the child exists, and
+// Cmd.WaitDelay bounds Wait — both start counting after Start has returned. A
+// Start that never returns is outside every one of them, so `cmd.Run()` called
+// directly is an unbounded wait wearing a timeout's clothes.
+//
+// That gap is reachable rather than theoretical: under the race detector, with
+// two dozen forks in flight on a loaded machine, Start wedged for a full
+// 900-second package timeout while its 30-second context sat unused.
+//
+// When the deadline wins, the goroutine is abandoned. There is nothing to
+// cancel — it is blocked in the kernel — and the caller must not read anything
+// that goroutine still owns, because a buffer being written by an abandoned
+// writer is a data race, and a partial answer read out of one would be worse
+// than the timeout it replaced.
+func runBounded(ctx context.Context, run func() error) (err error, timedOut bool) {
+	done := make(chan error, 1)
+	go func() { done <- run() }()
+	select {
+	case err = <-done:
+		return err, false
+	case <-ctx.Done():
+		return nil, true
+	}
+}
+
 func (c *Client) decode(ctx context.Context, into any, timeout time.Duration, args ...string) (said, error) {
 	if c.Binary == "" {
 		return said{}, errors.New("no devmap binary configured")
@@ -988,7 +1017,28 @@ func (c *Client) decode(ctx context.Context, into any, timeout time.Duration, ar
 	// process does not unblock Wait while a child holds the stdout pipe.
 	cmd.WaitDelay = 2 * time.Second
 
-	runErr := cmd.Run()
+	// Run on its own goroutine so the deadline covers the fork, not just the
+	// process.
+	//
+	// exec.CommandContext arms its killer only once the child exists, and
+	// WaitDelay bounds Wait — so both of them start counting after Start has
+	// returned. A Start that does not return is outside every one of those
+	// bounds, and this function's contract is that an invocation is bounded.
+	// That gap is reachable: under the race detector, with two dozen forks in
+	// flight and a loaded machine, Start wedged here for the full 900-second
+	// package timeout with the 30-second context sitting unused.
+	//
+	// On the deadline path the goroutine is abandoned rather than waited for —
+	// it is blocked in the kernel and there is nothing to cancel. It owns the
+	// only references to stdout and stderr that anyone will read afterwards,
+	// which is why nothing below this select touches them on that path: a
+	// buffer still being written by an abandoned goroutine is a data race, and
+	// a partial answer read out of one would be worse than the timeout.
+	runErr, timedOut := runBounded(ctx, cmd.Run)
+	if timedOut {
+		return said{}, fmt.Errorf("devmap %s did not return within %s (the process could not be started or reaped): %w",
+			args[0], timeout, ctx.Err())
+	}
 	// Checked before runErr, and this order is the fix. Breaking the pipe is
 	// how the flood is stopped, so exec reports it as the command failing — and
 	// reporting that as "devmap status failed: signal: broken pipe" would send
