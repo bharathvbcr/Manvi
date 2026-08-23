@@ -92,3 +92,4 @@ bench/results/
 *.fdb_latexmk
 *.bbl
 *.blg
+bench/paper/workshop/*.pdf
