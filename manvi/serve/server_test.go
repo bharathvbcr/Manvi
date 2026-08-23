@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"manvi/policy"
 )
@@ -531,4 +534,73 @@ func TestProbeReportsAnEmbeddingOnlyModel(t *testing.T) {
 	if !got.Embedding {
 		t.Error("an embedding-only model was not reported as one")
 	}
+}
+
+// TestCancellationEndsServeWhileStdinStaysOpen pins the shutdown contract:
+// SIGINT/SIGTERM arrive as context cancellation, and the loop — parked on a
+// blocking stdin read that cannot observe it — must still come back. Before
+// this, `manvi serve` ignored its own signal context entirely: Ctrl+C left an
+// idle sidecar running until SIGKILL.
+func TestCancellationEndsServeWhileStdinStaysOpen(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+
+	// Serve writes from its own goroutine while this test polls for the
+	// response, so the recorder has to be safe for both.
+	var out synchronizedBuffer
+	srv := New(&out, hostOpts())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, pr) }()
+
+	// One full round trip proves the server was live on the blocking read.
+	req, err := json.Marshal(Request{ID: "live", Op: OpHello})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pw.Write(append(req, '\n')); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(out.String(), "\"id\":\"live\"") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	pw.Close() // a host that cancels may or may not close stdin; either ends it
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned an error on cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not end Serve while stdin was still open")
+	}
+	if !strings.Contains(out.String(), "\"id\":\"live\"") {
+		t.Fatalf("the pre-cancellation request was never answered: %q", out.String())
+	}
+}
+
+// synchronizedBuffer is a strings.Builder safe to read while a writer goroutine
+// is appending.
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *synchronizedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *synchronizedBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
 }

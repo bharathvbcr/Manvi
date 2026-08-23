@@ -6,6 +6,13 @@ test is whether the ablation delta shrinks as model capability rises
 """
 import random
 
+from .runtime import is_starved_episode
+
+
+def usable_rows(rows):
+    """Drop first-turn 0-token timeouts. Those are serving failures, not tasks."""
+    return [r for r in (rows or []) if not is_starved_episode(r)]
+
 
 def mean(xs):
     xs = list(xs)
@@ -40,9 +47,13 @@ def bootstrap_ci(xs, n_boot=10000, alpha=0.05, rng_seed=0):
 
 
 def pass_rates_by_repeat(rows):
-    """Map rep -> passed/n_tasks for that repeat. Missing reps are omitted."""
+    """Map rep -> passed/n_tasks for that repeat. Missing reps are omitted.
+
+    Starved 0-token timeouts are excluded so a wedged server cannot look like
+    a harness ablation.
+    """
     by = {}
-    for r in rows:
+    for r in usable_rows(rows):
         rep = r.get("rep", 0)
         rec = by.setdefault(rep, [0, 0])
         rec[1] += 1

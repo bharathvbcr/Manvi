@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements all 23 DevCouncil development tools natively in Go and Rust. Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 tools**, as reported by `manvi tools`: 40 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one bridge to the external DevCouncil CLI, and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -14,6 +14,17 @@ MANVI implements all 23 DevCouncil development tools natively in Go and Rust. Un
 | **Override Seam** | 1 | Request audited Human or Agent overrides for soft policy denials. |
 | **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
 | **Code Graph & Navigation** | 3 | Query AST symbol definitions, detect dead code, and analyze blast radii. |
+| **Git Integration** | 6 | Structured version-control reads (status, log, branches, show) plus gate-arbitrated staging and committing. |
+| **External CLI Bridge** | 1 | Read-only queries against the incumbent `dev`/`devcouncil` CLI's project-level views. |
+| **Tool Discovery & Activation** | 2 | Search the registry by capability and pull tools or whole groups into the model's active context. |
+| **Sub-Agent Management** | 4 | Define, invoke, message, and terminate specialized sub-agents by conversation ID. |
+| **Artifacts** | 3 | Create, list, and revise persistent structured artifacts under `.devcouncil/artifacts/`. |
+| **Interactive Questions** | 1 | Ask the operator to resolve underspecified requirements or pick between options. |
+| **MCP 2.0 & Open Plugins** | 4 | List and call tools, and list and read resources, on external MCP servers over stateless JSON-RPC. |
+
+The thirteen rows above sum to the 44 tools `manvi tools` reports.
+
+**Specification coverage is not yet complete.** The first eight categories (30 tools) have full parameter and permission specifications in this document. The last five (14 tools — `devcouncil_search_tools`, `devcouncil_activate_tools`, `devcouncil_define_subagent`, `devcouncil_invoke_subagent`, `devcouncil_manage_subagents`, `devcouncil_send_message`, `devcouncil_create_artifact`, `devcouncil_list_artifacts`, `devcouncil_update_artifact`, `devcouncil_ask_question`, `mcp_list_tools`, `mcp_call_tool`, `mcp_list_resources`, `mcp_read_resource`) are registered in `manvi/devcouncil/` and dispatch normally, but are not written up below. Run `manvi tools` for their live schemas until they are.
 
 ---
 
@@ -81,6 +92,27 @@ MANVI implements all 23 DevCouncil development tools natively in Go and Rust. Un
 | `devcouncil_graph_query` | Read-only | `symbol` (string), `kind` (string, optional) | Searches AST symbol definitions and references with file paths and line spans. |
 | `devcouncil_code_dead` | Read-only | `path` (string, optional) | Identifies callerless dead code functions and structs with exemption annotations. |
 | `devcouncil_graph_context` | Read-only | `path` (string) | Performs blast-radius analysis: lists incoming callers and outgoing dependencies. |
+
+---
+
+### 7. Git Integration Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_git_status` | Read-only | *None* | Reports branch, HEAD, ahead/behind, and individually enumerated staged/unstaged/untracked files (`-uall`, NUL-safe parsing for awkward filenames). |
+| `devcouncil_git_log` | Read-only | `max` (int, optional; default 10, capped 50) | Lists recent commits with hash, author, ISO date, and subject. |
+| `devcouncil_git_branches` | Read-only | *None* | Lists local branches with the current one marked. |
+| `devcouncil_git_show` | Read-only | `object` (string, optional; default HEAD) | Shows one commit's metadata and patch; the patch is size-capped with the truncation reported. Object arguments are validated against option injection. |
+| `devcouncil_git_stage` | Write | `paths` (array of strings) | Stages named paths through the command policy gate — the same ladder as `devcouncil_exec_command`. Secret-path matches are refused as hard denials under every posture. |
+| `devcouncil_git_commit` | Write | `message` (string), `allow_empty` (bool, optional) | Commits the staged set through the command policy gate; re-checks the index against secret-path patterns at commit time and returns the new HEAD on success. |
+
+---
+
+### 8. External CLI Bridge Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Queries the incumbent `dev`/`devcouncil` CLI over JSON (`MANVI_DEVCOUNCIL_BINARY` overrides discovery). `check` always runs the deterministic evidence gate (`--verify`), never the LLM audit; non-JSON output is returned labelled as degraded, never parsed as structure. |
 
 ---
 

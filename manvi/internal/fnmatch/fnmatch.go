@@ -170,9 +170,16 @@ func translate(pattern string) string {
 
 // charClass parses a [...] set starting at runes[open], returning the regexp
 // equivalent and the index of the closing bracket.
+//
+// Only a leading '!' negates. A leading '^' is an ordinary member of the set:
+// that is what CPython's fnmatch does — translate('[^a]') yields [\^a], a
+// literal set {^, a} — and these two planes are pinned to that behaviour, not
+// to shell intuition. Treating '^' as negation made the two halves of the
+// write gate disagree with the incumbent about exactly which paths a [^…]
+// pattern named, in opposite directions.
 func charClass(runes []rune, open int) (string, int, bool) {
 	i := open + 1
-	if i < len(runes) && (runes[i] == '!' || runes[i] == '^') {
+	if i < len(runes) && runes[i] == '!' {
 		i++
 	}
 	// A ']' immediately after the (negated) opening is a literal.
@@ -187,9 +194,8 @@ func charClass(runes []rune, open int) (string, int, bool) {
 	}
 
 	body := string(runes[open+1 : i])
-	negated := false
-	if strings.HasPrefix(body, "!") || strings.HasPrefix(body, "^") {
-		negated = true
+	negated := strings.HasPrefix(body, "!")
+	if negated {
 		body = body[1:]
 	}
 	if body == "" {

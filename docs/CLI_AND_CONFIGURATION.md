@@ -20,7 +20,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Task Lease Release** | `manvi lease release TASK TOKEN` | Atomically relinquish a held task lease using its cryptographic token. |
 | **Policy Pre-Check** | `manvi check PATH [--task ID]` | Probe write gate policy for a file path without touching the filesystem; outputs decision, fired rules, and explanation. |
 | **Human Override** | `manvi allow PATH --reason TEXT` | Record an audited human grant in the ledger to unblock a soft policy denial. |
-| **Native Tools List** | `manvi tools` | List all 37 native DevCouncil tools and their parameter schemas. |
+| **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |

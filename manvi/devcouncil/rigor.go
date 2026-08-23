@@ -20,6 +20,10 @@ import (
 type rigorClient struct {
 	Binary  string
 	Timeout time.Duration
+	// Root is the repository root, passed to the verifier so absolute LCOV
+	// paths (llvm-cov and grcov emit those) reduce to the repo-relative form
+	// the diff uses. Without it every such file reported as unmeasured.
+	Root string
 }
 
 // Finding is one rigor result.
@@ -58,7 +62,12 @@ type rigorResult struct {
 
 // maxRigorOutput bounds the reply. Findings are one per added line at worst, so
 // a large but legitimate result is possible; an unbounded read is not.
-const maxRigorOutput = 16 << 20
+const (
+	maxRigorOutput = 16 << 20
+	// maxPatchReadBytes bounds how large a file patchFile will pull into
+	// memory for a read-modify-write.
+	maxPatchReadBytes = 64 << 20
+)
 
 // run feeds a diff to the verifier and returns its findings.
 //
@@ -82,26 +91,34 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	if coverage != "" {
 		args = append(args, "--coverage", coverage)
 	}
+	if c.Root != "" {
+		args = append(args, "--root", c.Root)
+	}
 	cmd := exec.CommandContext(ctx, c.Binary, args...)
 	cmd.Stdin = strings.NewReader(diff)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	// Capped during the copy, not checked after it: a verifier gone rogue on
+	// a large diff used to be able to allocate the whole result before the
+	// bound was ever consulted. Same shape as the store boundary's
+	// cappedBuffer.
+	stdout := &cappedRigorBuffer{limit: maxRigorOutput}
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 	// The same bound as the store boundary: killing the process does not
 	// unblock Wait while a child holds the stdout pipe.
 	cmd.WaitDelay = 2 * time.Second
 
 	runErr := cmd.Run()
-	if stdout.Len() > maxRigorOutput {
+	if stdout.overflow {
 		return nil, fmt.Errorf("verifier produced more than %d bytes", maxRigorOutput)
 	}
 
 	var out rigorResult
-	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &out); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.buf.Bytes()), &out); err != nil {
 		if runErr != nil {
 			return nil, fmt.Errorf("verifier failed: %w (stderr: %s)", runErr, bytes.TrimSpace(stderr.Bytes()))
 		}
-		return nil, fmt.Errorf("verifier returned unparseable output: %w (%q)", err, stdout.String())
+		return nil, fmt.Errorf("verifier returned unparseable output: %w (%q)", err, stdout.buf.String())
 	}
 	if !out.OK {
 		reason := out.Error
@@ -259,4 +276,31 @@ func gapsFrom(taskID string, result *rigorResult, enforceCoverage bool) ([]Gap, 
 	}
 
 	return gaps, actions
+}
+
+// cappedRigorBuffer collects up to a limit and then records that it stopped,
+// so a runaway verifier is a reported condition rather than an allocation the
+// harness pays for before it ever looks at the result. Deliberately its own
+// type rather than an import of the store client's: one boundary's transport
+// detail is not another's API.
+type cappedRigorBuffer struct {
+	buf      bytes.Buffer
+	limit    int
+	overflow bool
+}
+
+func (b *cappedRigorBuffer) Write(p []byte) (int, error) {
+	if remaining := b.limit - b.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			b.buf.Write(p[:remaining])
+			b.overflow = true
+		} else {
+			b.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.overflow = true
+	}
+	// Always report a full write: returning short would make the copier treat
+	// this as an I/O failure and mask the real diagnostic.
+	return len(p), nil
 }

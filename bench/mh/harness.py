@@ -15,6 +15,7 @@ from .tools import Sandbox, ToolError, cap_output
 ENVBOOT_TIMEOUT_S = 15
 WALL_S_DEFAULT = 1800          # episode fail line; 30 minutes
 HTTP_TIMEOUT_S = 1800          # per-request cap; harness shrinks this to remaining wall
+FIRST_TURN_TIMEOUT_S = 600     # wedged llama-server never returns; real first turn is 1–3 min
 
 
 class Config:
@@ -266,6 +267,8 @@ class Harness:
                 if wall > 0 and hasattr(self.client, "timeout"):
                     remaining = wall - elapsed
                     cap = getattr(self.client, "http_timeout", HTTP_TIMEOUT_S)
+                    if self.res.steps == 0:
+                        cap = min(int(cap), int(FIRST_TURN_TIMEOUT_S))
                     self.client.timeout = max(1, min(int(cap), int(remaining)))
                 self.res.steps += 1
                 reply = self.client.chat(msgs, tools=toolmod.schemas_for(self.cfg.nativetools))

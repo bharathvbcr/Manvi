@@ -1,8 +1,8 @@
 #!/bin/bash
-# Qwen ‖ Ornith on the GH200. Pass/fail and tokens are the metrics; wall-clock
-# is not. --share-gpu keeps both weights resident (one peer). Each arm is a
-# separate grid.py so two decode streams can overlap. Skip-existing, so a
-# mid-ladder restart does not redo finished episodes.
+# Sole-tenant expansion. Qwen+Ornith share-gpu starved Qwen (0-token 30 min
+# timeouts). Ornith one-offs already on disk are kept. Qwen starved cells are
+# re-run with --force-starved and no --share-gpu. Frozen full/baseline is
+# sequential, one model at a time.
 set -euo pipefail
 cd "$(dirname "$0")"
 PYTHON="${PYTHON:-python3}"
@@ -11,8 +11,6 @@ LOG="results/expand-${TAG}.log"
 QWEN="qwen3.8:27b"
 ORNITH="hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0"
 ONE_OFF="no-verifygate,no-envboot,no-checklist,no-loopbreak,no-outcap,no-groundfs,no-nativetools"
-# One-shot: Qwen cells whose episodes are the 300s HTTP-timeout artefact.
-QWEN_FORCE_CONFIGS="${QWEN_FORCE_CONFIGS:-}"
 mkdir -p results
 
 arm_log() {
@@ -26,29 +24,19 @@ run_arm() {
   shift 2
   local slog
   slog="$(arm_log "$model")"
-  echo "[expand] $(date -u +%Y-%m-%dT%H:%M:%SZ) arm=$model configs=$configs $*" | tee -a "$LOG" "$slog"
-  $PYTHON grid.py --tag "$TAG" --hard --max-steps 0 --max-wall 1800 --share-gpu \
+  echo "[expand] $(date -u +%Y-%m-%dT%H:%M:%SZ) SOLE_TENANT arm=$model configs=$configs $*" | tee -a "$LOG" "$slog"
+  $PYTHON grid.py --tag "$TAG" --hard --max-steps 0 --max-wall 1800 \
     --models "$model" --configs "$configs" --repeats 5 --seed 0 "$@" \
     2>&1 | tee -a "$slog" | tee -a "$LOG"
 }
 
-echo "[expand] $(date -u +%Y-%m-%dT%H:%M:%SZ) PARALLEL share-gpu qwen || ornith tag=$TAG" | tee -a "$LOG"
+echo "[expand] $(date -u +%Y-%m-%dT%H:%M:%SZ) sole-tenant recovery tag=$TAG" | tee -a "$LOG"
 
-run_arm "$ORNITH" "$ONE_OFF" &
-pid_o=$!
-if [ -n "$QWEN_FORCE_CONFIGS" ]; then
-  echo "[expand] forcing Qwen configs: $QWEN_FORCE_CONFIGS" | tee -a "$LOG"
-  run_arm "$QWEN" "$QWEN_FORCE_CONFIGS" --force
-fi
-run_arm "$QWEN" "$ONE_OFF" &
-pid_q=$!
-fail=0
-wait "$pid_q" || fail=1
-wait "$pid_o" || fail=1
-if [ "$fail" -ne 0 ]; then
-  echo "[expand] one-off grid failed" | tee -a "$LOG"
-  exit 1
-fi
+# Ornith one-offs: skip complete clean cells.
+run_arm "$ORNITH" "$ONE_OFF"
+
+# Qwen: rewrite only 0-token timeout artefacts; keep verifygate/envboot.
+run_arm "$QWEN" "$ONE_OFF" --force-starved
 
 for d in \
   qwen3.8_27b__full__hard \
@@ -62,17 +50,12 @@ do
   fi
 done
 
-run_arm "$QWEN" "full,baseline" --force &
-pid_q=$!
-run_arm "$ORNITH" "full,baseline" --force &
-pid_o=$!
-fail=0
-wait "$pid_q" || fail=1
-wait "$pid_o" || fail=1
-if [ "$fail" -ne 0 ]; then
-  echo "[expand] forced full/baseline failed" | tee -a "$LOG"
-  exit 1
-fi
+# Sequential so Qwen is never on the GPU with Ornith resident.
+echo "[expand] $(date -u +%Y-%m-%dT%H:%M:%SZ) restarting ollama before frozen full/baseline" | tee -a "$LOG"
+sudo -n systemctl restart ollama || true
+sleep 8
+run_arm "$ORNITH" "full,baseline" --force
+run_arm "$QWEN" "full,baseline" --force
 
 $PYTHON compare.py --tag "$TAG" --json-out "results/stats-${TAG}.json" 2>&1 | tee -a "$LOG"
 $PYTHON figures.py "results/stats-${TAG}.json" 2>&1 | tee -a "$LOG"

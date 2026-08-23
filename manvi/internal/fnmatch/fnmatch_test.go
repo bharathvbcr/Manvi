@@ -81,3 +81,28 @@ func TestMatchAny(t *testing.T) {
 		t.Fatal("MatchAny matched an unrelated path")
 	}
 }
+
+// TestCaretInClassIsLiteralNotNegation pins CPython's semantics: only a
+// leading '!' negates, and translate('[^a]') is the literal set {^, a}. Both
+// planes once negated on '^', which made them disagree with the incumbent
+// about which paths a [^…] rule named — in opposite directions.
+func TestCaretInClassIsLiteralNotNegation(t *testing.T) {
+	tests := []struct {
+		pattern string
+		name    string
+		want    bool
+	}{
+		{"[^a]", "b", false}, // literal set {^, a} does not contain b
+		{"[^a]", "^", true},  // ^ is a member
+		{"[^a]", "a", true},
+		{"[!a]", "b", true},  // ! still negates
+		{"[!a]", "a", false}, //
+		{"[^abc]", "^", true},
+		{".env[^1]", ".env2", false},
+	}
+	for _, tc := range tests {
+		if got := Match(tc.pattern, tc.name); got != tc.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
+		}
+	}
+}

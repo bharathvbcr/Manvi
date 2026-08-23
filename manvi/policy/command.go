@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -76,7 +77,12 @@ type CommandGate struct {
 	HardRules bool
 }
 
-// EvaluateCommand walks DevCouncil's command ladder.
+// maxSubstitutionDepth bounds the recursion into command-substitution
+// contents. Each level judges strictly less text than its parent, so the cap
+// is unreachable except by adversarial input — and adversarial input is
+// exactly what gets refused rather than recursed into forever.
+const maxSubstitutionDepth = 8
+
 // EvaluateCommand walks DevCouncil's command ladder.
 //
 // Git safety runs first and unconditionally. In the Python engine the two
@@ -87,11 +93,15 @@ type CommandGate struct {
 // git-safety outcome is a denial or a warning, never an allow that skips the
 // allowlist below.
 func (g CommandGate) EvaluateCommand(command string, task *dc.Task) Decision {
+	return g.evaluate(command, task, 0)
+}
+
+func (g CommandGate) evaluate(command string, task *dc.Task, depth int) Decision {
 	parts := SplitCommandChain(command)
 	if len(parts) > 1 {
 		var warnDecision *Decision
 		for _, part := range parts {
-			d := g.evaluateSingleCommand(part, task)
+			d := g.evaluateSingleCommand(part, task, depth)
 			if d.Action == Deny {
 				return d
 			}
@@ -108,10 +118,10 @@ func (g CommandGate) EvaluateCommand(command string, task *dc.Task) Decision {
 		}
 		return g.noteHardRules(allow("Compound command allowed.", command, taskID))
 	}
-	return g.evaluateSingleCommand(command, task)
+	return g.evaluateSingleCommand(command, task, depth)
 }
 
-func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task) Decision {
+func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth int) Decision {
 	raw := collapseSpaces(command)
 	normalized := NormalizeAllowlistCommand(command)
 	taskID := ""
@@ -121,6 +131,45 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task) Decisi
 
 	if normalized == "" {
 		return g.noteHardRules(deny(RuleCommandEmpty, "Empty command is not allowed.", command, taskID))
+	}
+
+	// A live substitution or a heredoc carries code this ladder cannot read:
+	// an allowlist entry matched against the surrounding line never judged
+	// what `sh -c` would actually execute inside it. Substitution contents are
+	// extracted and run through this same gate — so `echo $(date)` is judged
+	// as both echo and date — and anything the scanner cannot bound is refused
+	// outright rather than guessed at. A heredoc body is expanded data with no
+	// reliable static end, so it has no extraction path and is refused.
+	if hasHeredoc(raw) {
+		return g.noteHardRules(deny(RuleCommandHeredoc,
+			"Heredocs carry expanded data with no statically checkable end and are not allowed; "+
+				"write the content to a file instead.", normalized, taskID))
+	}
+	spans, subErr := liveSubstitutions(raw)
+	switch {
+	case subErr != nil:
+		return g.noteHardRules(deny(RuleCommandSubstitution,
+			"Command substitution could not be analysed to its end and is not allowed; "+
+				"rewrite without $(), backticks, <() or >().", normalized, taskID))
+	case len(spans) > 0 && depth >= maxSubstitutionDepth:
+		return g.noteHardRules(deny(RuleCommandSubstitution,
+			"Command substitution nested beyond the analysis limit is not allowed; "+
+				"run the inner commands separately.", normalized, taskID))
+	case len(spans) > 0:
+		var warnDecision *Decision
+		for _, span := range spans {
+			d := g.evaluate(span, task, depth+1)
+			if d.Action == Deny {
+				return g.noteHardRules(deny(RuleCommandSubstitution,
+					fmt.Sprintf("Substituted command was denied: %s", d.Reason), normalized, taskID))
+			}
+			if d.Action == Warn && warnDecision == nil {
+				warnDecision = &d
+			}
+		}
+		if warnDecision != nil {
+			return *warnDecision
+		}
 	}
 
 	if g.HardRules {
@@ -163,8 +212,12 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task) Decisi
 		"Command is not in task or global allowlists.", normalized, task.ID))
 }
 
-// SplitCommandChain splits a shell command line on &&, ||, ;, and | operators,
-// respecting single and double quotes.
+// SplitCommandChain splits a shell command line on &&, ||, ;, |, a lone &,
+// and unquoted newlines — every operator sh treats as a command boundary.
+// Respecting single and double quotes. A boundary the splitter misses is a
+// second command hidden inside one string the gate judges once, so anything
+// the shell could read as "start another command" splits here; splitting too
+// much costs nothing, because each part is judged on its own merits anyway.
 func SplitCommandChain(command string) []string {
 	var parts []string
 	var cur strings.Builder
@@ -198,6 +251,37 @@ func SplitCommandChain(command string) []string {
 			cur.Reset()
 		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
 			i++
+			if s := strings.TrimSpace(cur.String()); s != "" {
+				parts = append(parts, s)
+			}
+			cur.Reset()
+		case r == '&':
+			// sh reads '&' as a control operator except where it completes a
+			// redirection: `2>&1` and `>&2` duplicate descriptors, and `&>` /
+			// `&>>` are themselves redirections. Those stay text. Anything
+			// else — backgrounding, with or without a trailing space — is a
+			// command boundary, because the backgrounded job runs just the
+			// same.
+			if i > 0 && runes[i-1] == '>' {
+				cur.WriteRune(r)
+				break
+			}
+			if i+1 < len(runes) && runes[i+1] == '>' {
+				cur.WriteRune('&')
+				cur.WriteRune('>')
+				i++
+				if i+1 < len(runes) && runes[i+1] == '>' {
+					cur.WriteRune('>')
+					i++
+				}
+				break
+			}
+			if s := strings.TrimSpace(cur.String()); s != "" {
+				parts = append(parts, s)
+			}
+			cur.Reset()
+		case r == '\n' || r == '\r':
+			// An unquoted newline is sh's statement separator.
 			if s := strings.TrimSpace(cur.String()); s != "" {
 				parts = append(parts, s)
 			}
@@ -242,23 +326,43 @@ func GitSafety(command string) Decision {
 }
 
 // gitSafety returns the git-safety verdict and whether any rule fired.
+//
+// The rules are matched against the line as normalised *and* against a
+// dequoted reading of it. Quoting is how sh hides characters from word
+// splitting while still concatenating them into one argument, so
+// `--no-'v'erify` reaches git as `--no-verify` and `git "reset" --hard` as an
+// ordinary reset — a check that only reads the raw text is bypassed by
+// exactly the commands worth catching. Checking both readings costs at most a
+// false positive on a command that merely prints forbidden text, which is the
+// safe direction for this rung.
 func gitSafety(normalized, taskID string) (Decision, bool) {
-	lowered := strings.ToLower(normalized)
+	variants := []string{normalized}
+	if dq := shellDequote(normalized); dq != normalized {
+		variants = append(variants, dq)
+	}
+	for _, variant := range variants {
+		if d, fired := gitSafetyVariant(strings.ToLower(variant), taskID); fired {
+			return d, true
+		}
+	}
+	return Decision{}, false
+}
 
+func gitSafetyVariant(lowered, taskID string) (Decision, bool) {
 	if strings.Contains(lowered, "--no-verify") || strings.Contains(lowered, "--no-gpg-sign") {
-		return deny(RuleCommandBypassFlag, "Verification bypass flags are not allowed.", normalized, taskID), true
+		return deny(RuleCommandBypassFlag, "Verification bypass flags are not allowed.", lowered, taskID), true
 	}
 	if hardResetProtectedRe.MatchString(lowered) {
-		return deny(RuleCommandProtectedReset, "Protected branch hard resets are not allowed.", normalized, taskID), true
+		return deny(RuleCommandProtectedReset, "Protected branch hard resets are not allowed.", lowered, taskID), true
 	}
 	// The refspec form (`git push origin +HEAD:master`) forces a
 	// non-fast-forward update without carrying --force.
 	if forcePushFlagRe.MatchString(lowered) || forcePushPlusRefspecRe.MatchString(lowered) {
-		return deny(RuleCommandForcePush, "Force pushes are not allowed.", normalized, taskID), true
+		return deny(RuleCommandForcePush, "Force pushes are not allowed.", lowered, taskID), true
 	}
 	if protectedBranchPushRe.MatchString(lowered) {
 		return warn(RuleCommandProtectedPush,
-			"Direct pushes to protected branches should go through verification gates.", normalized, taskID), true
+			"Direct pushes to protected branches should go through verification gates.", lowered, taskID), true
 	}
 	return Decision{}, false
 }
@@ -268,6 +372,370 @@ func (g CommandGate) noteHardRules(d Decision) Decision {
 		d.Degraded = append(d.Degraded, "policy.hard_rules.disabled")
 	}
 	return d
+}
+
+// liveSubstitutions returns the inner text of every command substitution sh
+// would execute in this line: $( … ), a legacy backtick span, and the process
+// substitutions <( … ) and >( … ).
+//
+// Substitutions inside single quotes are data; inside double quotes they are
+// live, which is why the quote state is tracked here rather than delegated to
+// a pre-pass. Arithmetic expansions `$(( … ))` are skipped whole: they expand
+// variables but cannot execute commands. An unterminated span is an error,
+// not an empty list — a scanner that lost track of where code ends must
+// refuse rather than guess.
+func liveSubstitutions(command string) ([]string, error) {
+	var spans []string
+	runes := []rune(command)
+	n := len(runes)
+	quote := rune(0)
+	i := 0
+	for i < n {
+		r := runes[i]
+		switch {
+		case (quote == 0 || quote == '"') && r == '\\' && i+1 < n && quote != '\'':
+			i += 2
+		case quote == 0 && r == '\'':
+			quote = '\''
+			i++
+		case quote == '\'' && r == '\'':
+			quote = 0
+			i++
+		case quote == 0 && r == '"':
+			quote = '"'
+			i++
+		case quote == '"' && r == '"':
+			quote = 0
+			i++
+		case quote == '\'':
+			i++
+		case r == '`':
+			end := -1
+			for j := i + 1; j < n; j++ {
+				if runes[j] == '`' {
+					end = j
+					break
+				}
+				if runes[j] == '\\' {
+					j++
+				}
+			}
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated backtick substitution")
+			}
+			spans = append(spans, string(runes[i+1:end]))
+			i = end + 1
+		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
+			next, ok := skipArithmetic(runes, i)
+			if !ok {
+				return nil, fmt.Errorf("unterminated arithmetic expansion")
+			}
+			i = next
+		case r == '$' && i+1 < n && runes[i+1] == '(':
+			text, next, err := scanParenSpan(runes, i+1)
+			if err != nil {
+				return nil, err
+			}
+			spans = append(spans, text)
+			i = next
+		case (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
+			text, next, err := scanParenSpan(runes, i+1)
+			if err != nil {
+				return nil, err
+			}
+			spans = append(spans, text)
+			i = next
+		default:
+			i++
+		}
+	}
+	return spans, nil
+}
+
+// scanParenSpan reads from the opening parenthesis at position open to its
+// matching close, honouring nested parentheses and quoted spans within the
+// substitution. It returns the inner text and the index one past the closing
+// parenthesis.
+func scanParenSpan(runes []rune, open int) (string, int, error) {
+	depth := 0
+	quote := rune(0)
+	for j := open; j < len(runes); j++ {
+		r := runes[j]
+		switch {
+		case quote == '\'' && r == '\'':
+			quote = 0
+		case quote == '"' && r == '"':
+			quote = 0
+		case quote != 0:
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+			if depth == 0 {
+				return string(runes[open+1 : j]), j + 1, nil
+			}
+		}
+	}
+	return "", 0, fmt.Errorf("unterminated $( substitution")
+}
+
+// skipArithmetic consumes a $(( … )) span and returns the index one past it.
+// The two-paren form is recognised up front; anything that does not close as
+// arithmetic is reported so the caller can refuse rather than misparse.
+func skipArithmetic(runes []rune, start int) (int, bool) {
+	depth := 0
+	for j := start; j < len(runes); j++ {
+		switch runes[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return j + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// hasHeredoc reports whether the command carries a heredoc introducer outside
+// quotes. A heredoc body undergoes expansion yet has no statically checkable
+// end — the terminator is whatever word the author chose on some following
+// line — so no extraction is attempted; the construct is refused instead.
+// Arithmetic contexts are skipped so `$((a << 2))` is not misread as one.
+func hasHeredoc(command string) bool {
+	runes := []rune(command)
+	n := len(runes)
+	quote := rune(0)
+	i := 0
+	for i < n {
+		r := runes[i]
+		switch {
+		case quote == 0 && r == '\\':
+			i += 2
+		case quote == 0 && r == '\'':
+			quote = '\''
+			i++
+		case quote == '\'' && r == '\'':
+			quote = 0
+			i++
+		case quote == 0 && r == '"':
+			quote = '"'
+			i++
+		case quote == '"' && r == '"':
+			quote = 0
+			i++
+		case quote != 0:
+			i++
+		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
+			next, ok := skipArithmetic(runes, i)
+			if !ok {
+				return false // malformed arithmetic; the substitution rung refuses it
+			}
+			i = next
+		case r == '<' && i+1 < n && runes[i+1] == '<':
+			return true
+		default:
+			i++
+		}
+	}
+	return false
+}
+
+// shellDequote removes quote characters the way sh concatenates their content:
+// '…' contributes literally, "…" contributes everything except the quotes and
+// escapes, and an escaped character contributes itself. An unterminated quote
+// contributes the rest of the line as data. The result is what the shell would
+// hand a single command after quote removal — the reading safety rules must
+// also see, because quoting exists precisely to hide characters from naive
+// substring checks.
+func shellDequote(s string) string {
+	var b strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch r {
+		case '\\':
+			if i+1 < len(runes) {
+				b.WriteRune(runes[i+1])
+				i++
+			}
+		case '\'':
+			// Scan for the closing quote in rune space. IndexRune on a
+			// re-encoded substring returns a BYTE offset, and mixing the two
+			// desyncs on the first multibyte character — found by the chain
+			// fuzzer as a slice-bounds panic on input like 'ααααααα'.
+			close := -1
+			for j := i + 1; j < len(runes); j++ {
+				if runes[j] == '\'' {
+					close = j
+					break
+				}
+			}
+			if close < 0 {
+				b.WriteString(string(runes[i+1:]))
+				return b.String()
+			}
+			b.WriteString(string(runes[i+1 : close]))
+			i = close
+		case '"':
+			j := i + 1
+			for ; j < len(runes); j++ {
+				if runes[j] == '\\' && j+1 < len(runes) && (runes[j+1] == '"' || runes[j+1] == '\\') {
+					b.WriteRune(runes[j+1])
+					j++
+					continue
+				}
+				if runes[j] == '"' {
+					break
+				}
+				b.WriteRune(runes[j])
+			}
+			if j >= len(runes) {
+				return b.String()
+			}
+			i = j
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// RedirectTargets returns every file an output redirection in this command
+// would write: the targets of >, >>, &>, >& and their fd-prefixed forms.
+// Input redirections (<) are reads, which this ladder does not gate, and a
+// heredoc introducer (<<) is not a path at all; neither is returned.
+//
+// The second return value reports whether a target could not be resolved to a
+// literal path — it carries an expansion ($HOME, ${VAR}, ~) whose value only
+// the shell knows. A target the gate cannot name is a write it cannot judge,
+// so the caller must treat that as a refusal rather than skip the check.
+//
+// Matching strips trailing redirections so patterns like "dev map *" stay
+// single-clause, which is exactly why the executed form has to be re-read
+// here: the string that matched is not the string that runs.
+func RedirectTargets(command string) ([]string, bool, error) {
+	var targets []string
+	opaque := false
+	runes := []rune(command)
+	n := len(runes)
+	quote := rune(0)
+	i := 0
+	readTarget := func(start int) (string, int, error) {
+		j := start
+		for j < n && runes[j] == ' ' {
+			j++
+		}
+		if j >= n {
+			return "", 0, fmt.Errorf("redirection with no target")
+		}
+		if runes[j] == '&' || (runes[j] >= '0' && runes[j] <= '9') && j+1 < n && runes[j+1] == '&' {
+			// >&N / &N — dup to a descriptor, not a path.
+			for j < n && runes[j] != ' ' {
+				j++
+			}
+			return "", j, nil
+		}
+		var b strings.Builder
+		q := rune(0)
+		for j < n {
+			r := runes[j]
+			if q == 0 && r == '\\' && j+1 < n {
+				b.WriteRune(runes[j+1])
+				j += 2
+				continue
+			}
+			if q == 0 && (r == '\'' || r == '"') {
+				q = r
+				j++
+				continue
+			}
+			if q != 0 && r == q {
+				q = 0
+				j++
+				continue
+			}
+			if q == 0 && (r == ' ' || r == '\n' || r == ';' || r == '|' || r == '&') {
+				break
+			}
+			b.WriteRune(r)
+			j++
+		}
+		return b.String(), j, nil
+	}
+	for i < n {
+		r := runes[i]
+		switch {
+		case quote == 0 && r == '\\':
+			i += 2
+		case quote == 0 && r == '\'':
+			quote = '\''
+			i++
+		case quote == '\'' && r == '\'':
+			quote = 0
+			i++
+		case quote == 0 && r == '"':
+			quote = '"'
+			i++
+		case quote == '"' && r == '"':
+			quote = 0
+			i++
+		case quote != 0:
+			i++
+		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
+			next, ok := skipArithmetic(runes, i)
+			if !ok {
+				return nil, false, fmt.Errorf("unterminated arithmetic expansion")
+			}
+			i = next
+		case r == '$' && i+1 < n && runes[i+1] == '(':
+			_, next, err := scanParenSpan(runes, i+1)
+			if err != nil {
+				return nil, false, err
+			}
+			i = next
+		case r == '<' && i+1 < n && runes[i+1] == '<':
+			// Heredoc introducer or herestring; not an output path.
+			i += 2
+		case r == '>' || (r >= '0' && r <= '9' && i+1 < n && runes[i+1] == '>'):
+			fdStart := i
+			for i < n && runes[i] >= '0' && runes[i] <= '9' {
+				i++
+			}
+			if i >= n || runes[i] != '>' {
+				i = fdStart + 1
+				continue
+			}
+			i++                           // consume '>'
+			if i < n && runes[i] == '>' { // append form >>
+				i++
+			} else if i < n && runes[i] == '&' { // >&N duplicates descriptors
+				i++
+				for i < n && runes[i] >= '0' && runes[i] <= '9' {
+					i++
+				}
+				continue
+			}
+			target, next, err := readTarget(i)
+			if err != nil {
+				return nil, false, err
+			}
+			if strings.ContainsAny(target, "$~") {
+				opaque = true
+			} else if target != "" {
+				targets = append(targets, target)
+			} else {
+				opaque = true
+			}
+			i = next
+		default:
+			i++
+		}
+	}
+	return targets, opaque, nil
 }
 
 // NormalizeAllowlistCommand collapses the forms an allowlist would otherwise

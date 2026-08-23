@@ -429,10 +429,27 @@ func writeAtomic(path, content string, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
+	// Sync before publish: without this a crash right after the rename can
+	// leave the file present but empty — the exact truncated-.gitignore state
+	// that silently disables the rules it carries. The session store's
+	// link-and-sync protocol is the reference here.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	// And sync the directory: syncing the file puts its bytes on disk; only
+	// the directory sync guarantees the NAME is there after a crash.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // Rules lists every managed rule, sorted. It exists for the tests and for any

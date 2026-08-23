@@ -204,7 +204,7 @@ func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry)
 	// what the model receives is what the log says — see agent/compaction.go
 	// for why that is load-bearing rather than tidy.
 	if b != nil {
-		_, _ = bus.OnWaterfall(b, func(e PreStep, next bus.Next[PreStep]) PreStep {
+		if _, err := bus.OnWaterfall(b, func(e PreStep, next bus.Next[PreStep]) PreStep {
 			messages, err := l.compact(e.Messages)
 			if err != nil {
 				e.Reject = err
@@ -212,7 +212,13 @@ func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry)
 			}
 			e.Messages = messages
 			return next(e)
-		})
+		}); err != nil {
+			// A compaction stage that failed to register is a turn that will
+			// overflow its window with nothing standing in the way — and no
+			// error anywhere saying why. Registration is construction work;
+			// it fails loudly here or not at all.
+			return nil, fmt.Errorf("agent: registering compaction: %w", err)
+		}
 	}
 
 	return l, nil
@@ -264,7 +270,9 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 	plan := PlanCompactionCalibrated(messages, l.cfg.SystemPrompt, schemas, l.Budget(), already, &l.calib)
 	if plan.Empty() {
 		if plan.Insufficient {
-			l.reportOverflow(plan)
+			if err := l.reportOverflow(plan); err != nil {
+				return nil, err
+			}
 			l.overflowed = true
 		}
 		return messages, nil
@@ -278,7 +286,9 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 		return nil, err
 	}
 	if plan.Insufficient {
-		l.reportOverflow(plan)
+		if err := l.reportOverflow(plan); err != nil {
+			return nil, err
+		}
 	}
 
 	// Re-derive rather than patching in place. The projection is the only
@@ -296,12 +306,19 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 // helper that has no Outcome in hand, and inventing a return value for it would
 // put the signal on a path that three callers would each have to remember to
 // propagate — which is how it came to be unreported in the first place.
-func (l *Loop) reportOverflow(plan CompactionPlan) {
-	_, _ = l.log.Append(session.ContextOverflow, session.OverflowData{
+// reportOverflow records that history still exceeds the window after
+// compaction. It is an event rather than an error: the turn can still be
+// attempted, and the server's own refusal is more informative than a
+// helper that has no Outcome in hand. The Append's own failure, though, is
+// returned: a durable record that silently failed to write is exactly the
+// "must not happen silently" this function exists for.
+func (l *Loop) reportOverflow(plan CompactionPlan) error {
+	_, err := l.log.Append(session.ContextOverflow, session.OverflowData{
 		EstimatedTokens: plan.After,
 		Threshold:       l.Budget().Threshold(),
 		ContextWindow:   l.Budget().ContextWindow,
 	})
+	return err
 }
 
 // mergeDecoding accumulates compensation flags across a turn.
@@ -682,6 +699,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 			if _, err := l.log.Append(session.NullResponseRetried, session.NullResponseData{
 				Step: step, Attempt: nullRetries, Of: maxNullRetries,
 			}); err != nil {
+				return out, err
+			}
+			// The step is over even though the turn continues: leaving its
+			// start unclosed made every retried response dangle a step/start
+			// in the durable log for the TUI projector, the invariant check,
+			// and resume to trip over.
+			if _, err := l.log.Append(session.StepEnd, nil); err != nil {
 				return out, err
 			}
 			continue

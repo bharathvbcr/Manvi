@@ -31,6 +31,12 @@ PATTERNS = [
     "src/legacy/**",
     "a[bc]d",
     "a[!bc]d",
+    # CPython negates only on '!': '[^…]' is a literal set containing '^'.
+    # Both ports once negated on it, which made them disagree with the
+    # incumbent about which paths such a rule named.
+    "[^a]x",
+    ".env[^1]",
+    "f[^a-c]o",
     "x?z",
     "[]]a",
     "**/secrets/**",

@@ -16,7 +16,9 @@ from mh.bench import load_tasks
 from mh.compute import Sampler, tok_s
 from mh.harness import Config, Harness
 from mh.model import Client
-from mh.runtime import ensure_sole_tenant
+from mh.runtime import (STARVE_ABORT_DEFAULT, ensure_sole_tenant,
+                        is_starved_episode, keep_existing_episode,
+                        should_retry_starved, unstick_server, unload_all)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results")
@@ -75,6 +77,11 @@ def main():
                     help="allow one peer model on this GPU (GH200 Qwen+Ornith)")
     ap.add_argument("--force", action="store_true",
                     help="re-run episodes even if {task}.rep{rep}.json exists")
+    ap.add_argument("--force-starved", action="store_true",
+                    help="re-run only first-turn 0-token timeout artefacts; keep real episodes")
+    ap.add_argument("--starve-abort", type=int, default=STARVE_ABORT_DEFAULT,
+                    help="abort the cell after this many consecutive 0-token timeouts "
+                         "(0 disables). Prevents burning 40×30 min on a wedged GPU.")
     args = ap.parse_args()
 
     names = [t for t in args.tasks.split(",") if t.strip()] or None
@@ -105,24 +112,31 @@ def main():
 
     rows = []
     cap = "uncapped" if not args.max_steps else str(args.max_steps)
+    share_gpu = bool(args.share_gpu)
+    starve_streak = 0
+    starved_abort = False
     print(f"[runner] model={args.model} config={cfg.name} tasks={len(tasks)} "
           f"repeat={args.repeat} seed_base={args.seed} max_steps={cap} "
-          f"max_wall={args.max_wall or 'off'}")
+          f"max_wall={args.max_wall or 'off'} share_gpu={share_gpu}")
     for rep in range(args.repeat):
+        if starved_abort:
+            break
         pinned = seed_for_repeat(args.seed, rep, args.repeat)
         if pinned is not None:
             client.options["seed"] = pinned
         else:
             client.options.pop("seed", None)
         for task in tasks:
+            if starved_abort:
+                break
             ep_path = os.path.join(outdir, f"{task.name}.rep{rep}.json")
-            if (not args.force) and os.path.isfile(ep_path):
+            if os.path.isfile(ep_path) and not args.force:
                 try:
                     prev = json.load(open(ep_path))
                     row = prev.get("row") or {}
                 except (OSError, json.JSONDecodeError):
                     row = {}
-                if row.get("task"):
+                if keep_existing_episode(row, force=args.force):
                     rows.append(row)
                     mark = "PASS" if row.get("passed") else "fail"
                     print(f"  {task.name:24s} {mark}  skip existing "
@@ -132,61 +146,89 @@ def main():
                     continue
             sandbox = os.path.join(WORK, f"{slug}-{cfg.name}-{task.name}-{rep}")
             os.makedirs(os.path.dirname(sandbox), exist_ok=True)
-            task.materialise(sandbox)
-            h = Harness(client, cfg, sandbox, task, log_dir=outdir)
-            sampler = Sampler(interval=2.0)
-            sampler.start()
-            try:
-                res = h.run()
-            except Exception as e:
-                sampler.stop()
-                print(f"  {task.name:24s} RUNNER-ERROR {type(e).__name__}: {e}")
-                rows.append({"task": task.name, "rep": rep, "seed": pinned,
-                             "passed": False,
-                             "stop_reason": f"runner_error:{type(e).__name__}"})
+            row = None
+            verify_output, events = "", []
+            for attempt in (0, 1):
+                task.materialise(sandbox)
+                h = Harness(client, cfg, sandbox, task, log_dir=outdir)
+                sampler = Sampler(interval=2.0)
+                sampler.start()
+                try:
+                    res = h.run()
+                except Exception as e:
+                    sampler.stop()
+                    print(f"  {task.name:24s} RUNNER-ERROR {type(e).__name__}: {e}")
+                    row = {"task": task.name, "rep": rep, "seed": pinned,
+                           "passed": False, "steps": 0, "output_tokens": 0,
+                           "stop_reason": f"runner_error:{type(e).__name__}",
+                           "errors": [str(e)]}
+                    break
+                compute = sampler.stop()
+                decode_tok_s = tok_s(res.output_tokens, res.eval_duration_ns)
+                prompt_tok_s = tok_s(res.prompt_tokens, res.prompt_eval_duration_ns)
+                row = {"task": task.name, "rep": rep, "seed": pinned,
+                       "passed": res.passed,
+                       "finished": res.finished, "stop_reason": res.stop_reason,
+                       "steps": res.steps, "tool_calls": res.tool_calls,
+                       "wall_s": round(res.wall_s, 1),
+                       "model_s": round(res.model_latency_s, 1),
+                       "prompt_tokens": res.prompt_tokens,
+                       "output_tokens": res.output_tokens,
+                       "tool_errors": len(res.errors),
+                       "errors": res.errors[:8],
+                       "peak_prompt_tokens": res.peak_prompt_tokens,
+                       "eval_duration_ns": res.eval_duration_ns,
+                       "prompt_eval_duration_ns": res.prompt_eval_duration_ns,
+                       "decode_tok_s": decode_tok_s,
+                       "prompt_tok_s": prompt_tok_s,
+                       "compute": compute}
+                if should_retry_starved(row, attempt):
+                    print(f"[runner] starved first turn on {task.name}; "
+                          f"unsticking server and retrying as sole tenant",
+                          flush=True)
+                    if share_gpu:
+                        unloaded = unload_all(keep=args.model)
+                        if unloaded:
+                            print(f"[runner] evicted {', '.join(unloaded)}",
+                                  flush=True)
+                        share_gpu = False
+                    unstick_server(args.model)
+                    continue
+                verify_output = res.verify_output
+                events = res.events
+                break
+            if row is None:
                 continue
-            compute = sampler.stop()
-            decode_tok_s = tok_s(res.output_tokens, res.eval_duration_ns)
-            prompt_tok_s = tok_s(res.prompt_tokens, res.prompt_eval_duration_ns)
-            row = {"task": task.name, "rep": rep, "seed": pinned,
-                   "passed": res.passed,
-                   "finished": res.finished, "stop_reason": res.stop_reason,
-                   "steps": res.steps, "tool_calls": res.tool_calls,
-                   "wall_s": round(res.wall_s, 1),
-                   "model_s": round(res.model_latency_s, 1),
-                   "prompt_tokens": res.prompt_tokens,
-                   "output_tokens": res.output_tokens,
-                   "tool_errors": len(res.errors),
-                   "errors": res.errors[:8],
-                   "peak_prompt_tokens": res.peak_prompt_tokens,
-                   "eval_duration_ns": res.eval_duration_ns,
-                   "prompt_eval_duration_ns": res.prompt_eval_duration_ns,
-                   "decode_tok_s": decode_tok_s,
-                   "prompt_tok_s": prompt_tok_s,
-                   "compute": compute}
             rows.append(row)
-            with open(os.path.join(outdir, f"{task.name}.rep{rep}.json"), "w") as f:
+            with open(ep_path, "w") as f:
                 json.dump({"model": args.model, "config": cfg.as_dict(),
                            "task": task.name, "row": row,
-                           "verify_output": res.verify_output,
-                           "events": res.events}, f, indent=1)
-            mark = "PASS" if res.passed else "fail"
-            power = None if not compute else compute.get("power_frac_mean")
-            hbm = None if not compute else compute.get("hbm_frac_mean")
-            memc = None if not compute else compute.get("mem_controller_pct_mean")
+                           "verify_output": verify_output,
+                           "events": events}, f, indent=1)
+            mark = "PASS" if row.get("passed") else "fail"
             extra = ""
-            if decode_tok_s is not None:
-                extra += f"  decode={decode_tok_s:.0f} tok/s"
+            compute = row.get("compute") or {}
+            dts = row.get("decode_tok_s")
+            if dts is not None:
+                extra += f"  decode={dts:.0f} tok/s"
+            power = compute.get("power_frac_mean") if compute else None
             if power is not None:
                 extra += f"  power={power:.0%}"
-            if hbm is not None:
-                extra += f"  hbm={hbm:.0%}"
-            if memc is not None:
-                extra += f"  memctl={memc:.0f}%"
-            print(f"  {task.name:24s} {mark}  steps={res.steps:<3d} "
-                  f"calls={res.tool_calls:<3d} {res.wall_s:6.1f}s  "
-                  f"out_tok={res.output_tokens:<6d} {res.stop_reason}{extra}",
+            print(f"  {task.name:24s} {mark}  steps={row.get('steps', 0):<3d} "
+                  f"calls={row.get('tool_calls', 0):<3d} {row.get('wall_s', 0):6.1f}s  "
+                  f"out_tok={row.get('output_tokens', 0):<6d} "
+                  f"{row.get('stop_reason', '')}{extra}",
                   flush=True)
+            if is_starved_episode(row):
+                starve_streak += 1
+                limit = args.starve_abort
+                if limit and starve_streak >= limit:
+                    print(f"[runner] aborting cell: {starve_streak} consecutive "
+                          f"0-token timeouts (starve-abort={limit})",
+                          flush=True)
+                    starved_abort = True
+            else:
+                starve_streak = 0
 
     n = len(rows)
     p = sum(1 for r in rows if r.get("passed"))
@@ -199,6 +241,8 @@ def main():
                    "max_steps": args.max_steps,
                    "max_wall": args.max_wall,
                    "share_gpu": bool(args.share_gpu),
+                   "share_gpu_demoted": bool(args.share_gpu) and not share_gpu,
+                   "starved_abort": starved_abort,
                    "num_ctx": args.num_ctx,
                    "num_predict": args.num_predict,
                    "temperature": args.temperature,
@@ -209,6 +253,8 @@ def main():
         json.dump(summary, f, indent=1)
     print(f"[runner] {p}/{n} passed ({summary['pass_rate']}%)  "
           f"total {summary['wall_s']}s  -> {outdir}")
+    if starved_abort:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

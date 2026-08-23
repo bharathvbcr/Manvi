@@ -89,20 +89,64 @@ var ops = []string{
 	OpChatForget,
 }
 
-// Serve reads requests until r is exhausted.
+// Serve reads requests until r is exhausted or ctx is cancelled.
 //
 // It returns nil on clean end-of-input: the host closing stdin is how a
 // sidecar is asked to exit, so that is a successful shutdown rather than a
-// read error. It returns non-nil only when the stream itself failed.
+// read error. Cancellation (SIGINT/SIGTERM via NotifyContext) ends the loop
+// the same way. It returns non-nil only when the stream itself failed.
+//
+// The blocking read cannot observe the context, so a producer goroutine feeds
+// lines through a channel and the loop selects between them and Done(). The
+// producer may end up parked on a read of a stdin nobody will ever close; it
+// exits when cancellation fires, which is exactly the case where it matters,
+// and dies with the process otherwise.
 func (s *Server) Serve(ctx context.Context, r io.Reader) error {
 	reader := bufio.NewReaderSize(r, 64<<10)
+
+	type readResult struct {
+		line []byte
+		err  error
+	}
+	lines := make(chan readResult)
+	go func() {
+		defer close(lines)
+		for {
+			line, _, err := readLine(reader, maxLineBytes)
+			select {
+			case lines <- readResult{line, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				// An oversized line is refused downstream and the session
+				// lives on, so the producer keeps reading past it. Anything
+				// else — EOF, a failed stream — ends the feed.
+				if _, oversize := err.(errLineTooLarge); oversize {
+					continue
+				}
+				return
+			}
+		}
+	}()
+
 	for {
-		line, _, err := readLine(reader, maxLineBytes)
-		if err == io.EOF {
+		var line []byte
+		var readErr error
+		select {
+		case <-ctx.Done():
+			return s.flush()
+		case rr, ok := <-lines:
+			if !ok {
+				return s.flush()
+			}
+			line, readErr = rr.line, rr.err
+		}
+		if readErr == io.EOF {
 			return s.flush()
 		}
-		if err != nil {
-			if oversized, ok := err.(errLineTooLarge); ok {
+		if readErr != nil {
+			if oversized, ok := readErr.(errLineTooLarge); ok {
 				// An oversized request is refused like any other: one
 				// response, correlated by id where the head preserved one,
 				// and the session lives on. Killing the connection here would
@@ -123,7 +167,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) error {
 				continue
 			}
 			_ = s.flush()
-			return err
+			return readErr
 		}
 		if len(line) == 0 {
 			continue

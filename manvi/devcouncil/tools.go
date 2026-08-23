@@ -530,6 +530,11 @@ func (r *Registry) Tools() []tools.Tool {
 	set = append(set, r.artifactTools()...)
 	// Interactive pair programming and question tools.
 	set = append(set, r.askQuestionTools()...)
+	// Native git integration: structured reads plus gate-arbitrated staging
+	// and committing.
+	set = append(set, r.gitTools()...)
+	// Bridge to the external DevCouncil CLI's project-level views.
+	set = append(set, r.devTools()...)
 	return set
 }
 
@@ -1146,6 +1151,19 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if refusal != nil {
 		return *refusal
 	}
+	// The target is pinned BEFORE the ladder runs and before any approval
+	// prompt: the identity snapshot has to predate human-scale delays, or a
+	// concurrent actor could swap a directory for a symlink while the prompt
+	// sat open and the kernel would follow it at open time. See safefs.go.
+	normalized, outside := policy.NormalizeRepoPath(r.deps.Root, args.Path)
+	var pinned *pinnedTarget
+	if !outside {
+		var err error
+		pinned, err = pinWriteTarget(r.deps.Root, normalized)
+		if err != nil {
+			return tools.Errorf("%v", err)
+		}
+	}
 	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, dc.OpWrite)
 	if err != nil {
 		return unavailable("policy decision", err)
@@ -1162,11 +1180,19 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if err != nil {
 		return tools.Errorf("%v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return tools.Errorf("creating directory for %s: %v", args.Path, err)
-	}
-	if err := os.WriteFile(full, []byte(args.Content), 0o644); err != nil {
-		return tools.Errorf("writing %s: %v", args.Path, err)
+	if pinned != nil {
+		if err := pinned.Write([]byte(args.Content), 0o644); err != nil {
+			return tools.Errorf("writing %s: %v", args.Path, err)
+		}
+	} else {
+		// Outside-root targets are reachable only with hard rules off — an
+		// explicit operator decision. The legacy path stands there.
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return tools.Errorf("creating directory for %s: %v", args.Path, err)
+		}
+		if err := os.WriteFile(full, []byte(args.Content), 0o644); err != nil {
+			return tools.Errorf("writing %s: %v", args.Path, err)
+		}
 	}
 
 	return annotate(
@@ -1199,6 +1225,21 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 			return r.refusal(decision)
 		}
 		decision = escalated
+	}
+
+	// Delete is pinned like write: a directory swapped to an escaping symlink
+	// between evaluation and unlink would otherwise delete wherever the link
+	// points. The pin happens after escalation here — unlink has no
+	// deliberation payload — so the residual race is only the microsecond
+	// between pin and syscall, not the whole approval window.
+	normalizedDelete, outside := policy.NormalizeRepoPath(r.deps.Root, args.Path)
+	if !outside {
+		if err := RemovePinned(r.deps.Root, normalizedDelete); err != nil {
+			return tools.Errorf("%v", err)
+		}
+		return annotate(
+			tools.Result{Text: fmt.Sprintf("deleted %s", decision.Target)},
+			decision)
 	}
 
 	full, err := r.resolvePath(args.Path)
@@ -1251,36 +1292,21 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", args.Command)
-	cmd.Dir = r.deps.Root
-
-	var buf bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &buf, limit: 1024 * 1024}
-	cmd.Stderr = cmd.Stdout
-
 	start := time.Now()
-	runErr := cmd.Run()
+	outText, exitCode, timedOut, runErr := runShell(cmdCtx, r.deps.Root, args.Command)
 	elapsed := time.Since(start)
 
-	outText := buf.String()
-	if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
+	if timedOut {
 		return annotate(tools.Result{
-			Text:    fmt.Sprintf("command timed out after 5m:\n%s", outText),
+			Text:    "command timed out after 5m:\n" + outText,
 			IsError: true,
 		}, decision)
 	}
-
-	var exitCode int
 	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return annotate(tools.Result{
-				Text:    fmt.Sprintf("failed to execute command %q: %v", args.Command, runErr),
-				IsError: true,
-			}, decision)
-		}
+		return annotate(tools.Result{
+			Text:    fmt.Sprintf("failed to execute command %q: %v", args.Command, runErr),
+			IsError: true,
+		}, decision)
 	}
 
 	resultText := fmt.Sprintf("exit code %d (took %s)\n%s", exitCode, elapsed.Round(time.Millisecond), outText)
@@ -1288,6 +1314,74 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 		Text:    strings.TrimRight(resultText, "\n"),
 		IsError: exitCode != 0,
 	}, decision)
+}
+
+// runShell executes command under `sh -c` in dir, bounded by the deadline on
+// ctx, and returns the captured output, the exit code, and whether the
+// deadline fired.
+//
+// Two properties make this safe for agent-authored commands. First, the child
+// runs as its own process-group leader and the whole group is killed when the
+// deadline fires — CommandContext reaches only sh itself, and a descendant it
+// backgrounded would otherwise keep running with the inherited stdout pipe.
+// Second, WaitDelay bounds how long those descendants may hold the stdio pipes
+// after sh is gone; without it, os/exec's copy goroutine waits on EOF forever
+// and this function never returns, wedging the tool call past its own timeout.
+// A command whose foreground work completed reports success even when its
+// leftover descendants were cut off that way.
+func runShell(ctx context.Context, dir, command string) (string, int, bool, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
+	setOwnProcessGroup(cmd)
+
+	var buf bytes.Buffer
+	cmd.Stdout = &limitWriter{w: &buf, limit: 1024 * 1024}
+	cmd.Stderr = cmd.Stdout
+
+	cmd.WaitDelay = 5 * time.Second
+
+	if err := cmd.Start(); err != nil {
+		return "", 0, false, err
+	}
+	killed := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// The context has already signalled the child; reach the rest of
+			// its process group so a held pipe cannot outlive the deadline.
+			if cmd.Process != nil {
+				killProcessGroup(cmd.Process.Pid)
+			}
+		case <-killed:
+		}
+	}()
+
+	runErr := cmd.Wait()
+	close(killed)
+
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if timedOut {
+		return buf.String(), 0, true, nil
+	}
+	exitCode := 0
+	if runErr != nil {
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			// The command itself exited; only leftover descendants kept the
+			// pipes open past the grace period. Report the command's own
+			// outcome rather than dressing plumbing cleanup up as a failure.
+			runErr = nil
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+		} else {
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				return buf.String(), 0, false, runErr
+			}
+			exitCode = exitErr.ExitCode()
+		}
+	}
+	return buf.String(), exitCode, false, nil
 }
 
 func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
@@ -1917,6 +2011,18 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 	if refusal != nil {
 		return *refusal
 	}
+	// Pinned before evaluation and before any approval prompt: patch is
+	// read-modify-write, so both halves must address the same verified file,
+	// and a directory swapped mid-deliberation must void the whole operation.
+	normalizedPatch, outside := policy.NormalizeRepoPath(r.deps.Root, args.Path)
+	var pinned *pinnedTarget
+	if !outside {
+		var err error
+		pinned, err = pinWriteTarget(r.deps.Root, normalizedPatch)
+		if err != nil {
+			return tools.Errorf("%v", err)
+		}
+	}
 	decision, err := r.deps.Gate.EvaluateWrite(args.Path, task, dc.OpModify)
 	if err != nil {
 		return unavailable("policy decision", err)
@@ -1934,15 +2040,23 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		return tools.Errorf("%v", err)
 	}
 
-	data, err := os.ReadFile(full)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return tools.Errorf("file %s does not exist; use devcouncil_write_file to create new files", args.Path)
+	var content string
+	if pinned != nil {
+		data, err := pinned.Read(maxPatchReadBytes)
+		if err != nil {
+			return tools.Errorf("%v", err)
 		}
-		return tools.Errorf("reading %s: %v", args.Path, err)
+		content = string(data)
+	} else {
+		data, err := os.ReadFile(full)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return tools.Errorf("file %s does not exist; use devcouncil_write_file to create new files", args.Path)
+			}
+			return tools.Errorf("reading %s: %v", args.Path, err)
+		}
+		content = string(data)
 	}
-
-	content := string(data)
 
 	if args.StartLine > 0 || args.EndLine > 0 {
 		lines := strings.Split(content, "\n")
@@ -2006,8 +2120,14 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 	}
 
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-		return tools.Errorf("writing patched %s: %v", args.Path, err)
+	if pinned != nil {
+		if err := pinned.Write([]byte(content), 0o644); err != nil {
+			return tools.Errorf("writing patched %s: %v", args.Path, err)
+		}
+	} else {
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			return tools.Errorf("writing patched %s: %v", args.Path, err)
+		}
 	}
 
 	return annotate(

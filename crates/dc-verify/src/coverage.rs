@@ -18,6 +18,11 @@ use std::collections::BTreeMap;
 
 use crate::rigor::FileCoverage;
 
+/// The widest covered span one profile block may declare. Real blocks are
+/// functions; anything past this is a corrupt or hostile profile line, refused
+/// rather than materialised.
+const MAX_COVERED_SPAN: u64 = 1_000_000;
+
 /// A coverage file that could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageError {
@@ -40,6 +45,16 @@ impl std::error::Error for CoverageError {}
 
 /// Parses a coverage report, detecting the format from its content.
 pub fn parse(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
+    parse_with_root(raw, None)
+}
+
+/// Like [`parse`], but with the repository root supplied by the caller — the
+/// binary passes it so absolute LCOV paths (llvm-cov/grcov emit those) reduce
+/// to the repo-relative form the diff uses.
+pub fn parse_with_root(
+    raw: &str,
+    root: Option<&std::path::Path>,
+) -> Result<Vec<FileCoverage>, CoverageError> {
     let trimmed = raw.trim_start();
     if trimmed.is_empty() {
         // An empty file is not an empty measurement. It means the run produced
@@ -54,7 +69,7 @@ pub fn parse(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
     if trimmed.starts_with("mode:") {
         parse_go(raw)
     } else if trimmed.starts_with("TN:") || trimmed.starts_with("SF:") {
-        parse_lcov(raw)
+        parse_lcov(raw, root)
     } else {
         Err(CoverageError {
             line_number: 1,
@@ -117,6 +132,15 @@ fn parse_go(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
         if end_line < start_line {
             return Err(bad("the block ends before it starts"));
         }
+        // One profile line naming a span of billions of lines used to be
+        // materialised line by line — a corrupt or hostile profile could
+        // allocate gigabytes before the intersection ever ran. A block wider
+        // than any real source file is malformed input, and malformed input is
+        // an error rather than a measurement of nothing.
+        let span = u64::from(end_line) - u64::from(start_line) + 1;
+        if span > MAX_COVERED_SPAN {
+            return Err(bad("the block spans more lines than any real source file"));
+        }
 
         seen_any = true;
         // The path is module-qualified; the diff is repo-relative. Both are
@@ -158,7 +182,10 @@ fn normalise_go_path(path: &str) -> String {
 /// branch records carry no line-level information the intersection can use, and
 /// silently ignoring records is safe here in a way it is not elsewhere: an
 /// unknown record cannot make a covered line look uncovered.
-fn parse_lcov(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
+fn parse_lcov(
+    raw: &str,
+    root: Option<&std::path::Path>,
+) -> Result<Vec<FileCoverage>, CoverageError> {
     let mut covered: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut current: Option<String> = None;
     let mut seen_any = false;
@@ -177,8 +204,8 @@ fn parse_lcov(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
             if path.is_empty() {
                 return Err(bad("SF record names no file"));
             }
-            covered.entry(normalise_lcov_path(path)).or_default();
-            current = Some(normalise_lcov_path(path));
+            covered.entry(normalise_lcov_path(path, root)).or_default();
+            current = Some(normalise_lcov_path(path, root));
             continue;
         }
         if let Some(record) = line.strip_prefix("DA:") {
@@ -222,8 +249,39 @@ fn parse_lcov(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
 }
 
 /// Makes an absolute LCOV path repo-relative where it obviously is one.
-fn normalise_lcov_path(path: &str) -> String {
-    path.trim_start_matches("./").to_string()
+/// Normalises an LCOV `SF:` path to the repo-relative form the diff uses,
+/// against `root` when one is known.
+///
+/// llvm-cov and grcov emit absolute paths (`SF:/repo/crates/dc-verify/src/lib.rs`),
+/// which never matched the repo-relative diff paths — every file landed in
+/// `coverage_unmeasured`, training operators to ignore the unmeasured wall. An
+/// absolute path is reduced by stripping a matching root prefix; both the raw
+/// and canonical spellings of the root are tried, because the root itself may
+/// be reached through a symlinked ancestor (macOS /tmp → /private/tmp). A path
+/// under no known root is kept verbatim: guessing a different file's coverage
+/// is worse than reporting none.
+pub fn normalise_lcov_path(path: &str, root: Option<&std::path::Path>) -> String {
+    let trimmed = path.trim_start_matches("./");
+    if !trimmed.starts_with('/') {
+        return trimmed.to_string();
+    }
+    let candidates: Vec<std::path::PathBuf> = match root {
+        Some(r) => vec![
+            r.to_path_buf(),
+            r.canonicalize().unwrap_or_else(|_| r.to_path_buf()),
+        ],
+        None => match std::env::current_dir() {
+            Ok(cwd) => vec![cwd.clone(), cwd.canonicalize().unwrap_or(cwd)],
+            Err(_) => Vec::new(),
+        },
+    };
+    for base in candidates {
+        let prefix = format!("{}/", base.to_string_lossy());
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            return rest.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 fn finish(covered: BTreeMap<String, Vec<u32>>) -> Vec<FileCoverage> {

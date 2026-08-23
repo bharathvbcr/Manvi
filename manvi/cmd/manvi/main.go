@@ -103,6 +103,30 @@ thing under .devcouncil/ meant to be committed; the environment still wins
 over it for a single run. 'manvi flags' shows where each value came from.
 `
 
+// processExitFns holds teardown work registered by the surfaces that own
+// child processes, drained when run() returns. A slice under a mutex rather
+// than a hook field on each command: the composition root is the one place
+// that cannot forget to call it.
+var processExitMu sync.Mutex
+
+var processExitFns []func()
+
+func onProcessExit(fn func()) {
+	processExitMu.Lock()
+	processExitFns = append(processExitFns, fn)
+	processExitMu.Unlock()
+}
+
+func drainProcessExits() {
+	processExitMu.Lock()
+	fns := processExitFns
+	processExitFns = nil
+	processExitMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
 func main() {
 	err := run(os.Stdout, os.Stderr, os.Args[1:])
 	switch {
@@ -151,6 +175,12 @@ func main() {
 // gets piped, and a line about .gitignore in the middle of it is a line some
 // script has to learn to skip.
 func run(out, notes io.Writer, args []string) error {
+	// Every subprocess the process spawned is reaped on the way out, however
+	// the run ends — success, error, or a ceiling exit. Registered by the
+	// surfaces that own children; drained here because this is the one frame
+	// every invocation returns through.
+	defer drainProcessExits()
+
 	// Pulled out before the subcommand is read, so --yolo may sit on either
 	// side of it. It is stripped rather than passed through because each
 	// command parses its own arguments and an unrecognised one is an error in
@@ -1446,6 +1476,12 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	if err != nil {
 		return nil, nil, err
 	}
+	// The manager spawns server subprocesses lazily and keeps them for the
+	// life of the process. Registering the teardown here — the one place every
+	// tool surface passes through — is what makes servers die with their
+	// harness instead of outliving it; CloseAll existed and was tested, but
+	// nothing ever called it.
+	onProcessExit(func() { mcpMgr.CloseAll() })
 	subRegistry := agents.NewRegistry()
 	subMgr := agents.NewInstanceManager()
 
@@ -1639,7 +1675,11 @@ func loadGrants(g *gate.Gate) error {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return fmt.Errorf("grant ledger %s is unreadable: %w", grantLedgerPath(), err)
 	}
-	g.Ledger.Restore(saved)
+	// Refused entries are shown rather than fatal: one hand-edited record must
+	// not take every command down, but it is also never loaded quietly.
+	for _, why := range g.Ledger.Restore(saved) {
+		fmt.Fprintf(os.Stderr, "manvi: grant refused on load — %s\n", why)
+	}
 	return nil
 }
 

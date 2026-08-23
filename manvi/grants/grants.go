@@ -480,18 +480,89 @@ func containsRule(rules []policy.RuleID, r policy.RuleID) bool {
 // was already spent, which would turn a durable record into a renewable
 // permission. The sequence counter is advanced past anything restored so a new
 // grant cannot collide with an old one's ID.
-func (l *Ledger) Restore(saved []Grant) {
+//
+// Every entry is also re-validated against the policy this ledger enforces
+// now, because Restore used to append whatever the file held: a corrupted or
+// hand-edited record could name no rules (matching everything), carry a hard
+// rule, or hold an expiry no issue path could have minted, and the durable
+// override seam ended up trusting its own persistence less than it trusts the
+// model. Refused entries come back as reasons so the caller can show them;
+// they are never loaded half-way.
+func (l *Ledger) Restore(saved []Grant) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.grants = append(l.grants, saved...)
-	if l.restored == nil && len(saved) > 0 {
-		l.restored = make(map[string]bool, len(saved))
-	}
+	now := l.now()
+	var refused []string
 	for _, g := range saved {
+		why := l.restoreRefusal(g)
+		if why == "" {
+			why = l.expiryRefusal(g, now)
+		}
+		if why != "" {
+			refused = append(refused, fmt.Sprintf("%s: %s", g.ID, why))
+			continue
+		}
+		l.grants = append(l.grants, g)
+		if l.restored == nil {
+			l.restored = make(map[string]bool)
+		}
 		l.restored[g.ID] = true
 		var n int
 		if _, err := fmt.Sscanf(g.ID, "GRANT-%d", &n); err == nil && n > l.seq {
 			l.seq = n
 		}
 	}
+	return refused
+}
+
+// restoreRefusal applies the checks Issue would have applied, minus the TTL
+// arithmetic (Restore preserves original expiries; the ceiling itself is
+// checked against those separately).
+func (l *Ledger) restoreRefusal(g Grant) string {
+	if len(g.Scope.Rules) == 0 {
+		return "names no rules; a rule-less grant covers every soft rule on every task"
+	}
+	for _, rule := range g.Scope.Rules {
+		if policy.SeverityOf(rule) == policy.Hard {
+			return fmt.Sprintf("carries hard rule %s, which no grant may clear", rule)
+		}
+	}
+	if strings.TrimSpace(g.Reason) == "" && l.policy.RequireReason {
+		return "has no reason under a policy that requires one"
+	}
+	switch g.Grantor.Authority {
+	case Agent:
+		if !l.policy.AgentEnabled {
+			return "agent grants are disabled by current policy"
+		}
+		for _, rule := range g.Scope.Rules {
+			if !l.policy.agentMayGrant(rule) {
+				return fmt.Sprintf("rule %s is not agent-grantable", rule)
+			}
+		}
+	case Human:
+		// Humans may grant repository-wide; that is what human authority means.
+	default:
+		return fmt.Sprintf("has unknown authority %q", g.Grantor.Authority)
+	}
+	return ""
+}
+
+// expiryRefusal rejects an expiry no issue path could have produced: beyond
+// the ceiling for its own authority means the record was written by something
+// other than this policy, and loading it would let that something extend its
+// own life indefinitely.
+func (l *Ledger) expiryRefusal(g Grant, now time.Time) string {
+	if g.ExpiresAt.IsZero() {
+		return ""
+	}
+	ceiling := l.policy.HumanMaxTTL
+	if g.Grantor.Authority == Agent {
+		ceiling = l.policy.AgentMaxTTL
+	}
+	if ceiling > 0 && g.ExpiresAt.Sub(now) > ceiling {
+		return fmt.Sprintf("expires in %s, beyond the %s ceiling for its authority",
+			g.ExpiresAt.Sub(now).Round(time.Second), ceiling)
+	}
+	return ""
 }

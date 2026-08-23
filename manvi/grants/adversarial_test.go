@@ -222,3 +222,67 @@ func TestNegativeTTLDoesNotBecomeTheCeiling(t *testing.T) {
 		t.Fatalf("a negative TTL was accepted and became %s", g.ExpiresAt.Sub(g.IssuedAt))
 	}
 }
+
+// TestRestoreRefusesWhatIssueWouldRefuse pins re-validation of the durable
+// ledger: Restore used to append whatever the file held, so a corrupted or
+// hand-edited record could name no rules (matching everything), carry a hard
+// rule, or hold an expiry no issue path could mint.
+func TestRestoreRefusesWhatIssueWouldRefuse(t *testing.T) {
+	l := ledger(t)
+	now := time.Now()
+	saved := []Grant{
+		{
+			ID: "GRANT-9001", Grantor: Grantor{Authority: Human, ID: "op"},
+			Scope:    Scope{Rules: nil}, // rule-less: matches everything soft
+			IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		},
+		{
+			ID: "GRANT-9002", Grantor: Grantor{Authority: Human, ID: "op"}, Reason: "nope",
+			Scope:    Scope{Rules: []policy.RuleID{policy.RuleSecretPath}},
+			IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		},
+		{
+			ID: "GRANT-9003", Grantor: Grantor{Authority: Human, ID: "op"}, Reason: "eternal",
+			Scope:    Scope{Rules: []policy.RuleID{policy.RuleUnplannedScope}, Paths: []string{"src/a.go"}},
+			IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(100 * 24 * 365 * time.Hour),
+		},
+	}
+	refused := l.Restore(saved)
+	if len(refused) != len(saved) {
+		t.Fatalf("expected all %d records refused, got %v", len(saved), refused)
+	}
+
+	if _, used := l.Apply(denial(policy.RuleUnplannedScope, "src/a.go", "TASK-1")); used {
+		t.Fatal("a tampered ledger cleared a denial after restore")
+	}
+	// The valid path still works end to end.
+	fresh, err := l.Issue(Request{
+		Grantor: Grantor{Authority: Human, ID: "op"}, Reason: "legit",
+		Scope: Scope{Rules: []policy.RuleID{policy.RuleUnplannedScope}, Paths: []string{"src/b.go"}},
+	})
+	if err != nil {
+		t.Fatalf("a legitimate issue must still work: %v", err)
+	}
+	if _, used := l.Apply(denial(policy.RuleUnplannedScope, "src/b.go", "TASK-1")); !used || fresh.ID == "" {
+		t.Fatal("the ledger stopped working for honest grants")
+	}
+}
+
+// TestRestoreKeepsAWellFormedGrant: validation must not become a wipe. A
+// grant Issue itself could have minted restores intact and still applies.
+func TestRestoreKeepsAWellFormedGrant(t *testing.T) {
+	l := ledger(t)
+	good := Grant{
+		ID: "GRANT-0007", Grantor: Grantor{Authority: Human, ID: "op"}, Reason: "reviewed",
+		Scope:    Scope{TaskID: "TASK-1", Rules: []policy.RuleID{policy.RuleUnplannedScope}, Paths: []string{"src/keep.go"}},
+		IssuedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if refused := l.Restore([]Grant{good}); len(refused) != 0 {
+		t.Fatalf("an honest record was refused: %v", refused)
+	}
+	d := denial(policy.RuleUnplannedScope, "src/keep.go", "TASK-1")
+	cleared, used := l.Apply(d)
+	if !used || cleared.Action != policy.Allow {
+		t.Fatalf("the restored grant did not apply: used=%v decision=%+v", used, cleared)
+	}
+}

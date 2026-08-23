@@ -23,7 +23,7 @@ run.py          the runner; one resident model; --seed pinned per repeat
 grid.py         resumable 3×7×5 CUDA matrix
 compare.py      result tables plus bootstrap CIs on pass rates and Δ
 selftest.py     proves the suite is valid before any GPU time is spent
-stress_test.py  87 adversarial tests of the harness itself, no GPU needed
+stress_test.py  106 adversarial tests of the harness itself, no GPU needed
 test_stats.py   bootstrap / Δ / seed unit tests, no GPU needed
 test_compute.py nvidia-smi parse + tok/s, no GPU needed
 ```

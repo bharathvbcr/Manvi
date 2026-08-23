@@ -200,7 +200,7 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 	const owned = "secret_scan, stub_detection, diff_coverage"
 	var degraded []string
 
-	client := rigorClient{Binary: r.deps.VerifierBinary}
+	client := rigorClient{Binary: r.deps.VerifierBinary, Root: r.deps.Root}
 	if r.deps.VerifierBinary == "" {
 		return nil, nil, []string{owned + ": no dcverify binary configured — these checks did not run"}
 	}

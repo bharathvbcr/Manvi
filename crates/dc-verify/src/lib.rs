@@ -85,18 +85,42 @@ pub fn parse_unified(diff: &str) -> Result<Vec<FileDiff>, ParseError> {
     let mut files: Vec<FileDiff> = Vec::new();
     let mut current: Option<FileDiff> = None;
     let mut new_line: u32 = 0;
-    let mut hunk_remaining: u32 = 0;
+    // Per-side remainders rather than one lumped counter: a hunk that declares
+    // -1,5 +1,5 but supplies two body lines used to parse as success because a
+    // shared counter could not tell which side came up short, and a partial
+    // `added_lines` set reported as clean is a false gap factory downstream.
+    let mut new_remaining: u32 = 0;
+    let mut old_remaining: u32 = 0;
+    // Distinguishing "between hunks" from "a hunk whose counts ran out" is
+    // what makes extra body lines an error rather than a silent skip: both
+    // states have zeroed counters, but only one of them may legally see a
+    // '+' line.
+    let mut in_hunk = false;
     let mut pending_rename_from: Option<String> = None;
     let mut saw_content_before_any_file = false;
+    let total_lines = diff.lines().count();
+
+    macro_rules! finish_hunk {
+        ($lineno:expr, $raw:expr) => {
+            if new_remaining != 0 || old_remaining != 0 {
+                return Err(ParseError {
+                    line_number: $lineno,
+                    line: $raw,
+                    reason: "hunk ended before its declared line count",
+                });
+            }
+        };
+    }
 
     for (idx, raw) in diff.lines().enumerate() {
         let lineno = idx + 1;
 
         if let Some(rest) = raw.strip_prefix("diff --git ") {
+            finish_hunk!(lineno.saturating_sub(1), String::new());
+            in_hunk = false;
             if let Some(done) = current.take() {
                 files.push(done);
             }
-            hunk_remaining = 0;
             pending_rename_from = None;
             let path = git_header_path(rest).ok_or_else(|| ParseError {
                 line_number: lineno,
@@ -124,7 +148,7 @@ pub fn parse_unified(diff: &str) -> Result<Vec<FileDiff>, ParseError> {
             continue;
         };
 
-        if hunk_remaining == 0 {
+        if !in_hunk {
             if let Some(rest) = raw.strip_prefix("rename from ") {
                 pending_rename_from = Some(strip_prefix_marker(rest));
                 continue;
@@ -161,42 +185,76 @@ pub fn parse_unified(diff: &str) -> Result<Vec<FileDiff>, ParseError> {
         }
 
         if raw.starts_with("@@") {
+            finish_hunk!(lineno.saturating_sub(1), String::new());
             let hunk = parse_hunk_header(raw).ok_or_else(|| ParseError {
                 line_number: lineno,
                 line: raw.to_string(),
                 reason: "malformed hunk header",
             })?;
             new_line = hunk.new_start;
-            hunk_remaining = hunk.new_count + hunk.old_count;
+            new_remaining = hunk.new_count;
+            old_remaining = hunk.old_count;
+            in_hunk = true;
             continue;
         }
 
-        if hunk_remaining == 0 {
+        if !in_hunk {
             // Outside a hunk: index lines, mode lines, binary markers.
             continue;
         }
 
         match raw.chars().next() {
             Some('+') => {
+                if new_remaining == 0 {
+                    return Err(ParseError {
+                        line_number: lineno,
+                        line: raw.to_string(),
+                        reason: "body line beyond the count the hunk header declared",
+                    });
+                }
+                let bumped = bump_line(new_line, lineno, raw)?;
                 file.added_lines.push((new_line, raw[1..].to_string()));
-                new_line += 1;
-                hunk_remaining = hunk_remaining.saturating_sub(1);
+                new_line = bumped;
+                new_remaining -= 1;
             }
             Some('-') => {
+                if old_remaining == 0 {
+                    return Err(ParseError {
+                        line_number: lineno,
+                        line: raw.to_string(),
+                        reason: "body line beyond the count the hunk header declared",
+                    });
+                }
                 file.removed_count += 1;
-                hunk_remaining = hunk_remaining.saturating_sub(1);
+                old_remaining -= 1;
             }
             Some(' ') => {
-                new_line += 1;
-                hunk_remaining = hunk_remaining.saturating_sub(2);
+                if new_remaining == 0 || old_remaining == 0 {
+                    return Err(ParseError {
+                        line_number: lineno,
+                        line: raw.to_string(),
+                        reason: "context line beyond the counts the hunk header declared",
+                    });
+                }
+                new_line = bump_line(new_line, lineno, raw)?;
+                new_remaining -= 1;
+                old_remaining -= 1;
             }
             Some('\\') => {
                 // "\ No newline at end of file" belongs to the preceding line.
             }
             None => {
                 // A context line that is entirely empty; git emits these bare.
-                new_line += 1;
-                hunk_remaining = hunk_remaining.saturating_sub(2);
+                if new_remaining == 0 || old_remaining == 0 {
+                    return Err(ParseError {
+                        line_number: lineno,
+                        line: raw.to_string(),
+                        reason: "context line beyond the counts the hunk header declared",
+                    });
+                }
+                new_line = bump_line(new_line, lineno, raw)?;
+                new_remaining -= 1;
+                old_remaining -= 1;
             }
             Some(_) => {
                 return Err(ParseError {
@@ -207,6 +265,12 @@ pub fn parse_unified(diff: &str) -> Result<Vec<FileDiff>, ParseError> {
             }
         }
     }
+
+    // A diff that ends inside a hunk is truncated, not complete: whatever
+    // wrote it stopped early, and the missing lines are exactly the ones the
+    // gates would have read. Parsing the fragment as success reports on less
+    // of the change than the header claims.
+    finish_hunk!(total_lines, String::new());
 
     if let Some(done) = current.take() {
         files.push(done);
@@ -233,6 +297,12 @@ struct Hunk {
     old_count: u32,
 }
 
+/// Any single range value beyond this is not a real hunk. A crafted header
+/// like `@@ -4294967295,1 +4294967295,1 @@` parses as a valid u32 and then
+/// walks line arithmetic off the end of it — panic in debug, silent wrap to
+/// wrong line numbers in release, which is worse.
+const MAX_HUNK_VALUE: u32 = 1_000_000_000;
+
 /// Parses `@@ -a,b +c,d @@`. Counts default to 1 when omitted, per the format.
 fn parse_hunk_header(line: &str) -> Option<Hunk> {
     let body = line.strip_prefix("@@")?;
@@ -253,10 +323,25 @@ fn parse_hunk_header(line: &str) -> Option<Hunk> {
 }
 
 fn split_range(spec: &str) -> Option<(u32, u32)> {
-    match spec.split_once(',') {
-        Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
-        None => Some((spec.parse().ok()?, 1)),
+    let (start, count) = match spec.split_once(',') {
+        Some((start, count)) => (start.parse().ok()?, count.parse().ok()?),
+        None => (spec.parse().ok()?, 1),
+    };
+    if start > MAX_HUNK_VALUE || count > MAX_HUNK_VALUE {
+        return None;
     }
+    Some((start, count))
+}
+
+/// Advances the post-change line counter, refusing to wrap. With the header
+/// ceiling this is unreachable, and that is the point: the failure mode it
+/// guards against is numbers that look right and are not.
+fn bump_line(line: u32, lineno: usize, raw: &str) -> Result<u32, ParseError> {
+    line.checked_add(1).ok_or_else(|| ParseError {
+        line_number: lineno,
+        line: raw.to_string(),
+        reason: "line number overflowed while walking the hunk",
+    })
 }
 
 /// Extracts the post-change path from a `diff --git a/x b/y` header.
@@ -360,7 +445,7 @@ diff --git a/src/calc.go b/src/calc.go
 index 1234567..89abcde 100644
 --- a/src/calc.go
 +++ b/src/calc.go
-@@ -10,6 +10,8 @@ func Add(a, b int) int {
+@@ -10,5 +10,8 @@ func Add(a, b int) int {
  	return a + b
  }
 

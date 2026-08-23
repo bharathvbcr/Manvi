@@ -170,3 +170,28 @@ func TestAResponseThatSaidSomethingIsNeverRetried(t *testing.T) {
 		}
 	}
 }
+
+// TestNullResponseRetryLeavesBalancedSteps pins the durable-log invariant the
+// retry branch used to break: it continued to the next step without closing
+// the current one, so every retried step left a dangling step/start in the
+// session — a shape consumers of the log (the TUI projector, the invariant
+// checker, resume) read as a step that never ended.
+func TestNullResponseRetryLeavesBalancedSteps(t *testing.T) {
+	loop, log := loopOver(t, []replay.Turn{
+		nullTurn(), nullTurn(), answerTurn("here is the answer"),
+	})
+	run(t, loop)
+
+	starts, ends := 0, 0
+	for _, e := range log.Events() {
+		switch e.Type {
+		case session.StepStart:
+			starts++
+		case session.StepEnd:
+			ends++
+		}
+	}
+	if starts != ends {
+		t.Fatalf("unbalanced steps after retries: %d step/start vs %d step/end", starts, ends)
+	}
+}

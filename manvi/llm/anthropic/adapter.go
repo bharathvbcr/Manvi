@@ -279,6 +279,12 @@ func toWireBlock(block llm.ContentBlock) (wireBlock, error) {
 	}
 }
 
+// maxDecodedResponseBytes bounds how much of one response this stream will
+// hold across all accumulators. The stall watchdog bounds silence, not volume;
+// without a byte ceiling a server generating past any max_tokens it was given
+// makes the harness allocate without bound. Mirrors openaicompat's limit.
+const maxDecodedResponseBytes = 4 << 20
+
 // stream decodes the SSE event sequence into neutral chunks.
 type stream struct {
 	sse   *transport.SSE
@@ -369,6 +375,13 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				s.done = true
+			} else {
+				// A stream that died mid-flight settles as that failure.
+				// Without this the reader's error is known only to whoever
+				// called Next, and Response answers "called before the stream
+				// was exhausted" — blaming the caller for a server that went
+				// silent.
+				s.failure = err
 			}
 			return llm.Chunk{}, err
 		}
@@ -392,10 +405,31 @@ func (s *stream) Next() (llm.Chunk, error) {
 			s.failure = err
 			return llm.Chunk{}, err
 		}
+		// Checked once per event rather than per write, and by setting the
+		// failure rather than returning it, so a chunk this frame produced
+		// still reaches the caller before the refusal does.
+		if over := s.decodedBytes(); over > maxDecodedResponseBytes && s.failure == nil {
+			s.failure = fmt.Errorf(
+				"anthropic: the response exceeded the %d-byte decode limit (%d bytes and still arriving); "+
+					"the server is generating past any max_tokens it was given",
+				maxDecodedResponseBytes, over)
+		}
 		if emit {
 			return chunk, nil
 		}
 	}
+}
+
+// decodedBytes is everything this stream is holding from the response so far.
+func (s *stream) decodedBytes() int {
+	total := 0
+	for _, acc := range s.blocks {
+		if acc == nil {
+			continue
+		}
+		total += acc.text.Len() + len(acc.signature) + len(acc.data) + acc.args.Len()
+	}
+	return total
 }
 
 func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {

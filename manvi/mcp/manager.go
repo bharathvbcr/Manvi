@@ -260,19 +260,30 @@ func (m *Manager) AutoDiscover(ctx context.Context) error {
 }
 
 // Client returns an active client for a named server, connecting lazily if needed.
+//
+// A cached client that has died — its stdout ended without anyone calling
+// Close, the signature of a crash — is replaced rather than returned. Handing
+// out a corpse converted one bad server frame into permanent tool failure for
+// the rest of the session.
+//
+// The expensive part of a cold connection — spawning the process and waiting
+// out the initialize handshake — happens outside every lock. Holding the
+// write lock through it serialized every other manager operation behind one
+// slow server's ten-second timeout.
 func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	if !m.Enabled() {
 		return nil, m.unavailable()
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	if client, ok := m.clients[name]; ok && !client.closed.Load() {
-		return client, nil
+	m.mu.RLock()
+	cachedClient, hasCached := m.clients[name]
+	cfg, registered := m.configs[name]
+	m.mu.RUnlock()
+
+	if hasCached && cachedClient.Alive() {
+		return cachedClient, nil
 	}
-
-	cfg, ok := m.configs[name]
-	if !ok {
+	if !registered {
 		return nil, fmt.Errorf("mcp: server %q is not registered", name)
 	}
 
@@ -292,6 +303,14 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 		return nil, fmt.Errorf("mcp: initializing %s: %w", name, err)
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A concurrent caller may have completed its own connection while this
+	// one was handshaking; theirs wins, ours closes.
+	if existing, ok := m.clients[name]; ok && existing.Alive() {
+		_ = client.Close()
+		return existing, nil
+	}
 	m.clients[name] = client
 	return client, nil
 }

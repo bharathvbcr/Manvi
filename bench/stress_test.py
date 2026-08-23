@@ -303,10 +303,44 @@ check("max_steps 0 is not a 40-turn ceiling",
       f"steps={res.steps} stop={res.stop_reason}")
 
 print("episode wall-clock timeout")
-from mh.harness import WALL_S_DEFAULT, HTTP_TIMEOUT_S
+from mh.harness import WALL_S_DEFAULT, HTTP_TIMEOUT_S, FIRST_TURN_TIMEOUT_S
+import mh.harness as harness_mod
 check("default wall is 30 minutes", WALL_S_DEFAULT == 1800)
 check("HTTP cap matches the episode wall", HTTP_TIMEOUT_S == 1800)
+check("first-turn cap is 10 minutes", FIRST_TURN_TIMEOUT_S == 600)
 check("Config default matches", Config().wall_s == 1800)
+
+class ProbeTimeouts:
+    def __init__(self):
+        self.timeout = 1800
+        self.http_timeout = 1800
+        self.first = None
+        self.later = None
+        self.n = 0
+    def chat(self, messages, tools=None, retries=2):
+        self.n += 1
+        if self.n == 1:
+            self.first = self.timeout
+            return Reply(content="", reasoning="", tool_calls=[FIX],
+                         raw={}, prompt_tokens=10, output_tokens=10,
+                         latency_s=0.0, done_reason="stop")
+        self.later = self.timeout
+        return Reply(content="", reasoning="",
+                     tool_calls=[call("finish", summary="ok")],
+                     raw={}, prompt_tokens=10, output_tokens=10,
+                     latency_s=0.0, done_reason="stop")
+
+old_first = harness_mod.FIRST_TURN_TIMEOUT_S
+harness_mod.FIRST_TURN_TIMEOUT_S = 7
+sbdir = tmpdir()
+task.materialise(os.path.join(sbdir, "probe"))
+probe = ProbeTimeouts()
+Harness(probe, Config(name="first-turn", wall_s=1800, max_steps=0),
+        os.path.join(sbdir, "probe"), task).run()
+harness_mod.FIRST_TURN_TIMEOUT_S = old_first
+check("first turn uses first-turn cap", probe.first == 7, str(probe.first))
+check("later turns use remaining wall", probe.later is not None and probe.later > 7,
+      str(probe.later))
 
 class SlowClient(FakeClient):
     def chat(self, messages, tools=None, retries=2):

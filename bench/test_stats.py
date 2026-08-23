@@ -3,8 +3,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mh.stats import (aligned_deltas, bootstrap_ci, interaction, mean,
-                      pass_rates_by_repeat, role_of)
+from mh.stats import (aligned_deltas, bootstrap_ci, capability_arms, interaction, mean,
+                      pass_rates_by_repeat, role_of, usable_rows)
 from run import seed_for_repeat
 
 PASS, FAIL = [], []
@@ -48,6 +48,17 @@ abl = {0: 0.25, 1: 0.50, 2: 0.00}
 d, keys = aligned_deltas(full, abl)
 check("paired keys", keys == [0, 1, 2])
 check("paired values", d == [0.5, 0.0, 0.25])
+
+print("starved rows excluded from pass rates")
+mixed = [
+    {"task": "a", "rep": 0, "passed": True, "steps": 5, "output_tokens": 10,
+     "stop_reason": "finished"},
+    {"task": "b", "rep": 0, "passed": False, "steps": 1, "output_tokens": 0,
+     "stop_reason": "error:ModelError"},
+]
+check("usable drops starved", len(usable_rows(mixed)) == 1)
+rates_u = pass_rates_by_repeat(mixed)
+check("starved not in denominator", abs(rates_u[0] - 1.0) < 1e-12, str(rates_u))
 
 print("interaction Δ_weak > Δ_strong")
 # weak deltas sit well above strong deltas

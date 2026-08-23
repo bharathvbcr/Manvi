@@ -182,7 +182,14 @@ func (g FileGate) EvaluateFileChange(path string, task *dc.Task, op dc.Operation
 		return g.noteHardRules(d)
 	}
 
-	if matchesAny(task.ForbiddenChanges, normalized) {
+	// Folded like the secret and restricted rungs above: ".ENV and .env are
+	// one file" on the case-insensitive filesystems this harness ships on,
+	// and a prohibition the planner wrote is voided by a case change unless
+	// the match folds too. (The planned-file match below stays
+	// case-sensitive on purpose: its failure direction is denial, which is
+	// safe, and folding it would let a differently-cased path claim another
+	// entry's authorisation.)
+	if fnmatch.MatchAnyFold(task.ForbiddenChanges, normalized) {
 		return g.noteHardRules(deny(RuleForbiddenChange, "Path is listed in forbidden_changes.", normalized, task.ID))
 	}
 

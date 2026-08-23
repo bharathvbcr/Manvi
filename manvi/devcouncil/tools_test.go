@@ -175,6 +175,9 @@ func TestEveryToolIsRegistered(t *testing.T) {
 		"devcouncil_request_override",
 		"devcouncil_get_diff", "devcouncil_verify_task",
 		"devcouncil_get_gaps", "devcouncil_get_next_actions",
+		"devcouncil_git_status", "devcouncil_git_log", "devcouncil_git_branches",
+		"devcouncil_git_show", "devcouncil_git_stage", "devcouncil_git_commit",
+		"devcouncil_dev_inspect",
 	} {
 		if !f.pipe.Has(name) {
 			t.Errorf("%s is not registered", name)

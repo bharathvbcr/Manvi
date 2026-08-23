@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.bench import load_tasks
+from mh.runtime import is_starved_episode
 from run import CONFIGS, seed_for_repeat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +52,17 @@ def outdir(model, config, tag):
     return os.path.join(RESULTS, f"{slug(model)}__{config}__{tag}")
 
 
+def cell_has_starved(model, config, tag):
+    p = os.path.join(outdir(model, config, tag), "summary.json")
+    if not os.path.isfile(p):
+        return False
+    try:
+        s = json.load(open(p))
+    except Exception:
+        return False
+    return any(is_starved_episode(r) for r in (s.get("rows") or []))
+
+
 def complete(model, config, tag, n_tasks, repeats):
     p = os.path.join(outdir(model, config, tag), "summary.json")
     if not os.path.isfile(p):
@@ -60,7 +72,9 @@ def complete(model, config, tag, n_tasks, repeats):
     except Exception:
         return False
     want = n_tasks * repeats
-    return int(s.get("n") or 0) >= want
+    if int(s.get("n") or 0) < want:
+        return False
+    return not cell_has_starved(model, config, tag)
 
 
 def main():
@@ -81,6 +95,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true",
                     help="re-run cells that already have a complete summary")
+    ap.add_argument("--force-starved", action="store_true",
+                    help="re-run cells that contain first-turn 0-token timeouts")
     ap.add_argument("--max-steps", type=int, default=0,
                     help="passed to run.py; 0 means no LLM-turn ceiling")
     ap.add_argument("--max-wall", type=int, default=1800,
@@ -127,7 +143,14 @@ def main():
     failed = 0
     t0 = time.time()
     for i, (role, model, cfg) in enumerate(plan, 1):
-        if not args.force and complete(model, cfg, args.tag, n_tasks, repeats):
+        skip = False
+        if not args.force:
+            if complete(model, cfg, args.tag, n_tasks, repeats):
+                if args.force_starved and cell_has_starved(model, cfg, args.tag):
+                    skip = False
+                else:
+                    skip = True
+        if skip:
             print(f"[grid] {i}/{len(plan)} skip complete {role} {model} {cfg}")
             skipped += 1
             continue
@@ -140,6 +163,8 @@ def main():
             cmd.append("--share-gpu")
         if args.force:
             cmd.append("--force")
+        elif args.force_starved:
+            cmd.append("--force-starved")
         if args.tasks:
             cmd.extend(["--tasks", args.tasks])
         print(f"[grid] {i}/{len(plan)} {role} {model} {cfg}", flush=True)

@@ -148,3 +148,48 @@ fn coverage_for_a_file_the_diff_never_touched_is_ignored() {
     });
     assert!(intersect_coverage(&files, &measurements).is_clean());
 }
+
+#[test]
+fn an_absurd_span_is_malformed_not_materialised() {
+    // One profile line used to allocate its full span line by line: a corrupt
+    // or hostile profile could push ~4.3 billion u32s before the intersection
+    // ever ran.
+    let profile = "mode: set\nmod/file.go:1.1,4294967295.1 1 1\n";
+    let err = dc_verify::coverage::parse(profile).expect_err("an absurd span must be refused");
+    assert!(
+        err.reason.contains("more lines than any real source file"),
+        "unexpected reason: {}",
+        err.reason
+    );
+}
+
+#[test]
+fn absolute_lcov_paths_reduce_against_the_supplied_root() {
+    // llvm-cov and grcov emit SF: as an absolute path. Without a root to
+    // reduce against, no such path ever matched a repo-relative diff path and
+    // every file reported as unmeasured.
+    let base = std::env::temp_dir().join(format!("dcv-root-{}", std::process::id()));
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let profile = format!(
+        "SF:{}/crates/x/src/lib.rs\nDA:4,1\nend_of_record\n",
+        repo.display()
+    );
+    let parsed = dc_verify::coverage::parse_with_root(&profile, Some(&repo)).expect("must parse");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].path, "crates/x/src/lib.rs");
+
+    // The symlinked-ancestor spelling reduces too (macOS /tmp → /private/tmp).
+    if let Ok(canonical) = repo.canonicalize() {
+        let profile = format!(
+            "SF:{}/src/main.rs\nDA:2,1\nend_of_record\n",
+            canonical.display()
+        );
+        let parsed =
+            dc_verify::coverage::parse_with_root(&profile, Some(&repo)).expect("must parse");
+        assert_eq!(parsed[0].path, "src/main.rs");
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}

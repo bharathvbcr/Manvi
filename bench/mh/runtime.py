@@ -15,6 +15,45 @@ HOST = "http://127.0.0.1:11434"
 # One peer besides `model`. Qwen 27B Q4 (~21 GiB resident) + Ornith 35B Q8
 # (~39 GiB weights) leaves HBM headroom; three would not.
 SHARE_GPU_MAX_PEERS = 1
+STARVE_ABORT_DEFAULT = 3
+
+
+def keep_existing_episode(row, force=False):
+    """Skip-existing must not treat a 0-token timeout as a finished episode."""
+    if force:
+        return False
+    if not isinstance(row, dict) or not row.get("task"):
+        return False
+    return not is_starved_episode(row)
+
+
+def should_retry_starved(row, attempt):
+    """One retry after unstick. A wedged llama-server is not a harness fail."""
+    return attempt == 0 and is_starved_episode(row)
+
+
+def is_starved_episode(row):
+    """True when the GPU never served the model.
+
+    The Qwen+Ornith share-gpu failure mode is: first /api/chat times out,
+    steps=1, output_tokens=0, stop_reason error:ModelError. That is not a
+    harness ablation. Treating it as a real fail contaminates the cell.
+    """
+    if not isinstance(row, dict):
+        return False
+    if int(row.get("output_tokens") or 0) > 0:
+        return False
+    if int(row.get("steps") or 0) > 1:
+        return False
+    stop = str(row.get("stop_reason") or "")
+    errs = " ".join(str(e) for e in (row.get("errors") or []))
+    blob = (stop + " " + errs).lower()
+    return (
+        stop.startswith("error:")
+        or stop == "wall_timeout"
+        or "timed out" in blob
+        or "timeouterror" in blob
+    )
 
 
 def resident_models(host=HOST):
@@ -66,6 +105,34 @@ def is_api_model(model):
     return (model.startswith("gemini") or 
             model.startswith("models/gemini") or 
             model == "live-gemini")
+
+
+def unstick_server(model, host=HOST, restart=True):
+    """Kill a wedged llama-server. Next /api/chat reloads the model.
+
+    `ollama stop` is enough when the process can still accept RPC. If the
+    model is still listed, or the API is down, restart the unit. Tests pass
+    restart=False so they never touch systemd.
+    """
+    try:
+        subprocess.run(["ollama", "stop", model], capture_output=True, timeout=60)
+    except Exception:
+        pass
+    time.sleep(1)
+    if not restart:
+        return
+    still = model in resident_models(host)
+    if server_up(host) and not still:
+        return
+    try:
+        subprocess.run(["sudo", "-n", "systemctl", "restart", "ollama"],
+                       capture_output=True, timeout=90)
+    except Exception:
+        pass
+    for _ in range(40):
+        if server_up(host):
+            return
+        time.sleep(1)
 
 
 def ensure_sole_tenant(model, host=HOST, evict=True, share_gpu=False):

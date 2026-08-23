@@ -222,6 +222,25 @@ type Log struct {
 	// history is projected from, so a UI fed by it cannot show a turn that
 	// differs from the one the model saw.
 	observers []func(Event)
+
+	// proj is the incremental projection cache. DeriveMessages used to copy
+	// and re-decode every event on every call — and it runs at least once per
+	// step — so a session carrying per-token AssistantChunk events paid
+	// quadratic cost as it grew. Appends now extend the projection in place;
+	// only a compaction (which rewrites how an earlier result replays) or a
+	// load invalidates it.
+	proj projection
+}
+
+// projection is DeriveMessages' answer, kept warm across appends. Guarded by
+// Log.mu; `messages` never contains a partially flushed tool-result group —
+// those live in `pending` until a message event or a derive folds them in,
+// matching the grouping the original full-replay algorithm produced.
+type projection struct {
+	valid     bool
+	compacted map[llm.CallID]string
+	messages  []llm.Message
+	pending   []llm.ContentBlock
 }
 
 // NewLog returns an empty log.
@@ -289,6 +308,122 @@ func (l *Log) Observe(fn func(Event)) {
 }
 
 // Append records an event and returns it with its assigned sequence number.
+// extendProjection folds one appended event into the warm projection, under
+// the write lock Append already holds.
+//
+// Only three event kinds touch the projection. Everything else — per-token
+// AssistantChunk above all — is history-neutral and costs nothing here,
+// which is the whole point: the old derive-everything-per-step shape made a
+// long streaming session quadratic in its own token count.
+func (l *Log) extendProjection(t Type, payload any) {
+	switch t {
+	case ToolResultCompacted:
+		// A compaction changes how an EARLIER tool result replays, so no
+		// incremental extension is sound. Invalidate wholesale; compactions
+		// are rare (once per window overflow), so the next derive pays one
+		// full replay.
+		l.proj.valid = false
+		return
+	case UserMessage, AssistantMessage:
+		data, ok := payload.(MessageData)
+		if !ok {
+			l.proj.valid = false // unexpected payload shape; fall back to replay
+			return
+		}
+		if t == AssistantMessage && len(data.Message.Content) == 0 {
+			// Recorded for its usage but contributes nothing to history —
+			// and, matching the full replay, does not even flush pending
+			// results.
+			return
+		}
+		if !l.proj.valid {
+			return
+		}
+		l.proj.flushPending(&l.proj.messages)
+		l.proj.messages = append(l.proj.messages, data.Message)
+	case ToolResult:
+		data, ok := payload.(ToolResultData)
+		if !ok {
+			l.proj.valid = false
+			return
+		}
+		if !l.proj.valid {
+			return
+		}
+		text := data.Text
+		if short, ok := l.proj.compacted[data.ToolCallID]; ok {
+			text = short
+		}
+		l.proj.pending = append(l.proj.pending, llm.ToolResultBlock{
+			ToolCallID: data.ToolCallID,
+			Content:    []llm.ContentBlock{llm.TextBlock{Text: text}},
+			IsError:    data.IsError,
+		})
+	default:
+		// No effect on model-visible history.
+	}
+}
+
+// flushPending groups accumulated tool results into one user message.
+func (p *projection) flushPending(out *[]llm.Message) {
+	if len(p.pending) == 0 {
+		return
+	}
+	*out = append(*out, llm.Message{Role: llm.RoleUser, Content: p.pending})
+	p.pending = nil
+}
+
+// rebuildProjection reproduces DeriveMessages' original full replay exactly;
+// it runs only on the cold path (first derive, after a compaction, or after a
+// load).
+func (l *Log) rebuildProjection() error {
+	events := l.events
+
+	proj := projection{valid: true, compacted: make(map[llm.CallID]string)}
+	for _, event := range events {
+		if event.Type != ToolResultCompacted {
+			continue
+		}
+		var data CompactionData
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			return fmt.Errorf("session: event %d: %w", event.Seq, err)
+		}
+		proj.compacted[data.ToolCallID] = data.Text
+	}
+
+	for _, event := range events {
+		switch event.Type {
+		case UserMessage, AssistantMessage:
+			var data MessageData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				return fmt.Errorf("session: event %d: %w", event.Seq, err)
+			}
+			if event.Type == AssistantMessage && len(data.Message.Content) == 0 {
+				continue
+			}
+			proj.flushPending(&proj.messages)
+			proj.messages = append(proj.messages, data.Message)
+
+		case ToolResult:
+			var data ToolResultData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				return fmt.Errorf("session: event %d: %w", event.Seq, err)
+			}
+			text := data.Text
+			if short, ok := proj.compacted[data.ToolCallID]; ok {
+				text = short
+			}
+			proj.pending = append(proj.pending, llm.ToolResultBlock{
+				ToolCallID: data.ToolCallID,
+				Content:    []llm.ContentBlock{llm.TextBlock{Text: text}},
+				IsError:    data.IsError,
+			})
+		}
+	}
+	l.proj = proj
+	return nil
+}
+
 func (l *Log) Append(t Type, payload any) (Event, error) {
 	var raw json.RawMessage
 	if payload != nil {
@@ -318,6 +453,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		Data: raw,
 	}
 	l.events = append(l.events, event)
+	l.extendProjection(t, payload)
 	observers := l.observers
 	l.mu.Unlock()
 
@@ -391,71 +527,50 @@ func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 }
 
 func (l *Log) DeriveMessages() ([]llm.Message, error) {
+	// Fast path: the warm projection is extended by every Append, so a
+	// steady-state step costs one slice copy instead of re-decoding the
+	// whole log. The returned outer slice is fresh; the content blocks it
+	// points at are shared with the cache and treated as read-only, which is
+	// the same contract every consumer of this projection already had.
 	l.mu.RLock()
-	events := append([]Event(nil), l.events...)
-	l.mu.RUnlock()
-
-	// Compactions are collected first because a tool result is replayed in its
-	// compacted form regardless of where the compaction event landed relative
-	// to it. Applying them in one pass also means the projection is a pure
-	// function of the log: two derivations of the same log are byte-identical,
-	// which is what the prefix cache and the invariant assertion both rely on.
-	compacted := make(map[llm.CallID]string)
-	for _, event := range events {
-		if event.Type != ToolResultCompacted {
-			continue
-		}
-		var data CompactionData
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
-		}
-		compacted[data.ToolCallID] = data.Text
-	}
-
 	var out []llm.Message
-	var pendingResults []llm.ContentBlock
-
-	flushResults := func() {
-		if len(pendingResults) == 0 {
-			return
-		}
-		out = append(out, llm.Message{Role: llm.RoleUser, Content: pendingResults})
-		pendingResults = nil
-	}
-
-	for _, event := range events {
-		switch event.Type {
-		case UserMessage, AssistantMessage:
-			var data MessageData
-			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
-			}
-			// An assistant message with no content is recorded for its usage
-			// but contributes nothing to history, matching the upstream rule.
-			if event.Type == AssistantMessage && len(data.Message.Content) == 0 {
-				continue
-			}
-			flushResults()
-			out = append(out, data.Message)
-
-		case ToolResult:
-			var data ToolResultData
-			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
-			}
-			text := data.Text
-			if short, ok := compacted[data.ToolCallID]; ok {
-				text = short
-			}
-			pendingResults = append(pendingResults, llm.ToolResultBlock{
-				ToolCallID: data.ToolCallID,
-				Content:    []llm.ContentBlock{llm.TextBlock{Text: text}},
-				IsError:    data.IsError,
-			})
+	if l.proj.valid {
+		out = make([]llm.Message, 0, len(l.proj.messages)+1)
+		out = append(out, l.proj.messages...)
+		if len(l.proj.pending) > 0 {
+			out = append(out, llm.Message{Role: llm.RoleUser, Content: l.proj.pending})
 		}
 	}
-	flushResults()
-	return out, nil
+	l.mu.RUnlock()
+	if out != nil {
+		return out, nil
+	}
+
+	// Cold path: full replay under the write lock, stored so the next derive
+	// is warm again. The read lock is dropped before the write lock is taken —
+	// an RWMutex upgrade attempt would deadlock against itself.
+	if err := func() error {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.proj.valid {
+			return nil // another cold derive won the race; nothing to do
+		}
+		return l.rebuildProjection()
+	}(); err != nil {
+		return nil, err
+	}
+
+	// The rebuild replayed l.events live under the write lock, so the stored
+	// projection is current as of this lock's release; any later append folds
+	// into it incrementally. Read it back through a fresh lock.
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	result := make([]llm.Message, 0, len(l.proj.messages)+1)
+	result = append(result, l.proj.messages...)
+	if len(l.proj.pending) > 0 {
+		result = append(result, llm.Message{Role: llm.RoleUser, Content: l.proj.pending})
+	}
+	return result, nil
 }
 
 // SystemPrompt returns the most recently logged system prompt.

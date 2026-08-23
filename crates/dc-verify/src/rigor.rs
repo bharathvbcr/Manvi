@@ -78,7 +78,7 @@ pub fn detect_stubs(files: &[FileDiff]) -> Vec<Finding> {
                     severity: Severity::Blocking,
                     path: file.path.clone(),
                     line: *line_no,
-                    evidence: truncate(content.trim(), 120),
+                    evidence: safe_evidence(content),
                     message: format!(
                         "added code whose body is `{marker}`; the task is not implemented"
                     ),
@@ -98,7 +98,7 @@ pub fn detect_stubs(files: &[FileDiff]) -> Vec<Finding> {
                     severity: Severity::Advisory,
                     path: file.path.clone(),
                     line: *line_no,
-                    evidence: truncate(content.trim(), 120),
+                    evidence: safe_evidence(content),
                     message: format!("added a `{marker}` marker"),
                 });
             }
@@ -131,6 +131,37 @@ struct SecretPattern {
     prefix: &'static str,
     /// Minimum length of the whole token, including the prefix.
     min_len: usize,
+}
+
+impl SecretPattern {
+    /// Returns the token this pattern matches in `content`, if it does.
+    ///
+    /// The single seam through which every consumer — the secret gate, and
+    /// the evidence builder every other gate routes its quotes through —
+    /// decides what counts as a credential. Two shapes share one rule set or
+    /// they disagree about where secrets are, which is how a key redacted by
+    /// one gate leaks out of another's evidence field.
+    fn matches(&self, content: &str) -> Option<String> {
+        let start = content.find(self.prefix)?;
+        let token: String = content[start..]
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'' && *c != ',')
+            .collect();
+        // A PEM block is identified by its full header, not by the dashes
+        // alone: certificates and public keys are ordinary trust-store
+        // content, and blocking them taught operators to wave findings
+        // through.
+        if self.prefix == "-----BEGIN" {
+            let upper = content.to_ascii_lowercase();
+            if !upper.contains("private key") {
+                return None;
+            }
+        }
+        if token.len() < self.min_len && !self.prefix.starts_with("-----") {
+            return None;
+        }
+        Some(token)
+    }
 }
 
 /// Vendor-prefixed key shapes.
@@ -205,16 +236,9 @@ pub fn scan_secrets(files: &[FileDiff]) -> Vec<Finding> {
     for file in files {
         for (line_no, content) in &file.added_lines {
             for pattern in SECRET_PATTERNS {
-                let Some(start) = content.find(pattern.prefix) else {
+                let Some(token) = pattern.matches(content) else {
                     continue;
                 };
-                let token: String = content[start..]
-                    .chars()
-                    .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'' && *c != ',')
-                    .collect();
-                if token.len() < pattern.min_len && !pattern.prefix.starts_with("-----") {
-                    continue;
-                }
                 findings.push(Finding {
                     gate: "secret_scan",
                     severity: Severity::Blocking,
@@ -236,6 +260,23 @@ pub fn scan_secrets(files: &[FileDiff]) -> Vec<Finding> {
         }
     }
     findings
+}
+
+/// Builds the evidence text a non-secret finding may quote from an added line.
+///
+/// Every evidence field outside `scan_secrets` is built through here, so a
+/// line carrying both a stub marker and a credential cannot leak the
+/// credential through a gate that does not itself look for credentials — which
+/// is exactly how `// TODO remove before merge sk-ant-…` once reached the
+/// report verbatim while the secret gate beside it showed only `sk-ant-…`.
+fn safe_evidence(line: &str) -> String {
+    let trimmed = line.trim();
+    for pattern in SECRET_PATTERNS {
+        if pattern.matches(trimmed).is_some() {
+            return format!("<contains a {}; quoted text withheld>", pattern.name);
+        }
+    }
+    truncate(trimmed, 120)
 }
 
 /// redact keeps the identifying prefix and hides the rest.

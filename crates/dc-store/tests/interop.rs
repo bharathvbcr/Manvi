@@ -175,15 +175,19 @@ fn both_sides_agree_on_when_a_lease_expires() {
     let db = temp_db("expiry");
 
     let store = Store::open(&db).unwrap();
-    // A lease that expired an hour ago.
+    // A lease whose one-second life has passed. (A negative TTL would be the
+    // obvious way to get here, but the store now refuses those: minting a
+    // lease that is born expired while reporting success was a defect, not a
+    // feature.)
     let lease = store
         .acquire(&AcquireRequest {
             task_id: "TASK-EXPIRED".into(),
             owner: "rust-builder".into(),
-            ttl_seconds: Some(-3600),
+            ttl_seconds: Some(1),
             ..Default::default()
         })
         .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
 
     let code = format!(
         r#"

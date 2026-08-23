@@ -316,3 +316,63 @@ fn timestamps_round_trip_and_parse_python_shapes() {
     assert_eq!(parse_iso_utc("garbage"), None);
     assert_eq!(parse_iso_utc(""), None);
 }
+
+#[test]
+fn non_positive_ttl_is_refused_not_minted() {
+    let store = Store::open_in_memory().unwrap();
+    for ttl in [-3600i64, 0] {
+        let err = store
+            .acquire(&AcquireRequest {
+                task_id: "TASK-TTL".into(),
+                owner: "builder-1".into(),
+                ttl_seconds: Some(ttl),
+                ..Default::default()
+            })
+            .expect_err("a lease born expired must not report success");
+        assert!(
+            err.to_string().contains("unusable ttl"),
+            "unexpected error for ttl {ttl}: {err}"
+        );
+        assert!(store.active_lease("TASK-TTL").unwrap().is_none());
+    }
+}
+
+#[test]
+fn absurd_ttl_is_refused_rather_than_overflowing() {
+    // i64::MAX used to walk `now + ttl` off the end of i64: panic in debug,
+    // nonsense expiry in release.
+    let store = Store::open_in_memory().unwrap();
+    let err = store
+        .acquire(&AcquireRequest {
+            task_id: "TASK-TTL".into(),
+            owner: "builder-1".into(),
+            ttl_seconds: Some(i64::MAX),
+            ..Default::default()
+        })
+        .expect_err("an unbounded ttl must be refused");
+    assert!(err.to_string().contains("unusable ttl"), "{err}");
+}
+
+#[test]
+fn impossible_calendar_timestamps_are_unreadable_not_immortal() {
+    // Digit-shaped garbage used to produce an epoch via the civil-date
+    // arithmetic and read as a lease that effectively never expires. The
+    // invariant is the opposite: an unreadable expiry surfaces as an error,
+    // never as an indefinite lease.
+    for bad in [
+        "9999-99-99T99:99:99",
+        "2099-13-01T00:00:00", // month 13
+        "2099-01-32T00:00:00", // day 32
+        "2099-01-01T24:00:00", // hour 24
+        "2099-01-01T00:60:00", // minute 60
+        "2099-01-01T00:00:61", // leap-second spelling stays out; it is not produced here
+    ] {
+        assert!(
+            parse_iso_utc(bad).is_none(),
+            "{bad} parsed as a readable timestamp"
+        );
+    }
+    // And the readable shapes still parse, including the offset forms.
+    assert!(parse_iso_utc("2099-01-31T23:59:59").is_some());
+    assert!(parse_iso_utc("2099-01-31T23:59:59+05:30").is_some());
+}

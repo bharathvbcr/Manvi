@@ -463,6 +463,11 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				s.done = true
+			} else {
+				// A stream that died mid-flight settles as that failure, so
+				// Response reports the server's silence instead of blaming
+				// the caller for exhausting nothing.
+				s.failure = err
 			}
 			return llm.Chunk{}, err
 		}
@@ -495,10 +500,36 @@ func (s *stream) Next() (llm.Chunk, error) {
 			s.failure = err
 			return llm.Chunk{}, err
 		}
+		// Checked once per event rather than per write, and by setting the
+		// failure rather than returning it, so a chunk this frame produced
+		// still reaches the caller before the refusal does.
+		if over := s.decodedBytes(); over > maxDecodedResponseBytes && s.failure == nil {
+			s.failure = fmt.Errorf(
+				"gemini: the response exceeded the %d-byte decode limit (%d bytes and still arriving); "+
+					"the server is generating past any max_tokens it was given",
+				maxDecodedResponseBytes, over)
+		}
 		if emit {
 			return chunk, nil
 		}
 	}
+}
+
+// maxDecodedResponseBytes bounds how much of one response this stream will
+// hold across all accumulators. Mirrors openaicompat's limit: the stall
+// watchdog bounds silence, not volume.
+const maxDecodedResponseBytes = 4 << 20
+
+// decodedBytes is everything this stream is holding from the response so far.
+func (s *stream) decodedBytes() int {
+	total := s.text.Len() + s.reasoning.Len()
+	for _, acc := range s.calls {
+		if acc == nil {
+			continue
+		}
+		total += acc.args.Len()
+	}
+	return total
 }
 
 func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {

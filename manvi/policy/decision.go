@@ -64,6 +64,14 @@ const (
 	RuleCommandForcePush      RuleID = "command.force_push"
 	RuleCommandProtectedReset RuleID = "command.protected_reset"
 	RuleCommandProtectedPush  RuleID = "command.protected_branch_push"
+	// Substitution and heredoc refusals are structural, not behavioural: the
+	// ladder judges a command line by reading it, and both constructs carry
+	// code the reading cannot see. They are Hard for the same reason the
+	// splitter treats every unquoted operator as a boundary — an allowlist
+	// entry matched against a line whose live parts were never judged is an
+	// allow that skipped the gate.
+	RuleCommandSubstitution RuleID = "command.substitution"
+	RuleCommandHeredoc      RuleID = "command.heredoc"
 )
 
 // severities is the authoritative classification. A rule absent from this map
@@ -92,6 +100,8 @@ var severities = map[RuleID]Severity{
 	RuleCommandProtectedPush:  WarnSeverity,
 	RuleCommandNoLease:        Soft,
 	RuleCommandNotAllowed:     Soft,
+	RuleCommandSubstitution:   Hard,
+	RuleCommandHeredoc:        Hard,
 }
 
 // Subject says what a rule's Target names: a path on disk, or a shell command.
@@ -140,6 +150,8 @@ var subjects = map[RuleID]Subject{
 	RuleCommandForcePush:      SubjectCommand,
 	RuleCommandProtectedReset: SubjectCommand,
 	RuleCommandProtectedPush:  SubjectCommand,
+	RuleCommandSubstitution:   SubjectCommand,
+	RuleCommandHeredoc:        SubjectCommand,
 }
 
 // SubjectOf returns what a rule's Target names.

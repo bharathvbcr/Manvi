@@ -1,8 +1,13 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -370,5 +375,77 @@ func TestAnUnknownModelIsRefusedAtAssembly(t *testing.T) {
 	}
 	if len(server.Requests) != 0 {
 		t.Fatal("an unknown model reached the network")
+	}
+}
+
+// TestRunawayResponseHitsTheDecodeLimit: a server generating past any output
+// bound must fail the turn rather than allocate without limit. The stall
+// watchdog bounds silence; this bounds volume.
+func TestRunawayResponseHitsTheDecodeLimit(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	b.WriteString("event: content_block_start\n")
+	b.WriteString("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
+	// Far past the 4 MiB decode ceiling in one delta.
+	chunk := strings.Repeat("x", maxDecodedResponseBytes+1024)
+	fmt.Fprintf(&b, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%q}}\n\n", chunk)
+
+	adapter, _ := adapterFor(t, b.String())
+	stream, err := adapter.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawErr error
+	for {
+		_, err := stream.Next()
+		if err != nil {
+			sawErr = err
+			break
+		}
+	}
+	if sawErr == nil || !strings.Contains(sawErr.Error(), "decode limit") {
+		t.Fatalf("a %d-byte response was accepted without complaint", len(chunk))
+	}
+	// The settled view reports the same failure, not a caller error.
+	if _, err := stream.Response(); err == nil || !strings.Contains(err.Error(), "decode limit") {
+		t.Fatalf("Response() = %v, want the decode-limit failure", err)
+	}
+}
+
+// TestMidFlightFailureSettlesTheStream: when the connection dies partway, the
+// settled view must report that failure. It used to answer "called before the
+// stream was exhausted", blaming the caller for a server that went silent.
+func TestMidFlightFailureSettlesTheStream(t *testing.T) {
+	// A server that starts a valid SSE response and then rips the connection
+	// away mid-event: the client sees an I/O failure, not clean EOF.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		flusher.Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := New(srv.URL, adaptertest.Secret("sk-test-key-value"))
+	stream, err := adapter.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstErr := error(nil)
+	for {
+		_, err := stream.Next()
+		if err != nil {
+			firstErr = err
+			break
+		}
+	}
+	if firstErr == nil || errors.Is(firstErr, io.EOF) {
+		t.Fatalf("expected a mid-flight I/O failure, got %v", firstErr)
+	}
+	_, respErr := stream.Response()
+	if respErr == nil || !strings.Contains(respErr.Error(), firstErr.Error()) {
+		t.Fatalf("Response() = %v, want the stream's own failure (%v)", respErr, firstErr)
 	}
 }

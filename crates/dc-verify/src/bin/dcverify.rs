@@ -29,13 +29,14 @@ fn main() -> ExitCode {
     }
 }
 
-const KNOWN_FLAGS: &[&str] = &["planned", "coverage"];
+const KNOWN_FLAGS: &[&str] = &["planned", "coverage", "root"];
 const IDENTITY: &str = "dc-verify";
 const SCHEMA_VERSION: u32 = 1;
 
 fn run(args: &[String]) -> Result<String, String> {
     let mut planned: Vec<String> = Vec::new();
     let mut coverage_path: Option<String> = None;
+    let mut root: Option<String> = None;
     let mut positional: Vec<&str> = Vec::new();
 
     let mut i = 0;
@@ -55,6 +56,11 @@ fn run(args: &[String]) -> Result<String, String> {
             // comma or a space survives the boundary intact.
             if name == "coverage" {
                 coverage_path = Some(value.clone());
+            } else if name == "root" {
+                // Absolute LCOV paths reduce against this; without it the
+                // working directory is used, which a host driving the binary
+                // from elsewhere cannot rely on.
+                root = Some(value.clone());
             } else {
                 planned = value
                     .lines()
@@ -76,12 +82,20 @@ fn run(args: &[String]) -> Result<String, String> {
             quote(IDENTITY),
             SCHEMA_VERSION
         )),
-        Some("check") | None => check(&planned, coverage_path.as_deref()),
+        Some("check") | None => check(
+            &planned,
+            coverage_path.as_deref(),
+            root.as_deref().map(std::path::Path::new),
+        ),
         Some(other) => Err(format!("unknown command {other:?} (check, health)")),
     }
 }
 
-fn check(planned: &[String], coverage_path: Option<&str>) -> Result<String, String> {
+fn check(
+    planned: &[String],
+    coverage_path: Option<&str>,
+    root: Option<&std::path::Path>,
+) -> Result<String, String> {
     let mut diff = String::new();
     std::io::stdin()
         .read_to_string(&mut diff)
@@ -107,7 +121,7 @@ fn check(planned: &[String], coverage_path: Option<&str>) -> Result<String, Stri
         Some(path) => {
             let raw = std::fs::read_to_string(path)
                 .map_err(|e| format!("reading the coverage file {path}: {e}"))?;
-            dc_verify::coverage::parse(&raw)
+            dc_verify::coverage::parse_with_root(&raw, root)
                 .map_err(|e| format!("parsing the coverage file {path}: {e}"))?
         }
     };

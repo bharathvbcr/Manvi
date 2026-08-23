@@ -1,7 +1,13 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -633,5 +639,80 @@ func TestTheStreamCarriesSignaturesOutOfTheThoughtStep(t *testing.T) {
 	// And it must not have become visible content.
 	if strings.Contains(resp.Message.Text(), "EuYBCuMBARFNMg") {
 		t.Error("the signature leaked into the answer text")
+	}
+}
+
+// TestRunawayResponseHitsTheDecodeLimit: a server generating past any output
+// bound must fail the turn rather than allocate without limit.
+func TestRunawayResponseHitsTheDecodeLimit(t *testing.T) {
+	chunk := strings.Repeat("x", maxDecodedResponseBytes+1024)
+	payload, err := json.Marshal(map[string]any{
+		"event_type": "step.delta",
+		"step": map[string]any{
+			"type": "model_output",
+			"content": []map[string]any{
+				{"type": "text", "text": chunk},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "event: interaction.created\ndata: {\"event_type\":\"interaction.created\"}\n\n" +
+		"event: step.delta\ndata: " + string(payload) + "\n\n"
+
+	adapter, _ := adapterFor(t, body)
+	stream, err := adapter.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawErr error
+	for {
+		_, err := stream.Next()
+		if err != nil {
+			sawErr = err
+			break
+		}
+	}
+	if sawErr == nil || !strings.Contains(sawErr.Error(), "decode limit") {
+		t.Fatalf("a %d-byte response was accepted without complaint", len(chunk))
+	}
+	if _, err := stream.Response(); err == nil || !strings.Contains(err.Error(), "decode limit") {
+		t.Fatalf("Response() = %v, want the decode-limit failure", err)
+	}
+}
+
+// TestMidFlightFailureSettlesTheStream: a connection ripped away partway must
+// settle as that failure in Response(), not as a caller error.
+func TestMidFlightFailureSettlesTheStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "event: interaction.created\ndata: {\"event_type\":\"interaction.created\"}\n\n")
+		flusher.Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := New(srv.URL, adaptertest.Secret("gemini-test-key-value"))
+	stream, err := adapter.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstErr error
+	for {
+		_, err := stream.Next()
+		if err != nil {
+			firstErr = err
+			break
+		}
+	}
+	if firstErr == nil || errors.Is(firstErr, io.EOF) {
+		t.Fatalf("expected a mid-flight I/O failure, got %v", firstErr)
+	}
+	_, respErr := stream.Response()
+	if respErr == nil || !strings.Contains(respErr.Error(), firstErr.Error()) {
+		t.Fatalf("Response() = %v, want the stream's own failure (%v)", respErr, firstErr)
 	}
 }

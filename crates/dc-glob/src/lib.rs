@@ -109,9 +109,14 @@ impl CharClass {
 /// Parses the class starting at `open`, returning it and the index of the
 /// closing bracket. Returns None for an unterminated or empty class, which the
 /// caller then treats as a literal `[`.
+///
+/// Only a leading '!' negates, matching CPython's fnmatch: `[^a]` is a
+/// literal set {^, a}, not a negation. Both planes are pinned to the
+/// incumbent's behaviour — treating '^' as negation made them deny and allow
+/// exactly inverted path sets against it.
 fn parse_class(pat: &[char], open: usize) -> Option<(CharClass, usize)> {
     let mut i = open + 1;
-    let negated = matches!(pat.get(i), Some('!') | Some('^'));
+    let negated = pat.get(i) == Some(&'!');
     if negated {
         i += 1;
     }
@@ -209,6 +214,19 @@ mod tests {
         assert!(matches("f[a-c]o", "fbo"));
         assert!(!matches("f[a-c]o", "fzo"));
         assert!(matches("f[!a-c]o", "fzo"));
+    }
+
+    /// CPython's fnmatch negates only on '!': translate('[^a]') is the
+    /// literal set {^, a}. Negating on '^' made this plane and the Go plane
+    /// disagree with the incumbent about which paths a [^…] pattern named.
+    #[test]
+    fn caret_in_class_is_literal_not_negation() {
+        assert!(matches("[^a]", "^"));
+        assert!(matches("[^a]", "a"));
+        assert!(!matches("[^a]", "b"));
+        assert!(!matches(".env[^1]", ".env2"));
+        assert!(matches("[!a]", "b"));
+        assert!(!matches("[!a]", "a"));
     }
 
     /// Pathological star patterns must not blow up.

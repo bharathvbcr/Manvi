@@ -94,7 +94,16 @@ pub enum StoreError {
     /// nobody wrote down. It names the mode actually in force so the reader
     /// does not have to go and ask the file.
     JournalMode { mode: String },
+    /// A TTL the store will not honour: zero, negative, or past the ceiling.
+    /// Zero or negative would mint a lease that is born expired — the caller
+    /// believes it holds a task it does not — and an unbounded one walks the
+    /// epoch arithmetic off i64.
+    BadTtl { ttl_seconds: i64 },
 }
+
+/// The longest TTL this store will mint, in seconds. Long enough for any real
+/// working session; short enough that no arithmetic on it can overflow.
+pub const MAX_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -111,6 +120,10 @@ impl std::fmt::Display for StoreError {
                 f,
                 "store could not be put in WAL mode (journal_mode is {mode:?}); \
                  concurrent builders need WAL to share this database"
+            ),
+            StoreError::BadTtl { ttl_seconds } => write!(
+                f,
+                "unusable ttl {ttl_seconds}s: must be between 1 and {MAX_TTL_SECONDS} seconds"
             ),
         }
     }
@@ -291,6 +304,13 @@ impl Store {
         }
 
         let now = self.now_epoch();
+        // Validated before anything is written: an unvalidated TTL used to
+        // overflow the epoch arithmetic (panic in debug, absurd expiry in
+        // release) and a non-positive one minted a lease that read as expired
+        // on first touch while reporting success.
+        if let Some(ttl) = req.ttl_seconds {
+            validate_ttl(ttl)?;
+        }
         let lease = Lease {
             id: new_id(&self.conn)?,
             task_id: req.task_id.clone(),
@@ -302,7 +322,7 @@ impl Store {
             token: new_token(&self.conn)?,
             status: "active".to_string(),
             created_at: self.iso(now),
-            expires_at: req.ttl_seconds.map(|ttl| self.iso(now + ttl)),
+            expires_at: req.ttl_seconds.map(|ttl| self.iso(now.saturating_add(ttl))),
             released_at: None,
         };
 
@@ -396,15 +416,18 @@ impl Store {
     /// hold the lease, or the lease already expired — renewal is deliberately
     /// not a way to resurrect a dead lease.
     pub fn renew(&self, task_id: &str, token: &str, ttl_seconds: i64) -> Result<Option<Lease>> {
+        validate_ttl(ttl_seconds)?;
         let Some(active) = self.active_lease(task_id)? else {
             return Ok(None);
         };
         if active.token != token {
             return Ok(None);
         }
-        let expires = self.iso(self.now_epoch() + ttl_seconds);
+        let expires = self.iso(self.now_epoch().saturating_add(ttl_seconds));
+        // The status predicate keeps a renewal racing a force-steal from
+        // extending a row that was just marked stale.
         self.conn.execute(
-            "UPDATE task_leases SET expires_at = ?1 WHERE id = ?2",
+            "UPDATE task_leases SET expires_at = ?1 WHERE id = ?2 AND status = 'active'",
             params![expires, active.id],
         )?;
         self.select_active(task_id)
@@ -846,6 +869,16 @@ pub fn format_iso_utc(epoch: i64) -> String {
 /// offset, with or without fractional seconds. Returns None rather than a
 /// guess, so an unreadable expiry surfaces as an error instead of an
 /// accidentally-immortal lease.
+/// Rejects a TTL this store will not mint. Zero or negative would create a
+/// lease that is born expired while reporting success; anything past the
+/// ceiling is refused rather than trusted with the epoch arithmetic.
+fn validate_ttl(ttl_seconds: i64) -> Result<()> {
+    if ttl_seconds <= 0 || ttl_seconds > MAX_TTL_SECONDS {
+        return Err(StoreError::BadTtl { ttl_seconds });
+    }
+    Ok(())
+}
+
 pub fn parse_iso_utc(value: &str) -> Option<i64> {
     let text = value.trim();
     let bytes = text.as_bytes();
@@ -860,6 +893,20 @@ pub fn parse_iso_utc(value: &str) -> Option<i64> {
     let minute = num(14, 16)?;
     let second = num(17, 19)?;
     if bytes[4] != b'-' || bytes[7] != b'-' || (bytes[10] != b'T' && bytes[10] != b' ') {
+        return None;
+    }
+
+    // Digit-shaped but impossible calendar values used to sail through and
+    // produce an epoch far in some direction — `9999-99-99T99:99:99` read as
+    // an effectively immortal lease. The crate's own invariant is that an
+    // unreadable expiry must not read as indefinite, so impossible means
+    // unreadable.
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
 
