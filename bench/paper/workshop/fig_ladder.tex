@@ -1,0 +1,38 @@
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth, height=5.0cm,
+  ymin=40, ymax=105, ylabel={pass rate (\%)},
+  xtick={0,1,2,3,4,5,6,7,8}, xticklabels={full,base,no-vg,no-eb,no-cl,no-lb,no-oc,no-gf,no-nt},
+  x tick label style={font=\scriptsize,rotate=35,anchor=east},
+  y tick label style={font=\scriptsize},
+  ylabel style={font=\scriptsize},
+  legend style={font=\scriptsize,at={(0.5,1.02)},anchor=south,legend columns=2,draw=none},
+  grid=major, grid style={gray!20},
+  error bars/y dir=both, error bars/y explicit,
+]
+\addplot[only marks,mark=*,mark size=1.6pt,color=blue!70!black] coordinates {
+(-0.18,95.0) +- (0,5.0) -= (0,5.0)
+(0.82,90.0) +- (0,7.5) -= (0,7.5)
+(1.82,82.5) +- (0,15.0) -= (0,17.5)
+(2.82,95.0) +- (0,5.0) -= (0,5.0)
+(3.82,97.5) +- (0,2.5) -= (0,5.0)
+(4.82,100.0) +- (0,0.0) -= (0,0.0)
+(5.82,92.5) +- (0,7.5) -= (0,10.0)
+(6.82,97.5) +- (0,2.5) -= (0,5.0)
+(7.82,97.5) +- (0,2.5) -= (0,5.0)
+};
+\addlegendentry{Qwen 3.8 27B}
+\addplot[only marks,mark=square*,mark size=1.6pt,color=orange!80!black] coordinates {
+(0.18,65.0) +- (0,10.0) -= (0,10.0)
+(1.18,57.5) +- (0,10.0) -= (0,7.5)
+(2.18,62.5) +- (0,7.5) -= (0,7.5)
+(3.18,57.5) +- (0,5.0) -= (0,5.0)
+(4.18,72.5) +- (0,2.5) -= (0,5.0)
+(5.18,62.5) +- (0,10.0) -= (0,10.0)
+(6.18,75.0) +- (0,7.5) -= (0,7.5)
+(7.18,67.5) +- (0,5.0) -= (0,5.0)
+(8.18,55.0) +- (0,12.5) -= (0,15.0)
+};
+\addlegendentry{Ornith-1.5 35B-A3B}
+\end{axis}
+\end{tikzpicture}

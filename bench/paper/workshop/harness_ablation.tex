@@ -18,6 +18,8 @@
 \usepackage{microtype}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
 
@@ -225,6 +227,16 @@ no-nativetools  & 97.5\% & $-2.5$ $[-10.0, +5.0]$ & 55.0\% & $+10.0$ $[-12.5, +3
 \end{tabular}
 \end{table}
 
+\begin{figure}[t]
+\centering
+\input{fig_ladder}
+\caption{Every cell of the one-flag ladder with bootstrap 95\% intervals, generated directly
+from the statistics file. Neither model peaks at \texttt{full}: Qwen is highest at
+\texttt{no-loopbreak} and Ornith at \texttt{no-outcap}. Intervals overlap almost everywhere ---
+that overlap is the result, not a presentation problem.}
+\label{fig:ladder}
+\end{figure}
+
 \paragraph{The bundle is not the optimum, and one component hurts.}
 Table~\ref{tab:ladder} is the result we did not expect. \emph{Neither model's best
 configuration is \texttt{full}}: Qwen peaks at \texttt{no-loopbreak} (100\%, every seed on every
@@ -236,14 +248,48 @@ prompt growth so much as remove the evidence it needed, while the truncation not
 costs tokens. A practitioner shipping the full bundle because each component has a plausible
 story is shipping two components that cost their model episodes.
 
+\begin{figure}[t]
+\centering
+\input{fig_interaction}
+\caption{The interaction test, sorted by point estimate. Every interval crosses zero and the
+estimates disagree in sign. This is what an underpowered test looks like; it is not evidence
+that the interaction is absent.}
+\label{fig:interaction}
+\end{figure}
+
 \paragraph{The interaction is undetectable.}
 The hypothesis motivating harness engineering is that structure matters more for weaker models.
 Assigning arms empirically (Ornith 65.0\% weaker, Qwen 95.0\% stronger), all eight
 $\Delta_{\text{weaker}} - \Delta_{\text{stronger}}$ intervals include zero, and the point
 estimates do not agree in sign: four positive, three negative, one exactly zero. We report this
-as underpowered rather than absent. With five repeats the intervals are wide enough to be
-consistent with a substantial effect in either direction; a design that wants to see one needs
-more repeats, more tasks, or a wider capability spread than 65\% versus 95\%.
+as underpowered rather than absent (Figure~\ref{fig:interaction}).
+
+\paragraph{How underpowered, exactly.}
+"Underpowered" is only useful with a number attached. Resampling each contrast's observed
+per-seed spread and asking how often a bootstrap interval would exclude zero gives the seed
+counts a follow-up would need:
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+Contrast & $n{=}5$ & $n{=}10$ & $n{=}20$ & $n{=}40$ \\
+\midrule
+Qwen full vs.\ baseline             & 33\% & 70\% & 98\% & 100\% \\
+Ornith full vs.\ baseline           & 19\% & 31\% & 60\% & 89\% \\
+Ornith \texttt{no-outcap}           & 68\% & 96\% & 100\% & 100\% \\
+Interaction, \texttt{no-outcap}     & 38\% & --- & 86\% & --- \\
+Interaction, \texttt{no-verifygate} & 33\% & --- & 99\% & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Twenty seeds --- four times this grid, roughly 2{,}900 episodes --- would resolve most
+of these, and the one result already significant (\texttt{no-outcap}) was detectable at the $n$
+we ran. This is a sample-size problem with a known price, not an unfalsifiable one. What extra
+seeds would \emph{not} fix is construct validity: eight Python tasks written by the harness
+author, a one-flag-at-a-time design blind to interactions between flags, and a weaker arm whose
+failures are dominated by context exhaustion. Those need different tasks and a different design,
+not more compute.
 
 \paragraph{Cost is not wall-clock.}
 We make no timing claim: some cells shared the GPU and later ones did not. What the transcripts
