@@ -93,3 +93,6 @@ bench/results/
 *.bbl
 *.blg
 bench/paper/workshop/*.pdf
+
+# Third-party reference documentation kept locally for study, not redistributed.
+reference/
