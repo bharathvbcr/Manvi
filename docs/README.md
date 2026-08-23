@@ -41,13 +41,13 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  
   Complete CLI subcommand reference, exit codes (`0`, `1`, `2`), full flag catalogue, mutability scopes (`human` vs `startup`), `.devcouncil/config.yaml` schema, and posture matrix.
 - [**DevCouncil Native Tool Suite Reference**](TOOLS_REFERENCE.md)  
-  Detailed parameter and permission specifications for all 23 native DevCouncil tools across Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, and Code Graph Navigation.
+  Detailed parameter and permission specifications for the 37 native DevCouncil tools across Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge.
 
 ---
 
 ## Quality, Parity & Hardening
 
 - [**Verification & Parity Specification**](VERIFICATION_AND_PARITY.md)  
-  Cross-language testing methodology, 938 parity fixtures (`fnmatch-parity.tsv`, `command-parity.tsv`), diff-coverage intersection, anti-stub rigor gates, and the master `./verify.sh` gate.
+  Cross-language testing methodology, 1,031 parity fixtures (`fnmatch-parity.tsv`, `command-parity.tsv`), diff-coverage intersection, anti-stub rigor gates, and the master `./verify.sh` gate.
 - [**Hardening Ledger & Defect Catalogue**](HARDENING_LEDGER.md)  
   Complete catalogue of 30+ hardened invariants, defect patterns, failure modes, and automated regression tests.

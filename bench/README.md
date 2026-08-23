@@ -1,6 +1,6 @@
 # `bench/` — a lightweight harness for small local models
 
-A ~700-line, stdlib-only Python harness and benchmark rig, built to test one claim
+A stdlib-only Python harness and benchmark rig, built to test one claim
 from **Meta-Harness** (arXiv:2603.28052): that harness structure matters far more
 for weak models than for strong ones. It adds no dependencies to this repo.
 

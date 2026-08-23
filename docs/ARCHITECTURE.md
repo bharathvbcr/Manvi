@@ -81,7 +81,7 @@ flowchart TB
 | **Diff & Scope Parsing** | Rust | `crates/dc-verify` | CPU-bound text processing, unified diff parsing, regex matching |
 | **Test Coverage Intersection** | Rust | `crates/dc-verify` | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
 | **Task & Lease Persistence** | Rust | `crates/dc-store` | `rusqlite` SQLite binding, ACID transactions, exclusion index |
-| **Glob Pattern Matching** | Rust & Go | `crates/dc-glob`, `manvi/internal/fnmatch` | Shared 682-case CPython `fnmatch` parity fixture |
+| **Glob Pattern Matching** | Rust & Go | `crates/dc-glob`, `manvi/internal/fnmatch` | Shared 775-case CPython `fnmatch` parity fixture |
 
 ---
 
@@ -303,7 +303,7 @@ Dev_Harness/
 │   └── dc-verify/             # Diff parser, rigor gates & coverage mapper
 │
 ├── testdata/                  # Shared cross-language test fixtures
-│   ├── fnmatch-parity.tsv     # 682 glob test cases
+│   ├── fnmatch-parity.tsv     # 775 glob test cases
 │   └── command-parity.tsv     # 256 command policy test cases
 │
 ├── docs/                      # Technical Documentation & Strategy Artifacts

@@ -13,7 +13,7 @@ To eliminate human interpretation drift, MANVI's Go and Rust implementations are
 ```mermaid
 flowchart LR
     CPython["CPython 3.12 Standard Library"] --> GenGlob["scripts/gen-fnmatch-parity.py"]
-    GenGlob --> GlobTSV["testdata/fnmatch-parity.tsv<br/>(682 cases)"]
+    GenGlob --> GlobTSV["testdata/fnmatch-parity.tsv<br/>(775 cases)"]
     
     GlobTSV --> GoFnmatch["manvi/internal/fnmatch (Go)"]
     GlobTSV --> RustGlob["crates/dc-glob (Rust)"]
@@ -28,7 +28,7 @@ flowchart LR
 
 - Go's standard `path.Match` stops at `/` separators. Python's `fnmatch` crosses `/` separators.
 - Using standard Go `path.Match` would have silently weakened glob-based secret path rules without raising an error.
-- Both Go and Rust must evaluate all 682 glob test cases identically, and `verify.sh` verifies fixture integrity before running tests.
+- Both Go and Rust must evaluate all 775 glob test cases identically, and `verify.sh` verifies fixture integrity before running tests.
 
 ---
 
