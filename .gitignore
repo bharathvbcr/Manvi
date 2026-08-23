@@ -82,3 +82,13 @@ bench/results/
 
 # Built binary sitting in the module tree
 /manvi/harness
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
