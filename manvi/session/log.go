@@ -222,6 +222,16 @@ type Log struct {
 	// history is projected from, so a UI fed by it cannot show a turn that
 	// differs from the one the model saw.
 	observers []func(Event)
+	// scrub is the credential backstop, applied to every payload on its way
+	// into the log. Nil means no scrubbing, which is what a log built without
+	// a composition root gets.
+	//
+	// It is here rather than at the callers because this is the one place
+	// everything durable passes through, and because the log is also what
+	// DeriveMessages projects into the next request — so a credential removed
+	// here is removed from the file on disk *and* from what the provider is
+	// told next turn. Scrubbing at the writer would have left the second half.
+	scrub func(string) string
 
 	// proj is the incremental projection cache. DeriveMessages used to copy
 	// and re-decode every event on every call — and it runs at least once per
@@ -435,6 +445,11 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	}
 
 	l.mu.Lock()
+	if l.scrub != nil && len(raw) > 0 {
+		if cleaned := l.scrub(string(raw)); cleaned != string(raw) {
+			raw = json.RawMessage(cleaned)
+		}
+	}
 	switch t {
 	case TurnStart:
 		l.turn++
@@ -466,6 +481,21 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		fn(event)
 	}
 	return event, nil
+}
+
+// SetScrubber installs the credential backstop every appended payload passes
+// through.
+//
+// The value is replaced inside the marshalled JSON rather than inside the
+// payload struct, because the payloads are a dozen different shapes and a
+// per-shape list is a list to keep in step. Credentials are alphanumeric with
+// dashes and underscores — nothing JSON escapes — so they appear verbatim in
+// the encoded form, and the marker they are replaced with ("[redacted]")
+// contains no character JSON escapes either. The document stays valid.
+func (l *Log) SetScrubber(scrub func(string) string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.scrub = scrub
 }
 
 // Events returns a copy of the log.

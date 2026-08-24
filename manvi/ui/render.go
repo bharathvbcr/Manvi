@@ -319,7 +319,65 @@ func (s *JSONSink) Emit(e Event) {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	e.Text = s.scrubber.Clean(e.Text)
-	e.Detail = s.scrubber.Clean(e.Detail)
-	s.encoder.Encode(e)
+	s.encoder.Encode(scrubEvent(e, s.scrubber))
+}
+
+// scrubEvent returns e with every credential-carrying field cleaned.
+//
+// Every string field, not the two that were easiest to remember. Text and
+// Detail were the only ones JSONSink.Emit cleaned, while the terminal renderer
+// put all of them through `safe` — so the two faces, which JSONSink's own
+// comment says consume the same events precisely so they cannot drift,
+// disagreed about what counts as a credential. The JSON face is the one that
+// writes to disk.
+//
+// Enumerated by hand rather than by reflection, because reflection would make
+// the set silently correct and this list is meant to be read beside the Event
+// definition: a field added there and not here is a gap, and a gap visible in a
+// diff is the point.
+//
+// Arguments is included and is not an afterthought — a tool call carries the
+// model's own text, which is the likeliest place for a credential the harness
+// never chose to handle.
+func scrubEvent(e Event, scrubber *credentials.Scrubber) Event {
+	if scrubber == nil {
+		return e
+	}
+	clean := scrubber.Clean
+	e.Agent = clean(e.Agent)
+	e.Text = clean(e.Text)
+	e.Detail = clean(e.Detail)
+	e.Tool = clean(e.Tool)
+	e.Rule = clean(e.Rule)
+	e.Severity = clean(e.Severity)
+	e.Path = clean(e.Path)
+	e.GrantID = clean(e.GrantID)
+	e.GrantedBy = clean(e.GrantedBy)
+	e.Demoted = clean(e.Demoted)
+	e.ApprovalID = clean(e.ApprovalID)
+	e.TaskID = clean(e.TaskID)
+	e.Posture = clean(e.Posture)
+	e.Model = clean(e.Model)
+	e.Degraded = cleanAll(clean, e.Degraded)
+	e.Weakened = cleanAll(clean, e.Weakened)
+	if len(e.Arguments) > 0 {
+		if cleaned := clean(string(e.Arguments)); cleaned != string(e.Arguments) {
+			e.Arguments = []byte(cleaned)
+		}
+	}
+	return e
+}
+
+// cleanAll copies rather than cleaning in place: the slice belongs to the
+// caller's event, and rewriting it would scrub the value the emitter still
+// holds — which is how a display concern becomes a mutation nobody expected.
+func cleanAll(clean func(string) string, values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = clean(v)
+	}
+	return out
 }
