@@ -540,6 +540,20 @@ func (l *Ledger) restoreRefusal(g Grant) string {
 				return fmt.Sprintf("rule %s is not agent-grantable", rule)
 			}
 		}
+		// The task scoping Issue enforces, enforced again here.
+		//
+		// Issue refuses an agent grant that does not name the task the agent
+		// holds, and refuses one whose scope names a different task — that
+		// pairing is the whole of what "an agent may only grant within its own
+		// task" means. Restore did neither, so a record with an empty
+		// Scope.TaskID came back as a grant covering *every* task and every
+		// path, and Issue would have refused the identical shape a moment
+		// earlier. A ledger file is not a trusted input: it outlives the run
+		// that wrote it, it is editable, and the whole reason these checks
+		// exist is that the scope on a grant is what bounds it.
+		if strings.TrimSpace(g.Scope.TaskID) == "" {
+			return "is an agent grant that names no task; an agent may only grant within its own task"
+		}
 	case Human:
 		// Humans may grant repository-wide; that is what human authority means.
 	default:
@@ -560,7 +574,19 @@ func (l *Ledger) expiryRefusal(g Grant, now time.Time) string {
 	if g.Grantor.Authority == Agent {
 		ceiling = l.policy.AgentMaxTTL
 	}
-	if ceiling > 0 && g.ExpiresAt.Sub(now) > ceiling {
+	// A ceiling of zero is the tightest setting an operator can choose, and it
+	// used to be the one that switched this check off: the guard read
+	// `ceiling > 0`, so `grants.agent.max_ttl=0s` let a record claiming a
+	// hundred-year expiry restore unexamined. Zero is not a sentinel for "no
+	// limit" here — Issue under a zero ceiling can only mint a grant that
+	// expires the instant it is issued, so any restored record with a future
+	// expiry is one this policy could not have produced. A negative ceiling is
+	// not a longer one either; it is clamped to zero rather than inverted into
+	// permission.
+	if ceiling < 0 {
+		ceiling = 0
+	}
+	if g.ExpiresAt.Sub(now) > ceiling {
 		return fmt.Sprintf("expires in %s, beyond the %s ceiling for its authority",
 			g.ExpiresAt.Sub(now).Round(time.Second), ceiling)
 	}

@@ -184,6 +184,19 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 	}
 	// Create the tail that was missing at pin time — under the verified
 	// prefix, after its identity has just been confirmed.
+	//
+	// Every segment is inspected after the Mkdir, and that inspection is the
+	// point of this loop rather than an extra precaution. os.Mkdir reports
+	// EEXIST for a path that is already a *symlink*, and treating EEXIST as
+	// "fine, it is there" walked straight through one: a component planted
+	// between the pin and the write became the parent of the file, and
+	// O_NOFOLLOW below guards only the leaf. Nothing else covered it either —
+	// when the very first component is missing, resolvedDirs holds only the
+	// root, so verifyChain re-verifies the root and nothing between it and the
+	// target. The write landed wherever the link pointed, and writeFile pins
+	// *before* the policy ladder and before the blocking human approval, so
+	// the window was the whole approval dialog rather than the microseconds
+	// this file's header claims.
 	if p.firstMissing < len(strings.Split(p.rel, "/"))-1 {
 		base := p.resolvedDirs[len(p.resolvedDirs)-1]
 		for _, seg := range strings.Split(p.rel, "/")[p.firstMissing : len(strings.Split(p.rel, "/"))-1] {
@@ -191,6 +204,31 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 			if err := os.Mkdir(base, 0o755); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("creating directory for %q: %w", p.rel, err)
 			}
+			// Lstat, not Stat: Stat follows the link and would report the
+			// directory at the far end as though the component itself were one.
+			fi, err := os.Lstat(base)
+			if err != nil {
+				return fmt.Errorf("inspecting created directory %q: %w", base, err)
+			}
+			if fi.Mode()&fs.ModeSymlink != 0 {
+				return &symlinkRefusal{component: seg, during: "write"}
+			}
+			if !fi.IsDir() {
+				return fmt.Errorf("refusing to write %q: path component %q is not a directory", p.rel, seg)
+			}
+			if !containedUnder(p.root, base) {
+				return fmt.Errorf("refusing to write %q: directory component %q resolves outside the repository",
+					p.rel, seg)
+			}
+			id, ok := identityOf(fi)
+			if !ok {
+				return fmt.Errorf("platform cannot identify directories; refusing to write %q", p.rel)
+			}
+			// Recorded so the create-case verifyChain after the open covers the
+			// segments this loop just made, not merely the prefix that existed
+			// when the target was pinned.
+			p.resolvedDirs = append(p.resolvedDirs, base)
+			p.dirIDs = append(p.dirIDs, id)
 		}
 	}
 

@@ -118,6 +118,70 @@ flowchart TD
     HardCmdRules --> SoftCmdRules
 ```
 
+### What a Command Line Writes
+
+A command line has two things to judge, not one: the command, and the files its
+redirections open. The second is judged through exactly the path a `WriteFile`
+call faces, so `cmd > .env` cannot be treated differently from writing `.env`
+directly.
+
+Three properties make that hold rather than merely intend it:
+
+- **Redirect enumeration descends into command substitutions.** `sh -c` executes
+  what is inside `$( )`, backticks, `<( )` and `>( )`, redirections included, so
+  `echo $(echo x > .env)` writes `.env`. Targets are collected from every span
+  the ladder recurses into, to the same depth bound.
+- **The rung is skipped only for a *hard* denial.** A hard denial is undemotable
+  and ungrantable, so the command cannot run. Every other outcome — including a
+  *soft* denial — has its redirections judged, because a soft denial is exactly
+  what a gate mode demotes or a grant clears. The two verdicts are merged by
+  `policy.BlockStrength`, so the stronger survives into the grant-and-mode step.
+- **A target that cannot be resolved refuses.** `> $HOME/x`, `> ~/.ssh/keys`, and
+  any target inside a construct that could not be read to its end are refused as
+  unverifiable writes rather than skipped.
+
+The invariant these add up to, and the one the differential test in
+`gate/redirect_test.go` asserts against the real filesystem, is:
+
+> The gate's verdict on a command line is never more permissive than its verdict
+> on the files that command writes.
+
+### Bounded Cost
+
+The gate is asked about every command an agent runs, and the command is a string
+a model composed, so deciding must cost a bounded amount and the bound cannot
+rest on the model's restraint. Two limits enforce that, and both refuse rather
+than truncate:
+
+- `command.too_long` (Hard, 128 KiB) is checked once before any rung reads the
+  line. It is not a rung inside the ladder, because a rung is reached per clause
+  — after the splitter has already walked the whole input, which is most of the
+  cost it exists to avoid.
+- `maxRedirectTargets` (64 distinct paths) bounds how many writes one command
+  line may be judged to perform. Exceeding it is reported as an *incomplete*
+  enumeration, so the caller fails closed instead of judging the first sixty-four
+  and ignoring the rest.
+
+`gate/bounds_test.go` asserts that every adversarial shape decides inside a
+budget, which is what keeps these from silently drifting into "large enough not
+to matter".
+
+### The Boundary: Inline Code vs. Code On Disk
+
+Two rungs — `command.heredoc` and `command.reparse` — refuse constructs whose
+meaning is not in the text being judged. A heredoc body has no statically
+checkable end; an `eval` argument is a single quoted word until sh discards the
+quotes that made it one. Both are refused outright rather than guessed at.
+
+Executing a script that lives **on disk** is deliberately not addressed by this
+ladder. `sh x.sh`, `make`, `pytest` and every test runner load code that is not
+in the command string at all, so no reading of that string could catch it; the
+allowlist decides whether those command words may run, and the write gate
+decides what the resulting process may write through the harness's own tools.
+Refusing the command words that read files would deny ordinary development work
+while leaving the capability one rename away. This boundary is stated here so it
+is a known limit rather than an assumed guarantee.
+
 ### Parity with Python Incumbent
 
 Command policy normalization matches DevCouncil's Python `TaskPolicyEngine` across 256 test vectors in `testdata/command-parity.tsv`:

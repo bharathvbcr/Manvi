@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -576,7 +578,12 @@ func NormalizeRepoPath(root, raw string) (string, bool) {
 		return "", true
 	}
 
-	rootResolved := resolveExisting(root)
+	rootResolved, rootOK := resolveExisting(root)
+	if !rootOK {
+		// Without a resolved root there is nothing to be contained *by*, so
+		// every answer below would be a guess. Uncontained is the honest one.
+		return "", true
+	}
 
 	var candidate string
 	if filepath.IsAbs(cleaned) {
@@ -584,7 +591,10 @@ func NormalizeRepoPath(root, raw string) (string, bool) {
 	} else {
 		candidate = filepath.Join(rootResolved, cleaned)
 	}
-	resolved := resolveExisting(candidate)
+	resolved, resolvedOK := resolveExisting(candidate)
+	if !resolvedOK {
+		return "", true
+	}
 
 	rel, err := filepath.Rel(rootResolved, resolved)
 	if err != nil {
@@ -633,23 +643,56 @@ func settlePath(raw string) (string, bool) {
 // that does not exist yet, and a write gate is asked about new files
 // constantly — but skipping symlink resolution entirely would let a symlinked
 // directory carry a write out of the repository.
-func resolveExisting(p string) string {
+// The second return value is whether the path could be resolved at all.
+// Callers fail closed on false: a path this function could not follow is one
+// where it and the kernel may be looking at different files, which is the whole
+// condition it exists to prevent.
+//
+// A component that does not resolve is not automatically a component that does
+// not exist, and conflating the two was a hole. EvalSymlinks reports ENOENT for
+// a *dangling* symlink — one whose target is missing — exactly as it does for a
+// name that was never created. The old loop peeled such a component off and
+// reattached it literally, which discarded the link and answered about the
+// link's own name rather than where it points: `notes.md ->
+// /elsewhere/authorized_keys` normalised to `notes.md`, was reported contained,
+// and the write that *created* the target landed outside the repository. Only a
+// second write, once the target existed, was refused — so the escaping write was
+// always the first one. Git carries dangling symlinks in a tree, so a clone can
+// deliver this.
+func resolveExisting(p string) (string, bool) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return filepath.Clean(p)
+		return "", false
 	}
 	cur := abs
 	rest := ""
-	for {
+	// One bound for both kinds of step: peeling a component and following a
+	// link. Real paths are bounded by the OS and link chains by ELOOP, so
+	// exhausting this means the input was built to exhaust it — reported rather
+	// than answered at whatever round the loop gave up on.
+	for steps := 0; steps < 256; steps++ {
 		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
 			if rest == "" {
-				return resolved
+				return resolved, true
 			}
-			return filepath.Join(resolved, rest)
+			return filepath.Join(resolved, rest), true
+		}
+		// Dangling link: follow it by hand and keep resolving from its target,
+		// carrying whatever tail has already been peeled.
+		if fi, lerr := os.Lstat(cur); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+			target, rerr := os.Readlink(cur)
+			if rerr != nil {
+				return "", false
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			cur = filepath.Clean(target)
+			continue
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return filepath.Clean(abs)
+			return filepath.Clean(abs), true
 		}
 		if rest == "" {
 			rest = filepath.Base(cur)
@@ -658,6 +701,7 @@ func resolveExisting(p string) string {
 		}
 		cur = parent
 	}
+	return "", false
 }
 
 // NormalizePlannedCandidate strips the leading "./" the way write

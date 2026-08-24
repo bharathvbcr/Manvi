@@ -1511,6 +1511,11 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		return nil, nil, err
 	}
 	pipeline := tools.NewRegistry(bus.New())
+	// Armed before any tool can run. Every result the model sees, and every
+	// result the session log writes to disk, goes through this.
+	toolScrubber := credentials.NewScrubber()
+	toolScrubber.WatchAll(credentials.NewResolver())
+	pipeline.SetScrubber(toolScrubber.Clean)
 	if err := native.Register(pipeline); err != nil {
 		return nil, nil, err
 	}

@@ -281,6 +281,41 @@ done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' | sed -E 's/^([^:]+):
 [[ -z "$fuzz_missing" ]] || fail "declared but not reachable in their own package:${fuzz_missing}"
 printf '    covered: all %s declared fuzz targets are reachable where they are defined\n' "$fuzz_declared"
 
+# The command gate has two verdicts to reconcile — one about the command, one
+# about the files its redirections open — and for a long time only the first was
+# reliably reached. The tests that prove the second are differential: they run
+# each command line under `sh -c` in a throwaway tree and compare the files that
+# appeared against the gate's own verdict on those files. That makes them the
+# only checks here whose expectation comes from the filesystem rather than from
+# something a person wrote down, which is exactly why they found what the
+# hand-written fixtures could not.
+#
+# They are counted rather than trusted to have run. `go test ./gate` prints "ok"
+# whether these executed or were renamed out of existence, and a differential
+# check that silently stopped running would leave the class it covers looking
+# closed.
+step "Command gate — verdicts match what the shell actually writes"
+diff_ran="$( (cd manvi && go test -count=1 -v ./gate/ \
+  -run 'TestCommandVerdictIsNeverLooserThanTheWritesItPerforms|TestHiddenWritesAreRefusedOutrightUnderEveryPosture' 2>/dev/null) \
+  | grep -c '^    --- PASS' || true )"
+(( diff_ran >= 60 )) || fail "the command/filesystem differential ran only ${diff_ran} cases; the corpus is not being exercised"
+printf '    covered: %s command lines executed under sh and reconciled against the gate\n' "$diff_ran"
+
+# The generated half of the same differential. The corpus above covers the
+# shapes someone wrote down; this assembles command lines from the shell's own
+# operators and checks the same invariant against the filesystem, and it is what
+# found the substituted write that escaped the repository root altogether.
+#
+# The count that matters is not how many lines ran but how many got far enough
+# to be checked: the invariant is conditional on the gate having allowed the
+# line, so a run where nothing was allowed passes while proving nothing. The
+# test fails on its own if that happens; this step surfaces the numbers.
+step "Command gate — generated command lines hold the same invariant"
+gen_out="$( (cd manvi && MANVI_GATE_SOAK="${MANVI_GATE_SOAK:-400}" go test -count=1 -v ./gate/ \
+  -run 'TestGeneratedCommandsNeverOutrunTheirOwnWriteVerdict' 2>&1) )"
+grep -q '^--- PASS' <<<"$gen_out" || { printf '%s\n' "$gen_out" >&2; fail "the generated differential did not pass"; }
+printf '    %s\n' "$(grep -o '[0-9]* generated command lines: .*' <<<"$gen_out" | head -1)"
+
 step "Docs — every stated count is the measured count"
 docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented' 2>/dev/null) | grep -c '^--- PASS' || true )"
 (( docs_ran == 6 )) || fail "the documentation contract ran only ${docs_ran} of 6 checks"

@@ -90,6 +90,18 @@ type FileCheckParams struct {
 type CommandCheckParams struct {
 	// Command is the command line as it would be run.
 	Command string `json:"command"`
+	// Root is the project root a redirection target is resolved against.
+	//
+	// Optional, and its absence is reported rather than passed over. A command
+	// line writes files through its redirections — `cmd > .env` is a write to
+	// .env whatever the allowlist says about cmd — and judging those needs a
+	// root, because the secret, restricted and outside-root rungs are all
+	// statements about a path's position in a repository. Without one this
+	// surface can still answer about the command; it cannot answer about the
+	// files, so the decision comes back carrying
+	// `command.redirect_targets.unchecked` and a host cannot mistake the
+	// narrower answer for the whole one.
+	Root string `json:"root,omitempty"`
 	// AllowedCommands is the host's own allowlist, in fnmatch form.
 	AllowedCommands []string `json:"allowed_commands,omitempty"`
 	// EnforceAllowlist keeps "not in any allowlist" a denial under
@@ -177,6 +189,30 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	}
 	d := gate.EvaluateCommand(p.Command, scope)
 
+	// The files this command line redirects into are judged before the
+	// demotion below, for the same reason the harness gate judges them before
+	// its own: a refusal that is about to be relaxed must not carry an
+	// unexamined write through with it. Under PostureHost every Soft denial is
+	// demoted, so without this a host asking about `nope > .env` would be told
+	// "allowed" — the allowlist refusal demoted, the write to .env never
+	// looked at.
+	if !(d.Blocked() && d.Severity == policy.Hard) {
+		redirect, unjudged, err := s.commandRedirectDecision(p, scope)
+		if err != nil {
+			return nil, badRequest("%v", err)
+		}
+		if redirect != nil && policy.BlockStrength(*redirect) > policy.BlockStrength(d) {
+			d = *redirect
+		} else if unjudged {
+			// Only when the command actually redirects somewhere and no root
+			// was given to resolve it against. A command with no redirections
+			// has nothing here that went unchecked, and marking it degraded
+			// would report an absent check where there was no check to run —
+			// the same dishonesty as the reverse, pointing the other way.
+			d.Degraded = append(d.Degraded, "command.redirect_targets.unchecked")
+		}
+	}
+
 	// An empty command has nothing to run and nothing to grant; it is Hard, so
 	// it never reaches the demotion below. Stated here because it is the one
 	// command outcome a host might expect to be demoted and must not be.
@@ -184,6 +220,65 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		return d, nil
 	}
 	return s.posture.demote(d, "serve.posture=host: allowlist not enforced (enforce_allowlist=false)"), nil
+}
+
+// commandRedirectDecision judges the files p.Command redirects output into,
+// and returns the strongest refusal among them, or nil when none refuses.
+//
+// The second value reports that this command has redirections that were not
+// judged — targets exist and no root was given to resolve them against — so
+// the caller can record that rather than let an unasked question read as an
+// answered one.
+//
+// A target that cannot be resolved to a path at all is refused without a root,
+// because that refusal is a statement about the command's text rather than
+// about a repository, and it is the one this surface can make honestly either
+// way.
+func (s *Server) commandRedirectDecision(p CommandCheckParams, scope *dc.Task) (*policy.Decision, bool, error) {
+	targets, opaque, err := policy.RedirectTargets(p.Command)
+	if err != nil {
+		return nil, false, fmt.Errorf("policy.check.command: %v", err)
+	}
+	if opaque {
+		return &policy.Decision{Action: policy.Deny,
+			Rule:     policy.RuleCommandSubstitution,
+			Severity: policy.Hard,
+			Reason: "A redirection target could not be resolved to a path this gate can judge — " +
+				"it carries an expansion only the shell can resolve, or sits inside a construct " +
+				"that could not be read to its end — and was treated as an unverifiable write.",
+			Target: p.Command,
+			TaskID: scope.ID,
+		}, false, nil
+	}
+	if len(targets) == 0 {
+		return nil, false, nil
+	}
+	if p.Root == "" {
+		return nil, true, nil
+	}
+	fileGate := policy.FileGate{
+		Root: p.Root,
+		// Matching checkFile exactly: no repo map, and no same-directory
+		// fallback with no planned files to measure against.
+		Subsystems:     nil,
+		AllowNeighbors: s.allowNeighbors,
+		AllowSameDir:   false,
+		HardRules:      s.hardRules,
+	}
+	var worst *policy.Decision
+	for _, target := range targets {
+		written := fileGate.EvaluateFileChange(target, nil, dc.OpWrite, false)
+		if !written.Blocked() {
+			continue
+		}
+		written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
+			target, written.Reason)
+		if worst == nil || policy.BlockStrength(written) > policy.BlockStrength(*worst) {
+			d := written
+			worst = &d
+		}
+	}
+	return worst, false, nil
 }
 
 // parseOperation maps the wire spelling to dc.Operation, refusing anything
