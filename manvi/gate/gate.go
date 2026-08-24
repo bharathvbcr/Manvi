@@ -118,11 +118,11 @@ func (g *Gate) EvaluateWrite(path string, task *dc.Task, op dc.Operation) (polic
 //
 // Matching normalises away trailing redirections so allowlist entries stay
 // single-clause, which means an approved command can still carry a redirect
-// the ladder never looked at. Each target is therefore evaluated here as the
-// write it actually is, through exactly the path a WriteFile call faces. A
-// blocked target denies the command; a demoted one follows the operator's own
-// file-mode posture, so this cannot contradict how the harness treats direct
-// writes to the same path.
+// the ladder never looked at. Each target is therefore evaluated as the write
+// it actually is, through exactly the path a WriteFile call faces — but only
+// once the command's own decision has settled, because settling is where a
+// grant and a mode demotion turn a denial into an allow. See EvaluateRedirects
+// for the invariant and for what the earlier ordering let through.
 func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, error) {
 	mode, modeOrigin, err := flags.EffectiveGateMode(g.Flags, flags.PolicyCommandMode)
 	if err != nil {
@@ -138,35 +138,121 @@ func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, 
 		HardRules:             hardRules,
 	}.EvaluateCommand(command, task)
 
-	if decision.Action != policy.Deny {
-		targets, opaque, err := policy.RedirectTargets(command)
-		if err != nil {
-			return policy.Decision{}, err
-		}
-		if opaque {
-			return policy.Decision{Action: policy.Deny,
+	settled := g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode)
+	if settled.Blocked() {
+		// Nothing runs, so there is no component left to judge. The command's
+		// own refusal is the one the operator has to answer, and settle has
+		// already recorded it.
+		return settled, nil
+	}
+
+	refusal, err := EvaluateRedirects(command, taskIDOf(task), func(target string) (policy.Decision, error) {
+		// Through EvaluateWrite, not the bare ladder: a redirect target must be
+		// judged by exactly what a direct write to the same path faces, ledger
+		// and file-mode posture included, or the two surfaces contradict each
+		// other. It also records the target decision, which is why the
+		// FromTarget branch below does not record it again.
+		return g.EvaluateWrite(target, task, dc.OpWrite)
+	})
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	if !refusal.Refused {
+		return settled, nil
+	}
+	if refusal.FromTarget {
+		return refusal.Decision, nil
+	}
+	// Synthesised by the rung itself, so nothing else has seen it. Recorded
+	// here or the run summary undercounts a denial this gate made — a
+	// fail-closed decision that Report() could not account for.
+	return g.record(refusal.Decision), nil
+}
+
+// WriteEvaluator judges one redirection target as the write it actually is.
+//
+// It is injected rather than fixed so the rung below has exactly one
+// implementation across every plane that runs commands: the DevCouncil gate
+// passes its own EvaluateWrite, flags and grant ledger and all, and the serve
+// plane passes the taskless host evaluation it already answers
+// policy.check.file with. What must not vary — which components a command line
+// has, what an unresolvable one means, and that a refused component refuses the
+// command — is decided in one place.
+type WriteEvaluator func(target string) (policy.Decision, error)
+
+// RedirectRefusal is the redirect rung's outcome.
+type RedirectRefusal struct {
+	// Decision refuses the command. Meaningful only when Refused.
+	Decision policy.Decision
+	// Refused reports whether any component was refused.
+	Refused bool
+	// FromTarget distinguishes the two kinds of refusal, and the distinction
+	// is not cosmetic. True means the refusal is a target's own write decision:
+	// the caller's WriteEvaluator produced it, so whatever that caller does
+	// with decisions — record it, count it, log it — has already happened.
+	// False means the rung synthesised the refusal itself and no evaluator ever
+	// saw it, so a caller that keeps a run log must record it or summarise a
+	// denial it never accounts for.
+	FromTarget bool
+}
+
+// EvaluateRedirects is the harness's one redirect rung.
+//
+// INVARIANT: no command reaches execution with any component left unevaluated.
+// A command line is not one subject but several — the command itself, and every
+// file an output redirection would write. Allowlist matching deliberately
+// normalises the redirections away so entries stay single-clause, so the string
+// that matched is never the string that runs, and the targets are judged here
+// or by nobody.
+//
+// The invariant is about *ordering* as much as coverage, and that is the half
+// that was missing. This rung must run on every command a caller is about to
+// permit, no matter how the command came to be permitted: cleanly, by a grant
+// that cleared a soft denial, by a gate-mode demotion, or by a posture that
+// demotes soft denials wholesale. Placed behind a test of the policy ladder's
+// own Deny — which is what gate.EvaluateCommand used to do, before it called
+// settle — the rung silently skips exactly the commands that grants and
+// demotions let through. `cat src/calc.go > .env.local` was denied by the
+// allowlist rung, so its target was never looked at; a grant then cleared the
+// allowlist rung and the write went with it, .devcouncil grant ledger included.
+// Callers therefore run this after settling and before returning an allow, and
+// never behind a test of the command decision's own action.
+//
+// A refusal is returned as-is, not folded back through the caller's command-mode
+// demotion: a target that survived the file gate's own mode has been judged as
+// the write it is, and demoting it a second time under a command flag would let
+// the harness contradict how it treats a direct write to the same path.
+func EvaluateRedirects(command, taskID string, evalWrite WriteEvaluator) (RedirectRefusal, error) {
+	targets, opaque, err := policy.RedirectTargets(command)
+	if err != nil {
+		return RedirectRefusal{}, err
+	}
+	if opaque {
+		return RedirectRefusal{
+			Decision: policy.Decision{
+				Action:   policy.Deny,
 				Rule:     policy.RuleCommandSubstitution,
-				Severity: policy.Hard,
+				Severity: policy.SeverityOf(policy.RuleCommandSubstitution),
 				Reason: "A redirection target carries an expansion only the shell can resolve " +
 					"and was judged as an unverifiable write.",
 				Target: command,
-				TaskID: taskIDOf(task),
-			}, nil
+				TaskID: taskID,
+			},
+			Refused: true,
+		}, nil
+	}
+	for _, target := range targets {
+		written, err := evalWrite(target)
+		if err != nil {
+			return RedirectRefusal{}, err
 		}
-		for _, target := range targets {
-			written, err := g.EvaluateWrite(target, task, dc.OpWrite)
-			if err != nil {
-				return policy.Decision{}, err
-			}
-			if written.Blocked() {
-				written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
-					target, written.Reason)
-				return written, nil
-			}
+		if written.Blocked() {
+			written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
+				target, written.Reason)
+			return RedirectRefusal{Decision: written, Refused: true, FromTarget: true}, nil
 		}
 	}
-
-	return g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode), nil
+	return RedirectRefusal{}, nil
 }
 
 func taskIDOf(task *dc.Task) string {
@@ -200,6 +286,18 @@ func (g *Gate) settle(decision policy.Decision, mode string, modeOrigin flags.Or
 		}
 	}
 
+	return g.record(decision)
+}
+
+// record appends a decision to the run log without touching it.
+//
+// settle is the path for a decision the ledger and the gate mode still have a
+// say over. This one is for a decision that has already been resolved by the
+// rung that produced it and that neither seam may move again — the redirect
+// rung's own refusal, which no evaluator recorded because no evaluator made it.
+// Split out so there is a single place appending to g.decided: a second one is
+// how a denial comes to be made and never counted.
+func (g *Gate) record(decision policy.Decision) policy.Decision {
 	g.mu.Lock()
 	g.decided = append(g.decided, decision)
 	g.mu.Unlock()
