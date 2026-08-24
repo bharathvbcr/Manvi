@@ -72,6 +72,16 @@ const (
 	// allow that skipped the gate.
 	RuleCommandSubstitution RuleID = "command.substitution"
 	RuleCommandHeredoc      RuleID = "command.heredoc"
+	// RuleCommandReparse is the same refusal one step further out. A heredoc
+	// body and a substitution span are code the reading cannot see *yet*; an
+	// `eval` argument is code the reading cannot see *at all*, because the
+	// shell re-parses the string only after its own expansions have run. The
+	// quotes that make `eval "echo x > .env"` a single word to this scanner
+	// are exactly the quotes sh discards before parsing it as a redirection,
+	// so every static reading of that line — the allowlist match, the git
+	// safety rules, the redirect enumeration — is a reading of something other
+	// than what runs.
+	RuleCommandReparse RuleID = "command.reparse"
 )
 
 // severities is the authoritative classification. A rule absent from this map
@@ -102,6 +112,7 @@ var severities = map[RuleID]Severity{
 	RuleCommandNotAllowed:     Soft,
 	RuleCommandSubstitution:   Hard,
 	RuleCommandHeredoc:        Hard,
+	RuleCommandReparse:        Hard,
 }
 
 // Subject says what a rule's Target names: a path on disk, or a shell command.
@@ -152,6 +163,7 @@ var subjects = map[RuleID]Subject{
 	RuleCommandProtectedPush:  SubjectCommand,
 	RuleCommandSubstitution:   SubjectCommand,
 	RuleCommandHeredoc:        SubjectCommand,
+	RuleCommandReparse:        SubjectCommand,
 }
 
 // SubjectOf returns what a rule's Target names.
@@ -258,6 +270,31 @@ type Decision struct {
 
 // Blocked reports whether the decision stops the operation.
 func (d Decision) Blocked() bool { return d.Action == Deny }
+
+// BlockStrength orders decisions by how firmly they stop the operation, so two
+// verdicts about one subject can be merged without either being lost.
+//
+// It lives here rather than in either caller because both the harness gate and
+// the serve plane have the same reconciliation to make — a command line has a
+// verdict about the command and a verdict about the files it redirects into —
+// and two copies of this ordering are two places for "hard outranks soft" to
+// stop being true.
+//
+// Hard denials outrank soft ones because only the soft ones are demotable by a
+// gate mode or clearable by a grant; a warn outranks an allow because it
+// carries a note that must survive the merge.
+func BlockStrength(d Decision) int {
+	switch {
+	case d.Blocked() && d.Severity == Hard:
+		return 3
+	case d.Blocked():
+		return 2
+	case d.Action == Warn:
+		return 1
+	default:
+		return 0
+	}
+}
 
 // Overridable reports whether a grant could clear this decision.
 func (d Decision) Overridable() bool {

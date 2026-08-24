@@ -138,35 +138,80 @@ func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, 
 		HardRules:             hardRules,
 	}.EvaluateCommand(command, task)
 
-	if decision.Action != policy.Deny {
-		targets, opaque, err := policy.RedirectTargets(command)
+	// A hard denial is the one outcome that needs nothing further. It is
+	// undemotable and ungrantable by construction, so the command cannot run
+	// and its redirections cannot happen; analysing them would only replace a
+	// precise refusal with a vaguer one.
+	//
+	// Every other outcome — allow, warn, and a *soft* denial — has to have its
+	// redirections judged, and the soft denial is the case this guard used to
+	// get wrong. It read `decision.Action != policy.Deny`, so a command the
+	// ladder soft-refused skipped the redirect rung entirely; settle then
+	// demoted that refusal under the shipped dev posture, or a grant cleared
+	// it, and the write ran having never been shown to the write gate. That
+	// turned a scope rule an operator chose to relax into a way past the
+	// credential rules they did not: `exec > .env`, `false || echo x > .env`,
+	// `(echo x > .env)` and `echo x >| .env` all wrote .env under dev, while
+	// the same redirect on its own was refused as path.secret.
+	//
+	// The redirect verdict is merged by strength rather than returned outright,
+	// so a soft command refusal keeps its own reason when the redirect is
+	// clean, and a hard write refusal displaces it when it is not. settle then
+	// applies grants and mode to whichever survived, and it already declines to
+	// demote a hard denial — which is what makes the merge sufficient.
+	if !(decision.Blocked() && decision.Severity == policy.Hard) {
+		redirect, err := g.redirectDecision(command, task)
 		if err != nil {
 			return policy.Decision{}, err
 		}
-		if opaque {
-			return policy.Decision{Action: policy.Deny,
-				Rule:     policy.RuleCommandSubstitution,
-				Severity: policy.Hard,
-				Reason: "A redirection target carries an expansion only the shell can resolve " +
-					"and was judged as an unverifiable write.",
-				Target: command,
-				TaskID: taskIDOf(task),
-			}, nil
-		}
-		for _, target := range targets {
-			written, err := g.EvaluateWrite(target, task, dc.OpWrite)
-			if err != nil {
-				return policy.Decision{}, err
-			}
-			if written.Blocked() {
-				written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
-					target, written.Reason)
-				return written, nil
-			}
+		if redirect != nil && policy.BlockStrength(*redirect) > policy.BlockStrength(decision) {
+			decision = *redirect
 		}
 	}
 
 	return g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode), nil
+}
+
+// redirectDecision judges every file this command line would redirect output
+// into, and returns the strongest refusal among them, or nil when none refuses.
+//
+// The targets come from policy.RedirectTargets, which descends into command
+// substitutions; each one is then put through exactly the path a direct write
+// faces, so a redirect into a file cannot be treated differently from a
+// WriteFile call naming it.
+func (g *Gate) redirectDecision(command string, task *dc.Task) (*policy.Decision, error) {
+	targets, opaque, err := policy.RedirectTargets(command)
+	if err != nil {
+		return nil, err
+	}
+	if opaque {
+		return &policy.Decision{Action: policy.Deny,
+			Rule:     policy.RuleCommandSubstitution,
+			Severity: policy.Hard,
+			Reason: "A redirection target could not be resolved to a path this gate can judge — " +
+				"it carries an expansion only the shell can resolve, or sits inside a construct " +
+				"that could not be read to its end — and was treated as an unverifiable write.",
+			Target: command,
+			TaskID: taskIDOf(task),
+		}, nil
+	}
+	var worst *policy.Decision
+	for _, target := range targets {
+		written, err := g.EvaluateWrite(target, task, dc.OpWrite)
+		if err != nil {
+			return nil, err
+		}
+		if !written.Blocked() {
+			continue
+		}
+		written.Reason = fmt.Sprintf("Command redirects to a file the write gate refuses (%s): %s",
+			target, written.Reason)
+		if worst == nil || policy.BlockStrength(written) > policy.BlockStrength(*worst) {
+			d := written
+			worst = &d
+		}
+	}
+	return worst, nil
 }
 
 func taskIDOf(task *dc.Task) string {

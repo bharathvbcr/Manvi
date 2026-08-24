@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"manvi/dc"
 	"manvi/internal/fnmatch"
@@ -22,7 +23,7 @@ var (
 	// Trailing shell redirections break glob matching against patterns like
 	// "dev map *". Stripped for matching only, in a loop, so the pattern itself
 	// stays single-clause and cannot backtrack pathologically.
-	redirectTailRe = regexp.MustCompile(`(?: \d*(?:>>|>|<|&>|&>>) ?\S+| \d*>&\d+)$`)
+	redirectTailRe = regexp.MustCompile(`(?: \d*(?:>>|>\||>|<|&>|&>>) ?\S+| \d*>&\d+)$`)
 )
 
 // devBinaries are the executable names normalised back to a bare "dev", so a
@@ -144,6 +145,17 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth 
 		return g.noteHardRules(deny(RuleCommandHeredoc,
 			"Heredocs carry expanded data with no statically checkable end and are not allowed; "+
 				"write the content to a file instead.", normalized, taskID))
+	}
+	// Checked on the raw line, beside the heredoc rung, because it is the same
+	// refusal: a construct whose meaning is not in the text being judged. It
+	// runs before the substitution rung so that `eval $(...)` is named as the
+	// re-parse it is rather than as the substitution it also contains.
+	if word, isReparse := reparsingCommandWord(raw); isReparse {
+		return g.noteHardRules(deny(RuleCommandReparse,
+			"`"+word+"` re-parses its argument as shell code after expansion, so nothing in this "+
+				"line — the allowlist match, the git-safety rules, or the redirection targets — "+
+				"describes what would actually run; write the commands out directly instead.",
+			normalized, taskID))
 	}
 	spans, subErr := liveSubstitutions(raw)
 	switch {
@@ -544,6 +556,70 @@ func hasHeredoc(command string) bool {
 	return false
 }
 
+// reparsingCommandWord reports whether this single command's command word is a
+// builtin that re-parses its arguments as shell code, and names it.
+//
+// Only the command word counts. `grep eval file` and `echo eval` mention the
+// word without invoking it, and refusing those would make the rung fire on
+// text rather than on behaviour — the exact defect the git-safety rules avoid
+// by reading a dequoted variant rather than by matching substrings.
+//
+// The word is dequoted before comparison, because sh removes quotes before it
+// decides what to run: `\eval`, `"eval"` and `'ev'al` all invoke the builtin.
+// Leading VAR=value assignments are stepped over for the same reason — they
+// precede the command word without being it.
+func reparsingCommandWord(command string) (string, bool) {
+	for _, field := range strings.Fields(command) {
+		word := shellDequote(field)
+		if isAssignmentWord(word) {
+			continue
+		}
+		// `command eval …` and `builtin eval …` reach the builtin through a
+		// wrapper, so the search continues past them rather than stopping on a
+		// word that is not itself the thing being run.
+		if word == "command" || word == "builtin" {
+			continue
+		}
+		if reparsingBuiltins[word] {
+			return word, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// reparsingBuiltins are the command words whose arguments become shell code
+// only at run time.
+//
+// `eval` is the whole set, and the boundary is deliberate. This rung refuses
+// code that is *inline in the line being judged* — text the gate holds and
+// cannot interpret. Running a script that lives on disk (`sh x.sh`, `make`,
+// `pytest`) is a different problem and is not addressed here: the code is not
+// in this string at all, so no reading of this string could catch it, and
+// refusing the command words that do it would deny every test runner while
+// leaving the capability one rename away. That boundary is documented in
+// docs/POLICY_AND_SAFETY.md rather than left implicit here.
+var reparsingBuiltins = map[string]bool{"eval": true}
+
+// isAssignmentWord reports whether a word is a NAME=value prefix rather than
+// the command word.
+func isAssignmentWord(word string) bool {
+	eq := strings.Index(word, "=")
+	if eq <= 0 {
+		return false
+	}
+	for i, r := range word[:eq] {
+		if r == '_' || unicode.IsLetter(r) {
+			continue
+		}
+		if i > 0 && unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // shellDequote removes quote characters the way sh concatenates their content:
 // '…' contributes literally, "…" contributes everything except the quotes and
 // escapes, and an escaped character contributes itself. An unterminated quote
@@ -605,19 +681,78 @@ func shellDequote(s string) string {
 }
 
 // RedirectTargets returns every file an output redirection in this command
-// would write: the targets of >, >>, &>, >& and their fd-prefixed forms.
+// would write: the targets of >, >>, >|, &>, >& and their fd-prefixed forms.
 // Input redirections (<) are reads, which this ladder does not gate, and a
 // heredoc introducer (<<) is not a path at all; neither is returned.
 //
 // The second return value reports whether a target could not be resolved to a
 // literal path — it carries an expansion ($HOME, ${VAR}, ~) whose value only
-// the shell knows. A target the gate cannot name is a write it cannot judge,
-// so the caller must treat that as a refusal rather than skip the check.
+// the shell knows, or it sits inside a construct this scanner could not read
+// to its end. A target the gate cannot name is a write it cannot judge, so the
+// caller must treat that as a refusal rather than skip the check.
 //
 // Matching strips trailing redirections so patterns like "dev map *" stay
 // single-clause, which is exactly why the executed form has to be re-read
 // here: the string that matched is not the string that runs.
+//
+// It descends into command substitutions, and that is the whole reason this is
+// not a single linear scan. `sh -c` executes what is inside $( ), ` `, <( ) and
+// >( ), redirections included, so `echo $(echo x > .env)` writes .env — and a
+// scanner that skipped the span, as this one did, reported no targets at all.
+// The command ladder already recurses into those spans to judge what runs
+// there; the writes they perform have to travel the same path, or the two
+// halves of one command are judged by different rules. Every ungated write in
+// the differential sweep — the shell's actual filesystem effect against this
+// gate's verdict — came from that gap.
 func RedirectTargets(command string) ([]string, bool, error) {
+	return redirectTargetsDeep(command, 0)
+}
+
+// redirectTargetsDeep unions one clause's own redirections with those of every
+// command substitution inside it, to the same depth the command ladder judges.
+//
+// Failures below the top level become opacity rather than errors, and the
+// distinction is deliberate. At the top level a dangling `>` is a malformed
+// command line and the caller should hear about it — the documented contract
+// says so. Inside a substitution, the honest statement is narrower: there is a
+// redirection in here that could not be resolved to a path. That is exactly
+// what the opaque flag means, and it makes the caller fail closed instead of
+// turning an inner parse failure into an error that hides the ladder's own,
+// better-worded refusal.
+func redirectTargetsDeep(command string, depth int) ([]string, bool, error) {
+	targets, opaque, err := scanRedirectTargets(command)
+	if err != nil {
+		return nil, false, err
+	}
+	if depth >= maxSubstitutionDepth {
+		// Nesting past the ladder's own analysis limit. The ladder refuses the
+		// command outright at this depth; here the matching answer is that
+		// there may be writes below this point that were never enumerated.
+		return targets, true, nil
+	}
+	spans, subErr := liveSubstitutions(command)
+	if subErr != nil {
+		// A substitution that cannot be read to its end may hold anything,
+		// including a redirection. The ladder refuses it; this reports that the
+		// enumeration is incomplete so a caller that only consults targets
+		// still fails closed.
+		return targets, true, nil
+	}
+	for _, span := range spans {
+		inner, innerOpaque, innerErr := redirectTargetsDeep(span, depth+1)
+		if innerErr != nil {
+			opaque = true
+			continue
+		}
+		targets = append(targets, inner...)
+		opaque = opaque || innerOpaque
+	}
+	return targets, opaque, nil
+}
+
+// scanRedirectTargets reads the redirections of one command line without
+// descending into the substitutions it contains.
+func scanRedirectTargets(command string) ([]string, bool, error) {
 	var targets []string
 	opaque := false
 	runes := []rune(command)
@@ -658,7 +793,12 @@ func RedirectTargets(command string) ([]string, bool, error) {
 				j++
 				continue
 			}
-			if q == 0 && (r == ' ' || r == '\n' || r == ';' || r == '|' || r == '&') {
+			// A backtick closes a legacy substitution; it is never part of the
+			// path. Without it `echo `cat > f`` yielded the target "f`", and
+			// the gate then judged a filename the shell never opens — which
+			// took a write to .env past the secret rung as ".env`".
+			if q == 0 && (r == ' ' || r == '\n' || r == '\t' || r == ';' || r == '|' || r == '&' ||
+				r == '`' || r == '(' || r == ')') {
 				break
 			}
 			b.WriteRune(r)
@@ -697,6 +837,25 @@ func RedirectTargets(command string) ([]string, bool, error) {
 				return nil, false, err
 			}
 			i = next
+		case r == '`':
+			// A legacy substitution is code, not text. Its redirections belong
+			// to the span and are collected by the recursion in
+			// redirectTargetsDeep; skipping it here keeps the backtick out of
+			// the surrounding clause's filenames.
+			end := -1
+			for j := i + 1; j < n; j++ {
+				if runes[j] == '`' {
+					end = j
+					break
+				}
+				if runes[j] == '\\' {
+					j++
+				}
+			}
+			if end < 0 {
+				return nil, false, fmt.Errorf("unterminated backtick substitution")
+			}
+			i = end + 1
 		case r == '<' && i+1 < n && runes[i+1] == '<':
 			// Heredoc introducer or herestring; not an output path.
 			i += 2
@@ -711,6 +870,13 @@ func RedirectTargets(command string) ([]string, bool, error) {
 			}
 			i++                           // consume '>'
 			if i < n && runes[i] == '>' { // append form >>
+				i++
+			} else if i < n && runes[i] == '|' {
+				// >| is > with noclobber overridden. It names a path exactly
+				// as > does; read as an unresolvable target it reported
+				// opacity, which refused the command for the wrong reason and
+				// — because the refusal never reached the write gate — let the
+				// path itself go unjudged.
 				i++
 			} else if i < n && runes[i] == '&' { // >&N duplicates descriptors
 				i++
