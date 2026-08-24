@@ -34,6 +34,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"manvi/llm"
 	"manvi/llm/transport"
@@ -108,14 +109,19 @@ type Options struct {
 // model's output cap, and even a 128k-token completion at four bytes a token
 // is about 512KiB. 4MiB leaves eight times that headroom — a local model
 // writing a whole file through a tool call still lands — while stopping a
-// runaway in seconds instead of minutes. It counts text, reasoning and all
-// tool-call arguments together, because a per-field cap is evaded by whichever
-// field the runaway happens to be filling.
+// runaway in seconds instead of minutes. It counts text, reasoning, all
+// tool-call arguments and the per-call bookkeeping together, because a
+// per-field cap is evaded by whichever field the runaway happens to be filling.
 //
 // Exceeding it is an error, never a truncation. Settling 4MiB of a runaway as
 // though it were the answer would be exactly the silent corruption the rest of
 // this package is written to prevent.
-const MaxDecodedResponseBytes = 4 << 20
+//
+// The number is transport.MaxDecodedResponseBytes rather than a fourth copy of
+// the same literal: anthropic and gemini bound the same thing, and three
+// independent declarations are how they came to disagree about what the bound
+// counted. This name stays because callers outside the package use it.
+const MaxDecodedResponseBytes = transport.MaxDecodedResponseBytes
 
 // DefaultStallTimeout is generous enough for a cold, large, quantised model to
 // finish loading and prefill a long prompt — measured at two minutes for a
@@ -396,6 +402,14 @@ type stream struct {
 	// Text and reasoning can be measured from their builders; arguments are
 	// spread over a map of accumulators, so they are tallied as they arrive.
 	argBytes int
+
+	// callBytes counts what the per-call bookkeeping itself costs: one charge
+	// of transport.RetainedAccumulatorBytes per accumulator opened, plus the
+	// id and name each one retains. Tallied as it changes, for the same reason
+	// argBytes is and one more: decodedBytes runs once per frame, so walking
+	// the accumulators to total this would make the cap that bounds a runaway
+	// quadratic in the size of the runaway.
+	callBytes int
 
 	stopReason llm.StopReason
 	usage      llm.Usage
@@ -1264,8 +1278,22 @@ func (s *stream) Next() (llm.Chunk, error) {
 }
 
 // decodedBytes is everything this stream is holding from the response so far.
+//
+// "Everything" now includes the per-call bookkeeping, not just the content. It
+// counted text, reasoning, argument bytes and the filter's carry, and a stream
+// of tool_calls fragments that each carried a fresh id and no argument bytes
+// created an accumulator, three map entries and a callOrder slot per fragment
+// while adding nothing to the total: 400,000 accumulators and 98 MiB of heap
+// with this function returning 0 and the 4MiB cap never firing. The cap is
+// documented as counting every field together precisely so the runaway cannot
+// pick an uncounted one, and an uncounted one is what this was.
+//
+// Each open call is charged transport.RetainedAccumulatorBytes for the fixed
+// cost of existing, plus the id and name it retains, plus its arguments —
+// argBytes and callBytes are those tallies, kept as the stream runs. The same
+// rule is applied by the anthropic and gemini decoders.
 func (s *stream) decodedBytes() int {
-	return s.text.Len() + s.reasoning.Len() + s.argBytes + len(s.filter.carry)
+	return s.text.Len() + s.reasoning.Len() + s.argBytes + s.callBytes + len(s.filter.carry)
 }
 
 // syntheticCallSeq numbers the tool call ids the harness has to invent.
@@ -1308,12 +1336,15 @@ func (s *stream) applyToolCalls(deltas []wireToolCall) {
 	for _, delta := range deltas {
 		acc := s.resolveAccumulator(delta)
 		if delta.ID != "" {
+			s.callBytes += len(delta.ID) - len(acc.id)
 			acc.id = delta.ID
 			acc.idFromWire = true
 		} else if acc.id == "" {
 			acc.id = synthesizeCallID("local")
+			s.callBytes += len(acc.id)
 		}
 		if delta.Function.Name != "" {
+			s.callBytes += len(delta.Function.Name) - len(acc.name)
 			acc.name = delta.Function.Name
 		}
 		if delta.Function.Arguments != "" {
@@ -1406,6 +1437,11 @@ func (s *stream) resolveAccumulator(delta wireToolCall) *callAccumulator {
 		slot++
 	}
 	acc := &callAccumulator{index: slot, block: s.nextIndex}
+	// Charged the moment it exists, not when it collects anything. An
+	// accumulator that never collects a byte still costs a struct, a builder,
+	// an entry in each of the three maps above and a slot in callOrder; see
+	// transport.RetainedAccumulatorBytes.
+	s.callBytes += transport.RetainedAccumulatorBytes
 	s.nextIndex++
 	s.calls[slot] = acc
 	s.callOrder = append(s.callOrder, slot)
@@ -2243,10 +2279,21 @@ type MalformedCall struct {
 }
 
 // truncateForMessage bounds a fragment quoted back to the model.
+//
+// The cut is moved back to a rune boundary. Slicing at a byte offset split
+// multi-byte UTF-8 down the middle and put the orphaned continuation bytes into
+// MalformedCall.Reason, which is both quoted back to the model and written to
+// the session log — measured producing "aaa…\xe6\x97…". Nothing rejected it:
+// json.Marshal substitutes U+FFFD, so the record was corrupted quietly rather
+// than refused, and the model was handed bytes that are not text.
 func truncateForMessage(s string) string {
 	const limit = 120
 	if len(s) <= limit {
 		return s
 	}
-	return s[:limit] + "…"
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

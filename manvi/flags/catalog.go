@@ -307,14 +307,22 @@ func DefineHarnessFlags(r *Registry) error {
 		},
 
 		{
-			Key: AgentsMaxSpawnDepth, Kind: KindInt, Default: "2",
-			Mutable:     HumanOnly,
-			Description: "Maximum sub-agent delegation depth. A ceiling in code, not a prompt instruction.",
+			Key: AgentsMaxSpawnDepth, Kind: KindInt,
+			Default: strconv.Itoa(DefaultAgentsMaxSpawnDepth),
+			Min:     0, Max: MaxAgentsMaxSpawnDepth,
+			Mutable: HumanOnly,
+			Description: "Maximum sub-agent delegation depth. A ceiling in code, not a prompt instruction. " +
+				"Zero means this harness delegates nothing at all; the upper bound is " +
+				strconv.Itoa(MaxAgentsMaxSpawnDepth) + ", and a value past it is refused rather than clamped.",
 		},
 		{
-			Key: AgentsMaxFanout, Kind: KindInt, Default: "8",
-			Mutable:     HumanOnly,
-			Description: "Maximum concurrent sub-agents per parent.",
+			Key: AgentsMaxFanout, Kind: KindInt,
+			Default: strconv.Itoa(DefaultAgentsMaxFanout),
+			Min:     1, Max: MaxAgentsMaxFanout,
+			Mutable: HumanOnly,
+			Description: "Maximum concurrent sub-agents per parent, from 1 to " + strconv.Itoa(MaxAgentsMaxFanout) + ". " +
+				"This is the concurrency, not a queue depth: the pool launches one goroutine per task and refuses a " +
+				"batch wider than this, so the number is how many model turns run at once.",
 		},
 		{
 			Key: SubagentsDynamicEnabled, Kind: KindBool, Default: "true",
@@ -546,6 +554,35 @@ func DefineHarnessFlags(r *Registry) error {
 	}
 	return nil
 }
+
+// The delegation bounds, and the reason they have ceilings at all.
+//
+// agents.max_fanout was validated by strconv.Atoi and nothing else, so a config
+// file could ask for 100000 and be taken at its word — and it is not a queue
+// depth that would merely be slow to drain. agents.Pool.Run launches one
+// goroutine per task and refuses a batch wider than the limit, so the setting
+// *is* the concurrency: the value names how many model turns, each holding a
+// lease, run at once. It is not a safety flag either, so nothing in Weakened()
+// would have mentioned it.
+//
+// The ceilings are bounds on plausible operator intent rather than tuning
+// advice. Past a few dozen concurrent children the provider's rate limits and
+// the store's lease contention decide the real width anyway, and
+// agents.AdaptiveFanoutLimit already narrows a local provider to two. Depth
+// below the first level is structural — a child's registry carries no
+// dispatching tools — so the depth ceiling only has to be past any tree a
+// person would draw.
+//
+// They live here, next to the Defs that use them, because the two devcouncil
+// dispatch handlers each carried their own copy of the fallback and both said 4
+// against a catalogue default of 8. One rule, one place: agents.ResolveBounds
+// reads these and both handlers read it.
+const (
+	DefaultAgentsMaxSpawnDepth = 2
+	MaxAgentsMaxSpawnDepth     = 8
+	DefaultAgentsMaxFanout     = 8
+	MaxAgentsMaxFanout         = 32
+)
 
 // EffectiveGateMode resolves the mode a gate actually runs in.
 //

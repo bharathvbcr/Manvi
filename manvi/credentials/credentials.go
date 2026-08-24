@@ -183,10 +183,20 @@ func DefaultRequirements() []Requirement {
 		{
 			Provider: "local",
 			EnvVars:  []string{"LOCAL_API_KEY", "OPENAI_API_KEY"},
-			Doc:      "any value the local server accepts; most ignore it, so none is required",
+			Doc: "any value the local server accepts; most ignore it, so none is required. " +
+				"OPENAI_API_KEY is honoured as a convenience, but only for a base URL on this " +
+				"machine — a key set for another vendor's service is not sent to an arbitrary host",
 			// A server on loopback that never checks a key must not be
 			// unreachable because the harness insisted on one.
 			Optional: true,
+			// OPENAI_API_KEY is borrowed from a different vendor's tooling, and
+			// llm.local.base_url does not have to name this machine. The
+			// destination check that keeps those two facts from combining into
+			// a credential leak lives in llm/local
+			// (checkCredentialDestination), because this package knows which
+			// variable answered and only the adapter knows where the request is
+			// going. A variable added here that names someone else's service
+			// must be added to that check too.
 		},
 	}
 }

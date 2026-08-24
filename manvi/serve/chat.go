@@ -54,24 +54,83 @@ func newChatSession() *ChatSession {
 	return &ChatSession{compacted: map[llm.CallID]string{}, lastUsed: time.Now()}
 }
 
+// pruneLedger drops what the ledger no longer needs to remember, given the
+// history the host has just sent.
+//
+// A ledger entry earns its place by substituting a shortened result back into
+// the next request (toNeutralMessages) and by keeping that result off the next
+// plan (the `already` set). An entry for a tool_call_id the host no longer
+// sends does neither: the conversation moved on, the result is gone, and the
+// entry is pure residue. Dropping it is therefore free — it cannot move a
+// prompt prefix that no longer contains the message.
+//
+// What is left is bounded by what the host sends, and one request is bounded
+// by maxLineBytes; maxCompactedEntries is the second bound, for a host whose
+// history itself keeps growing. That one is not free — a dropped entry gets
+// re-shortened, and possibly to different text — so it takes the front of the
+// history, which is the part furthest from the protected tail the model is
+// actively reasoning over.
+func (s *ChatSession) pruneLedger(wire []WireMessage) {
+	if len(s.compacted) == 0 {
+		return
+	}
+	live := make(map[llm.CallID]struct{}, len(wire))
+	order := make([]llm.CallID, 0, len(wire))
+	for _, m := range wire {
+		if m.Role != "tool" || m.ToolCallID == "" {
+			continue
+		}
+		id := llm.CallID(m.ToolCallID)
+		if _, seen := live[id]; seen {
+			continue
+		}
+		live[id] = struct{}{}
+		order = append(order, id)
+	}
+	for id := range s.compacted {
+		if _, ok := live[id]; !ok {
+			delete(s.compacted, id)
+		}
+	}
+	for i := 0; len(s.compacted) > maxCompactedEntries && i < len(order); i++ {
+		delete(s.compacted, order[i])
+	}
+}
+
 // Session-table bounds.
 //
 // The table exists so compaction is one-way within a conversation; nothing
 // about that requires remembering every conversation forever. A host that
 // calls chat.forget keeps its sessions precisely; these bounds are what
 // happens when it does not — a crashed host, an abandoned tab, or a hostile
-// caller minting ids to see what happens. Both bounds cost at most one
-// re-planning of an evicted conversation's next step, which is exactly what
-// an absent sidecar costs anyway.
+// caller minting ids to see what happens. Every bound here costs at most one
+// re-planning of what it drops, which is exactly what an absent sidecar costs
+// anyway.
 const (
-	// maxChatSessions caps the table outright. A ledger holds shortened text
-	// for the tool results of one conversation, so hundreds of them are
-	// megabytes at worst — but the cap is what turns "unbounded" into a number.
+	// maxChatSessions caps the table outright.
 	maxChatSessions = 256
 	// chatSessionIdleTTL drops sessions unused for this long. Longer than any
 	// turn a real user sits through; short enough that a crashed host's
 	// ledgers are gone within the hour instead of at process exit.
 	chatSessionIdleTTL = time.Hour
+	// maxCompactedEntries caps *one* session's ledger.
+	//
+	// The two bounds above cap how many ledgers exist and never touched how
+	// large one grows, and the ledger is append-only: every plan adds an entry
+	// and nothing but chat.forget ever removed one. A single session driven
+	// with fresh tool_call_ids therefore grew without limit — measured at
+	// exactly linear, 2,000 entries and 621 KB after 40 requests, with no knee
+	// to stop at. The comment that used to sit on maxChatSessions ("hundreds
+	// of them are megabytes at worst") was true of an honest host and of
+	// nothing else, which is the wrong thing for a bound to be true of.
+	//
+	// Pruning to what the host still sends (see pruneLedger) is what usually
+	// holds the size down; this is the number for the case where the host's
+	// own history is what grew. It is far above any real conversation — a turn
+	// with 4,096 outstanding compacted tool results has other problems — so
+	// crossing it is a host defect, and the cost of crossing it is that the
+	// oldest results get shortened again.
+	maxCompactedEntries = 4096
 )
 
 func (t *sessionTable) get(id string) *ChatSession {
@@ -192,12 +251,14 @@ type PrepareParams struct {
 	Messages []WireMessage `json:"messages"`
 
 	// ContextWindow is the model's total token capacity — ideally the value
-	// capability.probe discovered rather than a default.
+	// capability.probe discovered rather than a default. Must be positive and
+	// no larger than maxTokenCount.
 	ContextWindow int `json:"context_window"`
 	// ReservedOutput is held back for the response. Zero means a default
-	// proportional to the window.
+	// proportional to the window. Bounded like ContextWindow.
 	ReservedOutput int `json:"reserved_output,omitempty"`
 	// Overhead covers chat-template scaffolding the estimator does not model.
+	// Bounded like ContextWindow.
 	Overhead int `json:"overhead,omitempty"`
 
 	// ObservedPromptTokens is what the server reported for the *previous*
@@ -262,8 +323,26 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 	if p.ContextWindow <= 0 {
 		return nil, badRequest("chat.prepare requires a positive context_window")
 	}
+	for _, bound := range []struct {
+		field string
+		value int
+	}{
+		{"context_window", p.ContextWindow},
+		{"reserved_output", p.ReservedOutput},
+		{"overhead", p.Overhead},
+		{"observed_prompt_tokens", p.ObservedPromptTokens},
+	} {
+		if err := checkTokenCount(bound.field, bound.value); err != nil {
+			return nil, err
+		}
+	}
 
 	session := s.chat.get(p.SessionID)
+
+	// Drop what this history no longer references before anything reads the
+	// ledger, so both the substitution below and the `already` set built from
+	// it describe the request the host actually sent.
+	session.pruneLedger(p.Messages)
 
 	// Fold in what the server counted for the previous request before
 	// planning this one, so the correction applies to the decision it informs

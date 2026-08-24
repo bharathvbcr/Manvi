@@ -2,20 +2,24 @@
 // process over stdio, so a host that is not written in Go can use them without
 // a cgo boundary or a second implementation.
 //
-// The wire is NDJSON: one JSON object per line, in both directions. It follows
-// the shape the harness already uses to reach dcstore, dcverify and devmap —
-// single JSON objects per call — with one addition that those did not need.
-// Those are request/response; a chat step also *streams*, so this channel
-// carries three kinds of line rather than two:
+// The wire is NDJSON: one JSON object per line, in both directions. It is the
+// shape the harness already uses to reach dcstore, dcverify and devmap —
+// single JSON objects per call — and it carries exactly two kinds of line:
 //
 //	{"id":"7","op":"policy.check.file","params":{…}}   host → harness  (request)
-//	{"id":"7","event":"delta","data":{…}}              harness → host  (event)
 //	{"id":"7","ok":true,"result":{…}}                  harness → host  (response)
 //
+// There is deliberately no streaming line. The chat plane is advisory and does
+// not make the model call (see chat.go): the host owns the HTTP request and
+// therefore owns the token stream, so nothing here has partial output to
+// forward. An earlier draft of this package described a third "event" line and
+// shipped the type for it; nothing ever emitted one, and a documented
+// capability that does not exist is worse than an absent one — a host would
+// have written a decoder branch it could never exercise. Both are gone.
+//
 // Every line carries the id of the request it belongs to, so a host may have
-// several calls outstanding. Exactly one response is written per request, and
-// it is always the last line for that id — a host that has seen the response
-// can free the correlation entry knowing no further event will reference it.
+// several calls outstanding. Exactly one line is written per request and it is
+// the response, so a host that has seen it can free the correlation entry.
 //
 // Two properties of this protocol are load-bearing, and both exist because the
 // host is a GUI that must stay responsive:
@@ -39,11 +43,46 @@ import "encoding/json"
 // to talk is worse than refusing to.
 const ProtocolVersion = 1
 
+// maxTokenCount bounds every token count a host may state.
+//
+// The published windows of the largest models are single-digit millions, so
+// 2^24 leaves better than an order of magnitude of headroom over anything that
+// can be served. It exists because the numbers on this wire are arithmetic
+// inputs, not opaque values: a window near math.MaxInt64 overflows the budget
+// arithmetic downstream, and an overflowed budget does not look wrong — it
+// reports a plausible-looking token count that is simply not 70% of the
+// threshold it claims to be under. A ceiling here is what keeps that number
+// from having to be trusted.
+//
+// Crossing it is refused rather than clamped. A silently clamped window is a
+// plan for a model the host does not have, delivered as if it were a plan for
+// the one it does; the host has no way to tell the two apart, which is exactly
+// the confusion the whole capability plane exists to remove.
+const maxTokenCount = 1 << 24
+
+// checkTokenCount refuses a token count the arithmetic cannot honour.
+func checkTokenCount(field string, value int) *Error {
+	if value < 0 {
+		return badRequest(
+			"%s is negative (%d); a negative count subtracts in the wrong direction "+
+				"and would raise the compaction threshold above the window it is meant to fit inside",
+			field, value)
+	}
+	if value > maxTokenCount {
+		return badRequest(
+			"%s is %d, past the %d-token ceiling this wire accepts; "+
+				"it is refused rather than clamped, because a plan computed for a window "+
+				"the model does not have is indistinguishable from one that fits",
+			field, value, maxTokenCount)
+	}
+	return nil
+}
+
 // Request is one call from the host.
 type Request struct {
-	// ID correlates the response and any events with this call. The host
-	// chooses it; the harness only echoes it. An empty ID is refused, because
-	// a response the host cannot route is indistinguishable from a hang.
+	// ID correlates the response with this call. The host chooses it; the
+	// harness only echoes it. An empty ID is refused, because a response the
+	// host cannot route is indistinguishable from a hang.
 	ID string `json:"id"`
 	// Op names the operation. See the Op* constants.
 	Op string `json:"op"`
@@ -57,13 +96,6 @@ type Response struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *Error          `json:"error,omitempty"`
-}
-
-// Event is a non-terminal line emitted while a request is in flight.
-type Event struct {
-	ID    string          `json:"id"`
-	Event string          `json:"event"`
-	Data  json.RawMessage `json:"data,omitempty"`
 }
 
 // Error is a failure the host can branch on.

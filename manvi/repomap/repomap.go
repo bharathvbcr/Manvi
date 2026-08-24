@@ -189,8 +189,36 @@ type Stats struct {
 
 // Permissive reports whether the neighbour relation covers most of the
 // repository, in which case the rule is close to allowing everything.
+//
+// The ratio used to be guarded by `Areas > 2`, and that clause excluded the two
+// graphs that are the *most* permissive of all. For a complete neighbour graph
+// MaxDegree is Areas-1, so `MaxDegree*2 >= Areas` holds at every Areas >= 2:
+// the clause was the only thing keeping the small total cases quiet, and a
+// repository where every area neighbours every other was reported as not
+// permissive at two areas and permissive at three — the same relation, opposite
+// verdicts, decided by a threshold that had nothing to do with how wide the
+// relation was. An allow qualified in one repository and clean in a strictly
+// more permissive one is a check reporting that it meant something when it
+// could not have.
+//
+// One area is stronger still, and the ratio cannot express it: an area has no
+// neighbours to count when there is nothing to be adjacent to, so the widest
+// degree is zero while every indexed file sits in the same subsystem as every
+// planned one. It is stated separately rather than folded into the arithmetic,
+// because it is a different fact — not "the relation is wide" but "there is no
+// relation to be outside of".
+//
+// Zero areas is not permissive. Nothing is indexed, so the rung answers
+// "unknown" rather than "yes", and the policy layer records that as its own
+// degradation; calling it permissive would name the wrong defect.
 func (s Stats) Permissive() bool {
-	return s.Areas > 2 && s.MaxDegree*2 >= s.Areas
+	if s.Areas <= 0 {
+		return false
+	}
+	if s.Areas == 1 {
+		return true
+	}
+	return s.MaxDegree*2 >= s.Areas
 }
 
 // Stats returns what was loaded.

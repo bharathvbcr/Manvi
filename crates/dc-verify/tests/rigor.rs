@@ -358,3 +358,145 @@ diff --git a/src/calc.go b/src/calc.go
 ";
     assert!(parse_unified(overlong).is_err());
 }
+
+/// Incompleteness *inside* a family the list already claims.
+///
+/// `ghp_` was covered and its four siblings were not; `xoxb-` was covered and
+/// `xoxp-`/`xoxa-`/`xapp-` were not; `AKIA` was covered and `ASIA` — the
+/// temporary credential granting the same access — was not; `sk-proj-` was
+/// covered and the legacy `sk-` key was not. GitLab, HuggingFace and npm had no
+/// entry at all. Every one of these passed the gate clean.
+#[test]
+fn sibling_prefixes_of_the_vendors_already_listed_are_detected() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "legacy openai",
+            "key = \"sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "github oauth",
+            "tok = \"gho_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "github server",
+            "tok = \"ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "github user",
+            "tok = \"ghu_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "github refresh",
+            "tok = \"ghr_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "slack user",
+            "tok = \"xoxp-1111111111-2222222222-AAAAAAAAAAAAAAAA\"",
+        ),
+        (
+            "slack app",
+            "tok = \"xapp-1-A0000000000-1111111111-AAAAAAAAAAAAAAAA\"",
+        ),
+        ("gitlab pat", "tok = \"glpat-AAAAAAAAAAAAAAAAAAAA\""),
+        ("aws temporary", "id = \"ASIAIOSFODNN7EXAMPLE\""),
+        (
+            "huggingface",
+            "tok = \"hf_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ),
+        ("npm", "tok = \"npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\""),
+    ];
+    for (name, line) in cases {
+        let files = vec![diff_of("src/a.go", &[(1, line)])];
+        let findings = scan_secrets(&files);
+        assert_eq!(
+            findings.len(),
+            1,
+            "{name} passed the secret gate clean: {line}"
+        );
+        assert_eq!(findings[0].severity, Severity::Blocking);
+        assert!(
+            !findings[0].evidence.contains("AAAAAAAAAA"),
+            "{name}: the finding quoted the credential: {}",
+            findings[0].evidence
+        );
+    }
+}
+
+/// The other half of the same change, and the reason a bare length floor was
+/// not enough. `sk-` occurs inside ordinary English and ordinary identifiers —
+/// `task-`, `disk-`, `risk-` — so a prefix that only had to appear *somewhere*
+/// on the line would report a long kebab-case name as an OpenAI key, and a
+/// gate that fires on ordinary code is a gate that gets switched off.
+#[test]
+fn ordinary_identifiers_containing_a_key_prefix_are_not_credentials() {
+    let files = vec![diff_of(
+        "src/a.go",
+        &[
+            (1, "const task-runner-configuration-for-integration = 1"),
+            (2, "// the disk-usage-reporting-subsystem-for-large-volumes"),
+            (3, "riskAssessmentForTheDistributedSchedulerComponent()"),
+            (
+                4,
+                "url := \"https://example.com/ask-a-very-long-question-here\"",
+            ),
+            (5, "hash := \"AKIA\" // four letters and nothing after them"),
+        ],
+    )];
+    let findings = scan_secrets(&files);
+    assert!(
+        findings.is_empty(),
+        "ordinary code was reported as credentials: {findings:#?}"
+    );
+}
+
+/// A file the gate did not ask about used to leave no trace at all — not a gap,
+/// not unmeasured — so `is_clean()` was true. Shell, ES modules, Kotlin, Swift,
+/// PHP and C# all fell in that hole, and `.mjs` was the sharpest case: the
+/// identical CommonJS file *was* measured.
+#[test]
+fn executable_files_outside_the_old_allowlist_are_accounted_for() {
+    let executable = [
+        "deploy.sh",
+        "src/mod.mjs",
+        "src/mod.cjs",
+        "src/a.kt",
+        "src/a.swift",
+        "src/a.php",
+        "src/a.cs",
+    ];
+    let files: Vec<FileDiff> = executable
+        .iter()
+        .map(|path| diff_of(path, &[(1, "rm -rf \"$TARGET\"")]))
+        .collect();
+
+    let report = intersect_coverage(&files, &[]);
+    assert_eq!(
+        report.unmeasured.len(),
+        executable.len(),
+        "files that execute were dropped from the report: {report:#?}"
+    );
+    assert!(
+        !report.is_clean(),
+        "a diff nobody measured reported as clean"
+    );
+    assert!(report.skipped_by_type.is_empty(), "{report:#?}");
+}
+
+/// And what is still skipped is *named*. "Coverage is not a question about this
+/// file" is a real answer; it is only a safe one while it is written down.
+#[test]
+fn a_file_the_gate_does_not_measure_is_recorded_rather_than_dropped() {
+    let files = vec![
+        diff_of("README.md", &[(1, "documentation")]),
+        diff_of("config/settings.toml", &[(1, "key = 1")]),
+    ];
+    let report = intersect_coverage(&files, &[]);
+    assert_eq!(
+        report.skipped_by_type,
+        vec!["README.md".to_string(), "config/settings.toml".to_string()],
+    );
+    // Skipping is not a failure of the change, so it does not make the report
+    // unclean — but it is no longer invisible either.
+    assert!(report.is_clean());
+    assert!(report.unmeasured.is_empty());
+}

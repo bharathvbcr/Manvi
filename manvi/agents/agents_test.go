@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"manvi/flags"
 )
 
 // recorder is a releaser that records what it was asked to give back, and can
@@ -340,5 +342,46 @@ func TestAdaptiveFanoutLimit(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("AdaptiveFanoutLimit(%q, %d) = %d, want %d", tc.provider, tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestResolveBoundsIsTheOneReaderOfTheDelegationLimits.
+//
+// The block this replaces existed twice, once in each devcouncil dispatch
+// handler, and both copies hardcoded a no-registry fallback of four while the
+// catalogue's default was eight. The drift happened to be in the safe
+// direction, which is exactly why nothing caught it: a dispatch whose limits
+// could not be read ran narrower than one whose limits were read, and no report
+// distinguished the two.
+func TestResolveBoundsIsTheOneReaderOfTheDelegationLimits(t *testing.T) {
+	// No registry: the catalogue's own defaults, not a number retyped at a
+	// call site.
+	if got := ResolveBounds(nil); got.MaxFanout != flags.DefaultAgentsMaxFanout ||
+		got.MaxDepth != flags.DefaultAgentsMaxSpawnDepth {
+		t.Errorf("ResolveBounds(nil) = %+v, want the catalogue defaults %d/%d",
+			got, flags.DefaultAgentsMaxSpawnDepth, flags.DefaultAgentsMaxFanout)
+	}
+
+	reg := flags.New()
+	if err := flags.DefineHarnessFlags(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.LoadConfig(map[string]string{
+		flags.AgentsMaxFanout:     "5",
+		flags.AgentsMaxSpawnDepth: "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveBounds(reg); got.MaxFanout != 5 || got.MaxDepth != 1 {
+		t.Errorf("ResolveBounds = %+v, want the configured 1/5", got)
+	}
+
+	// A local provider is narrowed on top of the setting, because the setting
+	// is a ceiling on intent and this is a ceiling on the hardware.
+	if err := reg.LoadConfig(map[string]string{flags.LLMDefaultProvider: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveBounds(reg); got.MaxFanout != 2 {
+		t.Errorf("ResolveBounds under a local provider = %+v, want fanout narrowed to 2", got)
 	}
 }

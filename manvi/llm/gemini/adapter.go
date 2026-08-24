@@ -443,9 +443,16 @@ type wireEvent struct {
 			CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
 		} `json:"usage"`
 	} `json:"interaction"`
+	// Error carries both `status` and `code` because this wire uses whichever
+	// it feels like and a reader of one alone gets nothing. preflight decodes
+	// both already (see errorInFrame, whose comment records that reading only
+	// `status` "reported an empty parenthesis where the reason belonged"); the
+	// fix landed there and not here, so an in-stream error frame carrying only
+	// `code` still reached the operator as "...try again later. ()".
 	Error *struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
+		Code    string `json:"code"`
 	} `json:"error"`
 	// Status is the interaction status on an interaction.status_update frame,
 	// where it sits at the top level rather than inside `interaction`. Decoding
@@ -516,26 +523,63 @@ func (s *stream) Next() (llm.Chunk, error) {
 }
 
 // maxDecodedResponseBytes bounds how much of one response this stream will
-// hold across all accumulators. Mirrors openaicompat's limit: the stall
-// watchdog bounds silence, not volume.
-const maxDecodedResponseBytes = 4 << 20
+// hold across all accumulators. The stall watchdog bounds silence, not volume.
+//
+// It is transport.MaxDecodedResponseBytes rather than a local copy of the same
+// literal. Three adapters each declaring the number independently is how they
+// came to disagree about what it counted; see decodedBytes.
+const maxDecodedResponseBytes = transport.MaxDecodedResponseBytes
 
 // decodedBytes is everything this stream is holding from the response so far.
+//
+// Two things were missing, and both were bytes this stream keeps for the life
+// of the response.
+//
+// Thought signatures. applyStep copies s.lastSignature into every call
+// accumulator and signatures() hands them back as replay state, so they are
+// retained and they reach the session log — but they were not counted, while
+// the sibling anthropic decoder counted exactly the same field. Measured:
+// 19.5 MiB of signature bytes retained with this function returning 0 and the
+// 4MiB cap never firing. Two decoders bounding one thing must agree on what the
+// thing is, or "exceeded the decode limit" means something different per
+// provider.
+//
+// The accumulators themselves. Each is charged
+// transport.RetainedAccumulatorBytes for the fixed cost of existing, so a
+// runaway that opens calls carrying no arguments trips the same ceiling as one
+// that sends content.
+//
+// It walks s.order rather than s.calls: order holds every accumulator this
+// stream has opened, while calls only holds those a step index has been
+// registered against, and an uncounted accumulator is the whole defect.
 func (s *stream) decodedBytes() int {
-	total := s.text.Len() + s.reasoning.Len()
-	for _, acc := range s.calls {
+	total := s.text.Len() + s.reasoning.Len() + len(s.lastSignature)
+	for _, acc := range s.order {
 		if acc == nil {
 			continue
 		}
-		total += acc.args.Len()
+		total += transport.RetainedAccumulatorBytes +
+			acc.args.Len() + len(acc.signature) + len(acc.id) + len(acc.name)
 	}
 	return total
 }
 
 func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 	if ev.Error != nil {
+		// status first, code as the fallback, and the parenthesis omitted
+		// entirely when neither is set — the same order errorInFrame uses, so
+		// the preflight scan and the decoder describe one failure identically.
+		// An empty "()" is not a reason; it is a reader that looked in the
+		// wrong field and printed the hole.
+		reason := ev.Error.Status
+		if reason == "" {
+			reason = ev.Error.Code
+		}
+		if reason == "" {
+			return llm.Chunk{}, false, fmt.Errorf("gemini: stream error: %s", ev.Error.Message)
+		}
 		return llm.Chunk{}, false, fmt.Errorf("gemini: stream error: %s (%s)",
-			ev.Error.Message, ev.Error.Status)
+			ev.Error.Message, reason)
 	}
 
 	switch kind {

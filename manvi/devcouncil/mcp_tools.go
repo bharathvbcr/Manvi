@@ -109,6 +109,36 @@ func (r *Registry) mcpListTools(ctx context.Context, call tools.Call) tools.Resu
 	})
 }
 
+// mcpDispatchUnjudged is what every MCP tool call admits about itself.
+//
+// The handler validates two strings and hands the call to the server: no gate,
+// no lease, no rule, and — until this — nothing in the result to say so. The
+// only control was mcp.enabled, which is all-or-nothing and is not a safety
+// flag, so a run that reached a filesystem write or a shell through an MCP
+// server looked, in the report, exactly like a run that had not: no Degraded,
+// no Rule, no Demoted, and nothing in Weakened().
+//
+// A lease is deliberately *not* required, and the reason is that requiring one
+// would be the misleading choice rather than the strict one. This harness
+// cannot tell a read from a write on the far side of a JSON-RPC boundary, so a
+// lease requirement would refuse read-only MCP research that the native
+// read-only tools do without one, and — worse — would dress the calls it did
+// admit as authorised. A lease authorises a task's planned files; no MCP call
+// is ever in a task's planned files, so holding one says nothing true about it.
+// What can be said truthfully is that nothing judged this, and that is what
+// travels on the result, on the failure path as much as the success path: a
+// dispatch that errored still reached the server, and the harness has no way to
+// know how far it got.
+const mcpDispatchUnjudged = "mcp.dispatch.unjudged"
+
+// unjudgedMCP marks a result as having crossed the MCP boundary.
+func unjudgedMCP(res tools.Result, server, tool string) tools.Result {
+	res.Degraded = append(res.Degraded, fmt.Sprintf(
+		"%s: %s/%s ran outside the write and command gates; no rule was consulted and no lease was required",
+		mcpDispatchUnjudged, server, tool))
+	return res
+}
+
 func (r *Registry) mcpCallTool(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		ServerName string         `json:"server_name"`
@@ -128,7 +158,9 @@ func (r *Registry) mcpCallTool(ctx context.Context, call tools.Call) tools.Resul
 	mgr := r.getMCPManager()
 	res, err := mgr.CallTool(ctx, args.ServerName, args.ToolName, args.Arguments)
 	if err != nil {
-		return tools.Errorf("calling MCP tool %s/%s: %v", args.ServerName, args.ToolName, err)
+		return unjudgedMCP(
+			tools.Errorf("calling MCP tool %s/%s: %v", args.ServerName, args.ToolName, err),
+			args.ServerName, args.ToolName)
 	}
 
 	var texts []string
@@ -145,10 +177,10 @@ func (r *Registry) mcpCallTool(ctx context.Context, call tools.Call) tools.Resul
 		outText = fmt.Sprintf("tool %s/%s completed successfully", args.ServerName, args.ToolName)
 	}
 
-	return tools.Result{
+	return unjudgedMCP(tools.Result{
 		Text:    outText,
 		IsError: res.IsError,
-	}
+	}, args.ServerName, args.ToolName)
 }
 
 func (r *Registry) mcpListResources(ctx context.Context, call tools.Call) tools.Result {

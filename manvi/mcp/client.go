@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +54,12 @@ const (
 	// is skipped with a recorded diagnostic rather than allowed to end the
 	// session: the next line may be perfectly good.
 	maxStdoutLine = 16 << 20
+	// maxStderrLine bounds one retained stderr line. Diagnostics are worth
+	// keeping only while they are small; a server emitting megabyte log lines
+	// must not grow the retained buffer without bound. A line past it is
+	// skipped — with a diagnostic saying so — and draining continues, because a
+	// stderr reader that stops is a child that blocks in write(2).
+	maxStderrLine = 1 << 20
 	// defaultCallTimeout applies to calls made on a context with no deadline.
 	// An unbounded wait on a wedged server freezes the whole tool surface;
 	// operators who need longer set Timeout in the server config.
@@ -119,21 +127,33 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 }
 
 // stderrLoop records stderr diagnostics from the MCP server.
+//
+// It reads with the same readLimitedLine/drainToNewline pattern as stdout
+// rather than with a bufio.Scanner. A Scanner stops *permanently* on
+// ErrTooLong — it does not skip the token and carry on — so one oversized log
+// line ended stderr draining for the life of the process: the child's stderr
+// pipe filled, the child blocked in write(2) before it could answer, and every
+// later call ran out its full timeout. And ErrTooLong was explicitly filtered
+// out of the diagnostics, so a reader that had stopped reported exactly what a
+// reader that ran clean reports — nothing. A check that could not run must
+// never report the same result as a check that ran and passed, so the skip is
+// recorded and draining continues.
 func (c *Client) stderrLoop() {
-	scanner := bufio.NewScanner(c.stderr)
-	// Diagnostics are worth keeping only while they are small; a server
-	// emitting megabyte log lines must not grow this buffer without bound.
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		c.errMu.Lock()
-		if len(c.serverErrors) < 100 {
-			c.serverErrors = append(c.serverErrors, line)
+	reader := bufio.NewReaderSize(c.stderr, 64*1024)
+	for {
+		line, err := readLimitedLine(reader, maxStderrLine)
+		switch {
+		case err == nil:
+			c.recordError(strings.TrimRight(string(line), "\r\n"))
+			continue
+		case errors.As(err, new(errLineTooLarge)):
+			c.recordError(fmt.Sprintf("stderr line skipped: %v", err))
+			continue
+		case err == io.EOF:
+		default:
+			c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
 		}
-		c.errMu.Unlock()
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
+		return
 	}
 }
 
@@ -144,6 +164,20 @@ func (c *Client) recordError(msg string) {
 		c.serverErrors = append(c.serverErrors, msg)
 	}
 	c.errMu.Unlock()
+}
+
+// Diagnostics returns what the reader goroutines saw: retained stderr lines,
+// lines and frames they had to skip, and reader failures.
+//
+// It exists because the record was write-only — nothing could read
+// serverErrors, so "the stderr reader stopped" and "the server said nothing"
+// were the same observation from outside the package. Retention is capped at
+// 100 entries; a caller must not read an empty result as proof the server was
+// quiet, only as proof nothing was retained.
+func (c *Client) Diagnostics() []string {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	return append([]string(nil), c.serverErrors...)
 }
 
 // Alive reports whether the server process is still producing stdout. A client
@@ -162,16 +196,21 @@ func (c *Client) Alive() bool {
 // Done exposes the channel closed when the server's stdout ends.
 func (c *Client) Done() <-chan struct{} { return c.doneCh }
 
-// readLimitedLine returns one newline-terminated frame without its terminator.
-// The final unterminated frame at EOF counts as a line, matching the
-// bufio.Scanner semantics this replaced. A frame longer than limit is drained
+// readLimitedLine returns one line including its trailing newline, if it had
+// one. The final unterminated line at EOF counts as a line, matching the
+// bufio.Scanner semantics this replaced. A line longer than limit is drained
 // to its terminator and reported as errLineTooLarge rather than ending the
 // stream: one runaway frame must not convert a healthy session into permanent
-// tool failure.
-type errLineTooLarge struct{}
+// tool failure, and — on stderr — must not stop the drain that keeps the child
+// from blocking in write(2).
+//
+// errLineTooLarge carries the limit it exceeded because both streams use this
+// reader with different bounds; naming maxStdoutLine unconditionally would have
+// reported the wrong number for a skipped stderr line.
+type errLineTooLarge struct{ limit int }
 
-func (errLineTooLarge) Error() string {
-	return fmt.Sprintf("server emitted a frame exceeding %d bytes", maxStdoutLine)
+func (e errLineTooLarge) Error() string {
+	return fmt.Sprintf("server emitted a line exceeding %d bytes", e.limit)
 }
 
 func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
@@ -185,7 +224,7 @@ func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 			buf = append(buf, chunk...)
 			if len(buf) > limit {
 				drainToNewline(r)
-				return nil, errLineTooLarge{}
+				return nil, errLineTooLarge{limit: limit}
 			}
 		case err == io.EOF:
 			if len(buf)+len(chunk) > 0 {
@@ -236,7 +275,8 @@ func (c *Client) readLoop() {
 			continue
 		}
 
-		// Match by numeric ID
+		// Match by request ID. This client only ever sends a number, so any id
+		// that denotes one of ours is that number however it was encoded.
 		var id int64
 		switch v := resp.ID.(type) {
 		case float64:
@@ -245,8 +285,27 @@ func (c *Client) readLoop() {
 			id = v
 		case int:
 			id = int64(v)
+		case string:
+			// JSON-RPC 2.0 permits a string id and only requires the server to
+			// echo back the one it was sent; implementations that stringify it
+			// are legal. Dropping those responses meant every call to such a
+			// server ran out its full timeout — 120s by default — with nothing
+			// recorded anywhere, so a server answering wrongly looked exactly
+			// like a server not answering at all.
+			n, convErr := strconv.ParseInt(v, 10, 64)
+			if convErr != nil {
+				c.recordError(fmt.Sprintf(
+					"dropped a response whose id %q is neither a number nor a number in a string", v))
+				continue
+			}
+			id = n
+		case nil:
+			// A notification or a server-initiated message with no id. There is
+			// nothing to correlate it with and nothing wrong with it.
+			continue
 		default:
-			// Notification or non-numeric ID; ignore for now
+			c.recordError(fmt.Sprintf(
+				"dropped a response with an id of unusable type %T (%v)", resp.ID, resp.ID))
 			continue
 		}
 
@@ -354,11 +413,46 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}
 }
 
+// ErrWriteUncertain reports a frame this client could not establish the fate
+// of: the write outlived writeTimeout, so an unknown prefix of it — possibly
+// all of it — is already in the child's pipe.
+//
+// It is a distinct type because the distinction is the whole point. A caller
+// that treats it as "the request was not sent" and retries will run a
+// non-idempotent tool a second time. There is no way for this layer to
+// discover which happened, so it names the ambiguity instead of resolving it
+// one way and being wrong half the time.
+type ErrWriteUncertain struct {
+	// Server is the configured server name, for the message.
+	Server string
+	// After is the bound the write outlived.
+	After time.Duration
+}
+
+func (e *ErrWriteUncertain) Error() string {
+	return fmt.Sprintf("stdin write to %s did not complete within %s: the request may already have "+
+		"been delivered and executed, so it must not be retried blindly; the connection was torn down",
+		e.Server, e.After)
+}
+
 // writeFrame writes one newline-terminated frame under the writer lock, with
 // the write itself bounded: a child that stopped draining its stdin would
 // otherwise hold writerMu forever and freeze every other call in the queue.
-// The goroutine a timed-out write leaves behind drains on its own; the pipe is
-// closed by Close either way.
+//
+// A write that outlives writeTimeout is not a write that failed, and reporting
+// it as one was the defect. The goroutine stayed blocked in write(2) and, the
+// instant the child resumed reading, delivered the frame — so the server
+// received and executed a request whose caller had been told it was never sent.
+// Releasing writerMu with those bytes still in flight also let the next frame
+// splice into the middle of the abandoned one, which no server can parse.
+//
+// So a timed-out write poisons the connection rather than pretending: Close
+// shuts stdin (which unblocks the orphan with an error, and bounds how much of
+// the frame can ever land), reaps the child, and ends the read loop. Every
+// queued and later call then fails against a closed client instead of writing
+// into a corrupted stream, and the Manager respawns a clean process on next
+// use. The caller is handed ErrWriteUncertain so it can tell "not delivered"
+// from "unknown" — the only honest answer available here.
 func (c *Client) writeFrame(data []byte) error {
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
@@ -373,7 +467,8 @@ func (c *Client) writeFrame(data []byte) error {
 	case werr := <-errCh:
 		return werr
 	case <-time.After(writeTimeout):
-		return fmt.Errorf("stdin write did not complete within %s (server not reading)", writeTimeout)
+		_ = c.Close()
+		return &ErrWriteUncertain{Server: c.Name(), After: writeTimeout}
 	}
 }
 

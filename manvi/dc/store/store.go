@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"manvi/dc"
+	"manvi/dc/internal/proc"
 )
 
 // Client runs the store binary.
@@ -64,6 +65,7 @@ type response struct {
 	OK              bool     `json:"ok"`
 	Store           string   `json:"store"`
 	SchemaVersion   int      `json:"schema_version"`
+	ExclusionIndex  string   `json:"exclusion_index"`
 	Code            string   `json:"code"`
 	Error           string   `json:"error"`
 	Holder          string   `json:"holder"`
@@ -481,6 +483,14 @@ func (c *Client) ReadyTasks(ctx context.Context) ([]string, error) {
 // must never be reported as an empty-but-healthy store. This is the same rule
 // the Rust port learned the hard way — an unbuilt store that reported itself
 // available returned a confident zero.
+//
+// A *missing* database is one of those unknowns, and it used not to be: the
+// store opened the path with SQLite's default flags, so health created the file
+// it was asked about and answered "healthy, zero leases" from a database nobody
+// else was using. Two harnesses configured with two spellings of one path
+// therefore shared no exclusion at all while both reported fine. health is now
+// the one command that will not bring a store into existence, so this reports
+// unavailable rather than manufacturing the store it was asked to check.
 func (c *Client) Available(ctx context.Context) error {
 	out, err := c.run(ctx, "health")
 	if err != nil {
@@ -498,8 +508,29 @@ func (c *Client) Available(ctx context.Context) error {
 			"reading a lease through the wrong column layout would produce answers that look valid",
 			c.Binary, out.SchemaVersion, SchemaVersion)
 	}
+	// The third assertion, and the one a schema version cannot make. A version
+	// number says which columns the store expects; it says nothing about
+	// whether the database it just opened carries the partial unique index that
+	// makes two racing acquires resolve to one winner. That index is created
+	// with IF NOT EXISTS, which matches on name alone, so a same-named index
+	// with any other definition silently turns mutual exclusion back into the
+	// check-then-insert it is supposed to backstop — and a 24-way race against
+	// such a database elected two winners while health answered ok. The store
+	// now reads its own schema back and says so here.
+	if out.ExclusionIndex != exclusionIndexVerified {
+		return fmt.Errorf("store unavailable: %s did not report its lease exclusion index as %q (got %q) — "+
+			"without the partial unique index on task_id, two builders racing for one task both win",
+			c.Binary, exclusionIndexVerified, out.ExclusionIndex)
+	}
 	return nil
 }
+
+// exclusionIndexVerified is what health answers once it has read the opened
+// database's own schema and found the exclusion index intact. A store that
+// cannot make the assertion — an older binary, or one that never looked —
+// reports something else, and something else is not good enough for a check
+// whose failure mode is two agents in one working tree.
+const exclusionIndexVerified = "verified"
 
 // SchemaVersion is the lease-schema revision this harness understands. It must
 // match dc_store::SCHEMA_VERSION; Available refuses to proceed when it does not.
@@ -574,7 +605,24 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	cmd.WaitDelay = 2 * time.Second
 	configureProcessGroup(cmd)
 
-	runErr := cmd.Run()
+	// Run on its own goroutine so the bound covers the fork, not just the
+	// process. Everything above this line — the context, WaitDelay, the process
+	// group — starts counting after Start has returned, so a Start that does
+	// not return is outside all of them, and this client's advertised 10-second
+	// bound would not hold. This is the lease path: every Diagnose on the write
+	// gate and every Acquire comes through here, and a wedged fork would stall
+	// the turn indefinitely rather than fail it.
+	//
+	// On the deadline path the goroutine is abandoned — it is blocked in the
+	// kernel and there is nothing to cancel — so nothing below reads stdout or
+	// stderr on that path. A buffer still being written by an abandoned writer
+	// is a data race, and a partial reply decoded out of one would be worse
+	// than the timeout it replaced.
+	runErr, timedOut := proc.RunBounded(ctx, cmd.Run)
+	if timedOut {
+		return nil, fmt.Errorf("store: %s did not return within %s (the process could not be started or reaped): %w",
+			args[0], timeout, ctx.Err())
+	}
 	if stdout.overflow {
 		return nil, fmt.Errorf("store: %s %w (%d bytes)", args[0], errOversize, maxOutput)
 	}

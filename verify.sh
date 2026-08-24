@@ -107,9 +107,22 @@ printf '    %s command cases against the Python engine\n' "$cmd_cases"
 step "Cross-language — store schema"
 tmpdb="$(mktemp -d)/state.sqlite"
 (cd crates && cargo build -q -p dc-store --bin dcstore) || fail "building dcstore"
-crates/target/debug/dcstore --db "$tmpdb" health >/dev/null || fail "dcstore health"
+
+# `health` must not manufacture the store it is asked about. This gate used to
+# run it first against a path that did not exist yet, and it passed — because
+# health opened with SQLITE_OPEN_CREATE, made an empty database, and reported it
+# healthy. A typo in --db was therefore indistinguishable from a working store,
+# which is the same class as every other "a check that could not run answered
+# like one that passed" defect in this file. The order below is now load-bearing
+# rather than incidental: a writing command creates, and health only reads.
+if crates/target/debug/dcstore --db "$(mktemp -d)/absent.sqlite" health >/dev/null 2>&1; then
+  fail "dcstore health reported a database that does not exist as healthy"
+fi
+printf '    covered: health refuses a store that does not exist rather than creating one\n'
+
 crates/target/debug/dcstore --db "$tmpdb" acquire --task VERIFY-1 --owner gate --ttl-seconds 60 >/dev/null \
   || fail "dcstore acquire"
+crates/target/debug/dcstore --db "$tmpdb" health >/dev/null || fail "dcstore health"
 if command -v sqlite3 >/dev/null; then
   held="$(sqlite3 "$tmpdb" "SELECT task_id FROM task_leases WHERE status='active';")"
   [[ "$held" == "VERIFY-1" ]] || fail "an independent reader saw '$held', not VERIFY-1"

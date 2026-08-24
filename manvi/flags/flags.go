@@ -84,6 +84,18 @@ type Def struct {
 	Description string
 	// Values enumerates the legal values for KindEnum.
 	Values []string
+	// Min and Max bound a KindInt value, inclusive, and are checked wherever a
+	// value enters — the config file, the environment, and Set — so an
+	// out-of-range setting is refused by the layer that supplied it instead of
+	// being accepted here and clamped later by whichever consumer thought of
+	// it. A consumer that clamps silently turns "the operator asked for 100000
+	// concurrent children" into a number nobody chose and nothing reports.
+	//
+	// A Max of zero means unbounded, which is how every flag that has never
+	// needed a ceiling keeps its current contract: the range check runs only
+	// for a flag that declares one. A setting whose real ceiling is zero is a
+	// constant, not a setting, so nothing in the catalogue needs that spelling.
+	Min, Max int
 	// Mutable says who may change this flag after boot.
 	Mutable Mutability
 	// Safety marks a flag whose off/demoted state weakens a gate. Safety flags
@@ -197,6 +209,15 @@ func (r *Registry) Define(defs ...Def) error {
 		}
 		if d.Kind == KindEnum && len(d.Values) == 0 {
 			return fmt.Errorf("flags: enum %q declares no values", d.Key)
+		}
+		// Bounds on anything but an int would be declared, reported by nothing,
+		// and enforced nowhere — a limit an operator can read in the catalogue
+		// and that does not hold.
+		if d.Kind != KindInt && (d.Min != 0 || d.Max != 0) {
+			return fmt.Errorf("flags: %q declares bounds %d..%d but is a %s, not an int", d.Key, d.Min, d.Max, d.Kind)
+		}
+		if d.Max != 0 && d.Min > d.Max {
+			return fmt.Errorf("flags: %q declares an empty range %d..%d", d.Key, d.Min, d.Max)
 		}
 		if err := validate(d, d.Default); err != nil {
 			return fmt.Errorf("flags: default for %q: %w", d.Key, err)
@@ -506,8 +527,17 @@ func validate(d Def, raw string) error {
 			return fmt.Errorf("expected a bool, got %q", raw)
 		}
 	case KindInt:
-		if _, err := strconv.Atoi(raw); err != nil {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
 			return fmt.Errorf("expected an int, got %q", raw)
+		}
+		// The range is checked only for a flag that declares a ceiling; see
+		// Def.Max. A value outside it is refused rather than clamped, because
+		// the two are not the same answer: a refusal names the setting and the
+		// limit, and a clamp runs the harness on a number the operator did not
+		// choose and cannot see in the flag table.
+		if d.Max != 0 && (n < d.Min || n > d.Max) {
+			return fmt.Errorf("expected an int in %d..%d, got %d", d.Min, d.Max, n)
 		}
 	case KindDuration:
 		if _, err := time.ParseDuration(raw); err != nil {

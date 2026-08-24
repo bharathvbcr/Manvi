@@ -129,7 +129,8 @@ fn check(
 
     Ok(format!(
         "{{\"ok\":true,\"files\":{},\"in_scope\":{},\"orphans\":{},\"untouched_planned\":{},\
-         \"findings\":{},\"coverage_unmeasured\":{},\"coverage_gaps\":{}}}",
+         \"findings\":{},\"coverage_unmeasured\":{},\"coverage_gaps\":{},\
+         \"coverage_skipped_by_type\":{}}}",
         files.len(),
         string_array(&scope.in_scope),
         string_array(&scope.orphans),
@@ -137,6 +138,10 @@ fn check(
         findings_array(&findings),
         string_array(&coverage.unmeasured),
         coverage_gaps(&coverage),
+        // Reported even though nothing blocks on it. A file the gate did not
+        // ask about used to leave the reply with no trace, which reads exactly
+        // like a file that was measured and clean.
+        string_array(&coverage.skipped_by_type),
     ))
 }
 

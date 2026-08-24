@@ -40,6 +40,76 @@ func LoadConfigFile(r *Registry, path string) (bool, error) {
 type indentEntry struct {
 	indent int
 	key    string
+	// line is where this key was written, so a key that turns out to hold
+	// nothing can be reported at the line an operator has to go and fix.
+	line int
+	// hadContent records whether anything was nested under this key: a deeper
+	// key, a value, or a list item. A key with nothing under it was never a
+	// section — it is a setting whose value is missing, and closeSection is
+	// where that is finally decided.
+	hadContent bool
+}
+
+// fullKeyOf joins the open sections with a leaf to make the dotted key the
+// registry is addressed by.
+func fullKeyOf(stack []indentEntry, leaf string) string {
+	if len(stack) == 0 {
+		return leaf
+	}
+	keys := make([]string, 0, len(stack)+1)
+	for _, e := range stack {
+		keys = append(keys, e.key)
+	}
+	return strings.Join(append(keys, leaf), ".")
+}
+
+// reserve claims a key for one line and refuses a second claim on it.
+//
+// It is called at the point a key is *claimed* rather than at the point its
+// value is stored, and that is the whole of the fix it carries. The duplicate
+// check used to sit on the single-line branch only, so a repeated key whose
+// second value opened a quoted multi-line string skipped it entirely and the
+// later value silently won: `harness.posture: strict` followed by
+// `harness.posture: "yolo` resolved to yolo, while the identical file with an
+// unquoted second value was refused. A guard the parser deliberately
+// implements must not be escapable by the shape of the value, least of all in
+// the direction that relaxes a safety flag.
+func reserve(seen map[string]int, key string, line int) error {
+	if first, dup := seen[key]; dup {
+		return fmt.Errorf("line %d: %q is already set on line %d", line, key, first)
+	}
+	seen[key] = line
+	return nil
+}
+
+// closeSection pops the innermost open key and records it as a valueless
+// setting when nothing was ever nested under it.
+//
+// `policy.file.mode:` with the value lost to a truncated edit, a templating
+// bug, or a YAML anchor that resolved to nothing used to be read as the opening
+// of a section, pushed, and then dropped when nothing arrived under it. The
+// flag kept its default, the file that named it changed nothing, and no error
+// said so — the package's own rule is that a key which quietly does nothing is
+// the same class of defect as a check that could not run reporting success.
+//
+// It is recorded as an empty value rather than refused here because this parser
+// does not know which keys are the harness's. The registry does: a defined key
+// gets its own validation — an enum or a bool rejects "" by name — and a key in
+// a harness namespace that is not defined is already reported as unknown, while
+// a foreign section in a shared `.devcouncil/config.yaml` stays ignored, which
+// is the whole reason foreign keys are tolerated at all.
+func closeSection(stack []indentEntry, values map[string]string, seen map[string]int) ([]indentEntry, error) {
+	top := stack[len(stack)-1]
+	stack = stack[:len(stack)-1]
+	if top.hadContent {
+		return stack, nil
+	}
+	key := fullKeyOf(stack, top.key)
+	if err := reserve(seen, key, top.line); err != nil {
+		return nil, err
+	}
+	values[key] = ""
+	return stack, nil
 }
 
 // ParseConfig reads YAML configuration files in either flat dotted form (llm.local.model: ...)
@@ -104,14 +174,29 @@ func ParseConfig(src io.Reader) (map[string]string, error) {
 			continue
 		}
 
-		// Adjust stack based on indentation
-		for len(stack) > 0 && indent <= stack[len(stack)-1].indent {
-			stack = stack[:len(stack)-1]
+		// A block list item is content belonging to the key above it, and it is
+		// marked before the stack is unwound because YAML lets it sit at the
+		// same indentation as that key: `roles:` followed by `- a` at column
+		// zero pops `roles` on the line that proves it has something in it.
+		// Lists are not represented here — every flag is a scalar — but a key
+		// that has one must not be mistaken for a key that has nothing, which
+		// is what closeSection would otherwise report it as.
+		if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+			if len(stack) > 0 {
+				stack[len(stack)-1].hadContent = true
+			}
+			continue
 		}
 
-		// Check for block list item, e.g. "- item"
-		if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
-			continue
+		// Adjust stack based on indentation
+		for len(stack) > 0 && indent <= stack[len(stack)-1].indent {
+			var err error
+			if stack, err = closeSection(stack, values, seen); err != nil {
+				return nil, err
+			}
+		}
+		if len(stack) > 0 {
+			stack[len(stack)-1].hadContent = true
 		}
 
 		keyPart, rest, ok := strings.Cut(trimmed, ":")
@@ -129,28 +214,24 @@ func ParseConfig(src io.Reader) (map[string]string, error) {
 
 		rest = strings.TrimSpace(rest)
 
-		// Parent section (nested dictionary)
+		// Nothing after the colon. Which of the two things this is — a section
+		// with keys under it, or a setting whose value went missing — is not
+		// decidable here; it is decided by whether anything is nested under it,
+		// so the key is pushed and closeSection settles it.
 		if rest == "" || strings.HasPrefix(rest, "#") {
-			stack = append(stack, indentEntry{indent: indent, key: keyPart})
+			stack = append(stack, indentEntry{indent: indent, key: keyPart, line: line})
 			continue
 		}
 
-		// Leaf key
-		var fullKey string
-		if len(stack) > 0 {
-			var keys []string
-			for _, e := range stack {
-				keys = append(keys, e.key)
-			}
-			keys = append(keys, keyPart)
-			fullKey = strings.Join(keys, ".")
-		} else {
-			fullKey = keyPart
-		}
+		fullKey := fullKeyOf(stack, keyPart)
 
 		val, isMulti, quoteByte, err := parseYAMLValue(rest)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
+		}
+
+		if err := reserve(seen, fullKey, line); err != nil {
+			return nil, err
 		}
 
 		if isMulti {
@@ -160,14 +241,9 @@ func ParseConfig(src io.Reader) (map[string]string, error) {
 			multilineStartLine = line
 			multilineBuf.Reset()
 			multilineBuf.WriteString(val)
-			seen[fullKey] = line
 			continue
 		}
 
-		if first, dup := seen[fullKey]; dup {
-			return nil, fmt.Errorf("line %d: %q is already set on line %d", line, fullKey, first)
-		}
-		seen[fullKey] = line
 		values[fullKey] = val
 	}
 
@@ -175,8 +251,21 @@ func ParseConfig(src io.Reader) (map[string]string, error) {
 		return nil, fmt.Errorf("line %d: the %q quote is never closed", multilineStartLine, string(multilineQuote))
 	}
 
+	// Checked before the open sections are closed: a scan that stopped early —
+	// a line over the buffer cap, an unreadable file — leaves a stack that was
+	// never finished, and reporting a key as valueless because the reader gave
+	// up before reaching its contents would name the wrong fault.
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+
+	// End of file closes whatever is still open, so a trailing key with nothing
+	// under it is judged by the same rule as one in the middle.
+	for len(stack) > 0 {
+		var err error
+		if stack, err = closeSection(stack, values, seen); err != nil {
+			return nil, err
+		}
 	}
 	return values, nil
 }

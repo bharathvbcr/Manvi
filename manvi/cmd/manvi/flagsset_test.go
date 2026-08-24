@@ -319,3 +319,75 @@ func TestFlagsSetDistinguishesANoOpFromAMove(t *testing.T) {
 		t.Errorf("setting a flag to the value it already had did not say so:\n%s", sameValue)
 	}
 }
+
+// flagLine returns the flag table's line for one key.
+func flagLine(t *testing.T, table, key string) string {
+	t.Helper()
+	for _, line := range strings.Split(table, "\n") {
+		if strings.Contains(line, key+" ") {
+			return line
+		}
+	}
+	t.Fatalf("the flag table has no line for %s:\n%s", key, table)
+	return ""
+}
+
+// flagTable renders `manvi flags` for a registry configured with one posture.
+func flagTable(t *testing.T, posture string) string {
+	t.Helper()
+	reg := flags.New()
+	if err := flags.DefineHarnessFlags(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.LoadConfig(map[string]string{flags.HarnessPosture: posture}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := showFlags(&out, reg, nil); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+// TestTheFlagTablePrintsTheModeTheGateWillRunIn.
+//
+// The table printed Value.Raw, so the gate settings read `enforce default`
+// under strict and `enforce default` under yolo — byte identical for a run that
+// enforces and a run with the gate off, on the one line an operator reads to
+// learn the posture. doctor resolves the same question through
+// EffectiveGateMode and gets it right; two commands over one registry must not
+// disagree about what the gate will do.
+func TestTheFlagTablePrintsTheModeTheGateWillRunIn(t *testing.T) {
+	strict, yolo := flagTable(t, flags.PostureStrict), flagTable(t, flags.PostureYolo)
+
+	for _, key := range []string{flags.PolicyFileMode, flags.PolicyCommandMode} {
+		strictLine, yoloLine := flagLine(t, strict, key), flagLine(t, yolo, key)
+		if strictLine == yoloLine {
+			t.Errorf("%s reads identically under strict and yolo:\n%s", key, strictLine)
+		}
+		if !strings.Contains(strictLine, flags.ModeEnforce) {
+			t.Errorf("%s under strict = %q, want the mode the gate runs in", key, strictLine)
+		}
+		if !strings.Contains(yoloLine, flags.ModeOff) {
+			t.Errorf("%s under yolo = %q; the gate does not run, and the table must say so", key, yoloLine)
+		}
+		// The posture that decided it is named, so the reader knows which
+		// setting to change, and the flag's own value is not hidden.
+		if !strings.Contains(yoloLine, flags.HarnessPosture) {
+			t.Errorf("%s under yolo = %q, want the setting that decided it named", key, yoloLine)
+		}
+		if !strings.Contains(yoloLine, "set to "+flags.ModeEnforce) {
+			t.Errorf("%s under yolo = %q, want the value the flag itself carries kept", key, yoloLine)
+		}
+	}
+
+	// The hard rules are the same class: yolo clears them without moving the
+	// flag, so the flag's own value is not the answer to "do they run".
+	hard := flagLine(t, yolo, flags.PolicyHardRules)
+	if !strings.Contains(hard, "false") {
+		t.Errorf("%s under yolo = %q; yolo turns the hard rules off", flags.PolicyHardRules, hard)
+	}
+	if strings.Contains(flagLine(t, strict, flags.PolicyHardRules), "false") {
+		t.Errorf("%s under strict must stay on", flags.PolicyHardRules)
+	}
+}

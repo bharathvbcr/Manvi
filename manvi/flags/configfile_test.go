@@ -255,3 +255,93 @@ llm:
 		t.Errorf("verify.rigor.enabled = %v, want true", rigor)
 	}
 }
+
+// TestADuplicateKeyIsRefusedWhateverShapeItsValueTakes.
+//
+// The duplicate guard used to sit on the single-line branch only, so a repeat
+// whose second value opened a quoted multi-line string skipped it and the later
+// value silently won. The pair below is the same file twice, differing only in
+// a quote: one was refused and the other moved the posture from strict to yolo
+// without a word.
+func TestADuplicateKeyIsRefusedWhateverShapeItsValueTakes(t *testing.T) {
+	for _, tc := range []struct{ name, doc string }{
+		{"second value is multiline", "harness.posture: strict\nharness.posture: \"yolo\n\"\n"},
+		{"first value is multiline", "harness.posture: \"strict\n\"\nharness.posture: yolo\n"},
+		{"both values are multiline", "harness.posture: \"strict\n\"\nharness.posture: \"yolo\n\"\n"},
+		{"control, neither is", "harness.posture: strict\nharness.posture: yolo\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseErr(t, tc.doc)
+			if !strings.Contains(got, `"harness.posture" is already set on line 1`) {
+				t.Errorf("error = %q, want it to name the key and the line that set it first", got)
+			}
+		})
+	}
+}
+
+// TestAKeyWithNoValueIsNotSilentlyDropped.
+//
+// A key with nothing after the colon was read as the opening of a section and
+// dropped when nothing arrived under it: `policy.file.mode:` left the flag on
+// its default with no error, and under the yolo posture that default resolves
+// the file gate to off. A config line that names a setting and changes nothing
+// is the defect this package exists to refuse.
+func TestAKeyWithNoValueIsNotSilentlyDropped(t *testing.T) {
+	r := New()
+	if err := DefineHarnessFlags(r); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("policy.file.mode:\nharness.posture: yolo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfigFile(r, path)
+	if err == nil {
+		v, _ := r.Lookup(PolicyFileMode)
+		t.Fatalf("a valueless setting was accepted; policy.file.mode = %q (%s)", v.Raw, v.Origin)
+	}
+	if !strings.Contains(err.Error(), PolicyFileMode) {
+		t.Errorf("error = %v, want it to name the key that set nothing", err)
+	}
+
+	// The nested spelling of the same mistake, and a mistyped key that never
+	// got a value either: both are the same class and neither may pass.
+	for _, doc := range []string{"policy:\n  file:\n    mode:\n", "harness.postur:\n"} {
+		nested := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(nested, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fresh := New()
+		if err := DefineHarnessFlags(fresh); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfigFile(fresh, nested); err == nil {
+			t.Errorf("%q was accepted; a key that sets nothing must be reported", doc)
+		}
+	}
+}
+
+// TestSectionsAndListsAreStillSections is the other half of the rule above: the
+// keys that legitimately carry nothing on their own line must keep working, or
+// "an empty value is an error" becomes "a nested config is an error".
+func TestSectionsAndListsAreStillSections(t *testing.T) {
+	got := parse(t, `llm:
+  local:
+    model: qwen
+commands:
+  lint:
+    - go vet ./...
+    - gofmt -l .
+roles:
+- reviewer
+- implementer
+`)
+	if got["llm.local.model"] != "qwen" {
+		t.Errorf("llm.local.model = %q, want the nested value", got["llm.local.model"])
+	}
+	for _, key := range []string{"llm", "llm.local", "commands", "commands.lint", "roles"} {
+		if v, ok := got[key]; ok {
+			t.Errorf("%s = %q; a key with keys or list items under it is a section, not a setting with no value", key, v)
+		}
+	}
+}

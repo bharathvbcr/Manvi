@@ -23,6 +23,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"manvi/flags"
 )
 
 // Errors callers branch on.
@@ -31,6 +33,49 @@ var (
 	ErrFanoutExceeded = errors.New("agents: concurrent fan-out limit reached")
 	ErrClosed         = errors.New("agents: the pool is closed")
 )
+
+// Bounds are the delegation limits one dispatch runs under.
+type Bounds struct {
+	// MaxDepth is how deep delegation may go; zero means not at all.
+	MaxDepth int
+	// MaxFanout is how many children may run at once.
+	MaxFanout int
+}
+
+// ResolveBounds reads the delegation bounds from the flag registry, narrowed
+// for the provider that will serve the children.
+//
+// It exists because this was two copies. The devcouncil handlers for
+// spawn_subagents and invoke_subagent each carried the same block verbatim, and
+// both hardcoded a no-registry fallback of four against a catalogue default of
+// eight — one rule, two implementations, already disagreeing about its own
+// value. The fallbacks here are the catalogue's own constants, so there is
+// nothing left for a copy to drift from.
+//
+// A nil registry means the bounds could not be read at all, which is why the
+// fallback is the catalogue default rather than something wider: a dispatch
+// whose limits could not be resolved must not run looser than one whose limits
+// were. The ceiling itself is enforced where the value enters the registry —
+// see flags.Def.Max — so a value that reaches here has already been judged.
+func ResolveBounds(reg *flags.Registry) Bounds {
+	b := Bounds{
+		MaxDepth:  flags.DefaultAgentsMaxSpawnDepth,
+		MaxFanout: flags.DefaultAgentsMaxFanout,
+	}
+	if reg == nil {
+		return b
+	}
+	if depth, _, err := reg.Int(flags.AgentsMaxSpawnDepth); err == nil && depth >= 0 {
+		b.MaxDepth = depth
+	}
+	if fanout, _, err := reg.Int(flags.AgentsMaxFanout); err == nil && fanout >= 1 {
+		b.MaxFanout = fanout
+	}
+	if provider, _, err := reg.String(flags.LLMDefaultProvider); err == nil {
+		b.MaxFanout = AdaptiveFanoutLimit(provider, b.MaxFanout)
+	}
+	return b
+}
 
 // AdaptiveFanoutLimit returns safe concurrency bounds for subagents based on the provider.
 // For local LLMs running on single consumer GPUs or Apple Silicon unified memory,

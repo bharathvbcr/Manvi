@@ -14,6 +14,7 @@ import (
 	"manvi/credentials"
 	"manvi/llm"
 	"manvi/llm/openaicompat"
+	"manvi/llm/transport"
 )
 
 // Adapter drives an OpenAI-compatible server on the operator's machine.
@@ -85,12 +86,57 @@ func New(cfg Config, resolve func() (credentials.Secret, error)) *Adapter {
 				return nil, err
 			}
 			if secret.Present() {
+				if err := checkCredentialDestination(cfg.BaseURL, secret); err != nil {
+					return nil, err
+				}
 				h.Set("Authorization", "Bearer "+secret.Reveal())
 			}
 			return h, nil
 		},
 	})
 	return a
+}
+
+// borrowedCredentialSources names the environment variables this provider
+// accepts that belong to a different vendor's tooling.
+//
+// OPENAI_API_KEY is listed on the "local" requirement so an operator who
+// already has an OpenAI-shaped client configured does not have to invent a
+// second variable for their llama.cpp server. But the value in it is a real
+// OpenAI key, set for OpenAI, and llm.local.base_url does not have to name this
+// machine. Nothing tied the two together: the loopback predicate existed and
+// chose a connection pool with it, not whether to attach a credential — so an
+// operator who pointed this provider at a remote inference host shipped their
+// OpenAI key to that host as a bearer token, with nothing said about it.
+var borrowedCredentialSources = map[string]bool{"OPENAI_API_KEY": true}
+
+// DedicatedCredentialEnvVar is the variable that says "this key is for the
+// server llm.local.base_url names". It is the one an operator sets on purpose.
+const DedicatedCredentialEnvVar = "LOCAL_API_KEY"
+
+// checkCredentialDestination refuses to send a borrowed credential off this
+// machine.
+//
+// It fails the request rather than quietly dropping the header. Dropping it
+// would leave a 401 to explain a decision this code made, and "the harness
+// declined to send your key" and "your key was rejected" send an operator to
+// opposite places. A credential resolved from this provider's own variable, or
+// supplied in-process by an embedding program, is deliberate and travels
+// wherever it is pointed; only a variable named for someone else's service is
+// held back.
+func checkCredentialDestination(baseURL string, secret credentials.Secret) error {
+	if !borrowedCredentialSources[secret.Source()] {
+		return nil
+	}
+	if transport.IsLoopbackURL(baseURL) {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to send the credential in %s to %s: %s is not on this machine, and %s "+
+			"is another service's key that happens to be accepted here as a convenience. "+
+			"Set %s to the key that server actually wants, or point %s at a loopback address",
+		secret.Source(), baseURL, baseURL, secret.Source(),
+		DedicatedCredentialEnvVar, BaseURLSetting)
 }
 
 // Capability describes a model this adapter serves.

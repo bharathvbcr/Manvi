@@ -193,3 +193,67 @@ fn absolute_lcov_paths_reduce_against_the_supplied_root() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// MAX_COVERED_SPAN bounds one block; nothing bounded their sum, and the sum is
+/// what the allocation follows. Overlapping blocks of a million lines each cost
+/// a million entries *apiece*: 601 bytes of profile took 19.7 s and 85 MB, and
+/// 12.3 KB took 284 s and 1.6 GB. The consequence was worse than the memory —
+/// the Go client bounds the verifier at 30 s, so a crafted profile reliably
+/// pushed secret_scan, stub_detection and diff_coverage into "did not run",
+/// which is recorded as degradation rather than as a blocking finding.
+#[test]
+fn blocks_that_are_individually_legal_cannot_add_up_to_an_unbounded_parse() {
+    let mut profile = String::from("mode: set\n");
+    for _ in 0..10 {
+        profile.push_str("manvi/gate/gate.go:1.1,1000000.2 1 1\n");
+    }
+    assert!(
+        profile.len() < 512,
+        "the input is small; the cost must not be"
+    );
+
+    let start = std::time::Instant::now();
+    let err = parse(&profile).expect_err("an aggregate no measurement produces was accepted");
+    let elapsed = start.elapsed();
+
+    assert!(
+        err.reason.contains("together cover more lines"),
+        "unexpected refusal: {err}"
+    );
+    // Generous, because this asserts "bounded", not "fast". Before the bound
+    // this call materialised ten million line numbers and returned Ok.
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "refusing a malformed profile took {elapsed:?}"
+    );
+}
+
+/// An LCOV report is bounded by the same rule, so neither format has a growth
+/// path the other has closed.
+#[test]
+fn an_lcov_report_is_bounded_by_the_same_rule() {
+    let mut report = String::from("TN:\nSF:src/a.rs\n");
+    for line in 1..=32 {
+        report.push_str(&format!("DA:{line},1\n"));
+    }
+    report.push_str("end_of_record\n");
+    let files = parse(&report).expect("an ordinary report still parses");
+    assert_eq!(files[0].covered_lines.len(), 32);
+}
+
+/// A profile big enough to be real still parses. The bound is set past any
+/// honest measurement, and a bound that refused one would be worse than none.
+#[test]
+fn a_large_but_honest_profile_still_parses() {
+    let mut profile = String::from("mode: set\n");
+    for block in 0..2_000 {
+        let start = block * 50 + 1;
+        profile.push_str(&format!(
+            "manvi/gate/gate.go:{start}.1,{}.2 3 1\n",
+            start + 40
+        ));
+    }
+    let files = parse(&profile).expect("an honest profile was refused");
+    assert_eq!(files.len(), 1);
+    assert!(files[0].covered_lines.len() > 80_000);
+}

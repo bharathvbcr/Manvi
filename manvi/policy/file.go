@@ -81,12 +81,21 @@ var SecretPathPatterns = []string{
 // the agent client configs, so an agent cannot disarm the gate that is
 // checking it.
 var RestrictedPathPatterns = []string{
-	// The bare entries are a deliberate addition to the incumbent's list. In a
-	// git worktree or a submodule, ".git" is a *file* holding "gitdir: ...",
-	// and rewriting it repoints the repository at another one — which is the
-	// whole of what this rung protects, achieved without touching ".git/".
-	// Python's rule is a glob plus a prefix test, and ".git".startswith(".git/")
-	// is false, so the incumbent misses this. Matching it is strictly safer.
+	// These two are a deliberate addition to the incumbent's list. In a git
+	// worktree or a submodule, ".git" is a *file* holding "gitdir: ...", and
+	// rewriting it repoints the repository at another one — which is the whole
+	// of what this rung protects, achieved without touching ".git/". Python's
+	// rule is a glob plus a prefix test, and ".git".startswith(".git/") is
+	// false, so the incumbent misses this. Matching it is strictly safer.
+	//
+	// Only these two ever got a bare twin by hand, and the omission was the
+	// hole: ".claude", ".codex", ".cursor", ".gemini", ".grok", ".opencode"
+	// and ".agents" carried "/*" and "/**" forms only, so a fresh checkout
+	// could take a *file* named ".claude" and pre-empt the config directory
+	// this rung exists to protect. Hand-added twins fix the cases; the rule
+	// they state belongs to matchesRestricted, which now compares whole path
+	// components and therefore covers the bare form of every entry here,
+	// including any added later.
 	".git",
 	".devcouncil",
 	".git/*",
@@ -194,6 +203,11 @@ func (g FileGate) EvaluateFileChange(path string, task *dc.Task, op dc.Operation
 	if fnmatch.MatchAnyFold(task.ForbiddenChanges, normalized) {
 		return g.noteHardRules(deny(RuleForbiddenChange, "Path is listed in forbidden_changes.", normalized, task.ID))
 	}
+	if entry, aliased := forbiddenAlias(g.Root, normalized, task.ForbiddenChanges); aliased {
+		return g.noteHardRules(deny(RuleForbiddenChange,
+			"Path is another name for `"+entry+"`, which is listed in forbidden_changes.",
+			normalized, task.ID))
+	}
 
 	planned, widened := plannedFileFor(normalized, task)
 	if planned == nil {
@@ -220,7 +234,14 @@ func (g FileGate) EvaluateFileChange(path string, task *dc.Task, op dc.Operation
 		return g.noteHardRules(refusal)
 	}
 
-	if fnmatch.MatchAny(ProtectedWritePatterns, normalized) {
+	// Folded like the hard rungs above, and for the same reason: on APFS and
+	// NTFS "PACKAGE.JSON" and "package.json" are one file, so a case-sensitive
+	// match here read the pattern list and still let the write through with no
+	// warning and no verification gate — the rung silently absent for exactly
+	// the spelling an agent would reach for to make it absent. Over-blocking a
+	// file that differs from a manifest only by case costs a warning, which is
+	// all this rung ever produces.
+	if fnmatch.MatchAnyFold(ProtectedWritePatterns, normalized) {
 		d := warn(RuleProtectedWrite,
 			normalized+" is a protected high-impact file; verification gates must approve it.", normalized, task.ID)
 		d.Widened = widened
@@ -331,7 +352,25 @@ func (g FileGate) unplannedDecision(path string, task *dc.Task) Decision {
 
 	for _, area := range plannedAreas {
 		if area == targetArea {
-			return allow("File is in the same subsystem as a planned file.", path, task.ID)
+			d := allow("File is in the same subsystem as a planned file.", path, task.ID)
+			if g.Subsystems.NeighborsArePermissive() {
+				// The map reports its own rungs as near-total, and this one
+				// degenerates faster than the neighbour rung below it: a graph
+				// holding a single named area puts every indexed file in "the
+				// same subsystem as a planned file", so the question has one
+				// possible answer and every unplanned write was recorded as a
+				// scope check that ran and passed. isRootArea already covers a
+				// whole-repo area spelled ".", which is why the named-single-area
+				// shape survived — same condition, a spelling the guard did not
+				// recognise.
+				//
+				// Its own marker, not the neighbour one: the neighbour relation
+				// did not decide this allow, and a signal that names the wrong
+				// rung is a signal an operator learns to discount. Recorded
+				// rather than refused, for the reason the neighbour rung states.
+				d.Degraded = append(d.Degraded, "scope.subsystem.permissive")
+			}
+			return d
 		}
 	}
 	for _, area := range plannedAreas {
@@ -757,6 +796,60 @@ func matchPlannedFile(path string, planned []dc.PlannedFile) *dc.PlannedFile {
 	return nil
 }
 
+// forbiddenAlias reports which forbidden_changes entry names the same *file*
+// as path under a different name, and whether one does.
+//
+// The pattern rung above compares strings, and a filesystem hands out more than
+// one string for the same file. APFS is normalisation-insensitive as well as
+// case-insensitive, so "café.txt" spelled NFC and spelled NFD are two strings
+// and one file: a prohibition written in one form was cleared by submitting the
+// other, and the matcher saw a name it had never been told about while the
+// kernel opened the file it had. A hard link does the same thing for pure
+// ASCII, and so does any spelling a future filesystem decides to fold.
+//
+// Normalising the strings would need Unicode tables this module does not carry,
+// and it would be the wrong answer anyway on a normalisation-sensitive
+// filesystem, where the two spellings really are two files and refusing the
+// second would be an over-refusal. Asking the kernel which file each name opens
+// is exact on both kinds of filesystem. It costs one stat per glob-free entry,
+// and only for a task that declared a prohibition at all.
+//
+// Two bounds, stated rather than hidden. A glob entry names a set, not a file,
+// so resolving one would mean walking the repository on every write; glob
+// entries are left to the pattern rung. And a prohibition on a file that does
+// not exist yet has no identity to compare against, so the alias spelling can
+// still create it — the rung protects a file, and there is not yet a file.
+func forbiddenAlias(root, path string, forbidden []string) (string, bool) {
+	if root == "" || path == "" || len(forbidden) == 0 {
+		return "", false
+	}
+	target, err := os.Stat(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil {
+		return "", false
+	}
+	for _, raw := range forbidden {
+		entry := NormalizePlannedCandidate(raw)
+		if entry == "" || entry == path || strings.ContainsAny(entry, "*?[") {
+			continue
+		}
+		if filepath.IsAbs(entry) || entry == ".." || strings.HasPrefix(entry, "../") ||
+			strings.Contains(entry, "/../") || strings.HasSuffix(entry, "/..") {
+			// An entry that leaves the repository names nothing this gate is
+			// responsible for; stat'ing it would only widen what a planner
+			// string can reach.
+			continue
+		}
+		fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(entry)))
+		if err != nil {
+			continue
+		}
+		if os.SameFile(fi, target) {
+			return raw, true
+		}
+	}
+	return "", false
+}
+
 func matchesAny(patterns []string, path string) bool {
 	for _, raw := range patterns {
 		p := normalizeSlashes(raw)
@@ -769,17 +862,36 @@ func matchesAny(patterns []string, path string) bool {
 
 // matchesRestricted mirrors the Python rule, which tests both a glob match and
 // a prefix match against the pattern with its stars stripped — so ".git/*"
-// also catches a bare ".git".
+// also catches a bare ".git" and everything beneath it.
+//
+// The prefix half compares whole path components, and that is the fix for two
+// defects that were the same defect. Python's rule is `path.startswith(pattern
+// .strip("*"))`, a test on characters: ".git" is a character prefix of
+// ".gitignore", ".gitattributes", ".gitmodules" and ".github/workflows/ci.yml",
+// none of which are the repository's own machinery, and every one of them was
+// denied Hard. That also made the two ".github/workflows/*" entries in
+// ProtectedWritePatterns dead code — a rung that runs earlier can never let
+// them fire — so the "allowed, but flagged" behaviour those entries document
+// did not exist, and a routine CI edit was unreachable rather than reviewed.
+//
+// In the other direction the character test needed the pattern to end in "/"
+// to cover a subtree, which meant it never covered the directory itself:
+// ".claude/*" stripped to ".claude/", and ".claude".startswith(".claude/") is
+// false. Bare ".git" and ".devcouncil" were added to the list by hand to
+// paper over that; the other seven agent-config entries were not. Trimming the
+// separator and comparing components states the rule once, for every entry.
 func matchesRestricted(path string) bool {
+	lower := strings.ToLower(path)
 	for _, pattern := range RestrictedPathPatterns {
 		if fnmatch.MatchFold(pattern, path) {
 			return true
 		}
-		// The prefix test mirrors the Python rule, which strips the stars and
-		// tests startswith. Folded here for the same filesystem reason as the
-		// glob above.
-		if prefix := strings.Trim(pattern, "*"); prefix != "" &&
-			strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix)) {
+		// Folded here for the same filesystem reason as the glob above.
+		prefix := strings.ToLower(strings.TrimSuffix(strings.Trim(pattern, "*"), "/"))
+		if prefix == "" {
+			continue
+		}
+		if lower == prefix || strings.HasPrefix(lower, prefix+"/") {
 			return true
 		}
 	}

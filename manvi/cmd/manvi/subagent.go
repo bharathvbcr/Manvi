@@ -236,7 +236,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	// conversations into one projection, and the projection is what the next
 	// request is built from — the parent would find the child's tool results
 	// answering calls it never made.
-	log := session.NewLog()
+	log := newSessionLog()
 	if cfg.sink != nil {
 		label := req.Label
 		log.Observe(func(e session.Event) {

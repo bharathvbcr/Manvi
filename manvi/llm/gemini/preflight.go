@@ -65,12 +65,11 @@ func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error)
 
 		for frames < preflightFrames {
 			rest := seen.String()[consumed:]
-			idx := strings.Index(rest, "\n\n")
-			if idx < 0 {
+			frame, size, ok := splitFrame(rest)
+			if !ok {
 				break
 			}
-			frame := rest[:idx]
-			consumed += idx + 2
+			consumed += size
 			frames++
 
 			if failure := errorInFrame(frame); failure != nil {
@@ -91,6 +90,43 @@ func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error)
 		}
 	}
 	return replay(&seen, resp.Body), nil
+}
+
+// frameTerminators are the byte sequences that end an SSE frame: a blank line,
+// whose line ending may be CRLF or LF, after a line whose ending may likewise
+// be either.
+//
+// This scanner split on "\n\n" alone, which never occurs in a CRLF-framed
+// stream — so a retryable error frame delivered with CRLF endings was invisible
+// here and the four-attempt retry policy this whole file exists to reach was
+// skipped, on nothing but a line ending. Measured on the same body from the
+// same server: the LF form got three requests, the CRLF form got one.
+// transport.SSE, which reads the very same stream immediately afterwards,
+// accepts both (it trims "\r\n" off every line), and two parsers disagreeing
+// about where a frame ends is a defect whether or not a live endpoint currently
+// exercises it.
+//
+// Ordered longest-first so a boundary is consumed whole rather than leaving a
+// stray terminator at the head of the next frame.
+var frameTerminators = [...]string{"\r\n\r\n", "\r\n\n", "\n\r\n", "\n\n"}
+
+// splitFrame returns the first whole frame in rest and how many bytes it
+// occupied, terminator included.
+func splitFrame(rest string) (frame string, size int, ok bool) {
+	at, width := -1, 0
+	for _, sep := range frameTerminators {
+		i := strings.Index(rest, sep)
+		if i < 0 {
+			continue
+		}
+		if at < 0 || i < at || (i == at && len(sep) > width) {
+			at, width = i, len(sep)
+		}
+	}
+	if at < 0 {
+		return "", 0, false
+	}
+	return rest[:at], at + width, true
 }
 
 // isPreamble reports whether a frame is one of the opening frames that carry no

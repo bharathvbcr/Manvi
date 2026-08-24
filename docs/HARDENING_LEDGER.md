@@ -154,3 +154,86 @@ pass report with their repros.
 | **The Credential Scrubber Was Wired Only to the Display Layer** | `Scrubber` was installed on the renderer and the JSON sink — the two surfaces that were never the risk. `run_command` sets `cmd.Dir` and never `cmd.Env`, so `env` returned the harness's own API keys; the loop appended that text **verbatim to the session file on disk** and sent it in the next request body. A person watching the terminal saw redaction marks the whole time. The scrubber's own documentation names "a subprocess that prints its own environment" as its job. | Installed on `tools.Registry.Run`, the one seam every result from every tool converges on, applied in a `defer` on the named return so it covers the ordinary path, listener short-circuits, refusals, post-execute rewrites and the panic recovery alike — a credential in a panic message is still a credential. | `tools/scrubber_test.go` |
 | **Restore Accepted Grants `Issue` Would Refuse** | A ledger file outlives the run that wrote it, sits in the repository, and is read back as grants that clear refusals — but `restoreRefusal` omitted `Issue`'s agent task-scoping checks, so a record with an empty `Scope.TaskID` came back as a grant covering **every task and every path**. Separately, `expiryRefusal` guarded `ceiling > 0`, which made `grants.agent.max_ttl=0s` — the tightest setting an operator can choose — switch the expiry check off entirely, restoring a hundred-year grant. | Restore applies the task-scoping check `Issue` applies. Zero is not a sentinel for "no limit": under a zero ceiling `Issue` can only mint a grant that expires the instant it is issued, so any restored record with a future expiry is one this policy could not have produced. A negative ceiling is clamped to zero rather than inverted into permission. | `grants/restore_test.go` |
 | **`Report.Strict()` Did Not Check `Denied`** | A run whose only decision was a hard refusal to write `.env` reported `Strict() == true`. "Was this enforced?" and "did it pass?" are both halves of what the predicate answers, and a refusal fails the second one however cleanly the rules ran. | `r.Denied == 0` joined the predicate. | `gate/gate.go` |
+
+---
+
+## Audit Pass `audit/full-backlog` (2026-08)
+
+The backlog the parallel sweep left, closed by six agents working disjoint
+subsystems plus the coordinator on what none of them owned. Thirty-nine defects,
+each reproduced before the fix and pinned by a test proven to fail against the
+pre-fix code.
+
+### MCP — the process boundary
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **Replaced clients were never closed** | `Client()` swapped a dead cached client out and dropped it: stdin stayed open, the child was never reaped, fds and the stderr goroutine stayed held, and it was gone from the map so `CloseAll` could not reach it. 5 respawns left 5 abandoned processes running. | The displaced client is closed, outside the mutex so a slow teardown does not serialise the manager. |
+| **One oversized stderr line wedged the server permanently** | `bufio.Scanner` returned `ErrTooLong` and stopped for good; stderr was never drained again, the child blocked in `write(2)`, and every later call hung to timeout — with `ErrTooLong` filtered out, so a reader that died looked exactly like one that ran clean. | The stdout read pattern (`readLimitedLine`/`drainToNewline`) applied to stderr, and the skip is **recorded**. `Diagnostics()` added — `serverErrors` was write-only. |
+| **A timed-out write still executed** | `writeFrame` reported failure while the orphan goroutine completed the write; the server executed all three frames the caller was told had failed, and a retry double-executed a non-idempotent tool. | A write outliving its timeout poisons the connection, and the caller gets a typed `*ErrWriteUncertain` saying the request may already have run and must not be blindly retried. Availability traded for correctness, deliberately. |
+| **String JSON-RPC ids dropped every response** | Legal per the spec; every call burned its full timeout with no diagnostic. | Ids parsed from strings; unmatchable ids recorded rather than ignored. |
+| **A manifest error made a server vanish** | `ToServerConfig`'s error was discarded, so a server with no `runtime.command` was absent from `ServerNames`, `ListAllTools` and `Skipped` alike. | Recorded in `Skipped()`. |
+
+### Serve — the host plane
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **A refusal was answered under someone else's id** | `recoverID` scanned for the first `"id"` anywhere in the head, `params` included, so a 9 MiB frame was refused under a nested `"NOT-A-REQUEST-ID"` and the real caller was never answered. The doc claimed the degraded case was an *empty* id; it was a *wrong* one. | The id is read from the request envelope — top-level members only, tokens decoded by `encoding/json`, last duplicate winning as the decoder resolves them. |
+| **One session's compaction ledger grew without bound** | `maxChatSessions` capped the session *count*; nothing capped one session's map. 40 requests → 680 entries, 663 of them describing messages the history no longer held. | Entries the history no longer references are pruned, plus a hard cap. |
+| **Unbounded wire integers** | A `timeout_ms` of 1<<31 wedged the serial dispatcher for 596 hours; `context_window` reached `Budget.Target()`, which wrapped. | Bounded at the boundary and refused loudly, never clamped into something plausible. |
+| **Dead event API presented as load-bearing** | `Server.Emit`/`Event` had no callers while the protocol document described events as a line kind. | Deleted, and the document corrected to say why there is no event line. |
+
+### LLM — transport and adapters
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **An SSE event buffered without bound** | `MaxFrameBytes` capped one *line*; `data` accumulated across lines until a blank one. Measured **134 MB in a single event**, and the stall watchdog was re-armed by every payload byte so nothing fired. | `MaxEventBytes` checked before the append, with its own error type — a different fault from an oversized frame, and a different operator action. |
+| **The decode cap was bypassable twice** | 400,000 accumulators reported `decodedBytes()` = 0 while holding 98 MiB; gemini omitted from its tally the field anthropic counted. | One owner for both limits, referenced by all three adapters, charging every retained byte. Running tallies, because the naive loop made the cap quadratic. |
+| **Gemini dropped the error reason** | `stream error: high demand ()` — the same omission `preflight.go` documents having fixed on its own side. | The code field carried through. |
+| **CRLF framing changed the retry policy** | A CRLF-framed retryable overload got 1 attempt where the LF control got 3. | All four frame terminators accepted. |
+| **Truncation split UTF-8 mid-rune** | Invalid bytes went to the model and into the log. | Backs up to a rune start. |
+| **The local provider sent a borrowed key anywhere** | `OPENAI_API_KEY` was bearer-sent to any configured base URL; `isLoopbackURL` gated only the connection pool. | A borrowed variable is refused for a non-loopback destination, loudly, before the dial. **Narrows access only.** |
+| **A credential failure was retried four times** | It carried `Status 0`, so `Retryable()` said yes and the operator saw `context deadline exceeded` instead of the real reason. | Permanent failures marked as such. |
+
+### Path safety
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **A hard link laundered a secret** | `ln .env notes.txt` → the gate allowed `notes.txt` and the pinned write replaced `.env`'s contents; `ReadPinned` returned them, and `git add` put the key in history past both `SecretPathPatterns` and `.gitignore`. Identity pinning made it *worse* by guaranteeing the inode. | Write and read refuse when the opened descriptor's `st_nlink > 1`; staging and committing refuse a multi-link path. Writing the test exposed a second defect at the same seam: **`O_TRUNC` truncated during `open`, before every check, so refusals emptied the file they refused** — the open no longer truncates. |
+| **Case-sensitive rungs on a case-insensitive filesystem** | `PACKAGE.JSON` and `DOCKERFILE` were allowed with no warning while every *hard* rung folded case. | Folded, in the protected-write rung and in `secretPaths`. |
+| **`.github/workflows/*` entries were dead code** | The `.git` prefix test swallowed them, so a list entry could never match. Bare `.claude`, `.codex`, `.cursor`, `.gemini`, `.agents` were unrestricted while bare `.git` was. | One root cause: the prefix test now compares whole components. **Security impact: widens write access to `.gitignore` and `.github/**` — intended, the list already documents workflow edits as flagged rather than refused — and narrows it for seven bare agent-config names.** |
+| **Unicode normalisation aliased past `forbidden_changes`** | Two spellings of one filename; the matcher saw two strings and the filesystem opened one file. | Answered by the kernel rather than by Unicode tables: `os.SameFile` against each glob-free entry, which also closes hard-link and case aliases of the same rung. |
+
+### Repository navigation, configuration, and the ungated tools
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **The permissiveness guard excluded the most permissive graphs** | `Permissive()` required `Areas > 2`, and for a complete graph that clause was the only thing excluding the totally-coupled 1- and 2-area cases — so the scope rung reported a check with one possible answer as one that passed. The *same-subsystem* branch never consulted the guard at all. | Both halves: the ratio no longer carries an area-count exemption, and the same-subsystem rung attaches its own `scope.subsystem.permissive`. |
+| **Artifact tools bypassed the gate** | `write_file .devcouncil/artifacts/x` was refused as a hard rule while `create_artifact` wrote the same path — two tools disagreeing about one rule, with no `PreExecute` listener in production to catch it. | Artifact writes require a lease through the same rung, demote identically under advisory, and are annotated `scope.artifact_store`. |
+| **The artifact store followed symlinks out of itself** | `sanitizeName` refused traversal, and traversal is not the only way out: a name with no `..` in it wrote wherever a planted link pointed — leaf, metadata sibling, or directory component. With `create_artifact` ungated, the store's own containment was the only thing between a model-chosen name and an arbitrary write. | Directories created and then inspected (`os.Mkdir` answers EEXIST for a symlink); the leaf opened with `O_NOFOLLOW`. |
+| **MCP dispatch was unjudged and unrecorded** | Any MCP tool ran with no gate, no lease, and no degradation note, controlled only by a setting not marked `Safety`. | Recorded as `mcp.dispatch.unjudged` on success and failure. A lease was deliberately *not* required: the harness cannot tell read from write across JSON-RPC, and a lease would dress an unjudged call as an authorised one. |
+| **Config parsing failed open** | A duplicate key whose second value opened a quoted multi-line string silently won — `posture: strict` became `yolo`. An empty value for a defined key was dropped, leaving the file gate `off` with no error. | Duplicates are caught at key *claim* time; an empty value is emitted and refused by the registry's own validation. |
+| **The flag table showed raw values, not effective ones** | `policy.file.mode enforce default` printed byte-identically under strict and yolo, where `doctor` correctly said `enforce` and `off`. | The table resolves gate modes and hard rules the way doctor does, keeping the set value in a trailing note. |
+| **`agents.max_fanout` was unbounded** | 100000 accepted, absent from `Weakened()`, one goroutine per task. The bound logic existed in two places and had already drifted — the second copy's fallbacks were literals while the registry's defaults moved on. | `Min`/`Max` on the flag definition, refused rather than clamped, and one reader for both call sites. |
+
+### The evidence stream and the durable boundaries
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **The JSON face scrubbed two fields of fifteen** | The terminal renderer put every field through `safe`; the JSON face — the one that writes to disk — cleaned `Text` and `Detail` and left the rest, including the tool arguments carrying the model's own text. Its own comment says the two faces consume the same events so they cannot drift. | Every string field, enumerated by hand beside the Event definition so a field added there and not here shows up in a diff. |
+| **The session log had no backstop at all** | It is both boundaries at once — what `Store.Save` writes and what `DeriveMessages` projects into the next request. A scrubber at the writer would have redacted the record of a leak and kept the leak. | Armed at append. One construction site in `cmd/manvi`, with a source guard that fails if a second appears. |
+| **The compaction budget's arithmetic wrapped** | `Target` multiplied before dividing: at `MaxInt` the ratio came out 0.1 instead of 0.7, and at 1<<62 the target came out **negative** — a compaction goal the planner reads as already met, so the harness stops compacting exactly when it needs to. | int64 arithmetic between a floor and a ceiling, the ceiling chosen so the multiplication is safe where `int` is 32 bits as well. |
+
+### The store and the verifier
+
+| Defect | Failure Mode & Consequence | Resolution |
+|---|---|---|
+| **`scope-append` embedded a raw JSON column** | Validated only as `[`…`]`, so a payload closing its array early injected a second key; Go's last-wins decode then reported an agent-appended `**` as **planner-authorised** — the exact confusion the planner/appended split exists to prevent. | A full JSON-grammar scan at the write, at every scope column read, and on the echo. Validated rather than re-serialised, because the CAS compares stored bytes. |
+| **The coverage parser bounded a block, not the total** | A 12.3 KB profile took **284 s and 1.6 GB**, forcing three rigor gates into "did not run" — a `Degraded` note, so `Passed` stayed true. | The aggregate is bounded before allocation, in both parsers; the intersection binary-searches instead of scanning. |
+| **`ready_tasks` never re-offered a crashed builder's task** | It read `status='active'` raw with no lazy expiry, while its neighbour applied it. `ready` returned `[]` forever until some other call happened to touch the row. | Both route through one `sweep_expired`. |
+| **A refused TTL still cost the incumbent its lease** | `--force` marked the holder stale *before* the TTL was validated: agentA lost the lease, agentB got nothing, the task was silently unleased. | Validation moved above the mutation. |
+| **The exclusion index was asserted by name** | `CREATE UNIQUE INDEX IF NOT EXISTS` matches on name only and `health` asserted a compile-time constant, so a same-named non-partial index gave **2 winners out of 24 acquirers** while health answered `{"ok":true}`. | The index's actual definition is verified at open; health reports the verification, and the Go side requires it. |
+| **A typo'd `--db` reported healthy** | It created an empty database and passed, contradicting `Available()`'s stated contract. | `health` opens without `SQLITE_OPEN_CREATE`; writing commands still cold-start. |
+| **The secret scanner missed seven key families** | Legacy `sk-`, `gho_`/`ghs_`/`ghu_`/`ghr_`, `glpat-`, `xoxp-`/`xapp-`, `ASIA`, `hf_`, `npm_`. | Added, with token-boundary guards so `task-` and `disk-` do not fire. Line-split keys and headerless PEM bodies documented as accepted limits rather than silently uncovered. |
+| **Six executable file types were skipped entirely** | `.sh`, `.mjs`, `.kt`, `.swift`, `.php`, `.cs` were neither a gap nor `unmeasured`, so `is_clean()` was true. | Allowlist extended, and a third bucket — `coverage_skipped_by_type` — so a file the gate does not measure is *reported* rather than dropped. |
+| **One of three subprocess boundaries was unbounded** | A bare `cmd.Run()` on the lease path, next to a sibling that documents at length why that is "an unbounded wait wearing a timeout's clothes". | All three converge on one bounded helper, with a source guard. |

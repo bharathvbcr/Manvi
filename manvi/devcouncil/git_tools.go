@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -456,6 +458,9 @@ func (r *Registry) gitStage(ctx context.Context, call tools.Call) tools.Result {
 	if leaked := secretPaths(rel); len(leaked) > 0 {
 		return secretRefusal("stage", leaked)
 	}
+	if aliased := aliasedPaths(r.deps.Root, rel); len(aliased) > 0 {
+		return aliasedRefusal("stage", aliased)
+	}
 
 	argv := append([]string{"add", "--"}, rel...)
 	commandLine := renderCommandLine(append([]string{"git"}, argv...))
@@ -494,6 +499,9 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 	}
 	if leaked := secretPaths(stagedPaths); len(leaked) > 0 {
 		return secretRefusal("commit", leaked)
+	}
+	if aliased := aliasedPaths(r.deps.Root, stagedPaths); len(aliased) > 0 {
+		return aliasedRefusal("commit", aliased)
 	}
 
 	argv := []string{"commit", "-m", args.Message}
@@ -593,14 +601,83 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 // secretPaths reports which of paths match the harness's secret-path
 // patterns. One owner of the list: policy.SecretPathPatterns is what the
 // write gate blocks with, so the git tools refuse on exactly the same set.
+//
+// Folded, like the write ladder's own secret rung: the two consult one list
+// and must read it the same way. They did not — this side matched
+// case-sensitively — so ".ENV", "server.KEY" and "ID_RSA" reported clean here
+// while the ladder refused them, and on a case-insensitive filesystem those
+// are the same files. git's pathspec matching turned out to block the
+// staging of a case variant on APFS, so the divergence never became a leak
+// through this door; a divergence between two readings of one list is a defect
+// on its own, and the door it does not open today is an implementation detail
+// of git.
 func secretPaths(paths []string) []string {
 	var leaked []string
 	for _, p := range paths {
-		if fnmatch.MatchAny(policy.SecretPathPatterns, p) {
+		if fnmatch.MatchAnyFold(policy.SecretPathPatterns, p) {
 			leaked = append(leaked, p)
 		}
 	}
 	return leaked
+}
+
+// aliasedPaths reports which of paths carry more than one name in the
+// filesystem.
+//
+// secretPaths is a statement about names, and a hard link gives one inode two
+// of them: `ln .env notes.txt` produces a path matching no secret pattern
+// whose contents are the credential, and `git add notes.txt && git commit`
+// puts them in history past this check and past .gitignore, which is the one
+// git act that cannot be undone locally. The link cannot be created through
+// any tool here — git does not store hard links either — but `ln`, `cp -al`
+// and the package managers that hardlink into a store are ordinary allowed
+// commands.
+//
+// Which other names an inode has cannot be read back from the inode, so this
+// refuses on the count rather than on what the other names are. That is the
+// honest rule for the same reason the pinned write uses it: a path whose
+// contents are reachable under a name the secret check did not examine is a
+// path this check cannot vouch for. Lstat, not Stat — for a symbolic link git
+// commits the link, not the file at the far end, so the far end's link count
+// is not this operation's business.
+func aliasedPaths(root string, paths []string) []string {
+	var aliased []string
+	for _, p := range paths {
+		fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if links, ok := linksOf(fi); ok && links > 1 {
+			aliased = append(aliased, p)
+		}
+	}
+	return aliased
+}
+
+// aliasedRefusal refuses a stage or commit of a file that has more than one
+// name. It carries the secret rung's rule id because that is the rung a hard
+// link defeats, and because the payload contract callers match on is the one
+// secretRefusal established; the reason says what actually happened.
+func aliasedRefusal(op string, aliased []string) tools.Result {
+	payload := map[string]any{
+		"operation": op,
+		"paths":     aliased,
+		"rule":      string(policy.RuleSecretPath),
+		"severity":  string(policy.Hard),
+		"reason": "these paths are hard links: their contents are reachable under at least one " +
+			"other name, which the secret-path check never examined, so committing them can put " +
+			"a credential into history under an innocent name. Break the link — copy the file and " +
+			"replace the original with the copy — and retry, or stage the other name instead so " +
+			"the check can see it.",
+	}
+	data, _ := json.Marshal(payload)
+	return tools.Result{
+		Text:     string(data),
+		IsError:  true,
+		Blocked:  true,
+		Rule:     string(policy.RuleSecretPath),
+		Severity: string(policy.Hard),
+	}
 }
 
 // secretRefusal refuses a stage or commit that would put a secret into
