@@ -62,18 +62,46 @@ type Budget struct {
 	Overhead int
 }
 
+// minThreshold is the floor a budget cannot fall below, and maxThreshold the
+// ceiling it cannot rise above.
+//
+// The ceiling exists for arithmetic rather than for policy. Threshold feeds a
+// multiplication in Target, and `int` is 64-bit on the platforms this ships on
+// and 32-bit on others — so a budget near the top of the range wrapped to a
+// *negative* target, and a negative target is a compaction goal the planner
+// treats as already met. A declared context window of MaxInt64-4096 produced
+// `threshold=9223372036854771711 target=922337203685474712`: a tenth of the
+// threshold rather than seven tenths, which is the wrap wearing a plausible
+// number's clothes.
+//
+// 1<<28 tokens is two orders of magnitude past any model that exists, and
+// 1<<28 × 7 still fits in a 32-bit int, so the clamp makes the multiplication
+// safe everywhere rather than only where it happened to be tested.
+const (
+	minThreshold = 4096
+	maxThreshold = 1 << 28
+)
+
 // Threshold is the point at which history must be shortened.
+//
+// The subtraction is done in int64 because its operands are three independent
+// caller-supplied numbers: a large ContextWindow against a negative
+// ReservedOutput wraps in int, and the floor below would then read the wrapped
+// value as a small budget rather than as nonsense.
 func (b Budget) Threshold() int {
-	t := b.ContextWindow - b.ReservedOutput - b.Overhead
-	if t < 4096 {
-		t = 4096
+	t := int64(b.ContextWindow) - int64(b.ReservedOutput) - int64(b.Overhead)
+	if t < minThreshold {
+		t = minThreshold
 	}
-	return t
+	if t > maxThreshold {
+		t = maxThreshold
+	}
+	return int(t)
 }
 
 // Target is what compaction aims for once it runs.
 func (b Budget) Target() int {
-	return b.Threshold() * CompactionHeadroomNum / CompactionHeadroomDen
+	return int(int64(b.Threshold()) * CompactionHeadroomNum / CompactionHeadroomDen)
 }
 
 // CompactionStep is one planned change: a tool result and the text that
