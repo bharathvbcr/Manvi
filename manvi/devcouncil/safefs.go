@@ -15,23 +15,56 @@ import (
 // This file closes the check-then-act gap between policy evaluation and
 // filesystem mutation. The ladder judges a path string at T0; a concurrent
 // actor — a subagent fan-out, an allowed background command, anything faster
-// than a human approval prompt — could previously swap a directory component
+// than a human approval prompt — could otherwise swap a directory component
 // for a symbolic link during the window, and the kernel would happily resolve
 // the swapped chain at open time, writing the payload wherever the link
 // points.
 //
-// The defence is identity pinning: at T0 every component's device/inode pair
-// is captured alongside the resolved path. At syscall time the opened file
-// descriptor's own identity (fstat — immune to later path games) must match
-// what T0 recorded, or the write refuses. A swap therefore fails closed
-// instead of silently redirecting.
+// The defence has two halves, and both are needed.
 //
-// Residual, documented limits: an attacker who can win a race between the T0
-// identity capture and the single open() syscall can still forge consistency;
-// closing that requires openat2(RESOLVE_BENEATH)-class semantics, which the
-// Go standard library does not expose portably (darwin has no exported
-// Openat at all). The practical window shrinks from "as long as a human
-// approval dialog is open" to microseconds.
+//  1. Identity pinning. At T0 every existing component's device/inode pair is
+//     captured. At syscall time each of those components must still be the
+//     very same object, or the operation refuses.
+//
+//  2. Descriptor traversal. At syscall time the path is walked one component
+//     at a time through directory file descriptors (os.Root, which is openat2
+//     RESOLVE_BENEATH on Linux and an openat/O_NOFOLLOW walk elsewhere) rather
+//     than handed to the kernel as a string. Nothing is ever re-resolved from
+//     the root by name after it has been verified, so there is no interval in
+//     which a verified name can be pointed somewhere else before it is used.
+//
+// Half 1 alone was not enough, and its failure was not theoretical: identities
+// can only be pinned for components that exist at T0, and writeFile
+// legitimately creates missing directories. A request for "newdir/payload"
+// pinned nothing but the repository root, created "newdir" at write time with
+// no verification at all, and then opened the leaf by full path — so replacing
+// "newdir" with a symbolic link during the approval dialog redirected the write
+// out of the repository and the harness reported success. Components this
+// operation creates are now verified exactly like pinned ones: created through
+// the parent's descriptor, re-opened through that same descriptor, required to
+// be a real directory (a link found where we expected our own new directory is
+// a refusal, not something to follow), and used only as a descriptor
+// thereafter.
+//
+// After the leaf is open, a final pass walks the held descriptors back up and
+// requires each child to still be the entry its parent names — that catches a
+// component renamed out from under the walk, which identity comparison alone
+// cannot see because a rename preserves the inode.
+//
+// Residual, documented limits:
+//
+//   - Once a descriptor is held, a rename of that directory follows the
+//     descriptor. The post-open pass detects any such move that completes
+//     before the leaf is open; a move that races the pass itself is not
+//     detectable this way. The window is microseconds of syscalls, never the
+//     length of an approval dialog.
+//   - os.Root refuses absolute symbolic links outright, even ones that resolve
+//     back inside the repository. Such a link mid-path is now a refusal where
+//     it used to be followed. That is a deliberate fail-closed narrowing.
+//   - Symbolic links between two locations inside the repository are still
+//     followed for components that existed at pin time, because that is the
+//     tree policy evaluated; they cannot escape, since the walk is confined
+//     beneath the root.
 
 // componentIdentity is the filesystem identity of one path component.
 type componentIdentity struct {
@@ -64,18 +97,25 @@ func (e *symlinkRefusal) Error() string {
 type pinnedTarget struct {
 	root string
 	rel  string
-	// physical is the resolved absolute path all syscalls go through.
-	physical string
-	// resolvedDirs[i] and dirIDs[i] pair each directory along the verified
-	// chain (root first) with its T0 identity. Components past firstMissing
-	// did not exist at pin time and are created only at write time.
-	resolvedDirs []string
+	// parts is rel split on "/"; the last element is the leaf.
+	parts []string
+	// dirIDs[0] is the root's identity and dirIDs[i+1] is parts[i]'s, for the
+	// components that existed at pin time. len(dirIDs) == firstMissing+1.
 	dirIDs       []componentIdentity
 	firstMissing int
 	// targetExisted records whether the leaf existed at pin time; if it did,
 	// its identity must still match when we open it.
 	targetExisted bool
 	targetIdent   componentIdentity
+}
+
+// pinnedDirID returns the T0 identity of directory component parts[i], and
+// whether that component existed at pin time at all.
+func (p *pinnedTarget) pinnedDirID(i int) (componentIdentity, bool) {
+	if i < 0 || i >= p.firstMissing {
+		return componentIdentity{}, false
+	}
+	return p.dirIDs[i+1], true
 }
 
 // pinWriteTarget resolves rel under root the way the policy layer understood
@@ -86,8 +126,8 @@ type pinnedTarget struct {
 //
 // Components that do not exist yet are tolerated: writeFile legitimately
 // creates directories, so the snapshot records how far the existing chain
-// reaches and Write creates the missing tail only after re-verifying every
-// recorded ancestor.
+// reaches. The missing tail is not trusted for being absent — it is created
+// and verified at write time, through descriptors, by openVerifiedParent.
 func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 	clean := path.Clean(filepath.ToSlash(rel))
 	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || clean == "." {
@@ -101,9 +141,9 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 
 	parts := strings.Split(clean, "/")
 	pinned := &pinnedTarget{
-		root:         rootResolved,
-		rel:          clean,
-		resolvedDirs: []string{rootResolved},
+		root:  rootResolved,
+		rel:   clean,
+		parts: parts,
 	}
 	rootFi, err := os.Stat(rootResolved)
 	if err != nil {
@@ -141,23 +181,24 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 		if !ok || !fi.IsDir() {
 			return nil, fmt.Errorf("path component %q of %q is not a directory", part, rel)
 		}
-		pinned.resolvedDirs = append(pinned.resolvedDirs, resolved)
 		pinned.dirIDs = append(pinned.dirIDs, id)
 		current = resolved
 	}
 
-	// Physical location: the verified chain plus whatever was missing.
-	tail := parts[firstMissing:]
+	// The resolved leaf location: the verified chain plus whatever was
+	// missing. It is inspected here and then deliberately forgotten — every
+	// later syscall goes through descriptors, never through a whole path,
+	// because a whole path is exactly what an attacker can re-point.
 	pinned.firstMissing = firstMissing
-	pinned.physical = filepath.Join(append([]string{current}, tail...)...)
+	physical := filepath.Join(append([]string{current}, parts[firstMissing:]...)...)
 
 	if firstMissing == len(parts)-1 {
 		// The leaf's own directory exists; the leaf itself must never be a
 		// symlink. (Distinct names, not re-used err: a shadowed error once
 		// made every missing file look like an existing one.)
-		leafFi, leafErr := os.Lstat(pinned.physical)
+		leafFi, leafErr := os.Lstat(physical)
 		if leafErr != nil && !os.IsNotExist(leafErr) {
-			return nil, fmt.Errorf("inspecting %q: %w", pinned.physical, leafErr)
+			return nil, fmt.Errorf("inspecting %q: %w", physical, leafErr)
 		}
 		if leafErr == nil && leafFi.Mode()&fs.ModeSymlink != 0 {
 			return nil, &symlinkRefusal{component: parts[len(parts)-1], during: "write"}
@@ -174,68 +215,260 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 	return pinned, nil
 }
 
-// Write stores data at the pinned location, refusing unless every identity
-// recorded at pin time still holds at syscall time.
-func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
-	// Re-verify every ancestor that existed at pin time: the kernel is about
-	// to traverse them again, and this is the last chance to catch a swap.
-	if err := p.verifyChain(); err != nil {
-		return err
-	}
-	// Create the tail that was missing at pin time — under the verified
-	// prefix, after its identity has just been confirmed.
-	if p.firstMissing < len(strings.Split(p.rel, "/"))-1 {
-		base := p.resolvedDirs[len(p.resolvedDirs)-1]
-		for _, seg := range strings.Split(p.rel, "/")[p.firstMissing : len(strings.Split(p.rel, "/"))-1] {
-			base = filepath.Join(base, seg)
-			if err := os.Mkdir(base, 0o755); err != nil && !os.IsExist(err) {
-				return fmt.Errorf("creating directory for %q: %w", p.rel, err)
-			}
+// verifiedChain is the descriptor chain from the repository root down to the
+// leaf's parent directory. Every element was verified as it was opened, and
+// every element is a file descriptor: no name in it can be re-pointed.
+type verifiedChain struct {
+	// dirs[0] is the repository root; dirs[len-1] is the leaf's parent.
+	dirs []*os.Root
+	// ids[i] is the fstat identity of dirs[i] as opened.
+	ids []componentIdentity
+	// op is the verb used in refusal messages ("write", "read", "remove").
+	op string
+	// rel is the repository-relative path, for messages.
+	rel string
+}
+
+func (c *verifiedChain) parent() *os.Root { return c.dirs[len(c.dirs)-1] }
+
+func (c *verifiedChain) Close() {
+	for _, d := range c.dirs {
+		if d != nil {
+			d.Close()
 		}
 	}
+}
 
-	fd, err := syscall.Open(p.physical,
-		syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC,
-		uint32(perm))
+// stillLinked re-checks, from the descriptors themselves, that every directory
+// in the chain is still the entry its parent names. Identity comparison alone
+// cannot see a rename — the inode survives it — but a renamed directory is no
+// longer reachable under the name policy approved, and following a descriptor
+// that has been moved out of the repository would be an escape. Lstat, not
+// Stat: a symbolic link left behind under the old name must not resolve back
+// to the directory it replaced.
+func (c *verifiedChain) stillLinked(parts []string) error {
+	rootFi, err := os.Lstat(c.rootPath())
+	if err != nil {
+		return fmt.Errorf("refusing to %s %q: the repository root vanished mid-operation: %w", c.op, c.rel, err)
+	}
+	rootID, ok := identityOf(rootFi)
+	if !ok {
+		return fmt.Errorf("platform cannot identify directories; refusing to %s %q", c.op, c.rel)
+	}
+	if rootID != c.ids[0] {
+		return fmt.Errorf(
+			"refusing to %s %q: the repository root changed identity mid-operation "+
+				"(was inode %d, found inode %d)", c.op, c.rel, c.ids[0].ino, rootID.ino)
+	}
+	for i := 1; i < len(c.dirs); i++ {
+		name := parts[i-1]
+		fi, err := c.dirs[i-1].Lstat(name)
+		if err != nil {
+			return fmt.Errorf(
+				"refusing to %s %q: directory component %q was unlinked or renamed mid-operation: %w",
+				c.op, c.rel, name, err)
+		}
+		id, ok := identityOf(fi)
+		if !ok {
+			return fmt.Errorf("platform cannot identify directories; refusing to %s %q", c.op, c.rel)
+		}
+		if id != c.ids[i] {
+			return fmt.Errorf(
+				"refusing to %s %q: directory component %q changed identity or became a symbolic "+
+					"link mid-operation (was inode %d, found inode %d)",
+				c.op, c.rel, name, c.ids[i].ino, id.ino)
+		}
+	}
+	return nil
+}
+
+func (c *verifiedChain) rootPath() string { return c.dirs[0].Name() }
+
+// openVerifiedParent walks from the repository root to the leaf's parent
+// directory through file descriptors, verifying every component — the ones
+// pinned at T0 against their pinned identity, and the ones this call has to
+// create against the fact that we created them and that what we re-open is a
+// real directory rather than something planted in the window.
+//
+// create says whether missing directory components may be created; reads and
+// removals pass false, so a vanished chain is a refusal rather than a
+// resurrection.
+//
+// The caller owns the returned chain and must Close it.
+func (p *pinnedTarget) openVerifiedParent(op string, create bool) (*verifiedChain, error) {
+	root, err := os.OpenRoot(p.root)
+	if err != nil {
+		return nil, fmt.Errorf("opening the repository root to %s %q: %w", op, p.rel, err)
+	}
+	chain := &verifiedChain{dirs: []*os.Root{root}, op: op, rel: p.rel}
+
+	rootFi, err := root.Stat(".")
+	if err != nil {
+		chain.Close()
+		return nil, fmt.Errorf("inspecting the repository root to %s %q: %w", op, p.rel, err)
+	}
+	rootID, ok := identityOf(rootFi)
+	if !ok {
+		chain.Close()
+		return nil, fmt.Errorf("platform cannot identify directories; refusing to %s %q", op, p.rel)
+	}
+	if rootID != p.dirIDs[0] {
+		chain.Close()
+		return nil, fmt.Errorf(
+			"refusing to %s %q: the repository root changed identity between policy evaluation "+
+				"and open (was inode %d, found inode %d)", op, p.rel, p.dirIDs[0].ino, rootID.ino)
+	}
+	chain.ids = append(chain.ids, rootID)
+
+	for i, part := range p.parts[:len(p.parts)-1] {
+		next, id, err := p.enterDir(chain.parent(), i, part, op, create)
+		if err != nil {
+			chain.Close()
+			return nil, err
+		}
+		chain.dirs = append(chain.dirs, next)
+		chain.ids = append(chain.ids, id)
+	}
+	return chain, nil
+}
+
+// enterDir opens one directory component through its parent's descriptor and
+// returns it only if it is provably the directory this operation is entitled
+// to enter.
+func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create bool) (*os.Root, componentIdentity, error) {
+	var zero componentIdentity
+	pinnedID, wasPinned := p.pinnedDirID(i)
+
+	if !wasPinned {
+		// This component did not exist when policy looked. It gets no trust
+		// from the pin, so it gets all of its trust from being created here
+		// and inspected through the parent descriptor.
+		if !create {
+			return nil, zero, fmt.Errorf(
+				"refusing to %s %q: directory component %q does not exist", op, p.rel, name)
+		}
+		if err := parent.Mkdir(name, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return nil, zero, fmt.Errorf("creating directory %q for %q: %w", name, p.rel, err)
+		}
+		// EEXIST is tolerated — a concurrent legitimate write may have created
+		// the same directory — but only if what is there is a real directory.
+		// A symbolic link at a name we intended to create ourselves is an
+		// attacker, not a race between two honest writers.
+		li, err := parent.Lstat(name)
+		if err != nil {
+			return nil, zero, fmt.Errorf(
+				"refusing to %s %q: inspecting the directory %q we just created: %w", op, p.rel, name, err)
+		}
+		if li.Mode()&fs.ModeSymlink != 0 {
+			return nil, zero, &symlinkRefusal{component: name, during: op}
+		}
+		if !li.IsDir() {
+			return nil, zero, fmt.Errorf(
+				"refusing to %s %q: path component %q is not a directory", op, p.rel, name)
+		}
+		linkID, ok := identityOf(li)
+		if !ok {
+			return nil, zero, fmt.Errorf("platform cannot identify directories; refusing to %s %q", op, p.rel)
+		}
+		pinnedID, wasPinned = linkID, true
+	}
+
+	next, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, zero, fmt.Errorf(
+			"refusing to %s %q: directory component %q could not be entered as the directory policy "+
+				"evaluated — it changed identity or became a symbolic link: %w", op, p.rel, name, err)
+	}
+	fi, err := next.Stat(".")
+	if err != nil {
+		next.Close()
+		return nil, zero, fmt.Errorf("inspecting directory component %q of %q: %w", name, p.rel, err)
+	}
+	if !fi.IsDir() {
+		next.Close()
+		return nil, zero, fmt.Errorf(
+			"refusing to %s %q: path component %q is not a directory", op, p.rel, name)
+	}
+	id, ok := identityOf(fi)
+	if !ok {
+		next.Close()
+		return nil, zero, fmt.Errorf("platform cannot identify directories; refusing to %s %q", op, p.rel)
+	}
+	// The descriptor's own fstat — immune to any path game — must be the
+	// directory we verified a moment ago.
+	if wasPinned && id != pinnedID {
+		next.Close()
+		return nil, zero, fmt.Errorf(
+			"refusing to %s %q: directory component %q changed identity between policy evaluation "+
+				"and open (possible symlink swap; was inode %d, found inode %d)",
+			op, p.rel, name, pinnedID.ino, id.ino)
+	}
+	return next, id, nil
+}
+
+// leafName is the final component of the pinned path.
+func (p *pinnedTarget) leafName() string { return p.parts[len(p.parts)-1] }
+
+// Write stores data at the pinned location, refusing unless every component of
+// the path — pinned or created by this very call — is provably the one policy
+// evaluated at the moment the leaf is opened.
+func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
+	chain, err := p.openVerifiedParent("write", true)
+	if err != nil {
+		return err
+	}
+	defer chain.Close()
+
+	leaf := p.leafName()
+	// O_NONBLOCK so a FIFO planted at the target cannot park the harness
+	// forever; O_NOFOLLOW as belt and braces where the platform honours it
+	// (os.Root resolves in-root links itself, so the refusal below is what
+	// actually carries the guarantee). No O_TRUNC: truncation happens after
+	// the opened file has been proved to be the pinned one, so a refused
+	// write never destroys the bystander it refused to write to.
+	flags := os.O_WRONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
+	if p.targetExisted {
+		// The file existed at pin time. It must still exist and still be that
+		// same file; re-creating it would paper over a deletion race.
+		if err := p.verifyLeafIdentity(chain, leaf); err != nil {
+			return err
+		}
+	} else {
+		// It did not exist at pin time, so this call must be the one that
+		// creates it. O_EXCL makes that provable and, verified above on this
+		// platform, refuses a symbolic link planted at the name instead of
+		// creating a file at the far end of it.
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+
+	f, err := chain.parent().OpenFile(leaf, flags, perm)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return &symlinkRefusal{component: p.rel, during: "write"}
 		}
+		if !p.targetExisted && errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf(
+				"refusing to write %q: it did not exist when policy evaluated it but something "+
+					"was created at that name before the write (possible symlink swap)", p.rel)
+		}
 		return fmt.Errorf("opening %q: %w", p.rel, err)
 	}
-	f := os.NewFile(uintptr(fd), p.physical)
 	defer f.Close()
 
-	// What did we actually just open? fstat reads the descriptor, not the
-	// path, so a concurrent rename cannot confuse it.
-	opened, err := f.Stat()
+	openedID, err := p.checkOpened(f, chain, leaf, "write")
 	if err != nil {
-		return fmt.Errorf("inspecting opened %q: %w", p.rel, err)
+		return err
 	}
-	if !opened.Mode().IsRegular() {
-		return fmt.Errorf("refusing to write %q: not a regular file", p.rel)
-	}
-	openedID, ok := identityOf(opened)
-	if !ok {
-		return fmt.Errorf("platform cannot identify files; refusing to write %q", p.rel)
-	}
-
-	if p.targetExisted {
-		if openedID != p.targetIdent {
-			return fmt.Errorf(
-				"refusing to write %q: the file at that path changed identity between "+
-					"policy evaluation and open (was inode %d, opened inode %d)",
-				p.rel, p.targetIdent.ino, openedID.ino)
-		}
-	} else {
-		// Create case: the file did not exist at pin time, so the thing we
-		// opened must have been created by our own O_CREAT at the verified
-		// location. Its directory must still be the pinned one.
-		if err := p.verifyChain(); err != nil {
-			return err
-		}
+	if p.targetExisted && openedID != p.targetIdent {
+		return fmt.Errorf(
+			"refusing to write %q: the file at that path changed identity between "+
+				"policy evaluation and open (was inode %d, opened inode %d)",
+			p.rel, p.targetIdent.ino, openedID.ino)
 	}
 
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncating %q: %w", p.rel, err)
+	}
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("writing %q: %w", p.rel, err)
 	}
@@ -246,85 +479,110 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 	return nil
 }
 
-// verifyChain re-stats every recorded directory along the resolved chain and
-// requires each to still be the very directory captured at pin time.
-func (p *pinnedTarget) verifyChain() error {
-	for i, dir := range p.resolvedDirs {
-		fi, err := os.Stat(dir)
-		if err != nil {
-			return fmt.Errorf("directory %q of %q vanished before the write: %w", dir, p.rel, err)
-		}
-		id, ok := identityOf(fi)
-		if !ok {
-			return fmt.Errorf("platform cannot identify directories; refusing to use %q", dir)
-		}
-		if id != p.dirIDs[i] {
-			return fmt.Errorf(
-				"refusing to use %q: directory component %q changed identity between policy "+
-					"evaluation and open (possible symlink swap; was inode %d, found inode %d)",
-				p.rel, dir, p.dirIDs[i].ino, id.ino)
-		}
-	}
-	return nil
-}
-
-// verifyDirectory is the single-parent form kept for the leaf-only checks.
-func (p *pinnedTarget) verifyDirectory() error {
-	parent := filepath.Dir(p.physical)
-	fi, err := os.Stat(parent)
+// checkOpened proves that the descriptor just opened is a regular file that is
+// still the entry named leaf in the verified parent, and that the whole
+// directory chain was intact at that moment.
+func (p *pinnedTarget) checkOpened(f *os.File, chain *verifiedChain, leaf, op string) (componentIdentity, error) {
+	var zero componentIdentity
+	// What did we actually just open? fstat reads the descriptor, not the
+	// path, so a concurrent rename cannot confuse it.
+	opened, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("the directory of %q vanished before the write: %w", p.rel, err)
+		return zero, fmt.Errorf("inspecting opened %q: %w", p.rel, err)
 	}
-	id, ok := identityOf(fi)
+	if !opened.Mode().IsRegular() {
+		return zero, fmt.Errorf("refusing to %s %q: not a regular file", op, p.rel)
+	}
+	openedID, ok := identityOf(opened)
 	if !ok {
-		return fmt.Errorf("platform cannot identify directories; refusing to write %q", p.rel)
+		return zero, fmt.Errorf("platform cannot identify files; refusing to %s %q", op, p.rel)
 	}
-	last := len(p.dirIDs) - 1
-	if id != p.dirIDs[last] {
+	// The open resolved a name; prove the name still denotes this exact file
+	// in the verified directory, and that nothing in the chain moved while we
+	// were opening it.
+	li, err := chain.parent().Lstat(leaf)
+	if err != nil {
+		return zero, fmt.Errorf("refusing to %s %q: inspecting the opened entry: %w", op, p.rel, err)
+	}
+	if li.Mode()&fs.ModeSymlink != 0 {
+		return zero, &symlinkRefusal{component: leaf, during: op}
+	}
+	linkID, ok := identityOf(li)
+	if !ok {
+		return zero, fmt.Errorf("platform cannot identify files; refusing to %s %q", op, p.rel)
+	}
+	if linkID != openedID {
+		return zero, fmt.Errorf(
+			"refusing to %s %q: the name resolved to a different file than the one opened "+
+				"(named inode %d, opened inode %d)", op, p.rel, linkID.ino, openedID.ino)
+	}
+	if err := chain.stillLinked(p.parts); err != nil {
+		return zero, err
+	}
+	return openedID, nil
+}
+
+// verifyLeafIdentity refuses early when the pinned leaf is already gone or has
+// been replaced, so the failure names the swap rather than a bare ENOENT.
+func (p *pinnedTarget) verifyLeafIdentity(chain *verifiedChain, leaf string) error {
+	li, err := chain.parent().Lstat(leaf)
+	if err != nil {
 		return fmt.Errorf(
-			"refusing to write %q: its directory changed identity between policy evaluation "+
-				"and open (possible symlink swap; was inode %d, found inode %d)",
-			p.rel, p.dirIDs[last].ino, id.ino)
+			"refusing to write %q: the file policy evaluated is no longer there: %w", p.rel, err)
+	}
+	if li.Mode()&fs.ModeSymlink != 0 {
+		return &symlinkRefusal{component: leaf, during: "write"}
+	}
+	id, ok := identityOf(li)
+	if !ok {
+		return fmt.Errorf("platform cannot identify files; refusing to write %q", p.rel)
+	}
+	if id != p.targetIdent {
+		return fmt.Errorf(
+			"refusing to write %q: the file at that path changed identity between policy "+
+				"evaluation and open (was inode %d, found inode %d)",
+			p.rel, p.targetIdent.ino, id.ino)
 	}
 	return nil
 }
 
-// Read reads the whole file at the pinned location through the same identity
-// verification as Write: reading through a swapped directory is an
-// exfiltration channel, not merely a wrong result. A limit of 0 means
-// unlimited.
+// Read reads the whole file at the pinned location through the same descriptor
+// traversal and identity verification as Write: reading through a swapped
+// directory is an exfiltration channel, not merely a wrong result. A limit of
+// 0 means unlimited.
 func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 	if !p.targetExisted {
 		return nil, fmt.Errorf("file %s does not exist", p.rel)
 	}
-	if err := p.verifyChain(); err != nil {
+	chain, err := p.openVerifiedParent("read", false)
+	if err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(p.physical, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	defer chain.Close()
+
+	leaf := p.leafName()
+	f, err := chain.parent().OpenFile(leaf,
+		os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, &symlinkRefusal{component: p.rel, during: "read"}
 		}
 		return nil, fmt.Errorf("opening %q: %w", p.rel, err)
 	}
-	f := os.NewFile(uintptr(fd), p.physical)
 	defer f.Close()
 
-	st, err := f.Stat()
+	openedID, err := p.checkOpened(f, chain, leaf, "read")
 	if err != nil {
-		return nil, fmt.Errorf("inspecting opened %q: %w", p.rel, err)
-	}
-	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("refusing to read %q: not a regular file", p.rel)
-	}
-	openedID, ok := identityOf(st)
-	if !ok {
-		return nil, fmt.Errorf("platform cannot identify files; refusing to read %q", p.rel)
+		return nil, err
 	}
 	if openedID != p.targetIdent {
 		return nil, fmt.Errorf(
 			"refusing to read %q: the file changed identity between evaluation and open "+
 				"(was inode %d, opened inode %d)", p.rel, p.targetIdent.ino, openedID.ino)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting opened %q: %w", p.rel, err)
 	}
 	if limit > 0 && st.Size() > limit {
 		return nil, fmt.Errorf("refusing to read %q: %d bytes exceeds the %d-byte limit", p.rel, st.Size(), limit)
@@ -346,18 +604,44 @@ func ReadPinned(root, rel string, limit int64) ([]byte, error) {
 	return pinned.Read(limit)
 }
 
-// RemovePinned deletes the leaf at a pinned location. Unlink never follows a
-// final-component symlink, so the leaf itself cannot redirect the operation;
-// the directory identity check closes the swapped-parent variant.
+// RemovePinned deletes the leaf at a pinned location. The removal is issued
+// against the verified parent's descriptor and never follows a final-component
+// symlink, so neither the leaf nor any directory above it can redirect it.
 func RemovePinned(root, rel string) error {
 	pinned, err := pinWriteTarget(root, rel)
 	if err != nil {
 		return err
 	}
-	if err := pinned.verifyChain(); err != nil {
+	chain, err := pinned.openVerifiedParent("remove", false)
+	if err != nil {
 		return err
 	}
-	if err := syscall.Unlink(pinned.physical); err != nil {
+	defer chain.Close()
+
+	leaf := pinned.leafName()
+	li, err := chain.parent().Lstat(leaf)
+	if err != nil {
+		return fmt.Errorf("removing %q: %w", rel, err)
+	}
+	if li.IsDir() {
+		return fmt.Errorf("refusing to remove %q: it is a directory", rel)
+	}
+	if pinned.targetExisted {
+		id, ok := identityOf(li)
+		if !ok {
+			return fmt.Errorf("platform cannot identify files; refusing to remove %q", rel)
+		}
+		if id != pinned.targetIdent {
+			return fmt.Errorf(
+				"refusing to remove %q: the file at that path changed identity between policy "+
+					"evaluation and removal (was inode %d, found inode %d)",
+				rel, pinned.targetIdent.ino, id.ino)
+		}
+	}
+	if err := chain.stillLinked(pinned.parts); err != nil {
+		return err
+	}
+	if err := chain.parent().Remove(leaf); err != nil {
 		if errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.EPERM) {
 			return fmt.Errorf("refusing to remove %q: it is a directory", rel)
 		}
@@ -373,23 +657,6 @@ func containedUnder(root, child string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-// io_ReadAll exists only to keep this file's imports minimal; io.ReadAll is
-// the same function.
-func io_ReadAll(f *os.File) ([]byte, error) {
-	var out []byte
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := f.Read(buf)
-		out = append(out, buf[:n]...)
-		if err != nil {
-			if err.Error() == "EOF" {
-				return out, nil
-			}
-			return out, err
-		}
-	}
 }
 
 // syscall_Mkfifo builds a fifo for the non-regular-file refusal test. Mkfifo
