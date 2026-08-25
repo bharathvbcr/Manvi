@@ -543,7 +543,7 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 		return unavailable("command policy decision", err)
 	}
 	if decision.Blocked() {
-		escalated, ok := r.escalate(ctx, decision)
+		escalated, ok := r.escalate(ctx, decision, commandLine)
 		if !ok {
 			return r.refusal(decision)
 		}
@@ -557,8 +557,10 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	cmd.WaitDelay = 5 * time.Second
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &stdout, limit: maxGitOutputBytes}
-	cmd.Stderr = &limitWriter{w: &stderr, limit: 64 * 1024}
+	outCap := &limitWriter{w: &stdout, limit: maxGitOutputBytes}
+	errCap := &limitWriter{w: &stderr, limit: 64 * 1024}
+	cmd.Stdout = outCap
+	cmd.Stderr = errCap
 
 	runErr := cmd.Run()
 
@@ -581,6 +583,14 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	}
 	if errMsg := strings.TrimSpace(stderr.String()); errMsg != "" {
 		payload["git_stderr"] = errMsg
+	}
+	// A capped capture says it was capped. Reading a trimmed diff as the whole
+	// diff is how "nothing else changed" gets asserted from a partial sample.
+	if note := outCap.truncationNote(); note != "" {
+		payload["output_truncated"] = note
+	}
+	if note := errCap.truncationNote(); note != "" {
+		payload["git_stderr_truncated"] = note
 	}
 
 	if exitCode != 0 {

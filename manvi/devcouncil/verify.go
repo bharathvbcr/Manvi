@@ -1,6 +1,7 @@
 package devcouncil
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -300,13 +301,25 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	tracked, err := runGit(ctx, root, "diff", "HEAD")
+	var notes []string
+
+	tracked, trackedNote, err := runGitCapped(ctx, root, maxGitCaptureBytes, "diff", "HEAD")
 	if err != nil {
 		// A repository with no commits yet has no HEAD; fall back to the index.
-		tracked, err = runGit(ctx, root, "diff")
+		tracked, trackedNote, err = runGitCapped(ctx, root, maxGitCaptureBytes, "diff")
 		if err != nil {
 			return "", nil, err
 		}
+	}
+	if trackedNote != "" {
+		// Cut at the cap, then back to the last complete line: a header cut in
+		// half parses as a header naming a file that does not exist, so the
+		// gates would report on a path nobody wrote.
+		tracked = trimPartialLine(tracked)
+		notes = append(notes, fmt.Sprintf(
+			"tracked_diff: %s; the gates read only the part above that cap, so the rest of the "+
+				"change was not covered — commit or split the change to get a complete answer",
+			trackedNote))
 	}
 
 	// -z is not a detail. Without it git separates paths with newlines and
@@ -316,7 +329,12 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	// see. NUL-separated output has no such ambiguity.
 	untracked, err := runGit(ctx, root, "ls-files", "-z", "--others", "--exclude-standard")
 	if err != nil {
-		return tracked, nil, nil
+		// Not fatal — the tracked diff is still worth gating — but not silent
+		// either: no untracked file is in what follows, and a caller reading a
+		// pass has to be able to tell that from "there were none".
+		return tracked, append(notes, fmt.Sprintf(
+			"untracked_diff: the untracked-file listing failed (%v), so no untracked file is in "+
+				"this diff and the gates that read it did not see any", err)), nil
 	}
 
 	paths := make([]string, 0, 16)
@@ -326,7 +344,6 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 		}
 	}
 
-	var notes []string
 	rendered := paths
 	if len(paths) > maxUntrackedRendered {
 		rendered = paths[:maxUntrackedRendered]
@@ -339,17 +356,46 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 
 	var b strings.Builder
 	b.WriteString(tracked)
-	for _, path := range rendered {
+	// One budget across the whole fan-out, not one cap per file: 256 files at
+	// their own ceiling is 256 ceilings, which is not a bound on anything.
+	budget := maxGitCaptureBytes
+	var cutFiles []string
+	unrendered := 0
+	for i, path := range rendered {
+		if budget <= 0 {
+			unrendered = len(rendered) - i
+			break
+		}
 		// Render an untracked file as an addition so one parser handles both.
 		// The literal, not os.DevNull: this is git's own convention for the
 		// empty side of a diff and it means the same thing on every platform,
 		// whereas os.DevNull is "NUL" on Windows and git would read that as a
 		// filename.
-		added, err := runGit(ctx, root, "diff", "--no-index", "--", "/dev/null", path)
+		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
 		if err != nil && added == "" {
 			continue
 		}
+		if note != "" {
+			added = trimPartialLine(added)
+			// The path and the byte counts together: "some of this file is
+			// missing" is not actionable, and a note that carries only one of
+			// the two numbers is how a capped sample gets read as a whole one.
+			cutFiles = append(cutFiles, fmt.Sprintf("%s %s", path, note))
+		}
+		budget -= len(added)
 		b.WriteString(added)
+	}
+	if len(cutFiles) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: %d untracked file(s) were cut at the %d-byte capture budget: %s; "+
+				"the gates saw only the part above the cut",
+			len(cutFiles), maxGitCaptureBytes, strings.Join(cutFiles, "; ")))
+	}
+	if unrendered > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: the %d-byte capture budget ran out with %d untracked file(s) still "+
+				"unrendered; they are not in this diff and the gates did not see them",
+			maxGitCaptureBytes, unrendered))
 	}
 	diff := b.String()
 	if quoted := quotedHeaderPaths(diff); len(quoted) > 0 {
@@ -364,6 +410,15 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 			len(quoted), strings.Join(quoted, ", ")))
 	}
 	return diff, notes, nil
+}
+
+// trimPartialLine drops an incomplete final line from a capture that was cut at
+// a byte boundary, so half a diff header cannot be read as a whole one.
+func trimPartialLine(s string) string {
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		return s[:i+1]
+	}
+	return ""
 }
 
 // quotedHeaderPaths finds diff headers whose path git had to escape.
@@ -385,28 +440,89 @@ func quotedHeaderPaths(diff string) []string {
 	return found
 }
 
+// Bounds on one git invocation's captured output.
+//
+// cmd.Output() had none: it accumulates everything the child writes into a
+// bytes.Buffer that grows until the process runs out of memory, and every diff
+// the verifier takes goes through this function. The size of that diff is not
+// the harness's choice — it is decided by whatever is in the working tree,
+// which on this path is content an agent has just written. The sibling paths
+// already had ceilings (patchFile at maxPatchReadBytes, gatedGit at
+// maxGitOutputBytes); this one is the one that did not.
+//
+// 16 MiB is far past any honest working-tree diff and far short of what a
+// deliberately large one costs. stderr gets its own, much smaller cap: it is
+// diagnostics, and a server that answers a failure with megabytes of chatter
+// must not have those megabytes copied into an error string.
+const (
+	maxGitCaptureBytes = 16 << 20
+	maxGitStderrBytes  = 64 << 10
+	// gitStderrPreview bounds how much captured stderr travels on an error.
+	gitStderrPreview = 400
+)
+
+// runGit runs one git command and returns its stdout, refusing rather than
+// silently trimming when the output runs past the cap.
+//
+// Callers that can carry a degradation should use runGitCapped and report the
+// note; this wrapper exists for the callers that cannot, and for them a
+// truncated answer is worse than no answer — a diff cut mid-hunk still parses,
+// still names files, and reads exactly like a complete one.
 func runGit(ctx context.Context, root string, args ...string) (string, error) {
+	out, note, err := runGitCapped(ctx, root, maxGitCaptureBytes, args...)
+	if err != nil {
+		return "", err
+	}
+	if note != "" {
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), note)
+	}
+	return out, nil
+}
+
+// runGitCapped runs one git command with stdout bounded at limit bytes.
+//
+// The second return is empty when the whole of git's output was captured, and
+// otherwise says what was dropped. It is not an error: a caller with a
+// degradation channel of its own can report the shortfall and carry on with
+// the part it has. What no caller may do is treat a non-empty note as nothing.
+func runGitCapped(ctx context.Context, root string, limit int, args ...string) (string, string, error) {
 	// core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead
 	// of C-style octal escapes. It is set here rather than in either parser
 	// because crates/dc-verify reads this same format: unquoting on one side
 	// only would give the two readers different answers for the same file.
 	full := append([]string{"-c", "core.quotePath=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	// Without this, cancelling the context kills git but Output() keeps waiting
-	// on a pipe any grandchild — a hook, a credential helper — still holds open,
-	// so a bounded context still produces an unbounded wait.
+	// Without this, cancelling the context kills git but the output copy keeps
+	// waiting on a pipe any grandchild — a hook, a credential helper — still
+	// holds open, so a bounded context still produces an unbounded wait.
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = root
-	out, err := cmd.Output()
+
+	var stdout, stderr bytes.Buffer
+	outCap := &limitWriter{w: &stdout, limit: limit}
+	errCap := &limitWriter{w: &stderr, limit: maxGitStderrBytes}
+	cmd.Stdout = outCap
+	cmd.Stderr = errCap
+
+	err := cmd.Run()
+	out := stdout.String()
+	note := outCap.truncationNote()
+
 	// `git diff --no-index` exits 1 when files differ, which is the normal
 	// case here rather than a failure.
 	if err != nil && len(out) > 0 {
-		return string(out), nil
+		return out, note, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			if len(msg) > gitStderrPreview {
+				msg = msg[:gitStderrPreview] + "…"
+			}
+			return "", "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+		}
+		return "", "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return string(out), nil
+	return out, note, nil
 }
 
 // changedFiles extracts the post-change paths from a unified diff.

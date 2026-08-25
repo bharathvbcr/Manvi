@@ -39,10 +39,18 @@ func runTUI(reg *flags.Registry, args []string) error {
 		firstSession: make(chan string, 1),
 	}
 
+	// The credential backstop, armed before the first frame. `manvi run`,
+	// `manvi watch` and `manvi probe` each wired one and this face wired none,
+	// so the one face that is a live terminal — the one where a leaked key is
+	// read by a human and scrolled into their scrollback — was the only one
+	// printing provider error bodies unredacted.
+	_, scrubber := host.creds()
+
 	runner, err := tui.New(tui.Config{
 		Host:         host,
 		Title:        "manvi",
 		FirstSession: true,
+		Scrubber:     scrubber,
 	})
 	if errors.Is(err, term.ErrNotATerminal) {
 		// Named rather than generic. "not a terminal" sends an operator looking
@@ -150,6 +158,18 @@ type harnessHost struct {
 	// about concurrent turns that is never exercised by a test. Nil means ask
 	// the runner, which is what every production path does.
 	busyTurns func(exclude string) []string
+
+	// credOnce guards the two fields below, which are built on first use rather
+	// than in a constructor: a harnessHost assembled by a test sets only the
+	// fields that test needs, and a nil resolver reached from a turn would be a
+	// panic in production code that no test covers.
+	credOnce sync.Once
+	// resolver is this process's one credential resolver, and scrubber is the
+	// backstop armed from it. One of each, shared: a scrubber armed from a
+	// resolver that some other part of the process replaced is a backstop that
+	// does not hold the values actually in use.
+	resolver *credentials.Resolver
+	scrubber *credentials.Scrubber
 
 	// firstSession carries the id of the session that opens first. The index
 	// refresh runs before any session exists and has to report into a
@@ -618,14 +638,24 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 		case "check":
 			// The session's own gate, so what this reports is what will
 			// actually decide the session's next write.
-			return check(&out, s.gate, fields)
+			err := check(&out, s.gate, fields)
+			if errors.Is(err, errCheckBlocked) || errors.Is(err, errCheckHardBlocked) {
+				// A block is this command's answer, not its failure. On the CLI
+				// it is a non-zero exit status because a script has nothing else
+				// to read; here the decision is already in the transcript above,
+				// and reporting it a second time as an error would tell the
+				// operator the command did not run.
+				return nil
+			}
+			return err
 		case "allow":
 			return allow(&out, s.gate, fields)
 		case "tool":
 			// The session's own pipeline: it carries this session's lease, and
 			// its approval seam, so a blocked write raises a card here rather
 			// than being refused by a registry nobody is watching.
-			return callTool(&out, &out, s.pipeline, fields)
+			_, scrubber := h.creds()
+			return callTool(&out, &out, scrubber, s.pipeline, fields)
 		case "map":
 			return mapCommand(&out, h.reg, fields)
 		case "probe":
@@ -1028,17 +1058,40 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	return nil
 }
 
+// creds returns this host's credential resolver and the scrubber armed from it.
+//
+// WatchAll runs on every call, not only the first. buildProvider registers the
+// requirement for the provider it is building, so a credential that was not a
+// requirement when the UI started — a provider switched to mid-session — is not
+// in the watched set until after it has been resolved once.
+func (h *harnessHost) creds() (*credentials.Resolver, *credentials.Scrubber) {
+	h.credOnce.Do(func() {
+		if h.resolver == nil {
+			h.resolver = credentials.NewResolver()
+		}
+		if h.scrubber == nil {
+			h.scrubber = credentials.NewScrubber()
+		}
+	})
+	h.scrubber.WatchAll(h.resolver)
+	return h.resolver, h.scrubber
+}
+
 // attachProvider resolves the provider, credential, and model for a session.
 func (h *harnessHost) attachProvider(s *tuiSession) error {
 	name, _, err := h.reg.String(flags.LLMDefaultProvider)
 	if err != nil {
 		return err
 	}
-	resolver := credentials.NewResolver()
+	resolver, _ := h.creds()
 	provider, err := buildProvider(name, h.reg, resolver, io.Discard)
 	if err != nil {
 		return err
 	}
+	// Re-armed after the build, which is when the provider's own credential
+	// requirement became known to the resolver. Before this call the scrubber
+	// could not have been watching the key this session is about to use.
+	h.creds()
 
 	registry := llm.NewRegistry()
 	if err := registry.Register(provider); err != nil {

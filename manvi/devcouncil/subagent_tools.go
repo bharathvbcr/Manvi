@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -12,7 +13,59 @@ import (
 	"manvi/tools"
 )
 
+// The governing invariant of this file:
+//
+//	A control-plane tool must never report an outcome it did not achieve.
+//
+// These four tools are how a model observes and steers its own children, and
+// each of them once answered success for something that did not happen: a kill
+// that cancelled nothing and replied {"killed":[id]} while the child ran on and
+// wrote to the tree; a kill of an ID nobody had registered, and a kill_all over
+// an empty manager, both reported as done; a message queued into a channel with
+// no reader and answered {"delivered":true}; a child that produced nothing
+// reported "completed"; a role name with a typo in it silently producing a
+// child with the parent's whole tool surface.
+//
+// The rule that follows from it, in both directions: an action that could not
+// be delivered is an error result naming what was not done, and an outcome is
+// only reported once the thing it describes has actually been established. A
+// control that reports an action it did not perform is worse than no control,
+// because the operator and the model both stop looking.
+
 var conversationCounter atomic.Int64
+
+// fallbackPlanes holds the role catalogue and instance table a Registry uses
+// when Deps supplied neither.
+//
+// It is keyed per Registry and built once, because the getters below used to
+// answer agents.NewRegistry() / agents.NewInstanceManager() on every single
+// call. Two consequences, both of them this file's invariant broken: a role
+// defined in one call was written into a throwaway and looked up in a different
+// one on the next, so a dispatch under that name found nothing and silently
+// fell back; and every instance a dispatch registered went into a manager the
+// management tool would never see, so "list" answered count 0 with children
+// live and "kill" could never find anything to kill.
+//
+// Production wires both (cmd/manvi/main.go), so this map stays empty there. It
+// holds a reference to any Registry that does reach it, which is a bounded cost
+// only an embedder that leaves the fields nil pays.
+var fallbackPlanes sync.Map // *Registry -> *subagentPlane
+
+type subagentPlane struct {
+	roles     *agents.Registry
+	instances *agents.InstanceManager
+}
+
+func (r *Registry) fallbackPlane() *subagentPlane {
+	if plane, ok := fallbackPlanes.Load(r); ok {
+		return plane.(*subagentPlane)
+	}
+	plane, _ := fallbackPlanes.LoadOrStore(r, &subagentPlane{
+		roles:     agents.NewRegistry(),
+		instances: agents.NewInstanceManager(),
+	})
+	return plane.(*subagentPlane)
+}
 
 func (r *Registry) subagentTools() []tools.Tool {
 	return []tools.Tool{
@@ -55,14 +108,34 @@ func (r *Registry) getSubagentRegistry() *agents.Registry {
 	if r.deps.SubagentRegistry != nil {
 		return r.deps.SubagentRegistry
 	}
-	return agents.NewRegistry()
+	return r.fallbackPlane().roles
 }
 
 func (r *Registry) getSubagentManager() *agents.InstanceManager {
 	if r.deps.SubagentMgr != nil {
 		return r.deps.SubagentMgr
 	}
-	return agents.NewInstanceManager()
+	return r.fallbackPlane().instances
+}
+
+// requireSummary is the one place this package decides whether a child that
+// returned without an error actually did any work.
+//
+// A child that ran and produced nothing is a failure, not a quiet success.
+// Counting it among the completions is how a fan-out comes to report work that
+// did not happen.
+//
+// It is a function rather than a line inside each dispatcher because there are
+// two dispatchers and the judgement drifted between them: this one lost the
+// check entirely and reported "completed" for an empty result. The second copy
+// still stands inline in the spawn_subagents fan-out in tools.go, which is
+// owned elsewhere; it should call this instead of restating it.
+func requireSummary(label, summary string) error {
+	if strings.TrimSpace(summary) != "" {
+		return nil
+	}
+	return fmt.Errorf("sub-agent %s returned no summary; "+
+		"it produced nothing that can be reported as its work", label)
 }
 
 func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Result {
@@ -84,6 +157,20 @@ func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Re
 	}
 
 	reg := r.getSubagentRegistry()
+	// A shipped role is not redefinable, whatever subagents.dynamic.enabled
+	// says. The two are different questions: the setting decides whether a
+	// model may author roles at all, while this decides whether it may rewrite
+	// one the operator already reviewed. Registry.Register overwrites by name,
+	// so without this check "define a role" and "rewrite the shipped read-only,
+	// MCP-denied critic to say you may write, with MCP on" are the same call —
+	// a reviewed permission widened inside a single turn, under a name every
+	// later dispatch still reads as the reviewed one.
+	if reg.IsBuiltIn(def.Name) {
+		return tools.Errorf(
+			"%q is a role this harness ships, and a shipped role cannot be redefined at runtime. "+
+				"Nothing was registered and %q is unchanged. Define a role under a different name instead",
+			def.Name, def.Name)
+	}
 	if err := reg.Register(def); err != nil {
 		return tools.Errorf("registering subagent: %v", err)
 	}
@@ -171,7 +258,14 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	}
 
 	var subTasks []agents.Task
-	var dispatchedIDs []string
+	// unknownTypes names every type_name that is not a registered role. A typo
+	// in a role name used to be invisible: the dispatch fell back to a
+	// synthetic definition with EnableWriteTools true, so "critc" produced a
+	// child with the parent's whole tool surface and write access, and the
+	// result said nothing about it. The fallback is now read-only, and the
+	// names are reported, so a caller can tell "the role I named" from "a role
+	// this harness has never heard of".
+	var unknownTypes []string
 
 	for _, s := range args.Subagents {
 		s := s
@@ -186,16 +280,20 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		if ok {
 			surface = def.Surface()
 		} else {
-			// Auto-fallback to self
+			unknownTypes = append(unknownTypes, s.TypeName)
+			// Auto-fallback to self, with writes withheld. A permission nobody
+			// wrote down is a permission nobody reviewed, and the direction an
+			// unverifiable permission has to fail is closed: the caller named a
+			// role that does not exist, and the one thing that must not follow
+			// from a misspelling is a child that can mutate the working tree.
 			def = agents.Definition{
 				Name:             s.TypeName,
 				Role:             s.Role,
-				EnableWriteTools: true,
+				EnableWriteTools: false,
 			}
 		}
 
 		convID := fmt.Sprintf("subagent-%d-%d", time.Now().UnixMilli(), conversationCounter.Add(1))
-		dispatchedIDs = append(dispatchedIDs, convID)
 
 		subTasks = append(subTasks, agents.Task{
 			Label: s.Role,
@@ -203,13 +301,22 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 				childCtx, cancel := context.WithCancel(childCtx)
 				defer cancel()
 
-				inst := &agents.Instance{
-					ConversationID: convID,
-					Type:           s.TypeName,
-					Role:           s.Role,
-					State:          agents.StateRunning,
+				// This is the cancellation the control plane delivers, bound to
+				// the instance before it is registered. Instance.cancel was
+				// never assigned anywhere outside a test, so every kill found
+				// nil, cancelled nothing, moved the state to canceling and
+				// answered {"killed":[id]} — while the child ran to completion
+				// and went on writing to the tree.
+				inst, err := agents.NewInstance(convID, s.TypeName, s.Role, cancel)
+				if err != nil {
+					return nil, fmt.Errorf("sub-agent %q could not be tracked: %w", s.Role, err)
 				}
-				mgr.Register(inst)
+				// Refused rather than dispatched untracked: a child nothing can
+				// list or terminate is one the control plane would answer
+				// questions about that it cannot answer.
+				if err := mgr.Register(inst); err != nil {
+					return nil, fmt.Errorf("sub-agent %q could not be registered: %w", s.Role, err)
+				}
 
 				if runner == nil {
 					// No runner means no model, which means no work was done.
@@ -222,9 +329,8 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					// says otherwise. "Standalone mode" is not a reason to
 					// report success; it is a reason to report that the
 					// capability is absent.
-					inst.SetState(agents.StateErrored, "no sub-agent runner is attached")
-					return nil, fmt.Errorf(
-						"sub-agent %q cannot run: no model is attached to this invocation", s.Role)
+					return nil, recordFailure(inst, fmt.Errorf(
+						"sub-agent %q cannot run: no model is attached to this invocation", s.Role))
 				}
 
 				// The role decides where the child runs, and a per-call model
@@ -249,12 +355,26 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					Leases: leaseSinkFor(holder),
 				})
 				if err != nil {
-					inst.SetState(agents.StateErrored, err.Error())
-					return nil, err
+					return nil, recordFailure(inst, err)
+				}
+				// The same judgement the other dispatcher makes, from the same
+				// function rather than a second copy of it: a child that came
+				// back with nothing to say is not a completion.
+				if err := requireSummary(s.Role, out.Summary); err != nil {
+					return nil, recordFailure(inst, err)
 				}
 
-				inst.SetState(agents.StateCompleted, "done")
-				return map[string]any{
+				// Only now, with a result in hand, is "completed" claimed — and
+				// only if the lifecycle still allows it. The one move this
+				// refuses is completed-after-canceling, which is a child the
+				// control plane terminated mid-flight; reporting that as
+				// completed work is exactly the fabrication this file exists to
+				// prevent.
+				if err := inst.SetState(agents.StateCompleted, "done"); err != nil {
+					return nil, fmt.Errorf(
+						"sub-agent %q was terminated before it could report its work: %w", s.Role, err)
+				}
+				outcome := map[string]any{
 					"conversation_id": convID,
 					"status":          "completed",
 					"role":            s.Role,
@@ -262,7 +382,18 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					"summary":         out.Summary,
 					"steps":           out.Steps,
 					"usage":           out.Usage,
-				}, nil
+				}
+				if !ok {
+					// Carried on the child's own outcome as well as on the
+					// payload, because this is the line a dispatching model
+					// reads when it is deciding whether the answer it got came
+					// from the role it asked for.
+					outcome["unknown_type"] = true
+					outcome["note"] = fmt.Sprintf(
+						"no role named %q is registered; this child ran read-only on the parent's "+
+							"tool surface rather than under that role", s.TypeName)
+				}
+				return outcome, nil
 			},
 		})
 	}
@@ -282,6 +413,13 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 			for k, v := range value {
 				outcome[k] = v
 			}
+		} else {
+			// Unreachable with the closure above, and still not reported as a
+			// success: an outcome nobody can read is not evidence of work. This
+			// branch was absent, so such a child appeared in the results with a
+			// label and no status at all -- neither a completion nor a failure.
+			outcome["status"] = "failed"
+			outcome["error"] = "the sub-agent returned an unreadable outcome"
 		}
 		outcomes = append(outcomes, outcome)
 	}
@@ -313,11 +451,33 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	if spent.Any() {
 		payload["usage"] = spent
 	}
+	if len(unknownTypes) > 0 {
+		payload["unknown_types"] = unknownTypes
+		payload["unknown_types_note"] = fmt.Sprintf(
+			"these type_name values are not registered roles (%s). Each ran read-only on the "+
+				"parent's tool surface, under no role's system prompt, model placement or tool "+
+				"policy. Check the spelling against the registered roles, or define the role first",
+			strings.Join(unknownTypes, ", "))
+	}
 	if report.Children > 0 && report.Failed == report.Children {
 		return failure(payload, fmt.Sprintf(
 			"all %d sub-agent(s) failed; nothing was dispatched successfully", report.Children))
 	}
 	return ok(payload)
+}
+
+// recordFailure moves an instance to errored and returns the failure the child
+// is to report.
+//
+// The state write is checked rather than dropped: the only way it is refused is
+// that the instance already reached a terminal state, and a lifecycle the
+// control plane cannot record is not something to swallow on the way out of an
+// error path.
+func recordFailure(inst *agents.Instance, cause error) error {
+	if stateErr := inst.SetState(agents.StateErrored, cause.Error()); stateErr != nil {
+		return fmt.Errorf("%w (and its state could not be recorded: %v)", cause, stateErr)
+	}
+	return cause
 }
 
 func (r *Registry) sendMessage(ctx context.Context, call tools.Call) tools.Result {
@@ -335,15 +495,30 @@ func (r *Registry) sendMessage(ctx context.Context, call tools.Call) tools.Resul
 		return tools.Errorf("message content is required")
 	}
 
+	// Refused, because it cannot be delivered.
+	//
+	// This answered {"delivered": true} into a channel nothing in this harness
+	// ever reads. The buffer is what proves it: ten sends succeeded and the
+	// eleventh failed with "inbox is full", so every one of the ten was still
+	// sitting there and the child had been told nothing. A sub-agent runs
+	// through SubAgentRunner — one prompt in, one result out — and there is no
+	// seam anywhere for a message that arrives after it started.
+	//
+	// Delivering it for real is a design change (the runner would have to drain
+	// the inbox between steps), not a wiring fix. Until something does, saying
+	// so is the only honest answer: a caller told "delivered" stops repeating
+	// the instruction and starts believing the child has it.
 	mgr := r.getSubagentManager()
-	if err := mgr.SendMessage(args.Recipient, args.Message); err != nil {
-		return tools.Errorf("delivering message: %v", err)
+	known := "it is not a registered sub-agent"
+	if _, ok := mgr.Get(args.Recipient); ok {
+		known = "it is a registered sub-agent, but nothing delivers to a child mid-run"
 	}
-
-	return ok(map[string]any{
-		"delivered": true,
-		"recipient": args.Recipient,
-	})
+	return tools.Errorf(
+		"nothing was delivered to %s: %s. This harness runs a sub-agent as one prompt in and one "+
+			"result out, with no seam for an instruction that arrives after it started — a message "+
+			"queued here would sit unread until the child finished. Put the instruction in the "+
+			"child's prompt when you dispatch it, or wait for its result and dispatch a follow-up",
+		args.Recipient, known)
 }
 
 func (r *Registry) manageSubagents(ctx context.Context, call tools.Call) tools.Result {
@@ -358,7 +533,11 @@ func (r *Registry) manageSubagents(ctx context.Context, call tools.Call) tools.R
 	mgr := r.getSubagentManager()
 	switch args.Action {
 	case "list":
-		instances := mgr.List()
+		// Snapshots, not the live instances. Marshalling *agents.Instance read
+		// State and StateDetail with no lock while pool goroutines wrote them
+		// through SetState — a data race the detector fires on for every list
+		// issued during a fan-out, on a path a model reaches directly.
+		instances := mgr.Snapshot()
 		return ok(map[string]any{
 			"count":     len(instances),
 			"subagents": instances,
@@ -367,19 +546,51 @@ func (r *Registry) manageSubagents(ctx context.Context, call tools.Call) tools.R
 		if len(args.ConversationIDs) == 0 {
 			return tools.Errorf("conversation_ids are required for 'kill' action")
 		}
-		var killed []string
+		// Every ID is accounted for. The error from Kill used to be dropped —
+		// `if err := mgr.Kill(id); err == nil` — so an ID nobody had registered
+		// simply vanished from the answer, and a caller reading {"killed":[]}
+		// against a list it had just been given had no way to tell a child that
+		// was stopped from one that was never there.
+		killed := make([]string, 0, len(args.ConversationIDs))
+		refused := make([]map[string]any, 0, len(args.ConversationIDs))
 		for _, id := range args.ConversationIDs {
-			if err := mgr.Kill(id); err == nil {
-				killed = append(killed, id)
+			if err := mgr.Kill(id); err != nil {
+				refused = append(refused, map[string]any{
+					"conversation_id": id,
+					"error":           err.Error(),
+				})
+				continue
 			}
+			killed = append(killed, id)
+		}
+		payload := map[string]any{
+			"requested": len(args.ConversationIDs),
+			"killed":    killed,
+		}
+		if len(refused) > 0 {
+			payload["not_terminated"] = refused
+			return failure(payload, fmt.Sprintf(
+				"%d of %d sub-agent(s) were not terminated; the ones named under not_terminated "+
+					"are still whatever state they were in",
+				len(refused), len(args.ConversationIDs)))
+		}
+		return ok(payload)
+	case "kill_all":
+		// The IDs are named, and an empty manager is an error. "all subagents
+		// terminating" over a manager holding nothing is a claim about children
+		// that do not exist, and it was returned unconditionally: the error
+		// from KillAll was assigned to the blank identifier.
+		killed, err := mgr.KillAll()
+		if err != nil {
+			return failure(map[string]any{
+				"killed": killed,
+				"count":  len(killed),
+			}, err.Error())
 		}
 		return ok(map[string]any{
+			"status": "terminating",
 			"killed": killed,
-		})
-	case "kill_all":
-		_ = mgr.KillAll()
-		return ok(map[string]any{
-			"status": "all subagents terminating",
+			"count":  len(killed),
 		})
 	default:
 		return tools.Errorf("unknown action %q (must be 'list', 'kill', or 'kill_all')", args.Action)

@@ -1,6 +1,17 @@
 # section	command	result  — generated from DevCouncil's TaskPolicyEngine; regenerate with scripts/gen-command-parity.py
 # task allowed_commands: pytest * | go test * | make build | .venv/bin/dev *
 # global allowed_commands: npm install
+# DIVERGENCE from the incumbent, applied by hand after regeneration — 3 rows:
+#   NORM / ALLOW_TASK / ALLOW_NOTASK for `/abs/path/.venv/bin/dev status`.
+#   The Python engine normalises ANY absolute `…/.venv/bin/dev` to a bare `dev`,
+#   which launders a foreign binary at that layout into the repo's own CLI and
+#   hands it `dev`'s allowlist entries. The Go gate decides containment against
+#   the working tree instead (CommandGate.Root), and an unknown root — which is
+#   what this fixture's rootless gate has — attributes no absolute path to the
+#   tree. So the command stays un-normalised and falls to the ordinary
+#   allowlist rungs, where nothing matches it: deny. This only ever tightens,
+#   like TestGitSafetyRunsEvenWhenTheAllowlistWouldPass. Re-apply these three
+#   rows after any future run of scripts/gen-command-parity.py.
 NORM		
 NORM	   	
 NORM	dev status	dev status
@@ -30,7 +41,7 @@ NORM	uv run --project . dev map	uv run dev map
 NORM	uv run --directory /repo dev status	uv run dev status
 NORM	uv run -p /repo dev map query x	uv run dev map query x
 NORM	.venv/bin/dev map	dev map
-NORM	/abs/path/.venv/bin/dev status	dev status
+NORM	/abs/path/.venv/bin/dev status	/abs/path/.venv/bin/dev status
 NORM	./scripts/dev map	dev map
 NORM	DevCouncil/dev map	DevCouncil/dev map
 NORM	devcouncil status	dev status
@@ -94,7 +105,7 @@ ALLOW_TASK	uv run --project . dev map	allow
 ALLOW_TASK	uv run --directory /repo dev status	allow
 ALLOW_TASK	uv run -p /repo dev map query x	allow
 ALLOW_TASK	.venv/bin/dev map	allow
-ALLOW_TASK	/abs/path/.venv/bin/dev status	allow
+ALLOW_TASK	/abs/path/.venv/bin/dev status	deny
 ALLOW_TASK	./scripts/dev map	allow
 ALLOW_TASK	DevCouncil/dev map	deny
 ALLOW_TASK	devcouncil status	allow
@@ -158,7 +169,7 @@ ALLOW_NOTASK	uv run --project . dev map	allow
 ALLOW_NOTASK	uv run --directory /repo dev status	allow
 ALLOW_NOTASK	uv run -p /repo dev map query x	allow
 ALLOW_NOTASK	.venv/bin/dev map	allow
-ALLOW_NOTASK	/abs/path/.venv/bin/dev status	allow
+ALLOW_NOTASK	/abs/path/.venv/bin/dev status	deny
 ALLOW_NOTASK	./scripts/dev map	allow
 ALLOW_NOTASK	DevCouncil/dev map	deny
 ALLOW_NOTASK	devcouncil status	allow

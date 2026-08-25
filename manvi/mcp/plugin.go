@@ -43,8 +43,30 @@ type PluginManifest struct {
 	ManifestPath string `json:"-"`
 }
 
+// Bounds on discovery and on what a manifest may declare.
+//
+// A manifest is a file out of a checked-out tree, so its size, its depth in the
+// tree and the listing it declares are all chosen by whoever wrote the
+// repository. maxManifestTools in particular closes a route around the client's
+// own caps: a manifest's static Tools are handed to callers by ListAllTools
+// without a server being contacted at all, so nothing in client.go would ever
+// have seen them.
+const (
+	maxManifestBytes = 1 << 20
+	maxManifestTools = 1024
+	maxManifestDepth = 8
+	// maxManifestsPerDir bounds how many manifests one directory tree may
+	// contribute, so a repository cannot make discovery itself the denial of
+	// service.
+	maxManifestsPerDir = 256
+)
+
 // ParsePluginManifest decodes an Open Plugin 1.0 JSON manifest.
 func ParsePluginManifest(data []byte) (*PluginManifest, error) {
+	if len(data) > maxManifestBytes {
+		return nil, fmt.Errorf("openplugin: manifest is %d bytes, past the %d cap",
+			len(data), maxManifestBytes)
+	}
 	var m PluginManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("openplugin: malformed manifest: %w", err)
@@ -52,6 +74,30 @@ func ParsePluginManifest(data []byte) (*PluginManifest, error) {
 
 	if m.Name == "" {
 		return nil, fmt.Errorf("openplugin: manifest must declare a 'name'")
+	}
+	if hasControlChars(m.Name) || len(m.Name) > maxToolNameLen {
+		return nil, fmt.Errorf("openplugin: manifest name is unusable as an identifier "+
+			"(control characters, or longer than %d bytes)", maxToolNameLen)
+	}
+	if len(m.Tools) > maxManifestTools {
+		return nil, fmt.Errorf("openplugin: manifest %q declares %d tools, past the %d cap; "+
+			"it was refused rather than truncated", m.Name, len(m.Tools), maxManifestTools)
+	}
+	for i, tool := range m.Tools {
+		switch {
+		case tool.Name == "":
+			return nil, fmt.Errorf("openplugin: manifest %q declares a tool at index %d with no name",
+				m.Name, i)
+		case len(tool.Name) > maxToolNameLen || hasControlChars(tool.Name):
+			return nil, fmt.Errorf("openplugin: manifest %q declares an unusable tool name at index %d "+
+				"(control characters, or longer than %d bytes)", m.Name, i, maxToolNameLen)
+		case len(tool.Description) > maxToolDescLen:
+			return nil, fmt.Errorf("openplugin: manifest %q declares a %d-byte description for tool %q, "+
+				"past the %d cap", m.Name, len(tool.Description), tool.Name, maxToolDescLen)
+		case len(tool.InputSchema) > maxToolSchemaBytes:
+			return nil, fmt.Errorf("openplugin: manifest %q declares a %d-byte input schema for tool %q, "+
+				"past the %d cap", m.Name, len(tool.InputSchema), tool.Name, maxToolSchemaBytes)
+		}
 	}
 	if m.SchemaVersion == "" {
 		m.SchemaVersion = OpenPluginStandardVersion
@@ -68,7 +114,19 @@ func ParsePluginManifest(data []byte) (*PluginManifest, error) {
 }
 
 // LoadPluginFile loads an Open Plugin manifest from disk.
+//
+// Setting ManifestPath is what marks the result as workspace content: it is the
+// only thing that sets that field, and Manager.RegisterPlugin reads it to
+// decide whether spawning the declaration needs an operator's authorization.
 func LoadPluginFile(path string) (*PluginManifest, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("openplugin: reading %s: %w", path, err)
+	}
+	if info.Size() > maxManifestBytes {
+		return nil, fmt.Errorf("openplugin: %s is %d bytes, past the %d cap",
+			path, info.Size(), maxManifestBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("openplugin: reading %s: %w", path, err)
@@ -120,6 +178,7 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 			continue
 		}
 
+		found := 0
 		err = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -129,11 +188,24 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 				if name == ".git" || name == "node_modules" || name == "target" {
 					return filepath.SkipDir
 				}
+				// The walk descends the whole subtree, so how deep it goes is
+				// chosen by whoever wrote the repository. Bounding it costs a
+				// manifest nobody would bury that deep on purpose.
+				if depthUnder(dir, p) > maxManifestDepth {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 
 			name := strings.ToLower(d.Name())
 			if name == "plugin.json" || name == "openplugin.json" || name == "mcp.json" {
+				if found >= maxManifestsPerDir {
+					skipped = append(skipped, SkippedManifest{Path: p,
+						Reason: fmt.Sprintf("more than %d manifests under %s; the rest were not read",
+							maxManifestsPerDir, dir)})
+					return filepath.SkipAll
+				}
+				found++
 				manifest, err := LoadPluginFile(p)
 				switch {
 				case err != nil:
@@ -156,6 +228,15 @@ func DiscoverPlugins(dirs ...string) ([]*PluginManifest, []SkippedManifest, erro
 	}
 
 	return plugins, skipped, nil
+}
+
+// depthUnder counts path separators between a root and a path beneath it.
+func depthUnder(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
 }
 
 // ToServerConfig converts an Open Plugin manifest to an MCP ServerConfig.

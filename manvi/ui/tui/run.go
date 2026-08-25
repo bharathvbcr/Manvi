@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"manvi/credentials"
 	"manvi/ui"
 	"manvi/ui/input"
 	"manvi/ui/render"
@@ -29,6 +30,12 @@ type Config struct {
 	Title string
 	// FirstSession, when set, is created before the first frame.
 	FirstSession bool
+	// Scrubber removes known credential values from everything on its way to
+	// the frame. Optional only in the sense that an empty one is used when it
+	// is nil; a caller that has resolved credentials must pass the scrubber
+	// armed from them, because this face has no other backstop. The line
+	// renderer and the JSON sink both take one for the same reason.
+	Scrubber *credentials.Scrubber
 }
 
 // Runner owns the terminal, the painter, and the loop.
@@ -61,6 +68,9 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.Out == nil {
 		cfg.Out = os.Stdout
 	}
+	if cfg.Scrubber == nil {
+		cfg.Scrubber = credentials.NewScrubber()
+	}
 	t := term.New(cfg.In, cfg.Out)
 	if !t.IsTerminal() {
 		return nil, term.ErrNotATerminal
@@ -81,6 +91,12 @@ func New(cfg Config) (*Runner, error) {
 // It is a ui.Sink like any other, which is the point: the harness writes to it
 // exactly as it writes to the line renderer or the JSON face, and knows nothing
 // about the terminal.
+//
+// Events go onto the queue as the harness wrote them. Cleaning happens in
+// apply, on the way into the app, because this sink is one of several producers
+// — the approval seam, captured stderr and the turn's own error are others —
+// and each of them cleaning for itself is how three of the four came to be
+// missed.
 func (r *Runner) Sink(sessionID string) ui.Sink {
 	return ui.SinkFunc(func(e ui.Event) {
 		if e.At.IsZero() {
@@ -170,7 +186,10 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 
 	w, h := r.term.Size()
 	r.painter = render.NewPainter(w, h, r.term.Profile())
-	r.app.Dispatch(ActionResize{W: w, H: h})
+	// Through apply rather than straight to Dispatch, so apply is the only way
+	// an action reaches the app. A second door is a second place for the
+	// cleaning that happens there to be skipped.
+	r.apply(ctx, ActionResize{W: w, H: h})
 
 	r.reader = input.NewReader(r.cfg.In)
 	go r.reader.Run()
@@ -287,11 +306,92 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 	return nil
 }
 
+// clean prepares untrusted text for the frame: credential values removed,
+// terminal control sequences neutralised.
+//
+// Both, in that order, and never one without the other. The order matters
+// because Sanitize expands a control character into a visible marker, and a
+// credential whose bytes were rewritten first would no longer match the value
+// the scrubber watches.
+func (r *Runner) clean(text string) string {
+	return ui.Sanitize(r.cfg.Scrubber.Clean(text))
+}
+
 // apply dispatches an action and runs whatever effects it asked for.
+//
+// Everything the loop shows enters through here — the harness's event sink, the
+// approval seam, captured stderr, a session title from the store, the error a
+// turn ended with — so this is where untrusted text is cleaned. One choke point
+// rather than a Sanitize call at each of the several dozen places the app draws
+// a string: the call sites are where this was missed in the first place, and a
+// new one added tomorrow would miss it again.
 func (r *Runner) apply(ctx context.Context, act Action) {
-	for _, e := range r.app.Dispatch(act) {
+	for _, e := range r.app.Dispatch(cleanAction(act, r.clean)) {
 		r.runEffect(ctx, e)
 	}
+}
+
+// cleanAction returns act with every untrusted string passed through clean.
+//
+// Actions carrying only the operator's own keystrokes and pointer positions are
+// returned untouched: those are not third-party content, and rewriting what
+// someone typed on the way to the composer would change what the harness sends
+// on their behalf.
+func cleanAction(act Action, clean func(string) string) Action {
+	switch t := act.(type) {
+	case ActionEvent:
+		t.Event = ui.CleanEvent(t.Event, clean)
+		return t
+
+	case ActionApprovalRequest:
+		t.Request = ui.CleanRequest(t.Request, clean)
+		return t
+
+	case ActionNotice:
+		// Captured stderr arrives this way, which means a subprocess's own
+		// output — not the harness's — is in Text.
+		t.Text = clean(t.Text)
+		return t
+
+	case ActionSessionAdded:
+		// Titles come out of the store, which sanitize.go names as untrusted
+		// for exactly this reason: nothing about being persisted makes a string
+		// safe to write to a terminal.
+		t.Title = clean(t.Title)
+		return t
+
+	case ActionTurnEnded:
+		t.Err = cleanError(t.Err, clean)
+		return t
+	}
+	return act
+}
+
+// cleanedError carries cleaned text over an error whose identity a caller may
+// still need.
+//
+// A provider that fails with the request echoed back puts the API key inside
+// Error(), and the app writes that string straight into the transcript. Replacing
+// the error with a fresh one would make it safe and also make errors.Is stop
+// working; wrapping keeps both, because Unwrap still reaches the original.
+type cleanedError struct {
+	err  error
+	text string
+}
+
+func (e cleanedError) Error() string { return e.text }
+func (e cleanedError) Unwrap() error { return e.err }
+
+func cleanError(err error, clean func(string) string) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	cleaned := clean(text)
+	if cleaned == text {
+		return err
+	}
+	return cleanedError{err: err, text: cleaned}
 }
 
 func (r *Runner) draw() error {

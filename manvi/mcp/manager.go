@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,311 @@ import (
 type ConfigFile struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers,omitempty"`
 	Servers    map[string]ServerConfig `json:"servers,omitempty"`
+}
+
+// Origin says where a server declaration came from, which is the whole of what
+// decides whether spawning it needs an operator's authorization.
+//
+// Discovery reads declarations out of the working tree: mcp.json and .mcp.json
+// at the repository root, and any plugin.json, openplugin.json or mcp.json
+// anywhere under plugins/, .mcp/plugins or .devcouncil/plugins. Every one of
+// those arrives with a `git clone`. The command they name went straight into
+// exec.Command with no allowlist, no signature and nothing asked of anyone — so
+// checking out a repository and letting the model call mcp_list_tools, a
+// ReadOnly and ungated tool offered by default, ran whatever that repository
+// said to run, with this harness's credentials in the environment.
+//
+// Declarations made through the Go API are a different thing entirely: they
+// come from the program embedding this package, which is the operator's own
+// build, and nothing a checked-out file says can produce one.
+type Origin string
+
+const (
+	// OriginProgram is a declaration made in-process through RegisterServer or
+	// through RegisterPlugin with a manifest that was not read off disk.
+	OriginProgram Origin = "program"
+	// OriginWorkspace is a declaration read out of the checked-out tree.
+	// Spawning one requires an authorization the tree cannot grant itself.
+	OriginWorkspace Origin = "workspace"
+)
+
+// TrustFileEnv names an environment variable holding the path to the
+// authorization file, for installs that keep configuration somewhere else and
+// for tests.
+const TrustFileEnv = "MANVI_MCP_TRUST_FILE"
+
+// TrustListEnv names an environment variable holding authorized fingerprints
+// directly, whitespace- or comma-separated. It exists for headless and CI runs
+// with no home directory to keep a file in.
+const TrustListEnv = "MANVI_MCP_TRUST"
+
+// trustFileName is where authorizations live by default, under the user's
+// config directory — outside any repository, which is the point. An
+// authorization a repository could write for itself would not be one.
+const trustFileName = "mcp-trust.json"
+
+// TrustFile is the on-disk authorization list.
+type TrustFile struct {
+	Authorized []TrustEntry `json:"authorized"`
+}
+
+// TrustEntry authorizes one server declaration by fingerprint. Name and Note
+// are for the human reading the file; only Fingerprint is matched.
+type TrustEntry struct {
+	Fingerprint string `json:"fingerprint"`
+	Name        string `json:"name,omitempty"`
+	Note        string `json:"note,omitempty"`
+}
+
+// Fingerprint identifies a server declaration for authorization.
+//
+// It covers what decides which program runs and what that program is handed:
+// the server name, the command, its arguments, the declared environment, and
+// the variables the declaration asks to have forwarded from this process. Any
+// change to any of those produces a different fingerprint and needs authorizing
+// again — a repository cannot get a declaration approved and then quietly add
+// ANTHROPIC_API_KEY to its passthrough list.
+//
+// Cwd is deliberately not covered. It is an absolute path that differs between
+// clones and worktrees of the same repository, so including it would expire
+// every authorization on every re-checkout while adding no capability the
+// command and arguments do not already carry.
+//
+// What this does NOT establish, and no fingerprint of a declaration can: that
+// the program named by Command still contains what it contained when the
+// operator read it. `node server.js` fingerprints the same however server.js
+// changes. Authorizing a declaration means having reviewed what it will run,
+// not pinning that program's contents.
+func Fingerprint(cfg ServerConfig) string {
+	h := sha256.New()
+	write := func(label, value string) {
+		fmt.Fprintf(h, "%s\x00%d\x00%s\x00", label, len(value), value)
+	}
+	write("name", cfg.Name)
+	write("command", cfg.Command)
+	fmt.Fprintf(h, "args\x00%d\x00", len(cfg.Args))
+	for _, a := range cfg.Args {
+		write("arg", a)
+	}
+	keys := make([]string, 0, len(cfg.Env))
+	for k := range cfg.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(h, "env\x00%d\x00", len(keys))
+	for _, k := range keys {
+		write("env."+k, cfg.Env[k])
+	}
+	pass := append([]string(nil), cfg.EnvPassthrough...)
+	sort.Strings(pass)
+	fmt.Fprintf(h, "passthrough\x00%d\x00", len(pass))
+	for _, p := range pass {
+		write("passthrough", p)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// trustStore is the set of fingerprints an operator has authorized, plus where
+// that set came from so a refusal can name the file to edit.
+type trustStore struct {
+	path         string
+	fingerprints map[string]struct{}
+	// err is why the authorization list could not be read. It is carried
+	// rather than swallowed: an authorization check that could not run must
+	// not produce the same answer as one that ran and found nothing.
+	err error
+}
+
+// loadTrustStore reads the authorization list fresh.
+//
+// Fresh on every check, not cached, so an operator who authorizes a server can
+// retry without restarting the harness — and so a revocation takes effect the
+// moment it is written rather than at the next boot.
+//
+// root is the repository this manager serves. A trust file resolving to
+// somewhere inside it is refused outright: the whole mechanism rests on the
+// authorization living somewhere a `git clone` cannot write, and a path that
+// lands back inside the tree would let a repository authorize itself.
+func loadTrustStore(root string) trustStore {
+	store := trustStore{fingerprints: map[string]struct{}{}}
+
+	for _, fp := range strings.FieldsFunc(os.Getenv(TrustListEnv), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		store.fingerprints[strings.ToLower(strings.TrimSpace(fp))] = struct{}{}
+	}
+
+	path, err := trustFilePath()
+	if err != nil {
+		store.err = err
+		return store
+	}
+	store.path = path
+
+	if inside, err := pathIsInside(root, path); err != nil {
+		store.err = fmt.Errorf("could not tell whether the authorization file %s lies inside %s: %w",
+			path, root, err)
+		return store
+	} else if inside {
+		store.err = fmt.Errorf("the authorization file %s lies inside the repository %s; "+
+			"an authorization a checked-out tree can write is not an authorization, so it was not read",
+			path, root)
+		return store
+	}
+
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if !os.IsNotExist(readErr) {
+			store.err = fmt.Errorf("reading the authorization file %s: %w", path, readErr)
+		}
+		return store
+	}
+	var tf TrustFile
+	if err := json.Unmarshal(data, &tf); err != nil {
+		store.err = fmt.Errorf("parsing the authorization file %s: %w", path, err)
+		return store
+	}
+	for _, entry := range tf.Authorized {
+		if fp := strings.ToLower(strings.TrimSpace(entry.Fingerprint)); fp != "" {
+			store.fingerprints[fp] = struct{}{}
+		}
+	}
+	return store
+}
+
+func trustFilePath() (string, error) {
+	if p := strings.TrimSpace(os.Getenv(TrustFileEnv)); p != "" {
+		if !filepath.IsAbs(p) {
+			return "", fmt.Errorf("%s must be an absolute path, got %q", TrustFileEnv, p)
+		}
+		return filepath.Clean(p), nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("no user configuration directory to read MCP authorizations from "+
+			"(set %s or %s): %w", TrustFileEnv, TrustListEnv, err)
+	}
+	return filepath.Join(dir, "manvi", trustFileName), nil
+}
+
+// pathIsInside reports whether path lies within root, comparing the two after
+// resolving symlinks as far as each exists.
+func pathIsInside(root, path string) (bool, error) {
+	if strings.TrimSpace(root) == "" {
+		return false, nil
+	}
+	resolvedRoot, err := resolveExisting(root)
+	if err != nil {
+		return false, err
+	}
+	resolvedPath, err := resolveExisting(path)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil {
+		// Different volumes cannot contain one another.
+		return false, nil
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+// resolveExisting resolves symlinks over the longest existing prefix of path,
+// so a file that does not exist yet is still compared at its real location.
+func resolveExisting(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	remainder := ""
+	current := filepath.Clean(abs)
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Join(current, remainder), nil
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
+}
+
+// authorize decides whether a declaration may be spawned, and refuses in a way
+// an operator can act on.
+//
+// The refusal prints the whole declaration, because "authorize this
+// fingerprint" is only a safe instruction if the thing being authorized is in
+// front of the person doing it.
+func (m *Manager) authorize(cfg ServerConfig) error {
+	if cfg.Origin == OriginProgram {
+		return nil
+	}
+
+	store := loadTrustStore(m.root)
+	fp := Fingerprint(cfg)
+	if store.err != nil {
+		return fmt.Errorf("mcp: server %q was declared by workspace content and its authorization "+
+			"could not be checked, so it was not started: %w", cfg.Name, store.err)
+	}
+	if _, ok := store.fingerprints[strings.ToLower(fp)]; ok {
+		return nil
+	}
+
+	where := cfg.Source
+	if where == "" {
+		where = "the working tree"
+	}
+	// store.path is always set past the error check above: loadTrustStore only
+	// leaves it empty when it could not resolve a path at all, and that is
+	// carried as store.err. Naming a fallback here would mean naming a location
+	// inside the repository, which is the one place an authorization may not
+	// live.
+	target := store.path
+	return fmt.Errorf("mcp: server %q is declared by workspace content (%s) and no operator has "+
+		"authorized it, so it was not started.\n"+
+		"  it would run: %s\n"+
+		"  fingerprint:  %s\n"+
+		"authorize it by adding that fingerprint to %s, as "+
+		`{"authorized":[{"fingerprint":%q,"name":%q}]}`+"\n"+
+		"or by listing it in %s. Read the command above before you do: authorizing it lets that "+
+		"repository run it with your account's privileges.",
+		cfg.Name, where, describeInvocation(cfg), fp, target, fp, cfg.Name, TrustListEnv)
+}
+
+// describeInvocation renders what a declaration would actually execute.
+//
+// Bounded, because every string in it came out of the tree and this text is
+// handed to a model and to a terminal. A refusal that pastes a megabyte of
+// attacker-chosen bytes into the transcript is its own problem.
+func describeInvocation(cfg ServerConfig) string {
+	parts := append([]string{cfg.Command}, cfg.Args...)
+	for i, p := range parts {
+		parts[i] = strconv.Quote(truncateForMessage(p))
+	}
+	line := truncateTo(strings.Join(parts, " "), 4*unroutablePreview)
+	if cfg.Cwd != "" {
+		line += " (in " + cfg.Cwd + ")"
+	}
+	if len(cfg.Env) > 0 {
+		keys := make([]string, 0, len(cfg.Env))
+		for k := range cfg.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		line += " with env " + strings.Join(keys, ",")
+	}
+	if len(cfg.EnvPassthrough) > 0 {
+		pass := append([]string(nil), cfg.EnvPassthrough...)
+		sort.Strings(pass)
+		line += " forwarding this process's " + strings.Join(pass, ",")
+	}
+	return line
 }
 
 // Manager orchestrates multiple MCP 2.0 stateless servers and Open Plugins.
@@ -77,13 +385,24 @@ func (m *Manager) unavailable() error {
 }
 
 // RegisterServer adds a server configuration for on-demand connection.
+//
+// This is the Go API, so the declaration comes from the program embedding this
+// package rather than from a file somebody checked out — see Origin. The origin
+// is stamped here rather than taken from cfg so that no caller, and in
+// particular no JSON decoder feeding one, can claim it.
 func (m *Manager) RegisterServer(cfg ServerConfig) error {
+	return m.register(cfg, OriginProgram, "")
+}
+
+func (m *Manager) register(cfg ServerConfig, origin Origin, source string) error {
 	if !m.Enabled() {
 		return m.unavailable()
 	}
 	if cfg.Name == "" {
 		return errors.New("mcp: server name is required")
 	}
+	cfg.Origin = origin
+	cfg.Source = source
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.configs[cfg.Name] = cfg
@@ -91,6 +410,12 @@ func (m *Manager) RegisterServer(cfg ServerConfig) error {
 }
 
 // RegisterPlugin registers an Open Plugin 1.0 standard manifest.
+//
+// A manifest carrying a ManifestPath was read off disk, and only LoadPluginFile
+// sets that field — so "this manifest came out of the tree" is derived from
+// evidence rather than from a flag a caller might forget to pass or a manifest
+// might try to set. Everything else is a manifest the embedding program built
+// in memory.
 func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 	if !m.Enabled() {
 		return m.unavailable()
@@ -98,11 +423,15 @@ func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 	if p == nil || p.Name == "" {
 		return errors.New("openplugin: manifest is nil or has no name")
 	}
+	origin, source := OriginProgram, ""
+	if p.ManifestPath != "" {
+		origin, source = OriginWorkspace, p.ManifestPath
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.plugins[p.Name] = p
+	m.mu.Unlock()
 	if cfg, err := p.ToServerConfig(); err == nil {
-		m.configs[p.Name] = cfg
+		return m.register(cfg, origin, source)
 	}
 	return nil
 }
@@ -128,7 +457,14 @@ func (m *Manager) loadConfigFile(path string) (found bool, err error) {
 	if !m.Enabled() {
 		return false, m.unavailable()
 	}
-	data, err := os.ReadFile(m.resolve(path))
+	resolved := m.resolve(path)
+	// The file comes out of the checked-out tree, so its size is chosen by
+	// whoever wrote the repository. Bounded before it is read, not after.
+	if info, statErr := os.Stat(resolved); statErr == nil && info.Size() > maxManifestBytes {
+		return true, fmt.Errorf("mcp: %s is %d bytes, past the %d cap",
+			path, info.Size(), maxManifestBytes)
+	}
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -148,7 +484,10 @@ func (m *Manager) loadConfigFile(path string) (found bool, err error) {
 
 	for name, cfg := range servers {
 		cfg.Name = name
-		if err := m.RegisterServer(cfg); err != nil {
+		// Read out of the tree, so stamped as such. Whatever the file said
+		// about Origin is not consulted — the field is json:"-" precisely so
+		// that a declaration cannot promote itself.
+		if err := m.register(cfg, OriginWorkspace, m.resolve(path)); err != nil {
 			return true, err
 		}
 	}
@@ -287,6 +626,15 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 		return nil, fmt.Errorf("mcp: server %q is not registered", name)
 	}
 
+	// The one place a process is spawned, and so the one place authorization
+	// is decided. Every route to a server — ListAllTools, CallTool,
+	// ReadResource, the tool surface's per-server listing — arrives here, so a
+	// declaration that no operator authorized cannot be executed by any of
+	// them. See Origin.
+	if err := m.authorize(cfg); err != nil {
+		return nil, err
+	}
+
 	if cfg.Cwd == "" && m.root != "" {
 		cfg.Cwd = m.root
 	}
@@ -332,6 +680,13 @@ func (m *Manager) ServerNames() []string {
 type ServerTools struct {
 	Server string `json:"server"`
 	Tools  []Tool `json:"tools"`
+	// Error is why this server contributed no tools, when it contributed none
+	// for a reason. It exists because the survey used to `continue` past every
+	// failure, so a server that refused to start, one whose listing was
+	// rejected as hostile, and one an operator has not authorized all appeared
+	// in the result as simply absent — and an absent server is exactly what a
+	// server with no tools looks like.
+	Error string `json:"error,omitempty"`
 }
 
 // ListAllTools surveys tools across all registered servers.
@@ -361,14 +716,17 @@ func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
 			continue
 		}
 
+		// A failure here does not fail the whole survey — one bad server must
+		// not hide the others — but it is reported rather than skipped past.
 		client, err := m.Client(ctx, name)
 		if err != nil {
-			// Record empty/degraded rather than failing the whole survey
+			results = append(results, ServerTools{Server: name, Error: err.Error()})
 			continue
 		}
 
 		tools, err := client.ListTools(ctx)
 		if err != nil {
+			results = append(results, ServerTools{Server: name, Error: err.Error()})
 			continue
 		}
 
@@ -379,6 +737,29 @@ func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
 	}
 
 	return results, nil
+}
+
+// Unavailable returns why this manager will not talk to servers, or nil when it
+// will. It is the exported form of the refusal every disabled entry point
+// returns, for callers that need to check before doing other work.
+func (m *Manager) Unavailable() error {
+	if m.Enabled() {
+		return nil
+	}
+	return m.unavailable()
+}
+
+// Diagnostics returns what a connected server has said about itself. Empty when
+// the server is not connected — this reports a live client's record, it does
+// not start one.
+func (m *Manager) Diagnostics(name string) []string {
+	m.mu.RLock()
+	client := m.clients[name]
+	m.mu.RUnlock()
+	if client == nil {
+		return nil
+	}
+	return client.Diagnostics()
 }
 
 // CallTool routes a tool execution to the appropriate MCP server.

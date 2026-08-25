@@ -76,6 +76,15 @@ tui' also brings the navigation index up to date, in the background, so the
 first frame does not wait on a build whose cost scales with the repository.
 Set MANVI_HARNESS_INIT_ENABLED=false to leave the working tree untouched.
 
+Exit status:
+  'manvi run' documents its own — see 'manvi run --help'. 'manvi check' reports
+  the decision it made, because a pre-flight that exits 0 on a refusal is a
+  pre-flight that passes everything it was added to catch:
+  0  not blocked
+  6  blocked by a rule a grant can clear — the 'manvi allow' line is printed
+  7  blocked by a hard rule, which no grant clears by any authority
+  1  the command itself failed
+
 Options (any command):
   --yolo               Run in yolo posture: every gate off, hard rules included.
                        Credential paths, restricted paths, git safety and the
@@ -161,6 +170,16 @@ func main() {
 		// that as the work having been done. The message was already written
 		// where it belongs.
 		os.Exit(4)
+	case errors.Is(err, errCheckBlocked):
+		// `manvi check` refused a write, and said why on stdout. It exited 0,
+		// which is what an allowed write exits, so `manvi check "$f" && commit`
+		// treated every block as a pass. The decision and the `manvi allow`
+		// line that clears it are already printed.
+		os.Exit(6)
+	case errors.Is(err, errCheckHardBlocked):
+		// As 6, but no grant clears it. Separate so a caller does not retry
+		// after issuing an override that was never going to apply.
+		os.Exit(7)
 	default:
 		fmt.Fprintf(os.Stderr, "manvi: %v\n", err)
 		os.Exit(1)
@@ -298,7 +317,9 @@ func run(out, notes io.Writer, args []string) error {
 		if err != nil {
 			return err
 		}
-		return callTool(out, os.Stderr, pipeline, args[1:])
+		scrubber := credentials.NewScrubber()
+		scrubber.WatchAll(credentials.NewResolver())
+		return callTool(out, os.Stderr, scrubber, pipeline, args[1:])
 	case "providers":
 		return showProviders(out, reg)
 	case "local":
@@ -1303,23 +1324,61 @@ func check(out io.Writer, g *gate.Gate, args []string) error {
 	}
 	cmdStr := flagValue(args, "--cmd")
 	task := demoTask(flagValue(args, "--task"))
+
+	var decision policy.Decision
+	var err error
 	if cmdStr != "" {
-		decision, err := g.EvaluateCommand(cmdStr, task)
-		if err != nil {
-			return err
-		}
-		printDecision(out, decision)
-		return nil
+		decision, err = g.EvaluateCommand(cmdStr, task)
+	} else {
+		cwd, _ := os.Getwd()
+		targetPath := resolveCLIPath(g.Root, cwd, args[0])
+		decision, err = g.EvaluateWrite(targetPath, task, dc.OpWrite)
 	}
-	cwd, _ := os.Getwd()
-	targetPath := resolveCLIPath(g.Root, cwd, args[0])
-	decision, err := g.EvaluateWrite(targetPath, task, dc.OpWrite)
 	if err != nil {
 		return err
 	}
 	printDecision(out, decision)
-	return nil
+	return checkStatus(decision)
 }
+
+// checkStatus turns a decision into the exit status `manvi check` reports.
+//
+// Both branches used to print and return nil, so every refusal this command
+// exists to produce exited 0. That is the harness's cardinal rule inverted: a
+// check that blocked reported the same status as one that passed, and the
+// obvious way to use this command — `manvi check "$f" && git commit` in a CI
+// pre-flight — therefore committed through every block it was added to catch.
+// /etc/passwd, .env and .git/config all denied, and all three exited 0.
+//
+// Two statuses rather than one, for the reason run's four are distinct: they
+// ask the caller for different things. A soft block is cleared by `manvi allow`
+// with a recorded reason, and printDecision has just printed the exact command.
+// A hard block is cleared by nothing, by any authority, so a caller that retries
+// it after issuing a grant will retry for ever — it has to change the approach
+// instead. A warn is not a block and keeps status 0: the write was allowed, and
+// the qualification is printed above.
+func checkStatus(d policy.Decision) error {
+	if !d.Blocked() {
+		return nil
+	}
+	if d.Severity == policy.Hard {
+		return errCheckHardBlocked
+	}
+	return errCheckBlocked
+}
+
+// errCheckBlocked is the sentinel that maps to exit status 6: the write was
+// refused by a rule a grant can clear.
+var errCheckBlocked = errors.New("blocked by policy")
+
+// errCheckHardBlocked is the sentinel that maps to exit status 7: the write was
+// refused by a hard rule, which no grant clears.
+//
+// Kept apart from 6 because the answer is different. Six says "decide whether to
+// grant this"; seven says "there is nothing to decide, change what you are
+// doing" — and a script that cannot tell them apart will sit in a grant-and-retry
+// loop against a rule that is never going to move.
+var errCheckHardBlocked = errors.New("blocked by a hard rule")
 
 func allow(out io.Writer, g *gate.Gate, args []string) error {
 	if len(args) == 0 {
@@ -1617,7 +1676,10 @@ func listTools(out io.Writer, reg *flags.Registry) error {
 // tools carry its lease and its approval seam. A pipeline built here would take
 // a lease on a registry nothing later releases, and would answer a blocked write
 // by refusing it rather than by asking the operator who is sitting there.
-func callTool(out io.Writer, notes io.Writer, pipeline *tools.Registry, args []string) error {
+//
+// The scrubber is passed in for the same reason: a session's is armed from the
+// credentials that session resolved.
+func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pipeline *tools.Registry, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: manvi tool NAME [--json '{...}']")
 	}
@@ -1637,11 +1699,22 @@ func callTool(out io.Writer, notes io.Writer, pipeline *tools.Registry, args []s
 		ID: "cli", Name: args[0], Arguments: json.RawMessage(payload),
 	})
 
+	// A tool result is file contents, grep hits, or a command's stdout: bytes
+	// this harness did not write, going to a terminal that executes control
+	// sequences rather than showing them. It was printed verbatim, so a file
+	// holding "\x1b[2J\x1b[1;1H" cleared the operator's screen and could redraw
+	// a prompt over it — the exact scenario Sanitize's doc names, on the one
+	// command that echoes untrusted bytes most directly.
+	if scrubber == nil {
+		scrubber = credentials.NewScrubber()
+	}
+	text := ui.Sanitize(scrubber.Clean(result.Text))
+
 	if result.IsError {
-		fmt.Fprintln(out, result.Text)
+		fmt.Fprintln(out, text)
 		return errors.New("tool reported an error")
 	}
-	fmt.Fprintln(out, result.Text)
+	fmt.Fprintln(out, text)
 	if result.GrantID != "" {
 		// The qualification goes to the notes stream rather than to os.Stderr.
 		// On the CLI that is stderr, so piping the tool's JSON stays clean; in

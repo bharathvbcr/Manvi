@@ -28,9 +28,14 @@ func RuneWidth(r rune) int {
 	case r == 0:
 		return 0
 	case r < 0x20 || (r >= 0x7f && r < 0xa0):
-		// Control characters. Sanitize should have removed these long before
-		// they reach a buffer; returning 0 means a leak renders as nothing
-		// rather than as a column-shifting surprise.
+		// Control characters, C0 and C1. Sanitize is what removes these before
+		// they reach a buffer, and this answer used to say it "should have" —
+		// which was the assumption, not the enforcement. It was false: nothing
+		// on the full-screen path called Sanitize, and a zero width here is
+		// exactly what routed an ESC into the preceding cell's combining marks,
+		// from which the painter reassembled it. Buffer.SetRune now refuses to
+		// store a control character at all, so this width is only ever consulted
+		// for a rune that is about to be dropped.
 		return 0
 	case r < 0x300:
 		// Latin, Greek, Cyrillic and punctuation: the common case, and worth

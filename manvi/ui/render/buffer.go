@@ -1,5 +1,7 @@
 package render
 
+import "unicode"
+
 // Cell is one character position on the screen.
 type Cell struct {
 	// R is the base rune. A zero R marks the right-hand half of a double-width
@@ -195,6 +197,18 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 	}
 	w := RuneWidth(r)
 	if w == 0 {
+		// A control character is zero-width, but it is not a combining mark.
+		// Appending it here was how an escape sequence reassembled itself on
+		// the far side of the frame: RuneWidth answers 0 for ESC, the run below
+		// hung it off the preceding cell's Comb, and the painter writes Comb to
+		// the tty verbatim — so "a\x1b[31mX" arrived at the terminal as a
+		// working SGR sequence with the buffer none the wiser. Untrusted text is
+		// cleaned before it becomes an event, and this is the backstop for the
+		// path that forgets: a control character can be dropped here without
+		// losing anything, because there is no legitimate producer of one.
+		if unicode.IsControl(r) || r < 0x20 {
+			return 0
+		}
 		// A combining mark attaches to the cell on its left. With no cell to
 		// its left there is nothing to attach to, and it is dropped rather
 		// than promoted to a base character it is not.

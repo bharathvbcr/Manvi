@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
@@ -75,6 +76,15 @@ type CommandGate struct {
 	GlobalAllowedCommands []string
 	// HardRules mirrors flags.PolicyHardRules.
 	HardRules bool
+	// Root is the absolute path of the working tree this gate judges for.
+	//
+	// It exists so that an absolute `…/.venv/bin/dev` can be told apart from
+	// the repository's own — see NormalizeAllowlistCommand. Empty is a
+	// supported value and it fails closed: with no root to compare against,
+	// no absolute path is attributed to this tree, so none is normalised into
+	// a bare `dev` and none inherits `dev`'s allowlist entries. A gate that
+	// leaves this unset is therefore stricter, never looser.
+	Root string
 }
 
 // maxSubstitutionDepth bounds the recursion into command-substitution
@@ -123,7 +133,7 @@ func (g CommandGate) evaluate(command string, task *dc.Task, depth int) Decision
 
 func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth int) Decision {
 	raw := collapseSpaces(command)
-	normalized := NormalizeAllowlistCommand(command)
+	normalized := NormalizeAllowlistCommandInRoot(command, g.Root)
 	taskID := ""
 	if task != nil {
 		taskID = task.ID
@@ -212,49 +222,125 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth 
 		"Command is not in task or global allowlists.", normalized, task.ID))
 }
 
+// ansiCQuote is the scanner state inside a $'…' span.
+//
+// sh's ANSI-C quoting is not an ordinary single quote: a backslash escapes
+// inside it, so a dollar-quote span holding a backslash-escaped quote is one
+// word containing a quote character, and everything after that span is
+// UNQUOTED. Reading it as a plain '…' swallows the rest of the line — which is
+// how `echo $[backslash-quote span] ; mkdir OWNED` reached the gate as a
+// single command. It is therefore its own state, not a flag on the
+// single-quote one.
+const ansiCQuote = rune(-1)
+
+// shellQuoteStep advances past exactly one quoting construct at runes[i],
+// given the quote state on entry. It returns the index one past what it
+// consumed, the resulting state, and whether it consumed anything at all.
+//
+// Every scanner in this file routes its quote handling through here. They each
+// used to carry their own copy of the rules and had drifted: the chain splitter
+// alone had no unquoted-backslash case, so `echo \'` flipped it INTO a quoted
+// span while sh — which reads \' as a literal quote character and stays
+// unquoted — went on to run whatever followed the next `;`. One owner for the
+// rules is what makes that drift impossible rather than merely fixed once.
+//
+// handled=false means the rune is not part of the quoting grammar and the
+// caller must decide what it is. That happens in the unquoted state, and in the
+// "…" state, where command substitutions still execute.
+func shellQuoteStep(runes []rune, i int, quote rune) (next int, newQuote rune, handled bool) {
+	n := len(runes)
+	r := runes[i]
+	switch quote {
+	case ansiCQuote:
+		if r == '\\' && i+1 < n {
+			return i + 2, quote, true
+		}
+		if r == '\'' {
+			return i + 1, 0, true
+		}
+		return i + 1, quote, true
+	case '\'':
+		// Inside '…' nothing is special but the closing quote — a backslash
+		// there is an ordinary character.
+		if r == '\'' {
+			return i + 1, 0, true
+		}
+		return i + 1, quote, true
+	case '"':
+		if r == '\\' && i+1 < n {
+			return i + 2, quote, true
+		}
+		if r == '"' {
+			return i + 1, 0, true
+		}
+		return i, quote, false
+	default: // unquoted
+		switch {
+		case r == '\\':
+			// A backslash quotes the single next character, whatever it is —
+			// a quote, an operator, or a newline. A trailing one quotes
+			// nothing and is consumed on its own.
+			if i+1 < n {
+				return i + 2, 0, true
+			}
+			return i + 1, 0, true
+		case r == '$' && i+1 < n && runes[i+1] == '\'':
+			return i + 2, ansiCQuote, true
+		case r == '\'':
+			return i + 1, '\'', true
+		case r == '"':
+			return i + 1, '"', true
+		}
+		return i, 0, false
+	}
+}
+
 // SplitCommandChain splits a shell command line on &&, ||, ;, |, a lone &,
 // and unquoted newlines — every operator sh treats as a command boundary.
-// Respecting single and double quotes. A boundary the splitter misses is a
-// second command hidden inside one string the gate judges once, so anything
-// the shell could read as "start another command" splits here; splitting too
-// much costs nothing, because each part is judged on its own merits anyway.
+// Quoting is read through shellQuoteStep, so single quotes, double quotes,
+// $'…' spans and backslash escapes are honoured exactly as sh honours them. A
+// boundary the splitter misses is a second command hidden inside one string
+// the gate judges once, so anything the shell could read as "start another
+// command" splits here; splitting too much costs nothing, because each part is
+// judged on its own merits anyway.
 func SplitCommandChain(command string) []string {
 	var parts []string
 	var cur strings.Builder
-	var quote rune
+	quote := rune(0)
 	runes := []rune(command)
-	for i := 0; i < len(runes); i++ {
+	n := len(runes)
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			parts = append(parts, s)
+		}
+		cur.Reset()
+	}
+	for i := 0; i < n; {
+		if next, nq, handled := shellQuoteStep(runes, i, quote); handled {
+			cur.WriteString(string(runes[i:next]))
+			quote = nq
+			i = next
+			continue
+		}
 		r := runes[i]
-		switch {
-		case quote == '\'' && r == '\'':
-			quote = 0
-			cur.WriteRune(r)
-		case quote == '"' && r == '"':
-			quote = 0
-			cur.WriteRune(r)
-		case quote == '"' && r == '\\' && i+1 < len(runes):
+		if quote != 0 {
+			// Only the "…" state reaches here. Its contents are one word as
+			// far as command boundaries go; the substitution rung judges the
+			// code that still executes inside it.
 			cur.WriteRune(r)
 			i++
-			cur.WriteRune(runes[i])
-		case quote != 0:
-			cur.WriteRune(r)
-		case r == '\'' || r == '"':
-			quote = r
-			cur.WriteRune(r)
+			continue
+		}
+		switch {
 		case r == ';' || r == '|':
-			if r == '|' && i+1 < len(runes) && runes[i+1] == '|' {
+			if r == '|' && i+1 < n && runes[i+1] == '|' {
 				i++
 			}
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				parts = append(parts, s)
-			}
-			cur.Reset()
-		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+			flush()
 			i++
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				parts = append(parts, s)
-			}
-			cur.Reset()
+		case r == '&' && i+1 < n && runes[i+1] == '&':
+			i += 2
+			flush()
 		case r == '&':
 			// sh reads '&' as a control operator except where it completes a
 			// redirection: `2>&1` and `>&2` duplicate descriptors, and `&>` /
@@ -264,35 +350,31 @@ func SplitCommandChain(command string) []string {
 			// same.
 			if i > 0 && runes[i-1] == '>' {
 				cur.WriteRune(r)
+				i++
 				break
 			}
-			if i+1 < len(runes) && runes[i+1] == '>' {
+			if i+1 < n && runes[i+1] == '>' {
 				cur.WriteRune('&')
 				cur.WriteRune('>')
-				i++
-				if i+1 < len(runes) && runes[i+1] == '>' {
+				i += 2
+				if i < n && runes[i] == '>' {
 					cur.WriteRune('>')
 					i++
 				}
 				break
 			}
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				parts = append(parts, s)
-			}
-			cur.Reset()
+			flush()
+			i++
 		case r == '\n' || r == '\r':
 			// An unquoted newline is sh's statement separator.
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				parts = append(parts, s)
-			}
-			cur.Reset()
+			flush()
+			i++
 		default:
 			cur.WriteRune(r)
+			i++
 		}
 	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		parts = append(parts, s)
-	}
+	flush()
 	return parts
 }
 
@@ -391,40 +473,22 @@ func liveSubstitutions(command string) ([]string, error) {
 	quote := rune(0)
 	i := 0
 	for i < n {
+		if next, nq, handled := shellQuoteStep(runes, i, quote); handled {
+			quote = nq
+			i = next
+			continue
+		}
+		// Only the unquoted state and the "…" state reach here, and both are
+		// live: sh executes $( … ) and ` … ` inside double quotes.
 		r := runes[i]
 		switch {
-		case (quote == 0 || quote == '"') && r == '\\' && i+1 < n && quote != '\'':
-			i += 2
-		case quote == 0 && r == '\'':
-			quote = '\''
-			i++
-		case quote == '\'' && r == '\'':
-			quote = 0
-			i++
-		case quote == 0 && r == '"':
-			quote = '"'
-			i++
-		case quote == '"' && r == '"':
-			quote = 0
-			i++
-		case quote == '\'':
-			i++
 		case r == '`':
-			end := -1
-			for j := i + 1; j < n; j++ {
-				if runes[j] == '`' {
-					end = j
-					break
-				}
-				if runes[j] == '\\' {
-					j++
-				}
+			text, next, err := scanBacktickSpan(runes, i)
+			if err != nil {
+				return nil, err
 			}
-			if end < 0 {
-				return nil, fmt.Errorf("unterminated backtick substitution")
-			}
-			spans = append(spans, string(runes[i+1:end]))
-			i = end + 1
+			spans = append(spans, text)
+			i = next
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
 			next, ok := skipArithmetic(runes, i)
 			if !ok {
@@ -481,6 +545,23 @@ func scanParenSpan(runes []rune, open int) (string, int, error) {
 	return "", 0, fmt.Errorf("unterminated $( substitution")
 }
 
+// scanBacktickSpan reads from the opening backtick at position open to its
+// matching close, honouring the backslash escapes sh allows inside a legacy
+// substitution. It returns the inner text and the index one past the closing
+// backtick. An unterminated span is an error: a scanner that lost track of
+// where code ends must refuse rather than guess.
+func scanBacktickSpan(runes []rune, open int) (string, int, error) {
+	for j := open + 1; j < len(runes); j++ {
+		switch runes[j] {
+		case '\\':
+			j++
+		case '`':
+			return string(runes[open+1 : j]), j + 1, nil
+		}
+	}
+	return "", 0, fmt.Errorf("unterminated backtick substitution")
+}
+
 // skipArithmetic consumes a $(( … )) span and returns the index one past it.
 // The two-paren form is recognised up front; anything that does not close as
 // arithmetic is reported so the caller can refuse rather than misparse.
@@ -511,24 +592,18 @@ func hasHeredoc(command string) bool {
 	quote := rune(0)
 	i := 0
 	for i < n {
+		if next, nq, handled := shellQuoteStep(runes, i, quote); handled {
+			quote = nq
+			i = next
+			continue
+		}
 		r := runes[i]
+		if quote != 0 {
+			// Only the "…" state reaches here; a << inside it is literal text.
+			i++
+			continue
+		}
 		switch {
-		case quote == 0 && r == '\\':
-			i += 2
-		case quote == 0 && r == '\'':
-			quote = '\''
-			i++
-		case quote == '\'' && r == '\'':
-			quote = 0
-			i++
-		case quote == 0 && r == '"':
-			quote = '"'
-			i++
-		case quote == '"' && r == '"':
-			quote = 0
-			i++
-		case quote != 0:
-			i++
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
 			next, ok := skipArithmetic(runes, i)
 			if !ok {
@@ -617,7 +692,25 @@ func shellDequote(s string) string {
 // Matching strips trailing redirections so patterns like "dev map *" stay
 // single-clause, which is exactly why the executed form has to be re-read
 // here: the string that matched is not the string that runs.
+//
+// Command substitutions are descended into rather than skipped. Their contents
+// are recursed through the policy ladder, and that ladder has no redirect rung
+// of its own — the rung lives above it, in the caller of this function — so a
+// substitution the scanner stepped over was a write nothing ever judged:
+// `echo $(git diff > ~/.ssh/authorized_keys)` was allowed while the same
+// redirect on its own was a hard denial. Backticks and <( … ) happened to be
+// caught before, by the scanner not recognising them at all and stumbling onto
+// the `>` inside; they are now found the same principled way as $( … ), so the
+// three cannot diverge again.
 func RedirectTargets(command string) ([]string, bool, error) {
+	return redirectTargets(command, 0)
+}
+
+func redirectTargets(command string, depth int) ([]string, bool, error) {
+	if depth > maxSubstitutionDepth {
+		return nil, false, fmt.Errorf(
+			"command substitution nested beyond the analysis limit; redirection targets could not be resolved")
+	}
 	var targets []string
 	opaque := false
 	runes := []rune(command)
@@ -666,25 +759,35 @@ func RedirectTargets(command string) ([]string, bool, error) {
 		}
 		return b.String(), j, nil
 	}
+	// descend judges the redirections inside a substitution as the writes they
+	// are. Its findings merge into this command's, because sh performs them
+	// whether or not the surrounding line has a redirect of its own.
+	descend := func(inner string) error {
+		innerTargets, innerOpaque, err := redirectTargets(inner, depth+1)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, innerTargets...)
+		opaque = opaque || innerOpaque
+		return nil
+	}
 	for i < n {
+		if next, nq, handled := shellQuoteStep(runes, i, quote); handled {
+			quote = nq
+			i = next
+			continue
+		}
 		r := runes[i]
 		switch {
-		case quote == 0 && r == '\\':
-			i += 2
-		case quote == 0 && r == '\'':
-			quote = '\''
-			i++
-		case quote == '\'' && r == '\'':
-			quote = 0
-			i++
-		case quote == 0 && r == '"':
-			quote = '"'
-			i++
-		case quote == '"' && r == '"':
-			quote = 0
-			i++
-		case quote != 0:
-			i++
+		case r == '`':
+			text, next, err := scanBacktickSpan(runes, i)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := descend(text); err != nil {
+				return nil, false, err
+			}
+			i = next
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
 			next, ok := skipArithmetic(runes, i)
 			if !ok {
@@ -692,11 +795,29 @@ func RedirectTargets(command string) ([]string, bool, error) {
 			}
 			i = next
 		case r == '$' && i+1 < n && runes[i+1] == '(':
-			_, next, err := scanParenSpan(runes, i+1)
+			text, next, err := scanParenSpan(runes, i+1)
 			if err != nil {
 				return nil, false, err
 			}
+			if err := descend(text); err != nil {
+				return nil, false, err
+			}
 			i = next
+		case (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
+			// Process substitution: the code inside runs, and its redirections
+			// write files, exactly like $( … ).
+			text, next, err := scanParenSpan(runes, i+1)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := descend(text); err != nil {
+				return nil, false, err
+			}
+			i = next
+		case quote != 0:
+			// Only the "…" state reaches here. The substitutions above still
+			// execute inside it; a bare > does not — it is literal text.
+			i++
 		case r == '<' && i+1 < n && runes[i+1] == '<':
 			// Heredoc introducer or herestring; not an output path.
 			i += 2
@@ -738,14 +859,63 @@ func RedirectTargets(command string) ([]string, bool, error) {
 	return targets, opaque, nil
 }
 
+// devToolDirs are the directory names a repo-local dev CLI is installed under.
+// Matched exactly: a case-insensitive comparison let /tmp/x/BIN/dev through on
+// a case-sensitive filesystem where that is a different directory entirely.
+var devToolDirs = map[string]bool{"bin": true, "scripts": true, "Scripts": true}
+
+// devVenvDirs are the virtualenv roots whose bin/ (Scripts/ on Windows) holds
+// the installed `dev` console script.
+var devVenvDirs = map[string]bool{".venv": true, "venv": true}
+
 // NormalizeAllowlistCommand collapses the forms an allowlist would otherwise
 // miss: path-prefixed dev binaries, `uv run --project X` wrappers, and trailing
 // shell redirections.
 //
-// Only a bare `dev`/`devcouncil` token, or one under a bin/Scripts directory,
-// is rewritten — never a repository folder whose basename happens to be
-// "DevCouncil".
+// Normalisation is a claim that two spellings name the same program, and the
+// executed string is the un-normalised one — so every spelling accepted here
+// is a spelling that inherits `dev`'s allowlist entries. It used to accept any
+// token whose basename folded to "dev" under a parent folding to "bin" or
+// "scripts", which made `/tmp/attacker/bin/dev status`,
+// `../../../../tmp/attacker/bin/dev status`, `attacker/scripts/dev run-cmd …`
+// and `/tmp/x/bin/DEV status` all read as the repo's own CLI. What is accepted
+// now is only what the harness can attribute to this working tree:
+//
+//   - a bare `dev`/`devcouncil` token resolved off PATH;
+//   - a relative `bin/dev` or `scripts/dev` directly beneath the working
+//     directory — the repo's own tool directories;
+//   - a `…/.venv/bin/dev` (or venv/, or Scripts/ on Windows) layout, the shape
+//     a project virtualenv install actually produces.
+//
+// Anything with a `..` component is refused outright: a path that can climb out
+// of the tree cannot be attributed to it. A backslash is likewise not treated
+// as a separator — the gate hands these lines to `sh`, where `\` escapes the
+// next character rather than descending a directory, so reading `x\bin\dev` as
+// a path laundered a token sh never resolves as `dev` at all.
+//
+// An ABSOLUTE `…/.venv/bin/dev` is the one spelling that cannot be judged from
+// the command alone: `/repo/.venv/bin/dev` and `/tmp/attacker/.venv/bin/dev`
+// have the same shape, and only one of them is this tree's. That is what
+// NormalizeAllowlistCommandInRoot's root argument decides. This entry point
+// keeps the old signature for callers with no root to give, and answers the
+// question the only way an unknown root permits: no absolute path is this
+// repository's, so none is laundered into a bare `dev`. Fail closed — a
+// spelling that is refused here is a spelling that must be spelled out in the
+// allowlist, which is a nuisance; a spelling wrongly accepted here is a
+// foreign binary inheriting `dev`'s entries, which is not.
 func NormalizeAllowlistCommand(command string) string {
+	return NormalizeAllowlistCommandInRoot(command, "")
+}
+
+// NormalizeAllowlistCommandInRoot is NormalizeAllowlistCommand with the working
+// tree named, so an absolute path to this repository's own virtualenv `dev` is
+// distinguishable from a foreign one at the same layout.
+//
+// root must be absolute; anything else is treated as no root at all, because a
+// relative root cannot decide containment for an absolute token and guessing
+// from the process's cwd would make the answer depend on where the harness
+// happened to be started.
+func NormalizeAllowlistCommandInRoot(command, root string) string {
 	normalized := collapseSpaces(command)
 	if normalized == "" {
 		return normalized
@@ -763,27 +933,82 @@ func NormalizeAllowlistCommand(command string) string {
 
 	tokens := strings.Fields(normalized)
 	for i, token := range tokens {
-		posix := strings.ReplaceAll(token, `\`, "/")
-		name, parent := baseAndParent(posix)
-		bare := !strings.Contains(posix, "/") && devBinaries[strings.ToLower(name)]
-		underBin := devBinaries[strings.ToLower(name)] &&
-			(strings.EqualFold(parent, "bin") || strings.EqualFold(parent, "scripts"))
-		if bare || underBin {
+		if isRepoDevBinary(token, root) {
 			tokens[i] = "dev"
 		}
 	}
 	return strings.Join(tokens, " ")
 }
 
-// baseAndParent splits a posix-style path into its last and second-to-last
-// components, matching pathlib's .name and .parent.name.
-func baseAndParent(p string) (name, parent string) {
-	parts := strings.Split(p, "/")
-	name = parts[len(parts)-1]
-	if len(parts) >= 2 {
-		parent = parts[len(parts)-2]
+// insideRoot reports whether an absolute token names a path strictly beneath an
+// absolute root.
+//
+// Slash semantics rather than filepath's, deliberately: these strings are
+// handed to `sh`, which resolves "/" and nothing else, so judging them by the
+// host platform's separator would judge a path the shell will never walk. A
+// token equal to the root is not inside it — the root is a directory, not a
+// program.
+func insideRoot(root, token string) bool {
+	if !strings.HasPrefix(root, "/") || !strings.HasPrefix(token, "/") {
+		return false
 	}
-	return name, parent
+	// path.Clean cannot climb out here: isRepoDevBinary has already refused
+	// any token carrying a ".." component.
+	cleanRoot := path.Clean(root)
+	cleanToken := path.Clean(token)
+	if cleanRoot == "/" {
+		return cleanToken != "/"
+	}
+	return strings.HasPrefix(cleanToken, cleanRoot+"/")
+}
+
+// isRepoDevBinary reports whether a token names this repo's own dev CLI in a
+// spelling the gate can attribute to the working tree. See
+// NormalizeAllowlistCommand for why the answer has to be this narrow.
+func isRepoDevBinary(token, root string) bool {
+	if strings.ContainsRune(token, '\\') {
+		return false
+	}
+	parts := strings.Split(token, "/")
+	absolute := parts[0] == "" && len(parts) > 1
+	var comps []string
+	for _, p := range parts {
+		switch p {
+		case "..":
+			// The path can leave the working tree, so it is not this repo's.
+			return false
+		case "", ".":
+			// Empty from a leading, trailing or doubled separator; "." is the
+			// working directory itself.
+		default:
+			comps = append(comps, p)
+		}
+	}
+	if len(comps) == 0 || !devBinaries[comps[len(comps)-1]] {
+		return false
+	}
+	switch {
+	case len(comps) == 1:
+		// A bare name resolved off PATH — but "/dev" is the device directory,
+		// not a program.
+		return !absolute
+	case len(comps) == 2:
+		return !absolute && devToolDirs[comps[0]]
+	default:
+		if !devVenvDirs[comps[len(comps)-3]] || !devToolDirs[comps[len(comps)-2]] {
+			return false
+		}
+		if !absolute {
+			// Relative, no "..": it resolves beneath the working directory,
+			// which is this tree.
+			return true
+		}
+		// Absolute, so the layout alone proves nothing — /tmp/attacker/.venv/
+		// bin/dev has exactly the shape a project virtualenv produces. Only
+		// containment in the tree this gate was built for makes it this
+		// repository's, and an unknown root cannot establish that.
+		return insideRoot(root, token)
+	}
 }
 
 func matchesEither(patterns []string, normalized, raw string) bool {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -223,9 +224,15 @@ func TestCheckCommandAndAllow(t *testing.T) {
 	}
 
 	out.Reset()
-	// Check force push: should deny (git safety)
-	if err := run(&out, &notes, []string{"check", "--cmd", "git push -f origin main"}); err != nil {
-		t.Fatalf("check --cmd force push: %v", err)
+	// Check force push: should deny (git safety), and say so in its status.
+	//
+	// This assertion used to be `err != nil -> fatal`, which is the defect it
+	// was written before: a refusal returned nil, so `manvi check` exited 0 on
+	// every block. Git safety is a hard rule, so the status is the one that
+	// says no grant will clear it.
+	err := run(&out, &notes, []string{"check", "--cmd", "git push -f origin main"})
+	if !errors.Is(err, errCheckHardBlocked) {
+		t.Fatalf("check --cmd force push: got %v, want errCheckHardBlocked", err)
 	}
 	if !strings.Contains(out.String(), "DENY") {
 		t.Fatalf("expected DENY for force push, got: %s", out.String())

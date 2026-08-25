@@ -2,9 +2,11 @@ package serve
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"manvi/dc"
+	"manvi/gate"
 	"manvi/policy"
 )
 
@@ -117,7 +119,30 @@ type CommandCheckParams struct {
 	// A host that wants the full ladder sets this true and supplies a real
 	// allowlist. That is a tightening, so it is opt-in rather than default.
 	EnforceAllowlist bool `json:"enforce_allowlist,omitempty"`
+	// Root is the project root a redirection target is resolved against.
+	//
+	// Required only when the command actually redirects, and refused rather
+	// than defaulted when it does. `echo x > /etc/sudoers` is a write, and the
+	// rung that catches it is the outside-root one, which is meaningless
+	// without a root — policy.check.file refuses a missing root for exactly
+	// that reason, and a redirect is that same write reached through a command
+	// line. Evaluating it against the process working directory would judge it
+	// against whatever directory the host happened to spawn the sidecar from,
+	// and report the result as though the check had run.
+	//
+	// A command with no redirection never consults it, so a host that only
+	// checks plain commands keeps sending what it always sent.
+	Root string `json:"root,omitempty"`
 }
+
+// errCommandRootMissing is what the redirect rung's write evaluator reports
+// when the command redirects and the host named no root. It travels as an error
+// rather than as a denial because it is a defect in the request, not a decision
+// about the command: a host that gets a deny would reasonably tell its user the
+// command is unsafe, when what actually happened is that nobody could tell.
+var errCommandRootMissing = errors.New(
+	"policy.check.command requires a root when the command redirects to a file; " +
+		"without one the outside-root rung cannot run and `> /etc/sudoers` would read as an ordinary write")
 
 // checkFile evaluates one write.
 func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
@@ -137,8 +162,18 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 		return nil, badRequest("%v", err)
 	}
 
-	gate := policy.FileGate{
-		Root: p.Root,
+	return s.evaluateHostWrite(p.Root, p.Path, op, p.Internal), nil
+}
+
+// evaluateHostWrite judges one path for a host with no task model.
+//
+// One function rather than one per call site: policy.check.file and a
+// redirection target reached through policy.check.command are the same write,
+// and a host that was told a path is refused must not be told the command that
+// writes it is fine.
+func (s *Server) evaluateHostWrite(root, path string, op dc.Operation, internal bool) policy.Decision {
+	fileGate := policy.FileGate{
+		Root: root,
 		// Subsystems is nil: the neighbour rung needs a repo map the host has
 		// not built, and the gate already marks the decision Degraded when it
 		// cannot run rather than pretending it did.
@@ -151,8 +186,8 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 		AllowSameDir: false,
 		HardRules:    s.hardRules,
 	}
-	d := gate.EvaluateFileChange(p.Path, nil, op, p.Internal)
-	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host"), nil
+	d := fileGate.EvaluateFileChange(path, nil, op, internal)
+	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host")
 }
 
 // checkCommand evaluates one command.
@@ -162,7 +197,9 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		return nil, badRequest("policy.check.command params: %v", err)
 	}
 
-	gate := policy.CommandGate{HardRules: s.hardRules}
+	// Root is optional on the wire; empty keeps the fail-closed behaviour in
+	// which no absolute path is treated as this tree's own dev CLI.
+	cmdGate := policy.CommandGate{HardRules: s.hardRules, Root: p.Root}
 
 	// The host's declared scope, carried as the task the ladder expects. With
 	// no task at all the ladder stops at RuleCommandNoLease and never reaches
@@ -175,15 +212,40 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		Title:           "embedding host scope",
 		AllowedCommands: p.AllowedCommands,
 	}
-	d := gate.EvaluateCommand(p.Command, scope)
+	d := cmdGate.EvaluateCommand(p.Command, scope)
 
 	// An empty command has nothing to run and nothing to grant; it is Hard, so
-	// it never reaches the demotion below. Stated here because it is the one
-	// command outcome a host might expect to be demoted and must not be.
-	if p.EnforceAllowlist {
+	// it never reaches this demotion. Stated here because it is the one command
+	// outcome a host might expect to be demoted and must not be.
+	if !p.EnforceAllowlist {
+		d = s.posture.demote(d, "serve.posture=host: allowlist not enforced (enforce_allowlist=false)")
+	}
+	if d.Blocked() {
 		return d, nil
 	}
-	return s.posture.demote(d, "serve.posture=host: allowlist not enforced (enforce_allowlist=false)"), nil
+
+	// The redirect rung, and specifically the harness's own one rather than a
+	// copy of it. This plane built policy.CommandGate directly and therefore
+	// never ran the rung at all: `git diff > ~/.ssh/authorized_keys` came back
+	// action=allow with an empty rule and an empty Demoted, which is a clean
+	// allow — indistinguishable, to an audit, from a command the rules actually
+	// passed. It runs after the demotion above for the same reason gate.Gate
+	// runs it after settle: the demotion is one of the ways a command that the
+	// ladder refused ends up permitted, and a rung placed before it never sees
+	// those.
+	refusal, err := gate.EvaluateRedirects(p.Command, hostScopeID, func(target string) (policy.Decision, error) {
+		if p.Root == "" {
+			return policy.Decision{}, errCommandRootMissing
+		}
+		return s.evaluateHostWrite(p.Root, target, dc.OpWrite, false), nil
+	})
+	if err != nil {
+		return nil, badRequest("%v", err)
+	}
+	if refusal.Refused {
+		return refusal.Decision, nil
+	}
+	return d, nil
 }
 
 // parseOperation maps the wire spelling to dc.Operation, refusing anything

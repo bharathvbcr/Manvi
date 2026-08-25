@@ -703,25 +703,11 @@ func (r *Registry) authorisingTask(ctx context.Context, verb string) (*dc.Task, 
 // characters) and the repository root itself, both of which normalize to no
 // usable target at all.
 func (r *Registry) resolvePath(path string) (string, error) {
-	normalized, outside := policy.NormalizeRepoPath(r.deps.Root, path)
-	if !outside {
-		// If the file exists directly under root, use it.
-		// If it does not exist under root, but cwd is inside root and the file exists at cwd, prefer cwd.
-		if !filepath.IsAbs(path) {
-			if _, err := os.Stat(filepath.Join(r.deps.Root, normalized)); os.IsNotExist(err) {
-				if cwd, err := os.Getwd(); err == nil {
-					candidate := filepath.Join(cwd, path)
-					if normCwd, outCwd := policy.NormalizeRepoPath(r.deps.Root, candidate); !outCwd {
-						if _, statErr := os.Stat(candidate); statErr == nil {
-							return filepath.Join(r.deps.Root, normCwd), nil
-						}
-					}
-				}
-			}
-		}
-		return filepath.Join(r.deps.Root, normalized), nil
+	if rel, ok := r.containedRel(path); ok {
+		return filepath.Join(r.deps.Root, filepath.FromSlash(rel)), nil
 	}
 
+	normalized, _ := policy.NormalizeRepoPath(r.deps.Root, path)
 	hardRules, _, err := flags.EffectiveHardRules(r.deps.Gate.Flags)
 	if err != nil {
 		// An unreadable setting is not permission. The containment stands.
@@ -738,6 +724,99 @@ func (r *Registry) resolvePath(path string) (string, error) {
 		return "", fmt.Errorf("path %q does not name a usable location", path)
 	}
 	return target, nil
+}
+
+// containedRel answers the one question every path-taking tool has to ask
+// before it touches the filesystem: which repository-relative path does this
+// string name, and does it name one at all?
+//
+// It is the single owner of that answer. resolvePath is built on it, and so is
+// readContained — which is the point: read_file refused a symlink pointing out
+// of the repository while grep read the very same link through os.ReadFile and
+// reported the contents under the in-repo name, because the two had separate
+// opinions about containment and only one of them was enforcing.
+//
+// NormalizeRepoPath resolves symlinks before judging, so a link whose target
+// escapes is reported uncontained here rather than followed later.
+func (r *Registry) containedRel(p string) (string, bool) {
+	normalized, outside := policy.NormalizeRepoPath(r.deps.Root, p)
+	if outside {
+		return "", false
+	}
+	// If the file exists directly under root, use it. If it does not exist
+	// under root, but cwd is inside root and the file exists at cwd, prefer cwd.
+	if !filepath.IsAbs(p) {
+		if _, err := os.Stat(filepath.Join(r.deps.Root, normalized)); os.IsNotExist(err) {
+			if cwd, err := os.Getwd(); err == nil {
+				candidate := filepath.Join(cwd, p)
+				if normCwd, outCwd := policy.NormalizeRepoPath(r.deps.Root, candidate); !outCwd {
+					if _, statErr := os.Stat(candidate); statErr == nil {
+						return filepath.ToSlash(normCwd), true
+					}
+				}
+			}
+		}
+	}
+	return filepath.ToSlash(normalized), true
+}
+
+// containedRelOf is containedRel's form for a path the tool already holds as an
+// absolute location — a walk hit, say — where no normalization is wanted, only
+// the containment verdict and the relative name.
+func containedRelOf(root, abs string) (string, bool) {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	// "." is the root itself: a legitimate search root, and never a file the
+	// walk can hand to the reader — pinWriteTarget refuses it, so the read side
+	// fails closed even if one ever arrived.
+	return rel, true
+}
+
+// maxToolReadBytes bounds every file the ungated read tools will pull into
+// memory. One number, because read_file and grep face the same repository and
+// two different ceilings would only mean one of them was wrong.
+const maxToolReadBytes = 2 * 1024 * 1024
+
+// readContained is the canonical reader for the ungated read tools.
+//
+// It delegates to the pinned reader in safefs.go, which is the only code here
+// that gets containment right: it opens with O_NOFOLLOW so a symlink cannot
+// redirect the read, checks the opened descriptor is a regular file so a FIFO
+// or a device node cannot block forever or stream without end, re-verifies
+// every directory identity captured at pin time, and measures the size with
+// fstat on the descriptor rather than an lstat on the name — an lstat measures
+// the link, so a 182-byte symlink to a 5 MiB file passed a 2 MiB guard.
+//
+// The read runs on its own goroutine so ctx actually bounds it. It used to be
+// accepted and ignored; a FIFO planted in the repository then held the tool
+// open seconds past its own deadline, wedging the turn. The channel is
+// buffered, so the goroutine finishes and exits even when nobody is left to
+// receive.
+func readContained(ctx context.Context, root, rel string, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", rel, err)
+	}
+	type outcome struct {
+		data []byte
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		data, err := ReadPinned(root, rel, limit)
+		done <- outcome{data: data, err: err}
+	}()
+	select {
+	case res := <-done:
+		return res.data, res.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("reading %s: %w", rel, ctx.Err())
+	}
 }
 
 func (r *Registry) resolveDirPath(path string) (string, error) {
@@ -1124,11 +1203,11 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
 	}
-	full, err := r.resolvePath(args.Path)
-	if err != nil {
-		return tools.Errorf("%v", err)
+	rel, contained := r.containedRel(args.Path)
+	if !contained {
+		return tools.Errorf("path %q is outside the repository", args.Path)
 	}
-	data, err := os.ReadFile(full)
+	data, err := readContained(ctx, r.deps.Root, rel, maxToolReadBytes)
 	if err != nil {
 		return tools.Errorf("reading %s: %v", args.Path, err)
 	}
@@ -1169,7 +1248,7 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		return unavailable("policy decision", err)
 	}
 	if decision.Blocked() {
-		escalated, ok := r.escalate(ctx, decision)
+		escalated, ok := r.escalate(ctx, decision, decision.Target)
 		if !ok {
 			return r.refusal(decision)
 		}
@@ -1220,7 +1299,7 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 		return unavailable("policy decision", err)
 	}
 	if decision.Blocked() {
-		escalated, ok := r.escalate(ctx, decision)
+		escalated, ok := r.escalate(ctx, decision, decision.Target)
 		if !ok {
 			return r.refusal(decision)
 		}
@@ -1282,11 +1361,40 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	}
 
 	if decision.Blocked() {
-		escalated, ok := r.escalate(ctx, decision)
+		escalated, ok := r.escalate(ctx, decision, args.Command)
 		if !ok {
 			return r.refusal(decision)
 		}
 		decision = escalated
+
+		// Clearing the command is not clearing the write.
+		//
+		// The gate runs its redirect rung only on a command it is about to
+		// permit, so a command denied when EvaluateCommand ran had its
+		// redirect targets skipped -- and an escalation issues the grant
+		// afterwards. That left the write half judged by nobody: a human
+		// cleared `cat seed.txt > unplanned.txt` and the write landed on a
+		// path a direct write_file would have refused as scope.unplanned. The
+		// human was asked once, about the command.
+		//
+		// Only the redirect rung is re-run, not the whole ladder. Re-running
+		// EvaluateCommand would re-litigate the command half against its
+		// normalized target, which the just-issued grant deliberately does not
+		// match -- the grant is keyed to the raw command the human was shown.
+		taskID := ""
+		if task != nil {
+			taskID = task.ID
+		}
+		refused, err := gate.EvaluateRedirects(args.Command, taskID,
+			func(target string) (policy.Decision, error) {
+				return r.deps.Gate.EvaluateWrite(target, task, dc.OpWrite)
+			})
+		if err != nil {
+			return unavailable("redirect target policy decision", err)
+		}
+		if refused.Refused {
+			return r.refusal(refused.Decision)
+		}
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -1329,29 +1437,47 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 // and this function never returns, wedging the tool call past its own timeout.
 // A command whose foreground work completed reports success even when its
 // leftover descendants were cut off that way.
+//
+// Third, the group is reaped on every exit path, not only on the deadline. The
+// kill used to hang off ctx.Done() alone, so a command that exited zero closed
+// the watcher and left its descendants running: `sleep 30 &` outlived the tool
+// call that started it, unattached to anything that would ever clean it up. A
+// process this function started must not survive the call, whichever way the
+// call ended.
+//
+// Fourth, the child gets a built environment rather than the operator's. It
+// used to inherit everything, so an agent-authored command could print the
+// operator's API keys straight back into the transcript, and an interpreter
+// preload variable in the operator's shell would apply to whatever the agent
+// chose to run. See sanitizedEnv.
 func runShell(ctx context.Context, dir, command string) (string, int, bool, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
+	cmd.Env = sanitizedEnv(dir)
 	setOwnProcessGroup(cmd)
 
 	var buf bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &buf, limit: 1024 * 1024}
-	cmd.Stderr = cmd.Stdout
+	capture := &limitWriter{w: &buf, limit: 1024 * 1024}
+	cmd.Stdout = capture
+	cmd.Stderr = capture
 
 	cmd.WaitDelay = 5 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		return "", 0, false, err
 	}
+	pgid := cmd.Process.Pid
+	// Reaped on every path out of this function: deadline, clean exit, and
+	// non-zero exit alike.
+	defer killProcessGroup(pgid)
+
 	killed := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
 			// The context has already signalled the child; reach the rest of
 			// its process group so a held pipe cannot outlive the deadline.
-			if cmd.Process != nil {
-				killProcessGroup(cmd.Process.Pid)
-			}
+			killProcessGroup(pgid)
 		case <-killed:
 		}
 	}()
@@ -1359,9 +1485,16 @@ func runShell(ctx context.Context, dir, command string) (string, int, bool, erro
 	runErr := cmd.Wait()
 	close(killed)
 
+	output := func() string {
+		if note := capture.truncationNote(); note != "" {
+			return strings.TrimRight(buf.String(), "\n") + "\n" + note + "\n"
+		}
+		return buf.String()
+	}
+
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if timedOut {
-		return buf.String(), 0, true, nil
+		return output(), 0, true, nil
 	}
 	exitCode := 0
 	if runErr != nil {
@@ -1376,12 +1509,59 @@ func runShell(ctx context.Context, dir, command string) (string, int, bool, erro
 		} else {
 			var exitErr *exec.ExitError
 			if !errors.As(runErr, &exitErr) {
-				return buf.String(), 0, false, runErr
+				return output(), 0, false, runErr
 			}
 			exitCode = exitErr.ExitCode()
 		}
 	}
-	return buf.String(), exitCode, false, nil
+	return output(), exitCode, false, nil
+}
+
+// sanitizedEnv builds the environment an agent-authored command runs under.
+//
+// An allowlist, never a denylist: the operator's environment is not an
+// enumerable set, and every new secret exported into a shell would otherwise
+// arrive here as a default-allow. The child used to inherit all of it, so
+// `env` printed the operator's provider keys straight back into the model's
+// transcript, and an interpreter preload variable — LD_PRELOAD on Linux,
+// DYLD_INSERT_LIBRARIES where the platform does not strip it — applied to
+// whatever the agent chose to run.
+//
+// What survives is what a build or a test genuinely needs: the interpreter
+// search path, a home to find tool config under, locale, a temp directory, and
+// the toolchain caches whose absence turns every command into a cold rebuild.
+// Nothing matching a credential shape is on the list, and a name not on the
+// list does not reach the child at all.
+func sanitizedEnv(dir string) []string {
+	env := make([]string, 0, len(childEnvAllowlist)+1)
+	for _, name := range childEnvAllowlist {
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	// PWD is the shell's own idea of where it is; leaving the operator's would
+	// contradict cmd.Dir.
+	env = append(env, "PWD="+dir)
+	return env
+}
+
+// childEnvAllowlist is the complete set of variable names passed through to a
+// child process. Adding one is a deliberate decision about what an agent may
+// read; nothing is matched by prefix or pattern, because a pattern is how
+// ANTHROPIC_API_KEY ends up covered by a rule written for ANTHROPIC_BASE_URL.
+var childEnvAllowlist = []string{
+	// Where to find programs, and who is running them.
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM",
+	// Scratch space.
+	"TMPDIR", "TMP", "TEMP",
+	// Text handling and clock, so output is not silently mangled or misdated.
+	"LANG", "LC_ALL", "LC_CTYPE", "TZ",
+	// Toolchain caches and roots. Dropping these does not fail closed, it
+	// fails slow: every command becomes a cold rebuild.
+	"GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOTMPDIR",
+	"CARGO_HOME", "RUSTUP_HOME", "CARGO_TARGET_DIR",
+	"npm_config_cache", "NODE_PATH",
+	"PYTHONHASHSEED", "VIRTUAL_ENV",
 }
 
 func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
@@ -1408,10 +1588,19 @@ func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
 	}
 	var entries []entry
 
+	// One ceiling for both branches. The recursive walk capped at 500 and said
+	// so; the flat listing had no cap at all, so a directory with a hundred
+	// thousand entries was rendered whole into one tool result.
+	const maxEntries = 500
+
 	if !args.Recursive {
 		dirEntries, err := os.ReadDir(full)
 		if err != nil {
 			return tools.Errorf("reading directory %s: %v", targetPath, err)
+		}
+		truncated := len(dirEntries) > maxEntries
+		if truncated {
+			dirEntries = dirEntries[:maxEntries]
 		}
 		for _, de := range dirEntries {
 			var size int64
@@ -1424,45 +1613,14 @@ func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
 				Size:  size,
 			})
 		}
-	} else {
-		count := 0
-		truncated := false
-		const maxEntries = 500
-		err := filepath.WalkDir(full, func(p string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if count >= maxEntries {
-				truncated = true
-				return filepath.SkipAll
-			}
-			rel, err := filepath.Rel(r.deps.Root, p)
-			if err != nil || rel == "." {
-				return nil
-			}
-			if d.IsDir() && (d.Name() == ".git" || d.Name() == ".devcouncil" || d.Name() == "node_modules" || d.Name() == "target") {
-				return filepath.SkipDir
-			}
-			count++
-			var size int64
-			if info, err := d.Info(); err == nil && !d.IsDir() {
-				size = info.Size()
-			}
-			entries = append(entries, entry{
-				Name:  filepath.ToSlash(rel),
-				IsDir: d.IsDir(),
-				Size:  size,
-			})
-			return nil
-		})
-		if err != nil {
-			return tools.Errorf("walking directory %s: %v", targetPath, err)
-		}
 		payload := map[string]any{
 			"path":    targetPath,
 			"count":   len(entries),
 			"entries": entries,
 		}
+		// A capped sample is never handed back looking like the whole
+		// directory: a caller that concluded "the file is not here" from a
+		// silently trimmed listing would be concluding it from nothing.
 		if truncated {
 			payload["truncated"] = true
 			payload["limit"] = maxEntries
@@ -1470,11 +1628,47 @@ func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
 		return ok(payload)
 	}
 
-	return ok(map[string]any{
+	count := 0
+	truncated := false
+	if err := filepath.WalkDir(full, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if count >= maxEntries {
+			truncated = true
+			return filepath.SkipAll
+		}
+		rel, err := filepath.Rel(r.deps.Root, p)
+		if err != nil || rel == "." {
+			return nil
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == ".devcouncil" || d.Name() == "node_modules" || d.Name() == "target") {
+			return filepath.SkipDir
+		}
+		count++
+		var size int64
+		if info, err := d.Info(); err == nil && !d.IsDir() {
+			size = info.Size()
+		}
+		entries = append(entries, entry{
+			Name:  filepath.ToSlash(rel),
+			IsDir: d.IsDir(),
+			Size:  size,
+		})
+		return nil
+	}); err != nil {
+		return tools.Errorf("walking directory %s: %v", targetPath, err)
+	}
+	payload := map[string]any{
 		"path":    targetPath,
 		"count":   len(entries),
 		"entries": entries,
-	})
+	}
+	if truncated {
+		payload["truncated"] = true
+		payload["limit"] = maxEntries
+	}
+	return ok(payload)
 }
 
 func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result {
@@ -1522,6 +1716,13 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	if resolveErr != nil {
 		return tools.Errorf("%v", resolveErr)
 	}
+	// An uncontained search root is refused outright rather than walked to an
+	// empty result, for the same reason an unparseable pattern is: a search
+	// that could not run must never be reported as a search that found nothing.
+	if _, contained := containedRelOf(r.deps.Root, full); !contained {
+		return tools.Errorf("path %q is outside the repository and grep reads only inside it — "+
+			"this is not a negative result, no search ran", targetPath)
+	}
 
 	type match struct {
 		Path       string `json:"path"`
@@ -1545,12 +1746,21 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 			}
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > 2*1024*1024 {
+		// WalkDir does not follow symlinks, so a link arrives here as a link —
+		// but os.ReadFile did follow it, and d.Info() is an lstat that measured
+		// the link rather than its target. Anything that is not a plain file is
+		// skipped before it can be opened, and the read itself goes through the
+		// same contained reader read_file uses, so the size guard is an fstat on
+		// what was actually opened.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, contained := containedRelOf(r.deps.Root, p)
+		if !contained {
 			return nil
 		}
 
-		data, err := os.ReadFile(p)
+		data, err := readContained(ctx, r.deps.Root, rel, maxToolReadBytes)
 		if err != nil {
 			return nil
 		}
@@ -1558,7 +1768,6 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 			return nil
 		}
 
-		rel, _ := filepath.Rel(r.deps.Root, p)
 		lines := strings.Split(string(data), "\n")
 		for idx, line := range lines {
 			if expr.MatchString(line) {
@@ -1592,23 +1801,61 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	return ok(payload)
 }
 
+// limitWriter forwards at most limit bytes to w and silently discards the rest,
+// while remaining a well-behaved io.Writer.
+//
+// That second half is the whole point. io.Writer requires a short return to
+// carry a non-nil error, and os/exec copies a child's stdout with io.Copy,
+// which enforces it: the write that straddled the cap used to return
+// (truncated, nil), io.Copy turned that into io.ErrShortWrite, os/exec closed
+// the pipe, and the child took SIGPIPE. A command that had already run to
+// completion was then reported as a failure — "failed to execute command" from
+// exec_command, and "git … failed with exit code 141" from the git tools — for
+// work whose side effects were already on disk. Capping output is not a reason
+// to kill the process producing it, and it is never a reason to call a
+// successful command failed.
+//
+// dropped counts what the cap ate, so a truncated capture can say so rather
+// than passing a partial sample off as the whole output.
 type limitWriter struct {
-	w     io.Writer
-	limit int
-	wrote int
+	w       io.Writer
+	limit   int
+	wrote   int
+	dropped int
 }
 
-func (l *limitWriter) Write(p []byte) (n int, err error) {
+func (l *limitWriter) Write(p []byte) (int, error) {
 	if l.wrote >= l.limit {
+		l.dropped += len(p)
 		return len(p), nil
 	}
 	remaining := l.limit - l.wrote
-	if len(p) > remaining {
-		p = p[:remaining]
+	if len(p) <= remaining {
+		n, err := l.w.Write(p)
+		l.wrote += n
+		return n, err
 	}
-	n, err = l.w.Write(p)
+	n, err := l.w.Write(p[:remaining])
 	l.wrote += n
-	return len(p), err
+	if err != nil {
+		// A real downstream failure is still short, and still an error.
+		return n, err
+	}
+	l.dropped += len(p) - remaining
+	return len(p), nil
+}
+
+// truncated reports whether the cap discarded anything.
+func (l *limitWriter) truncated() bool { return l.dropped > 0 }
+
+// truncationNote renders the discarded byte count for a result, so a capped
+// capture is never presented as complete coverage.
+func (l *limitWriter) truncationNote() string {
+	if !l.truncated() {
+		return ""
+	}
+	return fmt.Sprintf("[output truncated: %d bytes captured, %d further bytes discarded]",
+		l.wrote, l.dropped)
 }
 
 // escalate puts a blocked decision to an attached human and, if cleared,
@@ -1619,20 +1866,42 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 // itself declines to grant. A hard rule is never even shown as a question —
 // offering an allow that is going to be refused downstream teaches an operator
 // that the control is advisory.
-func (r *Registry) escalate(ctx context.Context, decision policy.Decision) (policy.Decision, bool) {
+//
+// subject is the operation that will actually be performed if this is cleared:
+// the repository path for a write, the exact command line for an exec. Every
+// caller passes it, because decision.Target is not reliably that thing. The
+// command gate matches against a normalised form with trailing redirections
+// stripped, and the denial carries the normalised string — so the approval card
+// asked a human to clear `cat src/calc.go` while `cat src/calc.go > .env.local`
+// was what stood ready to run, and the grant issued from it took its scope from
+// the same stripped string, re-clearing every redirect variant of that command
+// for the grant's whole life. What a human authorises is now exactly what
+// executes, and the grant covers exactly what was shown.
+func (r *Registry) escalate(ctx context.Context, decision policy.Decision, subject string) (policy.Decision, bool) {
 	if r.deps.Approver == nil || !decision.Overridable() {
 		return decision, false
 	}
+	if strings.TrimSpace(subject) == "" {
+		// An escalation with nothing concrete to show is not a question a
+		// human can answer, and consent to an unnamed operation is not consent.
+		return decision, false
+	}
+
+	// The decision the human is shown and the decision the grant is issued from
+	// are one and the same, and both name the real operation. The original is
+	// left untouched so a refusal still reports what the ladder actually said.
+	authorised := decision
+	authorised.Target = subject
 
 	state := r.sessionFor(ctx).State()
 	answer, err := r.deps.Approver.Approve(ctx, ui.Request{
-		Rule:      string(decision.Rule),
-		Severity:  string(decision.Severity),
-		Path:      decision.Target,
-		Subject:   string(policy.SubjectOf(decision.Rule)),
-		Reason:    decision.Reason,
+		Rule:      string(authorised.Rule),
+		Severity:  string(authorised.Severity),
+		Path:      authorised.Target,
+		Subject:   string(policy.SubjectOf(authorised.Rule)),
+		Reason:    authorised.Reason,
 		TaskID:    state.TaskID,
-		Grantable: decision.Overridable(),
+		Grantable: authorised.Overridable(),
 	})
 	// An error, a refusal, and an allow with no reason are all refusals. A
 	// question that could not be answered must never be treated as consent.
@@ -1640,7 +1909,7 @@ func (r *Registry) escalate(ctx context.Context, decision policy.Decision) (poli
 		return decision, false
 	}
 
-	grant, err := r.deps.Gate.RequestOverride(decision,
+	grant, err := r.deps.Gate.RequestOverride(authorised,
 		grants.Grantor{Authority: grants.Human, ID: grantorID(answer.By)},
 		answer.Reason, state.TaskID)
 	if err != nil {
@@ -1651,10 +1920,10 @@ func (r *Registry) escalate(ctx context.Context, decision policy.Decision) (poli
 	// the ledger actually produces for this write, so the qualification that
 	// travels onto the result is the real grant rather than one assembled at
 	// the call site.
-	decision.Action = policy.Allow
-	decision.GrantID = grant.ID
-	decision.GrantedBy = string(grant.Grantor.Authority)
-	return decision, true
+	authorised.Action = policy.Allow
+	authorised.GrantID = grant.ID
+	authorised.GrantedBy = string(grant.Grantor.Authority)
+	return authorised, true
 }
 
 func grantorID(by string) string {
@@ -2028,7 +2297,7 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		return unavailable("policy decision", err)
 	}
 	if decision.Blocked() {
-		escalated, ok := r.escalate(ctx, decision)
+		escalated, ok := r.escalate(ctx, decision, decision.Target)
 		if !ok {
 			return r.refusal(decision)
 		}

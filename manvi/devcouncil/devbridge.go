@@ -121,8 +121,10 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	cmd.WaitDelay = 5 * time.Second
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &stdout, limit: maxGitOutputBytes}
-	cmd.Stderr = &limitWriter{w: &stderr, limit: 32 * 1024}
+	outCap := &limitWriter{w: &stdout, limit: maxGitOutputBytes}
+	errCap := &limitWriter{w: &stderr, limit: 32 * 1024}
+	cmd.Stdout = outCap
+	cmd.Stderr = errCap
 
 	runErr := cmd.Run()
 
@@ -141,6 +143,15 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 		"exit_code": exitCode,
 	}
 	var notes []string
+	// Truncation is a degradation, not a detail: a JSON document cut off at the
+	// cap will not parse, and the raw_output fallback below would otherwise
+	// present the surviving prefix as though it were all the CLI said.
+	if note := outCap.truncationNote(); note != "" {
+		notes = append(notes, "dev_inspect: "+note)
+	}
+	if note := errCap.truncationNote(); note != "" {
+		notes = append(notes, "dev_inspect stderr: "+note)
+	}
 	out := stdout.Bytes()
 	var parsed any
 	if json.Unmarshal(out, &parsed) == nil && parsed != nil {

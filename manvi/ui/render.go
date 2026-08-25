@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,167 @@ import (
 	"manvi/credentials"
 	"manvi/flags"
 )
+
+// CleanEvent returns e with every untrusted field passed through clean.
+//
+// It exists so the faces cannot disagree about which fields are untrusted.
+// They did: the line renderer scrubbed and sanitized field by field at the
+// moment it wrote each one, the JSON sink scrubbed two of about fifteen, and
+// the full-screen face did neither — so the same event was safe on one face and
+// carried a working escape sequence or a live API key on another. A field added
+// to Event is now unsafe on all three faces or none, which is a mistake someone
+// notices.
+//
+// clean is the face's own rule. The JSON sink passes credential scrubbing
+// alone, because escaping text would corrupt a record meant for a program; a
+// terminal face passes scrubbing composed with Sanitize, because a terminal
+// executes control sequences rather than displaying them.
+func CleanEvent(e Event, clean func(string) string) Event {
+	if clean == nil {
+		return e
+	}
+	e.Agent = clean(e.Agent)
+	e.Text = clean(e.Text)
+	e.Detail = clean(e.Detail)
+	e.Tool = clean(e.Tool)
+	e.Rule = clean(e.Rule)
+	e.Severity = clean(e.Severity)
+	e.Path = clean(e.Path)
+	e.GrantID = clean(e.GrantID)
+	e.GrantedBy = clean(e.GrantedBy)
+	e.Demoted = clean(e.Demoted)
+	e.Degraded = cleanStrings(e.Degraded, clean)
+	e.Weakened = cleanStrings(e.Weakened, clean)
+	e.ApprovalID = clean(e.ApprovalID)
+	e.TaskID = clean(e.TaskID)
+	e.Posture = clean(e.Posture)
+	e.Model = clean(e.Model)
+	e.Arguments = CleanJSON(e.Arguments, clean)
+	return e
+}
+
+// CleanRequest returns req with every untrusted field passed through clean.
+//
+// Path is the model-composed shell command line whenever Subject is "command",
+// and Reason is model-authored wherever a tool raises a question. Both are
+// drawn inside the approval card, which is the human-in-the-loop control — the
+// one surface where untrusted text repainting the screen is not a cosmetic
+// problem but a way to change the question a human thinks they are answering.
+//
+// Choices are cleaned too, and the cleaned form is what a decision carries back
+// to the caller. That is deliberate: the operator must answer with the option
+// they were shown, not with a hidden original that renders as something else.
+func CleanRequest(req Request, clean func(string) string) Request {
+	if clean == nil {
+		return req
+	}
+	req.ID = clean(req.ID)
+	req.Rule = clean(req.Rule)
+	req.Severity = clean(req.Severity)
+	req.Path = clean(req.Path)
+	req.Reason = clean(req.Reason)
+	req.TaskID = clean(req.TaskID)
+	req.Choices = cleanStrings(req.Choices, clean)
+	return req
+}
+
+// cleanStrings copies before cleaning. The slice is the caller's, and the event
+// it came from may still be on its way to another sink.
+func cleanStrings(in []string, clean func(string) string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = clean(s)
+	}
+	return out
+}
+
+// maxJSONDepth bounds how far into a tool call's arguments the cleaner walks.
+// Anything deeper is replaced rather than passed through, because a value this
+// pass could not examine must not reach a face as though it had been examined.
+const maxJSONDepth = 32
+
+// CleanJSON applies clean to every string inside a JSON document, keys
+// included, and re-encodes it.
+//
+// Cleaning the decoded strings rather than the raw bytes is what makes this
+// correct for both faces. A credential inside `{"body":"sk-..."}` is not
+// removed by escaping the document, and an ESC written by the model as
+// a JSON unicode escape is valid JSON that decodes to a live ESC — the
+// terminal face renders that decoded value, so that is where it has to be
+// neutralised.
+//
+// The original bytes are returned untouched when nothing changed, so the common
+// case keeps the exact fidelity the JSON face promises; only a document that
+// actually had something removed is re-encoded. Numbers survive re-encoding
+// verbatim because the decoder is told to keep them as literals — decoding a
+// large integer id through float64 and writing it back would corrupt the
+// record this sink exists to be trusted as.
+func CleanJSON(raw json.RawMessage, clean func(string) string) json.RawMessage {
+	if clean == nil || len(raw) == 0 {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		// Not decodable, so there is no string to reach. Both faces already
+		// refuse it: the terminal renders nothing for arguments it cannot
+		// parse, and encoding an invalid RawMessage fails. Rewriting it here
+		// would invent a document the model never sent.
+		return raw
+	}
+	cleaned, changed := cleanJSONValue(value, clean, 0)
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(cleaned)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func cleanJSONValue(v any, clean func(string) string, depth int) (any, bool) {
+	if depth > maxJSONDepth {
+		return "[nesting beyond the cleaner's depth limit]", true
+	}
+	switch t := v.(type) {
+	case string:
+		s := clean(t)
+		return s, s != t
+
+	case []any:
+		changed := false
+		for i, item := range t {
+			c, ch := cleanJSONValue(item, clean, depth+1)
+			if ch {
+				t[i] = c
+				changed = true
+			}
+		}
+		return t, changed
+
+	case map[string]any:
+		changed := false
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			c, ch := cleanJSONValue(item, clean, depth+1)
+			ck := clean(k)
+			if ch || ck != k {
+				changed = true
+			}
+			out[ck] = c
+		}
+		if !changed {
+			return t, false
+		}
+		return out, true
+	}
+	return v, false
+}
 
 // Palette holds the escape sequences the renderer uses.
 //
@@ -101,6 +263,19 @@ func (r *Renderer) safe(text string) string {
 	return Sanitize(r.scrubber.Clean(text))
 }
 
+// bounded is safe for text that also has to fit a budget.
+//
+// The order is the whole point, and it used to be the other way round. Cutting
+// first means a credential straddling the boundary is cut in half, so the
+// scrubber — which matches whole values — no longer recognises it, and the
+// surviving prefix of a real key is printed in the clear. Truncating after
+// cleaning also makes the budget mean what it says: a control character becomes
+// a several-character marker, and a cap applied before that expansion is not the
+// cap that ends up on screen.
+func (r *Renderer) bounded(text string, n int) string {
+	return Truncate(r.safe(text), n)
+}
+
 func (r *Renderer) write(format string, args ...any) {
 	fmt.Fprintf(r.out, format, args...)
 }
@@ -148,7 +323,7 @@ func (r *Renderer) Emit(e Event) {
 
 	case KindReasoning:
 		r.endStream()
-		r.write("%s%s%s\n", p.Dim, r.safe(Truncate(e.Text, 400)), p.Reset)
+		r.write("%s%s%s\n", p.Dim, r.bounded(e.Text, 400), p.Reset)
 
 	case KindText:
 		// Streamed: written without a newline so deltas concatenate.
@@ -165,7 +340,7 @@ func (r *Renderer) Emit(e Event) {
 		if e.IsError {
 			marker, colour = "✗", p.Red
 		}
-		body := r.safe(Truncate(e.Text, r.MaxToolResult))
+		body := r.bounded(e.Text, r.MaxToolResult)
 		r.write("%s  %s%s %s\n", colour, marker, p.Reset, indent(body, "    "))
 		r.writeQualification(e)
 
@@ -313,13 +488,18 @@ func NewJSONSink(out io.Writer, scrubber *credentials.Scrubber) *JSONSink {
 // Control sequences are left intact here and credentials are not: a consumer
 // of this stream is a program, and escaping its text would corrupt the record,
 // whereas a credential in it is a credential on disk.
+//
+// Every field goes through the scrubber, not the two that used to. Text and
+// Detail were scrubbed and the dozen fields beside them were not, so a key
+// echoed back inside a provider error reached the transcript through Path, the
+// tool call's Arguments, GrantedBy, or the Degraded list — four of them at once
+// in the case that found this. "A credential in it is a credential on disk" was
+// already the rule; it was only being applied to a seventh of the record.
 func (s *JSONSink) Emit(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	e.Text = s.scrubber.Clean(e.Text)
-	e.Detail = s.scrubber.Clean(e.Detail)
-	s.encoder.Encode(e)
+	s.encoder.Encode(CleanEvent(e, s.scrubber.Clean))
 }

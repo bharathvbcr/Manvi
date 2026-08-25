@@ -193,7 +193,13 @@ func mermaidBlocks(body string) []struct {
 // the build had any opinion about it.
 //
 // This is a structural check, not a parser: it looks for the malformations
-// that actually occur when hand-editing these blocks.
+// that actually occur when hand-editing these blocks. The authoritative gate
+// is scripts/check-mermaid.mjs, which hands every block to mermaid.parse and
+// runs from verify.sh — this test exists to catch the arrow-operator class
+// cheaply inside `go test`, where the grammar is not available. It missed two
+// broken diagrams the parser catches: a participant named `Loop` (lexed as the
+// reserved keyword) and a raw `;` in an escape sequence (a statement
+// separator).
 func TestMermaidDiagramsAreWellFormed(t *testing.T) {
 	// Mermaid's edge vocabulary differs by diagram type, and a check that
 	// ignores that produces noise instead of findings: `->>` is a correct
@@ -292,7 +298,9 @@ func stripQuoted(s string) string {
 // worse than nothing. Mermaid edge labels are free text, so this repository's
 // own input-decoder flowchart legitimately contains `-- Followed by [ -->`,
 // `-- [A, [B, [C, [D -->` and `-- [200~ ... [201~ -->`, and sequence-diagram
-// messages legitimately contain `(CUP: \x1b[y;xH)`. A balance check flags all
+// messages legitimately contain `(CUP: \x1b[y#59;xH)` — a raw `;` there would
+// be a Mermaid statement separator and the diagram would not render, which is
+// why the entity form is used. A balance check flags all
 // five as broken diagrams. Failures that fire on correct input are how a suite
 // teaches people to skip its output, which costs more than the class it catches.
 //
