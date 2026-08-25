@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"manvi/dc"
-	"manvi/dc/internal/proc"
+	"manvi/internal/proc"
 )
 
 // Client runs the store binary.

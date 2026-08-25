@@ -35,7 +35,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/dc/internal/proc"
+	"manvi/internal/proc"
 )
 
 // Client runs the devmap binary against a repository.

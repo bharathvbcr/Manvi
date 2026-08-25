@@ -215,20 +215,19 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 			Append(ev.Model, th.Strong())
 		add(title)
 
-		// Onboarding / Quick-Start Command Pill Bar
+		// Onboarding / quick-action pill bar. The three repository actions lead:
+		// they are the repeated maintenance loop this bar exists to shorten.
 		if body > 40 {
-			guide := render.Styled("  Commands: ", th.Muted()).
+			guide := render.Styled("  Quick: ", th.Muted()).
+				Append("/pull ", th.Status(StatusWarn)).
+				Append("/push ", th.Status(StatusWarn)).
+				Append("/issues ", th.Status(StatusInfo)).
+				Append(" • Inspect: ", th.Muted()).
 				Append("/doctor ", th.Status(StatusInfo)).
 				Append("/tools ", th.Status(StatusInfo)).
-				Append("/map ", th.Status(StatusInfo)).
-				Append("/theme ", th.Status(StatusInfo)).
-				Append(" • Keys: ", th.Muted()).
+				Append(" • ", th.Muted()).
 				Append("Ctrl+P ", render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).
-				Append("palette ", th.Subtle()).
-				Append("Ctrl+T ", render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).
-				Append("tabs ", th.Subtle()).
-				Append("Ctrl+S ", render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).
-				Append("sessions", th.Subtle())
+				Append("palette", th.Subtle())
 			add(guide)
 		}
 

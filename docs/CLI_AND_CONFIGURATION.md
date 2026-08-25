@@ -14,6 +14,9 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Settings Inspection** | `manvi flags [--all]` | Display all configuration flags, active values, safety ratings, and origin layers. |
 | **Runtime Flag Modification** | `manvi flags set KEY VALUE` | Set a configuration value for the current process. Fails closed if the flag is marked `startup`-only or moves a safety setting illegally. |
 | **Local LLM Discovery** | `manvi local [--resolve]` | Scan loopback ports to discover active local LLM servers (Ollama, MLX, vLLM, llama.cpp, LM Studio, Jan). `--resolve` displays the chosen candidate with origin annotations. |
+| **Safe Pull** | `manvi pull` | Fast-forward the current branch with `git pull --ff-only`. Refuses to run while the working tree has staged, modified, or untracked files. |
+| **Safe Push** | `manvi push` | Push the current branch to its configured upstream with no force or refspec override. |
+| **Issue Report** | `manvi issues` | Report up to 100 open GitHub issues through the authenticated `gh` CLI, sorted by latest activity. A 100-row result is explicitly marked as capped. |
 | **Stdio Host Server** | `manvi serve [--posture host\|devcouncil]` | Expose policy evaluation, context preparation, and completion parsing over NDJSON stdio for IDE extensions and external tools. |
 | **Task Lease Listing** | `manvi lease list` | Display active task checkouts, lease owners, tokens, and remaining TTLs. |
 | **Task Lease Acquisition** | `manvi lease acquire TASK OWNER [--ttl 15m]` | Atomically checkout a task and claim an exclusive lease. Fails if task is already held. |

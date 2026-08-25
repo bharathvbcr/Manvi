@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"manvi/internal/fnmatch"
+	"manvi/internal/proc"
 	"manvi/policy"
 	"manvi/tools"
 )
@@ -570,7 +571,10 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	cmd.Stdout = outCap
 	cmd.Stderr = errCap
 
-	runErr := cmd.Run()
+	runErr, timedOut := proc.RunBounded(cmdCtx, cmd.Run)
+	if timedOut {
+		return unavailable("git execution", fmt.Errorf("timed out after %s", gitTimeout))
+	}
 
 	exitCode := 0
 	if runErr != nil {

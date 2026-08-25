@@ -311,6 +311,9 @@ export MANVI_LLM_PROVIDER_DEFAULT=local
 | `manvi doctor` | Check configuration, store reachability, weakened gates |
 | `manvi run -p "..."` | One headless turn; exit 2 = step ceiling, 3 = output cap, 4 = no answer, 5 = unfinished |
 | `manvi local` | Discover local model servers (~30ms) |
+| `manvi pull` | Fast-forward the current branch; refuses a dirty tree |
+| `manvi push` | Push the current branch to its configured upstream (never force) |
+| `manvi issues` | Report up to 100 open GitHub issues, newest activity first |
 | `manvi serve` | NDJSON stdio host plane for IDEs and desktop apps |
 | `manvi check PATH` | Dry-run a file write against policy (no mutation) |
 | `manvi allow PATH` | Record an audited human grant after a soft denial |

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"manvi/internal/proc"
 )
 
 // rigorClient runs the Rust verifier over a diff.
@@ -108,7 +110,10 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	// unblock Wait while a child holds the stdout pipe.
 	cmd.WaitDelay = 2 * time.Second
 
-	runErr := cmd.Run()
+	runErr, timedOut := proc.RunBounded(ctx, cmd.Run)
+	if timedOut {
+		return nil, fmt.Errorf("verifier timed out after %s", timeout)
+	}
 	if stdout.overflow {
 		return nil, fmt.Errorf("verifier produced more than %d bytes", maxRigorOutput)
 	}

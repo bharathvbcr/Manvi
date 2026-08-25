@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"manvi/internal/proc"
 	"manvi/tools"
 )
 
@@ -126,7 +127,11 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	cmd.Stdout = outCap
 	cmd.Stderr = errCap
 
-	runErr := cmd.Run()
+	runErr, timedOut := proc.RunBounded(cmdCtx, cmd.Run)
+	if timedOut {
+		return unavailable(fmt.Sprintf("the devcouncil CLI (%s)", bin),
+			fmt.Errorf("timed out after %s", devInspectTimeout))
+	}
 
 	exitCode := 0
 	if runErr != nil {

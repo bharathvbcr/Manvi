@@ -8,7 +8,7 @@ import (
 
 // The bound has to cover the fork, not just the process.
 //
-// The helper itself lives in manvi/dc/internal/proc, with its own tests, because
+// The helper itself lives in manvi/internal/proc, with its own tests, because
 // three subprocess boundaries need it and only one of them had it. What is left
 // here is the invariant at the level devmap's callers use.
 //

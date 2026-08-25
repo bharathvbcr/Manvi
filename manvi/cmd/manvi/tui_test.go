@@ -346,7 +346,8 @@ func TestHarnessHostCommandsAreComplete(t *testing.T) {
 	}
 	for _, want := range []string{
 		"doctor", "flags", "providers", "tools", "leases", "lease",
-		"check", "allow", "tool", "map", "probe", "logo", "help", "clear", "quit",
+		"check", "allow", "tool", "map", "probe", "pull", "push", "issues",
+		"logo", "help", "clear", "quit",
 	} {
 		if !found[want] {
 			t.Errorf("harnessHost.Commands() missing %q", want)

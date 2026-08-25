@@ -58,6 +58,9 @@ Usage:
   manvi tool NAME [--json ARGS]     Call one natively, the same path an agent takes
   manvi providers                   Show model providers and whether a credential is present
   manvi local [--resolve]           Find local model servers; --resolve prints what a run would use
+  manvi pull                        Fast-forward the current branch; refuses a dirty tree
+  manvi push                        Push the current branch to its configured upstream
+  manvi issues                      Report open GitHub issues, newest activity first
   manvi watch [--json]              Render the event stream: a terminal face, or NDJSON for CI
   manvi run [-p] PROMPT             Drive one turn with no terminal: scripts, CI, benchmarks
   manvi tui                         Full-screen face: transcript, composer, approvals, dashboard
@@ -390,6 +393,8 @@ func run(out, notes io.Writer, args []string) error {
 		return showProviders(out, reg)
 	case "local":
 		return showLocal(out, reg, args[1:])
+	case "pull", "push", "issues":
+		return runQuickAction(context.Background(), out, projectRoot(), args[0], args[1:], osQuickCommandRunner{})
 	case "watch":
 		return watch(out, reg, args[1:])
 	case "run":

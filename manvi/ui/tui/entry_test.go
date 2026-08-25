@@ -122,6 +122,16 @@ func TestDevPostureIsRestatedOnEverySessionStart(t *testing.T) {
 	}
 }
 
+func TestSessionStartAdvertisesRepositoryQuickActions(t *testing.T) {
+	e := &Entry{Event: ui.Event{Kind: ui.KindSessionStart, Posture: "strict", Model: "some-model"}}
+	got := lineText(e.Lines(Dark(), 120))
+	for _, want := range []string{"Quick:", "/pull", "/push", "/issues", "Ctrl+P", "palette"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("session guide omitted %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRenderCacheIsKeyedOnEverythingThatChangesOutput(t *testing.T) {
 	// Keying on width alone leaves stale lines on screen after a fold or a
 	// theme change, and the bug reads as a rendering glitch rather than a cache

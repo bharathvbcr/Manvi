@@ -195,6 +195,9 @@ func (h *harnessHost) Commands() []tui.CommandSpec {
 		{Name: "flags", Args: "[--all] | set KEY VALUE", Summary: "settings, their values, where each came from, and how to move one"},
 		{Name: "providers", Summary: "model backends and whether each one is usable"},
 		{Name: "local", Args: "[--resolve] [--timeout DURATION]", Summary: "find local model servers and what they serve"},
+		{Name: "pull", Summary: "fast-forward the current branch; refuses a dirty tree", Mutating: true},
+		{Name: "push", Summary: "push the current branch to its configured upstream", Mutating: true},
+		{Name: "issues", Summary: "report open GitHub issues, newest activity first"},
 		{Name: "tools", Summary: "the native DevCouncil tools an agent can call"},
 		{Name: "leases", Summary: "show active leases"},
 		{Name: "lease", Args: "list|acquire|release", Summary: "manage leases in the store"},
@@ -626,6 +629,15 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 			return showProviders(&out, h.reg)
 		case "local":
 			return showLocal(&out, h.reg, fields)
+		case "pull", "push":
+			if h.busyTurns != nil {
+				if busy := h.busyTurns(sessionID); len(busy) > 0 {
+					return fmt.Errorf("/%s needs every session idle; active sessions: %s", name, strings.Join(busy, ", "))
+				}
+			}
+			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
+		case "issues":
+			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
 		case "tools":
 			return listTools(&out, h.reg)
 		case "leases":

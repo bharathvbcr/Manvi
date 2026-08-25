@@ -10,6 +10,7 @@ import (
 
 	"manvi/dc"
 	"manvi/flags"
+	"manvi/internal/proc"
 	"manvi/policy"
 )
 
@@ -504,7 +505,10 @@ func runGitCapped(ctx context.Context, root string, limit int, args ...string) (
 	cmd.Stdout = outCap
 	cmd.Stderr = errCap
 
-	err := cmd.Run()
+	err, timedOut := proc.RunBounded(ctx, cmd.Run)
+	if timedOut {
+		return "", "", fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+	}
 	out := stdout.String()
 	note := outCap.truncationNote()
 
