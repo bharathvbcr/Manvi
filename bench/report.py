@@ -2,7 +2,16 @@
 import json, glob, os, sys, statistics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-R = os.path.join(HERE, "results")
+R = os.environ.get("MH_RESULTS") or os.path.join(HERE, "results")
+
+
+def label(model):
+    """Short display name. Must distinguish serving stacks, not just families:
+    qwen3.8:27b and qwen3.8:27b-mlx are different arms, and folding them into
+    one label silently averages CUDA and Metal runs."""
+    m = model.split("/")[-1]
+    return (m.replace("-GGUF:Q8_0", "-Q8").replace(":27b-mlx", "-27B-mlx")
+             .replace(":27b", "-27B").replace(":e4b", "-E4B"))
 
 
 def load(tag):
@@ -12,8 +21,14 @@ def load(tag):
         if not os.path.isfile(p) or not d.endswith("__" + tag):
             continue
         s = json.load(open(p))
-        model = "Qwen3.8-27B" if "qwen" in d.lower() else "Ornith-1.5-35B-A3B"
-        runs[(model, s["config"]["name"])] = s
+        key = (label(s["model"]), s["config"]["name"])
+        if key in runs:
+            raise SystemExit(
+                f"[report] {key[0]} [{key[1]}] appears in two directories for "
+                f"tag {tag!r}: {runs[key]['dir']} and {d}. Reporting one of "
+                f"them silently would hide the other.")
+        s["dir"] = d
+        runs[key] = s
     return runs
 
 
