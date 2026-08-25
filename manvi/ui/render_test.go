@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +173,132 @@ func TestJSONSinkAndRendererConsumeTheSameEvents(t *testing.T) {
 	}
 }
 
+// TestJSONSinkKeepsALineForAnEventItCannotSerialise.
+//
+// Arguments is json.RawMessage, which validates when it is marshalled, and
+// json.Encoder writes nothing at all when marshalling fails. Discarding that
+// error deleted the whole line, so an event whose arguments were malformed and
+// an event that never happened were the same thing to a CI job or a benchmark
+// reading the transcript. The hole has to be in the record, not instead of it.
+func TestJSONSinkKeepsALineForAnEventItCannotSerialise(t *testing.T) {
+	var buf bytes.Buffer
+	sink := NewJSONSink(&buf, nil)
+	at := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+
+	sink.Emit(Event{
+		Kind: KindToolStart, At: at, Tool: "devcouncil_write_file",
+		Detail: "src/a.go", Arguments: json.RawMessage("{not json"),
+	})
+
+	if buf.Len() == 0 {
+		t.Fatal("an event that would not marshal left no line at all; the transcript cannot show a hole it did not write")
+	}
+	var decoded Event
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("the replacement line is not JSON: %v (%q)", err, buf.String())
+	}
+	if decoded.Kind != KindToolStart {
+		t.Fatalf("the replacement line lost the kind, which is what a consumer filters on: %+v", decoded)
+	}
+	if !decoded.At.Equal(at) {
+		t.Fatalf("the replacement line lost the timestamp, so the hole cannot be correlated: %+v", decoded)
+	}
+	if !strings.Contains(decoded.EncodeError, "arguments") {
+		t.Fatalf("the replacement line does not name what could not be serialised: %q", decoded.EncodeError)
+	}
+	if len(decoded.Arguments) != 0 {
+		t.Fatalf("the field that would not marshal survived into the line: %s", decoded.Arguments)
+	}
+	// Everything that could be kept was kept: a hole one field wide, not an
+	// event reduced to a marker.
+	if decoded.Tool != "devcouncil_write_file" || decoded.Detail != "src/a.go" {
+		t.Fatalf("the replacement line threw away fields that marshalled fine: %+v", decoded)
+	}
+	if err := sink.Err(); err != nil {
+		t.Fatalf("a value that would not marshal was reported as a write failure: %v", err)
+	}
+}
+
+// TestJSONSinkStaysOneLinePerEventAfterAFailure: the stream's contract is a
+// line per event, and a consumer parses it line by line. A replacement line
+// that ran into the next event would take a good event down with a bad one.
+func TestJSONSinkStaysOneLinePerEventAfterAFailure(t *testing.T) {
+	var buf bytes.Buffer
+	sink := NewJSONSink(&buf, nil)
+	sink.Emit(Event{Kind: KindToolStart, Tool: "write", Arguments: json.RawMessage("{not json")})
+	sink.Emit(Event{Kind: KindToolResult, Text: "wrote src/a.go"})
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("two events produced %d lines: %q", len(lines), buf.String())
+	}
+	for i, line := range lines {
+		var decoded Event
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("line %d does not parse: %v (%q)", i+1, err, line)
+		}
+	}
+}
+
+// TestJSONSinkRemembersAWriteItCouldNotMake is the other half of the same
+// rule. Nothing can be written to say the writer is broken, so the failure is
+// held for the caller to ask about; a run that exits 0 with a transcript cut
+// short is a truncated record reported as a complete one.
+func TestJSONSinkRemembersAWriteItCouldNotMake(t *testing.T) {
+	sink := NewJSONSink(brokenWriter{}, nil)
+	sink.Emit(Event{Kind: KindToolResult, Text: "wrote src/a.go"})
+	if sink.Err() == nil {
+		t.Fatal("a line that could not be written was reported as written")
+	}
+	if !strings.Contains(sink.Err().Error(), "disk full") {
+		t.Fatalf("the write failure was replaced by something else: %v", sink.Err())
+	}
+}
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// TestRendererRemembersAWriteItCouldNotMake. The terminal face is the other
+// half of the same rule. Its destination is usually a terminal, where a write
+// does not fail — but it is also whatever a caller redirected stdout to, and a
+// run that could not write its account of itself must not be reported with the
+// status of one that did.
+func TestRendererRemembersAWriteItCouldNotMake(t *testing.T) {
+	r := NewRenderer(brokenWriter{}, nil)
+	r.SetPalette(PlainPalette())
+	if r.Err() != nil {
+		t.Fatalf("a renderer that has written nothing reported a failure: %v", r.Err())
+	}
+	r.Emit(Event{Kind: KindReport, Text: "3 files changed"})
+	if r.Err() == nil {
+		t.Fatal("a line that could not be written was reported as written")
+	}
+	if !strings.Contains(r.Err().Error(), "disk full") {
+		t.Fatalf("the write failure was replaced by something else: %v", r.Err())
+	}
+}
+
+// TestBothFacesAnswerTheSameQuestion: a caller holds a ui.Sink and does not
+// know which face it was given. Asking whether the output landed has to work
+// on either, or the check silently applies to only one of them.
+func TestBothFacesAnswerTheSameQuestion(t *testing.T) {
+	faces := map[string]Sink{
+		"json":     NewJSONSink(brokenWriter{}, nil),
+		"terminal": NewRenderer(brokenWriter{}, nil),
+	}
+	for name, face := range faces {
+		answerer, ok := face.(interface{ Err() error })
+		if !ok {
+			t.Fatalf("the %s face cannot say whether its output landed", name)
+		}
+		face.Emit(Event{Kind: KindReport, Text: "3 files changed"})
+		if answerer.Err() == nil {
+			t.Errorf("the %s face reported a refused write as written", name)
+		}
+	}
+}
+
 // TestJSONSinkScrubsCredentials: this stream is written to a file.
 func TestJSONSinkScrubsCredentials(t *testing.T) {
 	const key = "xai-secret-value-abcdefghij"
@@ -193,6 +322,79 @@ func TestStreamedTextDoesNotRunIntoTheNextEvent(t *testing.T) {
 		t.Fatalf("streamed deltas were not joined, or the line was not closed: %q", out)
 	}
 }
+
+// TestColourSurvivesADecoratedStdout.
+//
+// The composition root hands every command a stdout that remembers a failed
+// write. That wrapper is invisible in the output and it is not an *os.File, so
+// a colour check that asked the value it was handed would answer "not a
+// terminal" for an operator sitting at one — every session monochrome, with
+// nothing in the diff that looks like a colour change.
+func TestColourSurvivesADecoratedStdout(t *testing.T) {
+	// A character device rather than a controlling terminal, because a test
+	// that skips where there is no tty is a check reporting a pass it never
+	// ran — on a CI runner, which is every run that matters here. What
+	// ShouldColor actually asks is whether the far end is a character device,
+	// and /dev/null is one on every platform this builds for.
+	saved, had := os.LookupEnv("NO_COLOR")
+	os.Unsetenv("NO_COLOR")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("NO_COLOR", saved)
+		}
+	})
+	t.Setenv("TERM", "xterm-256color")
+
+	device, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("opening %s: %v", os.DevNull, err)
+	}
+	defer device.Close()
+
+	if !ShouldColor(device) {
+		t.Fatalf("%s is not reporting as a character device; this check cannot say anything", os.DevNull)
+	}
+	if !ShouldColor(decorated{device}) {
+		t.Fatal("a decorated character device was treated as a pipe; colour would be off for every session at a real terminal")
+	}
+}
+
+// TestTerminalFileSeesThroughDecoratorsAndStopsAtACycle. The walk is bounded
+// because a decorator that returns itself would otherwise hang the renderer
+// before it drew anything, which is worse than answering "not a terminal".
+func TestTerminalFileSeesThroughDecoratorsAndStopsAtACycle(t *testing.T) {
+	f := os.Stdout
+	if got, ok := TerminalFile(decorated{decorated{decorated{f}}}); !ok || got != f {
+		t.Fatalf("a file three decorators deep was not found: %v %v", got, ok)
+	}
+	if _, ok := TerminalFile(&bytes.Buffer{}); ok {
+		t.Fatal("a buffer was reported as a terminal file")
+	}
+	var loop selfDecorator
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := TerminalFile(&loop)
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("a decorator cycle reported a terminal file")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TerminalFile did not terminate on a decorator cycle")
+	}
+}
+
+type decorated struct{ w io.Writer }
+
+func (d decorated) Write(p []byte) (int, error) { return d.w.Write(p) }
+func (d decorated) Underlying() io.Writer       { return d.w }
+
+type selfDecorator struct{}
+
+func (s *selfDecorator) Write(p []byte) (int, error) { return len(p), nil }
+func (s *selfDecorator) Underlying() io.Writer       { return s }
 
 // TestShouldColorRefusesAPipe: escape codes in a redirected log make it
 // unreadable, and this is the check that keeps them out.

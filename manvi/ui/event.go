@@ -91,6 +91,15 @@ type Event struct {
 	Weakened   []string `json:"weakened,omitempty"`
 	ApprovalID string   `json:"approval_id,omitempty"`
 
+	// EncodeError marks a line the JSON face could not write whole.
+	//
+	// Set only by JSONSink, and only on a line that stands in for an event
+	// some of whose fields would not marshal. It names them, so the transcript
+	// carries a hole a reader can see rather than one that looks like an event
+	// that never happened. Nothing produces it on the way in, and the terminal
+	// face never sees it.
+	EncodeError string `json:"encode_error,omitempty"`
+
 	// Session fields.
 	TaskID  string `json:"task_id,omitempty"`
 	Posture string `json:"posture,omitempty"`

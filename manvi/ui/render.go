@@ -35,6 +35,37 @@ func ColorPalette() Palette {
 // PlainPalette renders without colour, for a pipe, a CI log, or NO_COLOR.
 func PlainPalette() Palette { return Palette{} }
 
+// Decorator is implemented by a writer that wraps another one.
+//
+// Whether output should be coloured is a question about the far end of the
+// chain, not about what sits in front of it. Without this seam a writer that
+// merely watches bytes on their way past — counting them, or remembering a
+// write that failed — silently turns colour off for an operator at a real
+// terminal, because the *os.File it decorates is no longer the value being
+// asked. The decoration is invisible to the reader and so is the regression.
+type Decorator interface {
+	// Underlying returns the writer this one writes through.
+	Underlying() io.Writer
+}
+
+// TerminalFile returns the file a writer ultimately writes to.
+//
+// The walk is bounded because a decorator that returns itself, directly or
+// through a cycle, must cost a wrong answer rather than a hung renderer.
+func TerminalFile(w io.Writer) (*os.File, bool) {
+	for range 8 {
+		switch v := w.(type) {
+		case *os.File:
+			return v, true
+		case Decorator:
+			w = v.Underlying()
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 // ShouldColor reports whether output to w should be coloured.
 //
 // Three checks, in the order that respects the operator: an explicit NO_COLOR
@@ -47,7 +78,7 @@ func ShouldColor(w io.Writer) bool {
 	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	f, ok := w.(*os.File)
+	f, ok := TerminalFile(w)
 	if !ok {
 		return false
 	}
@@ -73,6 +104,11 @@ type Renderer struct {
 	// streaming tracks whether the last thing written was assistant text, so
 	// deltas concatenate on one line and a following event starts a new one.
 	streaming bool
+	// writeErr holds the first write that did not land. A terminal that is a
+	// terminal never fails, but this face's output is also what a caller gets
+	// when they redirect it, and a run whose account of itself was cut short
+	// must not report the status of one that was written whole.
+	writeErr error
 }
 
 // NewRenderer builds a terminal renderer.
@@ -102,7 +138,18 @@ func (r *Renderer) safe(text string) string {
 }
 
 func (r *Renderer) write(format string, args ...any) {
-	fmt.Fprintf(r.out, format, args...)
+	if _, err := fmt.Fprintf(r.out, format, args...); err != nil && r.writeErr == nil {
+		r.writeErr = err
+	}
+}
+
+// Err reports the first write this renderer could not make, or nil. It is the
+// same question JSONSink.Err answers, asked of the other face, so a caller can
+// ask it of whichever one a run was given without knowing which that was.
+func (r *Renderer) Err() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.writeErr
 }
 
 // endStream closes an in-progress assistant line before another kind of event
@@ -294,8 +341,13 @@ func indent(text, prefix string) string {
 // set, which is what keeps the two faces from drifting: an event a CI job
 // cannot see is one the terminal should not be showing either.
 type JSONSink struct {
-	mu       sync.Mutex
-	encoder  *json.Encoder
+	mu  sync.Mutex
+	out io.Writer
+	// writeErr holds the first line that could not be written out. Emit
+	// satisfies Sink, which returns nothing, so the failure is kept here for
+	// the caller to ask about rather than dropped: a transcript cut short by a
+	// full disk or a closed pipe reads exactly like a run that ended there.
+	writeErr error
 	scrubber *credentials.Scrubber
 }
 
@@ -304,8 +356,7 @@ func NewJSONSink(out io.Writer, scrubber *credentials.Scrubber) *JSONSink {
 	if scrubber == nil {
 		scrubber = credentials.NewScrubber()
 	}
-	encoder := json.NewEncoder(out)
-	return &JSONSink{encoder: encoder, scrubber: scrubber}
+	return &JSONSink{out: out, scrubber: scrubber}
 }
 
 // Emit writes one event as a JSON line.
@@ -313,6 +364,11 @@ func NewJSONSink(out io.Writer, scrubber *credentials.Scrubber) *JSONSink {
 // Control sequences are left intact here and credentials are not: a consumer
 // of this stream is a program, and escaping its text would corrupt the record,
 // whereas a credential in it is a credential on disk.
+//
+// Marshalling is done here rather than by a json.Encoder because the two ways
+// this can fail need different answers, and an encoder reports them as one
+// error after the fact. A value that will not marshal is answered with a line
+// that says so; a writer that will not take the line is remembered for Err.
 func (s *JSONSink) Emit(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,5 +377,68 @@ func (s *JSONSink) Emit(e Event) {
 	}
 	e.Text = s.scrubber.Clean(e.Text)
 	e.Detail = s.scrubber.Clean(e.Detail)
-	s.encoder.Encode(e)
+
+	line, err := json.Marshal(e)
+	if err != nil {
+		line = s.holeLine(e, err)
+	}
+	if _, err := s.out.Write(append(line, '\n')); err != nil && s.writeErr == nil {
+		s.writeErr = err
+	}
+}
+
+// Err reports the first line this sink failed to write, or nil.
+//
+// A caller that finishes a run with a non-nil error here holds an incomplete
+// transcript and must not report the run as recorded. Nothing else can tell:
+// the missing lines are missing.
+func (s *JSONSink) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeErr
+}
+
+// holeLine builds the line written in place of an event that will not marshal.
+//
+// json.Encoder writes nothing at all when marshalling fails, so discarding its
+// error deleted the line: an event whose arguments were malformed and an event
+// that never happened were the same thing to a CI job reading the stream, and
+// this harness's rule is that a check which could not run must never look like
+// one that ran and passed. Arguments is the field that can fail — json.RawMessage
+// validates on marshal and holds bytes the model wrote — so the replacement
+// drops it, names it, and keeps the rest of the event. The record then has a
+// hole in it rather than a hole where it should have been.
+func (s *JSONSink) holeLine(e Event, cause error) []byte {
+	var dropped []string
+	if len(e.Arguments) > 0 && !json.Valid(e.Arguments) {
+		dropped = append(dropped, "arguments")
+	}
+	e.Arguments = nil
+	e.EncodeError = s.scrubber.Clean(encodeNote(dropped, cause))
+	if line, err := json.Marshal(e); err == nil {
+		return line
+	}
+
+	// After Arguments the only field left that can refuse to marshal is the
+	// timestamp: time.Time rejects a year outside [0,9999], and every other
+	// field is a string, a bool, or an int. Dropping it leaves a value that
+	// cannot fail.
+	e.At = time.Time{}
+	e.EncodeError = s.scrubber.Clean(encodeNote(append(dropped, "at"), cause))
+	if line, err := json.Marshal(e); err == nil {
+		return line
+	}
+
+	// Unreachable while Event holds no other marshaller, and here because the
+	// alternative at this point is writing nothing, which is the bug.
+	return []byte(`{"kind":"error","encode_error":"this event could not be serialised"}`)
+}
+
+// encodeNote names what the line is missing and why, in the terms a reader of
+// the transcript needs to act: which field is gone, and what was wrong with it.
+func encodeNote(dropped []string, cause error) string {
+	if len(dropped) == 0 {
+		dropped = []string{"an unidentified field"}
+	}
+	return fmt.Sprintf("dropped from this line: %s (%v)", strings.Join(dropped, ", "), cause)
 }

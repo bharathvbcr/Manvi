@@ -331,8 +331,14 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		return fmt.Errorf("the turn failed: %s", scrubber.Clean(err.Error()))
 	}
 
+	// In quiet mode this line is the whole deliverable — the sink is a no-op
+	// and nothing else reaches the caller — so a write that did not land is the
+	// answer lost. Held rather than acted on here because the run still has a
+	// usage event and its outcome notices to emit; it is folded into the status
+	// below, alongside the same failure happening to a face.
+	var answerErr error
 	if opts.quiet {
-		fmt.Fprintln(out, strings.TrimSpace(scrubber.Clean(textOf(outcome.Final))))
+		_, answerErr = fmt.Fprintln(out, strings.TrimSpace(scrubber.Clean(textOf(outcome.Final))))
 	}
 	// The dispatching agent's spend plus every child's. Reporting the first
 	// alone was reporting a fraction as a whole: on a fan-out the children are
@@ -361,7 +367,79 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 			fmt.Fprintf(notes, "manvi: %s\n", n.Text)
 		}
 	}
-	return outcomeStatus(outcome)
+	return outputStatus(outcomeStatus(outcome), notes, scrubber.Clean, faceFailure(sink), answerErr)
+}
+
+// faceFailure asks a face whether it failed to write, for the faces that can
+// answer. Both of them can; a caller does not have to know which one a run was
+// given, and a sink that cannot answer is treated as having nothing to report
+// rather than as having succeeded — those are the same here only because the
+// one sink that cannot answer, the quiet no-op, writes nothing at all.
+func faceFailure(sink ui.Sink) error {
+	if answerer, ok := sink.(interface{ Err() error }); ok {
+		return answerer.Err()
+	}
+	return nil
+}
+
+// outputStatus is the one owner of what a run's output failing to land does to
+// that run's exit status.
+//
+// It is the JSON sink's own rule one rung up. Inside a line, an event that
+// would not marshal is answered with a line that says so; here the thing that
+// failed is the writing itself, so there is no line left to say it in and it
+// has to come back as the status. A caller holding a short transcript, or an
+// empty answer from --quiet, is holding an account of the run with an unmarked
+// end, and must not be handed the status a whole one gets.
+//
+// causes are taken in order and the first that is set wins; they are the ways
+// the same thing goes wrong — a face that could not write its lines, and the
+// direct write of the quiet answer, which goes to no face at all.
+//
+// The turn's own sentinel wins over all of them when there is one: those map to
+// specific exit statuses and each says something more specific about the same
+// run. It does not get to bury this, so the fact goes to notes instead — and
+// only in that case, so the caller is told exactly once.
+// errOutputLost is what an incomplete-output failure is built from, so that a
+// caller can recognise one it has already been told about. Both rungs of this
+// check — a command that knows exactly which of its writes was lost, and the
+// composition root backstopping every write it does not know about — report
+// through outputStatus, and without this the two would say the same thing to
+// stderr twice for one failure.
+var errOutputLost = errors.New("the run's output is incomplete")
+
+func outputStatus(status error, notes io.Writer, clean func(string) string, causes ...error) error {
+	var cause error
+	for _, c := range causes {
+		if c != nil {
+			cause = c
+			break
+		}
+	}
+	if cause == nil {
+		return status
+	}
+	message := cause.Error()
+	if clean != nil {
+		message = clean(message)
+	}
+	failure := fmt.Errorf("%w: %s", errOutputLost, message)
+	if status == nil {
+		return failure
+	}
+	// Already reported, in either of the two ways a caller can already know.
+	// errOutputLost means an inner rung, which knew more about which write was
+	// lost than this one does, has said so. Carrying the cause itself means the
+	// command returned the very write error this rung is reporting — `manvi
+	// logo` does, because writing the mark is the whole of what it does — and
+	// the status will be printed with that cause in it. Either way, saying it
+	// again is one failure and two lines, and the second reads as a second
+	// failure.
+	told := errors.Is(status, errOutputLost) || errors.Is(status, cause)
+	if notes != nil && !told {
+		fmt.Fprintf(notes, "manvi: %v\n", failure)
+	}
+	return status
 }
 
 // outcomeStatus is the one owner of "what did this turn actually end as", as an

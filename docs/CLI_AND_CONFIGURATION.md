@@ -39,8 +39,14 @@ Scripts and CI systems should inspect exit codes from `manvi run`:
 | Exit Code | Meaning | Interpretation |
 |---|---|---|
 | `0` | **Success** | Turn completed successfully with evidence of completion. |
-| `1` | **Failure** | Turn terminated due to an error, policy rejection, or tool failure. |
+| `1` | **Failure** | Turn terminated due to an error, policy rejection, or tool failure — or its output could not be written, so the record a caller holds is short. |
 | `2` | **Step Ceiling Reached** | Turn exceeded `--max-steps` before completion. Work is incomplete; CI should **not** commit partial changes. |
+| `3` | **Output Cap Reached** | The final answer was truncated by the output cap. Distinct from `2` because the remedy is a larger cap, not more steps. |
+| `4` | **No Answer** | The turn hit neither ceiling and produced nothing. It exited `0` until this code existed, which read to CI as the work having been done. |
+| `5` | **Unfinished** | The turn reached its last response and that response did not end on a stop reason this harness recognises as finished: a dropped connection, an unmapped status, or a refusal. |
+
+These are pinned to the dispatch by `manvi/internal/contract`; a code added in one
+place and not the other fails the suite.
 
 ---
 

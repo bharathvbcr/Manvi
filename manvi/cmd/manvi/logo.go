@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 
+	"manvi/ui"
 	"manvi/ui/logo"
 	"manvi/ui/render"
 	"manvi/ui/term"
@@ -35,7 +36,10 @@ func showLogo(out io.Writer, args []string) error {
 	}
 
 	profile := render.NoColor
-	if f, ok := out.(*os.File); ok {
+	// Through any decorator: the composition root hands this command a stdout
+	// that remembers a failed write, and asking that value whether it is a
+	// terminal would answer about the wrapper rather than about the screen.
+	if f, ok := ui.TerminalFile(out); ok {
 		profile = term.DetectProfile(f)
 	}
 	th := tui.PickTheme(profile, term.DetectUnicode())

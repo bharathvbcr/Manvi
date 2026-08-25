@@ -503,3 +503,118 @@ func TestEveryCLISubcommandIsDocumented(t *testing.T) {
 	}
 	t.Logf("checked %d subcommands against the reference", len(commands))
 }
+
+// eventFieldPattern matches one struct field line in either the source or the
+// documented copy of it: an indented exported name, a type, and a json tag.
+// Comment lines and blank lines do not match, and neither does the `type …`
+// line itself, which is not indented.
+var eventFieldPattern = regexp.MustCompile("(?m)^[ \t]+([A-Z][A-Za-z0-9]*)[ \t]+[^/\\s][^`]*`json:\"([^\",]+)")
+
+// eventFields pulls the field-name-to-JSON-name mapping out of one rendering
+// of the Event struct, from the opening brace to the first closing brace at
+// the start of a line.
+func eventFields(t *testing.T, body, what string) map[string]string {
+	t.Helper()
+	start := strings.Index(body, "type Event struct {")
+	if start < 0 {
+		t.Fatalf("%s: no `type Event struct {` found; this check examined nothing", what)
+	}
+	block := body[start:]
+	if end := strings.Index(block, "\n}"); end > 0 {
+		block = block[:end]
+	}
+	fields := map[string]string{}
+	for _, m := range eventFieldPattern.FindAllStringSubmatch(block, -1) {
+		fields[m[1]] = m[2]
+	}
+	if len(fields) < 15 {
+		t.Fatalf("%s: parsed only %d fields out of the Event struct; this check examined almost nothing", what, len(fields))
+	}
+	return fields
+}
+
+// TestDocumentedEventFieldsMatchTheStruct pins the wire's documented shape to
+// the wire.
+//
+// The NDJSON face is a contract with programs — a CI job, a benchmark, an
+// editor plugin — and this block is where that contract is written down for a
+// reader who is not going to open event.go. It had already drifted the whole
+// way: the documented struct named Timestamp, Turn, Step, Grantor and a
+// `Degraded string`, none of which exist, and omitted Agent, Detail, Arguments,
+// Grantable, GrantedBy, Weakened, ApprovalID and TaskID, all of which do. Every
+// one of those was true of some earlier version and nothing re-read it.
+//
+// Both names are checked, because both are load-bearing and they fail
+// differently: the Go name is what a contributor greps for, and the JSON name
+// is what a consumer's parser keys on.
+func TestDocumentedEventFieldsMatchTheStruct(t *testing.T) {
+	source := eventFields(t,
+		readDoc(t, filepath.Join(docRoot, "manvi", "ui", "event.go")), "manvi/ui/event.go")
+	documented := eventFields(t,
+		readDoc(t, filepath.Join(docRoot, "docs", "TUI_AND_EVENT_SUBSYSTEM.md")),
+		"docs/TUI_AND_EVENT_SUBSYSTEM.md")
+
+	for name, jsonName := range source {
+		switch got, ok := documented[name]; {
+		case !ok:
+			t.Errorf("ui.Event has field %s and docs/TUI_AND_EVENT_SUBSYSTEM.md does not document it", name)
+		case got != jsonName:
+			t.Errorf("ui.Event.%s is on the wire as %q; the docs say %q", name, jsonName, got)
+		}
+	}
+	for name := range documented {
+		if _, ok := source[name]; !ok {
+			t.Errorf("docs/TUI_AND_EVENT_SUBSYSTEM.md documents ui.Event.%s, which does not exist", name)
+		}
+	}
+	t.Logf("checked %d documented event fields against the struct", len(source))
+}
+
+// TestDocumentedExitCodesMatchTheDispatch pins the table CI branches on.
+//
+// The reference listed 0, 1 and 2 while the dispatch had grown 3, 4 and 5 —
+// each added because a turn that ended badly was exiting 0 and being read as
+// success, and each documented nowhere. A CI step written from that table
+// treats an unknown status as a generic failure, which is the safe direction
+// only by luck; the harness added those codes precisely so a caller could tell
+// the cases apart, and a caller cannot act on a code it was never told about.
+func TestDocumentedExitCodesMatchTheDispatch(t *testing.T) {
+	main := readDoc(t, filepath.Join(docRoot, "manvi", "cmd", "manvi", "main.go"))
+	start := strings.Index(main, "func statusFor(")
+	if start < 0 {
+		t.Fatal("statusFor was not found; this check examined nothing")
+	}
+	body := main[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	live := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\t\treturn (\d+)$`).FindAllStringSubmatch(body, -1) {
+		live[m[1]] = true
+	}
+	if len(live) < 4 {
+		t.Fatalf("parsed only %d exit codes out of statusFor; this check examined almost nothing", len(live))
+	}
+
+	ref := readDoc(t, filepath.Join(docRoot, "docs", "CLI_AND_CONFIGURATION.md"))
+	table := ref[strings.Index(ref, "## Headless Exit Codes"):]
+	if cut := strings.Index(table, "\n---"); cut > 0 {
+		table = table[:cut]
+	}
+	documented := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `(\\d+)` \\|").FindAllStringSubmatch(table, -1) {
+		documented[m[1]] = true
+	}
+
+	for code := range live {
+		if !documented[code] {
+			t.Errorf("manvi exits %s and docs/CLI_AND_CONFIGURATION.md does not document that code", code)
+		}
+	}
+	for code := range documented {
+		if !live[code] && code != "0" {
+			t.Errorf("docs/CLI_AND_CONFIGURATION.md documents exit %s, which the dispatch never returns", code)
+		}
+	}
+	t.Logf("checked %d exit codes against the dispatch", len(documented))
+}

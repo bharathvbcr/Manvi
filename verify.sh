@@ -282,9 +282,9 @@ done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' | sed -E 's/^([^:]+):
 printf '    covered: all %s declared fuzz targets are reachable where they are defined\n' "$fuzz_declared"
 
 step "Docs — every stated count is the measured count"
-docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented' 2>/dev/null) | grep -c '^--- PASS' || true )"
-(( docs_ran == 6 )) || fail "the documentation contract ran only ${docs_ran} of 6 checks"
-printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links and subcommands all agree with the code\n'
+docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented|TestDocumentedEventFieldsMatchTheStruct|TestDocumentedExitCodesMatchTheDispatch' 2>/dev/null) | grep -c '^--- PASS' || true )"
+(( docs_ran == 8 )) || fail "the documentation contract ran only ${docs_ran} of 8 checks"
+printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links, subcommands, the event wire and the exit codes all agree with the code\n'
 
 step "Brand — the published mark is the drawn mark"
 logo_bin="$(mktemp -d)/manvi"

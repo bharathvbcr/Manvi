@@ -35,26 +35,56 @@ flowchart TD
 
 ### The `ui.Event` Payload
 
+The JSON names are the wire contract a CI job reads, so they are shown here
+rather than only the Go names. `manvi/internal/contract` re-reads this block
+against `manvi/ui/event.go` on every run; a field added, renamed or retagged in
+one and not the other fails the suite.
+
 ```go
 type Event struct {
-    Kind         EventKind // TurnStart, Text, ToolStart, ToolResult, Policy, Approval, etc.
-    Timestamp    time.Time
-    Turn         int
-    Step         int
-    Model        string
-    Posture      string
-    Text         string
-    Tool         string
-    Path         string
-    Rule         string
-    Severity     string
-    Demoted      string
-    Degraded     string
-    GrantID      string
-    Grantor      string
-    InputTokens  int
-    OutputTokens int
-    IsError      bool
+    Kind Kind      `json:"kind"`
+    At   time.Time `json:"at"`
+
+    // Agent names the sub-agent an event came from, empty for the parent turn.
+    // Two agents' evidence in one stream is only readable if each line says
+    // whose it is.
+    Agent string `json:"agent,omitempty"`
+
+    Text   string `json:"text,omitempty"`
+    Detail string `json:"detail,omitempty"`
+
+    // Tool fields.
+    Tool      string          `json:"tool,omitempty"`
+    Arguments json.RawMessage `json:"arguments,omitempty"`
+    IsError   bool            `json:"is_error,omitempty"`
+
+    // Policy fields. Rule is set whenever a rule fired, including on a success
+    // the posture or a grant allowed — a qualified pass is not a clean one.
+    Rule       string   `json:"rule,omitempty"`
+    Severity   string   `json:"severity,omitempty"`
+    Path       string   `json:"path,omitempty"`
+    Grantable  bool     `json:"grantable,omitempty"`
+    GrantID    string   `json:"grant_id,omitempty"`
+    GrantedBy  string   `json:"granted_by,omitempty"`
+    Demoted    string   `json:"demoted,omitempty"`
+    Degraded   []string `json:"degraded,omitempty"`
+    Weakened   []string `json:"weakened,omitempty"`
+    ApprovalID string   `json:"approval_id,omitempty"`
+
+    // Set only by the NDJSON sink, on a line standing in for an event whose
+    // fields would not all marshal. It names what that line is missing, so the
+    // transcript carries a hole a reader can see rather than one that looks
+    // like an event that never happened.
+    EncodeError string `json:"encode_error,omitempty"`
+
+    // Session fields.
+    TaskID  string `json:"task_id,omitempty"`
+    Posture string `json:"posture,omitempty"`
+    Model   string `json:"model,omitempty"`
+
+    // Usage.
+    InputTokens  int `json:"input_tokens,omitempty"`
+    OutputTokens int `json:"output_tokens,omitempty"`
 }
 ```
 
