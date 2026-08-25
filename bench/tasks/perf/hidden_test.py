@@ -1,5 +1,13 @@
-import random, sys, time
-from dedupe import common_prefix_pairs
+import os, random, sys, time
+
+# Ignore any bytecode cache sitting beside the candidate's sources: a .pyc
+# whose header matches the .py is honoured by the import system, so it could
+# stand in for the source this check is meant to exercise.
+sys.dont_write_bytecode = True
+sys.pycache_prefix = os.path.join(
+    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
+
+from dedupe import common_prefix_pairs  # noqa: E402
 
 def ref(words):
     c = 0

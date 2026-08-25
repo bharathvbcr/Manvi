@@ -39,6 +39,81 @@ eq("2 does not see A", c.get(2, "k") != "A", True)
 c.heal()
 eq("heal tie-break nid", views(c, "k"), ["B", "B", "B"])
 
+# --- the same tie, written in the other order. (clock, origin) does not
+# depend on wall-clock order, so a per-node Lamport clock gives B either way.
+# A single counter shared across the partition -- which no partitioned system
+# can have -- gives A here, because A was simply written second.
+c = DistCache(3)
+c.split([[0], [1, 2]])
+c.put(1, "k", "B")
+c.put(0, "k", "A")
+c.heal()
+eq("heal tie-break nid, reversed", views(c, "k"), ["B", "B", "B"])
+
+# --- clocks are per node: writes on one side of the partition must not
+# advance the clock on the other side. Three writes on the isolated node 0
+# outrank one write on node 1, whose own clock only ever reached 1.
+c = DistCache(2)
+c.split([[0], [1]])
+c.put(0, "k", "A0")             # clock0 = 1
+c.put(0, "k", "A1")             # clock0 = 2
+c.put(0, "k", "A2")             # clock0 = 3 -> (3, 0)
+c.put(1, "k", "B")              # clock1 = 1 -> (1, 1)
+c.heal()
+eq("isolated writes keep their own clock", views(c, "k"), ["A2", "A2"])
+
+# --- and the mirror image: one write on node 0 must lose to three on node 1
+c = DistCache(2)
+c.split([[0], [1]])
+c.put(1, "k", "B0")
+c.put(1, "k", "B1")
+c.put(1, "k", "B2")             # clock1 = 3 -> (3, 1)
+c.put(0, "k", "A")              # clock0 = 1 -> (1, 0)
+c.heal()
+eq("isolated writes keep their own clock, mirrored",
+   views(c, "k"), ["B2", "B2"])
+
+# --- receiving a record raises the receiver's clock (step 4), so node 0 can
+# out-rank node 1 despite node 1 holding the higher origin id.
+c = DistCache(2)
+c.put(1, "seed", "s")           # clock1 = 1, and clock0 = max(0, 1) = 1
+c.split([[0], [1]])
+c.put(0, "k", "A")              # clock0 = 2
+c.put(0, "k", "A2")             # clock0 = 3 -> (3, 0)
+c.put(1, "k", "B")              # clock1 = 2 -> (2, 1)
+c.heal()
+eq("apply raises the receiver clock", views(c, "k"), ["A2", "A2"])
+
+# --- heal levels every clock to the maximum, so the next write on a node
+# that was behind still outranks what the leader wrote before the heal.
+c = DistCache(2)
+c.split([[0], [1]])
+c.put(1, "seed", "s")           # clock1 = 1
+c.put(1, "seed", "s2")          # clock1 = 2
+c.heal()                        # clocks become 2 everywhere
+c.split([[0], [1]])
+c.put(0, "k", "A")              # clock0 = 3
+c.put(0, "k", "A2")             # clock0 = 4 -> (4, 0)
+c.put(1, "k", "B")              # clock1 = 3 -> (3, 1)
+c.heal()
+eq("heal levels the clocks", views(c, "k"), ["A2", "A2"])
+
+# --- a concurrent write must not beat a tombstone stamped at the same clock
+# by a higher node id, whichever of the two happened first in real time.
+for order in ("tomb-first", "write-first"):
+    c = DistCache(3)
+    c.put(0, "d", "live")       # clocks = 1 everywhere
+    c.split([[0], [1, 2]])
+    if order == "tomb-first":
+        c.invalidate(1, "d")    # (tomb, 2, 1)
+        c.put(0, "d", "again")  # (again, 2, 0)
+    else:
+        c.put(0, "d", "again")  # (again, 2, 0)
+        c.invalidate(1, "d")    # (tomb, 2, 1)
+    c.heal()
+    eq(f"tombstone wins the version tie ({order})", views(c, "d"),
+       [None, None, None])
+
 # --- later write on a higher clock wins even from a lower nid
 c = DistCache(3)
 c.split([[0, 1], [2]])

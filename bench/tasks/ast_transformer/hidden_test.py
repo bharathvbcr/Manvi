@@ -2,7 +2,15 @@ import ast
 import asyncio
 import os
 import sys
-from rewrite import rewrite
+
+# Ignore any bytecode cache sitting beside the candidate's sources: a .pyc
+# whose header matches the .py is honoured by the import system, so it could
+# stand in for the source this check is meant to exercise.
+sys.dont_write_bytecode = True
+sys.pycache_prefix = os.path.join(
+    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
+
+from rewrite import rewrite  # noqa: E402
 
 bad = 0
 
