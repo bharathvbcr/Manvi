@@ -341,9 +341,9 @@ grep -q '^--- PASS' <<<"$gen_out" || { printf '%s\n' "$gen_out" >&2; fail "the g
 printf '    %s\n' "$(grep -o '[0-9]* generated command lines: .*' <<<"$gen_out" | head -1)"
 
 step "Docs — every stated count is the measured count"
-docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented' 2>/dev/null) | grep -c '^--- PASS' || true )"
-(( docs_ran == 6 )) || fail "the documentation contract ran only ${docs_ran} of 6 checks"
-printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links and subcommands all agree with the code\n'
+docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented|TestDocumentedEventFieldsMatchTheStruct|TestDocumentedExitCodesMatchTheDispatch' 2>/dev/null) | grep -c '^--- PASS' || true )"
+(( docs_ran == 8 )) || fail "the documentation contract ran only ${docs_ran} of 8 checks"
+printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links, subcommands, the event wire and the exit codes all agree with the code\n'
 
 # The Go suite's mermaid check is structural: it knows the edge operators and
 # nothing else. Two diagrams shipped broken straight past it — a participant

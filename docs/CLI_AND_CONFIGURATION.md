@@ -59,6 +59,9 @@ does not treat every block as a pass:
 | `7` | **Hard block** | Blocked by a hard rule, which no grant clears by any authority. Do not retry after issuing an override. |
 | `1` | **Failure** | The command itself failed. |
 
+These are pinned to the dispatch by `manvi/internal/contract`; a code added in one
+place and not the other fails the suite.
+
 ---
 
 ## Configuration & Flag Catalogue

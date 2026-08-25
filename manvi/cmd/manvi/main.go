@@ -137,53 +137,118 @@ func drainProcessExits() {
 	}
 }
 
-func main() {
-	err := run(os.Stdout, os.Stderr, os.Args[1:])
+// answerWriter is stdout with a memory of the first write that did not land.
+//
+// A command's answer on stdout is a record: `manvi flags`, `manvi tools`,
+// `manvi lease list` and `manvi local --resolve` are all parsed by something,
+// this repository's own verify.sh among them. Around a hundred and sixty
+// writes produce those answers and none of them checked, so a full disk or a
+// revoked handle truncated the answer and the command still exited 0 — a
+// caller reading a short answer as the whole one. Checking here rather than at
+// each of those writes is the same choice drainProcessExits makes a few lines
+// up: the composition root is the one place that cannot forget.
+//
+// The error is still returned to the caller as well as remembered, so a writer
+// that does check — the JSON sink, the terminal renderer, the --quiet answer —
+// behaves exactly as it did.
+type answerWriter struct {
+	to  io.Writer
+	err error
+}
+
+func (a *answerWriter) Write(p []byte) (int, error) {
+	n, err := a.to.Write(p)
+	if err != nil && a.err == nil {
+		a.err = err
+	}
+	return n, err
+}
+
+// Underlying satisfies ui.Decorator, so colour and terminal detection ask the
+// screen rather than this wrapper.
+func (a *answerWriter) Underlying() io.Writer { return a.to }
+
+// Err reports the first write that did not land, or nil.
+func (a *answerWriter) Err() error { return a.err }
+
+func main() { os.Exit(exitStatus(os.Stdout, os.Stderr, os.Args[1:])) }
+
+// exitStatus runs one invocation and returns the status the process exits with.
+//
+// It is separate from main so that the composition can be driven by a test:
+// the backstop under every command's answer, and the mapping from a finished
+// run to an exit status, are the two things here that a caller depends on and
+// neither was reachable while they lived inside main. What is left in main is
+// one line with nothing in it to get wrong.
+func exitStatus(stdout, notes io.Writer, args []string) int {
+	answer := &answerWriter{to: stdout}
+	err := run(answer, notes, args)
+
+	if errors.Is(err, errUsage) {
+		// A request for help is not a failure.
+		fmt.Fprint(answer, runUsage)
+		err = nil
+	}
+
+	// The backstop under every command's answer, and placed after the last of
+	// those writes — the usage text above is one of them. A command that knows
+	// which of its own writes was lost reports that itself and this rung stays
+	// quiet; outputStatus is idempotent for exactly that reason.
+	//
+	// No scrubber: this error comes from the operating system naming a file
+	// handle, and the commands whose output can carry a credential scrub it
+	// before it reaches any writer.
+	return statusFor(outputStatus(err, notes, nil, answer.Err()), notes)
+}
+
+// statusFor maps a finished run to the process's exit status.
+//
+// It is the counterpart to outcomeStatus, which decides what a turn ended as;
+// this decides what a caller is told about it. Split out because the mapping
+// is a contract — a benchmark branches on these numbers and the CLI reference
+// documents them — and while it lived inline in main nothing could execute it.
+func statusFor(err error, notes io.Writer) int {
 	switch {
 	case err == nil:
-		return
-	case errors.Is(err, errUsage):
-		// A request for help is not a failure.
-		fmt.Fprint(os.Stdout, runUsage)
-		return
+		return 0
 	case errors.Is(err, errOutputCap):
 		// Its own status, for the same reason errTruncated has one: the turn
 		// ran and the answer is incomplete. Separate from 2 so a caller can
 		// act on it — this one is fixed by a larger output cap, not by more
 		// steps. The message was already written where it belongs.
-		os.Exit(3)
+		return 3
 	case errors.Is(err, errTruncated):
 		// Distinct from a failure, and distinct from success. The turn ran and
 		// did not finish, and a caller that cannot tell those three apart will
 		// commit half-done work. The message was already written where it
 		// belongs, so this only sets the status.
-		os.Exit(2)
+		return 2
 	case errors.Is(err, errUnfinished):
 		// The turn ran and produced an answer that did not end on a finished
 		// stop reason — a dropped connection, an unmapped status, or a
 		// refusal. It exited 0, which is what a completed turn exits, so a
 		// benchmark recorded a fragment as a result. The notice naming which
 		// of the three it was is already on stderr.
-		os.Exit(5)
+		return 5
 	case errors.Is(err, errNoAnswer):
 		// The turn ran, hit neither ceiling, and produced nothing. It used to
 		// exit 0, which is the worst of the four: a benchmark or CI step reads
 		// that as the work having been done. The message was already written
 		// where it belongs.
-		os.Exit(4)
+		return 4
 	case errors.Is(err, errCheckBlocked):
 		// `manvi check` refused a write, and said why on stdout. It exited 0,
 		// which is what an allowed write exits, so `manvi check "$f" && commit`
 		// treated every block as a pass. The decision and the `manvi allow`
 		// line that clears it are already printed.
-		os.Exit(6)
+		return 6
 	case errors.Is(err, errCheckHardBlocked):
 		// As 6, but no grant clears it. Separate so a caller does not retry
 		// after issuing an override that was never going to apply.
-		os.Exit(7)
+		return 7
 	default:
-		fmt.Fprintf(os.Stderr, "manvi: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(notes, "manvi: %v\n", err)
+		return 1
 	}
 }
 
@@ -326,7 +391,7 @@ func run(out, notes io.Writer, args []string) error {
 	case "local":
 		return showLocal(out, reg, args[1:])
 	case "watch":
-		return watch(reg, args[1:])
+		return watch(out, reg, args[1:])
 	case "run":
 		return runHeadless(out, notes, reg, args[1:])
 	case "tui":
@@ -649,7 +714,7 @@ func describeLocalReadiness(reg *flags.Registry) string {
 // documented: the terminal is not a privileged consumer. The same events drive
 // the JSON face, so anything visible here is visible to a CI job or an editor
 // without a second code path to keep in step.
-func watch(reg *flags.Registry, args []string) error {
+func watch(out io.Writer, reg *flags.Registry, args []string) (err error) {
 	asJSON := slices.Contains(args, "--json")
 
 	scrubber := credentials.NewScrubber()
@@ -657,10 +722,17 @@ func watch(reg *flags.Registry, args []string) error {
 
 	var sink ui.Sink
 	if asJSON {
-		sink = ui.NewJSONSink(os.Stdout, scrubber)
+		sink = ui.NewJSONSink(out, scrubber)
 	} else {
-		sink = ui.NewRenderer(os.Stdout, scrubber)
+		sink = ui.NewRenderer(out, scrubber)
 	}
+	// Every return below reports on what the store said, and every one of those
+	// reports leaves through this sink. A line that did not make it out makes
+	// the report incomplete, and stdout is where the report went, so the fact
+	// has to come back as the status. Deferred rather than repeated at each of
+	// the five returns, because a path that forgets it exits 0 on a short
+	// answer — which is the failure being closed here, rebuilt one level up.
+	defer func() { err = outputStatus(err, os.Stderr, scrubber.Clean, faceFailure(sink)) }()
 
 	posture, _, err := reg.String(flags.HarnessPosture)
 	if err != nil {

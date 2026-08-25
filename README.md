@@ -286,7 +286,7 @@ cargo build --manifest-path crates/Cargo.toml --bin dcstore --bin dcverify
 # Interactive full-screen TUI
 /tmp/manvi
 
-# Headless single turn (exit codes: 0 ok · 1 failure · 2 step ceiling hit)
+# Headless single turn (exit codes: 0 ok · 1 failure · 2 step ceiling · 3 output cap · 4 no answer · 5 unfinished)
 /tmp/manvi run -p "fix the failing test in src/calc.go"
 /tmp/manvi run -p "..." --json --max-steps 40 --timeout 10m
 
@@ -309,7 +309,7 @@ export MANVI_LLM_PROVIDER_DEFAULT=local
 |---|---|
 | `manvi` | Full-screen interactive TUI (composer, transcript, approvals, dashboard) |
 | `manvi doctor` | Check configuration, store reachability, weakened gates |
-| `manvi run -p "..."` | One headless turn; exit 2 = step ceiling reached |
+| `manvi run -p "..."` | One headless turn; exit 2 = step ceiling, 3 = output cap, 4 = no answer, 5 = unfinished |
 | `manvi local` | Discover local model servers (~30ms) |
 | `manvi serve` | NDJSON stdio host plane for IDEs and desktop apps |
 | `manvi check PATH` | Dry-run a file write against policy (no mutation) |
