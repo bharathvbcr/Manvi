@@ -23,6 +23,28 @@ use crate::rigor::FileCoverage;
 /// rather than materialised.
 const MAX_COVERED_SPAN: u64 = 1_000_000;
 
+/// The most line numbers one report may materialise, across every block of
+/// every file.
+///
+/// [`MAX_COVERED_SPAN`] bounds one block and nothing bounded their sum, which
+/// is not the same guarantee: a profile of N blocks each just inside the
+/// per-block limit costs N times that limit. Measured on overlapping
+/// 1,000,000-line blocks for a single file, 601 bytes of input took 19.7 s and
+/// 85 MB, and 12.3 KB took 284 s and 1.6 GB — roughly 130 KB of memory per byte
+/// of input. That is reachable rather than theoretical, because the coverage
+/// path is one the executor generally controls (`--coverage` points into the
+/// repo), and its consequence was worse than the memory: the Go client bounds
+/// the verifier at 30 s, so a crafted profile reliably pushed `secret_scan`,
+/// `stub_detection` and `diff_coverage` into "did not run" — which is recorded
+/// as degradation, not as a blocking finding. A file nobody could parse must
+/// not be a way to switch three gates off quietly.
+///
+/// Four million is far past any real measurement — it is a codebase of four
+/// million executed lines — and bounds this parse to about 16 MB and a few
+/// milliseconds. Exceeding it is an error, following the same rule as every
+/// other malformed input here: an error, never a measurement of nothing.
+const MAX_COVERED_LINES: u64 = 4_000_000;
+
 /// A coverage file that could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverageError {
@@ -88,6 +110,7 @@ pub fn parse_with_root(
 fn parse_go(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
     let mut covered: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut seen_any = false;
+    let mut materialised: u64 = 0;
 
     for (idx, line) in raw.lines().enumerate() {
         let lineno = idx + 1;
@@ -147,6 +170,16 @@ fn parse_go(raw: &str) -> Result<Vec<FileCoverage>, CoverageError> {
         // recorded so the intersection matches whichever form the diff carries.
         let entry = covered.entry(normalise_go_path(path)).or_default();
         if count > 0 {
+            // Counted before the lines are pushed, not after: the point of the
+            // bound is that the allocation never happens, so checking it once
+            // the vector had already grown would be a report of the problem
+            // rather than a defence against it.
+            materialised = materialised.saturating_add(span);
+            if materialised > MAX_COVERED_LINES {
+                return Err(bad(
+                    "the profile's blocks together cover more lines than any real measurement",
+                ));
+            }
             for n in start_line..=end_line {
                 entry.push(n);
             }
@@ -189,6 +222,11 @@ fn parse_lcov(
     let mut covered: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut current: Option<String> = None;
     let mut seen_any = false;
+    // One DA record materialises one line, so this bound is nearly the input's
+    // own size — but it is applied for the same reason as in the Go parser, and
+    // by the same rule, so neither format has a path to unbounded growth that
+    // the other has closed.
+    let mut materialised: u64 = 0;
 
     for (idx, line) in raw.lines().enumerate() {
         let lineno = idx + 1;
@@ -229,6 +267,12 @@ fn parse_lcov(
                 .map_err(|_| bad("DA hit count is not a number"))?;
             seen_any = true;
             if hits > 0 {
+                materialised += 1;
+                if materialised > MAX_COVERED_LINES {
+                    return Err(bad(
+                        "the report covers more lines than any real measurement",
+                    ));
+                }
                 covered.entry(file.clone()).or_default().push(line_no);
             }
             continue;

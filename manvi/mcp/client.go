@@ -79,6 +79,12 @@ const (
 	// is skipped with a recorded diagnostic rather than allowed to end the
 	// session: the next line may be perfectly good.
 	maxStdoutLine = 16 << 20
+	// maxStderrLine bounds one retained stderr line. Diagnostics are worth
+	// keeping only while they are small; a server emitting megabyte log lines
+	// must not grow the retained buffer without bound. A line past it is
+	// skipped — with a diagnostic saying so — and draining continues, because a
+	// stderr reader that stops is a child that blocks in write(2).
+	maxStderrLine = 1 << 20
 	// defaultCallTimeout applies to calls made on a context with no deadline.
 	// An unbounded wait on a wedged server freezes the whole tool surface;
 	// operators who need longer set Timeout in the server config.
@@ -268,21 +274,33 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 }
 
 // stderrLoop records stderr diagnostics from the MCP server.
+//
+// It reads with the same readLimitedLine/drainToNewline pattern as stdout
+// rather than with a bufio.Scanner. A Scanner stops *permanently* on
+// ErrTooLong — it does not skip the token and carry on — so one oversized log
+// line ended stderr draining for the life of the process: the child's stderr
+// pipe filled, the child blocked in write(2) before it could answer, and every
+// later call ran out its full timeout. And ErrTooLong was explicitly filtered
+// out of the diagnostics, so a reader that had stopped reported exactly what a
+// reader that ran clean reports — nothing. A check that could not run must
+// never report the same result as a check that ran and passed, so the skip is
+// recorded and draining continues.
 func (c *Client) stderrLoop() {
-	scanner := bufio.NewScanner(c.stderr)
-	// Diagnostics are worth keeping only while they are small; a server
-	// emitting megabyte log lines must not grow this buffer without bound.
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		c.errMu.Lock()
-		if len(c.serverErrors) < 100 {
-			c.serverErrors = append(c.serverErrors, line)
+	reader := bufio.NewReaderSize(c.stderr, 64*1024)
+	for {
+		line, err := readLimitedLine(reader, maxStderrLine)
+		switch {
+		case err == nil:
+			c.recordError(strings.TrimRight(string(line), "\r\n"))
+			continue
+		case errors.As(err, new(errLineTooLarge)):
+			c.recordError(fmt.Sprintf("stderr line skipped: %v", err))
+			continue
+		case err == io.EOF:
+		default:
+			c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
 		}
-		c.errMu.Unlock()
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
+		return
 	}
 }
 
@@ -359,9 +377,9 @@ func (c *Client) Alive() bool {
 // Done exposes the channel closed when the server's stdout ends.
 func (c *Client) Done() <-chan struct{} { return c.doneCh }
 
-// readLimitedLine returns one newline-terminated frame without its terminator.
-// The final unterminated frame at EOF counts as a line, matching the
-// bufio.Scanner semantics this replaced. A frame longer than limit is drained
+// readLimitedLine returns one line including its trailing newline, if it had
+// one. The final unterminated line at EOF counts as a line, matching the
+// bufio.Scanner semantics this replaced. A line longer than limit is drained
 // to its terminator and reported as errLineTooLarge rather than ending the
 // stream: one runaway frame must not convert a healthy session into permanent
 // tool failure.
@@ -371,10 +389,16 @@ func (c *Client) Done() <-chan struct{} { return c.doneCh }
 // noisy server and the session carries on; a 17 MiB line that opens with `{`
 // was a reply, and the request it was a reply to must be failed rather than
 // left to sit out its full timeout on a response that is never coming.
-type errLineTooLarge struct{ prefix []byte }
+// It carries the limit it exceeded as well, because both streams use this
+// reader with different bounds; naming maxStdoutLine unconditionally reported
+// the wrong number for a skipped stderr line.
+type errLineTooLarge struct {
+	prefix []byte
+	limit  int
+}
 
-func (errLineTooLarge) Error() string {
-	return fmt.Sprintf("server emitted a frame exceeding %d bytes", maxStdoutLine)
+func (e errLineTooLarge) Error() string {
+	return fmt.Sprintf("server emitted a line exceeding %d bytes", e.limit)
 }
 
 func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
@@ -392,7 +416,7 @@ func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 				if len(prefix) > unroutablePreview {
 					prefix = prefix[:unroutablePreview]
 				}
-				return nil, errLineTooLarge{prefix: append([]byte(nil), prefix...)}
+				return nil, errLineTooLarge{prefix: append([]byte(nil), prefix...), limit: limit}
 			}
 		case err == io.EOF:
 			if len(buf)+len(chunk) > 0 {
@@ -619,7 +643,7 @@ func renderID(v any) string {
 // waiting forever for.
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
 	if c.closed.Load() {
-		return errors.New("mcp: client is closed")
+		return c.closedReason()
 	}
 	if !c.Alive() {
 		return fmt.Errorf("mcp: server %s has exited%s", c.cfg.Name, c.diagnosticsSuffix())
@@ -698,6 +722,28 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}
 }
 
+// ErrWriteUncertain reports a frame this client could not establish the fate
+// of: the write outlived writeTimeout, so an unknown prefix of it — possibly
+// all of it — is already in the child's pipe.
+//
+// It is a distinct type because the distinction is the whole point. A caller
+// that treats it as "the request was not sent" and retries will run a
+// non-idempotent tool a second time. There is no way for this layer to
+// discover which happened, so it names the ambiguity instead of resolving it
+// one way and being wrong half the time.
+type ErrWriteUncertain struct {
+	// Server is the configured server name, for the message.
+	Server string
+	// After is the bound the write outlived.
+	After time.Duration
+}
+
+func (e *ErrWriteUncertain) Error() string {
+	return fmt.Sprintf("stdin write to %s did not complete within %s: the request may already have "+
+		"been delivered and executed, so it must not be retried blindly; the connection was torn down",
+		e.Server, e.After)
+}
+
 // writeFrame writes one newline-terminated frame under the writer lock, with
 // the write itself bounded: a child that stopped draining its stdin would
 // otherwise hold writerMu forever and freeze every other call in the queue.
@@ -734,22 +780,42 @@ func (c *Client) writeFrame(data []byte) error {
 		return werr
 	case <-time.After(writeTimeout):
 		c.writeWedged.Store(true)
-		if c.stdin != nil {
-			// Safe to call while that write is still in flight: StdinPipe
-			// returns a close-once handle over a pollable pipe, so the
-			// blocked Write returns instead of holding its buffer forever.
-			_ = c.stdin.Close()
-		}
-		return fmt.Errorf("stdin write to %s did not complete within %s (server not reading); "+
-			"the connection was retired because the frame may be partly written",
+		// Close, not just stdin.Close: shutting stdin unblocks the stranded
+		// goroutine and bounds how much of the frame can ever land, but the
+		// child also has to be reaped and the read loop ended, or a wedged
+		// connection leaves a live server process behind it. Close does not
+		// take writerMu, so calling it under that lock is safe.
+		_ = c.Close()
+		// A typed error because "not delivered" and "unknown" are different
+		// facts and only the second one is true here: the goroutine may already
+		// have delivered the frame into the pipe buffer before the deadline, so
+		// the server may have executed a request this caller is being told
+		// failed. Callers that must not retry blind can test for it.
+		return &ErrWriteUncertain{Server: c.Name(), After: writeTimeout}
+	}
+}
+
+// closedReason explains why this client is closed.
+//
+// "Closed" and "retired after a wedged write" are different facts and a caller
+// has to be able to tell them apart: the first is an orderly shutdown, the
+// second means a frame may be half-written on a stream nobody will ever read,
+// and a caller that retries into it corrupts the next request too. Close is
+// what a wedged write calls to reap the child, so without this the more
+// specific fact was overwritten by the more general one.
+func (c *Client) closedReason() error {
+	if c.writeWedged.Load() {
+		return fmt.Errorf("mcp: client is closed: an earlier write to %s did not complete within %s, "+
+			"so the connection was retired because it may carry a partial frame",
 			c.cfg.Name, writeTimeout)
 	}
+	return errors.New("mcp: client is closed")
 }
 
 // Notify sends a one-way notification without waiting for a response.
 func (c *Client) Notify(method string, params any) error {
 	if c.closed.Load() {
-		return errors.New("mcp: client is closed")
+		return c.closedReason()
 	}
 	if !c.Alive() {
 		return fmt.Errorf("mcp: server %s has exited", c.cfg.Name)

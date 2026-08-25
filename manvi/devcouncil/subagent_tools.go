@@ -216,19 +216,15 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 
 	runner := r.deps.SubAgent
 
-	maxDepth := 2
-	maxFanout := 4
-	if r.deps.Gate != nil && r.deps.Gate.Flags != nil {
-		if d, _, err := r.deps.Gate.Flags.Int(flags.AgentsMaxSpawnDepth); err == nil && d >= 0 {
-			maxDepth = d
-		}
-		if f, _, err := r.deps.Gate.Flags.Int(flags.AgentsMaxFanout); err == nil && f >= 1 {
-			maxFanout = f
-		}
-		if pName, _, err := r.deps.Gate.Flags.String(flags.LLMDefaultProvider); err == nil {
-			maxFanout = agents.AdaptiveFanoutLimit(pName, maxFanout)
-		}
+	// One reader for the delegation bounds, in the package that enforces them.
+	// This block used to be a verbatim copy of the one in spawn_subagents, with
+	// its own hardcoded fallback of four against a catalogue default of eight.
+	var flagReg *flags.Registry
+	if r.deps.Gate != nil {
+		flagReg = r.deps.Gate.Flags
 	}
+	bounds := agents.ResolveBounds(flagReg)
+	maxDepth, maxFanout := bounds.MaxDepth, bounds.MaxFanout
 
 	// The depth bound, applied. It was read into a variable, handed to a pool
 	// whose Child() nothing ever calls, and enforced nowhere: setting

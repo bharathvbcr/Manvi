@@ -3,15 +3,28 @@ package devcouncil
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"manvi/flags"
 	"manvi/mcp"
+	"manvi/policy"
+	"manvi/tools"
 )
 
 func TestArtifactTools(t *testing.T) {
 	f := newFixture(t)
+
+	// An artifact is a record of work on a task, so the tools now require the
+	// same lease every other mutation does. Under this fixture's strict posture
+	// the refusal stands rather than being demoted; TestAnArtifactWriteIsJudged
+	// below is what proves it.
+	if out := f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"}); out["task_id"] != "TASK-001" {
+		t.Fatalf("checkout = %v", out)
+	}
 
 	// 1. Create artifact
 	createRes := f.call("devcouncil_create_artifact", map[string]any{
@@ -237,3 +250,101 @@ func TestDynamicToolSearchAndActivationNative(t *testing.T) {
 		t.Fatalf("expected devcouncil_define_subagent in active schemas, got: %v", activeNames)
 	}
 }
+
+// TestAnArtifactWriteIsJudgedAndSaysHowItWasJudged.
+//
+// The artifact tools wrote into `.devcouncil/artifacts/` with no lease, no gate
+// consultation and nothing in the result to say so, while
+// devcouncil_write_file refused the sibling path in the same run as a hard rule
+// that "no override clears, by any authority". Two tools, one directory, two
+// answers — and the ungated one left no record that anything had been skipped.
+func TestAnArtifactWriteIsJudgedAndSaysHowItWasJudged(t *testing.T) {
+	create := func(f *fixture, name string) tools.Result {
+		return f.call("devcouncil_create_artifact", map[string]any{
+			"name":     name,
+			"content":  "# plan\n",
+			"metadata": map[string]any{"summary": "a plan"},
+		})
+	}
+
+	t.Run("strict refuses without a lease", func(t *testing.T) {
+		f := newFixture(t)
+		res := create(f, "unattributed.md")
+		if !res.IsError || !res.Blocked {
+			t.Fatalf("an artifact was written with no task checked out: %+v", res)
+		}
+		if res.Rule != string(policy.RuleNoTask) {
+			t.Errorf("rule = %q, want the rule a repository write is refused by for the same reason", res.Rule)
+		}
+		if _, err := os.Stat(filepath.Join(f.root, ".devcouncil", "artifacts", "unattributed.md")); !os.IsNotExist(err) {
+			t.Errorf("the refusal did not stop the write: %v", err)
+		}
+	})
+
+	t.Run("a leased write is allowed and admits what did not run", func(t *testing.T) {
+		f := newFixture(t)
+		f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
+		res := create(f, "planned.md")
+		if res.IsError {
+			t.Fatalf("a leased artifact write was refused: %s", res.Text)
+		}
+		// Spelled out rather than taken from the constant: this string travels
+		// into the run report, so the test has to pin the value and not just
+		// agree with whatever the source currently says.
+		if !slices.Contains(res.Degraded, "scope.artifact_store") {
+			// No task plans a file under .devcouncil/artifacts, so the scope
+			// rungs never ran on this path. An allow that does not say so is
+			// indistinguishable from one the plan authorised.
+			t.Errorf("degraded = %v, want %q", res.Degraded, "scope.artifact_store")
+		}
+	})
+
+	t.Run("yolo demotes the refusal rather than dropping the rule", func(t *testing.T) {
+		f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureYolo})
+		res := create(f, "unattributed.md")
+		if res.IsError {
+			t.Fatalf("yolo refused an artifact write: %s", res.Text)
+		}
+		// The posture allowed it; the record must still name what would have
+		// blocked it, exactly as a demoted repository write does.
+		if res.Demoted == "" || !strings.Contains(res.Demoted, flags.PolicyFileMode) {
+			t.Errorf("demoted = %q, want the setting that allowed this named", res.Demoted)
+		}
+		if res.Rule != string(policy.RuleNoTask) {
+			t.Errorf("rule = %q, want the rule that would have blocked it kept", res.Rule)
+		}
+	})
+}
+
+// mcpProbeScript is a minimal stdio MCP server: it answers the handshake and
+// every tools/call with one text block. A real subprocess over the real
+// JSON-RPC framing, because the point of the assertion below is what a
+// *successful* dispatch carries back, and a stubbed manager would prove only
+// what the stub was told to return.
+const mcpProbeScript = `
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  if [ -z "$id" ]; then continue; fi
+  case "$line" in
+    *tools/call*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"the probe server ran something"}]}}\n' "$id" ;;
+    *) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+  esac
+done
+`
+
+// TestAnMCPDispatchIsRecordedAsUnjudged was retired here, deliberately.
+//
+// It held that mcp_call_tool dispatches without being judged, and that the
+// honest response was to mark the result `mcp.dispatch.unjudged` rather than to
+// refuse it. That was true of a tool which validated two strings and handed the
+// call to the server. It is no longer true: mcp_call_tool now goes through the
+// command gate as `mcp_call_tool <server>/<tool>`, so the calls that used to be
+// unjudged are refused without a lease and annotated with a real decision when
+// they run. Keeping the old assertion would have required the harness to label
+// a gated call ungated.
+//
+// The property that replaced it is covered, not dropped:
+// TestMCPCallToolIsGatedAndRefusesWithoutApproval pins the refusal, and
+// TestAPermittedMCPCallStillRunsAndCarriesItsQualification pins that a
+// permitted call still reaches the server carrying its qualification.
+// mcpProbeScript above is kept: it is the fixture those tests use.

@@ -79,6 +79,41 @@ func identityOf(fi fs.FileInfo) (componentIdentity, bool) {
 	return componentIdentity{uint64(sys.Dev), uint64(sys.Ino)}, true
 }
 
+// linksOf reports how many names reach the file described by fi.
+//
+// This is the question the identity pin cannot ask. Pinning answers "is this
+// the file policy judged", and answers it well — but what policy judged is a
+// *name*, and a hard link gives one inode two names. `ln .env notes.txt` leaves
+// the ladder judging "notes.txt", which matches no secret pattern, while the
+// bytes land in .env; the pin then actively guarantees they do, because the
+// inode it verifies is exactly the one the link shares. Nothing above can see
+// it: st_nlink is a property of the file and every rung up there is a statement
+// about the path.
+func linksOf(fi fs.FileInfo) (uint64, bool) {
+	sys, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(sys.Nlink), true
+}
+
+// aliasRefusal reports that the file at the pinned location carries more than
+// one name, so the operation would reach a file the gate did not judge.
+type aliasRefusal struct {
+	rel    string
+	links  uint64
+	during string
+}
+
+func (e *aliasRefusal) Error() string {
+	return fmt.Sprintf(
+		"refusing to %s %q: %d names reach this file, so the %s would also reach it under a name "+
+			"policy never judged (a hard link to a credential is how one gets laundered past the "+
+			"secret-path rung). Break the link first — copy the file and replace the original with "+
+			"the copy — if this operation is intended",
+		e.during, e.rel, e.links, e.during)
+}
+
 // symlinkRefusal reports that traversal hit a symbolic link where the pinned
 // expectation required the literal directory or file.
 type symlinkRefusal struct {
@@ -472,6 +507,20 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 				"policy evaluation and open (was inode %d, opened inode %d)",
 			p.rel, p.targetIdent.ino, openedID.ino)
 	}
+	// Asked of the descriptor rather than of the pin, because a link created
+	// during the approval window is exactly the case that matters, and fstat
+	// on the open file cannot be raced by a later rename. See linksOf.
+	fi, statErr := f.Stat()
+	if statErr != nil {
+		return fmt.Errorf("inspecting the opened file %q: %w", p.rel, statErr)
+	}
+	links, ok := linksOf(fi)
+	if !ok {
+		return fmt.Errorf("platform cannot count links; refusing to write %q", p.rel)
+	}
+	if links > 1 {
+		return &aliasRefusal{rel: p.rel, links: links, during: "write"}
+	}
 
 	if err := f.Truncate(0); err != nil {
 		return fmt.Errorf("truncating %q: %w", p.rel, err)
@@ -581,6 +630,22 @@ func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 	openedID, err := p.checkOpened(f, chain, leaf, "read")
 	if err != nil {
 		return nil, err
+	}
+	// A pinned read is the read half of a write — patchFile reads the file it
+	// is about to rewrite — so the same rule applies: reading through a second
+	// name is how the contents of a file the gate would have refused reach the
+	// model. Unlink is left alone deliberately: removing one of several names
+	// destroys no shared content, so refusing it would be over-refusal.
+	fi, statErr := f.Stat()
+	if statErr != nil {
+		return nil, fmt.Errorf("inspecting the opened file %q: %w", p.rel, statErr)
+	}
+	links, ok := linksOf(fi)
+	if !ok {
+		return nil, fmt.Errorf("platform cannot count links; refusing to read %q", p.rel)
+	}
+	if links > 1 {
+		return nil, &aliasRefusal{rel: p.rel, links: links, during: "read"}
 	}
 	if openedID != p.targetIdent {
 		return nil, fmt.Errorf(

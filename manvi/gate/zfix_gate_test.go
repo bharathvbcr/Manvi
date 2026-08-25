@@ -73,7 +73,14 @@ func TestAGrantOnTheCommandDoesNotCarryItsRedirectTarget(t *testing.T) {
 	g := newGate(t, nil)
 	task := testTask()
 
-	before, err := g.EvaluateCommand(secretRedirect, task)
+	// Argued from the bare command, which is the subject an operator is
+	// actually shown: NormalizeAllowlistCommand strips the redirection, so this
+	// decision and the redirecting line are one argument as far as the ledger
+	// is concerned. Evaluating the redirecting line here instead would return
+	// the target's own hard refusal — the redirect rung reaches it now even
+	// though the command was only softly refused — and there would be no soft
+	// command denial left to argue a grant from.
+	before, err := g.EvaluateCommand(plainCommand, task)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +109,17 @@ func TestAGrantOnTheCommandDoesNotCarryItsRedirectTarget(t *testing.T) {
 	if !evaluated(g.Decisions(), ".env.local") {
 		t.Fatal("the redirect target was never evaluated")
 	}
+	// The grant is real and does clear the command rung. Checked last so a
+	// once-only grant is not consumed before the assertion that matters, and
+	// checked at all so the refusal above cannot be passing merely because the
+	// grant never applied to this line.
+	cleared, err := g.EvaluateCommand(plainCommand, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Blocked() {
+		t.Fatalf("the grant never cleared the command rung, so the redirect case proves nothing: %+v", cleared)
+	}
 }
 
 // DEFECT 1, the escalation chain. `.devcouncil/*` is path.restricted and Hard,
@@ -112,7 +130,9 @@ func TestAGrantCannotForgeTheGrantLedgerThroughARedirect(t *testing.T) {
 	g := newGate(t, nil)
 	task := testTask()
 
-	denial, err := g.EvaluateCommand(restrictedRedirect, task)
+	// The bare command, for the reason given in the test above: this is the
+	// soft, grantable subject the operator answers.
+	denial, err := g.EvaluateCommand(plainCommand, task)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,6 +333,22 @@ func TestRedirectTargetsAreEvaluatedInEveryCellWhereTheCommandIsPermitted(t *tes
 	}
 
 	for _, cell := range cells {
+		// The command rung's own verdict, measured on the fixture that carries
+		// no redirection to overrule it. It cannot be read off the redirect
+		// fixtures any more: the rung now runs even when the command was only
+		// *softly* refused — that is the property this test exists to hold —
+		// and a refused target returns the file's own rule, so the command
+		// rung's answer is no longer visible in the decision that comes back.
+		plain, err := cell.build(t).EvaluateCommand(plainCommand, testTask())
+		if err != nil {
+			t.Fatalf("%s: probing the command rung: %v", cell.name, err)
+		}
+		commandPermitted := !(plain.Blocked() && plain.Rule == policy.RuleCommandNotAllowed)
+		if commandPermitted != cell.wantPermitted {
+			t.Errorf("%s: command permitted = %v, want %v (decision %s/%q)",
+				cell.name, commandPermitted, cell.wantPermitted, plain.Action, plain.Rule)
+		}
+
 		for _, cmd := range commands {
 			label := cell.name + " / " + cmd.name
 			g := cell.build(t)
@@ -325,18 +361,11 @@ func TestRedirectTargetsAreEvaluatedInEveryCellWhereTheCommandIsPermitted(t *tes
 			t.Logf("%-52s -> %-5s %-22q target evaluated=%v",
 				label, d.Action, d.Rule, cmd.target != "" && evaluated(g.Decisions(), cmd.target))
 
-			// Every fixture is a `cat` the task never allowlisted, so the
-			// ladder's own refusal is always the allowlist rung. Anything else
-			// means the command itself got through and some later rung decided.
-			commandPermitted := !(d.Blocked() && d.Rule == policy.RuleCommandNotAllowed)
-			if commandPermitted != cell.wantPermitted {
-				t.Errorf("%s: command permitted = %v, want %v (decision %s/%q)",
-					label, commandPermitted, cell.wantPermitted, d.Action, d.Rule)
-			}
-			if !commandPermitted {
-				// Nothing runs, so there is no component left unevaluated.
-				continue
-			}
+			// No early exit on a refused command. A soft command refusal is
+			// demotable and grantable, so its redirection targets must be
+			// judged anyway — skipping them here is precisely how `exec > .env`
+			// came to be refused as a scope violation the operator could clear
+			// rather than as the credential write it is.
 
 			switch {
 			case cmd.target != "":

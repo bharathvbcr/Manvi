@@ -116,3 +116,60 @@ func clipS(s string) string {
 	}
 	return s[:200] + "..."
 }
+
+// FuzzRecoverIDNeverAnswersUnderSomeoneElsesID pins the one thing the
+// best-effort id recovery is not allowed to do.
+//
+// A line under the cap is correlated by encoding/json's reading of it; a line
+// over the cap is correlated by recoverID's reading of its first 4 KiB. The
+// second is allowed to give up — an empty id is a visible, unroutable refusal,
+// and that is the documented worst case. It is not allowed to produce a
+// *different* id, because that marks some other caller's in-flight request
+// failed while the request that was actually refused waits forever. Recovery
+// that gives up costs one confused log line; recovery that guesses costs two
+// hangs.
+//
+// This is invisible to FuzzServeAnswersEveryRequestItReads: its corpus never
+// reaches the 8 MiB line cap, so it never takes the oversized path at all.
+// Driving recoverID directly is what makes the property reachable at fuzzing
+// speed. That it does not also give up on everything is pinned by
+// TestRecoverIDReadsTheEnvelopeRatherThanScanningForAnID.
+func FuzzRecoverIDNeverAnswersUnderSomeoneElsesID(f *testing.F) {
+	seeds := []string{
+		`{"id":"7","op":"hello"}`,
+		`{"op":"hello","id":"7"}`,
+		`{"op":"hello","params":{"id":"nested"},"id":"7"}`,
+		`{"op":"hello","params":[{"id":"nested"}],"id":"7"}`,
+		`{"op":"hello","params":{"q":"{\"id\":\"nested\"}"},"id":"7"}`,
+		`{"id":"first","id":"second","op":"hello"}`,
+		`{"Id":"cased","op":"hello"}`,
+		`{"id":"a\"b","op":"hello"}`,
+		`{"id":"7","op":"hello"}`,
+		`{"id":7,"op":"hello"}`,
+		`{"id":null,"op":"hello"}`,
+		`{"paid":"no","id":"7"}`,
+		`{"id":{"id":"nested"},"op":"hello"}`,
+		`{"params":{"a":{"b":{"id":"deep"}}},"id":"7"}`,
+		`[{"id":"7"}]`,
+		`{"id":`,
+		`{`,
+		``,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, line string) {
+		var req Request
+		if json.Unmarshal([]byte(line), &req) != nil {
+			// A fragment, not a request. There is no decoded id to disagree
+			// with, and the head recovery is best-effort by construction.
+			return
+		}
+		if got := recoverID([]byte(line)); got != "" && got != req.ID {
+			t.Fatalf("recoverID(%q) = %q, but the decoder reads the id as %q; "+
+				"a refusal under that id would fail a call nobody made",
+				clipS(line), clipS(got), clipS(req.ID))
+		}
+	})
+}

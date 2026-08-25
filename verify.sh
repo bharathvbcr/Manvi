@@ -118,9 +118,22 @@ printf '    %s command cases against the Python engine\n' "$cmd_cases"
 step "Cross-language — store schema"
 tmpdb="$(mktemp -d)/state.sqlite"
 (cd crates && cargo build -q -p dc-store --bin dcstore) || fail "building dcstore"
-crates/target/debug/dcstore --db "$tmpdb" health >/dev/null || fail "dcstore health"
+
+# `health` must not manufacture the store it is asked about. This gate used to
+# run it first against a path that did not exist yet, and it passed — because
+# health opened with SQLITE_OPEN_CREATE, made an empty database, and reported it
+# healthy. A typo in --db was therefore indistinguishable from a working store,
+# which is the same class as every other "a check that could not run answered
+# like one that passed" defect in this file. The order below is now load-bearing
+# rather than incidental: a writing command creates, and health only reads.
+if crates/target/debug/dcstore --db "$(mktemp -d)/absent.sqlite" health >/dev/null 2>&1; then
+  fail "dcstore health reported a database that does not exist as healthy"
+fi
+printf '    covered: health refuses a store that does not exist rather than creating one\n'
+
 crates/target/debug/dcstore --db "$tmpdb" acquire --task VERIFY-1 --owner gate --ttl-seconds 60 >/dev/null \
   || fail "dcstore acquire"
+crates/target/debug/dcstore --db "$tmpdb" health >/dev/null || fail "dcstore health"
 if command -v sqlite3 >/dev/null; then
   held="$(sqlite3 "$tmpdb" "SELECT task_id FROM task_leases WHERE status='active';")"
   [[ "$held" == "VERIFY-1" ]] || fail "an independent reader saw '$held', not VERIFY-1"
@@ -291,6 +304,41 @@ done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' | sed -E 's/^([^:]+):
 (( fuzz_declared >= 10 )) || fail "only ${fuzz_declared} fuzz targets found; the sweep is not looking at the harness"
 [[ -z "$fuzz_missing" ]] || fail "declared but not reachable in their own package:${fuzz_missing}"
 printf '    covered: all %s declared fuzz targets are reachable where they are defined\n' "$fuzz_declared"
+
+# The command gate has two verdicts to reconcile — one about the command, one
+# about the files its redirections open — and for a long time only the first was
+# reliably reached. The tests that prove the second are differential: they run
+# each command line under `sh -c` in a throwaway tree and compare the files that
+# appeared against the gate's own verdict on those files. That makes them the
+# only checks here whose expectation comes from the filesystem rather than from
+# something a person wrote down, which is exactly why they found what the
+# hand-written fixtures could not.
+#
+# They are counted rather than trusted to have run. `go test ./gate` prints "ok"
+# whether these executed or were renamed out of existence, and a differential
+# check that silently stopped running would leave the class it covers looking
+# closed.
+step "Command gate — verdicts match what the shell actually writes"
+diff_ran="$( (cd manvi && go test -count=1 -v ./gate/ \
+  -run 'TestCommandVerdictIsNeverLooserThanTheWritesItPerforms|TestHiddenWritesAreRefusedOutrightUnderEveryPosture' 2>/dev/null) \
+  | grep -c '^    --- PASS' || true )"
+(( diff_ran >= 60 )) || fail "the command/filesystem differential ran only ${diff_ran} cases; the corpus is not being exercised"
+printf '    covered: %s command lines executed under sh and reconciled against the gate\n' "$diff_ran"
+
+# The generated half of the same differential. The corpus above covers the
+# shapes someone wrote down; this assembles command lines from the shell's own
+# operators and checks the same invariant against the filesystem, and it is what
+# found the substituted write that escaped the repository root altogether.
+#
+# The count that matters is not how many lines ran but how many got far enough
+# to be checked: the invariant is conditional on the gate having allowed the
+# line, so a run where nothing was allowed passes while proving nothing. The
+# test fails on its own if that happens; this step surfaces the numbers.
+step "Command gate — generated command lines hold the same invariant"
+gen_out="$( (cd manvi && MANVI_GATE_SOAK="${MANVI_GATE_SOAK:-400}" go test -count=1 -v ./gate/ \
+  -run 'TestGeneratedCommandsNeverOutrunTheirOwnWriteVerdict' 2>&1) )"
+grep -q '^--- PASS' <<<"$gen_out" || { printf '%s\n' "$gen_out" >&2; fail "the generated differential did not pass"; }
+printf '    %s\n' "$(grep -o '[0-9]* generated command lines: .*' <<<"$gen_out" | head -1)"
 
 step "Docs — every stated count is the measured count"
 docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented' 2>/dev/null) | grep -c '^--- PASS' || true )"

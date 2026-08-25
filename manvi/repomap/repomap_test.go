@@ -261,3 +261,105 @@ func TestPermissiveIsReported(t *testing.T) {
 		t.Fatalf("stats = %+v; an area adjacent to every other must report as permissive", s)
 	}
 }
+
+// TestTheTotallyPermissiveGraphsReportAsPermissive is the case the ratio alone
+// could not reach.
+//
+// `Areas > 2` used to guard the ratio, and for a complete neighbour graph
+// MaxDegree is Areas-1, so the ratio holds from two areas up: the clause was
+// the only thing excluding the two graphs that permit the most. Two fully
+// coupled areas were reported as not permissive while three fully coupled ones
+// — no less permissive, only larger — were reported as permissive, so an allow
+// in the smaller repository was clean where the same allow in the larger one
+// was qualified.
+//
+// The single-area graph is the far end of it: nothing is adjacent to anything
+// because there is nothing else to be adjacent to, and every indexed file is in
+// the one subsystem any planned file is in.
+func TestTheTotallyPermissiveGraphsReportAsPermissive(t *testing.T) {
+	complete := func(areas ...string) Stats {
+		var nodes, edges []map[string]any
+		for _, area := range areas {
+			nodes = append(nodes, map[string]any{
+				"id": area + "/f.go", "kind": "file", "path": area + "/f.go", "area": area,
+			})
+		}
+		for _, from := range areas {
+			for _, to := range areas {
+				if from == to {
+					continue
+				}
+				edges = append(edges, map[string]any{
+					"source": from + "/f.go", "target": to + "/f.go",
+					"kind": "calls", "confidence": ConfidenceExtracted,
+				})
+			}
+		}
+		raw, err := json.Marshal(map[string]any{"schema_version": 2, "nodes": nodes, "edges": edges})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(t.TempDir(), "g.json")
+		if err := os.WriteFile(p, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		m, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Stats()
+	}
+
+	one := complete("solo")
+	if one.Areas != 1 {
+		t.Fatalf("stats = %+v, want a single area", one)
+	}
+	if !one.Permissive() {
+		t.Errorf("stats = %+v; one subsystem holds every indexed file, which is the widest the rung can be", one)
+	}
+
+	two := complete("alpha", "beta")
+	if two.Areas != 2 || two.MaxDegree != 1 {
+		t.Fatalf("stats = %+v, want two areas each adjacent to the other", two)
+	}
+	if !two.Permissive() {
+		t.Errorf("stats = %+v; every area neighbours every other, so the rung allows every indexed write", two)
+	}
+
+	three := complete("alpha", "beta", "gamma")
+	if !three.Permissive() {
+		t.Fatalf("stats = %+v; the three-area control must stay permissive", three)
+	}
+}
+
+// TestUncoupledAreasAreNotPermissive holds the other edge: the fix above must
+// not turn "small" into "permissive". Two areas the graph does not join are a
+// relation that genuinely separates them, and an empty index is a rung that
+// could not run at all — which the policy layer reports as its own degradation
+// and must not be relabelled as a rung that ran and said yes to everything.
+func TestUncoupledAreasAreNotPermissive(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"schema_version": 2,
+		"nodes": []map[string]any{
+			{"id": "alpha/f.go", "kind": "file", "path": "alpha/f.go", "area": "alpha"},
+			{"id": "beta/f.go", "kind": "file", "path": "beta/f.go", "area": "beta"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "g.json")
+	if err := os.WriteFile(p, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Stats(); s.Permissive() {
+		t.Errorf("stats = %+v; two areas with no coupling between them are what the rung is for", s)
+	}
+	if (Stats{}).Permissive() {
+		t.Error("an empty map answers \"unknown\", not \"yes\"; calling it permissive names the wrong defect")
+	}
+}

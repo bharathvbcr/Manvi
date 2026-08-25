@@ -67,6 +67,20 @@ type Error struct {
 	// expired deadline rather than a fault of the provider. Unexported because
 	// callers should ask Retryable() rather than reconstruct the reasoning.
 	cancelled bool
+	// permanent records that this failure was decided before the request left
+	// the process, so no attempt can change it.
+	//
+	// It exists because Status 0 means "never reached a server", and the two
+	// ways that happens are not alike: a refused dial is the most retryable
+	// fault there is, while a credential that could not be resolved — or that
+	// this harness declined to send — will resolve exactly the same way on
+	// every attempt. Without the distinction, attempt()'s own comment ("a
+	// credential that cannot be resolved is not a transient failure") was a
+	// claim the classification did not honour: the failure was retried until
+	// the turn's deadline and then reported as "context deadline exceeded",
+	// which names the timer instead of the cause and sends an operator looking
+	// for a network problem that is not there.
+	permanent bool
 }
 
 func (e *Error) Error() string {
@@ -103,7 +117,7 @@ func (e *Error) Unwrap() error { return e.Err }
 // classifying it as transient makes this taxonomy lie to everything that reads
 // it — including a caller deciding whether to fail over to another provider.
 func (e *Error) Retryable() bool {
-	if e.cancelled {
+	if e.cancelled || e.permanent {
 		return false
 	}
 	return retryableStatus(e.Status) || e.Status == 0
@@ -224,6 +238,21 @@ func LocalLoopbackTransport() *http.Transport {
 		ForceAttemptHTTP2:   false,
 	}
 }
+
+// IsLoopbackURL reports whether a base URL addresses this machine.
+//
+// Exported because the answer decides more than which connection pool to use.
+// An adapter whose provider is *named* "local" has to be able to tell a server
+// on this machine from a remote one before it attaches a credential to a
+// request: a key an operator set for some other vendor's service must not
+// travel to an arbitrary host just because that host was configured here. See
+// llm/local.checkCredentialDestination.
+//
+// A URL that will not parse is treated as non-loopback by the substring
+// fallback only when it actually contains a loopback literal, so the failure
+// direction is "assume remote", which is the safe one for a caller deciding
+// whether to send a secret.
+func IsLoopbackURL(rawURL string) bool { return isLoopbackURL(rawURL) }
 
 func isLoopbackURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
@@ -352,8 +381,11 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 		extra, err := c.Header()
 		if err != nil {
 			// A credential that cannot be resolved is not a transient failure —
-			// retrying it just delays the same error.
-			return nil, &Error{Provider: c.Provider, Err: fmt.Errorf("resolving credentials: %w", err)}
+			// retrying it just delays the same error. Marked permanent so the
+			// retry loop honours that rather than treating it as the Status-0
+			// dial failure it superficially resembles.
+			return nil, &Error{Provider: c.Provider, permanent: true,
+				Err: fmt.Errorf("resolving credentials: %w", err)}
 		}
 		for key, values := range extra {
 			for _, value := range values {
@@ -688,6 +720,82 @@ func (e *ErrOversizedFrame) Error() string {
 		e.Limit)
 }
 
+// MaxEventBytes bounds one assembled SSE event — every data: line from the
+// start of the event to the blank line that dispatches it.
+//
+// MaxFrameBytes was the only bound here and it bounds the wrong unit. It caps a
+// *line*, and Next appends each data: line onto the event's payload, so a
+// server sending well-formed short lines and never a blank one grew that
+// payload for as long as it kept talking while every individual line stayed
+// orders of magnitude under the line cap. Measured: 134,219,775 bytes in one
+// event and 175 MiB of heap, four times MaxFrameBytes, and still climbing when
+// the generator stopped. Nothing above catches it — payloadReader re-arms the
+// stall watchdog on every byte that arrives, so the stream reads as healthy,
+// and each adapter's decode cap is consulted only after a frame decodes, which
+// never happens while the event is still being assembled.
+//
+// It is the same number as MaxFrameBytes rather than a larger one because the
+// two bound the same thing at different granularity: one line at the limit is
+// already a whole event's worth, so a stream that needs more than this is
+// broken either way, and a second constant to keep in step would only be a
+// second thing to get wrong.
+const MaxEventBytes = MaxFrameBytes
+
+// ErrOversizedEvent reports an SSE event whose accumulated data: lines exceeded
+// MaxEventBytes before a blank line dispatched it.
+//
+// It is a distinct type from ErrOversizedFrame because it is a distinct fault
+// and the two send an operator to different places: an oversized frame means
+// the server is not terminating its lines, while this means it terminates them
+// and never ends the event.
+type ErrOversizedEvent struct {
+	Limit int
+}
+
+func (e *ErrOversizedEvent) Error() string {
+	return fmt.Sprintf("a single stream event accumulated more than %d bytes of data "+
+		"without the blank line that ends it; the stream was abandoned rather than "+
+		"buffered further. The server is terminating its lines but never terminating "+
+		"the event, which is a broken stream, not a long response", e.Limit)
+}
+
+// MaxDecodedResponseBytes bounds how much of one response a stream decoder will
+// hold, across every accumulator it has open.
+//
+// It lives here, with the other bounds on a streaming response, because three
+// adapters were each declaring their own copy of the same number and then
+// disagreeing about what it counted — gemini omitted thought signatures from
+// the tally that anthropic included, and none of them counted the per-call
+// bookkeeping at all. One constant and one stated rule is the only arrangement
+// under which "the response exceeded the decode limit" means the same thing on
+// every provider.
+//
+// 4MiB is the value because the largest legitimate response is bounded by the
+// model's output cap, and even a 128k-token completion at four bytes a token is
+// about 512KiB. Exceeding it is an error, never a truncation: settling 4MiB of
+// a runaway as though it were the answer is silent corruption.
+const MaxDecodedResponseBytes = 4 << 20
+
+// RetainedAccumulatorBytes is what a decoder charges against
+// MaxDecodedResponseBytes for each accumulator it is holding open, on top of
+// the bytes that accumulator has collected.
+//
+// An accumulator is not free. Every one of them costs a struct, a
+// strings.Builder, and an entry in each index the decoder keys it by — in
+// openaicompat that is four maps and a slice. A stream of tool-call fragments
+// that each carry a fresh id and *zero* argument bytes therefore allocated one
+// of these per fragment while adding nothing to a tally that counted only
+// content: measured at 400,000 accumulators and 98 MiB of heap with
+// decodedBytes() still reporting 0 and the cap never firing. A cap that counts
+// only the bytes the server chose to send is a cap the server chooses whether
+// to be bound by.
+//
+// 256 bytes is measured rather than guessed: the 98 MiB above over 400,000
+// accumulators is roughly 245 bytes each. Charging it means a runaway of empty
+// calls trips the same 4MiB ceiling as a runaway of content, at about sixteen
+// thousand open calls — far past any real response, which opens a handful.
+const RetainedAccumulatorBytes = 256
+
 // NewSSEWithStall wraps a response body and abandons it after silence, using
 // DefaultFirstTokenTimeout for the wait before the first token. A non-positive
 // idle disables the watchdog entirely, which is the documented escape hatch.
@@ -810,6 +918,17 @@ func (s *SSE) Next() (Event, error) {
 		case "event":
 			event.Name = string(value)
 		case "data":
+			// Checked before the append, not after, so the oversized copy is
+			// never made. See MaxEventBytes: the per-line bound in readLine
+			// cannot see this growth, because every line involved is legal.
+			grown := len(data) + len(value)
+			if len(data) > 0 {
+				grown++
+			}
+			if grown > MaxEventBytes {
+				s.err = &ErrOversizedEvent{Limit: MaxEventBytes}
+				return Event{}, s.err
+			}
 			if len(data) > 0 {
 				data = append(data, '\n')
 			}
@@ -929,7 +1048,8 @@ func (c *Client) Probe(ctx context.Context, method, url string, payload []byte) 
 	if c.Header != nil {
 		extra, err := c.Header()
 		if err != nil {
-			return nil, &Error{Provider: c.Provider, Err: fmt.Errorf("resolving credentials: %w", err)}
+			return nil, &Error{Provider: c.Provider, permanent: true,
+				Err: fmt.Errorf("resolving credentials: %w", err)}
 		}
 		for key, values := range extra {
 			for _, value := range values {

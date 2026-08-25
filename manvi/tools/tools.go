@@ -206,6 +206,44 @@ type Registry struct {
 	active      map[string]bool
 	dynamicMode bool
 	bus         *bus.Bus
+	// scrub removes watched credentials from every result text. Nil means no
+	// scrubbing, which is what a registry built without a composition root
+	// gets — tests, mostly.
+	scrub func(string) string
+}
+
+// SetScrubber installs the credential backstop every tool result passes
+// through.
+//
+// It belongs here rather than at the call sites because this is the one place
+// every result from every tool converges, and the alternative was what the
+// harness actually did: the scrubber was wired to the *display* layer only —
+// the renderer and the JSON sink — so what a person saw on their terminal was
+// clean while what went to disk and to the provider was not. A subprocess that
+// prints its own environment is the case the scrubber's own documentation names,
+// and `run_command` never sets cmd.Env, so `env` returned the harness's own API
+// keys; the loop appended that text verbatim to the session file and sent it in
+// the next request body.
+//
+// Scrubbing at the surface that renders is scrubbing the one consumer that was
+// never the risk.
+func (r *Registry) SetScrubber(scrub func(string) string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scrub = scrub
+}
+
+func (r *Registry) scrubText(text string) string {
+	if text == "" {
+		return text
+	}
+	r.mu.RLock()
+	scrub := r.scrub
+	r.mu.RUnlock()
+	if scrub == nil {
+		return text
+	}
+	return scrub(text)
 }
 
 // NewRegistry returns a registry bound to an event bus.
@@ -610,6 +648,11 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 		if panicked := recover(); panicked != nil {
 			result = stagePanic("tool", panicked)
 		}
+		// Scrubbed last, on the named return, so every way out of this function
+		// is covered: the ordinary path, a listener short-circuit, a refusal, a
+		// post-execute rewrite, and the panic recovery immediately above. A
+		// credential in a panic message is still a credential.
+		result.Text = r.scrubText(result.Text)
 	}()
 
 	pre, err := r.preExecute(ctx, call)

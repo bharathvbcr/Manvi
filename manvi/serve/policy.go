@@ -92,6 +92,24 @@ type FileCheckParams struct {
 type CommandCheckParams struct {
 	// Command is the command line as it would be run.
 	Command string `json:"command"`
+	// Root is the project root a redirection target is resolved against.
+	//
+	// Required only when the command actually redirects, and refused rather
+	// than defaulted when it does. A command line writes files through its
+	// redirections — `cmd > .env` is a write to .env whatever the allowlist
+	// says about cmd — and judging those needs a root, because the secret,
+	// restricted and outside-root rungs are all statements about a path's
+	// position in a repository.
+	//
+	// The absence of a root is answered with E_BAD_REQUEST rather than with a
+	// decision carrying a "not checked" marker. A marker is only as good as the
+	// host's willingness to read it, and a host that ignores it would receive
+	// `echo x > /etc/sudoers` as an ordinary allow. Refusing puts the fault
+	// where it can be fixed — in the request — and cannot be overlooked.
+	//
+	// A command with no redirection never consults it, so a host that only
+	// checks plain commands keeps sending exactly what it always sent.
+	Root string `json:"root,omitempty"`
 	// AllowedCommands is the host's own allowlist, in fnmatch form.
 	AllowedCommands []string `json:"allowed_commands,omitempty"`
 	// EnforceAllowlist keeps "not in any allowlist" a denial under
@@ -119,20 +137,6 @@ type CommandCheckParams struct {
 	// A host that wants the full ladder sets this true and supplies a real
 	// allowlist. That is a tightening, so it is opt-in rather than default.
 	EnforceAllowlist bool `json:"enforce_allowlist,omitempty"`
-	// Root is the project root a redirection target is resolved against.
-	//
-	// Required only when the command actually redirects, and refused rather
-	// than defaulted when it does. `echo x > /etc/sudoers` is a write, and the
-	// rung that catches it is the outside-root one, which is meaningless
-	// without a root — policy.check.file refuses a missing root for exactly
-	// that reason, and a redirect is that same write reached through a command
-	// line. Evaluating it against the process working directory would judge it
-	// against whatever directory the host happened to spawn the sidecar from,
-	// and report the result as though the check had run.
-	//
-	// A command with no redirection never consults it, so a host that only
-	// checks plain commands keeps sending what it always sent.
-	Root string `json:"root,omitempty"`
 }
 
 // errCommandRootMissing is what the redirect rung's write evaluator reports
@@ -214,6 +218,13 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	}
 	d := cmdGate.EvaluateCommand(p.Command, scope)
 
+	// The files this command line redirects into are judged before the
+	// demotion below, for the same reason the harness gate judges them before
+	// its own: a refusal that is about to be relaxed must not carry an
+	// unexamined write through with it. Under PostureHost every Soft denial is
+	// demoted, so without this a host asking about `nope > .env` would be told
+	// "allowed" — the allowlist refusal demoted, the write to .env never
+	// looked at.
 	// An empty command has nothing to run and nothing to grant; it is Hard, so
 	// it never reaches this demotion. Stated here because it is the one command
 	// outcome a host might expect to be demoted and must not be.

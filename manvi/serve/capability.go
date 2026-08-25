@@ -12,6 +12,17 @@ import (
 	"manvi/llm/local"
 )
 
+// maxProbeTimeoutMS bounds capability.probe's deadline.
+//
+// A probe is one or two HTTP round trips against a server on loopback, so ten
+// minutes is already far past generous. The ceiling is not about the network:
+// dispatch is serial by design (see Serve), so a host's timeout_ms is the
+// length of time one probe can wedge every other call on this sidecar. The
+// unbounded field turned a single 1<<31 into a 596-hour stall that no host
+// could distinguish from a crashed harness — and that outcome is reachable by
+// a host typo, not only by a hostile caller.
+const maxProbeTimeoutMS = 10 * 60 * 1000
+
 // ProbeParams asks what a server can do with a model.
 type ProbeParams struct {
 	// BaseURL is the server's OpenAI-compatible API root. Empty means the
@@ -38,7 +49,8 @@ type ProbeParams struct {
 	AssumeModelServed bool `json:"assume_model_served,omitempty"`
 	// TimeoutMS bounds the probe. Zero means the adapter's default. A host
 	// calls this on the path to assembling a request, so an unreachable server
-	// must fail fast rather than hang the turn.
+	// must fail fast rather than hang the turn. Refused above
+	// maxProbeTimeoutMS, and refused when negative.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
@@ -92,6 +104,24 @@ func (s *Server) probe(ctx context.Context, raw json.RawMessage) (any, *Error) {
 	}
 	if strings.TrimSpace(p.Model) == "" {
 		return nil, badRequest("capability.probe requires a model")
+	}
+	if err := checkTokenCount("declared_context_window", p.DeclaredContextWindow); err != nil {
+		return nil, err
+	}
+	if err := checkTokenCount("max_output_tokens", p.MaxOutputTokens); err != nil {
+		return nil, err
+	}
+	if p.TimeoutMS < 0 {
+		return nil, badRequest(
+			"timeout_ms is negative (%d); a negative deadline is not a fast probe, "+
+				"it is an unstated one", p.TimeoutMS)
+	}
+	if p.TimeoutMS > maxProbeTimeoutMS {
+		return nil, badRequest(
+			"timeout_ms is %d, past the %d ms ceiling; dispatch is serial by design, "+
+				"so this value is how long one probe may hold every other call behind it, "+
+				"and a sidecar that accepted 1<<31 would spend 596 hours indistinguishable "+
+				"from one that hung", p.TimeoutMS, maxProbeTimeoutMS)
 	}
 
 	cfg := local.Config{

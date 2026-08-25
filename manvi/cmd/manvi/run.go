@@ -461,7 +461,7 @@ func openSession(notes io.Writer, store *session.Store, opts runOptions) (string
 			return "", nil, err
 		}
 		fmt.Fprintf(notes, "manvi: session %s\n", id)
-		return id, session.NewLog(), nil
+		return id, newSessionLog(), nil
 	}
 
 	// The error names the flag the caller actually typed. --continue reaches

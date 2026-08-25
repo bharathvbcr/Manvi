@@ -131,6 +131,15 @@ struct SecretPattern {
     prefix: &'static str,
     /// Minimum length of the whole token, including the prefix.
     min_len: usize,
+    /// Whether everything after the prefix must be letters and digits.
+    ///
+    /// It exists for the short, ambiguous prefixes. `sk-` occurs inside
+    /// ordinary English and ordinary identifiers — `task-`, `disk-`, `risk-`
+    /// all contain it — and a length floor alone would turn a long enough
+    /// kebab-case name into a reported credential. The vendors whose keys are
+    /// a flat alphanumeric body can say so, and then the shape does the work
+    /// the prefix cannot.
+    alphanumeric_body: bool,
 }
 
 impl SecretPattern {
@@ -142,11 +151,25 @@ impl SecretPattern {
     /// they disagree about where secrets are, which is how a key redacted by
     /// one gate leaks out of another's evidence field.
     fn matches(&self, content: &str) -> Option<String> {
-        let start = content.find(self.prefix)?;
+        // The prefix has to begin a token, not merely appear inside one. Without
+        // this, `sk-` matched the middle of `task-`, `disk-` and `risk-`, and a
+        // long enough kebab-case identifier would have been reported as an
+        // OpenAI key — the false positive that gets a secret gate switched off.
+        let start = content
+            .match_indices(self.prefix)
+            .map(|(at, _)| at)
+            .find(|at| starts_a_token(content, *at))?;
         let token: String = content[start..]
             .chars()
             .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'' && *c != ',')
             .collect();
+        if self.alphanumeric_body
+            && !token[self.prefix.len()..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric())
+        {
+            return None;
+        }
         // A PEM block is identified by its full header, not by the dashes
         // alone: certificates and public keys are ordinary trust-store
         // content, and blocking them taught operators to wave findings
@@ -164,6 +187,20 @@ impl SecretPattern {
     }
 }
 
+/// Reports whether `at` begins a token rather than landing inside a word.
+///
+/// Punctuation and quotes count as boundaries — a key is nearly always
+/// preceded by `=`, `:`, `"` or a space — while a letter, digit or underscore
+/// means the prefix is part of a longer identifier and not a credential.
+/// A leading `-` is a boundary too, so a PEM header written with extra dashes
+/// still matches.
+fn starts_a_token(content: &str, at: usize) -> bool {
+    match content[..at].chars().next_back() {
+        None => true,
+        Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
+    }
+}
+
 /// Vendor-prefixed key shapes.
 ///
 /// Matching on a documented prefix plus a length floor, rather than on entropy,
@@ -172,56 +209,172 @@ impl SecretPattern {
 /// one whose findings get waved through, which is strictly worse than not
 /// having it. These prefixes are published by their vendors and do not occur by
 /// accident.
+///
+/// What that design does not excuse is being incomplete inside a family it
+/// already claims. `ghp_` was listed and `gho_`/`ghs_`/`ghu_`/`ghr_` were not;
+/// `xoxb-` was listed and `xoxp-`/`xoxa-`/`xapp-` were not; `AKIA` was listed
+/// and `ASIA` — the temporary credential that grants the same access — was not;
+/// `sk-proj-` was listed and the legacy `sk-` OpenAI key was not; GitLab,
+/// HuggingFace and npm had no entry at all. Every one of those passed the gate
+/// clean. Order matters as much as membership: the scan stops at its first
+/// match, so a longer prefix must be listed before any shorter one it starts
+/// with, or the finding would name the wrong vendor.
+///
+/// Two evasions remain, and they are written down rather than left implied,
+/// because a gate is only safe to rely on while what it cannot see is known:
+///
+///   - **A key split across added lines.** `const k = "sk-ant-" +` on one line
+///     and `"api03-…"` on the next is not detected; the scan reads one line at
+///     a time. Joining lines first would mean deciding where a logical line
+///     ends in every language a repository contains, and getting that wrong
+///     brings back the false positives this design exists to avoid.
+///   - **A PEM body without its header.** The private-key pattern requires the
+///     literal `private key` text on the same line, because matching the
+///     dashes alone flagged certificates and public keys — ordinary
+///     trust-store content — and taught operators to wave findings through.
+///
+/// Both are accepted. This gate catches a credential pasted into a file, which
+/// is how credentials reach commits; neither evasion is a reason to widen the
+/// match into a shape that fires on ordinary code.
 const SECRET_PATTERNS: &[SecretPattern] = &[
     SecretPattern {
         name: "anthropic api key",
         prefix: "sk-ant-",
         min_len: 24,
+        alphanumeric_body: false,
     },
     SecretPattern {
-        name: "openai api key",
+        name: "openai project api key",
         prefix: "sk-proj-",
         min_len: 24,
-    },
-    SecretPattern {
-        name: "xai api key",
-        prefix: "xai-",
-        min_len: 20,
-    },
-    SecretPattern {
-        name: "google api key",
-        prefix: "AIza",
-        min_len: 30,
-    },
-    SecretPattern {
-        name: "github token",
-        prefix: "ghp_",
-        min_len: 30,
-    },
-    SecretPattern {
-        name: "github pat",
-        prefix: "github_pat_",
-        min_len: 40,
-    },
-    SecretPattern {
-        name: "slack token",
-        prefix: "xoxb-",
-        min_len: 30,
+        alphanumeric_body: false,
     },
     SecretPattern {
         name: "stripe live key",
         prefix: "sk_live_",
         min_len: 24,
+        alphanumeric_body: false,
+    },
+    // Last of the `sk` family, because it is a prefix of the ones above and the
+    // scan stops at its first match. The floor is high — a legacy OpenAI key is
+    // `sk-` plus 48 characters — so `sk-test`, an `sk-` in prose, and this
+    // file's own pattern literals stay below it.
+    SecretPattern {
+        name: "openai api key",
+        prefix: "sk-",
+        min_len: 45,
+        alphanumeric_body: true,
+    },
+    SecretPattern {
+        name: "xai api key",
+        prefix: "xai-",
+        min_len: 20,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "google api key",
+        prefix: "AIza",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github personal access token",
+        prefix: "ghp_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github oauth token",
+        prefix: "gho_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github app server token",
+        prefix: "ghs_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github app user token",
+        prefix: "ghu_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github refresh token",
+        prefix: "ghr_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "github pat",
+        prefix: "github_pat_",
+        min_len: 40,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "gitlab personal access token",
+        prefix: "glpat-",
+        min_len: 26,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "slack bot token",
+        prefix: "xoxb-",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "slack user token",
+        prefix: "xoxp-",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "slack workspace token",
+        prefix: "xoxa-",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "slack app-level token",
+        prefix: "xapp-",
+        min_len: 30,
+        alphanumeric_body: false,
     },
     SecretPattern {
         name: "aws access key id",
         prefix: "AKIA",
         min_len: 20,
+        alphanumeric_body: true,
+    },
+    // Temporary credentials, and no less dangerous for it: an ASIA key plus its
+    // session token is the same access as a long-lived one for as long as it
+    // lasts, and it was the shape a leaked assume-role snippet carried.
+    SecretPattern {
+        name: "aws temporary access key id",
+        prefix: "ASIA",
+        min_len: 20,
+        alphanumeric_body: true,
+    },
+    SecretPattern {
+        name: "huggingface token",
+        prefix: "hf_",
+        min_len: 30,
+        alphanumeric_body: false,
+    },
+    SecretPattern {
+        name: "npm access token",
+        prefix: "npm_",
+        min_len: 36,
+        alphanumeric_body: false,
     },
     SecretPattern {
         name: "private key block",
         prefix: "-----BEGIN",
         min_len: 20,
+        alphanumeric_body: false,
     },
 ];
 
@@ -312,10 +465,25 @@ pub struct CoverageReport {
     /// gaps, and reporting them the same way is how "diff coverage passed"
     /// comes to mean "coverage was never measured".
     pub unmeasured: Vec<String>,
+    /// Files the intersection did not ask a coverage question about, because
+    /// their extension is not one this gate knows how to measure.
+    ///
+    /// The third bucket exists for the same reason as the second. A skipped
+    /// file used to leave no trace at all — not a gap, not unmeasured — so a
+    /// diff that touched only files outside the allowlist produced an
+    /// all-clear that was indistinguishable from one whose every line was
+    /// executed. It is reported rather than blocking: "coverage is not a
+    /// question about this file" is a real answer, and it is only a safe one
+    /// while it is written down.
+    pub skipped_by_type: Vec<String>,
 }
 
 impl CoverageReport {
     /// Reports whether every added line was measured and executed.
+    ///
+    /// `skipped_by_type` is deliberately not part of this. A skipped file is
+    /// not a failure of the change; it is a limit of the gate, and the report
+    /// carries it so a reader can see which one they are looking at.
     pub fn is_clean(&self) -> bool {
         self.gaps.is_empty() && self.unmeasured.is_empty()
     }
@@ -324,26 +492,47 @@ impl CoverageReport {
 /// Intersects added lines with covered lines.
 ///
 /// Files whose extension marks them as non-executable — documentation, data,
-/// configuration — are skipped rather than reported unmeasured, because
-/// "coverage" is not a question about a Markdown file.
+/// configuration — are not asked the coverage question, because "coverage" is
+/// not a question about a Markdown file. They are *recorded* in
+/// `skipped_by_type` rather than dropped: a file that left the report with no
+/// trace at all was reported exactly like one that was measured and clean.
 pub fn intersect_coverage(files: &[FileDiff], coverage: &[FileCoverage]) -> CoverageReport {
     let mut report = CoverageReport::default();
     for file in files {
-        if file.status == crate::ChangeStatus::Deleted || !is_executable_source(&file.path) {
+        if file.status == crate::ChangeStatus::Deleted {
             continue;
         }
         let added = file.added_line_numbers();
         if added.is_empty() {
             continue;
         }
+        if !is_executable_source(&file.path) {
+            report.skipped_by_type.push(file.path.clone());
+            continue;
+        }
         let Some(entry) = coverage.iter().find(|c| c.path == file.path) else {
             report.unmeasured.push(file.path.clone());
             continue;
         };
+        // Binary search rather than a linear scan of every covered line for
+        // every added line: `finish` in the coverage parser hands back sorted,
+        // deduplicated lines, and the quadratic version turned a large profile
+        // into a second source of the wall-clock blowup the parser's bounds
+        // now prevent. A caller that built a FileCoverage by hand may not have
+        // sorted it, so that is checked rather than assumed — a wrong answer
+        // from a binary search over unsorted data would be a silently missed
+        // coverage gap.
+        let sorted: std::borrow::Cow<'_, [u32]> = if entry.covered_lines.is_sorted() {
+            std::borrow::Cow::Borrowed(&entry.covered_lines)
+        } else {
+            let mut owned = entry.covered_lines.clone();
+            owned.sort_unstable();
+            std::borrow::Cow::Owned(owned)
+        };
         let uncovered: Vec<u32> = added
             .iter()
             .copied()
-            .filter(|line| !entry.covered_lines.contains(line))
+            .filter(|line| sorted.binary_search(line).is_err())
             .collect();
         if !uncovered.is_empty() {
             report.gaps.push(CoverageGap {
@@ -354,15 +543,26 @@ pub fn intersect_coverage(files: &[FileDiff], coverage: &[FileCoverage]) -> Cove
         }
     }
     report.unmeasured.sort();
+    report.skipped_by_type.sort();
     report.gaps.sort_by(|a, b| a.path.cmp(&b.path));
     report
 }
 
 /// Extensions whose files execute, and therefore can be covered.
+///
+/// The list is an allowlist and it is kept long on purpose. Every extension
+/// missing from it used to be dropped from the report entirely, so a diff
+/// adding `rm -rf "$TARGET"` to a `.sh` file, or an ES module to a `.mjs` one,
+/// passed the coverage gate without being counted — while the identical
+/// CommonJS `.js` file was measured. Shell, Kotlin, Swift, PHP and C# were in
+/// the same hole. Nothing here is measured by every ecosystem's tooling, and a
+/// file with no coverage data lands in `unmeasured`, which is the honest
+/// answer: it executed, and nobody showed evidence that it ran.
 fn is_executable_source(path: &str) -> bool {
     const EXECUTABLE: &[&str] = &[
-        ".go", ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".rb", ".c", ".cc", ".cpp",
-        ".h",
+        ".go", ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".java",
+        ".kt", ".kts", ".scala", ".swift", ".rb", ".php", ".cs", ".c", ".cc", ".cpp", ".h", ".hpp",
+        ".sh", ".bash", ".zsh", ".ps1", ".pl", ".lua",
     ];
     // A test file's own lines are not the thing coverage is asking about.
     if path.ends_with("_test.go") || path.ends_with("_test.py") || path.contains("/tests/") {

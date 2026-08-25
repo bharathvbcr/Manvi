@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -977,8 +978,17 @@ func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said m
 			s.AmbiguousSkipped)
 	}
 	if s.Permissive() {
-		fmt.Fprintf(out, "                PERMISSIVE: %q neighbours %d of %d areas, so the neighbour rule allows most writes\n",
-			s.WidestArea, s.MaxDegree, s.Areas)
+		// Two shapes reach this, and one of them has no widest area to name:
+		// an index that holds a single subsystem has nothing to be adjacent
+		// to, so degree zero is the *most* permissive reading rather than the
+		// least. Printing the ratio there would say `"" neighbours 0 of 1`,
+		// which reads as the opposite of what it means.
+		if s.MaxDegree == 0 {
+			fmt.Fprintf(out, "                PERMISSIVE: the index holds one subsystem, so every indexed file is in the same subsystem as any planned file and the scope rung separates nothing\n")
+		} else {
+			fmt.Fprintf(out, "                PERMISSIVE: %q neighbours %d of %d areas, so the neighbour rule allows most writes\n",
+				s.WidestArea, s.MaxDegree, s.Areas)
+		}
 	}
 	return nil
 }
@@ -1167,11 +1177,41 @@ func nearestFlag(reg *flags.Registry, key string) string {
 	return "\ndid you mean: " + strings.Join(near, ", ")
 }
 
+// effectiveFlagValue resolves what a flag will actually be obeyed as, for the
+// three settings the posture can overrule.
+//
+// The flag table used to print Value.Raw for every key, which made it byte
+// identical under strict and under yolo for exactly the settings an operator
+// reads it to learn: `! policy.file.mode enforce default` on a run where the
+// gate enforces and on a run where it is off. EffectiveGateMode exists to stop
+// that — its own doc says a report of "enforce" while the gate does not run is
+// worse than no report — and doctor honours it while this table did not. Two
+// commands reading the same registry must not disagree about what the gate will
+// do, so both now ask the same resolver.
+func effectiveFlagValue(reg *flags.Registry, key string) (flags.Value, error) {
+	switch key {
+	case flags.PolicyFileMode, flags.PolicyCommandMode:
+		mode, origin, err := flags.EffectiveGateMode(reg, key)
+		if err != nil {
+			return flags.Value{}, err
+		}
+		return flags.Value{Key: key, Raw: mode, Origin: origin}, nil
+	case flags.PolicyHardRules:
+		on, origin, err := flags.EffectiveHardRules(reg)
+		if err != nil {
+			return flags.Value{}, err
+		}
+		return flags.Value{Key: key, Raw: strconv.FormatBool(on), Origin: origin}, nil
+	default:
+		return reg.Lookup(key)
+	}
+}
+
 func showFlags(out io.Writer, reg *flags.Registry, args []string) error {
 	all := slices.Contains(args, "--all")
 	for _, key := range reg.Keys() {
 		def, _ := reg.Def(key)
-		value, err := reg.Lookup(key)
+		value, err := effectiveFlagValue(reg, key)
 		if err != nil {
 			return err
 		}
@@ -1182,7 +1222,15 @@ func showFlags(out io.Writer, reg *flags.Registry, args []string) error {
 		if def.Safety {
 			marker = "!"
 		}
-		fmt.Fprintf(out, "%s %-34s %-14s %-9s %s\n", marker, key, value.Raw, value.Origin, def.Mutable)
+		// The value column is what is in force. When the posture decided it,
+		// the setting's own value is named after it rather than dropped: an
+		// operator who typed `policy.file.mode: enforce` and is reading why the
+		// gate is off needs to see both halves of that answer on one line.
+		note := ""
+		if set, err := reg.Lookup(key); err == nil && set.Raw != value.Raw {
+			note = fmt.Sprintf("  (set to %s/%s)", set.Raw, set.Origin)
+		}
+		fmt.Fprintf(out, "%s %-34s %-14s %-9s %s%s\n", marker, key, value.Raw, value.Origin, def.Mutable, note)
 	}
 	if !all {
 		fmt.Fprintln(out, "\n(showing safety flags and anything moved off its default; --all for everything)")
@@ -1570,6 +1618,11 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		return nil, nil, err
 	}
 	pipeline := tools.NewRegistry(bus.New())
+	// Armed before any tool can run. Every result the model sees, and every
+	// result the session log writes to disk, goes through this.
+	toolScrubber := credentials.NewScrubber()
+	toolScrubber.WatchAll(credentials.NewResolver())
+	pipeline.SetScrubber(toolScrubber.Clean)
 	if err := native.Register(pipeline); err != nil {
 		return nil, nil, err
 	}

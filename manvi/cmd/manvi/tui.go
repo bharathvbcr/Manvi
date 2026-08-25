@@ -229,7 +229,7 @@ func newSessionState(reg *flags.Registry, id string, approver ui.Approver) (*tui
 	}
 	return &tuiSession{
 		id: id, title: "session " + id,
-		log:    session.NewLog(),
+		log:    newSessionLog(),
 		gate:   native.Gate(),
 		native: native, pipeline: pipeline,
 		subMeter: &subAgentMeter{},

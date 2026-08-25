@@ -112,3 +112,89 @@ func FuzzChainingNeverLaundersADenial(f *testing.F) {
 		}
 	})
 }
+
+// FuzzRedirectTargetsSeesInsideEverySubstitution pins the recursion that the
+// linear scanner used to skip.
+//
+// The property is a containment one rather than an equality one, and that is
+// deliberate. RedirectTargets is allowed to find *more* than this test derives
+// — the outer clause has redirections of its own — but it must never find
+// fewer: every target the shell would open while executing a substitution span
+// is a file the caller has to judge, and the whole defect this closes was a
+// scanner that stepped over those spans and reported nothing.
+//
+// Deriving the expectation from liveSubstitutions rather than from a table is
+// what makes it hold for inputs nobody thought of. That is also the pairing
+// that broke: liveSubstitutions recursed and RedirectTargets did not, so the
+// two halves of the gate disagreed about what a command line contains.
+func FuzzRedirectTargetsSeesInsideEverySubstitution(f *testing.F) {
+	for _, seed := range []string{
+		`echo $(echo hi > .env)`,
+		`echo $(echo $(cat > a) > b)`,
+		"echo `cat > .env`",
+		`cat <(sort > out.txt)`,
+		`echo "$(printf x > y)"`,
+		`echo ${v:-$(printf x > y)}`,
+		`a > b && c $(d > e)`,
+		`echo $(( 1 << 2 )) > out`,
+		`echo hi`,
+		``,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, command string) {
+		outer, outerOpaque, err := RedirectTargets(command)
+		if err != nil {
+			// A malformed line is refused, not analysed. Nothing to compare.
+			return
+		}
+		spans, spanErr := liveSubstitutions(command)
+		if spanErr != nil {
+			// Unreadable spans must be reported as opacity, or a caller that
+			// only consults the target list would treat "I could not look" as
+			// "there is nothing there".
+			if !outerOpaque {
+				t.Fatalf("RedirectTargets(%q): substitutions could not be scanned (%v) "+
+					"but the result was not marked opaque", command, spanErr)
+			}
+			return
+		}
+		if outerOpaque {
+			// The scan already reports that it could not enumerate everything,
+			// which is what a caller fails closed on. Containment is only a
+			// meaningful demand of a result that claims to be complete.
+			return
+		}
+		// Set semantics, not multiset. RedirectTargets returns each distinct
+		// path once however many clauses name it, so counting occurrences and
+		// decrementing would report a false miss the moment two substitution
+		// spans redirect into the same file — a flaky failure waiting on a
+		// corpus entry nobody had generated yet.
+		found := map[string]struct{}{}
+		for _, target := range outer {
+			found[target] = struct{}{}
+		}
+		for _, span := range spans {
+			inner, innerOpaque, innerErr := RedirectTargets(span)
+			if innerErr != nil {
+				// An inner failure has to surface as opacity for the same
+				// reason as above.
+				if !outerOpaque {
+					t.Fatalf("RedirectTargets(%q): span %q failed to scan (%v) "+
+						"but the result was not marked opaque", command, span, innerErr)
+				}
+				continue
+			}
+			if innerOpaque && !outerOpaque {
+				t.Fatalf("RedirectTargets(%q): span %q has an unresolvable target "+
+					"but the whole-line result was not marked opaque", command, span)
+			}
+			for _, target := range inner {
+				if _, ok := found[target]; !ok {
+					t.Fatalf("RedirectTargets(%q) = %v: missed %q, which the shell would open "+
+						"while executing the substitution %q", command, outer, target, span)
+				}
+			}
+		}
+	})
+}

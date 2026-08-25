@@ -125,8 +125,15 @@ func TestASubAgentsEvidenceReachesTheOperator(t *testing.T) {
 			"is only readable if each line says whose it is")
 	}
 	// The child's own log must still be its own — forwarding is not sharing.
-	if !strings.Contains(src, "log := session.NewLog()") {
-		t.Error("the child no longer has its own log; sharing the parent's would put the child's " +
+	//
+	// The constructor is newSessionLog rather than session.NewLog because the
+	// log is a durable boundary: it is what session.Store writes and what
+	// DeriveMessages projects into the next request, so it is built with the
+	// credential backstop already attached. TestSessionLogsAreArmedAtOneSite
+	// keeps that helper the only construction site in this package, which is
+	// what makes naming it here as specific as naming the raw constructor was.
+	if !strings.Contains(src, "log := newSessionLog()") {
+		t.Error("the child no longer builds its own log; sharing the parent's would put the child's " +
 			"tool results into the history the parent replays to the model")
 	}
 

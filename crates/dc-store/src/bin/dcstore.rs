@@ -69,6 +69,12 @@ const KNOWN_FLAGS: &[&str] = &[
 /// to some other program that happens to print JSON.
 const STORE_IDENTITY: &str = "dc-store";
 
+/// What `health` answers once the exclusion index in the opened database has
+/// been read back and found to be the partial unique index on `task_id`. The
+/// Go client requires this exact word, so a store that cannot make the
+/// assertion cannot pass for one that can.
+const EXCLUSION_INDEX_VERIFIED: &str = "verified";
+
 enum Failure {
     Conflict(String),
     Fatal(String),
@@ -112,7 +118,20 @@ fn run(args: &[String]) -> Result<String, Failure> {
         .first()
         .ok_or_else(|| Failure::Fatal("a command is required".into()))?;
 
-    let store = Store::open(&db).map_err(|e| Failure::Fatal(e.to_string()))?;
+    // health is the one command that must not bring a store into existence.
+    // Every other command is doing work that implies the store — acquiring,
+    // releasing, widening — but health is the question the Go client asks
+    // *before* it will call the store reachable, and `Connection::open` creates
+    // the file when it is absent. A mistyped --db therefore answered
+    // "healthy, zero leases" from a private empty database nobody else was
+    // using, which is exactly the confident zero Available() promises never to
+    // report. A store that is not there is now an answer, not a side effect.
+    let store = if command == "health" {
+        Store::open_existing(&db)
+    } else {
+        Store::open(&db)
+    }
+    .map_err(|e| Failure::Fatal(e.to_string()))?;
     let flag = |name: &str| -> Option<&str> {
         flags
             .iter()
@@ -143,6 +162,23 @@ fn run(args: &[String]) -> Result<String, Failure> {
                 })?),
                 None => None,
             };
+            // Parsed, not tested for equality with "true". `--force 1` used to
+            // be silently false, which is the same class KNOWN_FLAGS exists to
+            // stop one line up: a value the parser does not understand leaves
+            // the caller believing a setting applied when it did nothing. It
+            // failed safe — no steal — but "safe" and "what you asked for" are
+            // different answers and only one of them was reported.
+            let force = match flag("force") {
+                None | Some("false") => false,
+                Some("true") => true,
+                Some(other) => {
+                    return Err(Failure::Fatal(format!(
+                        "--force {other:?} is neither \"true\" nor \"false\"; \
+                         a value this parser does not understand would be honoured as \
+                         false while looking to the caller like it applied"
+                    )));
+                }
+            };
             let request = AcquireRequest {
                 task_id: required("task")?.to_string(),
                 owner: required("owner")?.to_string(),
@@ -151,7 +187,7 @@ fn run(args: &[String]) -> Result<String, Failure> {
                 run_id: flag("run-id").map(str::to_string),
                 branch: flag("branch").map(str::to_string),
                 ttl_seconds: ttl,
-                force: flag("force").is_some_and(|v| v == "true"),
+                force,
             };
             match store.acquire(&request) {
                 Ok(lease) => Ok(object(&[
@@ -349,6 +385,14 @@ fn run(args: &[String]) -> Result<String, Failure> {
         // call the store reachable. It is a positive assertion — this binary,
         // this schema — rather than the absence of an error, so a program that
         // merely prints "{\"ok\":true}" cannot pass for a working store.
+        //
+        // `exclusion_index` is the third assertion, and the one that used to be
+        // missing: reaching this line means Store::open_existing read the
+        // opened file's own schema and found the partial unique index that
+        // makes two racing acquires resolve to one winner. Before, health
+        // reported a compile-time constant, and a database carrying a
+        // same-named index with a different definition answered ok while
+        // handing two agents the same task.
         "health" => {
             let leases = store
                 .active_leases()
@@ -357,6 +401,7 @@ fn run(args: &[String]) -> Result<String, Failure> {
                 ("ok", &json_bool(true)),
                 ("store", &quote(STORE_IDENTITY)),
                 ("schema_version", &dc_store::SCHEMA_VERSION.to_string()),
+                ("exclusion_index", &quote(EXCLUSION_INDEX_VERIFIED)),
                 ("active_leases", &leases.len().to_string()),
             ]))
         }

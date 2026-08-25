@@ -429,11 +429,33 @@ func (m *Manager) RegisterPlugin(p *PluginManifest) error {
 	}
 	m.mu.Lock()
 	m.plugins[p.Name] = p
-	m.mu.Unlock()
-	if cfg, err := p.ToServerConfig(); err == nil {
-		return m.register(cfg, origin, source)
+	cfg, err := p.ToServerConfig()
+	if err != nil {
+		// The manifest parsed, so DiscoverPlugins had no reason to skip it, but
+		// it declares no way to run. Without a config it is absent from
+		// ServerNames, from ListAllTools — which surveys only what ServerNames
+		// returns — and unreachable through CallTool, which routes via Client.
+		// Discarding this error put it in m.plugins and nowhere else: it
+		// disappeared on every channel at once, which is exactly the symptom
+		// the Skipped machinery was built to eliminate one layer down.
+		//
+		// It is recorded rather than returned because one unrunnable manifest
+		// must not fail discovery of the rest, and its static tools are still
+		// not advertised: CallTool cannot reach them, and a tool an agent is
+		// offered but can never call is worse than one it is never offered.
+		where := p.ManifestPath
+		if where == "" {
+			where = p.Name
+		}
+		m.skipped = append(m.skipped, SkippedManifest{Path: where, Reason: err.Error()})
+		m.mu.Unlock()
+		return nil
 	}
-	return nil
+	m.mu.Unlock()
+	// Through register, not a bare m.configs write: register is what records
+	// origin and source, and a plugin config filed without them is a server
+	// whose provenance the trust rules can no longer ask about.
+	return m.register(cfg, origin, source)
 }
 
 // LoadConfigFile parses an MCP server configuration file (e.g. .devcouncil/mcp.json).
@@ -581,7 +603,12 @@ func (m *Manager) Discover(ctx context.Context, src ConfigSource) error {
 	// carries on — see DiscoverPlugins for why these are reported rather than
 	// fatal — but a plugin that failed to load must not look like a plugin that
 	// was never installed.
+	//
+	// Under the lock like every other field of Manager: this was the one
+	// unguarded write, and -race caught it against the read in Skipped.
+	m.mu.Lock()
 	m.skipped = append(m.skipped, skipped...)
+	m.mu.Unlock()
 	for _, p := range plugins {
 		if err := m.RegisterPlugin(p); err != nil {
 			return err
@@ -652,14 +679,29 @@ func (m *Manager) Client(ctx context.Context, name string) (*Client, error) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	// A concurrent caller may have completed its own connection while this
-	// one was handshaking; theirs wins, ours closes.
-	if existing, ok := m.clients[name]; ok && existing.Alive() {
+	previous, hadPrevious := m.clients[name]
+	if hadPrevious && previous.Alive() {
+		m.mu.Unlock()
+		// A concurrent caller completed its own connection while this one was
+		// handshaking; theirs wins, ours closes. Outside the lock: Close waits
+		// on a child process, and every other manager operation queues behind
+		// this mutex.
 		_ = client.Close()
-		return existing, nil
+		return previous, nil
 	}
 	m.clients[name] = client
+	m.mu.Unlock()
+
+	// The client just displaced is dead — its stdout ended — and it has to be
+	// closed here, because this is the last reference to it. Dead stdout is not
+	// a dead process: the child may still be running with its stdin open, never
+	// Wait()ed and so never reaped, holding three pipes and a stderr goroutine.
+	// Overwriting the map entry dropped it out of m.clients too, so CloseAll
+	// could no longer reach it either, and a server that closes stdout under
+	// load leaked one live process per respawn for the rest of the run.
+	if hadPrevious {
+		_ = previous.Close()
+	}
 	return client, nil
 }
 

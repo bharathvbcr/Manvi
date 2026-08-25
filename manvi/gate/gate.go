@@ -143,12 +143,21 @@ func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, 
 		Root: g.Root,
 	}.EvaluateCommand(command, task)
 
-	settled := g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode)
-	if settled.Blocked() {
-		// Nothing runs, so there is no component left to judge. The command's
-		// own refusal is the one the operator has to answer, and settle has
-		// already recorded it.
-		return settled, nil
+	// A hard denial is the one outcome that needs nothing further. It is
+	// undemotable and ungrantable by construction, so the command cannot run and
+	// its redirections cannot happen; analysing them would only replace a precise
+	// refusal with a vaguer one.
+	//
+	// Every other outcome — allow, warn, and a *soft* denial — must have its
+	// redirections judged, and the soft denial is the case a `Blocked()` test
+	// here gets wrong. A command the ladder soft-refuses would skip the rung
+	// entirely; the posture then demotes that refusal, or a grant clears it, and
+	// the write runs having never been shown to the write gate. That turns a
+	// scope rule an operator chose to relax into a way past the credential rules
+	// they did not: `exec > .env`, `false || echo x > .env` and `(echo x > .env)`
+	// all wrote .env, while the same redirect alone was refused as path.secret.
+	if decision.Blocked() && decision.Severity == policy.Hard {
+		return g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode), nil
 	}
 
 	refusal, err := EvaluateRedirects(command, taskIDOf(task), func(target string) (policy.Decision, error) {
@@ -162,16 +171,22 @@ func (g *Gate) EvaluateCommand(command string, task *dc.Task) (policy.Decision, 
 	if err != nil {
 		return policy.Decision{}, err
 	}
-	if !refusal.Refused {
-		return settled, nil
+	if refusal.Refused {
+		// Returned without settling the command decision, so a grant scoped to
+		// the command is not consumed for a command that will not run — and so
+		// nothing on the command side can clear a refusal the file side made.
+		// The redirect verdict has already been through the file gate's own
+		// ledger and mode inside EvaluateWrite; if it still blocks after that,
+		// it is a refusal those seams declined to clear.
+		if refusal.FromTarget {
+			return refusal.Decision, nil
+		}
+		// Synthesised by the rung itself, so nothing else has seen it. Recorded
+		// here or the run summary undercounts a denial this gate made — a
+		// fail-closed decision that Report() could not account for.
+		return g.record(refusal.Decision), nil
 	}
-	if refusal.FromTarget {
-		return refusal.Decision, nil
-	}
-	// Synthesised by the rung itself, so nothing else has seen it. Recorded
-	// here or the run summary undercounts a denial this gate made — a
-	// fail-closed decision that Report() could not account for.
-	return g.record(refusal.Decision), nil
+	return g.settle(decision, mode, modeOrigin, flags.PolicyCommandMode), nil
 }
 
 // WriteEvaluator judges one redirection target as the write it actually is.
@@ -387,9 +402,14 @@ type Report struct {
 // cannot tell those two runs apart is the failure this whole layer exists to
 // avoid. Strict is the honest, conservative answer to "was this checked?".
 func (r Report) Strict() bool {
+	// Denied is part of the predicate, and its absence was a defect rather than
+	// a subtlety: a run whose only decision was a hard refusal to write .env
+	// reported Strict() == true. "Was this checked?" and "did it pass?" are
+	// both halves of what this answers, and a refusal is a failure of the
+	// second one however cleanly the rules were enforced.
 	return r.Posture == flags.PostureStrict && r.HardRules &&
-		r.Granted == 0 && r.Demoted == 0 && r.Widened == 0 && r.Degraded == 0 &&
-		len(r.WeakenedFlags) == 0
+		r.Denied == 0 && r.Granted == 0 && r.Demoted == 0 && r.Widened == 0 &&
+		r.Degraded == 0 && len(r.WeakenedFlags) == 0
 }
 
 // Report summarises the run.

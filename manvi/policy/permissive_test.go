@@ -121,3 +121,65 @@ func TestADenialIsNotMarkedPermissive(t *testing.T) {
 		t.Fatalf("a denial was marked permissive: %+v", d.Degraded)
 	}
 }
+
+// The same-subsystem rung degenerates faster than the neighbour rung, and it
+// was the one rung that never asked. A graph holding a single named area puts
+// every indexed file in "the same subsystem as a planned file", so the question
+// has exactly one answer and every unplanned write was allowed with an empty
+// Degraded — reported as a scope check that ran and passed. isRootArea already
+// covered a whole-repo area spelled "."; the named spelling of the same thing
+// was uncovered.
+func TestASameSubsystemAllowIsQualifiedWhenTheMapCannotDiscriminate(t *testing.T) {
+	task := &dc.Task{
+		ID:           "TASK-1",
+		PlannedFiles: []dc.PlannedFile{{Path: "src/calc.go", AllowedChange: dc.ChangeModify}},
+	}
+	// One named area covering the whole tree: "src" and "docs" are both "app".
+	single := areas{
+		of:         map[string]string{"src": "app", "docs": "app"},
+		neighbors:  map[string][]string{},
+		permissive: true,
+	}
+	// A repository the map genuinely partitions, with a tight relation.
+	partitioned := areas{
+		of:        map[string]string{"src": "core", "web": "ui"},
+		neighbors: map[string][]string{"ui": {"core"}, "core": {"ui"}},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		mapping       areas
+		wantQualified bool
+	}{
+		{name: "a map with one answer is recorded", mapping: single, wantQualified: true},
+		{name: "a partitioned map still passes cleanly", mapping: partitioned, wantQualified: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := FileGate{
+				Root:           t.TempDir(),
+				Subsystems:     tc.mapping,
+				AllowNeighbors: true,
+				AllowSameDir:   true,
+				HardRules:      true,
+			}
+
+			d := g.EvaluateFileChange("src/other.go", task, dc.OpModify, false)
+			if d.Action != Allow {
+				t.Fatalf("the same-subsystem rung did not allow: %+v", d)
+			}
+			if got := slices.Contains(d.Degraded, "scope.subsystem.permissive"); got != tc.wantQualified {
+				t.Fatalf("degraded=%v, want the marker present=%v", d.Degraded, tc.wantQualified)
+			}
+			// The neighbour rung did not decide this, so its marker must not
+			// appear: a signal naming the wrong rung is one an operator learns
+			// to discount.
+			if slices.Contains(d.Degraded, "scope.neighbors.permissive") {
+				t.Fatalf("a same-subsystem allow carried the neighbour marker: %v", d.Degraded)
+			}
+			if d.Clean() == tc.wantQualified {
+				t.Fatalf("Clean()=%v with a one-answer map=%v; an allow from a rung that could not "+
+					"discriminate must not read as an ordinary pass", d.Clean(), tc.wantQualified)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"manvi/dc"
 	"manvi/internal/fnmatch"
@@ -23,7 +24,7 @@ var (
 	// Trailing shell redirections break glob matching against patterns like
 	// "dev map *". Stripped for matching only, in a loop, so the pattern itself
 	// stays single-clause and cannot backtrack pathologically.
-	redirectTailRe = regexp.MustCompile(`(?: \d*(?:>>|>|<|&>|&>>) ?\S+| \d*>&\d+)$`)
+	redirectTailRe = regexp.MustCompile(`(?: \d*(?:>>|>\||>|<|&>|&>>) ?\S+| \d*>&\d+)$`)
 )
 
 // devBinaries are the executable names normalised back to a bare "dev", so a
@@ -103,8 +104,39 @@ const maxSubstitutionDepth = 8
 // git-safety outcome is a denial or a warning, never an allow that skips the
 // allowlist below.
 func (g CommandGate) EvaluateCommand(command string, task *dc.Task) Decision {
+	// Length is checked once, here, before any rung reads the line. Every rung
+	// below is a scan and several recurse, so an unbounded line is an unbounded
+	// amount of work handed to the gate by whoever composed the string — and
+	// the string is composed by a model. Measured on this machine, a 1.8 MB
+	// line of chained substitutions took seven seconds to refuse.
+	//
+	// It is deliberately not a rung inside the ladder: a rung would be reached
+	// per clause, after the splitter had already walked the whole input, which
+	// is most of the cost it exists to avoid.
+	if len(command) > maxCommandBytes {
+		taskID := ""
+		if task != nil {
+			taskID = task.ID
+		}
+		return g.noteHardRules(deny(RuleCommandTooLong,
+			fmt.Sprintf("Command is %d bytes; the limit is %d. A line this long is not a command "+
+				"someone wrote — put the work in a script file and run that.",
+				len(command), maxCommandBytes),
+			// The line itself is not echoed back into the decision: it is
+			// megabytes of model-authored text and Target travels into logs,
+			// transcripts and the TUI.
+			fmt.Sprintf("<%d-byte command>", len(command)), taskID))
+	}
 	return g.evaluate(command, task, 0)
 }
+
+// maxCommandBytes bounds the command line the ladder will read.
+//
+// Generous by two orders of magnitude against anything a person or an agent
+// legitimately writes — real command lines are tens of bytes — and small enough
+// that the worst measured input costs well under a second to refuse. It is a
+// backstop on cost, not a style rule.
+const maxCommandBytes = 128 << 10
 
 func (g CommandGate) evaluate(command string, task *dc.Task, depth int) Decision {
 	parts := SplitCommandChain(command)
@@ -154,6 +186,17 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth 
 		return g.noteHardRules(deny(RuleCommandHeredoc,
 			"Heredocs carry expanded data with no statically checkable end and are not allowed; "+
 				"write the content to a file instead.", normalized, taskID))
+	}
+	// Checked on the raw line, beside the heredoc rung, because it is the same
+	// refusal: a construct whose meaning is not in the text being judged. It
+	// runs before the substitution rung so that `eval $(...)` is named as the
+	// re-parse it is rather than as the substitution it also contains.
+	if word, isReparse := reparsingCommandWord(raw); isReparse {
+		return g.noteHardRules(deny(RuleCommandReparse,
+			"`"+word+"` re-parses its argument as shell code after expansion, so nothing in this "+
+				"line — the allowlist match, the git-safety rules, or the redirection targets — "+
+				"describes what would actually run; write the commands out directly instead.",
+			normalized, taskID))
 	}
 	spans, subErr := liveSubstitutions(raw)
 	switch {
@@ -619,6 +662,175 @@ func hasHeredoc(command string) bool {
 	return false
 }
 
+// reparsingCommandWord reports whether this single command's command word is a
+// builtin that re-parses its arguments as shell code, and names it.
+//
+// Only the command word counts. `grep eval file` and `echo eval` mention the
+// word without invoking it, and refusing those would make the rung fire on
+// text rather than on behaviour — the exact defect the git-safety rules avoid
+// by reading a dequoted variant rather than by matching substrings.
+//
+// The word is dequoted before comparison, because sh removes quotes before it
+// decides what to run: `\eval`, `"eval"` and `'ev'al` all invoke the builtin.
+// Leading VAR=value assignments are stepped over for the same reason — they
+// precede the command word without being it.
+func reparsingCommandWord(command string) (string, bool) {
+	words := shellWords(command)
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+		if word.quotedHead {
+			// The word begins inside quotes, so its first character is data
+			// rather than syntax: `">"` is a filename and `"FOO=1"` is a
+			// command named FOO=1, neither an operator nor an assignment. It
+			// can still *be* the command word — sh runs `"eval"` and `\eval`
+			// alike — so it is matched here before the scan stops.
+			if reparsingBuiltins[word.text] {
+				return word.text, true
+			}
+			return "", false
+		}
+		if isAssignmentWord(word.text) {
+			continue
+		}
+		if operand, isRedirect := redirectionPrefix(word.text); isRedirect {
+			// `> out eval …` puts the target in the next word; `2>out eval …`
+			// carries it in this one. Stepping over the wrong number of words
+			// is how `> out eval` read `>` as the command and stopped looking.
+			if operand {
+				i++
+			}
+			continue
+		}
+		// `command eval …` and `builtin eval …` reach the builtin through a
+		// wrapper, so the search continues past them rather than stopping on a
+		// word that is not itself the thing being run.
+		if word.text == "command" || word.text == "builtin" {
+			continue
+		}
+		if reparsingBuiltins[word.text] {
+			return word.text, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// redirectionPrefix reports whether a word is a redirection operator standing
+// before the command word, and whether its target is a separate word.
+func redirectionPrefix(word string) (targetIsNextWord, isRedirect bool) {
+	i := 0
+	for i < len(word) && word[i] >= '0' && word[i] <= '9' {
+		i++
+	}
+	if i >= len(word) || (word[i] != '<' && word[i] != '>') {
+		return false, false
+	}
+	for i < len(word) && (word[i] == '<' || word[i] == '>' || word[i] == '&' || word[i] == '|') {
+		i++
+	}
+	return i == len(word), true
+}
+
+// shellWord is one word of a command line, with its quoting recorded.
+type shellWord struct {
+	text string
+	// quotedHead reports whether the word's *first* character was produced by
+	// quoting or by a backslash escape, which is the distinction sh itself
+	// draws when deciding whether a word is syntax or data.
+	//
+	// It is the head specifically, not "any part quoted". `FOO="a b"` is an
+	// assignment — the quoting is in the value — while `"FOO=1"` is a command
+	// named FOO=1; `>` is an operator while `">"` is a filename. A flag set by
+	// quoting anywhere in the word conflates those, and did: it read
+	// `FOO="a b" eval …` as a quoted literal and stopped looking for the
+	// command word.
+	quotedHead bool
+}
+
+// shellWords splits a command line into the words sh would produce, honouring
+// quotes and backslash escapes and performing no expansion.
+//
+// strings.Fields is not a substitute, and using it here was a defect this
+// function exists to fix: it split `FOO="a b" eval "…"` into four pieces, the
+// second of which (`b"`) is neither an assignment nor a command, so the scan
+// concluded the command word was not eval and stopped. Quoting is precisely how
+// a shell word holds a space, so a word splitter that does not read quotes is
+// answering a different question from the one sh asks.
+func shellWords(command string) []shellWord {
+	var words []shellWord
+	var cur strings.Builder
+	started, quotedHead := false, false
+	quote := rune(0)
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case quote == 0 && r == '\\' && i+1 < len(runes):
+			quotedHead = quotedHead || !started
+			cur.WriteRune(runes[i+1])
+			i++
+			started = true
+		case quote == 0 && (r == '\'' || r == '"'):
+			quotedHead = quotedHead || !started
+			quote = r
+			started = true
+		case quote != 0 && r == quote:
+			quote = 0
+		case quote == '"' && r == '\\' && i+1 < len(runes) &&
+			(runes[i+1] == '"' || runes[i+1] == '\\' || runes[i+1] == '$' || runes[i+1] == '`'):
+			cur.WriteRune(runes[i+1])
+			i++
+		case quote != 0:
+			cur.WriteRune(r)
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if started {
+				words = append(words, shellWord{text: cur.String(), quotedHead: quotedHead})
+				cur.Reset()
+				started, quotedHead = false, false
+			}
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	if started {
+		words = append(words, shellWord{text: cur.String(), quotedHead: quotedHead})
+	}
+	return words
+}
+
+// reparsingBuiltins are the command words whose arguments become shell code
+// only at run time.
+//
+// `eval` is the whole set, and the boundary is deliberate. This rung refuses
+// code that is *inline in the line being judged* — text the gate holds and
+// cannot interpret. Running a script that lives on disk (`sh x.sh`, `make`,
+// `pytest`) is a different problem and is not addressed here: the code is not
+// in this string at all, so no reading of this string could catch it, and
+// refusing the command words that do it would deny every test runner while
+// leaving the capability one rename away. That boundary is documented in
+// docs/POLICY_AND_SAFETY.md rather than left implicit here.
+var reparsingBuiltins = map[string]bool{"eval": true}
+
+// isAssignmentWord reports whether a word is a NAME=value prefix rather than
+// the command word.
+func isAssignmentWord(word string) bool {
+	eq := strings.Index(word, "=")
+	if eq <= 0 {
+		return false
+	}
+	for i, r := range word[:eq] {
+		if r == '_' || unicode.IsLetter(r) {
+			continue
+		}
+		if i > 0 && unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // shellDequote removes quote characters the way sh concatenates their content:
 // '…' contributes literally, "…" contributes everything except the quotes and
 // escapes, and an escaped character contributes itself. An unterminated quote
@@ -680,14 +892,15 @@ func shellDequote(s string) string {
 }
 
 // RedirectTargets returns every file an output redirection in this command
-// would write: the targets of >, >>, &>, >& and their fd-prefixed forms.
+// would write: the targets of >, >>, >|, &>, >& and their fd-prefixed forms.
 // Input redirections (<) are reads, which this ladder does not gate, and a
 // heredoc introducer (<<) is not a path at all; neither is returned.
 //
 // The second return value reports whether a target could not be resolved to a
 // literal path — it carries an expansion ($HOME, ${VAR}, ~) whose value only
-// the shell knows. A target the gate cannot name is a write it cannot judge,
-// so the caller must treat that as a refusal rather than skip the check.
+// the shell knows, or it sits inside a construct this scanner could not read
+// to its end. A target the gate cannot name is a write it cannot judge, so the
+// caller must treat that as a refusal rather than skip the check.
 //
 // Matching strips trailing redirections so patterns like "dev map *" stay
 // single-clause, which is exactly why the executed form has to be re-read
@@ -703,8 +916,47 @@ func shellDequote(s string) string {
 // the `>` inside; they are now found the same principled way as $( … ), so the
 // three cannot diverge again.
 func RedirectTargets(command string) ([]string, bool, error) {
-	return redirectTargets(command, 0)
+	targets, opaque, err := redirectTargets(command, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	// Deduplicated, and bounded. Both are about what the caller does with this
+	// list: it puts every entry through the write gate, so the length of the
+	// list is a multiplier on the cost of judging one command line.
+	//
+	// `a > f && a > f && …` names one file however many times it is repeated,
+	// and re-judging it once per clause turned a 360 KiB command line into
+	// eight seconds of gate time — the same verdict, twenty thousand times.
+	// Distinctness is the honest unit anyway: the question the gate answers is
+	// "may this file be written", and it has one answer per file.
+	seen := make(map[string]struct{}, len(targets))
+	distinct := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if _, dup := seen[target]; dup {
+			continue
+		}
+		if len(distinct) >= maxRedirectTargets {
+			// Past the cap the enumeration is incomplete, and incomplete is
+			// exactly what opacity means — the caller refuses rather than
+			// judging a prefix of the writes and calling it the whole set.
+			return distinct, true, nil
+		}
+		seen[target] = struct{}{}
+		distinct = append(distinct, target)
+	}
+	return distinct, opaque, nil
 }
+
+// maxRedirectTargets bounds how many distinct files one command line may be
+// judged to write.
+//
+// It is a backstop rather than a tuning knob. A real command redirects into a
+// handful of files; a line naming more than this is not a command someone
+// wrote, and enumerating it without limit hands an unbounded amount of gate
+// work to whoever composed the string. Exceeding it is reported as an
+// incomplete enumeration, so the caller fails closed instead of judging the
+// first sixty-four writes and ignoring the rest.
+const maxRedirectTargets = 64
 
 func redirectTargets(command string, depth int) ([]string, bool, error) {
 	if depth > maxSubstitutionDepth {
@@ -751,7 +1003,12 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 				j++
 				continue
 			}
-			if q == 0 && (r == ' ' || r == '\n' || r == ';' || r == '|' || r == '&') {
+			// A backtick closes a legacy substitution; it is never part of the
+			// path. Without it `echo `cat > f`` yielded the target "f`", and
+			// the gate then judged a filename the shell never opens — which
+			// took a write to .env past the secret rung as ".env`".
+			if q == 0 && (r == ' ' || r == '\n' || r == '\t' || r == ';' || r == '|' || r == '&' ||
+				r == '`' || r == '(' || r == ')') {
 				break
 			}
 			b.WriteRune(r)
@@ -832,6 +1089,13 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 			}
 			i++                           // consume '>'
 			if i < n && runes[i] == '>' { // append form >>
+				i++
+			} else if i < n && runes[i] == '|' {
+				// >| is > with noclobber overridden. It names a path exactly
+				// as > does; read as an unresolvable target it reported
+				// opacity, which refused the command for the wrong reason and
+				// — because the refusal never reached the write gate — let the
+				// path itself go unjudged.
 				i++
 			} else if i < n && runes[i] == '&' { // >&N duplicates descriptors
 				i++

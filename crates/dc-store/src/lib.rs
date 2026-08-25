@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+pub mod json;
 pub mod schema;
 
 /// The lease-schema revision this build understands.
@@ -94,6 +95,17 @@ pub enum StoreError {
     /// nobody wrote down. It names the mode actually in force so the reader
     /// does not have to go and ask the file.
     JournalMode { mode: String },
+    /// The database named does not exist. Distinct from `Sql` because the
+    /// caller that asks about a store it has not created is almost always a
+    /// caller with a typo in its path, and `Connection::open` would have
+    /// answered by manufacturing an empty database that reports itself
+    /// healthy — a confident zero from a store nobody is using.
+    MissingDatabase { path: String },
+    /// The opened database's lease exclusion index is not the partial unique
+    /// index this crate's mutual exclusion rests on. Fatal rather than a
+    /// warning: without it `acquire` degrades to a check-then-insert that
+    /// hands two builders the same task, and it does so silently.
+    ExclusionIndex { detail: String },
     /// A TTL the store will not honour: zero, negative, or past the ceiling.
     /// Zero or negative would mint a lease that is born expired — the caller
     /// believes it holds a task it does not — and an unbounded one walks the
@@ -120,6 +132,17 @@ impl std::fmt::Display for StoreError {
                 f,
                 "store could not be put in WAL mode (journal_mode is {mode:?}); \
                  concurrent builders need WAL to share this database"
+            ),
+            StoreError::MissingDatabase { path } => write!(
+                f,
+                "no store at {path:?}; it was not created, because a database \
+                 conjured from a mistyped path answers every question with an \
+                 empty-but-healthy store"
+            ),
+            StoreError::ExclusionIndex { detail } => write!(
+                f,
+                "the lease exclusion index is not the partial unique index on task_id \
+                 ({detail}); without it two builders racing for one task both win"
             ),
             StoreError::BadTtl { ttl_seconds } => write!(
                 f,
@@ -227,6 +250,40 @@ impl Store {
         Self::prepare(conn)
     }
 
+    /// Opens a store that must already exist.
+    ///
+    /// The difference matters to anything that *asks about* a store rather than
+    /// writing to one. `Connection::open` creates the file when it is absent,
+    /// so a mistyped path used to produce a private, empty database that
+    /// answered "healthy, zero leases" — and two harnesses configured with two
+    /// spellings of the same path shared no exclusion at all while both
+    /// reported fine. A store that is not there is an answer this returns
+    /// rather than a state it manufactures.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(StoreError::MissingDatabase {
+                path: path.display().to_string(),
+            });
+        }
+        // Checked *and* opened without SQLITE_OPEN_CREATE: the exists() test
+        // above is for the message, and the flags are what make the guarantee,
+        // so a file deleted between the two cannot slip through as a creation.
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::CannotOpen => {
+                StoreError::MissingDatabase {
+                    path: path.display().to_string(),
+                }
+            }
+            other => StoreError::Sql(other),
+        })?;
+        Self::prepare(conn)
+    }
+
     /// Opens an in-memory store, for tests.
     pub fn open_in_memory() -> Result<Self> {
         Self::prepare(Connection::open_in_memory()?)
@@ -239,6 +296,13 @@ impl Store {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         ensure_wal(&conn)?;
         conn.execute_batch(schema::SCHEMA)?;
+        // Applying the DDL is not evidence that it took: every statement in it
+        // is `IF NOT EXISTS`, and for the exclusion index that match is on the
+        // name alone. Reading back what the file actually holds is what turns
+        // "the index must exist before the store is used concurrently" from a
+        // comment into a precondition.
+        schema::verify_exclusion_index(&conn)
+            .map_err(|detail| StoreError::ExclusionIndex { detail })?;
         Ok(Store { conn, now_fn: None })
     }
 
@@ -293,6 +357,22 @@ impl Store {
     /// gets a constraint violation, which is translated into the same
     /// `LeaseHeld` a caller would have seen from the check.
     pub fn acquire(&self, req: &AcquireRequest) -> Result<Lease> {
+        // Validated before anything is written, and that ordering is the whole
+        // of the guarantee: an unvalidated TTL used to overflow the epoch
+        // arithmetic (panic in debug, absurd expiry in release) and a
+        // non-positive one minted a lease that read as expired on first touch
+        // while reporting success.
+        //
+        // It also has to come before the force-steal below. It used to sit
+        // after it, so `--force true --ttl-seconds 0` revoked the incumbent's
+        // lease and *then* refused the request: the requester got nothing, the
+        // holder lost the task it was working on, and the only signal was an
+        // error message about a TTL. A rejected request must leave the store
+        // exactly as it found it.
+        if let Some(ttl) = req.ttl_seconds {
+            validate_ttl(ttl)?;
+        }
+
         if let Some(active) = self.active_lease(&req.task_id)? {
             if !req.force {
                 return Err(StoreError::LeaseHeld {
@@ -304,13 +384,6 @@ impl Store {
         }
 
         let now = self.now_epoch();
-        // Validated before anything is written: an unvalidated TTL used to
-        // overflow the epoch arithmetic (panic in debug, absurd expiry in
-        // release) and a non-positive one minted a lease that read as expired
-        // on first touch while reporting success.
-        if let Some(ttl) = req.ttl_seconds {
-            validate_ttl(ttl)?;
-        }
         let lease = Lease {
             id: new_id(&self.conn)?,
             task_id: req.task_id.clone(),
@@ -435,6 +508,22 @@ impl Store {
 
     /// Every currently-live lease, with expiry applied.
     pub fn active_leases(&self) -> Result<Vec<Lease>> {
+        let mut out = self.sweep_expired()?;
+        out.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        Ok(out)
+    }
+
+    /// Applies lazy expiry across every row still marked active, and returns
+    /// the ones that survived it.
+    ///
+    /// This is the single owner of "which leases are actually live", because
+    /// the alternative is what was here before: `active_leases` applied expiry
+    /// and `ready_tasks` read `status = 'active'` raw, so a lapsed lease still
+    /// hid its task from the ready list. Expiry in this store is observed on
+    /// read and there is no sweeper, so a lease nothing has touched keeps its
+    /// stale `active` row indefinitely — and a task whose builder crashed was
+    /// never re-offered until some *other* call happened to look at it.
+    fn sweep_expired(&self) -> Result<Vec<Lease>> {
         let mut stmt = self
             .conn
             .prepare("SELECT DISTINCT task_id FROM task_leases WHERE status = 'active'")?;
@@ -447,7 +536,6 @@ impl Store {
                 out.push(lease);
             }
         }
-        out.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         Ok(out)
     }
 
@@ -483,6 +571,15 @@ impl Store {
     /// it would deny a write the task itself authorised — the split matters to
     /// whoever reviews the plan afterwards, not to the check.
     pub fn task(&self, task_id: &str) -> Result<Option<Task>> {
+        const COLUMNS: [&str; 7] = [
+            "planned_files_json",
+            "agent_appended_planned_files_json",
+            "allowed_commands_json",
+            "agent_appended_allowed_commands_json",
+            "expected_tests_json",
+            "agent_appended_expected_tests_json",
+            "forbidden_changes_json",
+        ];
         let row = self
             .conn
             .query_row(
@@ -494,31 +591,51 @@ impl Store {
                  FROM tasks WHERE id = ?1",
                 params![task_id],
                 |r| {
-                    Ok(Task {
-                        id: r.get(0)?,
-                        title: r.get(1)?,
-                        status: r.get(2)?,
-                        difficulty: r.get(3)?,
-                        planned_files_json: merge_json_arrays(
-                            &r.get::<_, String>(4)?,
-                            &r.get::<_, String>(5)?,
-                        ),
-                        allowed_commands_json: merge_json_arrays(
-                            &r.get::<_, String>(6)?,
-                            &r.get::<_, String>(7)?,
-                        ),
-                        expected_tests_json: merge_json_arrays(
-                            &r.get::<_, String>(8)?,
-                            &r.get::<_, String>(9)?,
-                        ),
-                        forbidden_changes_json: r.get(10)?,
-                        agent_appended_planned_files_json: r.get(5)?,
-                    })
+                    let mut scope: Vec<String> = Vec::with_capacity(COLUMNS.len());
+                    for index in 4..4 + COLUMNS.len() {
+                        scope.push(r.get::<_, String>(index)?);
+                    }
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        scope,
+                    ))
                 },
             )
             .optional()
             .map_err(StoreError::Sql)?;
-        Ok(row)
+        let Some((id, title, status, difficulty, scope)) = row else {
+            return Ok(None);
+        };
+
+        // Every one of these columns is handed on as raw JSON text — merged
+        // with its sibling and embedded unquoted into the reply — so a column
+        // that is not a well-formed JSON array is a document this store would
+        // otherwise emit broken, or worse, emit with an extra key spliced into
+        // it. The write path refuses such a value, but this store shares its
+        // file with DevCouncil and with anything else holding the path, so the
+        // read asserts it too rather than trusting that every writer did.
+        for (column, value) in COLUMNS.iter().zip(scope.iter()) {
+            if let Err(why) = json::check_array(value.trim()) {
+                return Err(StoreError::BadScope {
+                    reason: format!("task {task_id}'s {column} is not a JSON array: {why}"),
+                });
+            }
+        }
+
+        Ok(Some(Task {
+            id,
+            title,
+            status,
+            difficulty,
+            planned_files_json: merge_json_arrays(&scope[0], &scope[1]),
+            allowed_commands_json: merge_json_arrays(&scope[2], &scope[3]),
+            expected_tests_json: merge_json_arrays(&scope[4], &scope[5]),
+            forbidden_changes_json: scope[6].clone(),
+            agent_appended_planned_files_json: scope[1].clone(),
+        }))
     }
 
     /// Replaces a task's agent-appended planned files, for the holder of its
@@ -559,12 +676,22 @@ impl Store {
                 ),
             });
         }
-        // A syntactic check, not a parse: the column is read back as JSON by
-        // every consumer, and text that cannot be one is refused at the write
-        // rather than discovered by whoever reads it next.
-        if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+        // A full scan of the JSON grammar, not the shape check this used to be.
+        // The column is read back as JSON by every consumer *and embedded raw*
+        // into the store's own reply, so text that merely begins with `[` and
+        // ends with `]` is not enough: `[…],"planned_files":[{"path":"**"}],…`
+        // satisfied that check, closed the array early, and injected a second
+        // key that Go's last-wins decoder preferred — an executor's self-widened
+        // path came back to the reporting side as scope the planner authorised.
+        // Refused at the write rather than discovered by whoever reads it next.
+        //
+        // Validated rather than re-serialised: the compare-and-swap below
+        // compares stored text, so a value normalised on the way in would no
+        // longer match what its caller holds and every widening would report as
+        // a conflict with itself.
+        if let Err(why) = json::check_array(trimmed) {
             return Err(StoreError::BadScope {
-                reason: format!("{replacement:?} is not a JSON array"),
+                reason: format!("{replacement:?} is not a JSON array: {why}"),
             });
         }
 
@@ -635,6 +762,17 @@ impl Store {
                 params![task_id],
                 |r| r.get(0),
             )?;
+            // Travels back to the caller embedded raw, so it carries the same
+            // obligation as anything else this store emits unquoted: a column
+            // some other writer left malformed must not be spliced into a reply
+            // as though it were a value.
+            if let Err(why) = json::check_array(current.trim()) {
+                return Err(StoreError::BadScope {
+                    reason: format!(
+                        "task {task_id}'s stored appended scope is not a JSON array: {why}"
+                    ),
+                });
+            }
             return Ok(ScopeWrite::Stale { current });
         }
         Ok(ScopeWrite::Written)
@@ -645,7 +783,15 @@ impl Store {
     /// "Ready" is a status question and "held" is a lease question, and they
     /// are answered together here so a caller cannot act on a task that was
     /// claimed between the two reads.
+    ///
+    /// Like every other read of a lease in this store, it is a *writing* read:
+    /// expiry is applied first. Without that, "held" meant `status = 'active'`
+    /// as stored, so a builder that crashed left its task hidden from the ready
+    /// list forever — the TTL had passed, but nothing had touched the row to
+    /// notice. `devcouncil_next_task` calls this and nothing else, so the
+    /// answer an agent got after a crash was "no unheld ready tasks".
     pub fn ready_tasks(&self) -> Result<Vec<String>> {
+        self.sweep_expired()?;
         let mut stmt = self
             .conn
             .prepare(
@@ -836,11 +982,15 @@ pub struct Task {
 
 /// Concatenates two JSON arrays textually.
 ///
-/// Deliberately not a parse-merge-reserialize: this crate has no JSON parser,
-/// and pulling one in for a concatenation would add a dependency to the storage
-/// layer for the benefit of a caller that already parses the result. A
-/// malformed input is passed through rather than repaired — the consumer's
-/// decoder will reject it, which is a better place to notice than here.
+/// Deliberately not a parse-merge-reserialize: the caller already parses the
+/// result into real types, and re-encoding here would break the compare-and-swap
+/// on the appended column, which compares the store's own bytes.
+///
+/// Both inputs are required to be well-formed JSON arrays, which is why this
+/// concatenation is sound: [`Store::task`] checks every column it reads through
+/// [`json::check_array`] before merging, and the write path refuses a
+/// replacement that is not one. Splicing text that had only been *shaped* like
+/// an array is what let an injected `"planned_files"` key ride into the reply.
 fn merge_json_arrays(base: &str, appended: &str) -> String {
     let a = base.trim();
     let b = appended.trim();
@@ -1259,6 +1409,199 @@ mod tests {
             .expect("read task")
             .expect("task exists");
         assert_eq!(task.agent_appended_planned_files_json, "[]");
+    }
+
+    /// The injection this store used to accept.
+    ///
+    /// `[…],"planned_files":[{"path":"**"}],"junk":[1]` begins with `[` and
+    /// ends with `]`, which was the whole of the old check. Stored verbatim and
+    /// embedded raw into the reply, it closed the array early and added a
+    /// second `planned_files` key — and Go's decoder takes the last one, so the
+    /// executor's own `**` came back as scope the *planner* authorised. The
+    /// split between planned and appended exists precisely to stop that, so a
+    /// replacement that is not one well-formed JSON array is refused at the
+    /// write.
+    #[test]
+    fn a_replacement_that_closes_its_array_early_cannot_reopen_the_document() {
+        let store = Store::open_in_memory().expect("open store");
+        plant_task(&store, "TASK-1", r#"["src/a.go"]"#, "[]");
+        let token = lease_for(&store, "TASK-1");
+
+        let injected = concat!(
+            r#"[{"path":"benign.go","allowed_change":"modify"}],"#,
+            r#""planned_files":[{"path":"**","allowed_change":"modify"}],"junk":[1]"#
+        );
+        assert!(injected.trim().starts_with('[') && injected.trim().ends_with(']'));
+        match store.set_agent_appended_planned_files("TASK-1", &token, "[]", injected) {
+            Err(StoreError::BadScope { .. }) => {}
+            other => panic!("the injection was accepted: {other:?}"),
+        }
+
+        // And nothing was written: the plan is still the planner's.
+        let task = store.task("TASK-1").expect("read").expect("exists");
+        assert_eq!(task.agent_appended_planned_files_json, "[]");
+        assert_eq!(task.planned_files_json, r#"["src/a.go"]"#);
+    }
+
+    /// The same rule on the way out. This store shares its file with DevCouncil
+    /// and with anything else holding the path, so a column another writer left
+    /// malformed must be an error here rather than a broken document emitted to
+    /// whoever reads the reply.
+    #[test]
+    fn a_stored_scope_column_that_is_not_an_array_is_an_error_not_a_broken_reply() {
+        let store = Store::open_in_memory().expect("open store");
+        plant_task(
+            &store,
+            "TASK-1",
+            r#"["src/a.go"]"#,
+            r#"[1],"planned_files":[{"path":"**"}]"#,
+        );
+        match store.task("TASK-1") {
+            Err(StoreError::BadScope { reason }) => {
+                assert!(
+                    reason.contains("agent_appended_planned_files_json"),
+                    "the refusal does not name the column: {reason}"
+                );
+            }
+            other => panic!("a malformed scope column was read as a task: {other:?}"),
+        }
+    }
+
+    /// An expired lease has to stop hiding its task, because that is the whole
+    /// purpose of the TTL. `ready` used to read `status = 'active'` raw while
+    /// its neighbour applied expiry, so a crashed builder's task was never
+    /// re-offered until some other call happened to touch the row — and
+    /// `devcouncil_next_task` calls this and nothing else.
+    #[test]
+    fn an_expired_lease_stops_hiding_its_task_from_ready() {
+        let mut store = Store::open_in_memory().expect("open store");
+        let now = Arc::new(AtomicI64::new(1_700_000_000));
+        let clock = Arc::clone(&now);
+        store.set_clock(move || clock.load(Ordering::SeqCst));
+        plant_task(&store, "TASK-1", "[]", "[]");
+
+        assert_eq!(store.ready_tasks().expect("ready"), vec!["TASK-1"]);
+        store
+            .acquire(&AcquireRequest {
+                task_id: "TASK-1".to_string(),
+                owner: "builder-1".to_string(),
+                ttl_seconds: Some(60),
+                ..Default::default()
+            })
+            .expect("acquire");
+        assert!(store.ready_tasks().expect("ready").is_empty());
+
+        // The holder is gone and its TTL has passed. Nothing else has looked at
+        // the row — that is the point.
+        now.store(1_700_000_000 + 61, Ordering::SeqCst);
+        assert_eq!(
+            store.ready_tasks().expect("ready"),
+            vec!["TASK-1"],
+            "a task whose lease expired is still hidden from the ready list"
+        );
+    }
+
+    /// A rejected request must leave the store exactly as it found it.
+    ///
+    /// The force-steal used to be written before the TTL was validated, so
+    /// `--force true --ttl-seconds 0` revoked the incumbent and then refused the
+    /// caller: agentA lost the task it was working on, agentB got nothing, and
+    /// the only signal was an error message about a TTL.
+    #[test]
+    fn a_refused_ttl_does_not_cost_the_incumbent_its_lease() {
+        let store = Store::open_in_memory().expect("open store");
+        let held = store
+            .acquire(&AcquireRequest {
+                task_id: "TASK-1".to_string(),
+                owner: "agentA".to_string(),
+                ttl_seconds: Some(300),
+                ..Default::default()
+            })
+            .expect("agentA acquires");
+
+        for ttl in [0i64, -5, i64::MAX] {
+            match store.acquire(&AcquireRequest {
+                task_id: "TASK-1".to_string(),
+                owner: "agentB".to_string(),
+                ttl_seconds: Some(ttl),
+                force: true,
+                ..Default::default()
+            }) {
+                Err(StoreError::BadTtl { .. }) => {}
+                other => panic!("ttl {ttl} was not refused: {other:?}"),
+            }
+            let active = store
+                .active_lease("TASK-1")
+                .expect("read")
+                .expect("agentA still holds the task after a refused steal");
+            assert_eq!(active.owner, "agentA");
+            assert_eq!(active.token, held.token);
+        }
+
+        // A force with a usable TTL still steals; the fix is about ordering,
+        // not about disabling the escape hatch.
+        let stolen = store
+            .acquire(&AcquireRequest {
+                task_id: "TASK-1".to_string(),
+                owner: "agentB".to_string(),
+                ttl_seconds: Some(300),
+                force: true,
+                ..Default::default()
+            })
+            .expect("a valid forced acquire still works");
+        assert_eq!(stolen.owner, "agentB");
+    }
+
+    /// `CREATE UNIQUE INDEX IF NOT EXISTS` matches on the name alone, so a
+    /// database carrying a same-named index with any other definition made the
+    /// DDL a silent no-op — and every acquire fell back to the check-then-insert
+    /// the index exists to backstop. A 24-way race against such a database
+    /// elected two winners while health answered ok, so opening it is refused.
+    #[test]
+    fn an_exclusion_index_with_another_definition_is_refused_at_open() {
+        // Each impostor breaks exactly one of the three properties the
+        // exclusion depends on, and each was reachable through the same
+        // IF NOT EXISTS no-op.
+        for impostor in [
+            // Unique, but over the wrong column: two active leases on one task
+            // have different ids, so both insert.
+            "CREATE UNIQUE INDEX ux_task_leases_active ON task_leases (id)",
+            // The right column, but not unique: it constrains nothing at all.
+            "CREATE INDEX ux_task_leases_active ON task_leases (task_id) WHERE status = 'active'",
+            // Unique and partial, over the wrong predicate: a released lease
+            // would keep its task locked and an active one would not be
+            // excluded.
+            "CREATE UNIQUE INDEX ux_task_leases_active ON task_leases (task_id) WHERE status = 'stale'",
+        ] {
+            let conn = Connection::open_in_memory().expect("open");
+            conn.execute_batch(schema::SCHEMA).expect("schema");
+            conn.execute_batch(&format!("DROP INDEX ux_task_leases_active; {impostor};"))
+                .expect("plant the impostor index");
+
+            match Store::prepare(conn) {
+                Err(StoreError::ExclusionIndex { detail }) => assert!(
+                    detail.contains("ux_task_leases_active"),
+                    "the refusal does not name the index: {detail}"
+                ),
+                other => panic!("{impostor:?} was accepted: {other:?}"),
+            }
+        }
+    }
+
+    /// The same check must not reject the real thing, including the spelling
+    /// DevCouncil's SQLAlchemy emits — quoted identifiers, different spacing.
+    #[test]
+    fn the_incumbents_spelling_of_the_index_is_accepted() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(schema::SCHEMA).expect("schema");
+        conn.execute_batch(
+            "DROP INDEX ux_task_leases_active;
+             CREATE UNIQUE INDEX ux_task_leases_active
+               ON task_leases (\"task_id\")
+               WHERE status  ==  'active';",
+        )
+        .expect("plant the incumbent's spelling");
+        Store::prepare(conn).expect("the incumbent's own index was refused");
     }
 
     /// A task id nothing was planned under gets a routable answer rather than a

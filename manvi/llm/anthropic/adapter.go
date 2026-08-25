@@ -282,8 +282,12 @@ func toWireBlock(block llm.ContentBlock) (wireBlock, error) {
 // maxDecodedResponseBytes bounds how much of one response this stream will
 // hold across all accumulators. The stall watchdog bounds silence, not volume;
 // without a byte ceiling a server generating past any max_tokens it was given
-// makes the harness allocate without bound. Mirrors openaicompat's limit.
-const maxDecodedResponseBytes = 4 << 20
+// makes the harness allocate without bound.
+//
+// It is transport.MaxDecodedResponseBytes rather than a local copy of the same
+// literal. Three adapters each declaring the number independently is how they
+// came to disagree about what it counted.
+const maxDecodedResponseBytes = transport.MaxDecodedResponseBytes
 
 // stream decodes the SSE event sequence into neutral chunks.
 type stream struct {
@@ -298,7 +302,15 @@ type stream struct {
 	// index. The settled Response is assembled from these, so nothing depends
 	// on the caller having consumed every chunk.
 	blocks map[int]*accumulator
-	order  []int
+
+	// retained is what those blocks are holding, tallied as it changes rather
+	// than totalled on demand. decodedBytes runs once per event, so walking
+	// every accumulator to add up its builders made the cap that bounds a
+	// runaway quadratic in the size of the runaway — measured at eight seconds
+	// of CPU to reach a ceiling the stream should hit in milliseconds, which is
+	// its own denial of service.
+	retained int
+	order    []int
 
 	stopReason llm.StopReason
 	usage      llm.Usage
@@ -421,16 +433,15 @@ func (s *stream) Next() (llm.Chunk, error) {
 }
 
 // decodedBytes is everything this stream is holding from the response so far.
-func (s *stream) decodedBytes() int {
-	total := 0
-	for _, acc := range s.blocks {
-		if acc == nil {
-			continue
-		}
-		total += acc.text.Len() + len(acc.signature) + len(acc.data) + acc.args.Len()
-	}
-	return total
-}
+//
+// Each block is charged transport.RetainedAccumulatorBytes for the fixed cost
+// of existing, on top of the content it holds. Without that charge a stream of
+// content_block_start events at ever-increasing indices allocated one
+// accumulator and one map entry per event while contributing nothing to a tally
+// that counted only content, so the cap could not fire on a runaway that sent
+// no content at all. The same rule is applied by the openaicompat and gemini
+// decoders; this one already counted signature bytes, and gemini did not.
+func (s *stream) decodedBytes() int { return s.retained }
 
 func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 	switch ev.Type {
@@ -454,10 +465,17 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 		acc := &accumulator{kind: ev.ContentBlock.Type}
 		s.blocks[ev.Index] = acc
 		s.order = append(s.order, ev.Index)
+		// Charged the moment the block exists, not when it collects anything.
+		// An accumulator that never receives a delta still costs a struct, a
+		// builder and an entry in this map, and a stream of empty
+		// content_block_start events was previously free of charge — so the
+		// cap could not fire on a runaway that sent no content at all.
+		s.retained += transport.RetainedAccumulatorBytes
 		switch ev.ContentBlock.Type {
 		case BlockToolUse:
 			acc.toolID = ev.ContentBlock.ID
 			acc.toolName = ev.ContentBlock.Name
+			s.retained += len(acc.toolID) + len(acc.toolName)
 			return llm.Chunk{
 				Kind: llm.ChunkToolCallStart, BlockIndex: ev.Index,
 				ToolCallID: llm.CallID(acc.toolID), ToolName: acc.toolName,
@@ -465,10 +483,12 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 		case BlockText:
 			if ev.ContentBlock.Text != "" {
 				acc.text.WriteString(ev.ContentBlock.Text)
+				s.retained += len(ev.ContentBlock.Text)
 				return llm.Chunk{Kind: llm.ChunkText, BlockIndex: ev.Index, Text: ev.ContentBlock.Text}, true, nil
 			}
 		case BlockRedactedThinking:
 			acc.data = ev.ContentBlock.Data
+			s.retained += len(acc.data)
 		}
 		return llm.Chunk{}, false, nil
 
@@ -483,17 +503,24 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 		switch ev.Delta.Type {
 		case DeltaText:
 			acc.text.WriteString(ev.Delta.Text)
+			s.retained += len(ev.Delta.Text)
 			return llm.Chunk{Kind: llm.ChunkText, BlockIndex: ev.Index, Text: ev.Delta.Text}, true, nil
 		case DeltaThinking:
 			acc.text.WriteString(ev.Delta.Thinking)
+			s.retained += len(ev.Delta.Thinking)
 			return llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: ev.Index, Text: ev.Delta.Thinking}, true, nil
 		case DeltaSignature:
 			// The signature is what makes a thinking block replayable. It is
-			// accumulated but not surfaced as a chunk: it is not content.
+			// accumulated but not surfaced as a chunk: it is not content. It is
+			// still counted: it is retained for the life of the stream and it
+			// reaches the session log, and the sibling gemini decoder omitting
+			// exactly this field is the disagreement this rule exists to end.
 			acc.signature += ev.Delta.Signature
+			s.retained += len(ev.Delta.Signature)
 			return llm.Chunk{}, false, nil
 		case DeltaInputJSON:
 			acc.args.WriteString(ev.Delta.PartialJSON)
+			s.retained += len(ev.Delta.PartialJSON)
 			return llm.Chunk{
 				Kind: llm.ChunkToolCallDelta, BlockIndex: ev.Index,
 				ToolCallID: llm.CallID(acc.toolID), ToolName: acc.toolName,

@@ -92,7 +92,11 @@ func TestConcurrentAcquireElectsExactlyOneHolder(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "state.sqlite")
 
 	// Create the schema once so the race is over the lease, not over migration.
-	if err := New(bin, db).Available(context.Background()); err != nil {
+	// Through a command that writes, not through Available: health deliberately
+	// refuses to bring a store into existence, because a health check that
+	// creates the database it was asked about cannot tell a mistyped path from
+	// a real store.
+	if _, err := New(bin, db).ActiveLeases(context.Background()); err != nil {
 		t.Fatalf("prepare store: %v", err)
 	}
 

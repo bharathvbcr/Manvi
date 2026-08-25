@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -81,13 +82,19 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cPath := s.contentPath(clean)
-	if _, err := os.Stat(cPath); err == nil {
-		return nil, fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", clean)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(cPath), 0o755); err != nil {
+	cPath, err := s.containedPath(clean)
+	if err != nil {
 		return nil, err
+	}
+	// Lstat, not Stat: a name that is a symbolic link "exists" for the purpose
+	// of refusing to clobber it, and saying so plainly is better than telling
+	// the caller to use Update — which would refuse for a different reason and
+	// leave them guessing which of the two answers was the real one.
+	if info, err := os.Lstat(cPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("artifacts: refusing %q: that name is already a symbolic link", clean)
+		}
+		return nil, fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", clean)
 	}
 
 	now := time.Now()
@@ -101,14 +108,19 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 		Revision:  1,
 	}
 
-	if err := os.WriteFile(cPath, []byte(content), 0o644); err != nil {
-		return nil, fmt.Errorf("artifacts: writing content for %s: %w", clean, err)
+	if err := writeContained(cPath, []byte(content), 0o644); err != nil {
+		return nil, err
 	}
 
 	metaBytes, _ := json.MarshalIndent(art, "", "  ")
-	if err := os.WriteFile(s.metaPath(clean), metaBytes, 0o644); err != nil {
+	metaFull, err := s.containedPath(clean + ".meta.json")
+	if err != nil {
 		_ = os.Remove(cPath)
-		return nil, fmt.Errorf("artifacts: writing metadata for %s: %w", clean, err)
+		return nil, err
+	}
+	if err := writeContained(metaFull, metaBytes, 0o644); err != nil {
+		_ = os.Remove(cPath)
+		return nil, err
 	}
 
 	return art, nil
@@ -124,8 +136,14 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cPath := s.contentPath(clean)
-	mPath := s.metaPath(clean)
+	cPath, err := s.containedPath(clean)
+	if err != nil {
+		return nil, err
+	}
+	mPath, err := s.containedPath(clean + ".meta.json")
+	if err != nil {
+		return nil, err
+	}
 
 	var existing Artifact
 	metaData, err := os.ReadFile(mPath)
@@ -147,16 +165,13 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 		existing.Metadata = *meta
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cPath), 0o755); err != nil {
+	if err := writeContained(cPath, []byte(content), 0o644); err != nil {
 		return nil, err
-	}
-	if err := os.WriteFile(cPath, []byte(content), 0o644); err != nil {
-		return nil, fmt.Errorf("artifacts: writing %s: %w", clean, err)
 	}
 
 	metaBytes, _ := json.MarshalIndent(existing, "", "  ")
-	if err := os.WriteFile(mPath, metaBytes, 0o644); err != nil {
-		return nil, fmt.Errorf("artifacts: writing meta for %s: %w", clean, err)
+	if err := writeContained(mPath, metaBytes, 0o644); err != nil {
+		return nil, err
 	}
 
 	return &existing, nil
@@ -242,4 +257,92 @@ func (s *Store) List() ([]*Artifact, error) {
 	})
 
 	return arts, nil
+}
+
+// --- containment ---
+//
+// sanitizeName refuses traversal, and traversal is not the only way out of a
+// directory. It rejects "../x" and an absolute path, then hands the result to
+// os.WriteFile, which follows symbolic links — so an artifact named "notes.md"
+// whose name already exists in the store as a link to somewhere else wrote
+// there instead. A symlinked *directory* component did the same for
+// "sub/notes.md". Neither carries a ".." for sanitizeName to find.
+//
+// That mattered more than it looks: the create_artifact tool reaches this store
+// without going through the policy gate at all, so the store's own containment
+// was the only thing standing between a model-chosen name and an arbitrary
+// file write.
+//
+// The rule here is the one safefs.go states for the write gate: a component
+// this code cannot identify is a component it will not walk through. Every
+// directory under the store root is created and then inspected — os.Mkdir
+// answers EEXIST for a symlink, so creating without looking proves nothing —
+// and the leaf is opened with O_NOFOLLOW so the kernel refuses the link rather
+// than resolving it.
+
+// containedPath returns the physical path for a cleaned artifact name,
+// creating the directories beneath it, and refuses if any component is a
+// symbolic link or is not a directory.
+func (s *Store) containedPath(clean string) (string, error) {
+	root, err := filepath.Abs(s.dir)
+	if err != nil {
+		return "", fmt.Errorf("artifacts: resolving store dir %s: %w", s.dir, err)
+	}
+	current := root
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+			return "", fmt.Errorf("artifacts: creating %s: %w", current, err)
+		}
+		// Lstat, not Stat: Stat follows the link and would report the directory
+		// at the far end as though this component were one.
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", fmt.Errorf("artifacts: inspecting %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("artifacts: refusing %q: path component %q is a symbolic link", clean, part)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("artifacts: refusing %q: path component %q is not a directory", clean, part)
+		}
+	}
+	return filepath.Join(current, parts[len(parts)-1]), nil
+}
+
+// writeContained writes data at full, refusing to follow a symbolic link at the
+// final component.
+//
+// O_NOFOLLOW is what makes this a decision the kernel enforces rather than a
+// check this code makes and then races against: an Lstat followed by an
+// ordinary open is two operations with a window between them, and the window is
+// the whole attack.
+func writeContained(full string, data []byte, perm os.FileMode) error {
+	fd, err := syscall.Open(full,
+		syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_CLOEXEC,
+		uint32(perm))
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("artifacts: refusing to write %s: it is a symbolic link", filepath.Base(full))
+		}
+		return fmt.Errorf("artifacts: opening %s: %w", filepath.Base(full), err)
+	}
+	f := os.NewFile(uintptr(fd), full)
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("artifacts: inspecting %s: %w", filepath.Base(full), err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("artifacts: refusing to write %s: not a regular file", filepath.Base(full))
+	}
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("artifacts: writing %s: %w", filepath.Base(full), err)
+	}
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -607,5 +608,174 @@ func TestSettleCatchesAMislabelledOutputCap(t *testing.T) {
 	if !got.(SettleResult).Truncated {
 		t.Error("Truncated = false for a reply that used the entire bound the host sent; " +
 			"finish_reason is a claim and this one is wrong")
+	}
+}
+
+// freshHistory is bulkyHistory with tool_call_ids nobody has used before,
+// which is what a long conversation actually looks like: every step's results
+// are new ones, and the step before it has scrolled out of the window the host
+// still sends.
+func freshHistory(round, n, linesEach int) []WireMessage {
+	msgs := bulkyHistory(n, linesEach)
+	for i := range msgs {
+		if msgs[i].ToolCallID != "" {
+			msgs[i].ToolCallID = fmt.Sprintf("r%d_%s", round, msgs[i].ToolCallID)
+		}
+		for j := range msgs[i].ToolCalls {
+			msgs[i].ToolCalls[j].ID = fmt.Sprintf("r%d_%s", round, msgs[i].ToolCalls[j].ID)
+		}
+	}
+	return msgs
+}
+
+// maxChatSessions caps how many ledgers exist and never capped how large one
+// grows. The ledger is append-only — a plan adds an entry and only chat.forget
+// ever removed one — so a single long-lived session grew linearly with
+// requests: 2,000 entries and 621 KB after 40 of them, with no knee to level
+// off at. A ledger entry only earns its place while the host is still sending
+// the result it describes; once that message is gone the entry substitutes
+// into nothing and suppresses nothing, and keeping it is pure residue.
+func TestOneSessionsLedgerDoesNotGrowWithEveryRequest(t *testing.T) {
+	const rounds = 40
+	d := newDriver(t)
+	var last []WireMessage
+	for round := 0; round < rounds; round++ {
+		last = freshHistory(round, 20, 60)
+		if r := d.callPrepare(PrepareParams{
+			SessionID:     "one-tab",
+			Messages:      last,
+			ContextWindow: 4096,
+		}); len(r.Steps) == 0 {
+			t.Fatalf("round %d compacted nothing; the fixture is not over budget", round)
+		}
+	}
+
+	session := d.srv.chat.get("one-tab")
+	live := map[llm.CallID]bool{}
+	for _, m := range last {
+		if m.Role == "tool" {
+			live[llm.CallID(m.ToolCallID)] = true
+		}
+	}
+	residue := 0
+	for id := range session.compacted {
+		if !live[id] {
+			residue++
+		}
+	}
+	if residue > 0 {
+		t.Fatalf("the ledger holds %d entries for tool results the host no longer sends "+
+			"(%d entries total after %d requests); it grows with requests rather than "+
+			"with the conversation", residue, len(session.compacted), rounds)
+	}
+	if len(session.compacted) > len(live) {
+		t.Fatalf("ledger holds %d entries for %d live tool results", len(session.compacted), len(live))
+	}
+}
+
+// Pruning to what the host still sends is bounded by what the host sends, and
+// one request is bounded by maxLineBytes. The cap is the second bound, for the
+// history that itself keeps growing. It is not free — a dropped entry gets
+// shortened again, possibly to different text — so it takes the front of the
+// history, furthest from the protected tail the model is reasoning over.
+func TestTheLedgerCapHoldsWhenTheHistoryItselfKeepsGrowing(t *testing.T) {
+	session := newChatSession()
+	var history []WireMessage
+	const overflow = 500
+	for i := 0; i < maxCompactedEntries+overflow; i++ {
+		id := fmt.Sprintf("call_%d", i)
+		session.compacted[llm.CallID(id)] = "shortened"
+		history = append(history, WireMessage{Role: "tool", ToolCallID: id, Text: "x"})
+	}
+
+	session.pruneLedger(history)
+
+	if got := len(session.compacted); got > maxCompactedEntries {
+		t.Fatalf("ledger holds %d entries, cap is %d", got, maxCompactedEntries)
+	}
+	if _, ok := session.compacted["call_0"]; ok {
+		t.Error("the oldest entry survived the cap; eviction must start at the front")
+	}
+	newest := llm.CallID(fmt.Sprintf("call_%d", maxCompactedEntries+overflow-1))
+	if _, ok := session.compacted[newest]; !ok {
+		t.Errorf("%s was evicted; the newest results are the ones the model is reasoning over", newest)
+	}
+}
+
+// A ledger entry for a result still in the history must survive pruning, or
+// the one-way property dies with it and the prompt prefix moves every step.
+func TestPruningKeepsWhatTheHistoryStillReferences(t *testing.T) {
+	session := newChatSession()
+	session.compacted["kept"] = "short"
+	session.compacted["gone"] = "short"
+
+	session.pruneLedger([]WireMessage{
+		{Role: "user", Text: "hello"},
+		{Role: "assistant", ToolCalls: []WireToolCall{{ID: "kept", Name: "Grep"}}},
+		{Role: "tool", ToolCallID: "kept", Text: "short"},
+	})
+
+	if _, ok := session.compacted["kept"]; !ok {
+		t.Error("an entry for a result still in the history was pruned; it would be re-shortened")
+	}
+	if _, ok := session.compacted["gone"]; ok {
+		t.Error("an entry for a result the host no longer sends was kept")
+	}
+}
+
+// The budget numbers are arithmetic inputs, not opaque values. A window near
+// math.MaxInt64 overflows agent.Budget.Target() — the wire reported
+// threshold_tokens 9223372036854771711 with target_tokens 922337203685474712,
+// which is not 70% of anything — and an overflowed budget does not look wrong,
+// it looks like a plausible number. Refused rather than clamped: a plan for a
+// window the model does not have is indistinguishable from one that fits.
+func TestPrepareRefusesBudgetNumbersTheArithmeticCannotHonour(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    PrepareParams
+	}{
+		{"window at MaxInt64", PrepareParams{ContextWindow: math.MaxInt64}},
+		{"window past the ceiling", PrepareParams{ContextWindow: maxTokenCount + 1}},
+		{"reserved output at MaxInt64", PrepareParams{ContextWindow: 8192, ReservedOutput: math.MaxInt64}},
+		{"negative reserved output", PrepareParams{ContextWindow: 8192, ReservedOutput: -1}},
+		{"overhead at MaxInt64", PrepareParams{ContextWindow: 8192, Overhead: math.MaxInt64}},
+		{"negative overhead", PrepareParams{ContextWindow: 8192, Overhead: -1}},
+		{"observed prompt tokens at MaxInt64",
+			PrepareParams{ContextWindow: 8192, ObservedPromptTokens: math.MaxInt64}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.p.SessionID = "tab-1"
+			tc.p.Messages = []WireMessage{{Role: "user", Text: "hi"}}
+			resp := newDriver(t).call(prepareRequest(t, "1", tc.p))
+			if resp.OK {
+				var got PrepareResult
+				if err := json.Unmarshal(resp.Result, &got); err != nil {
+					t.Fatal(err)
+				}
+				t.Fatalf("accepted: threshold_tokens=%d target_tokens=%d — target is %.1f%% of "+
+					"threshold, and the contract says 70%%",
+					got.Threshold, got.Target, 100*float64(got.Target)/float64(got.Threshold))
+			}
+			if resp.Error.Code != ErrBadRequest {
+				t.Fatalf("code = %q, want %q", resp.Error.Code, ErrBadRequest)
+			}
+		})
+	}
+}
+
+// The bound must not refuse the windows real models actually have.
+func TestPrepareAcceptsTheLargestRealWindows(t *testing.T) {
+	for _, window := range []int{4096, 32768, 262144, 1 << 20, maxTokenCount} {
+		r := newDriver(t).callPrepare(PrepareParams{
+			SessionID:     "tab-1",
+			Messages:      []WireMessage{{Role: "user", Text: "hi"}},
+			ContextWindow: window,
+		})
+		if r.Threshold <= 0 || r.Target <= 0 || r.Target > r.Threshold {
+			t.Errorf("window %d: threshold=%d target=%d", window, r.Threshold, r.Target)
+		}
+		if ratio := float64(r.Target) / float64(r.Threshold); ratio < 0.69 || ratio > 0.71 {
+			t.Errorf("window %d: target is %.3f of threshold, want ~0.70", window, ratio)
+		}
 	}
 }

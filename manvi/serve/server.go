@@ -37,9 +37,10 @@ type Server struct {
 	allowNeighbors bool
 	posture        Posture
 
-	// out serializes writes. Events and responses are produced by concurrent
-	// handlers, and two goroutines interleaving partial lines would corrupt
-	// the stream in a way neither side could resynchronise.
+	// out serializes writes. Dispatch is serial (see Serve), so there is one
+	// writer today; the lock is what keeps that from being load-bearing, since
+	// two goroutines interleaving partial lines would corrupt the stream in a
+	// way neither side could resynchronise.
 	mu  sync.Mutex
 	out *bufio.Writer
 
@@ -307,21 +308,9 @@ func (s *Server) hello(raw json.RawMessage) (any, *Error) {
 	return HelloResult{Protocol: ProtocolVersion, Ops: ops, Posture: string(s.posture)}, nil
 }
 
-// Emit writes a non-terminal event for an in-flight request.
-func (s *Server) Emit(id, name string, data any) {
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		// An event is progress reporting; losing one is survivable and must
-		// not fail the request it belongs to.
-		return
-	}
-	s.writeLine(Event{ID: id, Event: name, Data: encoded})
-}
-
-func (s *Server) writeResponse(resp Response) { s.writeLine(resp) }
-
-func (s *Server) writeLine(v any) {
-	encoded, err := json.Marshal(v)
+// writeResponse writes one terminal line for a request.
+func (s *Server) writeResponse(resp Response) {
+	encoded, err := json.Marshal(resp)
 	if err != nil {
 		return
 	}
@@ -354,60 +343,171 @@ func (e errLineTooLarge) Error() string {
 
 // recoverID pulls the correlation id out of an oversized line's head.
 //
-// Best effort by design: encoding/json is not used because the head is a
-// fragment, not an object. A short scan for `"id":"…"` covers every host that
-// marshals its request struct in field order — which ours does — and anything
-// else degrades to an empty id, i.e. a visible but unroutable refusal, which
-// is still strictly better than the session death it replaces.
+// It walks the head as the request *envelope* it is, and accepts an id only
+// where the decoder would have found one: a top-level member of the outermost
+// object, whose value is a string that ends inside the retained head. The
+// token itself is decoded by encoding/json, so an escaped id correlates as the
+// host spelled it rather than as its raw bytes. Anything else — an id past the
+// head, a non-string id, a fragment that stops before the value closes —
+// degrades to an empty id, i.e. a visible but unroutable refusal, which is
+// still strictly better than the session death it replaces.
+//
+// The earlier version scanned for the first `"id"` anywhere in the head,
+// params included, and that is the case this anchoring exists to remove. A
+// request carrying a nested "id" in its params had its E_TOO_LARGE stamped
+// with that nested value: the host failed an unrelated in-flight call while
+// the request that was actually refused went unanswered forever — the exact
+// hang the whole refusal path exists to prevent. A wrong id is worse than no
+// id, because it answers a question nobody asked.
+//
+// Taking the *last* top-level id rather than the first is the same reason:
+// encoding/json resolves a duplicate key to the last one, so a line that is
+// merely one byte too long is now read the same way on both paths.
 func recoverID(head []byte) string {
-	const key = `"id"`
-	i := indexBytes(head, []byte(key))
-	if i < 0 {
+	i := skipJSONSpace(head, 0)
+	if i >= len(head) || head[i] != '{' {
+		// A request is an object. A fragment that does not start as one has no
+		// top-level member to anchor to, and guessing inside it is what this
+		// function no longer does.
 		return ""
 	}
-	j := i + len(key)
-	// Skip whitespace and the colon.
-	for j < len(head) && (head[j] == ' ' || head[j] == ':' || head[j] == '\t' || head[j] == '\n' || head[j] == '\r') {
-		j++
-	}
-	if j >= len(head) || head[j] != '"' {
-		return ""
-	}
-	j++
-	start := j
-	for j < len(head) && head[j] != '"' {
-		if head[j] == '\\' {
-			// An escaped byte cannot appear in the ids this protocol
-			// correlates (they are caller-chosen opaque strings), but skipping
-			// the pair keeps a backslash from ending the scan early.
-			j++
-			if j >= len(head) {
+	i++
+
+	found := ""
+	for {
+		i = skipJSONSpace(head, i)
+		if i >= len(head) || head[i] != '"' {
+			return found
+		}
+		rawKey, next, ok := scanJSONString(head, i)
+		if !ok {
+			return found
+		}
+		i = skipJSONSpace(head, next)
+		if i >= len(head) || head[i] != ':' {
+			return found
+		}
+		i = skipJSONSpace(head, i+1)
+		if i >= len(head) {
+			return found
+		}
+
+		key, ok := decodeJSONString(rawKey)
+		if !ok {
+			return found
+		}
+		if key == "id" {
+			if head[i] != '"' {
+				// A non-string id fails the decoder on the ordinary path too.
+				// Refusing to guess keeps the two paths agreeing.
 				return ""
 			}
-		}
-		j++
-	}
-	if j >= len(head) {
-		// The value ran past the retained head; refuse to guess.
-		return ""
-	}
-	return string(head[start:j])
-}
-
-func indexBytes(b []byte, sub []byte) int {
-	for i := 0; i+len(sub) <= len(b); i++ {
-		match := true
-		for k := range sub {
-			if b[i+k] != sub[k] {
-				match = false
-				break
+			rawID, next, ok := scanJSONString(head, i)
+			if !ok {
+				// The value ran past the retained head.
+				return ""
+			}
+			id, ok := decodeJSONString(rawID)
+			if !ok {
+				return ""
+			}
+			found, i = id, next
+		} else {
+			i, ok = skipJSONValue(head, i)
+			if !ok {
+				return found
 			}
 		}
-		if match {
-			return i
+
+		i = skipJSONSpace(head, i)
+		if i >= len(head) || head[i] != ',' {
+			return found
+		}
+		i++
+	}
+}
+
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// scanJSONString returns the raw string token starting at i, quotes included,
+// and the index just past it. ok is false when the token does not close inside
+// b, which on a retained head means the value was truncated away.
+func scanJSONString(b []byte, i int) ([]byte, int, bool) {
+	if i >= len(b) || b[i] != '"' {
+		return nil, i, false
+	}
+	for j := i + 1; j < len(b); {
+		switch b[j] {
+		case '\\':
+			j += 2
+		case '"':
+			return b[i : j+1], j + 1, true
+		default:
+			j++
 		}
 	}
-	return -1
+	return nil, len(b), false
+}
+
+// decodeJSONString turns a raw string token into its value, using the same
+// decoder the ordinary path uses so that escapes mean the same thing on both.
+func decodeJSONString(raw []byte) (string, bool) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// skipJSONValue advances past one value beginning at i.
+//
+// It does not validate the value: the head is a fragment by construction, and
+// all this needs is where the next top-level member begins. ok is false once
+// the fragment ends mid-value, which ends the walk.
+func skipJSONValue(b []byte, i int) (int, bool) {
+	if i >= len(b) {
+		return i, false
+	}
+	switch b[i] {
+	case '"':
+		_, next, ok := scanJSONString(b, i)
+		return next, ok
+	case '{', '[':
+		depth := 0
+		for i < len(b) {
+			switch b[i] {
+			case '"':
+				// Skipped as a unit: a brace inside a string is text, and
+				// counting it would misplace every member after it.
+				_, next, ok := scanJSONString(b, i)
+				if !ok {
+					return len(b), false
+				}
+				i = next
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return i + 1, true
+				}
+			}
+			i++
+		}
+		return i, false
+	default:
+		// A number, true, false or null: it ends at the next structural byte.
+		for i < len(b) && b[i] != ',' && b[i] != '}' && b[i] != ']' {
+			i++
+		}
+		return i, i < len(b)
+	}
 }
 
 // readLine reads one newline-terminated line, refusing one longer than max.

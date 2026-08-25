@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -603,4 +604,123 @@ func (w *synchronizedBuffer) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.b.String()
+}
+
+// --- correlating a refusal with the request that caused it ---
+
+// The refusal for an oversized line must carry the *request's* id or none at
+// all. The scan this replaced took the first `"id"` anywhere in the retained
+// head, params included, so a request whose params happened to contain a
+// nested "id" had its refusal stamped with that value instead: the host marked
+// an unrelated in-flight call failed, and the request that was actually
+// refused went unanswered forever. That hang is the one thing E_TOO_LARGE
+// exists to prevent, so a wrong id here is worse than no id.
+func TestAnOversizedLineIsNeverRefusedUnderSomeoneElsesID(t *testing.T) {
+	huge := `{"op":"policy.check.file","params":{"id":"NOT-A-REQUEST-ID","blob":"` +
+		strings.Repeat("z", maxLineBytes) + `"},"id":"REAL-7"}` + "\n"
+
+	responses := runLines(t, hostOpts(), huge)
+	if len(responses) != 1 {
+		t.Fatalf("got %d response(s), want exactly the refusal: %+v", len(responses), responses)
+	}
+	if responses[0].ID == "NOT-A-REQUEST-ID" {
+		t.Fatal("the refusal was stamped with an id from params; the host would fail an " +
+			"unrelated call and the real request would never be answered")
+	}
+	// The real id sits past the retained head here, so an empty id is the
+	// honest answer: unroutable, but nobody else's.
+	if responses[0].ID != "" {
+		t.Fatalf("id = %q, want %q or the request's own id", responses[0].ID, "")
+	}
+	if responses[0].Error == nil || responses[0].Error.Code != ErrTooLarge {
+		t.Fatalf("error = %+v, want %s", responses[0].Error, ErrTooLarge)
+	}
+}
+
+// The request's own id, when it is in the head, still has to come back — a
+// refusal a host can route is the whole reason the head is retained.
+func TestAnOversizedLineIsRefusedUnderItsOwnIDEvenBehindNestedOnes(t *testing.T) {
+	huge := `{"op":"policy.check.file","params":{"id":"nested"},"id":"REAL-7","pad":"` +
+		strings.Repeat("z", maxLineBytes) + `"}` + "\n"
+
+	responses := runLines(t, hostOpts(), huge)
+	if len(responses) != 1 {
+		t.Fatalf("got %d response(s), want exactly the refusal: %+v", len(responses), responses)
+	}
+	if responses[0].ID != "REAL-7" {
+		t.Fatalf("id = %q, want %q", responses[0].ID, "REAL-7")
+	}
+}
+
+func TestRecoverIDReadsTheEnvelopeRatherThanScanningForAnID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		head string
+		want string
+	}{
+		{"plain", `{"id":"7","op":"hello"}`, "7"},
+		{"id last", `{"op":"hello","id":"7"}`, "7"},
+		{"nested id in params", `{"op":"hello","params":{"id":"nested"},"id":"7"}`, "7"},
+		{"nested id and no top-level id", `{"op":"hello","params":{"id":"nested"}}`, ""},
+		{"id inside an array", `{"op":"hello","params":[{"id":"nested"}],"id":"7"}`, "7"},
+		{"a brace inside a string does not shift the depth",
+			`{"op":"hello","params":{"q":"{\"id\":\"nested\"}"},"id":"7"}`, "7"},
+		{"an id-looking key that is not one", `{"paid":"no","id":"7"}`, "7"},
+		{"escapes are decoded, not echoed raw", `{"id":"a\"b\\c","op":"hello"}`, `a"b\c`},
+		{"unicode escape", `{"id":"\u0037-a","op":"hello"}`, "7-a"},
+		// encoding/json resolves a duplicate key to the last one. Both paths
+		// have to read the same bytes the same way or a line one byte over the
+		// cap is answered under a different id than a line one byte under it.
+		{"duplicate keys resolve like the decoder does", `{"id":"first","id":"second"}`, "second"},
+		{"a non-string id is refused rather than guessed", `{"id":7,"op":"hello"}`, ""},
+		{"truncated before the value closes", `{"op":"hello","id":"7`, ""},
+		{"truncated before the id", `{"op":"hello","params":{"a":1`, ""},
+		{"not an object", `["id","7"]`, ""},
+		{"empty", ``, ""},
+		{"leading whitespace", "  \t{\"id\":\"7\"}", "7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recoverID([]byte(tc.head)); got != tc.want {
+				t.Errorf("recoverID(%q) = %q, want %q", tc.head, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- bounds on the numbers a host states ---
+
+// Dispatch is serial, so timeout_ms is how long one probe may hold every other
+// call behind it. 1<<31 ms is 596 hours: a sidecar that accepted it would be
+// indistinguishable from one that hung, and the refusal has to happen before
+// any I/O rather than after the deadline it was handed.
+func TestProbeRefusesATimeoutThatWouldWedgeTheDispatcher(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    ProbeParams
+	}{
+		{"absurd timeout", ProbeParams{Model: "m", TimeoutMS: 1 << 31}},
+		{"negative timeout", ProbeParams{Model: "m", TimeoutMS: -1}},
+		{"absurd declared window", ProbeParams{Model: "m", DeclaredContextWindow: math.MaxInt64}},
+		{"negative declared window", ProbeParams{Model: "m", DeclaredContextWindow: -1}},
+		{"absurd output cap", ProbeParams{Model: "m", MaxOutputTokens: math.MaxInt64}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A port nothing serves. The number has to be refused before the
+			// adapter is built, so E_UNREACHABLE here would mean the value was
+			// accepted and the probe went to the network with it.
+			tc.p.BaseURL = "http://127.0.0.1:1"
+			responses := roundTrip(t, hostOpts(), probeRequest(t, "1", tc.p))
+			if len(responses) != 1 {
+				t.Fatalf("got %d response(s), want 1: %+v", len(responses), responses)
+			}
+			if responses[0].OK {
+				t.Fatal("an out-of-range number was accepted")
+			}
+			if responses[0].Error.Code != ErrBadRequest {
+				t.Fatalf("code = %q, want %q: the value is the request's own defect, and "+
+					"%q means it was carried into the probe instead of refused",
+					responses[0].Error.Code, ErrBadRequest, responses[0].Error.Code)
+			}
+		})
+	}
 }
