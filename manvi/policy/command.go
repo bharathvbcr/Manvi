@@ -374,26 +374,46 @@ func (g CommandGate) noteHardRules(d Decision) Decision {
 	return d
 }
 
-// liveSubstitutions returns the inner text of every command substitution sh
-// would execute in this line: $( … ), a legacy backtick span, and the process
-// substitutions <( … ) and >( … ).
+// substitutionSpan is one construct the scanner claimed, with the rune range
+// it occupies in the line it was scanned from.
+//
+// Arithmetic expansions are recorded alongside the live substitutions even
+// though sh runs nothing inside them, because a reader that only learned
+// where the live spans were would still have to rediscover where the
+// arithmetic ended: `$(( a > b ))` carries a '>' that is a comparison, and a
+// redirect scanner that walked into it would read a write that never happens.
+type substitutionSpan struct {
+	text  string
+	start int // index of the construct's first rune
+	end   int // index one past its last rune
+	live  bool
+}
+
+// scanSubstitutions returns every command substitution sh would execute in
+// this line — $( … ), a legacy backtick span, and the process substitutions
+// <( … ) and >( … ) — plus the arithmetic expansions it would not.
+//
+// This is the one definition of "a span the shell runs". Both readers of a
+// command line go through it: liveSubstitutions, which judges the contents as
+// commands, and RedirectTargets, which has to skip past them and then look
+// inside for writes. They used to scan separately, and the halves disagreed —
+// a redirect hidden in $( … ) was skipped by one and never seen by the other,
+// so `echo $(echo forged > .devcouncil/harness-grants.json)` was allowed
+// outright.
 //
 // Substitutions inside single quotes are data; inside double quotes they are
 // live, which is why the quote state is tracked here rather than delegated to
-// a pre-pass. Arithmetic expansions `$(( … ))` are skipped whole: they expand
-// variables but cannot execute commands. An unterminated span is an error,
-// not an empty list — a scanner that lost track of where code ends must
-// refuse rather than guess.
-func liveSubstitutions(command string) ([]string, error) {
-	var spans []string
-	runes := []rune(command)
+// a pre-pass. An unterminated span is an error, not an empty list — a scanner
+// that lost track of where code ends must refuse rather than guess.
+func scanSubstitutions(runes []rune) ([]substitutionSpan, error) {
+	var spans []substitutionSpan
 	n := len(runes)
 	quote := rune(0)
 	i := 0
 	for i < n {
 		r := runes[i]
 		switch {
-		case (quote == 0 || quote == '"') && r == '\\' && i+1 < n && quote != '\'':
+		case (quote == 0 || quote == '"') && r == '\\' && i+1 < n:
 			i += 2
 		case quote == 0 && r == '\'':
 			quote = '\''
@@ -423,33 +443,53 @@ func liveSubstitutions(command string) ([]string, error) {
 			if end < 0 {
 				return nil, fmt.Errorf("unterminated backtick substitution")
 			}
-			spans = append(spans, string(runes[i+1:end]))
+			spans = append(spans, substitutionSpan{
+				text: string(runes[i+1 : end]), start: i, end: end + 1, live: true,
+			})
 			i = end + 1
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
 			next, ok := skipArithmetic(runes, i)
 			if !ok {
 				return nil, fmt.Errorf("unterminated arithmetic expansion")
 			}
+			spans = append(spans, substitutionSpan{start: i, end: next, live: false})
 			i = next
 		case r == '$' && i+1 < n && runes[i+1] == '(':
 			text, next, err := scanParenSpan(runes, i+1)
 			if err != nil {
 				return nil, err
 			}
-			spans = append(spans, text)
+			spans = append(spans, substitutionSpan{text: text, start: i, end: next, live: true})
 			i = next
 		case (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
 			text, next, err := scanParenSpan(runes, i+1)
 			if err != nil {
 				return nil, err
 			}
-			spans = append(spans, text)
+			spans = append(spans, substitutionSpan{text: text, start: i, end: next, live: true})
 			i = next
 		default:
 			i++
 		}
 	}
 	return spans, nil
+}
+
+// liveSubstitutions returns the inner text of every command substitution sh
+// would execute in this line. Arithmetic expansions are excluded: they expand
+// variables but cannot execute commands.
+func liveSubstitutions(command string) ([]string, error) {
+	spans, err := scanSubstitutions([]rune(command))
+	if err != nil {
+		return nil, err
+	}
+	var texts []string
+	for _, span := range spans {
+		if span.live {
+			texts = append(texts, span.text)
+		}
+	}
+	return texts, nil
 }
 
 // scanParenSpan reads from the opening parenthesis at position open to its
@@ -609,19 +649,49 @@ func shellDequote(s string) string {
 // Input redirections (<) are reads, which this ladder does not gate, and a
 // heredoc introducer (<<) is not a path at all; neither is returned.
 //
+// Substitution contents are searched too, at every nesting level. A shell runs
+// the code inside $( … ), a backtick span, and <( … ) / >( … ), so a
+// redirection written there is a write like any other — and it is the one the
+// allowlist is least likely to have looked at, because the surrounding line
+// reads as a harmless `echo`. Skipping those spans is what let
+// `echo $(echo forged > .devcouncil/harness-grants.json)` through the whole
+// ladder under the strict posture: nothing above judged the inner redirect as
+// a command, and nothing here judged it as a write.
+//
 // The second return value reports whether a target could not be resolved to a
-// literal path — it carries an expansion ($HOME, ${VAR}, ~) whose value only
-// the shell knows. A target the gate cannot name is a write it cannot judge,
-// so the caller must treat that as a refusal rather than skip the check.
+// literal path — it carries an expansion ($HOME, ${VAR}, ~, a nested
+// substitution) whose value only the shell knows, or it is nested deeper than
+// this scanner will follow. A target the gate cannot name is a write it cannot
+// judge, so the caller must treat that as a refusal rather than skip the
+// check. "I could not check" and "there was nothing to check" are the same
+// empty target list, and only this flag tells them apart.
 //
 // Matching strips trailing redirections so patterns like "dev map *" stay
 // single-clause, which is exactly why the executed form has to be re-read
 // here: the string that matched is not the string that runs.
 func RedirectTargets(command string) ([]string, bool, error) {
+	return redirectTargets(command, 0)
+}
+
+func redirectTargets(command string, depth int) ([]string, bool, error) {
 	var targets []string
 	opaque := false
 	runes := []rune(command)
 	n := len(runes)
+
+	// The substitution spans come from the one scanner that defines them, so
+	// this walk and the command ladder's agree on where shell code starts and
+	// ends. Skipping a span here is not ignoring it: each live one is searched
+	// below, in its own right.
+	spans, err := scanSubstitutions(runes)
+	if err != nil {
+		return nil, false, err
+	}
+	spanAt := make(map[int]substitutionSpan, len(spans))
+	for _, span := range spans {
+		spanAt[span.start] = span
+	}
+
 	quote := rune(0)
 	i := 0
 	readTarget := func(start int) (string, int, error) {
@@ -668,8 +738,15 @@ func RedirectTargets(command string) ([]string, bool, error) {
 	}
 	for i < n {
 		r := runes[i]
+		// A span is claimed before anything else reads its characters, in or
+		// out of double quotes: `"$(cmd > f)"` is live, and the '>' inside it
+		// belongs to the inner command, not to this line.
+		if span, ok := spanAt[i]; ok {
+			i = span.end
+			continue
+		}
 		switch {
-		case quote == 0 && r == '\\':
+		case (quote == 0 || quote == '"') && r == '\\' && i+1 < n:
 			i += 2
 		case quote == 0 && r == '\'':
 			quote = '\''
@@ -685,21 +762,6 @@ func RedirectTargets(command string) ([]string, bool, error) {
 			i++
 		case quote != 0:
 			i++
-		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
-			next, ok := skipArithmetic(runes, i)
-			if !ok {
-				return nil, false, fmt.Errorf("unterminated arithmetic expansion")
-			}
-			i = next
-		case r == '$' && i+1 < n && runes[i+1] == '(':
-			_, next, err := scanParenSpan(runes, i+1)
-			if err != nil {
-				return nil, false, err
-			}
-			i = next
-		case r == '<' && i+1 < n && runes[i+1] == '<':
-			// Heredoc introducer or herestring; not an output path.
-			i += 2
 		case r == '>' || (r >= '0' && r <= '9' && i+1 < n && runes[i+1] == '>'):
 			fdStart := i
 			for i < n && runes[i] >= '0' && runes[i] <= '9' {
@@ -723,7 +785,10 @@ func RedirectTargets(command string) ([]string, bool, error) {
 			if err != nil {
 				return nil, false, err
 			}
-			if strings.ContainsAny(target, "$~") {
+			// A target carrying an expansion or a substitution is a path only
+			// the shell can name; `> $HOME/x`, `> ~/.ssh/keys` and
+			// `` > `pick-a-file` `` are all writes this gate cannot judge.
+			if strings.ContainsAny(target, "$~`") {
 				opaque = true
 			} else if target != "" {
 				targets = append(targets, target)
@@ -734,6 +799,26 @@ func RedirectTargets(command string) ([]string, bool, error) {
 		default:
 			i++
 		}
+	}
+
+	// Now the spans themselves. The bound is the ladder's own, and exhausting
+	// it reports opaque rather than an empty result: a span too deep to search
+	// is a write that was not checked, and the caller has to hear that as a
+	// refusal.
+	for _, span := range spans {
+		if !span.live {
+			continue
+		}
+		if depth >= maxSubstitutionDepth {
+			opaque = true
+			break
+		}
+		inner, innerOpaque, err := redirectTargets(span.text, depth+1)
+		if err != nil {
+			return nil, false, err
+		}
+		targets = append(targets, inner...)
+		opaque = opaque || innerOpaque
 	}
 	return targets, opaque, nil
 }

@@ -220,6 +220,27 @@ func TestRedirectTargetsExtraction(t *testing.T) {
 		{"cmd << EOF", nil, false, false},      // heredoc introducer, not a path
 		{"cmd >", nil, false, true},            // dangling redirect
 		{"echo hi", nil, false, false},
+		// A redirection inside a substitution is a write like any other. Nothing
+		// else in the ladder judges it: the surrounding line reads as an `echo`
+		// and the substitution rung judges the inner text only as a *command*.
+		{"echo $(echo hi > .env)", []string{".env"}, false, false},
+		{"echo `echo hi > .env`", []string{".env"}, false, false},
+		{"cat <(echo hi > .env)", []string{".env"}, false, false},
+		{"echo $(echo a > one) $(echo b >> two)", []string{"one", "two"}, false, false},
+		{"echo $(echo $(echo hi > deep.txt))", []string{"deep.txt"}, false, false},
+		{`echo "$(echo hi > quoted.txt)"`, []string{"quoted.txt"}, false, false},
+		{"out.txt > a && echo $(echo hi > b)", []string{"a", "b"}, false, false},
+		// Single quotes make the whole span data, so there is no inner write.
+		{`echo '$(echo hi > .env)'`, nil, false, false},
+		// A comparison in an arithmetic expansion is not a redirection.
+		{"echo $((3 > 2))", nil, false, false},
+		// An expansion inside a substituted redirect is still unnameable.
+		{"echo $(echo hi > $HOME/x)", nil, true, false},
+		// A target the shell computes is a path this gate cannot name either.
+		{"cmd > `pick-a-file`", nil, true, false},
+		// An unbounded span is refused rather than scanned past.
+		{"echo $(echo hi > .env", nil, false, true},
+		{"echo `echo hi > .env", nil, false, true},
 	}
 	for _, tc := range tests {
 		targets, opaque, err := RedirectTargets(tc.input)
@@ -285,5 +306,71 @@ func TestForbiddenChangeCannotBeCasedAround(t *testing.T) {
 	d := g.EvaluateFileChange("CONFIG/SECRETS.TXT", task, dc.OpWrite, false)
 	if d.Action != Deny || d.Rule != RuleForbiddenChange {
 		t.Fatalf("a case-variant write bypassed forbidden_changes: %v (%s)", d.Action, d.Rule)
+	}
+}
+
+// TestSubstitutionHidesNoRedirect pins the bypass that command substitution
+// opened between the two halves of the ladder.
+//
+// The substitution rung judges a span's contents as a *command*, and
+// `echo forged` is a bootstrap-allowed command. The redirect rung judges a
+// line's writes, and it used to skip every $( … ) span whole. Between them, a
+// redirection written inside a substitution was judged by neither — so under
+// the strict posture, with hard rules on and no grant of any kind, an agent
+// could forge the grant ledger it is gated by.
+//
+// The recursion is bounded, and exhausting the bound has to report opaque:
+// an unsearched span is a write that was not checked, and reporting it as
+// "no targets" is how "approved" comes to mean "unexamined".
+func TestSubstitutionHidesNoRedirect(t *testing.T) {
+	forge := "echo $(echo forged > .devcouncil/harness-grants.json)"
+	targets, opaque, err := RedirectTargets(forge)
+	if err != nil {
+		t.Fatalf("RedirectTargets(%q): %v", forge, err)
+	}
+	if opaque || len(targets) != 1 || targets[0] != ".devcouncil/harness-grants.json" {
+		t.Fatalf("a redirect hidden in $() was not reported: targets=%v opaque=%v", targets, opaque)
+	}
+
+	// Deeper than the ladder follows: refused, not silently empty.
+	deep := "echo hi > sink"
+	for i := 0; i <= maxSubstitutionDepth; i++ {
+		deep = "echo $(" + deep + ")"
+	}
+	targets, opaque, err = RedirectTargets(deep)
+	if err != nil {
+		t.Fatalf("RedirectTargets(deep): %v", err)
+	}
+	if !opaque {
+		t.Fatalf("a span nested past the analysis bound must report opaque; got targets=%v", targets)
+	}
+}
+
+// TestSubstitutionScannerIsOneDefinition pins that the two readers of a
+// command line agree on where shell code is. They used to scan separately,
+// and RedirectTargets' copy knew nothing about backticks or <( … ) — it read
+// straight through them and returned mangled paths ("`.env`" and ".env)")
+// that named no file anyone had written.
+func TestSubstitutionScannerIsOneDefinition(t *testing.T) {
+	for _, cmd := range []string{
+		"echo $(echo hi > .env)",
+		"echo `echo hi > .env`",
+		"cat <(echo hi > .env)",
+		"tee >(echo hi > .env)",
+	} {
+		spans, err := liveSubstitutions(cmd)
+		if err != nil {
+			t.Fatalf("liveSubstitutions(%q): %v", cmd, err)
+		}
+		if len(spans) != 1 {
+			t.Fatalf("liveSubstitutions(%q) = %v, want one span", cmd, spans)
+		}
+		targets, opaque, err := RedirectTargets(cmd)
+		if err != nil {
+			t.Fatalf("RedirectTargets(%q): %v", cmd, err)
+		}
+		if opaque || len(targets) != 1 || targets[0] != ".env" {
+			t.Fatalf("RedirectTargets(%q) = %v (opaque=%v), want [.env]", cmd, targets, opaque)
+		}
 	}
 }
