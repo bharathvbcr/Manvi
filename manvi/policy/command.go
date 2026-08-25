@@ -959,9 +959,18 @@ func RedirectTargets(command string) ([]string, bool, error) {
 const maxRedirectTargets = 64
 
 func redirectTargets(command string, depth int) ([]string, bool, error) {
+	// Exhausting the bound reports opacity, not an error. Both mean "there may
+	// be a write in here that I did not resolve", but they travel differently:
+	// opacity becomes a recorded command.substitution denial the run log counts
+	// and Report() can account for, while an error unwinds past the decision
+	// entirely and is refused by whoever catches it, if anyone does. It is also
+	// the answer this function already gives for the other unresolvable target
+	// — `> $VAR` — and one predicate should not have two spellings of "I could
+	// not look". What must never happen is the third answer: an unsearched span
+	// reported as "no targets", which is how "approved" comes to mean
+	// "unexamined".
 	if depth > maxSubstitutionDepth {
-		return nil, false, fmt.Errorf(
-			"command substitution nested beyond the analysis limit; redirection targets could not be resolved")
+		return nil, true, nil
 	}
 	var targets []string
 	opaque := false

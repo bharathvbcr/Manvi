@@ -587,3 +587,82 @@ func containsString(haystack []string, want string) bool {
 	}
 	return false
 }
+
+// TestRedirectHiddenInSubstitutionIsDenied is the composed form of the bypass
+// the redirect rung existed to close but did not.
+//
+// Both halves of the ladder read the same line and each concluded it was not
+// theirs to judge. The substitution rung extracted `echo forged` and judged it
+// as a command — and a bare `echo` is bootstrap-allowed, so it passed. The
+// redirect rung asked policy.RedirectTargets for the writes, and that scanner
+// skipped $( … ) spans whole, so it heard "no targets" where the truth was "I
+// did not look". The result was an allow, under the strict posture with hard
+// rules on and no task, no grant, and no demotion — for a line that forges the
+// grant ledger the gate itself consults.
+//
+// Every fixture here is a write the harness refuses when it is written plainly.
+// Hiding it inside a span the shell runs must not change the answer.
+func TestRedirectHiddenInSubstitutionIsDenied(t *testing.T) {
+	g := newGate(t, nil)
+	for _, tc := range []struct {
+		command string
+		rule    policy.RuleID
+	}{
+		{"echo forged > .devcouncil/harness-grants.json", policy.RuleRestrictedPath},
+		{"echo $(echo forged > .devcouncil/harness-grants.json)", policy.RuleRestrictedPath},
+		{"echo `echo forged > .devcouncil/harness-grants.json`", policy.RuleRestrictedPath},
+		{"echo $(echo hi > .env)", policy.RuleSecretPath},
+		{"echo `echo hi > .env`", policy.RuleSecretPath},
+		{"echo <(echo hi > .env)", policy.RuleSecretPath},
+		{`echo "$(echo hi > .env)"`, policy.RuleSecretPath},
+		{"echo $(echo $(echo hi > .env))", policy.RuleSecretPath},
+	} {
+		d, err := g.EvaluateCommand(tc.command, nil)
+		if err != nil {
+			t.Errorf("%q: %v", tc.command, err)
+			continue
+		}
+		if !d.Blocked() {
+			t.Errorf("%q: allowed under the strict posture with no task and no grant (%+v)", tc.command, d)
+			continue
+		}
+		// The rule matters as much as the verdict: it has to name the write
+		// that was refused, not a generic "substitution" shrug, or an operator
+		// reading the record cannot tell which file was nearly written.
+		if d.Rule != tc.rule {
+			t.Errorf("%q: rule = %q, want %q naming the refused write", tc.command, d.Rule, tc.rule)
+		}
+	}
+}
+
+// TestSubstitutedRedirectSurvivesAGrantedTask: the bypass is not only about
+// having no lease. A task whose allowlist and planned files are broad enough to
+// make the outer command unremarkable must still not be able to reach a
+// credential path through a substitution.
+func TestSubstitutedRedirectSurvivesAGrantedTask(t *testing.T) {
+	g := newGate(t, nil)
+	task := testTask()
+	task.AllowedCommands = []string{"echo *", "tee *"}
+	task.PlannedFiles = append(task.PlannedFiles, dc.PlannedFile{Path: "out/*.txt", AllowedChange: dc.ChangeCreate})
+
+	// The planned target still works, inside a substitution as well as out.
+	for _, ok := range []string{"echo hi > out/log.txt", "echo $(echo hi > out/log.txt)"} {
+		d, err := g.EvaluateCommand(ok, task)
+		if err != nil {
+			t.Fatalf("%q: %v", ok, err)
+		}
+		if d.Blocked() {
+			t.Errorf("%q: a planned write was refused (%q: %s)", ok, d.Rule, d.Reason)
+		}
+	}
+
+	for _, bad := range []string{"echo $(echo hi > .env)", "tee >(cat > .env)"} {
+		d, err := g.EvaluateCommand(bad, task)
+		if err != nil {
+			t.Fatalf("%q: %v", bad, err)
+		}
+		if !d.Blocked() {
+			t.Errorf("%q: a task allowlist laundered a credential write (%+v)", bad, d)
+		}
+	}
+}

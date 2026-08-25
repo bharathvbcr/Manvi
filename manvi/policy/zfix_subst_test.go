@@ -130,14 +130,29 @@ func TestSubstitutionScanFailsClosed(t *testing.T) {
 	}
 
 	// Nesting past the limit must refuse rather than recurse forever or return
-	// a silently short list.
+	// a silently short list. It refuses as *opacity* rather than as an error,
+	// which this asserted until the two spellings were unified: an unterminated
+	// span is a malformed command line the caller should hear about, while a
+	// span nested too deep is the same statement the flag already carries for
+	// `> $VAR` — "there may be a write here I did not resolve". Opacity is also
+	// the stronger of the two, because it becomes a recorded denial the run log
+	// counts instead of an error that unwinds past the decision.
 	deep := "git diff > out.patch"
 	for i := 0; i <= maxSubstitutionDepth+1; i++ {
 		deep = "echo $(" + deep + ")"
 	}
-	if _, _, err := RedirectTargets(deep); err == nil {
-		t.Error("RedirectTargets returned no error for a substitution nested past the analysis limit")
+	targets, opaque, err := RedirectTargets(deep)
+	if err != nil {
+		t.Fatalf("RedirectTargets(deep): %v", err)
 	}
+	if !opaque {
+		t.Errorf("a substitution nested past the analysis limit reported targets=%v and no opacity; "+
+			"an unsearched span must never read as a command that writes nothing", targets)
+	}
+
+	// That this opacity arrives at the caller as a hard refusal is asserted
+	// where the rung actually runs — gate.TestAnOpaqueRedirectRefusalIsCounted
+	// pins that an unenumerable target is refused and recorded — because policy cannot import gate.
 }
 
 // --- defect 3: normalisation laundering a path that is not this repo's CLI ---
