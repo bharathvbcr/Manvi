@@ -36,6 +36,27 @@ check("finished pass is not starved",
                               "stop_reason": "finished", "passed": True}))
 check("empty not starved", not is_starved_episode({}))
 
+# The split: only a timeout leaves the denominator; every other first-turn
+# death is a real result that must be scored, but is still worth re-running.
+from mh.runtime import is_first_turn_failure, keep_existing_episode
+http500 = {"steps": 1, "output_tokens": 0, "stop_reason": "error:ModelError",
+           "errors": ["ModelError: HTTP 500: invalid tool call arguments"]}
+badjson = {"steps": 1, "output_tokens": 0,
+           "stop_reason": "error:JSONDecodeError"}
+check("http 500 on turn 1 is NOT starved", not is_starved_episode(http500))
+check("malformed body is NOT starved", not is_starved_episode(badjson))
+check("http 500 on turn 1 is a first-turn failure",
+      is_first_turn_failure(http500))
+check("malformed body is a first-turn failure", is_first_turn_failure(badjson))
+check("timeout is both", is_starved_episode({
+    "steps": 1, "output_tokens": 0, "stop_reason": "error:ModelError",
+    "errors": ["ModelError: TimeoutError: timed out"]}))
+check("a real fail with tokens is neither",
+      not is_first_turn_failure({"steps": 8, "output_tokens": 5381,
+                                 "stop_reason": "error:ModelError"}))
+check("non-timeout failure is still re-run on resume",
+      not keep_existing_episode(http500))
+
 from mh.runtime import keep_existing_episode, should_retry_starved
 starve = {"task": "x", "steps": 1, "output_tokens": 0,
           "stop_reason": "error:ModelError"}
@@ -48,29 +69,130 @@ check("retry starved first attempt", should_retry_starved(starve, 0))
 check("no second retry", not should_retry_starved(starve, 1))
 check("no retry of real fail", not should_retry_starved(real, 0))
 
-print("complete() refuses starved cells")
+print("complete() reads the episodes, not the summary's word for them")
 import json, shutil, tempfile
+# Point grid at a throwaway tree BEFORE importing it: a test must never be able
+# to leave a directory behind in the real results tree, where compare.py would
+# then pick it up as a cell.
+_sandbox = tempfile.mkdtemp(prefix="mh-runtime-test-")
+os.environ["MH_RESULTS"] = _sandbox
 from grid import complete, cell_has_starved, outdir
-tag = "unittest-starve"
-d = outdir("qwen3.8:27b", "no-checklist", tag)
-os.makedirs(d, exist_ok=True)
+check("test grid is sandboxed", outdir("m", "c", "t").startswith(_sandbox),
+      outdir("m", "c", "t"))
+
+CFG = {"name": "no-checklist", "envboot": False, "max_steps": 0}
+
+
+def write_cell(d, rows, summary=True, protocol=None, run=None,
+               model="qwen3.8:27b", config=None, claim=None):
+    """A cell as run.py writes one: one file per episode, summary derived.
+
+    These fixtures used to write summary.json alone, which is exactly the
+    shape of the defect: the summary was the record, and the episodes beside
+    it were never read back. `claim` writes a summary that disagrees with the
+    episodes on purpose.
+    """
+    os.makedirs(d, exist_ok=True)
+    for r in rows:
+        ep = {"model": model, "config": dict(config or CFG), "task": r["task"],
+              "row": r, "verify_output": "", "events": []}
+        if protocol is not None:
+            ep["protocol"] = protocol
+        if run is not None:
+            ep["run"] = run
+        with open(os.path.join(d, f"{r['task']}.rep{r['rep']}.json"), "w") as f:
+            json.dump(ep, f)
+    if summary:
+        body = claim if claim is not None else rows
+        p = sum(1 for r in body if r.get("passed"))
+        with open(os.path.join(d, "summary.json"), "w") as f:
+            json.dump({"model": model, "config": dict(config or CFG),
+                       "n": len(body), "passed": p, "rows": body}, f)
+    return d
+
+
+def cell(tag, model="qwen3.8:27b", config="no-checklist"):
+    return outdir(model, config, tag)
+
+
 try:
     starved_rows = [{"task": "a", "rep": i, "steps": 1, "output_tokens": 0,
-                     "stop_reason": "error:ModelError"} for i in range(40)]
-    json.dump({"n": 40, "rows": starved_rows},
-              open(os.path.join(d, "summary.json"), "w"))
+                     "stop_reason": "error:ModelError",
+                     "errors": ["ModelError: TimeoutError: timed out"]}
+                    for i in range(40)]
+    tag = "unittest-starve"
+    write_cell(cell(tag), starved_rows)
     check("starved n=40 is not complete",
           complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is False)
     check("starved detected on disk",
           cell_has_starved("qwen3.8:27b", "no-checklist", tag) is True)
-    clean_rows = [{"task": "a", "rep": i, "steps": 8, "output_tokens": 100,
-                   "stop_reason": "finished"} for i in range(40)]
-    json.dump({"n": 40, "rows": clean_rows},
-              open(os.path.join(d, "summary.json"), "w"))
-    check("clean n=40 is complete",
+
+    # A complete 8-task x 5-repeat cell: 5 reps holding 8 episodes each.
+    clean_rows = [{"task": f"t{t}", "rep": rep, "steps": 8, "output_tokens": 100,
+                   "stop_reason": "finished"}
+                  for rep in range(5) for t in range(8)]
+    tag = "unittest-clean"
+    write_cell(cell(tag), clean_rows)
+    check("clean 5x8 is complete",
           complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is True)
+
+    # Same episode count, wrong shape: 40 repeats of one task. Counting rows
+    # alone called this complete, which is how a ragged cell passes for a full
+    # one -- the miscount shape that put three globmatch episodes under a
+    # navigate tag.
+    ragged = [{"task": "a", "rep": i, "steps": 8, "output_tokens": 100,
+               "stop_reason": "finished"} for i in range(40)]
+    tag = "unittest-ragged"
+    write_cell(cell(tag), ragged)
+    check("40 rows of the wrong shape is not complete",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is False)
+
+    # An extension is complete on its own repeat window, not the frozen one.
+    ext = [{"task": f"t{t}", "rep": rep, "steps": 8, "output_tokens": 100,
+            "stop_reason": "finished"}
+           for rep in range(5, 20) for t in range(8)]
+    tag = "unittest-ext"
+    write_cell(cell(tag), ext)
+    check("extension complete on reps 5-19",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 15, rep_offset=5) is True)
+    check("extension is not complete on reps 0-14",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 15, rep_offset=0) is False)
+    check("frozen window alone is not the extension",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is False)
+
+    # A1, at the skip check. The summary said n=1 while nine episodes sat
+    # beside it; the grid asked the summary and skipped nothing, or ran a cell
+    # it should have skipped. It has to count the episodes.
+    tag = "unittest-liar"
+    one_task = [{"task": "t0", "rep": 0, "steps": 8, "output_tokens": 100,
+                 "stop_reason": "finished"}]
+    write_cell(cell(tag), clean_rows, claim=one_task)
+    check("a summary claiming n=1 does not un-complete 40 episodes",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is True)
+
+    tag = "unittest-liar-starved"
+    write_cell(cell(tag), starved_rows, claim=one_task)
+    check("starvation the summary omits is still found on disk",
+          cell_has_starved("qwen3.8:27b", "no-checklist", tag) is True)
+
+    # A cell whose episodes are all present but whose summary never got
+    # written (crash, or a starve-abort that died first) is not complete: the
+    # summary is what compare.py reads.
+    tag = "unittest-nosummary"
+    write_cell(cell(tag), clean_rows, summary=False)
+    check("episodes without a summary are not complete",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is False)
+
+    # An episode that will not parse is not a cell with one fewer episode.
+    tag = "unittest-corrupt"
+    d = write_cell(cell(tag), clean_rows)
+    with open(os.path.join(d, "t3.rep2.json"), "w") as f:
+        f.write("{ truncated")
+    check("a corrupt episode is not complete",
+          complete("qwen3.8:27b", "no-checklist", tag, 8, 5) is False)
 finally:
-    shutil.rmtree(d, ignore_errors=True)
+    shutil.rmtree(_sandbox, ignore_errors=True)
+    os.environ.pop("MH_RESULTS", None)
 
 print("sole tenant (Mac / default)")
 check("alone ok", blocking_residents(qwen, [qwen]) == [])
@@ -86,6 +208,632 @@ third = blocking_residents(gemma, [qwen, ornith], share_gpu=True)
 check("third model blocked",
       len(third) == 1 and third[0] in (qwen, ornith), str(third))
 check("share alone ok", blocking_residents(qwen, [qwen], share_gpu=True) == [])
+
+print("rep-offset extension")
+import tempfile
+from mh.runtime import (CellError, extension_guard, extension_reps,
+                        protocol_block, protocol_diff, resume_conflicts,
+                        sibling_cells, sibling_overlap, write_episode,
+                        write_json_atomic, write_summary)
+from run import seed_for_repeat
+
+ENV = {"node": "testhost", "gpu": None, "platform": "test/arm64",
+       "ollama_version": None}
+PROTO_A = protocol_block(max_steps=0, max_wall=1800, share_gpu=False,
+                         num_ctx=32768, num_predict=4096, temperature=0.6,
+                         think=True, env=ENV)
+PROTO_B = protocol_block(max_steps=40, max_wall=1800, share_gpu=False,
+                         num_ctx=32768, num_predict=4096, temperature=0.6,
+                         think=True, env=ENV)
+RUN_A = {"tag": "ext", "seed_base": 0, "repeat": 15, "rep_offset": 5,
+         "started": "2026-08-24T00:00:00Z"}
+
+
+def ep_payload(task, rep, protocol=PROTO_A, run=RUN_A, passed=True,
+               model="m", config=None, **row):
+    r = {"task": task, "rep": rep, "seed": rep, "passed": passed, "steps": 6,
+         "output_tokens": 100, "wall_s": 12.0, "stop_reason": "finished"}
+    r.update(row)
+    ep = {"model": model, "config": config or {"name": "full", "envboot": True},
+          "task": task, "row": r, "verify_output": "", "events": []}
+    if protocol is not None:
+        ep["protocol"] = protocol
+    if run is not None:
+        ep["run"] = run
+    return ep
+
+
+def fill(d, tasks, reps, **kw):
+    os.makedirs(d, exist_ok=True)
+    for rep in reps:
+        for t in tasks:
+            write_episode(d, t, rep, ep_payload(t, rep, **kw))
+    return d
+
+
+check("default offset is the old range", extension_reps(0, 5) == [0, 1, 2, 3, 4])
+check("offset 5 repeat 15 covers 5..19",
+      extension_reps(5, 15) == list(range(5, 20)))
+
+# The frozen cells ran unseeded at repeat=5, so seed == rep index. An
+# extension must keep that, or a paired delta compares different seeds.
+frozen = [seed_for_repeat(None, r, 5) for r in extension_reps(0, 5)]
+ext = [seed_for_repeat(None, r, 15 + 5) for r in extension_reps(5, 15)]
+check("frozen convention is seed == rep", frozen == [0, 1, 2, 3, 4])
+check("extension keeps seed == rep", ext == list(range(5, 20)))
+check("extension seeds never revisit frozen ones",
+      not (set(frozen) & set(ext)))
+
+TASKS = ["nfa_match", "json_patch"]
+with tempfile.TemporaryDirectory() as tmp:
+    # Each fixture gets its own root: two cells under one root are SIBLINGS
+    # for the same (model, config), which is its own refusal below.
+    def root(name):
+        p = os.path.join(tmp, name)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    fresh = os.path.join(root("r-fresh"), "m__full__fresh")
+    check("offset 0 is unguarded",
+          extension_guard(fresh, TASKS, extension_reps(0, 5), 0, False) is None)
+    check("negative offset refused",
+          "must be >= 0" in (extension_guard(fresh, TASKS, [], -1, False) or ""))
+    check("clean extension allowed",
+          extension_guard(fresh, TASKS, extension_reps(5, 15), 5, False) is None)
+    check("force refused with offset",
+          "--force" in (extension_guard(fresh, TASKS, extension_reps(5, 15),
+                                        5, True) or ""))
+    # The cell is (model, config); the tag is a directory name. A directory
+    # that does not name one cannot be checked against its siblings, and a
+    # check that cannot run must not pass.
+    check("unparseable cell directory refused",
+          "slug__config__tag" in (extension_guard(
+              os.path.join(tmp, "loose"), TASKS, extension_reps(5, 15), 5,
+              False) or ""))
+
+    # Another run's episodes, with no provenance to say otherwise.
+    cell = fill(os.path.join(root("r-cell"), "m__full__cell"), TASKS, range(5),
+                protocol=None, run=None)
+    with open(os.path.join(cell, "summary.json"), "w") as f:
+        f.write("{}")
+
+    r = extension_guard(cell, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_A)
+    check("refuses to rewrite an existing summary",
+          r is not None and "summary.json" in r, str(r))
+
+    os.remove(os.path.join(cell, "summary.json"))
+    # Previously allowed: the guard only looked at the requested window, so an
+    # extension could settle into a directory holding another run's repeats
+    # and grow that cell's summary from 5 repeats to 20. The window being
+    # clear is not enough.
+    r = extension_guard(cell, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_A)
+    check("refuses to land beside another run's episodes",
+          r is not None and "from another run" in r, str(r))
+
+    r = extension_guard(cell, TASKS, extension_reps(3, 15), 3, False,
+                        protocol=PROTO_A)
+    check("refuses to overwrite an existing rep",
+          r is not None and "nfa_match.rep3.json" in r, str(r))
+    check("refusal counts every collision",
+          r is not None and "lands on 4 existing" in r, str(r))
+
+    # A5: our own interrupted extension. Same protocol stamp, so these
+    # episodes are ours to resume -- which is what "clean offset past the last
+    # rep is allowed" has always meant. Refusing them left a crashed or
+    # starve-aborted extension unresumable by any flag.
+    mine = fill(os.path.join(root("r-mine"), "m__full__mine"), TASKS, range(5, 8))
+    r = extension_guard(mine, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_A)
+    check("clean offset past the last rep is allowed", r is None, str(r))
+    with open(os.path.join(mine, "summary.json"), "w") as f:
+        f.write("{}")
+    r = extension_guard(mine, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_A)
+    check("a starve-aborted extension can be resumed", r is None, str(r))
+    r = extension_guard(mine, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_B)
+    check("resuming under a different protocol is not a resume",
+          r is not None and "nfa_match.rep5.json" in r, str(r))
+
+    # A summary with nothing left to re-derive it from.
+    orphan = os.path.join(root("r-orphan"), "m__full__orphan")
+    os.makedirs(orphan)
+    with open(os.path.join(orphan, "summary.json"), "w") as f:
+        f.write("{}")
+    r = extension_guard(orphan, TASKS, extension_reps(5, 15), 5, False,
+                        protocol=PROTO_A)
+    check("refuses a summary with no episodes beside it",
+          r is not None and "no episodes beside it" in r, str(r))
+
+print("sibling cells (a cell is model x config, not a tag)")
+with tempfile.TemporaryDirectory() as tmp:
+    frozen_cell = fill(os.path.join(tmp, "m__full__hard"), TASKS, range(5))
+    fresh_cell = os.path.join(tmp, "m__full__hard-ext")
+    other_cfg = fill(os.path.join(tmp, "m__baseline__hard"), TASKS, range(5))
+    other_model = fill(os.path.join(tmp, "n__full__hard"), TASKS, range(5))
+    sibs = [os.path.basename(p) for p in sibling_cells(fresh_cell)]
+    check("siblings are the same (model, config) under another tag",
+          sibs == ["m__full__hard"], str(sibs))
+    check("another config is not a sibling", "m__baseline__hard" not in sibs)
+    check("another model is not a sibling", "n__full__hard" not in sibs)
+
+    ov = sibling_overlap(fresh_cell, TASKS, extension_reps(3, 5))
+    check("sibling overlap names the frozen episodes",
+          [os.path.basename(k) for k in ov] == ["m__full__hard"] and
+          "nfa_match.rep3.json" in ov[frozen_cell], str(ov))
+    check("no overlap past the frozen window",
+          sibling_overlap(fresh_cell, TASKS, extension_reps(5, 15)) == {})
+
+    # A3: the guard used to inspect only the new tag's own directory, so this
+    # was allowed against an empty directory and silently re-ran repeats 3 and
+    # 4 that the (model, config) already had.
+    r = extension_guard(fresh_cell, TASKS, extension_reps(3, 5), 3, False,
+                        protocol=PROTO_A)
+    check("extension into a fresh tag sees the frozen cell",
+          r is not None and "under another tag" in r, str(r))
+    check("the refusal names the sibling",
+          r is not None and "m__full__hard" in r, str(r))
+    check("an extension past the frozen window is still allowed",
+          extension_guard(fresh_cell, TASKS, extension_reps(5, 15), 5, False,
+                          protocol=PROTO_A) is None)
+    # A plain re-run at offset 0 is how every v1/v2/rep tag in the tree was
+    # made. It is not refused -- it is reported, and run.py records it.
+    check("offset 0 into a fresh tag is reported, not refused",
+          extension_guard(fresh_cell, TASKS, extension_reps(0, 5), 0, False,
+                          protocol=PROTO_A) is None)
+    check("offset 0 overlap is still visible to the caller",
+          len(sibling_overlap(fresh_cell, TASKS, extension_reps(0, 5))) == 1)
+
+
+print("summary.json is derived from the cell, not from one invocation's rows")
+FULL = {"name": "full", "envboot": True, "max_steps": 0, "wall_s": 1800}
+with tempfile.TemporaryDirectory() as tmp:
+    # The published shape: `--tasks globmatch` ran in a directory that already
+    # held nine episodes, and the summary was rebuilt from the one task's rows.
+    d = fill(os.path.join(tmp, "gemma4_e4b__full__grid"),
+             ["ast_transformer", "globmatch", "navigate"], [0],
+             model="gemma4:e4b", config=FULL)
+    stale = {"model": "gemma4:e4b", "config": FULL, "n": 1, "passed": 1,
+             "rows": [{"task": "globmatch", "rep": 0, "passed": True,
+                       "wall_s": 12.0, "output_tokens": 100}]}
+    with open(os.path.join(d, "summary.json"), "w") as f:
+        json.dump(stale, f)
+    s = write_summary(d, "gemma4:e4b", FULL, protocol=PROTO_A)
+    check("summary counts every episode on disk, not the ones in --tasks",
+          s["n"] == 3, f"n={s['n']}")
+    check("every task on disk is in the rebuilt summary",
+          sorted(r["task"] for r in s["rows"]) ==
+          ["ast_transformer", "globmatch", "navigate"])
+    check("derived totals cover the whole cell",
+          s["output_tokens"] == 300 and s["wall_s"] == 36.0,
+          f"{s['output_tokens']} {s['wall_s']}")
+    check("the rebuilt summary is what is on disk",
+          json.load(open(os.path.join(d, "summary.json")))["n"] == 3)
+    check("rows are ordered by (rep, task)",
+          [r["task"] for r in s["rows"]] ==
+          ["ast_transformer", "globmatch", "navigate"])
+    check("derived_from records the episode count",
+          s["derived_from"]["episodes"] == 3)
+
+    # Adding a repeat re-derives the whole cell, not just the new repeat.
+    fill(d, ["ast_transformer", "globmatch", "navigate"], [1],
+         model="gemma4:e4b", config=FULL)
+    s = write_summary(d, "gemma4:e4b", FULL, protocol=PROTO_A)
+    check("a second repeat extends the derived summary", s["n"] == 6)
+    check("reps span what is on disk", s["reps"] == [0, 1], str(s["reps"]))
+
+    # Never shrink a cell: if the summary claims a row with no episode behind
+    # it, the episodes are not the whole record and rebuilding would delete it.
+    ghost = json.load(open(os.path.join(d, "summary.json")))
+    ghost["rows"].append({"task": "vanished", "rep": 0, "passed": True})
+    with open(os.path.join(d, "summary.json"), "w") as f:
+        json.dump(ghost, f)
+    try:
+        write_summary(d, "gemma4:e4b", FULL, protocol=PROTO_A)
+        check("refuses to rebuild a summary over a missing episode", False,
+              "no CellError")
+    except CellError as e:
+        check("refuses to rebuild a summary over a missing episode",
+              "vanished.rep0" in str(e), str(e))
+        check("the summary that would have shrunk is left alone",
+              len(json.load(open(os.path.join(d, "summary.json")))["rows"]) == 7)
+
+with tempfile.TemporaryDirectory() as tmp:
+    d = fill(os.path.join(tmp, "m__full__t"), ["a", "b"], [0], config=FULL)
+    with open(os.path.join(d, "a.rep0.json"), "w") as f:
+        f.write('{"row": {"task": "a", "rep": 0}, "trunc')
+    try:
+        write_summary(d, "m", FULL, protocol=PROTO_A)
+        check("an unreadable episode refuses the whole cell", False, "no CellError")
+    except CellError as e:
+        check("an unreadable episode refuses the whole cell",
+              "a.rep0.json" in str(e), str(e))
+    check("no summary was written over the refusal",
+          not os.path.isfile(os.path.join(d, "summary.json")))
+
+    # A filename and a row that disagree is a cell nobody can count.
+    d2 = fill(os.path.join(tmp, "m__full__u"), ["a"], [0], config=FULL)
+    ep = json.load(open(os.path.join(d2, "a.rep0.json")))
+    ep["row"]["rep"] = 4
+    with open(os.path.join(d2, "a.rep0.json"), "w") as f:
+        json.dump(ep, f)
+    try:
+        write_summary(d2, "m", FULL, protocol=PROTO_A)
+        check("filename and row must agree on the repeat", False, "no CellError")
+    except CellError as e:
+        check("filename and row must agree on the repeat",
+              "rep 4" in str(e), str(e))
+
+    d3 = fill(os.path.join(tmp, "m__full__v"), ["a"], [0], config=FULL)
+    try:
+        write_summary(d3, "other-model", FULL, protocol=PROTO_A)
+        check("a cell will not answer for another model's episodes", False,
+              "no CellError")
+    except CellError as e:
+        check("a cell will not answer for another model's episodes",
+              "'m'" in str(e), str(e))
+
+print("per-episode provenance: one run cannot claim another run's episodes")
+with tempfile.TemporaryDirectory() as tmp:
+    d = os.path.join(tmp, "m__full__mixed")
+    fill(d, ["a"], [0], protocol=PROTO_A, config=FULL)
+    fill(d, ["a"], [1], protocol=PROTO_B, config=FULL)
+    s = write_summary(d, "m", FULL, protocol=PROTO_A)
+    check("a cell that ran under two protocols records neither as its own",
+          s["protocol"] is None)
+    variants = s.get("protocol_variants") or []
+    check("both protocols are recorded, with the episodes that ran under them",
+          len(variants) == 2 and
+          {e for v in variants for e in v["episodes"]} ==
+          {"a.rep0.json", "a.rep1.json"}, str(variants))
+    check("the variant carries the max_steps each episode really used",
+          sorted((v["protocol"] or {}).get("max_steps") for v in variants)
+          == [0, 40], str(variants))
+
+    single = os.path.join(tmp, "m__full__single")
+    fill(single, ["a"], [0, 1], protocol=PROTO_A, config=FULL)
+    s = write_summary(single, "m", FULL, protocol=PROTO_A)
+    check("a cell that ran under one protocol records it", s["protocol"] == PROTO_A)
+    check("no variants when there is nothing to disagree about",
+          "protocol_variants" not in s)
+
+    # Legacy episodes carry no stamp. The run that rebuilds the summary must
+    # not lend them its own.
+    legacy = os.path.join(tmp, "m__full__legacy")
+    fill(legacy, ["a"], [0], protocol=None, run=None, config=FULL)
+    s = write_summary(legacy, "m", FULL, protocol=PROTO_A)
+    check("an unstamped episode does not inherit this run's protocol",
+          s["protocol"] is None)
+    check("unstamped episodes are named in the variants",
+          s.get("protocol_variants") == [{"protocol": None,
+                                          "episodes": ["a.rep0.json"]}],
+          str(s.get("protocol_variants")))
+
+    # Same for the config the episodes actually ran under.
+    cfgd = os.path.join(tmp, "m__full__cfg")
+    fill(cfgd, ["a"], [0], config=dict(FULL, max_steps=0))
+    fill(cfgd, ["a"], [1], config=dict(FULL, max_steps=40))
+    s = write_summary(cfgd, "m", FULL, protocol=PROTO_A)
+    check("a config flag two episodes disagree on is recorded as unknown",
+          s["config"]["max_steps"] is None and s["config"]["name"] == "full",
+          str(s["config"]))
+    check("config variants name the episodes",
+          len(s.get("config_variants") or []) == 2)
+
+    twoname = os.path.join(tmp, "m__full__twoname")
+    fill(twoname, ["a"], [0], config=FULL)
+    fill(twoname, ["a"], [1], config={"name": "baseline"})
+    try:
+        write_summary(twoname, "m", FULL, protocol=PROTO_A)
+        check("two config names is not one cell", False, "no CellError")
+    except CellError as e:
+        check("two config names is not one cell", "2 configs" in str(e), str(e))
+
+print("resume_conflicts: refuse before running, not after writing")
+with tempfile.TemporaryDirectory() as tmp:
+    d = fill(os.path.join(tmp, "m__full__resume"), ["a", "b"], [0],
+             protocol=PROTO_A, config=FULL)
+    conf, unattr = resume_conflicts(d, ["a", "b"], [0], PROTO_A)
+    check("resuming under the same protocol is no conflict", conf == [] and unattr == [])
+    conf, unattr = resume_conflicts(d, ["a", "b"], [0], PROTO_B)
+    check("resuming with different flags is a conflict", len(conf) == 2, str(conf))
+    check("the conflict names the setting that moved",
+          bool(conf) and conf[0][1] == ["max_steps"], str(conf))
+    conf, _ = resume_conflicts(d, ["a", "b"], [0], PROTO_B, force=True)
+    check("--force re-runs them, so there is nothing to conflict with", conf == [])
+
+    # A starved episode is re-run, not kept, so it cannot conflict either.
+    fill(d, ["c"], [0], protocol=PROTO_B, config=FULL, passed=False, steps=1,
+         output_tokens=0, stop_reason="wall_timeout")
+    conf, _ = resume_conflicts(d, ["c"], [0], PROTO_A)
+    check("an episode that will be re-run is not a conflict", conf == [], str(conf))
+
+    legacy = fill(os.path.join(tmp, "m__full__unstamped"), ["a"], [0],
+                  protocol=None, run=None, config=FULL)
+    conf, unattr = resume_conflicts(legacy, ["a"], [0], PROTO_A)
+    check("an unstamped episode is unattributed, not a conflict",
+          conf == [] and unattr == ["a.rep0.json"], str(unattr))
+    check("protocol_diff calls an absent stamp a disagreement",
+          protocol_diff(None, PROTO_A) == ["<unrecorded>"])
+
+print("atomic writes")
+with tempfile.TemporaryDirectory() as tmp:
+    p = os.path.join(tmp, "x.json")
+    write_json_atomic(p, {"a": 1})
+    check("writes what it was given", json.load(open(p)) == {"a": 1})
+    write_json_atomic(p, {"a": 2})
+    check("replaces in place", json.load(open(p)) == {"a": 2})
+    check("leaves no temp files behind", os.listdir(tmp) == ["x.json"],
+          str(os.listdir(tmp)))
+    # open(path, "w") truncates before the replacement exists. A payload that
+    # fails to encode halfway through used to leave the frozen episode empty.
+    class Unserialisable:
+        pass
+    def readback(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            return f"unreadable: {e}"
+    try:
+        write_json_atomic(p, {"a": 3, "bad": Unserialisable()})
+        check("a failed write is refused, not half-applied", False, "no error")
+    except TypeError:
+        check("a failed write is refused, not half-applied",
+              readback(p) == {"a": 2}, str(readback(p)))
+    check("a failed write leaves no temp file", os.listdir(tmp) == ["x.json"],
+          str(os.listdir(tmp)))
+
+print("is_api_model has one owner")
+from mh.runtime import is_api_model
+import mh.runtime as _runtime
+import mh.model as _model
+check("runtime owns the predicate under both names",
+      getattr(_runtime, "is_gemini_model", None) is is_api_model)
+CASES = ["gemini-3.7-flash", "models/gemini-3.7-flash", "live-gemini",
+         "qwen3.8:27b", "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+         "gemma4:e4b", "not-gemini-really"]
+check("mh.model's copy still agrees with the owner",
+      all(_model.is_gemini_model(m) == is_api_model(m) for m in CASES),
+      "mh/model.py must import is_gemini_model from mh.runtime")
+
+
+print("run.py end to end (no server, no model, no GPU, throwaway tree)")
+import contextlib, io, types
+import run as runner
+import mh.runtime as _rt
+
+
+class FakeTask:
+    def __init__(self, name):
+        self.name = name
+
+    def materialise(self, sandbox):
+        os.makedirs(sandbox, exist_ok=True)
+
+
+class FakeSampler:
+    def __init__(self, interval=2.0):
+        pass
+
+    def start(self):
+        return self
+
+    def stop(self):
+        return None
+
+
+class FakeRes:
+    def __init__(self, **kw):
+        d = dict(passed=True, finished=True, stop_reason="finished", steps=6,
+                 tool_calls=4, wall_s=12.0, model_latency_s=10.0,
+                 prompt_tokens=1000, output_tokens=100, errors=[],
+                 peak_prompt_tokens=1000, eval_duration_ns=10 ** 9,
+                 prompt_eval_duration_ns=10 ** 9, verify_output="ok", events=[])
+        d.update(kw)
+        self.__dict__.update(d)
+
+
+def starved_res():
+    return FakeRes(passed=False, finished=False, stop_reason="wall_timeout",
+                   steps=1, tool_calls=0, output_tokens=0,
+                   errors=["ModelError: TimeoutError: timed out"])
+
+
+class FakeHarness:
+    plan = {}
+    ran = []
+
+    def __init__(self, client, cfg, sandbox, task, log_dir=None):
+        self.task = task
+
+    def run(self):
+        FakeHarness.ran.append(self.task.name)
+        r = FakeHarness.plan.get(self.task.name)
+        if r is None:
+            return FakeRes()
+        return r() if callable(r) else r
+
+
+EVICTED = []
+runner.Client = lambda *a, **k: types.SimpleNamespace(options={})
+runner.Sampler = FakeSampler
+runner.Harness = FakeHarness
+runner.unstick_server = lambda *a, **k: None
+runner.unload_all = lambda *a, **k: []
+runner.ensure_sole_tenant = (lambda model, evict=True, share_gpu=False:
+                             EVICTED.append(model) or [])
+runner.protocol_block = lambda **kw: _rt.protocol_block(env=ENV, **kw)
+
+
+def run_main(argv, results, tasks=("alpha",), plan=None):
+    """Drive run.main(). Returns (exit code or 0, stdout)."""
+    FakeHarness.plan = dict(plan or {})
+    FakeHarness.ran = []
+    del EVICTED[:]
+    runner.RESULTS = results
+    runner.WORK = os.path.join(results, ".work")
+    runner.load_tasks = lambda names: [FakeTask(n) for n in (names or tasks)]
+    out = io.StringIO()
+    saved = sys.argv
+    sys.argv = ["run.py"] + list(argv)
+    try:
+        with contextlib.redirect_stdout(out):
+            runner.main()
+        return 0, out.getvalue()
+    except SystemExit as e:
+        return (e.code if e.code is not None else 0), out.getvalue()
+    except Exception as e:
+        # A crash is a failure to report, not a reason to stop the suite.
+        return f"CRASH {type(e).__name__}: {e}", out.getvalue()
+    finally:
+        sys.argv = saved
+
+
+def summary_of(results, tag, model="m", config="full"):
+    with open(os.path.join(results, f"{model}__{config}__{tag}",
+                           "summary.json")) as f:
+        return json.load(f)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    # A9: --repeat 0 died on an IndexError in the banner, after makedirs and
+    # after ensure_sole_tenant had already evicted the resident model.
+    code, _ = run_main(["--model", "m", "--tag", "bad", "--repeat", "0"], tmp)
+    check("--repeat 0 is refused",
+          isinstance(code, str) and "--repeat must be >= 1" in code, str(code))
+    check("--repeat 0 evicts nothing", EVICTED == [], str(EVICTED))
+    check("--repeat 0 creates no cell directory",
+          not os.path.exists(os.path.join(tmp, "m__full__bad")))
+    code, _ = run_main(["--model", "m", "--tag", "bad", "--repeat", "-2"], tmp)
+    check("negative --repeat is refused", isinstance(code, str), str(code))
+    code, _ = run_main(["--model", "m", "--tag", "bad", "--starve-abort", "-1"], tmp)
+    check("negative --starve-abort is refused",
+          isinstance(code, str) and "--starve-abort" in code, str(code))
+
+with tempfile.TemporaryDirectory() as tmp:
+    # A1, end to end: the second invocation is handed one task in a directory
+    # that already holds two. The summary must describe the cell.
+    code, _ = run_main(["--model", "m", "--tag", "grid", "--tasks", "alpha,beta"], tmp)
+    check("first run writes its episodes", code == 0, str(code))
+    s = summary_of(tmp, "grid")
+    check("summary of the first run", s["n"] == 2 and s["passed"] == 2)
+    code, _ = run_main(["--model", "m", "--tag", "grid", "--tasks", "gamma"], tmp)
+    check("adding one task does not rewrite the cell as one task",
+          summary_of(tmp, "grid")["n"] == 3, str(summary_of(tmp, "grid")["n"]))
+    check("the tasks already on disk survive the rebuild",
+          sorted(r["task"] for r in summary_of(tmp, "grid")["rows"]) ==
+          ["alpha", "beta", "gamma"])
+    check("only the new task was actually run", FakeHarness.ran == ["gamma"],
+          str(FakeHarness.ran))
+
+    # A4: episodes and summary are written whole, with nothing left behind.
+    d = os.path.join(tmp, "m__full__grid")
+    leftovers = [n for n in os.listdir(d) if n.startswith(".tmp-")]
+    check("no temp files left in the cell", leftovers == [], str(leftovers))
+    ep = json.load(open(os.path.join(d, "alpha.rep0.json")))
+    stamp = ep.get("protocol") or {}
+    check("every episode carries the protocol it ran under",
+          stamp.get("max_steps") == 0 and stamp.get("num_ctx") == 32768,
+          str(ep.get("protocol")))
+    check("every episode carries its run's identity",
+          (ep.get("run") or {}).get("tag") == "grid" and
+          (ep.get("run") or {}).get("rep_offset") == 0, str(ep.get("run")))
+
+    # A2 + A8: resuming with a different ceiling would have kept those three
+    # episodes and then stamped max_steps=40 over the lot.
+    code, _ = run_main(["--model", "m", "--tag", "grid", "--tasks", "alpha,beta",
+                        "--max-steps", "40"], tmp)
+    check("resuming under a different protocol is refused",
+          isinstance(code, str) and "different protocol" in code, str(code))
+    check("the refusal names the setting that moved",
+          isinstance(code, str) and "max_steps" in code, str(code))
+    check("the refusal happens before anything runs", FakeHarness.ran == [],
+          str(FakeHarness.ran))
+    check("the summary it would have relabelled is untouched",
+          (summary_of(tmp, "grid")["protocol"] or {}).get("max_steps") == 0,
+          str(summary_of(tmp, "grid")["protocol"]))
+
+    code, out = run_main(["--model", "m", "--tag", "grid", "--tasks",
+                          "alpha,beta,delta", "--max-steps", "40",
+                          "--force-starved"], tmp)
+    check("--force-starved is read, and lets the resume through", code == 0,
+          str(code))
+    s = summary_of(tmp, "grid")
+    check("the mixed cell claims no single protocol", s["protocol"] is None)
+    check("it records both protocols and whose episodes are whose",
+          sorted(len(v["episodes"])
+                 for v in (s.get("protocol_variants") or [])) == [1, 3],
+          str(s.get("protocol_variants")))
+    check("the runner says so out loud", "no single protocol" in out, out[-300:])
+    outc = s.get("outcomes") or {}
+    check("outcomes record the flag that was used",
+          outc.get("force_starved") is True and
+          outc.get("episodes_written") == 1, str(outc))
+
+with tempfile.TemporaryDirectory() as tmp:
+    # A10: --starve-abort counts CONSECUTIVE starvation. A skipped real
+    # episode breaks the run; leaving the streak standing aborted a resume on
+    # starvation that was never consecutive.
+    code, _ = run_main(["--model", "m", "--tag", "s", "--tasks", "beta"], tmp)
+    check("the kept episode is on disk", code == 0, str(code))
+    code, out = run_main(["--model", "m", "--tag", "s", "--tasks",
+                          "alpha,beta,gamma", "--starve-abort", "2"], tmp,
+                         plan={"alpha": starved_res, "gamma": starved_res})
+    check("a skipped real episode resets the starve streak", code == 0,
+          f"code={code} {out[-200:]}")
+    check("both starved episodes ran", FakeHarness.ran.count("gamma") >= 1,
+          str(FakeHarness.ran))
+    # Genuinely consecutive starvation still aborts.
+    code, out = run_main(["--model", "m", "--tag", "s2", "--tasks",
+                          "alpha,gamma", "--starve-abort", "2"], tmp,
+                         plan={"alpha": starved_res, "gamma": starved_res})
+    check("consecutive starvation still aborts the cell", code == 2, str(code))
+    check("the aborted cell still gets a derived summary",
+          (summary_of(tmp, "s2").get("outcomes") or {}).get("starved_abort")
+          is True)
+
+with tempfile.TemporaryDirectory() as tmp:
+    # A3, end to end: a fresh tag re-running repeats the (model, config)
+    # already has is a duplicate sample. It is allowed -- every v1/v2/rep tag
+    # in the tree is one -- but it is never silent.
+    run_main(["--model", "m", "--tag", "hard", "--tasks", "alpha"], tmp)
+    code, out = run_main(["--model", "m", "--tag", "hard-again", "--tasks",
+                          "alpha"], tmp)
+    check("a duplicate repeat under a new tag is reported", code == 0, str(code))
+    check("the warning names the sibling cell",
+          "WARNING" in out and "m__full__hard" in out, out[-300:])
+    outc = summary_of(tmp, "hard-again").get("outcomes") or {}
+    check("the duplication is recorded in the summary, not just printed",
+          outc.get("sibling_overlap") == {"m__full__hard": 1},
+          str(outc.get("sibling_overlap")))
+    # An extension is refused when the repeats it would add already exist for
+    # this (model, config) under ANY tag -- the check the fresh directory used
+    # to hide.
+    code, _ = run_main(["--model", "m", "--tag", "hard-ext", "--tasks", "alpha",
+                        "--rep-offset", "1", "--repeat", "2"], tmp)
+    check("an extension past the frozen repeats is allowed", code == 0, str(code))
+    check("it wrote the repeats it said it would",
+          summary_of(tmp, "hard-ext")["reps"] == [1, 2])
+    code, _ = run_main(["--model", "m", "--tag", "hard-ext2", "--tasks", "alpha",
+                        "--rep-offset", "1", "--repeat", "2"], tmp)
+    check("a second extension onto the same repeats is refused",
+          isinstance(code, str) and "under another tag" in code, str(code))
+
+    # A5: an extension that died partway through resumes into its own
+    # directory. The guard used to refuse its own output, and neither --force
+    # nor --force-starved could get past it.
+    os.remove(os.path.join(tmp, "m__full__hard-ext", "alpha.rep2.json"))
+    code, _ = run_main(["--model", "m", "--tag", "hard-ext", "--tasks", "alpha",
+                        "--rep-offset", "1", "--repeat", "2"], tmp)
+    check("an interrupted extension resumes into its own cell", code == 0,
+          str(code))
+    check("the resume re-ran only the episode that was missing",
+          FakeHarness.ran == ["alpha"], str(FakeHarness.ran))
+    check("the resumed cell holds both repeats",
+          summary_of(tmp, "hard-ext")["n"] == 2)
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")

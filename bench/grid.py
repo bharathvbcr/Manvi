@@ -8,7 +8,6 @@ Pins --seed to the repeat index so a cell is reproducible.
     python3 grid.py --tag grid
 """
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -16,11 +15,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.bench import load_tasks
-from mh.runtime import is_starved_episode
+from mh.runtime import CellError, cell_rows, is_starved_episode
 from run import CONFIGS, seed_for_repeat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESULTS = os.path.join(HERE, "results")
+# Overridable so tests can build a throwaway grid instead of writing
+# into the real results tree.
+RESULTS = os.environ.get("MH_RESULTS") or os.path.join(HERE, "results")
 
 # Linux/CUDA tags. qwen3.8:27b is the CUDA peer of the Apple-only
 # qwen3.8:27b-mlx build that saturated the 11-task suite. Do not pull
@@ -52,29 +53,53 @@ def outdir(model, config, tag):
     return os.path.join(RESULTS, f"{slug(model)}__{config}__{tag}")
 
 
+def cell_rows_on_disk(model, config, tag):
+    """The cell's rows, read from its episode files, or None if unreadable.
+
+    Whatever decides not to re-run a cell has to read the same source the
+    summary is derived from. summary.json used to be rebuilt from whichever
+    tasks one invocation was handed, so a cell could claim n=1 with nine
+    episodes beside it -- and this skip check believed the claim.
+    """
+    d = outdir(model, config, tag)
+    try:
+        return cell_rows(d)
+    except CellError as e:
+        print(f"[grid] cannot read cell {d}: {e}", file=sys.stderr, flush=True)
+        return None
+
+
 def cell_has_starved(model, config, tag):
-    p = os.path.join(outdir(model, config, tag), "summary.json")
-    if not os.path.isfile(p):
-        return False
-    try:
-        s = json.load(open(p))
-    except Exception:
-        return False
-    return any(is_starved_episode(r) for r in (s.get("rows") or []))
+    return any(is_starved_episode(r)
+               for r in (cell_rows_on_disk(model, config, tag) or []))
 
 
-def complete(model, config, tag, n_tasks, repeats):
-    p = os.path.join(outdir(model, config, tag), "summary.json")
-    if not os.path.isfile(p):
+def complete(model, config, tag, n_tasks, repeats, rep_offset=0):
+    """True when this cell already holds every episode this run would produce.
+
+    Counted from the episodes on disk. An extension is complete on its own
+    repeat window, not on the frozen cell's: `n` alone cannot tell reps 5-19
+    from reps 0-14, so the check is on the repeat indices present.
+
+    A cell whose episodes are all present but whose summary.json is missing is
+    NOT complete: the summary is what the rest of the pipeline reads, and
+    re-deriving it is cheap because every episode is skipped.
+    """
+    if not os.path.isfile(os.path.join(outdir(model, config, tag),
+                                       "summary.json")):
         return False
-    try:
-        s = json.load(open(p))
-    except Exception:
+    rows = cell_rows_on_disk(model, config, tag)
+    if rows is None:
         return False
-    want = n_tasks * repeats
-    if int(s.get("n") or 0) < want:
+    want_reps = set(range(rep_offset, rep_offset + repeats))
+    have = {}
+    for r in rows:
+        have[r.get("rep", 0)] = have.get(r.get("rep", 0), 0) + 1
+    if not want_reps <= set(have):
         return False
-    return not cell_has_starved(model, config, tag)
+    if any(have[rep] < n_tasks for rep in want_reps):
+        return False
+    return not any(is_starved_episode(r) for r in rows)
 
 
 def main():
@@ -103,6 +128,10 @@ def main():
                     help="passed to run.py; episode wall-clock fail line in seconds")
     ap.add_argument("--share-gpu", action="store_true",
                     help="passed to run.py; allow one peer model on this GPU")
+    ap.add_argument("--rep-offset", type=int, default=0,
+                    help="passed to run.py; start repeat indices at N to add "
+                         "seeds to an already-run cell. Use a fresh --tag: the "
+                         "runner refuses to touch an existing episode.")
     args = ap.parse_args()
 
     models = list(MODELS)
@@ -135,9 +164,10 @@ def main():
 
     print(f"[grid] {len(models)} models × {len(configs)} configs × {repeats} repeats "
           f"× {n_tasks} tasks  tag={args.tag} seed_base={args.seed}")
-    print(f"[grid] seeds per repeat: "
-          + ", ".join(str(seed_for_repeat(args.seed, r, repeats))
-                      for r in range(repeats)))
+    reps = list(range(args.rep_offset, args.rep_offset + repeats))
+    print(f"[grid] reps {reps[0]}-{reps[-1]}  seeds per repeat: "
+          + ", ".join(str(seed_for_repeat(args.seed, r, repeats + args.rep_offset))
+                      for r in reps))
     skipped = 0
     ran = 0
     failed = 0
@@ -145,7 +175,7 @@ def main():
     for i, (role, model, cfg) in enumerate(plan, 1):
         skip = False
         if not args.force:
-            if complete(model, cfg, args.tag, n_tasks, repeats):
+            if complete(model, cfg, args.tag, n_tasks, repeats, args.rep_offset):
                 if args.force_starved and cell_has_starved(model, cfg, args.tag):
                     skip = False
                 else:
@@ -157,6 +187,7 @@ def main():
         cmd = [sys.executable, os.path.join(HERE, "run.py"),
                "--model", model, "--config", cfg,
                "--repeat", str(repeats), "--seed", str(args.seed),
+               "--rep-offset", str(args.rep_offset),
                "--tag", args.tag, "--max-steps", str(args.max_steps),
                "--max-wall", str(args.max_wall)]
         if args.share_gpu:

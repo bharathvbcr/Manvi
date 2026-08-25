@@ -3,7 +3,7 @@
 Every hypothesised failure point from DESIGN.md gets a test that would fail if the
 defence were removed. No GPU required, so this runs on every change.
 """
-import json, os, shutil, sys, tempfile, time, traceback
+import json, os, shutil, subprocess, sys, tempfile, time, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mh import tools as toolmod
@@ -484,7 +484,450 @@ fc = FakeClient([
 h = Harness(fc, Config(), s_, task); r = h.run()
 check("duplicate finish handled", r.passed)
 
+# ============================================================ cheating holes
+# Each block below is an exploit that worked against the pre-hardening
+# instrument. They are written as the exploit, not as a paraphrase of it.
+print("C1 interpreter startup hijack")
+import mh.bench as benchmod
+from mh.bench import model_facing, failure_labels, _file_set
+from mh.tools import BENCH_ROOT, containment_backend
+
+SITECUSTOMIZE = "import os\nos._exit(0)\n"
+
+# The exploit: two lines in sitecustomize.py, written with the ordinary
+# write_file tool. `site` imported it at interpreter start-up because the
+# verifier ran `python3 <test>` with PYTHONPATH=sandbox and no -I/-E, so the
+# hidden test never executed and 18 of 19 tasks "passed" untouched.
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+open(os.path.join(s_, "sitecustomize.py"), "w").write(SITECUSTOMIZE)
+# Pretend the file was always there, so this checks the *interpreter*, not the
+# added-file check that also catches it.
+task._manifests[os.path.realpath(s_)] = _file_set(s_)
+ok, out = task.verify(s_)
+check("C1 sitecustomize does not buy a pass", not ok, out[:200])
+check("C1 the hidden test actually ran", "include_taxes" in out or "exit=1" in out)
+
+# A .pth file is the same hole with a different spelling.
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+open(os.path.join(s_, "evil.pth"), "w").write("import os; os._exit(0)\n")
+task._manifests[os.path.realpath(s_)] = _file_set(s_)
+ok, _ = task.verify(s_)
+check("C1 .pth does not buy a pass", not ok)
+
+# PYTHONPATH/PYTHONSTARTUP and friends are not inherited by the verifier.
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+shutil.copy2(os.path.join(task.dir, "reference", "app", "invoice.py"),
+             os.path.join(s_, "app", "invoice.py"))
+os.environ["PYTHONSTARTUP"] = "/nonexistent/boom.py"
+os.environ["PYTHONWARNINGS"] = "error"
+ok, _ = task.verify(s_)
+del os.environ["PYTHONSTARTUP"], os.environ["PYTHONWARNINGS"]
+check("C1 hijacking PYTHON* env does not disturb the verifier", ok)
+
+print("C2 files the agent adds are checked, not ignored")
+def solved_sandbox():
+    """A sandbox that verifies clean, so an added file is the only variable."""
+    d = os.path.join(tmpdir(), "s")
+    task.materialise(d)
+    shutil.copy2(os.path.join(task.dir, "reference", "app", "invoice.py"),
+                 os.path.join(d, "app", "invoice.py"))
+    return d
+
+s_ = solved_sandbox()
+check("C2 fixture verifies clean before anything is added", task.verify(s_)[0])
+open(os.path.join(s_, "sitecustomize.py"), "w").write(SITECUSTOMIZE)
+refused, other = task.additions(s_)
+check("C2 added startup hook is seen", refused == ["sitecustomize.py"], str(refused))
+ok, out = task.verify(s_)
+check("C2 added startup hook is refused", not ok, out[:160])
+check("C2 the refusal names the file and says why",
+      "sitecustomize.py" in out and "loads on its own" in out, out[:160])
+
+# a .pth is executed by site with no import at all
+s_ = solved_sandbox()
+open(os.path.join(s_, "hook.pth"), "w").write("import os; os._exit(0)\n")
+refused, _ = task.additions(s_)
+check("C2 added .pth is seen", refused == ["hook.pth"], str(refused))
+check("C2 added .pth is refused", not task.verify(s_)[0])
+
+# a top-level module shadowing a stdlib name on the verifier's sys.path
+s_ = solved_sandbox()
+open(os.path.join(s_, "json.py"), "w").write("def loads(x):\n    return {}\n")
+refused, _ = task.additions(s_)
+check("C2 stdlib shadow refused", refused == ["json.py"], str(refused))
+check("C2 stdlib shadow fails the verification", not task.verify(s_)[0])
+s_ = solved_sandbox()
+os.makedirs(os.path.join(s_, "json"))
+open(os.path.join(s_, "json", "__init__.py"), "w").write("")
+check("C2 stdlib shadow as a package is refused too", not task.verify(s_)[0])
+
+# ...but ordinary work products are not treated as cheating
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+shutil.copy2(os.path.join(task.dir, "reference", "app", "invoice.py"),
+             os.path.join(s_, "app", "invoice.py"))
+open(os.path.join(s_, "notes.txt"), "w").write("scratch\n")
+open(os.path.join(s_, "helper.py"), "w").write("VALUE = 1\n")
+os.makedirs(os.path.join(s_, "__pycache__"), exist_ok=True)
+open(os.path.join(s_, "__pycache__", "x.cpython-99.pyc"), "wb").write(b"\x00")
+ok, out = task.verify(s_)
+check("C2 benign additions still pass", ok, out[:200])
+check("C2 benign additions are recorded, not silent", "sandbox additions" in out, out[-200:])
+
+# the check must not skip itself when the manifest is missing
+fresh = load_tasks(["cryptic"])[0]
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s")
+shutil.copytree(fresh.setup_dir, s_)
+shutil.copy2(os.path.join(fresh.dir, "reference", "app", "invoice.py"),
+             os.path.join(s_, "app", "invoice.py"))
+check("C2 unmaterialised sandbox verifies clean", fresh.verify(s_)[0])
+open(os.path.join(s_, "sitecustomize.py"), "w").write(SITECUSTOMIZE)
+check("C2 unmaterialised sandbox is still checked", not fresh.verify(s_)[0])
+
+print("C3 the gate is not an oracle")
+# Reference solution with the tax applied twice: the hidden test now prints its
+# own expected values, e.g. "FAIL 29.16 want 27.0".
+WRONG = open(os.path.join(task.dir, "reference", "app", "invoice.py")).read().replace(
+    'total *= (1 + cfg["tax_rate"])', 'total *= (1 + cfg["tax_rate"] * 2)')
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+open(os.path.join(s_, "app", "invoice.py"), "w").write(WRONG)
+raw_ok, raw = task.verify(s_)
+check("C3 fixture really does leak values in the raw output",
+      (not raw_ok) and "want" in raw, raw[:200])
+
+fc = FakeClient([{"tool_calls": [call("finish", summary="done")]},
+                 {"tool_calls": [call("finish", summary="done")]},
+                 {"tool_calls": [call("finish", summary="done")]}])
+h = Harness(fc, Config(), s_, task)
+r = h.run()
+gate_msgs = [m["content"] for m in fc.seen_messages[-1]
+             if m.get("role") == "tool" and m.get("name") == "finish"]
+gate_text = "\n".join(gate_msgs)
+check("C3 gate replied at all", bool(gate_text))
+check("C3 gate never shows the expected value", "want" not in gate_text, gate_text[:300])
+check("C3 gate never shows the hidden test's numbers",
+      "27.0" not in gate_text and "29.16" not in gate_text, gate_text[:300])
+check("C3 gate still says the checks failed", "hidden checks fail" in gate_text)
+check("C3 gate says what is withheld", "never shown" in gate_text)
+check("C3 the raw output is still kept for the record",
+      "want" in r.verify_output)
+# tamper messages are harness text, not test output, and must still be shown
+check("C3 tamper text still reaches the model",
+      "protected files were changed" in model_facing(
+          False, "VERIFY FAILED: protected files were changed: test_invoice.py (modified)"))
+labels, total = failure_labels("FAIL [1,2,2,2,5] 2 got (0,0) want (1,3)")
+check("C3 labels carry no values", labels == ["FAIL"] and total == 1, str(labels))
+
+print("C4 the hidden test's source is not reachable from inside the verifier")
+STEAL = (
+    "import sys, shutil\n"
+    "try:\n"
+    "    shutil.copy(sys.argv[0], 'STOLEN.txt')\n"
+    "except Exception as exc:\n"
+    "    open('STOLEN.err', 'w').write(repr(exc))\n"
+    "_m = sys.modules.get('__main__')\n"
+    "open('MAINFILE.txt', 'w').write(str(getattr(_m, '__file__', None)))\n"
+    "open('ARGV0.txt', 'w').write(str(sys.argv[0]))\n"
+)
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+ref = open(os.path.join(task.dir, "reference", "app", "invoice.py")).read()
+open(os.path.join(s_, "app", "invoice.py"), "w").write(STEAL + ref)
+task.verify(s_)
+stolen = os.path.join(s_, "STOLEN.txt")
+check("C4 argv[0] is not a copyable path to the test", not os.path.exists(stolen),
+      "STOLEN.txt exists")
+if os.path.exists(stolen):
+    check("C4 nothing exfiltrated", "invoice_total" not in open(stolen).read())
+argv0 = open(os.path.join(s_, "ARGV0.txt")).read()
+mainfile = open(os.path.join(s_, "MAINFILE.txt")).read()
+check("C4 payload really did run inside the verifier", bool(argv0))
+check("C4 argv[0] names no file", not os.path.exists(argv0), argv0)
+check("C4 __file__ names no file", not os.path.exists(mainfile), mainfile)
+check("C4 no copy of the hidden test is left on disk anywhere",
+      not any(os.path.exists(os.path.join(d, "hidden_test.py"))
+              for d in (s_, tempfile.gettempdir())))
+
+print("C5 run_shell is contained")
+check("C5 a containment backend is in use or explicitly disabled",
+      containment_backend() in ("sandbox-exec", "off", None))
+# A replica of the real layout: <root>/tasks/<name> beside <root>/.work/<slug>.
+rep_root = tmpdir()
+rep_tasks = os.path.join(rep_root, "tasks")
+os.makedirs(rep_tasks)
+shutil.copytree(task.dir, os.path.join(rep_tasks, "cryptic"))
+rtask = load_tasks(["cryptic"], tasks_dir=rep_tasks)[0]
+rsand = os.path.join(rep_root, ".work", "cryptic-full-0")
+os.makedirs(os.path.dirname(rsand), exist_ok=True)
+rtask.materialise(rsand)
+rsb = Sandbox(rsand, protected_roots=rtask.guard_roots)
+victim = os.path.join(rep_tasks, "cryptic", "hidden_test.py")
+before = open(victim, "rb").read()
+
+if containment_backend() == "sandbox-exec":
+    got = rsb.run_shell(cmd="cat ../../tasks/cryptic/hidden_test.py")
+    check("C5 the hidden test is not readable from the shell",
+          "invoice_total" not in got, got[:200])
+    got = rsb.run_shell(cmd="echo POISONED >> ../../tasks/cryptic/hidden_test.py; "
+                            "echo rc=$?")
+    check("C5 the hidden test is not writable from the shell",
+          open(victim, "rb").read() == before, got[:200])
+    got = rsb.run_shell(cmd=f"cat {BENCH_ROOT}/mh/bench.py")
+    check("C5 the harness source is not readable from the shell",
+          "def verify" not in got, got[:200])
+    got = rsb.run_shell(cmd="echo inside > ok.txt && cat ok.txt")
+    check("C5 the sandbox itself is still writable", "inside" in got, got[:200])
+else:
+    check("C5 uncontained runs are refused or stamped",
+          containment_backend() == "off")
+
+# Even if a write did land some other way, a rewritten hidden test is refused
+# rather than scored against: the source is pinned when the task is loaded.
+open(victim, "ab").write(b"\nimport sys; sys.exit(0)\n")
+ok, out = rtask.verify(rsand)
+check("C5 a poisoned hidden test fails loudly instead of passing",
+      (not ok) and "pinned" in out, out[:200])
+open(victim, "wb").write(before)
+check("C5 restoring the test restores verification", not rtask.verify(rsand)[0])
+
+print("output caps are measured in bytes")
+body, trunc = cap_output("漢" * 40_000, 30_000)
+check("cap counts bytes, not characters",
+      len(body.encode("utf-8")) < 31_000, f"bytes={len(body.encode('utf-8'))}")
+check("multibyte cap still flags truncation", trunc)
+check("no mangled characters at the cut", "�" not in body)
+body, _ = cap_output("a" * 100 + "漢" * 10, 10 ** 9)
+check("large limit leaves text alone", body.endswith("漢" * 10))
+
+print("directory listings say when they are partial")
+bigdir = tmpdir()
+for i in range(250):
+    open(os.path.join(bigdir, f"f{i:03d}.txt"), "w").write("x")
+bsb = Sandbox(bigdir)
+listing = bsb.read_file(path=".")
+check("listing reports the true total", "250 entries" in listing, listing[:120])
+check("listing says how many it withheld", "not listed" in listing, listing[:120])
+small_listing = Sandbox(root).read_file(path="sub")
+check("a complete listing claims nothing", "not listed" not in small_listing)
+
+print("read_file is bounded before it builds strings")
+bigroot = tmpdir()
+bigfile = os.path.join(bigroot, "big.txt")
+with open(bigfile, "w") as _f:
+    for i in range(1_000_000):
+        _f.write(f"line {i:08d} padding padding padding\n")
+bigsize = os.path.getsize(bigfile)
+probe_src = (
+    "import os, resource, sys\n"
+    f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+    "from mh.tools import Sandbox\n"
+    "b0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+    f"out = Sandbox({bigroot!r}).read_file(path='big.txt')\n"
+    "b1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+    "print(len(out), b1 - b0)\n")
+probe = subprocess.run([sys.executable, "-c", probe_src], capture_output=True, text=True)
+check("read_file probe ran", probe.returncode == 0, probe.stderr[-300:])
+if probe.returncode == 0:
+    out_len, rss_delta = (int(x) for x in probe.stdout.split())
+    unit = 1 if sys.platform == "darwin" else 1024      # macOS reports bytes
+    grew = rss_delta * unit
+    check("read_file output stays inside the cap", out_len < 70_000, f"len={out_len}")
+    check("read_file does not pull the whole file into memory",
+          grew < bigsize, f"grew={grew} for a {bigsize}-byte file")
+# ...and the bound holds for the no-outcap ablation too, where the cap is 1e9
+nocap_out = Sandbox(bigroot, output_cap=10 ** 9).read_file(path="big.txt")
+check("the read bound survives the outcap ablation",
+      len(nocap_out) <= 2 * toolmod.MAX_READ_BYTES + 1000, f"len={len(nocap_out)}")
+check("and it still says it is partial", "read only part of this" in nocap_out)
+big_out = Sandbox(bigroot).read_file(path="big.txt")
+check("a partial read says so", "read only part of this" in big_out, big_out[:120])
+check("a partial read gives both numbers",
+      str(bigsize) in big_out and "line 00000000" in big_out)
+os.remove(bigfile)
+
+print("a timed-out command takes its children with it")
+old_timeout = toolmod.SHELL_TIMEOUT_S
+toolmod.SHELL_TIMEOUT_S = 2
+orphan_root = tmpdir()
+osb = Sandbox(orphan_root)
+# The duration doubles as a marker unique to this process, so a concurrent copy
+# of this suite cannot be mistaken for a survivor of ours.
+MARK = os.getpid()
+try:
+    osb.run_shell(cmd=f"sleep {MARK} & sleep {MARK} & sleep {MARK} & wait")
+    timed_out = False
+except ToolError as e:
+    timed_out = "timed out" in str(e)
+toolmod.SHELL_TIMEOUT_S = old_timeout
+check("the timeout fired", timed_out)
+time.sleep(0.5)
+survivors = subprocess.run(["/bin/sh", "-c", f"pgrep -f 'sleep {MARK}$' | wc -l"],
+                           capture_output=True, text=True).stdout.strip()
+check("no orphaned children survive the timeout", survivors == "0", f"survivors={survivors}")
+if survivors != "0":
+    subprocess.run(["/bin/sh", "-c", f"pkill -f 'sleep {MARK}$'"])
+
+# ... and the same deadline applies to the verifier, which runs the agent's code
+sbdir = tmpdir()
+htask_dir = os.path.join(sbdir, "tasks", "hangs")
+os.makedirs(os.path.dirname(htask_dir))
+shutil.copytree(tasks["cryptic"].dir, htask_dir)
+VMARK = os.getpid() + 1
+with open(os.path.join(htask_dir, "task.json"), "w") as _f:
+    json.dump({"name": "hangs", "kind": "python", "hidden": "hidden_test.py",
+               "protect": ["test_invoice.py"], "timeout": 3,
+               "blurb": "a hidden test that hangs"}, _f)
+with open(os.path.join(htask_dir, "hidden_test.py"), "w") as _f:
+    _f.write("import subprocess, time\n"
+             f"subprocess.Popen(['sleep', '{VMARK}'])\n"
+             "time.sleep(120)\n")
+htask = load_tasks(["hangs"], tasks_dir=os.path.dirname(htask_dir))[0]
+hs = os.path.join(sbdir, "hangs-sandbox"); htask.materialise(hs)
+t_start = time.time()
+ok, out = htask.verify(hs)
+check("a hanging hidden test is a fail, not a pass", not ok)
+check("and it is reported as a timeout", "timed out" in out, out[:120])
+check("the timeout is honoured, not the wall clock", time.time() - t_start < 30,
+      f"{time.time() - t_start:.1f}s")
+time.sleep(0.5)
+vsurv = subprocess.run(["/bin/sh", "-c", f"pgrep -f 'sleep {VMARK}$' | wc -l"],
+                       capture_output=True, text=True).stdout.strip()
+check("a timed-out verifier leaves no processes behind", vsurv == "0", f"survivors={vsurv}")
+if vsurv != "0":
+    subprocess.run(["/bin/sh", "-c", f"pkill -f 'sleep {VMARK}$'"])
+
+print("file tools refuse directories")
+dsb = Sandbox(root)
+os.makedirs(os.path.join(root, "adir"), exist_ok=True)
+check("write_file refuses a directory",
+      "is a directory" in err(dsb.write_file, path="adir", content="x"))
+check("edit_file refuses a directory",
+      "is a directory" in err(dsb.edit_file, path="adir", old="x", new="y"))
+
+print("grader tampering is graded, not filed as an infrastructure fault")
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+shutil.copy2(os.path.join(task.dir, "reference", "app", "invoice.py"),
+             os.path.join(s_, "app", "invoice.py"))
+os.remove(os.path.join(s_, "test_invoice.py"))
+os.makedirs(os.path.join(s_, "test_invoice.py"))
+ok, out = task.verify(s_)
+check("a protected file replaced by a directory is caught", not ok)
+check("and it is named as tampering",
+      "replaced by a directory" in out, out[:200])
+fc = FakeClient([{"tool_calls": [call("finish", summary="done")]}] * 3)
+r = Harness(fc, Config(), s_, task).run()
+check("the episode is a fail, not a runner_error",
+      (not r.passed) and not r.stop_reason.startswith("error:"), r.stop_reason)
+
+print("loop breaking counts results, not just calls")
+LOOK = call("run_shell", cmd="cat marker.txt")
+def bump(n):
+    return call("write_file", path="marker.txt", content=f"state {n}")
+cycle = [{"tool_calls": [bump(0)]}, {"tool_calls": [LOOK]},
+         {"tool_calls": [bump(1)]}, {"tool_calls": [LOOK]},
+         {"tool_calls": [bump(2)]}, {"tool_calls": [LOOK]},
+         {"tool_calls": [bump(3)]}, {"tool_calls": [LOOK]},
+         {"tool_calls": [FIX]},
+         {"tool_calls": [call("finish", summary="ok")]},
+         {"tool_calls": [call("finish", summary="ok")]}]
+res, fc, _ = run_with(cycle, Config(name="lb-cycle"))
+check("an edit/test/edit cycle is not mistaken for a loop",
+      not any(e["t"] == "loopbreak" for e in res.events))
+check("the cycle still finishes", res.passed)
+
+res, fc, _ = run_with([{"tool_calls": [call("run_shell", cmd="echo same")]}
+                       for _ in range(200)], Config(name="lb-200"))
+lb = [e for e in res.events if e["t"] == "loopbreak"]
+check("a genuine loop is still broken", len(lb) > 100, f"n={len(lb)}")
+windows = [e.get("window") for e in lb]
+check("the loop memory is observable at all", all(w is not None for w in windows))
+check("the loop memory stays bounded",
+      windows and all(w is not None and w <= harness_mod.LOOP_WINDOW for w in windows),
+      f"max={max(w for w in windows if w is not None) if any(windows) else None}")
+blocked = [m for m in fc.seen_messages[-1]
+           if m.get("role") == "tool" and "Repeating it will not help" in str(m.get("content"))]
+check("the loopbreak message states what is actually true",
+      blocked and "byte-identical output" in blocked[-1]["content"])
+
+print("a model that only produces truncated prose still terminates")
+class Endless:
+    def __init__(self):
+        self.n = 0
+    def chat(self, messages, tools=None, retries=2):
+        self.n += 1
+        if self.n > 50:
+            raise AssertionError("harness did not terminate on truncated prose")
+        return Reply(content="x" * 100, reasoning="", tool_calls=[], raw={},
+                     prompt_tokens=10, output_tokens=10, latency_s=0.0,
+                     done_reason="length")
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+endless = Endless()
+r = Harness(endless, Config(name="no-wall", max_steps=0, wall_s=0), s_, task).run()
+check("truncated prose terminates without a wall clock",
+      r.stop_reason == "no_tool_call", r.stop_reason)
+check("and it terminates quickly", endless.n <= 5, f"turns={endless.n}")
+
+print("malformed argument payloads do not kill the episode")
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+class Unserialisable:
+    pass
+
+fc = FakeClient([
+    {"tool_calls": [{"id": "c", "name": "run_shell", "args": "ls -la"}]},
+    {"tool_calls": [{"id": "c", "name": "run_shell", "args": ["ls"]}]},
+    {"tool_calls": [{"id": "c", "name": "run_shell",
+                     "args": {"cmd": Unserialisable()}}]},
+    {"tool_calls": [FIX]},
+    {"tool_calls": [call("finish", summary="ok")]},
+    {"tool_calls": [call("finish", summary="ok")]},
+])
+r = Harness(fc, Config(), s_, task).run()
+check("non-dict args are a tool error, not an episode error",
+      not r.stop_reason.startswith("error:"), r.stop_reason)
+check("non-dict args still let the run finish", r.passed)
+check("non-dict args are reported to the model",
+      any("must be an object" in e for e in r.errors))
+check("the event log records the raw payload",
+      any(e.get("args", {}).get("_raw") for e in r.events if e["t"] == "tool"))
+
+print("a check that could not run is recorded as not run")
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+r = Harness(FakeClient([{"tool_calls": [FIX]},
+                        {"tool_calls": [call("finish", summary="ok")]},
+                        {"tool_calls": [call("finish", summary="ok")]}]),
+            Config(), s_, task).run()
+check("context guard reports itself off when num_ctx is unknown",
+      r.ctx_guard_active is False)
+check("and says so in the event log",
+      any(e["t"] == "ctx_guard_disabled" for e in r.events))
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+r = Harness(FakeClient([{"tool_calls": [FIX]},
+                        {"tool_calls": [call("finish", summary="ok")]},
+                        {"tool_calls": [call("finish", summary="ok")]}],
+                       options={"num_ctx": 32768}), Config(), s_, task).run()
+check("context guard reports itself on when num_ctx is known", r.ctx_guard_active is True)
+check("no spurious disabled event",
+      not any(e["t"] == "ctx_guard_disabled" for e in r.events))
+check("containment is recorded on every episode",
+      r.containment == containment_backend() and
+      any(e["t"] == "containment" for e in r.events), str(r.containment))
+
 print()
+
+print("containment proves itself")
+from mh.tools import containment_proves_itself, containment_backend
+_ok, _backend, _detail = containment_proves_itself()
+if _backend == "off":
+    check("containment opt-out is not reported as containment", not _ok, _detail)
+else:
+    # The backend is a claim; this is the check. A profile that silently stops
+    # confining -- a wrong path, a platform whose wrapper is a no-op -- would
+    # otherwise be indistinguishable from a working one, and every episode
+    # would still be recorded as contained.
+    check(f"{_backend} actually confines reads and writes", _ok, _detail)
+    check("a read of the bench tree is refused under containment",
+          "did not stop a read" not in _detail, _detail)
+    check("a write into the bench tree is refused under containment",
+          "did not stop a write" not in _detail, _detail)
+
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILURES:")

@@ -24,16 +24,34 @@ Paper facts this design is built on (all read from the PDF, not recalled):
 | flag | component | failure it targets |
 |---|---|---|
 | `envboot`   | environment snapshot before turn 1        | F1 wasted exploration / hallucinated paths |
-| `nativetools`| native tool_calls vs ICL JSON            | F2 malformed tool invocation |
+| `nativetools`| five-tool surface vs shell-only           | F2 malformed tool invocation |
 | `outcap`    | head+tail output cap                      | F5 truncation, F6 context blowup |
 | `checklist` | completion checklist before finish        | F4 premature done |
 | `verifygate`| harness runs the verifier, model can't self-declare | F9 claimed-but-unrun success |
 | `loopbreak` | duplicate-call detector + intervention    | F3 repetition loops |
-| `groundfs`  | read-before-write + path existence echo   | F1 hallucinated files |
+| `groundfs`  | one prompt sentence: read files before editing | F1 hallucinated files |
+
+Two of these are narrower than their names suggest, and the names are kept only
+because the result files and figures are keyed on them:
+
+- **`nativetools` is not native-vs-ICL.** Both arms use the server's native
+  `tool_calls`; `mh/harness.py` passes a schema list to the client on every
+  request either way. The flag switches the *surface*: on, the model gets all
+  five tools; off, `read_file` / `write_file` / `edit_file` are withheld from the
+  schema list and refused if called anyway, so the model must reach files through
+  `run_shell`. The system prompt swaps with it. No ICL JSON parsing path exists in
+  this harness.
+- **`groundfs` is a prompt sentence and nothing more.** On, one sentence is
+  appended to the first user message: *"Everything you need is already in the task
+  directory. Read files before you edit them."* Nothing enforces read-before-write
+  — `write_file` will happily create a file the model has never read — and there
+  is no path existence echo. `edit_file` does require the file to exist and
+  requires an exactly-once `old` match, but that is unconditional and holds in
+  both arms.
 
 ## Hypothesised failure points for 27B/35B-class local models
 
-F1 hallucinated file paths and APIs -> env bootstrap, real listings, read-before-write
+F1 hallucinated file paths and APIs -> env bootstrap, real listings, a read-before-write instruction
 F2 hallucinated tool names/args     -> native tools, schema validation, corrective replies
 F3 repetition / infinite loops      -> duplicate-call detection; never raise token cap to escape
 F4 premature completion             -> checklist + harness-run verifier

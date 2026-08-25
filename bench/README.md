@@ -23,8 +23,10 @@ run.py          the runner; one resident model; --seed pinned per repeat
 grid.py         resumable 3×7×5 CUDA matrix
 compare.py      result tables plus bootstrap CIs on pass rates and Δ
 selftest.py     proves the suite is valid before any GPU time is spent
-stress_test.py  106 adversarial tests of the harness itself, no GPU needed
+stress_test.py  adversarial tests of the harness itself, no GPU needed
 test_stats.py   bootstrap / Δ / seed unit tests, no GPU needed
+test_pool.py    cell-assembly guards and pooling refusals, no GPU needed
+test_runtime.py resume, extension and starvation semantics, no GPU needed
 test_compute.py nvidia-smi parse + tok/s, no GPU needed
 ```
 
@@ -34,6 +36,8 @@ test_compute.py nvidia-smi parse + tok/s, no GPU needed
 python3 selftest.py                 # every task starts broken, accepts its reference, rejects tampering
 python3 stress_test.py              # harness defences, mock model, seconds
 python3 test_stats.py               # bootstrap CIs, paired Δ, seed pinning
+python3 test_pool.py                # cell assembly, pooling refusals, CLI end-to-end
+python3 test_runtime.py             # resume, extensions, starvation classification
 python3 test_compute.py             # nvidia-smi parse, decode tok/s
 python3 run.py --model qwen3.8:27b --config full --repeat 5 --seed 0 --tag grid
 python3 compare.py --tag grid --json-out results/stats.json
@@ -114,8 +118,17 @@ Inherited from this repo's own rules and enforced in `mh/bench.py`:
 
 - protected files are hashed at load and re-checked at verify time; editing or
   deleting a test fails the task and says so,
-- the hidden test runs from a fresh temp directory, so a same-named file inside
-  the sandbox cannot shadow it,
+- the hidden test *file* is copied to a fresh temp directory and run from there,
+  so a same-named file inside the sandbox cannot shadow the test itself. This does
+  **not** extend to the modules the test imports: the sandbox is put on
+  `PYTHONPATH` (it has to be — that is how the test reaches the model's
+  solution), which places it ahead of the standard library on `sys.path`. A
+  `json.py` or `re.py` written into the sandbox is therefore imported by the
+  hidden test in preference to the stdlib module of that name. Nothing currently
+  detects that: `tampered()` hashes only the paths a task lists in `protect` (the
+  visible test, and `SPEC.md` where there is one), and a file the model newly
+  creates is not one of them. This applies to the eighteen `python`-kind tasks;
+  `envbuild` is `shell`-kind and runs with an unmodified environment,
 - a verifier that could not run returns *failed*, never *passed*,
 - the verifier runs at the end of every episode regardless of what the model
   claimed, and its verdict — not the model's `finish` call — is the score.

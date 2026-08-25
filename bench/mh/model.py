@@ -20,6 +20,10 @@ DEFAULT_HOST = "http://127.0.0.1:11434"
 REASONING_FIELDS = ("thinking", "reasoning_content", "reasoning")
 
 
+# A chat response larger than this is a broken server, not a long answer.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
 class ModelError(RuntimeError):
     pass
 
@@ -445,10 +449,11 @@ class GeminiClient:
             raise last or ModelError("chat failed")
 
 
-def is_gemini_model(model):
-    return (model.startswith("gemini") or 
-            model.startswith("models/gemini") or 
-            model == "live-gemini")
+# One canonical owner. This predicate decides both which client to build and
+# whether the runner may evict a local model for it; two byte-identical copies
+# meant a drift would route a request one way and manage the GPU the other.
+# mh.runtime owns it because residency is the side that acts on it.
+from .runtime import is_gemini_model  # noqa: F401  (re-exported for callers here)
 
 
 class Client:
@@ -498,7 +503,20 @@ class Client:
             t0 = time.time()
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                    raw = json.loads(r.read())
+                    body_bytes = r.read(MAX_RESPONSE_BYTES + 1)
+                if len(body_bytes) > MAX_RESPONSE_BYTES:
+                    raise ModelError(
+                        f"response exceeded {MAX_RESPONSE_BYTES} bytes")
+                try:
+                    raw = json.loads(body_bytes)
+                except ValueError as e:
+                    raise ModelError(
+                        f"malformed JSON from {self.host}: {e}; "
+                        f"body starts {body_bytes[:120]!r}")
+                if not isinstance(raw, dict):
+                    raise ModelError(
+                        f"expected a JSON object from {self.host}, got "
+                        f"{type(raw).__name__}: {body_bytes[:120]!r}")
                 break
             except urllib.error.HTTPError as e:
                 detail = e.read()[:400].decode("utf-8", "replace")
@@ -513,6 +531,11 @@ class Client:
                 # a cached-failure 409 will burn every attempt.
                 if e.code != 429 and 400 <= e.code < 500:
                     raise last
+            except ModelError as e:
+                # A malformed body is the server contradicting its contract.
+                # Retrying re-reads the same broken proxy; surface it instead
+                # of burning the budget and then reporting a timeout.
+                raise e
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last = ModelError(f"{type(e).__name__}: {e}")
                 timed_out = (
@@ -526,6 +549,9 @@ class Client:
             raise last or ModelError("chat failed")
 
         msg = raw.get("message") or {}
+        if not isinstance(msg, dict):
+            raise ModelError(
+                f"expected an object for 'message', got {type(msg).__name__}")
         return Reply(
             content=msg.get("content") or "",
             reasoning=_extract_reasoning(msg),

@@ -21,6 +21,10 @@ import sys
 import threading
 import time
 
+# nvidia-smi's own ceiling. Every join that waits on a sampling thread has to
+# outlast this, or it returns while the probe is still running.
+SNAPSHOT_TIMEOUT_S = 5.0
+
 QUERY = (
     "timestamp,utilization.gpu,utilization.memory,memory.used,memory.total,"
     "clocks.current.sm,clocks.max.sm,power.draw,power.limit,temperature.gpu"
@@ -93,22 +97,46 @@ def cpu_snapshot(loadavg=None, nproc=None):
     }
 
 
-def snapshot(timeout=5):
-    """One nvidia-smi sample plus host CPU load, or None if no GPU."""
+def probe(timeout=SNAPSHOT_TIMEOUT_S):
+    """(sample, status) for one nvidia-smi call.
+
+    status is one of:
+
+      "ok"          a sample was taken
+      "no_gpu"      nvidia-smi is not installed, so there is no GPU to measure
+      "error:NAME"  the probe ran and failed (a timeout is the one that
+                    matters: a wedged nvidia-smi)
+      "unparseable" nvidia-smi answered with nothing this parser recognises
+
+    "there is no GPU here" and "the probe timed out" are different facts about
+    an episode. Collapsing both into None recorded a wedged GH200 exactly like
+    a Mac -- an attempted measurement reading as a completed one.
+    """
     try:
         out = subprocess.check_output(
             ["nvidia-smi", f"--query-gpu={QUERY}",
              "--format=csv,noheader,nounits"],
             timeout=timeout, text=True, stderr=subprocess.DEVNULL,
         )
-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
-        return None
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        return None, "no_gpu"
+    except (subprocess.SubprocessError, OSError) as e:
+        return None, f"error:{type(e).__name__}"
     for line in out.splitlines():
         parsed = parse_smi_csv(line)
         if parsed:
             parsed.update(cpu_snapshot())
-            return parsed
-    return None
+            return parsed, "ok"
+    return None, "unparseable"
+
+
+def snapshot(timeout=SNAPSHOT_TIMEOUT_S):
+    """One nvidia-smi sample plus host CPU load, or None if there is none.
+
+    Use probe() where the difference between "no GPU" and "could not measure"
+    has to be recorded.
+    """
+    return probe(timeout)[0]
 
 
 def tok_s(count, duration_ns):
@@ -144,38 +172,95 @@ def summarize(samples):
 
 
 class Sampler:
-    """Background nvidia-smi sampler for one episode. No-ops without a GPU."""
+    """Background nvidia-smi sampler for one episode.
 
-    def __init__(self, interval=2.0):
+    Records WHY it has no numbers. A machine with no GPU and a machine whose
+    nvidia-smi wedged both used to produce `compute: None`.
+    """
+
+    # A live loop's worst case is: sleep out the interval, then run a probe to
+    # its own timeout. The join was interval + 2 -- 4.0s at the production
+    # interval of 2.0 against a 5s probe timeout -- so a wedged nvidia-smi
+    # outlived every join. The thread reference was then dropped, leaking one
+    # unjoinable thread per episode that went on appending to `samples` after
+    # summarize() had read them.
+    JOIN_MARGIN_S = 1.0
+
+    def __init__(self, interval=2.0, timeout=SNAPSHOT_TIMEOUT_S):
         self.interval = interval
+        self.timeout = timeout
         self.samples = []
+        self.status = "unstarted"
+        self.leaked = False
         self._stop = threading.Event()
         self._thread = None
 
+    def join_timeout(self):
+        """Long enough for the sampling loop's worst legal case to finish."""
+        return self.interval + self.timeout + self.JOIN_MARGIN_S
+
     def start(self):
-        first = snapshot()
+        first, status = probe(self.timeout)
+        self.status = status
         if first is None:
             return self
         self.samples.append(first)
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="mh-compute-sampler")
         self._thread.start()
         return self
 
     def _loop(self):
         while not self._stop.wait(self.interval):
-            s = snapshot()
+            s, status = probe(self.timeout)
+            # Re-checked AFTER the probe returns. A probe that outlives stop()
+            # must not append to a sample list summarize() has already read.
+            if self._stop.is_set():
+                return
             if s:
                 self.samples.append(s)
+            elif status != "ok":
+                self.status = status
+
+    def record(self):
+        """This episode's compute record.
+
+        None means "there is no GPU to measure". A dict whose status is not
+        "ok" means the measurement was attempted and did not happen, which
+        must never read the same as a clean absence.
+        """
+        out = summarize(self.samples)
+        if out is None:
+            if self.status in ("no_gpu", "unstarted"):
+                return None
+            return {"n": 0, "measured": False, "status": self.status}
+        out["measured"] = True
+        out["status"] = self.status
+        if self.leaked:
+            out["sampler_thread_leaked"] = True
+        return out
 
     def stop(self):
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=self.interval + 2)
-            self._thread = None
-        last = snapshot()
+            self._thread.join(timeout=self.join_timeout())
+            if self._thread.is_alive():
+                # Keep the reference. Dropping it is what made the thread
+                # unjoinable; it can no longer touch self.samples, but it is
+                # still running and the record has to say so.
+                self.leaked = True
+                self.status = "error:sampler_thread_wedged"
+                print(f"[compute] nvidia-smi sampler did not stop within "
+                      f"{self.join_timeout():.1f}s; this episode's compute is "
+                      f"recorded as incomplete", file=sys.stderr, flush=True)
+            else:
+                self._thread = None
+        last, status = probe(self.timeout)
         if last:
             self.samples.append(last)
-        return summarize(self.samples)
+        elif status != "ok" and self.status == "ok":
+            self.status = status
+        return self.record()
 
 
 def watch(out_path, interval=2.0):

@@ -6,7 +6,6 @@ Q8 MoE and an 18 GB dense model at once, and when it tries, the loser is whateve
 else was mid-inference.
 """
 import argparse
-import json
 import os
 import sys
 import time
@@ -16,12 +15,17 @@ from mh.bench import load_tasks
 from mh.compute import Sampler, tok_s
 from mh.harness import Config, Harness
 from mh.model import Client
-from mh.runtime import (STARVE_ABORT_DEFAULT, ensure_sole_tenant,
-                        is_starved_episode, keep_existing_episode,
-                        should_retry_starved, unstick_server, unload_all)
+from mh.runtime import (STARVE_ABORT_DEFAULT, CellError, ensure_sole_tenant,
+                        episode_name, extension_guard, extension_reps,
+                        is_api_model, is_starved_episode, keep_existing_episode,
+                        protocol_block, read_episode, resume_conflicts,
+                        should_retry_starved, sibling_overlap, unstick_server,
+                        unload_all, write_episode, write_summary)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESULTS = os.path.join(HERE, "results")
+# Overridable so tests can build a throwaway grid instead of writing
+# into the real results tree.
+RESULTS = os.environ.get("MH_RESULTS") or os.path.join(HERE, "results")
 WORK = os.path.join(HERE, ".work")
 
 
@@ -43,7 +47,9 @@ def seed_for_repeat(base, rep, n_repeat):
 
     `--seed N --repeat 5` uses N, N+1, N+2, N+3, N+4. Multi-repeat runs
     with no `--seed` still pin to the repeat index (0, 1, ...). A single
-    unseeded run stays unseeded.
+    unseeded run stays unseeded. Callers pass the cell's total repeat count,
+    so an extension (`--rep-offset`) keeps the seed == rep index invariant
+    the frozen cells were run under.
     """
     if base is not None:
         return base + rep
@@ -68,6 +74,13 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--repeat", type=int, default=1)
+    ap.add_argument("--rep-offset", type=int, default=0,
+                    help="start repeat indices at N instead of 0, to add seeds "
+                         "to an already-run cell. Writes rep{N}.. and pins "
+                         "seed == rep. Refuses any repeat this (model, config) "
+                         "already holds under ANY tag, and refuses to land "
+                         "beside another run's episodes; it may resume its own "
+                         "interrupted output. Point it at a fresh --tag.")
     ap.add_argument("--tag", default="")
     ap.add_argument("--think", action=argparse.BooleanOptionalAction, default=True,
                     help="request reasoning channel from model (auto-falls back if unsupported)")
@@ -78,17 +91,92 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="re-run episodes even if {task}.rep{rep}.json exists")
     ap.add_argument("--force-starved", action="store_true",
-                    help="re-run only first-turn 0-token timeout artefacts; keep real episodes")
+                    help="keep real episodes and re-run only the first-turn "
+                         "0-token artefacts, even when the kept episodes ran "
+                         "under a different protocol. The cell's summary then "
+                         "records protocol_variants instead of one protocol.")
     ap.add_argument("--starve-abort", type=int, default=STARVE_ABORT_DEFAULT,
                     help="abort the cell after this many consecutive 0-token timeouts "
                          "(0 disables). Prevents burning 40×30 min on a wedged GPU.")
     args = ap.parse_args()
+
+    # Before makedirs, before eviction. `--repeat 0` used to get as far as
+    # evicting the resident model and creating the cell directory, then die on
+    # an IndexError in the banner.
+    if args.repeat < 1:
+        raise SystemExit(f"[runner] --repeat must be >= 1, got {args.repeat}")
+    if args.rep_offset < 0:
+        raise SystemExit(f"[runner] --rep-offset must be >= 0, got "
+                         f"{args.rep_offset}")
+    if args.starve_abort < 0:
+        raise SystemExit(f"[runner] --starve-abort must be >= 0 (0 disables), "
+                         f"got {args.starve_abort}")
+    if args.max_wall < 0:
+        raise SystemExit(f"[runner] --max-wall must be >= 0 (0 disables), got "
+                         f"{args.max_wall}")
+    if args.max_steps < 0:
+        raise SystemExit(f"[runner] --max-steps must be >= 0 (0 disables), got "
+                         f"{args.max_steps}")
 
     names = [t for t in args.tasks.split(",") if t.strip()] or None
     tasks = load_tasks(names)
     cfg = CONFIGS[args.config]()
     cfg.max_steps = args.max_steps
     cfg.wall_s = args.max_wall
+
+    slug = args.model.replace("/", "_").replace(":", "_")
+    tag = args.tag or time.strftime("%Y%m%d-%H%M%S")
+    outdir = os.path.join(RESULTS, f"{slug}__{cfg.name}__{tag}")
+    reps = extension_reps(args.rep_offset, args.repeat)
+    task_names = [t.name for t in tasks]
+    share_gpu = bool(args.share_gpu)
+    # Stamped on every episode this run writes. Provenance travels WITH the
+    # episode: that is what stops a later invocation from describing it.
+    protocol = protocol_block(max_steps=args.max_steps, max_wall=args.max_wall,
+                              share_gpu=share_gpu, num_ctx=args.num_ctx,
+                              num_predict=args.num_predict,
+                              temperature=args.temperature,
+                              think=bool(args.think))
+    run_meta = {"tag": tag, "seed_base": args.seed, "repeat": args.repeat,
+                "rep_offset": args.rep_offset,
+                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+    refusal = extension_guard(outdir, task_names, reps, args.rep_offset,
+                              args.force, protocol=protocol)
+    if refusal:
+        raise SystemExit(f"[runner] {refusal}")
+    conflicts, unattributed = resume_conflicts(outdir, task_names, reps,
+                                               protocol, force=args.force)
+    if conflicts and not args.force_starved:
+        lines = "\n".join(f"           {n}: differs on {', '.join(d)}"
+                          for n, d in conflicts[:5])
+        more = (f"\n           ... and {len(conflicts) - 5} more"
+                if len(conflicts) > 5 else "")
+        raise SystemExit(
+            f"[runner] {len(conflicts)} episode(s) in {outdir} would be kept "
+            f"but ran under a different protocol:\n{lines}{more}\n"
+            f"           Re-run them with --force, keep them with "
+            f"--force-starved (the cell then records no single protocol), or "
+            f"write the new repeats under a distinct --tag.")
+    if conflicts:
+        print(f"[runner] --force-starved: keeping {len(conflicts)} episode(s) "
+              f"that ran under a different protocol; this cell's summary will "
+              f"record protocol_variants, not one protocol", flush=True)
+    if unattributed:
+        shown = ", ".join(unattributed[:3])
+        print(f"[runner] {len(unattributed)} existing episode(s) record no "
+              f"protocol ({shown}{' ...' if len(unattributed) > 3 else ''}); "
+              f"they are kept, and this run's protocol will NOT be recorded "
+              f"for them", flush=True)
+    dup = sibling_overlap(outdir, task_names, reps)
+    if dup:
+        total = sum(len(v) for v in dup.values())
+        where = ", ".join(os.path.basename(d) for d in sorted(dup))
+        print(f"[runner] WARNING: {total} of the (task, rep) pairs this run "
+              f"writes already exist for this (model, config) under {where}; "
+              f"the two tags are duplicate samples and must not be pooled",
+              flush=True)
+    os.makedirs(outdir, exist_ok=True)
 
     try:
         evicted = ensure_sole_tenant(args.model, evict=not args.keep_resident,
@@ -105,23 +193,18 @@ def main():
                     think=args.think, seed=args.seed,
                     timeout=args.max_wall if args.max_wall > 0 else 1800)
 
-    slug = args.model.replace("/", "_").replace(":", "_")
-    tag = args.tag or time.strftime("%Y%m%d-%H%M%S")
-    outdir = os.path.join(RESULTS, f"{slug}__{cfg.name}__{tag}")
-    os.makedirs(outdir, exist_ok=True)
-
-    rows = []
     cap = "uncapped" if not args.max_steps else str(args.max_steps)
-    share_gpu = bool(args.share_gpu)
+    written = kept = 0
     starve_streak = 0
     starved_abort = False
     print(f"[runner] model={args.model} config={cfg.name} tasks={len(tasks)} "
-          f"repeat={args.repeat} seed_base={args.seed} max_steps={cap} "
+          f"repeat={args.repeat} reps={reps[0]}-{reps[-1]} "
+          f"seed_base={args.seed} max_steps={cap} "
           f"max_wall={args.max_wall or 'off'} share_gpu={share_gpu}")
-    for rep in range(args.repeat):
+    for rep in reps:
         if starved_abort:
             break
-        pinned = seed_for_repeat(args.seed, rep, args.repeat)
+        pinned = seed_for_repeat(args.seed, rep, args.repeat + args.rep_offset)
         if pinned is not None:
             client.options["seed"] = pinned
         else:
@@ -129,20 +212,28 @@ def main():
         for task in tasks:
             if starved_abort:
                 break
-            ep_path = os.path.join(outdir, f"{task.name}.rep{rep}.json")
+            ep_path = os.path.join(outdir, episode_name(task.name, rep))
             if os.path.isfile(ep_path) and not args.force:
                 try:
-                    prev = json.load(open(ep_path))
+                    prev = read_episode(ep_path, task.name, rep)
                     row = prev.get("row") or {}
-                except (OSError, json.JSONDecodeError):
+                except CellError as e:
+                    print(f"  {task.name:24s} re-running unreadable episode: {e}",
+                          flush=True)
                     row = {}
                 if keep_existing_episode(row, force=args.force):
-                    rows.append(row)
+                    kept += 1
                     mark = "PASS" if row.get("passed") else "fail"
                     print(f"  {task.name:24s} {mark}  skip existing "
-                          f"{task.name}.rep{rep}.json  "
+                          f"{episode_name(task.name, rep)}  "
                           f"{row.get('stop_reason', '')}",
                           flush=True)
+                    # A kept real episode breaks the run of consecutive
+                    # 0-token timeouts. Leaving the streak standing let
+                    # --starve-abort fire on starvation that was never
+                    # consecutive.
+                    if not is_starved_episode(row):
+                        starve_streak = 0
                     continue
             sandbox = os.path.join(WORK, f"{slug}-{cfg.name}-{task.name}-{rep}")
             os.makedirs(os.path.dirname(sandbox), exist_ok=True)
@@ -183,6 +274,15 @@ def main():
                        "prompt_tok_s": prompt_tok_s,
                        "compute": compute}
                 if should_retry_starved(row, attempt):
+                    # An API-served model has no local server to unstick, and
+                    # evicting a resident local model for a remote failure
+                    # kills an unrelated cell. ensure_sole_tenant already makes
+                    # this distinction; the retry path must make it too.
+                    if is_api_model(args.model):
+                        print(f"[runner] first-turn failure on {task.name} "
+                              f"({args.model} is API-served); retrying without "
+                              f"touching the local server", flush=True)
+                        continue
                     print(f"[runner] starved first turn on {task.name}; "
                           f"unsticking server and retrying as sole tenant",
                           flush=True)
@@ -199,12 +299,17 @@ def main():
                 break
             if row is None:
                 continue
-            rows.append(row)
-            with open(ep_path, "w") as f:
-                json.dump({"model": args.model, "config": cfg.as_dict(),
+            written += 1
+            # share_gpu is the value in force for THIS episode: a cell demoted
+            # mid-run really did run its earlier episodes with a peer resident.
+            ep_protocol = (protocol if share_gpu == protocol["share_gpu"]
+                           else dict(protocol, share_gpu=share_gpu))
+            write_episode(outdir, task.name, rep,
+                          {"model": args.model, "config": cfg.as_dict(),
                            "task": task.name, "row": row,
+                           "protocol": ep_protocol, "run": run_meta,
                            "verify_output": verify_output,
-                           "events": events}, f, indent=1)
+                           "events": events})
             mark = "PASS" if row.get("passed") else "fail"
             extra = ""
             compute = row.get("compute") or {}
@@ -230,29 +335,35 @@ def main():
             else:
                 starve_streak = 0
 
-    n = len(rows)
-    p = sum(1 for r in rows if r.get("passed"))
-    summary = {"model": args.model, "config": cfg.as_dict(), "n": n, "passed": p,
-               "pass_rate": round(100.0 * p / n, 1) if n else 0.0,
-               "wall_s": round(sum(r.get("wall_s", 0) for r in rows), 1),
-               "output_tokens": sum(r.get("output_tokens", 0) for r in rows),
-               "seed_base": args.seed, "repeat": args.repeat,
-               "protocol": {
-                   "max_steps": args.max_steps,
-                   "max_wall": args.max_wall,
-                   "share_gpu": bool(args.share_gpu),
-                   "share_gpu_demoted": bool(args.share_gpu) and not share_gpu,
-                   "starved_abort": starved_abort,
-                   "num_ctx": args.num_ctx,
-                   "num_predict": args.num_predict,
-                   "temperature": args.temperature,
-                   "think": bool(args.think),
-               },
-               "rows": rows}
-    with open(os.path.join(outdir, "summary.json"), "w") as f:
-        json.dump(summary, f, indent=1)
-    print(f"[runner] {p}/{n} passed ({summary['pass_rate']}%)  "
-          f"total {summary['wall_s']}s  -> {outdir}")
+    outcomes = {
+        "run": run_meta,
+        "share_gpu_requested": bool(args.share_gpu),
+        "share_gpu_demoted": bool(args.share_gpu) and not share_gpu,
+        "starved_abort": starved_abort,
+        "force": bool(args.force),
+        "force_starved": bool(args.force_starved),
+        "episodes_written": written,
+        "episodes_kept": kept,
+        "sibling_overlap": {os.path.basename(d): len(v)
+                            for d, v in sorted(dup.items())},
+    }
+    # Derived from the episodes on disk, never from `rows` this invocation
+    # happens to hold: --tasks selects what to RUN, never what the cell
+    # contains, and a summary rebuilt from one invocation's rows is how a cell
+    # came to report n=1 over nine episodes.
+    try:
+        summary = write_summary(outdir, args.model, cfg.as_dict(),
+                                protocol=protocol, outcomes=outcomes)
+    except CellError as e:
+        raise SystemExit(f"[runner] refusing to write summary.json: {e}")
+    print(f"[runner] cell {summary['passed']}/{summary['n']} passed "
+          f"({summary['pass_rate']}%)  total {summary['wall_s']}s  "
+          f"(this run: {written} written, {kept} kept)  -> {outdir}")
+    if summary["n"] and summary.get("protocol") is None:
+        groups = summary.get("protocol_variants") or []
+        print(f"[runner] NOTE: this cell has no single protocol; summary.json "
+              f"records protocol_variants over {len(groups)} group(s). It "
+              f"will not pool with another cell until that is resolved.")
     if starved_abort:
         raise SystemExit(2)
 

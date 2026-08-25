@@ -3,19 +3,26 @@
 Components are individually switchable (see Config) so their effect can be measured
 rather than assumed. That is the whole point -- the paper's result is that harness
 structure dominates for weak models, and a component nobody A/B'd is a guess.
+
+NOTE: this file is the measuring instrument. The frozen grid under bench/results/
+was collected and analysed with the pre-hardening harness and is NOT to be re-run
+or re-scored; everything here applies to future runs only.
 """
+import hashlib
 import json
 import os
-import subprocess
 import time
 
 from . import tools as toolmod
-from .tools import Sandbox, ToolError, cap_output
+from .bench import model_facing
+from .tools import Sandbox, ToolError, cap_output, containment_backend
 
 ENVBOOT_TIMEOUT_S = 15
 WALL_S_DEFAULT = 1800          # episode fail line; 30 minutes
 HTTP_TIMEOUT_S = 1800          # per-request cap; harness shrinks this to remaining wall
 FIRST_TURN_TIMEOUT_S = 600     # wedged llama-server never returns; real first turn is 1–3 min
+LOOP_WINDOW = 8                # tool calls remembered for loop detection
+MAX_TRUNCATED_NUDGES = 2       # consecutive output-limit turns before giving up
 
 
 class Config:
@@ -96,10 +103,9 @@ def gather_env_snapshot(root, timeout=ENVBOOT_TIMEOUT_S):
     degrade to the baseline harness, never break the run.
     """
     try:
-        proc = subprocess.run(["/bin/bash", "-lc", ENVBOOT_SCRIPT], cwd=root,
-                              capture_output=True, text=True, errors="replace",
-                              timeout=timeout)
-        out = (proc.stdout or "").strip()
+        _rc, out, _err = toolmod.run_bounded(["/bin/bash", "-lc", ENVBOOT_SCRIPT],
+                                             cwd=root, timeout=timeout)
+        out = out.strip()
     except Exception:
         return ""
     if not out:
@@ -166,6 +172,11 @@ class Result:
         self.events = []
         self.verify_output = ""
         self.verify_runs = 0
+        # Recorded, never assumed: an episode that ran without OS containment,
+        # or without a working context guard, must not be indistinguishable in
+        # the record from one that had both.
+        self.containment = None
+        self.ctx_guard_active = False
         self.peak_prompt_tokens = 0
         self.eval_duration_ns = 0
         self.prompt_eval_duration_ns = 0
@@ -175,7 +186,16 @@ class Result:
 
 
 def _call_signature(call):
-    return json.dumps({"name": call["name"], "args": call["args"]}, sort_keys=True)
+    """A stable key for "the model made this exact call again".
+
+    Same rule as the event log below: anything derived from model output is
+    parsed defensively. A payload json.dumps cannot serialise must degrade to a
+    weaker signature, never kill the episode.
+    """
+    try:
+        return json.dumps({"name": call["name"], "args": call["args"]}, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr((call.get("name"), call.get("args")))
 
 
 class Harness:
@@ -183,15 +203,33 @@ class Harness:
         self.client = client
         self.cfg = config
         self.task = task
-        self.sb = Sandbox(sandbox_root, output_cap=config.output_cap)
+        self.sb = Sandbox(sandbox_root, output_cap=config.output_cap,
+                          protected_roots=task.guard_roots)
         self.log_dir = log_dir
         self.res = Result()
+        backend = containment_backend()
+        self.res.containment = backend
+        if backend != "sandbox-exec":
+            self.res.events.append(
+                {"t": "containment", "backend": backend,
+                 "note": "shell commands are not OS-contained in this episode"})
+        else:
+            self.res.events.append({"t": "containment", "backend": backend})
         # Ollama silently drops the oldest tokens when a prompt exceeds num_ctx.
         # Silent truncation would corrupt a run invisibly -- the model would answer
         # from a context we did not give it -- so we watch the headroom and stop
         # loudly instead of producing a quiet, wrong result.
         self.num_ctx = int(getattr(client, "options", {}).get("num_ctx", 0) or 0)
         self.ctx_limit = int(self.num_ctx * 0.9) if self.num_ctx else 0
+        # The guard used to switch itself off in silence when num_ctx was absent,
+        # so "guard never fired" and "guard never ran" looked identical in the
+        # record. Say which one it was.
+        self.res.ctx_guard_active = bool(self.ctx_limit)
+        if not self.ctx_limit:
+            self.res.events.append(
+                {"t": "ctx_guard_disabled",
+                 "reason": "client reported no num_ctx; prompt growth is unchecked "
+                           "and silent server-side truncation would go unnoticed"})
         self._checked = False
 
     # -- context construction -------------------------------------------------
@@ -233,19 +271,25 @@ class Harness:
 
     def run_verifier(self):
         """Run the task's verifier. It lives outside the sandbox and the agent
-        cannot read or edit it."""
+        cannot read or edit it.
+
+        Returns (ok, raw, for_model). `raw` is the record kept in the episode log
+        for the researcher; `for_model` is the redacted verdict -- pass/fail and
+        assertion labels -- and is the only thing that may reach the model.
+        """
         self.res.verify_runs += 1
         ok, output = self.task.verify(self.sb.root)
         self.res.verify_output = output
-        return ok, output
+        return ok, output, model_facing(ok, output)
 
     # -- main loop ------------------------------------------------------------
 
     def run(self):
         t0 = time.time()
         msgs = self.initial_messages()
-        recent = []
+        recent = []              # (call signature, hash of that call's output)
         nudged_finish = False
+        truncated_nudges = 0
 
         try:
             # 0 / None / negative: no turn ceiling. Stop on finish, no_tool_call,
@@ -316,6 +360,19 @@ class Harness:
                 if not reply.tool_calls:
                     # No tool call and no finish: the model is talking, not working.
                     if reply.truncated:
+                        # This branch used to `continue` without touching any
+                        # counter: with no step ceiling and no wall clock it ran
+                        # 61,406 steps in 3.1s and never terminated.
+                        truncated_nudges += 1
+                        if truncated_nudges > MAX_TRUNCATED_NUDGES:
+                            self.res.stop_reason = "no_tool_call"
+                            self.res.errors.append(
+                                f"model hit the output limit {truncated_nudges} turns "
+                                f"in a row without making a tool call")
+                            self.res.events.append(
+                                {"t": "truncated_stall", "step": self.res.steps,
+                                 "turns": truncated_nudges})
+                            break
                         msgs.append({"role": "user", "content":
                                      "Your previous message hit the output limit. Make one "
                                      "small tool call instead of a long explanation."})
@@ -330,6 +387,7 @@ class Harness:
                     continue
 
                 nudged_finish = False
+                truncated_nudges = 0
                 stop = False
                 # Answer every call the model made. Handling `finish` last means a
                 # turn that mixes real work with a finish never leaves a call
@@ -341,23 +399,32 @@ class Harness:
                 for call in work:
                     self.res.tool_calls += 1
                     sig = _call_signature(call)
-                    if self.cfg.loopbreak and recent.count(sig) >= 2:
+                    # Loop detection keys on the call *and its result*. Counting
+                    # the call alone blocked the legitimate edit -> test -> edit
+                    # cycle and told the model it "got the same result" when the
+                    # file had changed between runs, which was simply false.
+                    prior = [h for s_, h in recent if s_ == sig]
+                    looping = len(prior) >= 2 and prior[-1] == prior[-2]
+                    if self.cfg.loopbreak and looping:
                         self.res.events.append(
                             {"t": "loopbreak", "step": self.res.steps,
-                             "call": call["name"]})
+                             "call": call["name"], "window": len(recent)})
                         msgs.append({"role": "tool",
                                      "name": call["name"],
                                      "tool_call_id": call.get("id"),
                                      "content":
                                      f"You have already made this exact {call['name']} "
-                                     "call twice and got the same result. Repeating it "
-                                     "will not help. State what you actually know, then "
-                                     "try a different approach."})
-                        recent.append(sig)
+                                     "call twice and got byte-identical output both "
+                                     "times. Repeating it will not help. State what you "
+                                     "actually know, then try a different approach."})
+                        # Record the block like a repeat, and trim: the old code
+                        # appended here without the window trim, so 200 identical
+                        # calls grew `recent` without bound and the count never
+                        # decayed.
+                        recent.append((sig, prior[-1]))
+                        if len(recent) > LOOP_WINDOW:
+                            recent.pop(0)
                         continue
-                    recent.append(sig)
-                    if len(recent) > 8:
-                        recent.pop(0)
                     try:
                         out = self.dispatch(call)
                     except ToolError as e:
@@ -366,10 +433,19 @@ class Harness:
                     except Exception as e:  # a tool bug must not kill the run
                         out = f"error: {type(e).__name__}: {e}"
                         self.res.errors.append(f"{type(e).__name__}: {e}")
+                    recent.append((sig, hashlib.sha256(
+                        out.encode("utf-8", "replace")).hexdigest()))
+                    if len(recent) > LOOP_WINDOW:
+                        recent.pop(0)
+                    args = call.get("args")
+                    # dispatch() already defends against a non-dict args payload;
+                    # this line used to call .items() on it outside the try and
+                    # killed the whole episode instead.
+                    logged = ({k: str(v)[:200] for k, v in args.items()}
+                              if isinstance(args, dict) else {"_raw": str(args)[:200]})
                     self.res.events.append(
                         {"t": "tool", "step": self.res.steps, "name": call["name"],
-                         "args": {k: str(v)[:200] for k, v in call["args"].items()},
-                         "out": out[:600], "out_len": len(out)})
+                         "args": logged, "out": out[:600], "out_len": len(out)})
                     msgs.append({"role": "tool",
                                  "name": call["name"],
                                  "tool_call_id": call.get("id"),
@@ -386,7 +462,7 @@ class Harness:
                                      "content": CHECKLIST})
                         break
                     if self.cfg.verifygate:
-                        ok, out = self.run_verifier()
+                        ok, raw, for_model = self.run_verifier()
                         self.res.events.append(
                             {"t": "verifygate", "ok": ok, "step": self.res.steps})
                         if ok:
@@ -394,13 +470,15 @@ class Harness:
                             self.res.stop_reason = "finished"
                             stop = True
                             break
-                        body, _ = cap_output(out, 4000)
+                        # Only the redacted verdict goes back. The raw text is the
+                        # hidden test's own stdout -- inputs and expected values --
+                        # and handing it to the model turned the gate into an
+                        # oracle in 77 of the 760 frozen episodes.
+                        body, _ = cap_output(for_model, 4000)
                         msgs.append({"role": "tool",
                                      "name": "finish",
                                      "tool_call_id": call.get("id"),
-                                     "content":
-                                     "The task is not complete yet. The checks still "
-                                     f"fail:\n\n{body}\n\nKeep working."})
+                                     "content": body + "\n\nKeep working."})
                         break
                     self.res.finished = True
                     self.res.stop_reason = "finished"
@@ -436,7 +514,7 @@ class Harness:
         # stopped on max_steps may still have fixed the code; a run that called
         # finish may not have. wall_timeout is the exception: the episode is a
         # fail even if the verifier would pass, so a hung client cannot score.
-        ok, out = self.run_verifier()
+        ok, out, _ = self.run_verifier()
         self.res.verify_output = out
         if self.res.stop_reason == "wall_timeout":
             self.res.passed = False
