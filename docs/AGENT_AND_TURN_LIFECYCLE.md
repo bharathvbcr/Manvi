@@ -12,66 +12,66 @@ The agent execution loop in `manvi/agent` is modeled as an evidence-driven, wate
 sequenceDiagram
     autonumber
     actor User as User / Harness CLI
-    participant Loop as Agent Loop (manvi/agent)
+    participant AL as Agent Loop (manvi/agent)
     participant Log as Session Log (session.jsonl)
     participant Waterfall as Event Bus Waterfalls
     participant Provider as LLM Provider (Anthropic/Gemini/xAI)
     participant ToolReg as Tool Registry (manvi/tools)
     participant Gate as Policy Gate (manvi/gate)
 
-    User->>Loop: Run(prompt)
-    activate Loop
-    Loop->>Log: Append User Message Record
+    User->>AL: Run(prompt)
+    activate AL
+    AL->>Log: Append User Message Record
     
     loop Each Step (until evidence of completion or MaxSteps)
-        Loop->>Log: Project History (Messages)
-        Loop->>Log: Assert Model-Visible == Logged
+        AL->>Log: Project History (Messages)
+        AL->>Log: Assert Model-Visible == Logged
         
-        Loop->>Waterfall: Trigger PreStep Waterfall
+        AL->>Waterfall: Trigger PreStep Waterfall
         alt Context Compaction Needed
             Waterfall->>Log: Append ToolResultCompacted event(s)
             Waterfall->>Log: Re-derive History
-            Waterfall-->>Loop: Compacted Messages (== projection)
+            Waterfall-->>AL: Compacted Messages (== projection)
         else Step Rejected
-            Waterfall-->>Loop: Reject Error -> Abort Turn
+            Waterfall-->>AL: Reject Error -> Abort Turn
         end
 
-        Loop->>Waterfall: Trigger LLMRequest Waterfall
-        Loop->>Provider: Stream(Request)
+        AL->>Waterfall: Trigger LLMRequest Waterfall
+        AL->>Provider: Stream(Request)
         activate Provider
         
         loop SSE Streaming Chunks
-            Provider-->>Loop: StreamDelta (Text / Reasoning / ToolCall)
-            Loop->>Log: Record Streaming Delta
+            Provider-->>AL: StreamDelta (Text / Reasoning / ToolCall)
+            AL->>Log: Record Streaming Delta
         end
-        Provider-->>Loop: Response Complete (Usage, ReplayState)
+        Provider-->>AL: Response Complete (Usage, ReplayState)
         deactivate Provider
 
         alt Model Emitted Tool Calls
             loop For Each Tool Call
-                Loop->>ToolReg: Execute(ToolCall)
+                AL->>ToolReg: Execute(ToolCall)
                 activate ToolReg
                 ToolReg->>Gate: Evaluate Write / Command Policy
                 Gate-->>ToolReg: Decision (Passed / Blocked / Granted / Demoted)
                 
                 alt Policy Passed or Allowed
                     ToolReg->>ToolReg: Run Native Tool Body
-                    ToolReg-->>Loop: ToolResult (Output, Status, Qualifications)
+                    ToolReg-->>AL: ToolResult (Output, Status, Qualifications)
                 else Policy Blocked
-                    ToolReg-->>Loop: ToolResult (Error: Policy Violation)
+                    ToolReg-->>AL: ToolResult (Error: Policy Violation)
                 end
                 deactivate ToolReg
                 
-                Loop->>Log: Append Tool Result Record
+                AL->>Log: Append Tool Result Record
             end
         else No Tool Calls (Evidence of Completion)
-            Loop->>Waterfall: Trigger TurnStopping Serial Check
-            Waterfall-->>Loop: OK -> Terminate Loop
+            AL->>Waterfall: Trigger TurnStopping Serial Check
+            Waterfall-->>AL: OK -> Terminate Loop
         end
     end
     
-    Loop-->>User: Turn Summary & Report
-    deactivate Loop
+    AL-->>User: Turn Summary & Report
+    deactivate AL
 ```
 
 ---
@@ -97,42 +97,64 @@ flowchart TD
     AttachMetadata --> ResultSink["Log Result & Return to Model Context"]
 ```
 
-### Reversible Tool Effects
-
-When an agent executes stateful file edits:
-- Modifications maintain before/after hashes.
-- In-memory backup snapshots allow rollback if a subsequent multi-file edit fails halfway.
-- The session log captures diffs, allowing deterministic rewind during debug replay.
-
 ---
 
 ## 3. Multi-Agent Roles & Hierarchy
 
-MANVI supports specialized agent personas with bounded scopes and permissions:
+MANVI ships six subagent roles, registered in `agents.NewRegistry`
+(`manvi/agents/definition.go`). The parent turn is not one of them: it dispatches
+these by name through `devcouncil_invoke_subagent` / `devcouncil_spawn_subagents`.
+
+The tree is one level deep, and that is structural rather than counted. A child's
+registry is built without the whole sub-agent dispatch group, so there is no path
+to a grandchild for a counter to bound. Ordering between roles is the parent's
+choice, not a pipeline the harness enforces.
 
 ```mermaid
 flowchart TB
-    Planner["Planner Agent<br/>(Read-Only, Fast Model)<br/>Generates tasks & file plans"]
-    
-    Orchestrator["Orchestrator Agent<br/>(High-Reasoning Model)<br/>Decomposes tasks & manages leases"]
-    
-    Builder1["Builder Agent 1<br/>(Active Lease on TASK-001)<br/>Scoped file writes"]
-    Builder2["Builder Agent 2<br/>(Active Lease on TASK-002)<br/>Scoped file writes"]
-    
-    Reviewer["Reviewer Agent<br/>(Verification & Diff Coverage)<br/>Runs dcverify & test suites"]
+    Parent["Parent Turn<br/>(agent loop, holds the lease)<br/>fan-out bounded by agents.max_fanout"]
 
-    Planner --> Orchestrator
-    Orchestrator --> Builder1 & Builder2
-    Builder1 & Builder2 --> Reviewer
+    Research["research<br/>read-only, MCP allowed"]
+    Planner["planner<br/>read-only, MCP allowed"]
+    Critic["critic<br/>read-only, MCP denied"]
+    Builder["builder<br/>writes, MCP allowed"]
+    Stress["stress_tester<br/>writes, MCP allowed"]
+    Self["self<br/>inherits parent config"]
+
+    Parent --> Research & Planner & Critic
+    Parent --> Builder & Stress & Self
 ```
 
-| Agent Role | Model Tier | Tool Permissions | Primary Responsibility |
-|---|---|---|---|
-| **Planner** | Fast / Lightweight | Read-only (Search, Map, Read) | Explores codebase, drafts task boundaries, specifies planned file globs. |
-| **Orchestrator** | High-Reasoning | Read + Lease Acquisition | Decomposes requirements, checks out tasks in SQLite, assigns tasks to builders. |
-| **Builder** | Code-Specialized | Read + Write + Test Exec | Executes task plan, performs edits within declared scope, creates tests. |
-| **Reviewer** | High-Reasoning | Read + Verify + Gate Check | Audits diffs, runs `dcverify`, verifies coverage, validates rigor gates. |
-| **Probe** | Diagnostic | Network / Wire Check | Probes live provider endpoints to verify wire contracts and token usage. |
+| Role Name | Declared Role | Write Tools | MCP Tools | Primary Responsibility |
+|---|---|---|---|---|
+| `research` | Codebase & Documentation Researcher | No | Yes | Explores and comprehends the codebase, navigates symbols via the dev map, verifies official documentation, identifies structural gaps without mutating. |
+| `builder` | Full-Stack Feature Builder | Yes | Yes | Builds on existing core functions without duplication, characterizes baseline behavior with tests first, verifies gap resolution. |
+| `critic` | Adversarial Code & Security Reviewer | No | **No** | Audits proposed changes against invariants, edge cases (empty, nil, concurrent, timeout), credential safety, and regression risk. |
+| `planner` | Problem Deconstructor & Hypothesis Architect | No | Yes | Deconstructs requirements, formulates verifiable hypotheses, drafts structured plans under `.devcouncil/artifacts/` without code mutations. |
+| `stress_tester` | Adversarial Stress Tester & Hardener | Yes | Yes | Attacks solutions with boundary conditions, concurrent races, malformed inputs, and timeouts. |
+| `self` | Autonomous Pair Subagent | Yes | Yes | Inherits the parent's configuration, tools, and system prompt for delegated concurrent work. |
+
+Every shipped role declares `Model: "inherit"` — none pins its own model tier, so
+a role runs on whatever model the parent session attached. The tool-permission
+columns above are the two switches a definition actually carries
+(`EnableWriteTools`, `EnableMCPTools`); finer-grained per-tool permissions are
+not part of a role definition.
+
+A role's two switches are enforced by building the child's registry without the
+denied tools, not by hiding schemas — a registry that still holds a tool
+dispatches it by name whether or not the schema was offered. A definition may
+also carry an `allowed_tools` allowlist, which only ever removes: it is
+intersected with the caller's read-only floor and the structural absence of
+sub-agent dispatch, never unioned with them, so naming a tool there cannot hand a
+child something those rules took away.
+
+Roles are registered by name, so defining a role reuses a shipped name rather
+than shadowing it. Whether a *model* may overwrite one of the six is decided at
+the tool boundary — the only layer that knows a call came from a model — and
+whether it may define new roles at all is governed by `subagents.dynamic.enabled`.
+
+`manvi probe PROVIDER` is a CLI command that makes one live request to check a
+provider's wire contract. It is not a subagent role and cannot be dispatched.
 
 ---
 
@@ -143,11 +165,13 @@ The `manvi/agents` package manages concurrent agent trees with explicit bounds a
 ```mermaid
 classDiagram
     class Pool {
-        -maxDepth: int
-        -maxFanout: int
-        -activeCount: int
-        +Spawn(ctx, task) (Result, error)
-        +Close() error
+        +MaxDepth: int
+        +MaxFanout: int
+        +Depth: int
+        +Releaser: Releaser
+        +ReleaseTimeout: Duration
+        +Child() (Pool, error)
+        +Run(ctx, tasks) (Result[], error)
     }
 
     class Holder {

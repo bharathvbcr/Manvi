@@ -103,18 +103,18 @@ Every turn is an evidence-driven state machine: project history → call the mod
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Loop as Agent Loop (Go)
+    participant AL as Agent Loop (Go)
     participant Log as Session Log (session.jsonl)
     participant Provider as LLM Provider
     participant Gate as Policy Gate
     participant Tool as Native Tool
     participant Rust as Rust Analysis Plane
 
-    Loop->>Log: Append user message record
+    AL->>Log: Append user message record
     loop Each step (until completion evidence or MaxSteps)
-        Loop->>Log: Project history + assert logged == model-visible
-        Loop->>Provider: Stream request (SSE)
-        Provider-->>Loop: Deltas: text / reasoning / tool calls
+        AL->>Log: Project history + assert logged == model-visible
+        AL->>Provider: Stream request (SSE)
+        Provider-->>AL: Deltas: text / reasoning / tool calls
         alt Model emitted tool calls
             loop For each tool call
                 Tool->>Gate: Evaluate write/command policy
@@ -122,17 +122,17 @@ sequenceDiagram
                 alt Allowed
                     Tool-->>Rust: JSON over stdio (e.g. verify diff, lease task)
                     Rust-->>Tool: Structured verdict
-                    Tool-->>Loop: Tool result (+ qualification metadata)
+                    Tool-->>AL: Tool result (+ qualification metadata)
                 else Blocked
-                    Tool-->>Loop: Error: policy violation w/ rule & reason
+                    Tool-->>AL: Error: policy violation w/ rule & reason
                 end
-                Loop->>Log: Append tool result record
+                AL->>Log: Append tool result record
             end
         else No tool calls (completion evidence)
-            Loop->>Loop: Serial stop-check waterfall → terminate
+            AL->>AL: Serial stop-check waterfall → terminate
         end
     end
-    Loop-->>Loop: Turn summary & report
+    AL-->>AL: Turn summary & report
 ```
 
 ### Tool Execution Pipeline

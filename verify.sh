@@ -61,9 +61,20 @@ fi
 # was not clean: TestConcurrentQueriesDoNotInterfere wedged a full run for ten
 # minutes and failed 2 of 5 isolated runs, because forking a shell two dozen
 # times over does not survive the race runtime on macOS. Opt-in, but gated.
+#
+# -p 1 is load-bearing, not tidiness. Package binaries otherwise run one per
+# CPU (18 here), each carrying the race runtime and several of them forking
+# shells and stub servers. That saturation is the same failure the paragraph
+# above describes, scaled up: a tree-wide parallel run wedged for 90 minutes on
+# a test that takes 0.99s, while its own package run clean in 78s and the whole
+# tree serialised finishes in 4.4 minutes. The detector is measuring the
+# machine at that point, not the code, and a gate that reports the machine is
+# not a gate. Serialised is well inside the timeout below; if that stops being
+# true, raise -p before raising the timeout, because the timeout only buys a
+# longer wait for the same answer.
 if (( RACE )); then
   step "Go — race detector"
-  (cd manvi && CGO_ENABLED=1 go test -race -count=1 -timeout 900s ./...) || fail "go test -race"
+  (cd manvi && CGO_ENABLED=1 go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
@@ -286,6 +297,25 @@ docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestPar
 (( docs_ran == 6 )) || fail "the documentation contract ran only ${docs_ran} of 6 checks"
 printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links and subcommands all agree with the code\n'
 
+# The Go suite's mermaid check is structural: it knows the edge operators and
+# nothing else. Two diagrams shipped broken straight past it — a participant
+# named `Loop`, which Mermaid's lexer reads as its reserved `loop` keyword
+# regardless of case, and a raw `;` inside a CSI escape sequence, which the
+# grammar takes for a statement separator. Both rendered as GitHub parse errors
+# on the project's front door while every gate stayed green. Only the real
+# grammar sees that class, so every fenced block is handed to mermaid.parse
+# here. The dependency tree this needs is dev-only (nothing in it reaches a
+# shipped binary), pinned by package-lock.json.
+step "Docs — mermaid blocks parse with the real grammar"
+if command -v node >/dev/null && command -v npm >/dev/null; then
+  if [[ ! -d node_modules ]]; then
+    npm ci --no-audit --no-fund --silent || fail "npm ci could not provision the mermaid parser gate"
+  fi
+  node scripts/check-mermaid.mjs || fail "a mermaid diagram does not parse with the real grammar"
+else
+  printf '\033[33m    NOT COVERED\033[0m: node/npm not on PATH — diagrams are checked structurally only\n'
+fi
+
 step "Brand — the published mark is the drawn mark"
 logo_bin="$(mktemp -d)/manvi"
 (cd manvi && go build -o "$logo_bin" ./cmd/manvi) || fail "building manvi"
@@ -405,5 +435,19 @@ if command -v script >/dev/null; then
 else
   printf '\033[33m    NOT COVERED\033[0m: script(1) not available — TUI terminal restoration is unverified here\n'
 fi
+
+# The benchmark is the instrument the paper's numbers come from, and it was
+# outside every gate: `grep bench verify.sh` returned nothing. Its suites cover
+# the bootstrap and the paired deltas, the seed pinning a delta depends on,
+# the cell-assembly refusals that keep two protocols out of one cell, and the
+# containment the verifier relies on. An instrument nothing checks is an
+# instrument nobody can trust, so it is checked here with everything else.
+step "Bench — instrument, statistics and cell assembly"
+for t in test_stats.py test_pool.py test_runtime.py test_compute.py stress_test.py; do
+  (cd bench && python3 "$t" >/dev/null) || fail "bench/$t"
+done
+(cd bench && python3 selftest.py >/dev/null) || fail "bench/selftest.py"
+printf '    covered: bootstrap CIs, paired deltas, seed pinning, cell-assembly refusals,\n'
+printf '             sandbox containment, and 19 tasks that start broken and reject tampering\n'
 
 printf '\n\033[32mPASS\033[0m all gates\n'

@@ -103,7 +103,7 @@ manvi serve [--posture host|devcouncil]
 ```json
 {
   "id": "req-3",
-  "op": "policy.check_command",
+  "op": "policy.check.command",
   "params": {
     "command": "rm -rf /",
     "task_id": "TASK-001"

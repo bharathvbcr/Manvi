@@ -1,0 +1,13 @@
+{
+  "name": "manvi-devtools",
+  "private": true,
+  "description": "Dev-time tooling for documentation gates. Nothing here ships in the manvi binary.",
+  "type": "module",
+  "scripts": {
+    "check:mermaid": "node scripts/check-mermaid.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0",
+    "mermaid": "^11.12.0"
+  }
+}

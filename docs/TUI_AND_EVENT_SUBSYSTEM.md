@@ -145,7 +145,7 @@ sequenceDiagram
     Engine->>Back: Paint Layout (Widgets, Panes, Modals)
     Engine->>Engine: Compare Back[y][x] vs Front[y][x]
     alt Cell Changed (Damage Detected)
-        Engine->>TTY: Move Cursor (CUP: \x1b[y;xH) + Paint Runes + SGR Style
+        Engine->>TTY: Move Cursor (CUP: \x1b[y#59;xH) + Paint Runes + SGR Style
         Engine->>Front: Update Front[y][x] = Back[y][x]
     else Cell Identical (No Change)
         Engine->>Engine: Skip Cell (Zero Bytes)
