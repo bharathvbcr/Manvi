@@ -816,6 +816,43 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an API model needs no tenancy at all",
           ensure_sole_tenant("cerebras:gpt-oss-120b", results_root=tmp) == [])
 
+print("the real decode-slot count, not the declared ceiling")
+# OLLAMA_NUM_PARALLEL is documented as a MAXIMUM. On ollama 0.33.0 it read 4
+# and the runner launched with -np 1: four concurrent requests all landed on
+# slot 0 and aggregate throughput was 1.01x serial. A preflight that checks the
+# variable is checking an intention, and would have waved through a grid whose
+# extra cells queue while their wall clock runs into --max-wall.
+import mh.runtime as _rtm
+_real_run = _rtm.subprocess.run
+
+
+class _PS:
+    def __init__(self, out): self.returncode, self.stdout = 0, out
+
+
+try:
+    _rtm.subprocess.run = lambda *a, **k: _PS(
+        "/usr/local/lib/ollama/llama-server --model /x -c 32768 -np 1 "
+        "--flash-attn auto\n")
+    check("a single-slot runner is reported as 1",
+          _rtm.observed_parallel_slots() == 1,
+          str(_rtm.observed_parallel_slots()))
+    _rtm.subprocess.run = lambda *a, **k: _PS(
+        "/usr/local/lib/ollama/llama-server --model /x -c 131072 -np 4\n")
+    check("a four-slot runner is reported as 4",
+          _rtm.observed_parallel_slots() == 4)
+    _rtm.subprocess.run = lambda *a, **k: _PS("bash\nsshd\n")
+    check("no runner loaded reads as unknown, not as agreement",
+          _rtm.observed_parallel_slots() is None)
+    def _boom(*a, **k):
+        raise OSError("ps unavailable")
+    _rtm.subprocess.run = _boom
+    check("a platform that cannot answer reads as unknown too",
+          _rtm.observed_parallel_slots() is None)
+finally:
+    _rtm.subprocess.run = _real_run
+
+
 print("concurrency is part of the protocol")
 P_SOLO = protocol_block(max_steps=0, max_wall=1800, share_gpu=False,
                         num_ctx=32768, num_predict=4096, temperature=0.6,

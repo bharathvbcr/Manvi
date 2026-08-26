@@ -16,7 +16,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.bench import load_tasks
 from mh.runtime import (CellError, cell_rows, ensure_sole_tenant,
-                        is_api_model, is_starved_episode, is_unserved_episode)
+                        is_api_model, is_starved_episode, is_unserved_episode,
+                        observed_parallel_slots)
 from run import ACCOUNT_REFUSED_RC, CONFIGS, seed_for_repeat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -242,6 +243,27 @@ def main():
         # SERVER process, so this can only check what is visible from here; an
         # unset value is reported as unknown rather than as agreement.
         want = args.parallel
+        # The runner's own -np is authoritative. OLLAMA_NUM_PARALLEL is a
+        # ceiling the scheduler need not take, and on ollama 0.33.0 it did not:
+        # the variable read 4 and the runner launched with -np 1, so four
+        # concurrent cells would have queued behind one slot at 1.01x the
+        # serial rate while every episode's wall clock grew.
+        slots = observed_parallel_slots()
+        if slots is not None and slots < want:
+            raise SystemExit(
+                f"[grid] the loaded runner has {slots} decode slot(s), below "
+                f"--parallel {want}. OLLAMA_NUM_PARALLEL is only a ceiling; "
+                f"this is what the scheduler actually chose. The extra cells "
+                f"would queue rather than decode, inflating every episode's "
+                f"wall clock into --max-wall timeouts scored as model "
+                f"failures. Run with --parallel {slots}, or make the server "
+                f"allocate more slots and re-check.")
+        if slots is None:
+            print(f"[grid] NOTE: no runner is loaded yet, so the real decode-"
+                  f"slot count could not be read. OLLAMA_NUM_PARALLEL is a "
+                  f"ceiling, not a guarantee -- verify with "
+                  f"`ps -eo args | grep llama-server` once a cell is running "
+                  f"that it shows -np >= {want}.", flush=True)
         got = os.environ.get("OLLAMA_NUM_PARALLEL")
         if got is None:
             print(f"[grid] NOTE: OLLAMA_NUM_PARALLEL is not visible from this "

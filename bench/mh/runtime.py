@@ -966,6 +966,41 @@ def conflicting_runners(results_root, model, pid=None):
             if r.get("model") != model]
 
 
+def observed_parallel_slots():
+    """Decode slots the loaded runner ACTUALLY has, or None if unknowable.
+
+    OLLAMA_NUM_PARALLEL is documented as a *maximum*; the scheduler picks the
+    real number. Measured on ollama 0.33.0 with the env var set to 4, both
+    grid models launched `llama-server ... -c 32768 -np 1` and four concurrent
+    requests all landed on slot id 0 -- aggregate throughput at four-way
+    concurrency was 1.01x the serial rate.
+
+    So checking the environment variable is checking an intention. This reads
+    the running runner's own `-np`, which is the number that decides whether a
+    parallel grid decodes or queues. None means no runner is loaded yet, or
+    this platform does not expose the argv -- reported as unknown, never as
+    agreement.
+    """
+    try:
+        out = subprocess.run(["ps", "-eo", "args"], capture_output=True,
+                             text=True, timeout=10)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    for line in (out.stdout or "").splitlines():
+        if "llama-server" not in line and "ollama runner" not in line:
+            continue
+        parts = line.split()
+        for i, tok in enumerate(parts):
+            if tok in ("-np", "--parallel") and i + 1 < len(parts):
+                try:
+                    return int(parts[i + 1])
+                except ValueError:
+                    return None
+    return None
+
+
 def is_api_model(model):
     """True for a model served over someone else's API, not by local ollama."""
     return api_provider(model) is not None
