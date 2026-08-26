@@ -15,6 +15,7 @@ import time
 
 from . import tools as toolmod
 from .bench import model_facing
+from .model import AccountRefused
 from .tools import Sandbox, ToolError, cap_output, containment_backend
 
 ENVBOOT_TIMEOUT_S = 15
@@ -496,6 +497,11 @@ class Harness:
                     break
             else:
                 self.res.stop_reason = "max_steps"
+        except AccountRefused:
+            # Deliberately not scored. The provider refused the account, so this
+            # episode is not a measurement of anything and must not become a row
+            # that reads like the model failing. The runner stops the cell.
+            raise
         except Exception as e:
             elapsed = time.time() - t0
             wall = self.cfg.wall_s or 0

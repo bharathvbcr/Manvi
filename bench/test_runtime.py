@@ -1,4 +1,6 @@
 """Residency policy. No ollama required."""
+import contextlib
+import io
 import os
 import sys
 
@@ -594,10 +596,311 @@ check("runtime owns the predicate under both names",
       getattr(_runtime, "is_gemini_model", None) is is_api_model)
 CASES = ["gemini-3.7-flash", "models/gemini-3.7-flash", "live-gemini",
          "qwen3.8:27b", "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
-         "gemma4:e4b", "not-gemini-really"]
+         "gemma4:e4b", "not-gemini-really", "cerebras:gpt-oss-120b",
+         "cerebras:gemma-4-31b", "gpt-oss-120b", "gemma-4-31b"]
 check("mh.model's copy still agrees with the owner",
       all(_model.is_gemini_model(m) == is_api_model(m) for m in CASES),
       "mh/model.py must import is_gemini_model from mh.runtime")
+from mh.runtime import api_model_id, api_provider
+check("api_provider routes each name to exactly one provider",
+      [api_provider(m) for m in CASES]
+      == ["gemini", "gemini", "gemini", None, None, None, None,
+          "cerebras", "cerebras", None, None],
+      str([api_provider(m) for m in CASES]))
+# `gpt-oss-120b` and `gemma-4-31b` are also local ollama tags. A bare name that
+# means the hosted model on one host and a local quantised build on another is
+# the confusion the protocol stamp exists to prevent, so the prefix is required.
+check("a bare hosted-model name stays local",
+      not is_api_model("gpt-oss-120b") and not is_api_model("gemma-4-31b"))
+check("api_model_id strips the routing prefix and nothing else",
+      [api_model_id(m) for m in CASES]
+      == ["gemini-3.7-flash", "models/gemini-3.7-flash", "live-gemini",
+          "qwen3.8:27b", "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+          "gemma4:e4b", "not-gemini-really", "gpt-oss-120b", "gemma-4-31b",
+          "gpt-oss-120b", "gemma-4-31b"],
+      str([api_model_id(m) for m in CASES]))
+check("an API model is never asked to evict a local one",
+      _runtime.ensure_sole_tenant("cerebras:gpt-oss-120b") == [])
+
+
+print("an API arm does not claim this box as its serving hardware")
+from mh.runtime import serving_env
+from mh.pool import PROTOCOL_KEYS, protocol_drift
+from mh.runtime import keep_existing_episode
+api_env = serving_env(model="cerebras:gpt-oss-120b")
+check("the provider and endpoint are what is recorded",
+      api_env["api_provider"] == "cerebras"
+      and api_env["api_endpoint"].startswith("https://api.cerebras.ai/"),
+      str(api_env))
+check("no local GPU, node or ollama version is stamped on a remote episode",
+      (api_env["gpu"], api_env["node"], api_env["ollama_version"],
+       api_env["platform"]) == (None, None, None, None), str(api_env))
+check("the box that ran the loop is still recorded as provenance",
+      "client_node" in api_env)
+check("but client_node is not a pooling key",
+      "env_client_node" not in PROTOCOL_KEYS, str(PROTOCOL_KEYS))
+# Two identical remote cells launched from different laptops must still pool;
+# two cells against different providers must not.
+LAP_A = dict(api_env, client_node="laptop-a")
+LAP_B = dict(api_env, client_node="laptop-b")
+P_A = protocol_block(max_steps=0, max_wall=1800, share_gpu=False, num_ctx=65536,
+                     num_predict=16384, temperature=0.6, think=True, env=LAP_A,
+                     top_p=0.95, reasoning_effort="medium")
+P_B = protocol_block(max_steps=0, max_wall=1800, share_gpu=False, num_ctx=65536,
+                     num_predict=16384, temperature=0.6, think=True, env=LAP_B,
+                     top_p=0.95, reasoning_effort="medium")
+check("the same remote cell run from two machines still pools",
+      protocol_drift(P_A, P_B) == [], str(protocol_drift(P_A, P_B)))
+P_C = protocol_block(max_steps=0, max_wall=1800, share_gpu=False, num_ctx=65536,
+                     num_predict=16384, temperature=0.6, think=True, env=LAP_A,
+                     top_p=0.95, reasoning_effort="high")
+check("two reasoning efforts are not one experiment",
+      protocol_drift(P_A, P_C) == ["reasoning_effort"],
+      str(protocol_drift(P_A, P_C)))
+check("a stamp written before these keys existed reads as agreeing with itself",
+      protocol_drift(PROTO_A, dict(PROTO_A)) == [])
+
+# protocol_diff (denylist over every key present) and mh.pool.protocol_drift
+# (allowlist) answer the same question and must not disagree. They did: a cell
+# resumed from a second laptop pooled cleanly by one and published
+# protocol_variants by the other, purely on the hostname.
+from mh.runtime import PROVENANCE_KEYS, protocol_diff, resume_conflicts
+
+
+def _resume_says_conflict(written_stamp, running_stamp):
+    """Does resume_conflicts refuse to resume a cell stamped `written_stamp`?"""
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as d:
+        write_episode(d, "alpha", 0, {"model": "m", "config": {}, "task": "alpha",
+                                      "row": {"task": "alpha", "rep": 0,
+                                              "passed": True, "steps": 5,
+                                              "output_tokens": 900,
+                                              "stop_reason": "finished"},
+                                      "protocol": written_stamp, "run": RUN_A})
+        return bool(resume_conflicts(d, ["alpha"], [0], running_stamp)[0])
+
+
+def resume_conflicts_probe():
+    """Resume a one-episode cell whose stamp differs only in provenance."""
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as d:
+        stamp = dict(P_A, env_client_node="host-that-wrote-it")
+        now = dict(P_A, env_client_node="host-running-now")
+        write_episode(d, "alpha", 0, {"model": "m", "config": {}, "task": "alpha",
+                                      "row": {"task": "alpha", "rep": 0,
+                                              "passed": True, "steps": 5,
+                                              "output_tokens": 900,
+                                              "stop_reason": "finished"},
+                                      "protocol": stamp, "run": RUN_A})
+        conflicts, _ = resume_conflicts(d, ["alpha"], [0], now)
+        assert not conflicts, f"provenance must not block a resume: {conflicts}"
+        # and a genuine difference still conflicts, with a name attached
+        other = dict(now, reasoning_effort="high")
+        return resume_conflicts(d, ["alpha"], [0], other)[0]
+check("provenance keys are excluded from protocol_diff too",
+      protocol_diff(P_A, LAP_HOST_B := dict(P_A, env_client_node="other-host")) == [],
+      str(protocol_diff(P_A, LAP_HOST_B)))
+check("the allowlist and the denylist agree about every provenance key",
+      all(k not in PROTOCOL_KEYS for k in PROVENANCE_KEYS),
+      f"{PROVENANCE_KEYS} vs {PROTOCOL_KEYS}")
+# resume_conflicts decided with `stamp != protocol` while reporting with
+# protocol_diff. Once provenance was excluded from the diff the two disagreed:
+# 90 keepable episodes were refused with an empty "differs on " list, and the
+# cell could not be resumed from a second machine at all.
+check("a conflict is never reported with nothing to name",
+      all(d for _n, d in resume_conflicts_probe()),
+      "resume_conflicts must decide with protocol_diff")
+# _merge_protocols grouped by the whole stamp, so a cell resumed from a second
+# machine published protocol_variants over two groups and the runner declared it
+# would not pool -- while mh.pool and protocol_diff both said the episodes
+# agreed. Fourth place with its own answer to "same protocol?".
+from mh.runtime import _merge_protocols, protocol_identity
+CELL_TWO_HOSTS = [
+    ("a.rep0.json", {"protocol": dict(P_A, env_client_node="host-a")}),
+    ("b.rep1.json", {"protocol": dict(P_A, env_client_node="host-b")}),
+]
+merged, variants = _merge_protocols(CELL_TWO_HOSTS)
+check("two hosts, one experiment: the cell has a single protocol",
+      merged is not None and not variants, str(variants)[:120])
+check("and it does not claim either host for all of them",
+      merged is not None and merged.get("env_client_node") is None,
+      str(merged and merged.get("env_client_node")))
+check("a genuine protocol split still produces variants",
+      _merge_protocols([("a.rep0.json", {"protocol": P_A}),
+                        ("b.rep1.json", {"protocol": P_C})])[0] is None)
+check("one host is still recorded when every episode agrees",
+      _merge_protocols([("a.rep0.json", {"protocol": dict(P_A, env_client_node="h")}),
+                        ("b.rep1.json", {"protocol": dict(P_A, env_client_node="h")})]
+                       )[0]["env_client_node"] == "h")
+check("protocol_identity drops exactly the provenance keys",
+      set(P_A) - set(protocol_identity(P_A)) == set(PROVENANCE_KEYS),
+      str(set(P_A) - set(protocol_identity(P_A))))
+check("a real protocol difference is still caught by both",
+      protocol_diff(P_A, P_C) == ["reasoning_effort"]
+      and protocol_drift(P_A, P_C) == ["reasoning_effort"],
+      f"{protocol_diff(P_A, P_C)} / {protocol_drift(P_A, P_C)}")
+
+# Four places answer "are these two stamps the same experiment?", and each one
+# grew its own answer. Every one of them was wrong at least once this week:
+#   mh.pool.protocol_drift   allowlist   - said they agreed
+#   runtime.protocol_diff    denylist    - said they disagreed
+#   resume_conflicts         dict !=     - refused a resume, naming nothing
+#   _merge_protocols         dict group  - published two protocols for one cell
+# The bug was never in any single one; it was that there were four. This asserts
+# they agree on the case that separates them, so a fifth caller that reaches for
+# `==` fails here rather than in a published number.
+print("every protocol comparison agrees on what counts as the same experiment")
+PROV_ONLY_A = dict(P_A, env_client_node="host-one")
+PROV_ONLY_B = dict(P_A, env_client_node="host-two")
+REAL_A, REAL_B = PROV_ONLY_A, dict(PROV_ONLY_A, num_ctx=4096)
+verdicts_same = {
+    "pool.protocol_drift": not protocol_drift(PROV_ONLY_A, PROV_ONLY_B),
+    "runtime.protocol_diff": not protocol_diff(PROV_ONLY_A, PROV_ONLY_B),
+    "resume_conflicts": not _resume_says_conflict(PROV_ONLY_A, PROV_ONLY_B),
+    "_merge_protocols": _merge_protocols(
+        [("a.rep0.json", {"protocol": PROV_ONLY_A}),
+         ("b.rep1.json", {"protocol": PROV_ONLY_B})])[0] is not None,
+}
+check("all four call provenance-only differences the SAME experiment",
+      all(verdicts_same.values()),
+      str({k: v for k, v in verdicts_same.items() if not v}))
+verdicts_diff = {
+    "pool.protocol_drift": bool(protocol_drift(REAL_A, REAL_B)),
+    "runtime.protocol_diff": bool(protocol_diff(REAL_A, REAL_B)),
+    "resume_conflicts": _resume_says_conflict(REAL_A, REAL_B),
+    "_merge_protocols": _merge_protocols(
+        [("a.rep0.json", {"protocol": REAL_A}),
+         ("b.rep1.json", {"protocol": REAL_B})])[0] is None,
+}
+check("and all four call a real num_ctx difference DIFFERENT experiments",
+      all(verdicts_diff.values()),
+      str({k: v for k, v in verdicts_diff.items() if not v}))
+
+
+print("concurrent runners never evict each other's model")
+# Parallelising the grid is the obvious way to use a rented GH200, and it was
+# unsafe in a way nothing reported: every runner calls unload_all(keep=its own
+# model), which evicts a sibling's weights mid-episode. The victim's next
+# /api/chat returns 0 tokens and times out, and lands as a scored failure with
+# nothing in the row naming the cause.
+from mh.runtime import (active_runners, conflicting_runners,
+                        ensure_sole_tenant, register_runner, release_runner)
+with tempfile.TemporaryDirectory() as tmp:
+    mine = register_runner(tmp, "qwen3.8:27b", pid=os.getpid())
+    check("a runner announces the model it holds",
+          [r["model"] for r in active_runners(tmp)] == ["qwen3.8:27b"])
+    check("a sibling on the SAME model is not a conflict",
+          conflicting_runners(tmp, "qwen3.8:27b", pid=-1) == [])
+    check("a sibling on a DIFFERENT model is",
+          [c["model"] for c in conflicting_runners(tmp, "ornith:35b", pid=-1)]
+          == ["qwen3.8:27b"])
+    try:
+        ensure_sole_tenant("ornith:35b", results_root=tmp, pid=-1)
+        check("ensure_sole_tenant refuses to evict a live sibling", False,
+              "it did not refuse")
+    except RuntimeError as e:
+        check("ensure_sole_tenant refuses to evict a live sibling",
+              "another runner on this box holds" in str(e), str(e))
+        check("and the refusal names the model and pid it would have killed",
+              "qwen3.8:27b" in str(e) and str(os.getpid()) in str(e), str(e))
+    # A crashed runner must not lock the GPU against every later one.
+    register_runner(tmp, "ghost:1b", pid=2 ** 30)
+    check("a lease whose process is gone is discarded, not believed",
+          [r["model"] for r in active_runners(tmp)] == ["qwen3.8:27b"])
+    check("the stale lease file is removed",
+          sorted(os.listdir(os.path.join(tmp, ".runners")))
+          == [f"{os.getpid()}.json"],
+          str(os.listdir(os.path.join(tmp, ".runners"))))
+    release_runner(mine)
+    check("releasing clears the lease", active_runners(tmp) == [])
+    check("an API model needs no tenancy at all",
+          ensure_sole_tenant("cerebras:gpt-oss-120b", results_root=tmp) == [])
+
+print("concurrency is part of the protocol")
+P_SOLO = protocol_block(max_steps=0, max_wall=1800, share_gpu=False,
+                        num_ctx=32768, num_predict=4096, temperature=0.6,
+                        think=True, env=ENV, concurrency=1)
+P_PAR = protocol_block(max_steps=0, max_wall=1800, share_gpu=False,
+                       num_ctx=32768, num_predict=4096, temperature=0.6,
+                       think=True, env=ENV, concurrency=4)
+check("a cell run four-up is not the same experiment as one run alone",
+      protocol_drift(P_SOLO, P_PAR) == ["concurrency"],
+      str(protocol_drift(P_SOLO, P_PAR)))
+check("and protocol_diff agrees",
+      protocol_diff(P_SOLO, P_PAR) == ["concurrency"],
+      str(protocol_diff(P_SOLO, P_PAR)))
+check("concurrency is a pooling key",
+      "concurrency" in PROTOCOL_KEYS, str(PROTOCOL_KEYS))
+check("an older stamp without it still agrees with itself",
+      protocol_drift(PROTO_A, dict(PROTO_A)) == [])
+
+
+print("a dry run touches nothing")
+import grid as _grid_mod
+_TOUCHED = []
+_real_est = _grid_mod.ensure_sole_tenant
+_grid_mod.ensure_sole_tenant = lambda *a, **k: _TOUCHED.append(a) or []
+_argv = sys.argv[:]
+try:
+    sys.argv = ["grid.py", "--models", "qwen3.8:27b", "--hard", "--parallel",
+                "4", "--tag", "dryrun-probe", "--dry-run"]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            _grid_mod.main()
+        except SystemExit:
+            pass
+finally:
+    sys.argv = _argv
+    _grid_mod.ensure_sole_tenant = _real_est
+# --parallel evicts once up front so the cells can carry --keep-resident. That
+# pass ran before the dry-run check, so `--dry-run` unloaded the resident model
+# and then printed that it intended to run nothing.
+check("--dry-run with --parallel evicts nothing", _TOUCHED == [], str(_TOUCHED))
+check("and it still prints a plan",
+      "[grid] done" in buf.getvalue(), buf.getvalue()[-200:])
+
+
+print("an account refusal is never scored as a model failure")
+from mh.model import AccountRefused, ModelError
+from mh.runtime import is_starved_episode, is_unserved_episode, unserved_count
+REFUSED_OLD = {"task": "t", "rep": 0, "steps": 1, "output_tokens": 0,
+               "passed": False, "stop_reason": "error:ModelError",
+               "errors": ['ModelError: HTTP 402: {"message":"Payment required"}']}
+REFUSED_NEW = {"task": "t", "rep": 1, "steps": 1, "output_tokens": 0,
+               "passed": False, "stop_reason": "error:AccountRefused",
+               "errors": ["AccountRefused: HTTP 402: quota"]}
+REAL_FAIL = {"task": "t", "rep": 2, "steps": 9, "output_tokens": 900,
+             "passed": False, "stop_reason": "error:ModelError",
+             "errors": ["ModelError: HTTP 500: high demand"]}
+check("AccountRefused is a ModelError, so existing handlers still catch it",
+      issubclass(AccountRefused, ModelError))
+check("a legacy 402 row is recognised", is_unserved_episode(REFUSED_OLD))
+check("a post-fix refusal row is recognised", is_unserved_episode(REFUSED_NEW))
+check("an ordinary 500 serving failure is NOT", not is_unserved_episode(REAL_FAIL))
+check("nor is a normal row", not is_unserved_episode({"stop_reason": "finished"}))
+check("unserved_count totals them", unserved_count(
+      [REFUSED_OLD, REFUSED_NEW, REAL_FAIL]) == 2)
+# The registered exclusion rule is timeouts only; this must not quietly widen it.
+check("an unserved episode is NOT silently dropped from denominators",
+      not is_starved_episode(REFUSED_OLD) and not is_starved_episode(REFUSED_NEW))
+check("but it is re-run rather than kept on resume",
+      not keep_existing_episode(REFUSED_OLD)
+      and not keep_existing_episode(REFUSED_NEW))
+# The episode-level and cell-level checks have to agree. They did not: run.py
+# would have replaced a 402 row, but grid.complete() decided the cell holding
+# 160 of them was finished and never invoked run.py, printing "skip complete"
+# over a 0.0% pass rate.
+import grid as _grid
+check("a cell holding unserved episodes is not complete",
+      _grid.unusable(REFUSED_OLD) and _grid.unusable(REFUSED_NEW),
+      "grid.complete() must refuse a cell of account refusals")
+check("a starved episode still counts as unusable too",
+      _grid.unusable({"steps": 1, "output_tokens": 0,
+                      "stop_reason": "wall_timeout"}))
+check("a real failure does not make a cell incomplete",
+      not _grid.unusable(REAL_FAIL) and not _grid.unusable(
+          {"stop_reason": "finished", "passed": True}))
 
 
 print("run.py end to end (no server, no model, no GPU, throwaway tree)")
@@ -663,7 +966,10 @@ runner.Sampler = FakeSampler
 runner.Harness = FakeHarness
 runner.unstick_server = lambda *a, **k: None
 runner.unload_all = lambda *a, **k: []
-runner.ensure_sole_tenant = (lambda model, evict=True, share_gpu=False:
+# Signature tracks run.py's call site: results_root/pid arrived with the runner
+# lease that stops parallel cells evicting each other's weights.
+runner.ensure_sole_tenant = (lambda model, evict=True, share_gpu=False,
+                             results_root=None, pid=None:
                              EVICTED.append(model) or [])
 runner.protocol_block = lambda **kw: _rt.protocol_block(env=ENV, **kw)
 

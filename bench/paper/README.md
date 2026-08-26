@@ -2,6 +2,15 @@
 
 Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 2, 22 August 2026**.
 
+Two protocol documents sit beside it and are not part of the manuscript:
+[`preregistration.md`](preregistration.md), the registered v2 grid (two locally
+served models), and [`extension-cerebras.md`](extension-cerebras.md), a separately
+registered extension adding API-served `gpt-oss-120b` and `gemma-4-31b` arms.
+The extension runs under its own tag and does not touch the frozen grid or the
+registered design; it carries its own pilot gates and its own suitability
+assessment, including what an arm with no sole tenancy and a best-effort seed
+costs the analysis.
+
 Figures are in `figures/`. The draft is NeurIPS-style IMRAD. Headline metrics are the **frozen**
 720-episode hard grid (Tables 3–8), re-derived for this revision from `stats-hard.json` and the
 per-episode `summary.json` rows. Protocol-1's 160-episode full-versus-baseline contrast

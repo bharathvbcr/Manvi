@@ -17,11 +17,12 @@ from mh.stats import (aligned_interaction, bootstrap_ci,
                       ci_degeneracy, deltas_by_repeat, denominators_of,
                       interaction, mean, multiplicity_report,
                       pass_counts_by_repeat, pearson_r, rates_of,
-                      role_of, usable_rows)
-from mh.pool import (contrast_conflicts, contrast_drift, merge_conflicts,
-                     pooled_drift, ragged_reps, rep_denominators, reps_of,
-                     seed_conflicts, seed_reuse, unseeded_cells)
-from mh.runtime import is_starved_episode
+                      role_of, sidak_alpha, usable_rows)
+from mh.pool import (arm_drift, contrast_conflicts, contrast_drift,
+                     merge_conflicts, pooled_drift, ragged_reps,
+                     rep_denominators, reps_of, seed_conflicts, seed_reuse,
+                     unseeded_cells)
+from mh.runtime import is_starved_episode, is_unserved_episode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Overridable so tests can build a throwaway grid instead of writing
@@ -248,14 +249,94 @@ def interval_reliability(report, shape, trials=5000, n_boot=10000,
                                          measured_coverage=measured)
 
 
+# The preregistered confirmatory tests, and only these. H1 is one test per
+# model; H2 is one test. Everything else on the ladder is H3 and is exploratory
+# by declaration, reported at 95% with the family-wise number beside it.
+CONFIRMATORY = (("H1", "baseline", "full harness beats all-off baseline"),
+                ("H2", "no-outcap", "the output cap does not hurt"))
+
+
+def _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms):
+    """Preregistered claims at their Šidák-corrected level, not at 95%.
+
+    The ladder above prints 95% intervals for everything, which is correct for
+    the exploratory family and wrong for a confirmatory claim: §5 of the
+    registration splits alpha across the preregistered tests, so H1 and H2 are
+    decided on ~98.3% intervals (three tests) and NOT on the 95% ones printed
+    above. Nothing in this file used to say so, and a reader with the 95% table
+    in front of them had no way to know which rows were the registered claims
+    or that those rows are decided at a different width. That is how a marginal
+    delta gets quoted as confirmed.
+
+    The corrected interval is computed here rather than left as an exercise --
+    a claim whose decision rule is documented but never evaluated is not a
+    decision rule.
+    """
+    models = sorted({m for (m, _abl) in delta_by_rep})
+    tests = [(h, abl, why, m) for (h, abl, why) in CONFIRMATORY
+             for m in models if (m, abl) in delta_by_rep]
+    if not tests:
+        return
+    k = len(tests)
+    alpha = sidak_alpha(k, 0.05)
+    level = 100.0 * (1.0 - alpha)
+    print(f"\n## Preregistered confirmatory tests  ({k} test(s), Šidák "
+          f"α={alpha:.4f}, i.e. {level:.1f}% intervals)\n")
+    print(f"{'':<4} {'model':<30} {'contrast':<14} {'Δ':>7}  "
+          f"{level:.1f}% CI{'':<8} verdict")
+    print("-" * 104)
+    out = {}
+    for h, abl, why, model in tests:
+        by_rep = delta_by_rep[(model, abl)]
+        keys = sorted(by_rep)
+        deltas = [by_rep[x] for x in keys]
+        w = pair_weights(model, abl, keys)
+        m_, lo, hi = bootstrap_ci(deltas, alpha=alpha, weights=w)
+        m95, lo95, hi95 = bootstrap_ci(deltas, weights=w)
+        supported = lo > 0 if h == "H1" else lo >= 0
+        # A claim that clears 95% but not the corrected level is the case this
+        # block exists for, so it is named rather than merely not-supported.
+        marginal = (lo95 > 0 or hi95 < 0) and not (lo > 0 or hi < 0)
+        verdict = ("supported" if supported else
+                   "NOT supported (clears 95% but not the corrected level)"
+                   if marginal else "not detected at this n")
+        print(f"{h:<4} {model:<30} full−{abl:<9} {m_:+7.3f}  "
+              f"[{lo:+.3f}, {hi:+.3f}]      {verdict}")
+        out[f"{h}|{model}|{abl}"] = {
+            "hypothesis": h, "claim": why, "model": model, "ablation": abl,
+            "n": len(deltas), "delta": m_, "lo": lo, "hi": hi,
+            "level": level, "sidak_alpha": alpha, "n_tests": k,
+            "ci95": [lo95, hi95], "supported": bool(supported),
+            "clears_95_only": bool(marginal),
+        }
+    report["confirmatory"] = out
+    print("  H3 (every other ablation) is exploratory: read it at 95% above, "
+          "with the family-wise number in the reliability block.")
+
+
 def _finish(report, degenerate, cell_denoms, coverage_trials,
-            coverage_skip_reason):
+            coverage_skip_reason, unserved_cells=None):
     """Sections every report carries, however far the interaction got.
 
     Split out so the "not enough models to rank arms" exit cannot skip
     the degeneracy, coverage and multiplicity blocks: a report missing
     them reads as a report whose intervals were fine.
     """
+    unserved_cells = unserved_cells or {}
+    report["unserved_cells"] = dict(unserved_cells)
+    if unserved_cells:
+        total = sum(unserved_cells.values())
+        print("\n## REFUSING TO CERTIFY: episodes the provider never served\n")
+        print(f"  {total} episode(s) across {len(unserved_cells)} cell(s) ended "
+              f"in an account refusal (HTTP 401/402/403). They are NOT excluded "
+              f"from any denominator -- the registered exclusion rule is "
+              f"timeouts only -- so every rate and delta above counts them as "
+              f"model failures.")
+        for k, n in sorted(unserved_cells.items()):
+            print(f"      {k}: {n}")
+        print("  These are not measurements. Re-run the affected cells (they "
+              "are first-turn failures, so no --force is needed) before "
+              "reporting anything here.")
     report["degenerate_intervals"] = degenerate
     if degenerate:
         print("\n## WARNING: intervals that carry no width, and why\n")
@@ -397,6 +478,7 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
     print(f"{'model':<42} {'config':<16} {'n':>3}  mean [95% CI]")
     print("-" * 88)
     degenerate = {}
+    unserved_cells = {}
     cell_denoms = {}
     rates_by_cell = {}
     for (model, cfg), cell in cells.items():
@@ -411,6 +493,14 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
         # equal denominators the weighted estimator is the unweighted one.
         ci = bootstrap_ci(xs, weights=[dens[r] for r in rates])
         n_starved = sum(1 for r in cell["rows"] if is_starved_episode(r))
+        # An episode the provider refused (401/402/403) is not a measurement,
+        # and unlike a starved one it is NOT excluded from the denominator --
+        # the registered exclusion rule is timeouts only. So it is scored as a
+        # failure, and a cell full of them reports 0.0% exactly as an ablation
+        # that destroys the model would. That happened: 160 refusals published
+        # 0.0% and nothing in this file could see it. Counted here so the rate
+        # is never printed without the fact beside it.
+        n_unserved = sum(1 for r in cell["rows"] if is_unserved_episode(r))
         usable = usable_rows(cell["rows"])
         report["cells"][f"{model}|{cfg}"] = {
             "role": role_of(model),
@@ -418,13 +508,18 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
             "n": len(cell["rows"]),
             "n_usable": len(usable),
             "n_starved": n_starved,
+            "n_unserved": n_unserved,
             "rates": rates,
             "mean": ci[0], "lo": ci[1], "hi": ci[2],
         }
+        if n_unserved:
+            unserved_cells[f"{model}|{cfg}"] = n_unserved
         why = ci_degeneracy(xs)
         if why:
             degenerate[f"cells:{model}|{cfg}"] = why
         warn = f"  STARVED={n_starved} excluded" if n_starved else ""
+        if n_unserved:
+            warn += f"  UNSERVED={n_unserved} SCORED AS FAILURES"
         if why:
             warn += "  DEGENERATE INTERVAL"
         print(f"{model:<42} {cfg:<16} {len(xs):>3}  {_fmt_ci(ci)}{warn}")
@@ -442,6 +537,18 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
             stops[sr] = stops.get(sr, 0) + 1
         report["per_task"][key] = {t: {"passed": p, "n": n} for t, (p, n) in by.items()}
         report["stops"][key] = stops
+        # How often the model closed the episode through the `finish` tool
+        # rather than trailing off. This is not decoration: the verify gate can
+        # only fire on a `finish`, so a cell where the model finishes half the
+        # time is one where the gate was exercised half the time, and the
+        # measured value of `verifygate` on that cell is a floor rather than an
+        # estimate. Measured on gpt-oss-120b: baseline finished 145/160 while
+        # the full harness finished 72/160, so the number moves with the very
+        # flags being ablated and cannot be assumed constant across a ladder.
+        n_rows = sum(stops.values())
+        n_fin = stops.get("finished", 0)
+        report["cells"][key]["finished"] = n_fin
+        report["cells"][key]["finish_rate"] = (n_fin / n_rows) if n_rows else None
 
     print("\n## Ablation deltas  Δ = full − ablation  (paired by repeat)\n")
     print(f"{'model':<42} {'ablation':<16} {'n':>3}  Δ mean [95% CI]")
@@ -487,6 +594,8 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
             print(f"{model:<42} {abl:<16} {len(deltas):>3}  "
                   f"{_fmt_ci(ci, as_pct=False)}{flag}")
 
+    _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms)
+
     print("\n## Interaction  Δ_weaker > Δ_stronger  (empirical full-harness means)\n")
     print(f"{'ablation':<16} {'Δw−Δs':>8}  95% CI                verdict")
     print("-" * 70)
@@ -502,8 +611,23 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
         report["interaction_paired"]["_note"] = (
             "need two models with full+baseline")
         return _finish(report, degenerate, cell_denoms, coverage_trials,
-                       coverage_skip_reason)
+                       coverage_skip_reason, unserved_cells)
     weak, strong = detail["weaker"], detail["stronger"]
+    # Two arms may legitimately run under different protocols -- that is the
+    # normal case once one of them is API-served. The interaction stays valid
+    # (each Δ is seed-paired within one arm) but the difference has to be
+    # declared, and the pass-rate table above must not be read across arms.
+    arm_keys = arm_drift(prov.get(f"{weak}|full", {}).get("protocol"),
+                         prov.get(f"{strong}|full", {}).get("protocol"))
+    report["arm_protocol_drift"] = arm_keys
+    if arm_keys:
+        print(f"\n## NOTE: the two arms ran under different protocols\n")
+        print(f"  {weak}\n  {strong}\n  differ on: {', '.join(arm_keys)}")
+        print("  The interaction below is a difference of WITHIN-arm deltas, "
+              "each seed-paired inside one arm under one protocol, so it "
+              "remains valid across this difference. The pass rates above are "
+              "NOT comparable between these arms and must not be quoted as a "
+              "capability comparison.\n")
     # The frozen `_arms` block carries four keys and nothing else; the gap,
     # the tie flag and the models dropped for a non-finite mean go in the
     # paired section, which is not under a reproduction contract.
@@ -573,7 +697,7 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
               f"[{inter['lo']:+.3f}, {inter['hi']:+.3f}]  {verdict}")
 
     return _finish(report, degenerate, cell_denoms, coverage_trials,
-                   coverage_skip_reason)
+                   coverage_skip_reason, unserved_cells)
 
 
 def _refuse(err):
@@ -675,8 +799,13 @@ def main():
         stops = {}
         for row in r["rows"]:
             stops[row.get("stop_reason", "?")] = stops.get(row.get("stop_reason", "?"), 0) + 1
+        n_rows = sum(stops.values())
+        fin = stops.get("finished", 0)
+        # The gate can only fire on a `finish`, so this rate bounds how much of
+        # `verifygate` was ever exercised in this cell.
+        rate = f"  finish_rate={100.0 * fin / n_rows:.0f}%" if n_rows else ""
         print(f"{short(r):<42} {r.get('passed', '?')}/{r.get('n', '?')}  "
-              f"stop_reasons={stops}")
+              f"stop_reasons={stops}{rate}")
 
     if args.coverage_trials <= 0:
         print("--coverage-trials must be positive", file=sys.stderr)

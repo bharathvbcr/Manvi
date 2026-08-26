@@ -6,6 +6,7 @@ Q8 MoE and an 18 GB dense model at once, and when it tries, the loser is whateve
 else was mid-inference.
 """
 import argparse
+import atexit
 import os
 import sys
 import time
@@ -14,13 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.bench import load_tasks
 from mh.compute import Sampler, tok_s
 from mh.harness import Config, Harness
-from mh.model import Client
-from mh.runtime import (STARVE_ABORT_DEFAULT, CellError, ensure_sole_tenant,
+from mh.model import (AccountRefused, Client, ModelError, model_spec,
+                      reasoning_effort_for)
+from mh.runtime import (STARVE_ABORT_DEFAULT, CellError, cell_rows,
+                        ensure_sole_tenant, register_runner, release_runner,
                         episode_name, extension_guard, extension_reps,
                         is_api_model, is_starved_episode, keep_existing_episode,
                         protocol_block, read_episode, resume_conflicts,
-                        should_retry_starved, sibling_overlap, unstick_server,
-                        unload_all, write_episode, write_summary)
+                        should_retry_starved, sibling_overlap, unserved_count,
+                        unstick_server, unload_all, write_episode, write_summary)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Overridable so tests can build a throwaway grid instead of writing
@@ -28,6 +31,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.environ.get("MH_RESULTS") or os.path.join(HERE, "results")
 WORK = os.path.join(HERE, ".work")
 
+
+# grid.py keys its whole-grid abort on this exit code; it is imported from
+# here so the two cannot drift into disagreeing about what 3 means.
+ACCOUNT_REFUSED_RC = 3
 
 CONFIGS = {
     "full": lambda: Config(name="full"),
@@ -69,9 +76,20 @@ def main():
     ap.add_argument("--max-wall", type=int, default=1800,
                     help="episode wall-clock budget in seconds; 0 disables. "
                          "Exceeding it stops the loop and scores fail (default 1800)")
-    ap.add_argument("--num-ctx", type=int, default=32768)
-    ap.add_argument("--num-predict", type=int, default=4096)
-    ap.add_argument("--temperature", type=float, default=0.6)
+    # These four default to the model's own specification (mh.model.MODEL_SPECS),
+    # which is the suite's historical 32768 / 4096 / 0.6 / 0.95 for every local
+    # model and the vendor's documented values for a hosted one. Passing any of
+    # them on the command line still wins; the resolved value is what the
+    # episode's protocol stamp records.
+    ap.add_argument("--num-ctx", type=int, default=None)
+    ap.add_argument("--num-predict", type=int, default=None)
+    ap.add_argument("--temperature", type=float, default=None)
+    ap.add_argument("--top-p", type=float, default=None)
+    ap.add_argument("--reasoning-effort", default=None,
+                    help="explicit reasoning level for an API-served model "
+                         "(e.g. low/medium/high on Cerebras). Default is the "
+                         "model spec's mapping of --think/--no-think. Local "
+                         "ollama models have no such knob and refuse it.")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--rep-offset", type=int, default=0,
@@ -88,6 +106,14 @@ def main():
                     help="skip the pre-run eviction (only when already sole tenant)")
     ap.add_argument("--share-gpu", action="store_true",
                     help="allow one peer model on this GPU (GH200 Qwen+Ornith)")
+    ap.add_argument("--concurrency", type=int, default=1,
+                    help="how many cells are deliberately in flight on this box, "
+                         "declared so it can be stamped on every episode. A "
+                         "contended GPU moves wall clock and --max-wall scores a "
+                         "fail, so cells run at different concurrency are not the "
+                         "same experiment and will not pool. Set by grid.py "
+                         "--parallel; set it yourself if you launch runners by "
+                         "hand.")
     ap.add_argument("--force", action="store_true",
                     help="re-run episodes even if {task}.rep{rep}.json exists")
     ap.add_argument("--force-starved", action="store_true",
@@ -108,6 +134,18 @@ def main():
     if args.rep_offset < 0:
         raise SystemExit(f"[runner] --rep-offset must be >= 0, got "
                          f"{args.rep_offset}")
+    if args.concurrency < 1:
+        raise SystemExit(f"[runner] --concurrency must be >= 1, got "
+                         f"{args.concurrency}")
+    if args.concurrency > 1 and args.share_gpu:
+        # Two models resident AND several episodes in flight is uncontrolled
+        # contention on both axes at once, and v1 already recorded what one
+        # axis did: --share-gpu starved Qwen's first turn into a 0-token
+        # timeout. Refused rather than stamped.
+        raise SystemExit(
+            "[runner] --share-gpu and --concurrency > 1 together put two "
+            "models and N episodes on one GPU at once. Pick one: parallel "
+            "cells of a single model, or two models run serially.")
     if args.starve_abort < 0:
         raise SystemExit(f"[runner] --starve-abort must be >= 0 (0 disables), "
                          f"got {args.starve_abort}")
@@ -117,6 +155,20 @@ def main():
     if args.max_steps < 0:
         raise SystemExit(f"[runner] --max-steps must be >= 0 (0 disables), got "
                          f"{args.max_steps}")
+
+    spec = model_spec(args.model)
+    num_ctx = args.num_ctx if args.num_ctx is not None else spec["num_ctx"]
+    num_predict = (args.num_predict if args.num_predict is not None
+                   else spec["num_predict"])
+    temperature = (args.temperature if args.temperature is not None
+                   else spec["temperature"])
+    top_p = args.top_p if args.top_p is not None else spec["top_p"]
+    effort = (args.reasoning_effort if args.reasoning_effort is not None
+              else reasoning_effort_for(args.model, args.think))
+    if num_ctx < 1:
+        raise SystemExit(f"[runner] --num-ctx must be >= 1, got {num_ctx}")
+    if num_predict < 1:
+        raise SystemExit(f"[runner] --num-predict must be >= 1, got {num_predict}")
 
     names = [t for t in args.tasks.split(",") if t.strip()] or None
     tasks = load_tasks(names)
@@ -133,10 +185,12 @@ def main():
     # Stamped on every episode this run writes. Provenance travels WITH the
     # episode: that is what stops a later invocation from describing it.
     protocol = protocol_block(max_steps=args.max_steps, max_wall=args.max_wall,
-                              share_gpu=share_gpu, num_ctx=args.num_ctx,
-                              num_predict=args.num_predict,
-                              temperature=args.temperature,
-                              think=bool(args.think))
+                              share_gpu=share_gpu, num_ctx=num_ctx,
+                              num_predict=num_predict,
+                              temperature=temperature,
+                              think=bool(args.think), model=args.model,
+                              top_p=top_p, reasoning_effort=effort,
+                              concurrency=args.concurrency)
     run_meta = {"tag": tag, "seed_base": args.seed, "repeat": args.repeat,
                 "rep_offset": args.rep_offset,
                 "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -178,20 +232,44 @@ def main():
               flush=True)
     os.makedirs(outdir, exist_ok=True)
 
+    # Announced before the tenancy check so a sibling starting at the same
+    # instant sees this runner too, and released in the finally below however
+    # this process exits.
+    lease = register_runner(RESULTS, args.model)
+    # atexit rather than a try/finally around the whole run: it covers the
+    # SystemExit paths below as well as a normal return. A hard kill leaves the
+    # file behind, which is why active_runners treats a lease whose pid is gone
+    # as stale and deletes it instead of believing it.
+    atexit.register(release_runner, lease)
     try:
         evicted = ensure_sole_tenant(args.model, evict=not args.keep_resident,
-                                     share_gpu=args.share_gpu)
+                                     share_gpu=args.share_gpu,
+                                     results_root=RESULTS)
     except RuntimeError as e:
+        release_runner(lease)
         raise SystemExit(f"[runner] {e}")
     if evicted:
         print(f"[runner] evicted {', '.join(evicted)} so {args.model} runs alone")
     elif args.share_gpu:
         print(f"[runner] share-gpu: {args.model} may coexist with one peer")
 
-    client = Client(args.model, temperature=args.temperature, top_p=0.95, top_k=20,
-                    num_ctx=args.num_ctx, num_predict=args.num_predict,
-                    think=args.think, seed=args.seed,
-                    timeout=args.max_wall if args.max_wall > 0 else 1800)
+    try:
+        client = Client(args.model, temperature=temperature, top_p=top_p,
+                        top_k=spec["top_k"], num_ctx=num_ctx,
+                        num_predict=num_predict, think=args.think,
+                        seed=args.seed, reasoning_effort=effort,
+                        timeout=args.max_wall if args.max_wall > 0 else 1800)
+    except ModelError as e:
+        raise SystemExit(f"[runner] {e}")
+    # Whether a pinned seed actually reaches the model is a property of the
+    # endpoint, not of the flag. An arm that cannot send one records None, so a
+    # seed that never left this process is never indistinguishable, on disk,
+    # from one the model actually sampled under.
+    seeds_honoured = bool(getattr(client, "ACCEPTS_SEED", True))
+    if not seeds_honoured and (args.seed is not None or args.repeat > 1):
+        print(f"[runner] NOTE: {args.model} is served by an endpoint that does "
+              f"not accept a seed; episodes record seed=null and repeats are "
+              f"independent samples, not seeded replicates", flush=True)
 
     cap = "uncapped" if not args.max_steps else str(args.max_steps)
     written = kept = 0
@@ -201,6 +279,9 @@ def main():
           f"repeat={args.repeat} reps={reps[0]}-{reps[-1]} "
           f"seed_base={args.seed} max_steps={cap} "
           f"max_wall={args.max_wall or 'off'} share_gpu={share_gpu}")
+    print(f"[runner] spec num_ctx={num_ctx} num_predict={num_predict} "
+          f"temperature={temperature} top_p={top_p} think={bool(args.think)} "
+          f"reasoning_effort={effort or 'n/a'}")
     for rep in reps:
         if starved_abort:
             break
@@ -209,6 +290,7 @@ def main():
             client.options["seed"] = pinned
         else:
             client.options.pop("seed", None)
+        recorded_seed = pinned if seeds_honoured else None
         for task in tasks:
             if starved_abort:
                 break
@@ -246,10 +328,30 @@ def main():
                 sampler.start()
                 try:
                     res = h.run()
+                except AccountRefused as e:
+                    # Every remaining episode would fail identically, and each
+                    # would be written as a 0-token failure indistinguishable
+                    # from the ablation working. Stop instead, writing nothing
+                    # for this episode.
+                    sampler.stop()
+                    # SystemExit(str) exits 1 and would be indistinguishable
+                    # from any other runner refusal; grid.py keys the
+                    # whole-grid abort on this specific code.
+                    print(f"[runner] ABORTING: the provider refused the "
+                          f"account, not the request -- {e}\n"
+                          f"           No episode was written for "
+                          f"{task.name}.rep{rep}. Nothing after this point "
+                          f"would be a measurement: fix the account, then "
+                          f"re-run this tag. Episodes already on disk that "
+                          f"died this way are first-turn failures and will be "
+                          f"re-run automatically (no --force needed).",
+                          flush=True)
+                    raise SystemExit(ACCOUNT_REFUSED_RC)
                 except Exception as e:
                     sampler.stop()
                     print(f"  {task.name:24s} RUNNER-ERROR {type(e).__name__}: {e}")
-                    row = {"task": task.name, "rep": rep, "seed": pinned,
+                    row = {"task": task.name, "rep": rep,
+                           "seed": recorded_seed,
                            "passed": False, "steps": 0, "output_tokens": 0,
                            "stop_reason": f"runner_error:{type(e).__name__}",
                            "errors": [str(e)]}
@@ -257,7 +359,7 @@ def main():
                 compute = sampler.stop()
                 decode_tok_s = tok_s(res.output_tokens, res.eval_duration_ns)
                 prompt_tok_s = tok_s(res.prompt_tokens, res.prompt_eval_duration_ns)
-                row = {"task": task.name, "rep": rep, "seed": pinned,
+                row = {"task": task.name, "rep": rep, "seed": recorded_seed,
                        "passed": res.passed,
                        "finished": res.finished, "stop_reason": res.stop_reason,
                        "steps": res.steps, "tool_calls": res.tool_calls,
@@ -335,8 +437,16 @@ def main():
             else:
                 starve_streak = 0
 
+    # Counted from the episodes on disk, so a cell poisoned by an earlier run
+    # is caught even when this invocation wrote nothing. A pass rate over rows
+    # the provider never served is not a pass rate.
+    try:
+        unserved = unserved_count(cell_rows(outdir))
+    except CellError:
+        unserved = 0
     outcomes = {
         "run": run_meta,
+        "unserved": unserved,
         "share_gpu_requested": bool(args.share_gpu),
         "share_gpu_demoted": bool(args.share_gpu) and not share_gpu,
         "starved_abort": starved_abort,
@@ -356,6 +466,14 @@ def main():
                                 protocol=protocol, outcomes=outcomes)
     except CellError as e:
         raise SystemExit(f"[runner] refusing to write summary.json: {e}")
+    if unserved:
+        print(f"[runner] WARNING: {unserved} of this cell's episodes were never "
+              f"served -- the provider refused the account (401/402/403). They "
+              f"are scored as failures by every reported rate, which is "
+              f"indistinguishable from the model failing. This cell MUST NOT be "
+              f"reported until they are re-run; they are first-turn failures, "
+              f"so re-running this tag replaces them without --force.",
+              flush=True)
     print(f"[runner] cell {summary['passed']}/{summary['n']} passed "
           f"({summary['pass_rate']}%)  total {summary['wall_s']}s  "
           f"(this run: {written} written, {kept} kept)  -> {outdir}")
