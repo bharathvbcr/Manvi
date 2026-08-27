@@ -2,9 +2,11 @@
 
 Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 2, 22 August 2026**.
 
-Two protocol documents sit beside it and are not part of the manuscript:
+Three protocol documents sit beside it and are not part of the manuscript:
 [`preregistration.md`](preregistration.md), the registered v2 grid (two locally
-served models), and [`extension-cerebras.md`](extension-cerebras.md), a separately
+served models); [`DEVIATIONS.md`](DEVIATIONS.md), which records every departure
+from it under §12 along with what had been observed when each was decided; and
+[`extension-cerebras.md`](extension-cerebras.md), a separately
 registered extension adding API-served `gpt-oss-120b` and `gemma-4-31b` arms.
 The extension runs under its own tag and does not touch the frozen grid or the
 registered design; it carries its own pilot gates and its own suitability
