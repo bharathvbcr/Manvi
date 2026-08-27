@@ -15,6 +15,12 @@ is filled here. Verified byte-identical on the run host across `mh/runtime.py`,
 Neoverse-V2 ×64, Ubuntu 22.04.5, Python 3.10.12, ollama 0.33.0, containment
 backend `bwrap` 0.6.1. Stamped on every episode as `env_*`.
 
+**Driver script:** [`run_v2.sh`](run_v2.sh), committed here verbatim, md5
+`20f4e46b31a8dd4d463122cf75181e46` — byte-identical to the copy executing on the
+run host. It was not previously under version control, which left the six-phase
+chaining and the per-phase seed counts undocumented outside this file. Its header
+comment is *not* authoritative about blindness; see the note at the end of D2.
+
 **Tag:** `v2`. The frozen v1 grid lives under `*__hard` and must never be pooled
 with this one (§1); a separate tag is what enforces that, because
 `compare.py --tag hard` pools every directory ending in that tag.
@@ -111,6 +117,14 @@ ablation can exceed `full` by at most 0.05, so H3 effects on that arm are
 necessarily small and n=5 versus n=20 changes little about what is resolvable
 there. A reader is entitled to weigh that. What did *not* inform it is any
 comparison, which is what H1, H2, H3 and H4 are all made of.
+
+**A conflicting label in the driver script.** `run_v2.sh`'s header comment reads
+"Decided blind: qwen's baseline cell had not finished when this was set, so no
+delta had been seen for either arm." Both of those facts are true and are
+restated above. The label "decided blind" is not: qwen's `full` cell *had*
+completed when D2b and D2c were taken. The comment is left unedited because the
+script is the run record and rewriting it after the fact would be worse than the
+overstatement; **this entry is authoritative where the two disagree.**
 
 **Consequence:** the six H3 ablations run at v1's sample size, and inherit v1's
 statistical weakness. Two specifics belong in the manuscript rather than being
