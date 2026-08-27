@@ -18,7 +18,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 ## Core Architecture & Engine Specifications
 
 - [**Why MANVI is Different (Comparative Analysis)**](COMPARISON.md)  
-  Comprehensive feature matrix and deep-dive comparison against SWE-agent, OpenHands, Aider, Claude Code, and traditional Python agent frameworks.
+  Comprehensive feature matrix and deep-dive comparison against SWE-agent, OpenHands, Aider, Claude Code, Pi, Oh My Pi, Kon, and traditional Python agent frameworks.
 - [**Technical Architecture Specification**](ARCHITECTURE.md)  
   Dual-plane partition (Go IO/concurrency vs Rust CPU/determinism), stdio JSON IPC protocol, session log invariants, and complete package map.
 - [**Policy & Safety Engine Specification**](POLICY_AND_SAFETY.md)  

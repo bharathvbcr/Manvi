@@ -1,6 +1,6 @@
 # Why MANVI is Different Compared to Other Harnesses
 
-Most coding-agent frameworks and evaluation harnesses (e.g., SWE-agent, SWE-bench runners, OpenHands, Aider, Claude Code, AutoGen, CrewAI) were originally designed as rapid Python/Node prototypes. They prioritize loose prompt chaining over execution integrity, resulting in high interpreter overhead, fragile shell sandboxing, silent evaluation false-positives, broken local KV prefix caches, and volatile in-memory concurrency.
+Most coding-agent frameworks and evaluation harnesses (e.g., SWE-agent, SWE-bench runners, OpenHands, Aider, Claude Code, Pi, Oh My Pi, Kon, AutoGen, CrewAI) were originally designed as rapid Python/Node prototypes. They prioritize loose prompt chaining over execution integrity, resulting in high interpreter overhead, fragile shell sandboxing, silent evaluation false-positives, broken local KV prefix caches, and volatile in-memory concurrency.
 
 **MANVI is engineered from the ground up as a high-performance, deterministic dual-plane harness in pure Go and Rust.**
 
@@ -92,8 +92,18 @@ See [`AGENT_AND_TURN_LIFECYCLE.md`](AGENT_AND_TURN_LIFECYCLE.md) for lifecycle d
 ---
 
 ### 6. Universal Host Plane (`manvi serve`) & Tri-Mode Interaction
-
+ 
 MANVI offers three distinct interaction surfaces:
 1. **Elm-Loop Full-Screen TUI** (`manvi` / `manvi tui`): Built-in multi-session tab strip, dynamic live theme switching (`/theme`, `Ctrl+Y`), searchable session switcher modal (`Ctrl+S`), markdown highlighting, and zero-allocation diff rendering (0 bytes on idle ticks). See [`TUI_AND_EVENT_SUBSYSTEM.md`](TUI_AND_EVENT_SUBSYSTEM.md).
 2. **Headless Execution Plane** (`manvi run`): Scripts and CI pipelines benefit from distinct exit codes: `0` (success), `1` (failure, including output that could not be written), `2` (step ceiling reached, preventing partial commit of incomplete work), `3` (output cap), `4` (no answer) and `5` (an unfinished stop reason). See [`CLI_AND_CONFIGURATION.md`](CLI_AND_CONFIGURATION.md).
 3. **Embedded Stdio Host Plane** (`manvi serve`): Exposes policy enforcement, capability discovery, token budget preparation, and completion settling over NDJSON on stdio—allowing IDEs (VS Code, JetBrains), editors, and desktop applications to embed MANVI with zero cgo or shared library linking. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
+ 
+---
+ 
+### 7. Comparison with Lightweight & Local Harnesses (Pi, Oh My Pi, Kon)
+ 
+In addition to heavyweight agent platforms, lightweight terminal harnesses (such as Pi, Oh My Pi, and Kon) have explored minimalist agent loops. MANVI builds on empirical tests and optimizations across these setups:
+ 
+- **Step Horizon & Stall Accounting**: Rigid step ceilings (e.g., 24 steps) prematurely terminate legitimate local multi-step repair workflows. Benchmarked against harnesses like Kon, MANVI sets a realistic 500-step ceiling coupled with `agent.StallCost` (charging 3× budget for zero-progress turns) and repeat-loop limiters to safely bound runaways without killing active work.
+- **Prefix Cache vs Ad-Hoc History Compaction**: Lightweight harnesses often rebuild or mutate conversation history between turns, dropping Ollama / vLLM / llama.cpp KV cache state. MANVI enforces strict append-only log projection so the token prefix only grows forward, achieving **1.5s warm step prefill vs 120s cold re-tokenization**.
+- **Structural Invariants vs Ad-Hoc Shell Scripts**: Where script-based tools rely on unconstrained subprocess shells, MANVI enforces hard workspace containment, 6-rung policy verification, and unshadowable test verification so local models cannot cheat evaluations.

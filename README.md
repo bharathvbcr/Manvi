@@ -2,11 +2,22 @@
 
 # MANVI
 
-A high-performance coding-agent harness in pure Go and Rust — no other runtime — that executes DevCouncil's tools natively rather than shelling out to external agent scripts.
+A lightweight, high-performance coding-agent harness in pure Go and Rust — designed for local models, customizable for specialized tools and use cases, and featuring additional capabilities from its dual-plane architecture.
 
 **Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 44 native tools (including a native git integration, an MCP 2.0 client, and a bridge to the external `devcouncil` CLI), and the Go↔Rust process boundary — all verified against **1,031 parity cases** generated from the Python incumbent. Everything is certified by `./verify.sh`.
 
 <br clear="left">
+
+---
+
+## Why MANVI?
+
+MANVI was created as a new lightweight coding harness designed for local models, customizable for other tools and use cases, and featuring additional capabilities from the architecture:
+
+- **Designed for Local Models**: Sub-30ms auto-discovery across local runners (Ollama, LM Studio, vLLM, llama.cpp, Jan), append-only context compaction preserving KV prefix caching (**1.5s warm vs 120s cold prefill on 27B models**), wire-level parser recovery (Hermes, Qwen3 XML), and prefilled `<think>` sanitization.
+- **Customizable for Other Tools & Use Cases**: Zero-runtime overhead extension model, native tool execution (44 native tools, MCP 2.0 client, and tool bridges), and an embedded stdio host server (`manvi serve`) for embedding into custom IDEs, editors, and external toolchains.
+- **Additional Architectural Capabilities**: Dual-plane process partition (pure Go concurrency + Rust CPU determinism with zero CGO), a 6-rung non-cheating policy ladder with audited override grants, and SQLite-backed multi-agent task concurrency that survives process termination.
+- **Tested & Optimized Against Sibling Harnesses**: Empirical testing and experiments with lightweight and local harnesses (such as Pi, Oh My Pi, and Kon) informed key harness optimizations — notably replacing naive 24-step cutoffs with a 500-step ceiling backed by progress stall-cost tracking, eliminating volatile in-memory state, and preventing prefix-cache invalidation.
 
 ---
 
