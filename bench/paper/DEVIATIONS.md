@@ -310,10 +310,29 @@ deviation than a wrong annotation. So:
 
 - every v2 episode already on disk, and every one still to be written, carries
   the incorrect note;
-- readers and any audit script must treat `events[].note` on this grid as
-  known-wrong, and take `protocol.env_containment` / `res.containment` as
-  authoritative;
+- **the `ext-cerebras` arm is unaffected.** It ran from macOS, where the backend
+  *is* `sandbox-exec`, so the old condition was false and no note was emitted.
+  Its episodes read `{"t": "containment", "backend": "sandbox-exec"}`, correctly;
+- readers and any audit script must treat `events[].note` on the v2 grid as
+  known-wrong and take **`events[].backend`** as the record — it correctly says
+  `bwrap` on every episode;
 - the fix applies to the next grid, not this one.
+
+**Correction to an earlier draft of this entry**, which named
+`protocol.env_containment` and `res.containment` as the authoritative fields.
+Neither is persisted. A real episode's protocol block holds seventeen keys and
+**none of them is containment**; `Result.containment` is assigned in the harness
+and never written to disk. The containment event is the *only* per-episode
+record, which is what makes a wrong note in it worth correcting rather than
+shrugging at.
+
+**A second finding falls out of that.** Containment is not in `PROTOCOL_KEYS`,
+so it is **not a pooling key**: an episode run with `MH_UNCONTAINED=1` would
+pool silently with a contained one, and only the event would show it. No
+contamination occurred here — every v2 episode records `bwrap` and every
+`ext-cerebras` episode records `sandbox-exec` — but for a study whose central
+claim is that containment was active, the property should be stamped and
+pooled on, not merely logged. Owed for the next grid alongside the O4 fix.
 
 ## O5 — The exploitation audit has not been repeated on v2
 
