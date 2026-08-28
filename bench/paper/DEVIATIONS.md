@@ -269,6 +269,83 @@ the qwen-vs-Ornith interaction is a cleaner capability × harness test than
 either against `ext-cerebras`, and should be presented as the primary H4
 contrast, with the hosted arm as the third point.
 
+## O4 — Every v2 episode carries a false containment note
+
+Found while asking whether the v1 exploitation audit had ever been repeated on
+v2. It had not, and the first v2 episode inspected opened with this:
+
+```
+{"t": "containment", "backend": "bwrap",
+ "note": "shell commands are not OS-contained in this episode"}
+```
+
+Both halves cannot be true. `bwrap` **is** OS containment: `contained_argv()`
+routes Linux through `_bwrap_argv`, and the live process tree on the run host
+shows `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs <bench root>`
+wrapping every shell command.
+
+**Cause.** `harness.py` emitted the note on `backend != "sandbox-exec"` — the
+same macOS-only assumption that had already been found and fixed in the C5
+containment probe, surviving in a second place. On Linux the condition is always
+true, so **every episode of the entire GPU arm is stamped as uncontained while
+being contained.**
+
+**Scope.** Annotation only. The note lives in `events`, never in `row`,
+`protocol` or `summary`, so it touches no pass rate, no delta and no pooling
+key. `res.containment` separately records the correct backend. No result
+changes.
+
+**Why it still matters.** This is the paper's own subject: a provenance record
+that misstates a safety property. v1's defects overstated the instrument;
+this one understates it. Both leave an auditor unable to tell a contained run
+from a leaky one by reading the record — which is exactly the failure the v1
+audit existed to rule out.
+
+**Fixed, and deliberately not deployed.** The decision now lives in one place,
+`tools.containment_event()`, with a regression test in `test_runtime.py` that
+fails against the old condition. The run host is **not** being patched: the
+registered grid must finish on the single instrument revision `82e453a` that
+DEVIATIONS pins, and swapping harness code mid-grid would be a far worse
+deviation than a wrong annotation. So:
+
+- every v2 episode already on disk, and every one still to be written, carries
+  the incorrect note;
+- readers and any audit script must treat `events[].note` on this grid as
+  known-wrong, and take `protocol.env_containment` / `res.containment` as
+  authoritative;
+- the fix applies to the next grid, not this one.
+
+## O5 — The exploitation audit has not been repeated on v2
+
+v1's headline credibility claim is an audit of all 760 episodes and 3,879
+file-writing tool calls that found **zero** exploiting the five defects. **No
+equivalent audit has been run on v2, or on `ext-cerebras`.** There is no audit
+script in the repository; the v1 pass was one-off analysis.
+
+The gap is not that exploitation is suspected — the defects v1 had are fixed and
+the tasks are stricter. It is that "the fixes are correct, therefore no episode
+cheated" is inference, and the same inference was available for v1 before anyone
+checked. O4 is evidence for taking that distinction seriously: the containment
+record on this grid is demonstrably wrong in one direction, found only because
+someone looked.
+
+Two specifics make v2 *more* in need of an audit than v1, not less:
+
+1. **The Linux containment path is new code.** It had never been exercised
+   before this grid, and ungating it revealed hidden tests reachable through
+   `TMPDIR` bind ordering, orphaned children surviving their parent, and a probe
+   asserting the wrong invariant. All were fixed before the grid started, but
+   the whole GPU arm is the first real workload that path has carried.
+2. **The episode record supports the query.** Every episode stores `events` and
+   `verify_output`, so the audit is a query over data already on disk, not a
+   re-run.
+
+**Owed before publication:** an audit script, run over all v2 and `ext-cerebras`
+episodes, checking that no episode read or wrote a hidden test, that no pass was
+recorded without the verifier running, and that the containment backend in each
+episode matches the one its host could provide. Its result belongs in the
+manuscript next to v1's, whatever it says.
+
 ## What has *not* been deviated from
 
 - **§4 primary analysis** — per-repeat pass rate, weighted mean over repeats,

@@ -16,7 +16,8 @@ import time
 from . import tools as toolmod
 from .bench import model_facing
 from .model import AccountRefused
-from .tools import Sandbox, ToolError, cap_output, containment_backend
+from .tools import (Sandbox, ToolError, cap_output, containment_backend,
+                    containment_event)
 
 ENVBOOT_TIMEOUT_S = 15
 WALL_S_DEFAULT = 1800          # episode fail line; 30 minutes
@@ -210,12 +211,7 @@ class Harness:
         self.res = Result()
         backend = containment_backend()
         self.res.containment = backend
-        if backend != "sandbox-exec":
-            self.res.events.append(
-                {"t": "containment", "backend": backend,
-                 "note": "shell commands are not OS-contained in this episode"})
-        else:
-            self.res.events.append({"t": "containment", "backend": backend})
+        self.res.events.append(containment_event(backend))
         # Ollama silently drops the oldest tokens when a prompt exceeds num_ctx.
         # Silent truncation would corrupt a run invisibly -- the model would answer
         # from a context we did not give it -- so we watch the headroom and stop

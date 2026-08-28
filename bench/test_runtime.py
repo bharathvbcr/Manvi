@@ -1178,6 +1178,27 @@ with tempfile.TemporaryDirectory() as tmp:
     check("the resumed cell holds both repeats",
           summary_of(tmp, "hard-ext")["n"] == 2)
 
+# ---------------------------------------------------------------------------
+# Containment provenance. The note used to fire on `backend != "sandbox-exec"`,
+# so every Linux episode -- the entire GPU arm -- was stamped as though its
+# shell commands were uncontained, while bwrap was in fact containing them.
+# A record that understates the instrument is the same class of defect as one
+# that overstates it: an auditor cannot tell the two apart from the episode.
+from mh.tools import containment_event
+
+for backend in ("sandbox-exec", "bwrap"):
+    ev = containment_event(backend)
+    check(f"a real backend ({backend}) is not stamped uncontained",
+          "note" not in ev and ev["backend"] == backend, str(ev))
+
+for backend in (None, "off"):
+    ev = containment_event(backend)
+    check(f"an uncontained episode ({backend!r}) still says so",
+          "not OS-contained" in ev.get("note", ""), str(ev))
+
+check("the event always names the backend it recorded",
+      containment_event("bwrap")["t"] == "containment")
+
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
