@@ -175,6 +175,73 @@ as "not present".
 
 ---
 
+## O2 — A floored task on the Ornith arm, and an asymmetry in §11
+
+Recorded for the same reason as O1: it is evidence the §11 gate would have
+weighed, arriving after launch because D1 ran the gate on one cell.
+
+Ornith `full`, complete at 160 episodes: **97/160 = 60.6%**. That clears §11's
+condition 3 (weaker arm's full-harness rate ≥ 20%) with room to spare, and the
+arm carries no ceiling — a harmful component can show a Δ down to −0.394 here,
+against qwen's −0.05. **Ornith is the arm that can resolve what qwen
+structurally cannot**, which is the O1 warning's counterpart.
+
+Per-task in that cell:
+
+| task | passed |
+|---|---|
+| `ast_transformer` | **0/20** |
+| `nfa_match` | 6/20 |
+| `state_machine_fuzz` | 9/20 |
+| `concurrency_race` | 13/20 |
+| `pratt_parse` | 13/20 |
+| `cache_invalidation_dist` | 18/20 |
+| `json_patch` | 19/20 |
+| `ot_transform` | 19/20 |
+
+**`ast_transformer` is floored at 0/20.** This is not a gate breach. §11 is
+asymmetric: condition 2 states a *task-level* saturation rule ("no task is
+passed by the stronger model in every cell", revise if ≥3 of 8), while
+condition 3 states only a *suite-level* floor ("the weaker model's
+full-harness rate ≥ 20%"). A task floored in every cell is not covered by any
+registered rule. Nothing is being retired on the strength of this — the task
+set is unrevised (§11.2's remedy requires re-registration, which did not
+happen) — but the gap is named here rather than left for a reader to notice.
+
+**Consequence, and it is the same consequence O1 has.** A task pinned at an
+extreme contributes no signal to any within-arm delta on that arm, because both
+cells score it identically; it only dilutes the mean over eight tasks toward
+zero. The two arms lose signal in opposite directions:
+
+- qwen: three tasks saturated at 20/20 in `full` (`json_patch`, `ot_transform`,
+  `pratt_parse`) — effectively **5 of 8** tasks informative.
+- Ornith: one task floored at 0/20 (`ast_transformer`), and two near-saturated
+  at 19/20 — effectively **5 of 8** informative, on a different subset.
+
+The overlap is partial: `json_patch` and `ot_transform` are near the ceiling on
+*both* arms, while `ast_transformer` is floored on Ornith and mid-range on qwen
+(17/20 in `full`). So per-arm deltas are computed over different effective task
+sets, and any cross-arm interaction (H4) is a comparison of two means taken
+over partly non-overlapping informative subsets. **The per-task profile must be
+reported alongside H4**, not just the aggregate; the aggregate can agree while
+the profiles disagree, which is already visible between qwen and `ext-cerebras`.
+
+## O3 — The two local arms share a protocol exactly
+
+Verified on the completed `full` cells: qwen and Ornith agree on **all 17
+protocol keys**, with no differences. This was intended (§Protocol keeps
+`num_ctx 32768 / num_predict 4096 / temperature 0.6` for local arms) but is
+worth stating as measured rather than assumed.
+
+It matters for H4. `extension-cerebras.md` §7 correctly records that the hosted
+arm differs from the local arms on `num_ctx`, `num_predict` and
+`reasoning_effort`, so the hosted arm's *pass rate* is not comparable to a
+local arm's and only its within-arm deltas are. **That restriction does not
+apply between qwen and Ornith.** Their pass rates are directly comparable, so
+the qwen-vs-Ornith interaction is a cleaner capability × harness test than
+either against `ext-cerebras`, and should be presented as the primary H4
+contrast, with the hosted arm as the third point.
+
 ## What has *not* been deviated from
 
 - **§4 primary analysis** — per-repeat pass rate, weighted mean over repeats,
