@@ -160,10 +160,31 @@ qwen `full`, complete at 160 episodes over 20 repeats: **152/160 = 95.0%**,
 
 §11.2 revises the task set when ≥3 of 8 tasks are passed **in every cell**.
 Three are saturated in *this* cell; whether they are saturated in every cell
-cannot be known until the ablations complete, and a task saturated under `full`
-may well fail under `baseline`. So this is not a breach of the gate — it is the
-early warning the gate was designed to produce, arriving after launch instead of
-before it.
+could not be known until the ablations completed.
+
+**Resolved — the gate is cleared.** With all nine qwen cells complete, the
+registered check was evaluated across the full arm:
+
+| task | worst cell | passed in every cell? |
+|---|---|---|
+| `json_patch` | 1/5 (`no-verifygate`) | no |
+| `concurrency_race` | 9/20 (`baseline`) | no |
+| `ast_transformer` | 3/5 (`no-verifygate`) | no |
+| `state_machine_fuzz` | 3/5 (`no-verifygate`) | no |
+| `nfa_match` | 15/20 (`baseline`) | no |
+| `cache_invalidation_dist` | 4/5 (`no-loopbreak`) | no |
+| `pratt_parse` | 4/5 (`no-groundfs`) | no |
+| `ot_transform` | 18/20 (`baseline`) | no |
+
+**Zero of eight.** §11's condition 2 is satisfied on the stronger arm; the task
+set required no revision and none was made. The three tasks saturated under
+`full` all fail somewhere else in the arm — `json_patch` most dramatically,
+falling to 1/5 without the verify gate. Saturation under a single cell was not
+saturation of the suite.
+
+**What still stands, and it is narrower than it first looked.** The gate is
+about the *task set*; the ceiling is about the *arm's mean*, and that is
+arithmetic no gate can clear.
 
 **Implication for interpretation:** with `full` at 0.950 against a hard ceiling
 of 1.0, a component that *hurts* qwen can show a Δ of at most −0.05. The
@@ -213,16 +234,22 @@ extreme contributes no signal to any within-arm delta on that arm, because both
 cells score it identically; it only dilutes the mean over eight tasks toward
 zero. The two arms lose signal in opposite directions:
 
-- qwen: three tasks saturated at 20/20 in `full` (`json_patch`, `ot_transform`,
-  `pratt_parse`) — effectively **5 of 8** tasks informative.
-- Ornith: one task floored at 0/20 (`ast_transformer`), and two near-saturated
-  at 19/20 — effectively **5 of 8** informative, on a different subset.
+- qwen: **all eight tasks vary across cells** (O1's resolution), so none is dead
+  weight. Two move only slightly — `ot_transform` spans 0.90–1.00 and
+  `pratt_parse` 0.80–1.00 across the nine cells — while `json_patch` spans
+  0.20–1.00. Signal is unevenly distributed, not absent.
+- Ornith: `ast_transformer` is floored at 0/20 in `full`, and `json_patch` and
+  `ot_transform` sit at 19/20. Whether the floor holds across *every* Ornith
+  cell cannot be settled until P6 completes, and the same §11.2 check should be
+  run on this arm then — under §11's own definition it is the **weaker** arm,
+  so condition 2 does not formally apply to it, which is precisely the
+  asymmetry named above.
 
-The overlap is partial: `json_patch` and `ot_transform` are near the ceiling on
-*both* arms, while `ast_transformer` is floored on Ornith and mid-range on qwen
-(17/20 in `full`). So per-arm deltas are computed over different effective task
-sets, and any cross-arm interaction (H4) is a comparison of two means taken
-over partly non-overlapping informative subsets. **The per-task profile must be
+The two arms therefore lose signal on different tasks: `ast_transformer` is
+qwen's third-most-variable task and may be Ornith's least informative. So
+per-arm deltas are weighted toward different tasks, and any cross-arm
+interaction (H4) compares two means whose informative mass sits in different
+places. **The per-task profile must be
 reported alongside H4**, not just the aggregate; the aggregate can agree while
 the profiles disagree, which is already visible between qwen and `ext-cerebras`.
 
