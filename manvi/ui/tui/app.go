@@ -452,24 +452,6 @@ func (a *App) key(binding string) []Effect {
 		}
 	}
 
-	// In choose stage of an allow/deny approval card, 'd' denies and 'a' allows directly.
-	if ctx == CtxApproval && len(binding) == 1 {
-		if v := a.Current(); v != nil && v.Approval() != nil {
-			card := v.Approval()
-			if card.stage == stageChoose && !card.isQuestion() {
-				if binding == "d" {
-					card.option = 0
-					return a.acceptApproval()
-				}
-				if binding == "a" && card.Request.Grantable {
-					card.option = 1
-					card.stage = stageReason
-					return nil
-				}
-			}
-		}
-	}
-
 	switch resolve(binding, ctx) {
 	case CmdQuit:
 		return a.requestQuit()

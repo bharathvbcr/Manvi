@@ -203,26 +203,57 @@ func TestApprovalQueuePositionAndWaitTime(t *testing.T) {
 	}
 }
 
-func TestApprovalDirectKeyMnemonic(t *testing.T) {
-	app, _ := newTestApp()
-	v := app.Current()
-	reply := make(chan ui.Decision, 1)
-	req := ui.Request{
-		ID:        "app-1",
-		Rule:      "fs.write",
-		Grantable: true,
-	}
-	v.PushApproval(NewApprovalCard(req, reply))
+func TestBareLettersDoNotAnswerAnApproval(t *testing.T) {
+	// An approval card is the human-in-the-loop control, and a single
+	// unmodified letter is the easiest thing to send by accident: a buffered
+	// keystroke, a held key, a paste that arrived a frame early. 'a' and 'd'
+	// once answered the card directly; nothing unmodified answers it now, and
+	// the only keys that do are the two the card advertises.
+	for _, k := range []string{"a", "d", "y", "n"} {
+		a, _ := newTestApp()
+		reply := raiseApproval(a, true)
 
-	// 'd' in choose stage denies directly
-	app.Dispatch(ActionKey{Binding: "d"})
-	select {
-	case dec := <-reply:
-		if dec.Allow {
-			t.Fatalf("expected deny from 'd' key, got allow")
+		card := a.Current().Approval()
+		if card == nil {
+			t.Fatal("no approval card was raised")
 		}
-	default:
-		t.Fatalf("expected decision on reply channel")
+
+		if effects := key(a, k); len(effects) != 0 {
+			t.Fatalf("%q produced effects on an approval card: %#v", k, effects)
+		}
+		select {
+		case dec := <-reply:
+			t.Fatalf("%q answered the approval card (allow=%v); it must not", k, dec.Allow)
+		default:
+		}
+		// 'a' did not answer the card outright, it advanced it to the reason
+		// editor with "allow" already selected — one Enter away from a grant.
+		// The card must not have moved at all.
+		if card.stage != stageChoose {
+			t.Fatalf("%q advanced the approval card off the choose stage", k)
+		}
+	}
+}
+
+func TestApprovalStillAnswersOnEnterAndEsc(t *testing.T) {
+	// Removing the letter shortcuts must not have taken the real answers with
+	// them: esc still denies, and the card is still answerable.
+	a, _ := newTestApp()
+	reply := raiseApproval(a, true)
+
+	effects := key(a, "esc")
+	if len(effects) != 1 {
+		t.Fatalf("esc on an approval card produced %#v", effects)
+	}
+	d, ok := effects[0].(EffectDecide)
+	if !ok {
+		t.Fatalf("esc produced %T, want EffectDecide", effects[0])
+	}
+	if d.Decision.Allow {
+		t.Fatal("esc on an approval card allowed the operation")
+	}
+	if d.Reply != reply {
+		t.Fatal("the decision went to the wrong reply channel")
 	}
 }
 
