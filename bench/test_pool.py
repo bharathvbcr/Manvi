@@ -653,6 +653,109 @@ with tempfile.TemporaryDirectory() as root:
           any("cells" in p for p in json.load(open(out)).get("nonfinite", [])),
           str(json.load(open(out)).get("nonfinite"))[:200])
 
+# --------------------------------------------- account refusals reach the report
+#
+# A cell of 160 HTTP 402s published 0.0% and every downstream stage believed it.
+# compare.py is the last stage that could have caught it and could not: it knows
+# about starved rows and nothing else. These rows are deliberately NOT excluded
+# from the denominator (the registered exclusion rule is timeouts only), so the
+# only defence is that the rate is never printed without the fact beside it.
+print("compare.py refuses to certify episodes the provider never served")
+with tempfile.TemporaryDirectory() as root:
+    poisoned = src("m__full__t", [0, 1], TASKS)
+    for r in poisoned["rows"][:4]:
+        r.update(passed=False, steps=1, output_tokens=0,
+                 stop_reason="error:ModelError",
+                 errors=['ModelError: HTTP 402: {"message":"Payment required"}'])
+    clean = src("m__baseline__t", [0, 1], TASKS, cfg="baseline",
+                flags={"envboot": False})
+    write_tree(root, [poisoned, clean])
+    r = run_compare(root, "--tag", "t")
+    check("the report says it is refusing to certify",
+          "REFUSING TO CERTIFY" in r.stdout, r.stdout[-400:])
+    check("it names the count and the cell",
+          "4 episode(s)" in r.stdout and f"{MODEL}|full" in r.stdout,
+          r.stdout[-600:])
+    check("the cell line carries the fact next to its rate",
+          "UNSERVED=4 SCORED AS FAILURES" in r.stdout, r.stdout[-800:])
+    out = os.path.join(root, "poisoned.json")
+    run_compare(root, "--tag", "t", "--json-out", out)
+    rep = json.load(open(out))
+    check("the machine-readable report carries it too",
+          rep.get("unserved_cells", {}).get(f"{MODEL}|full") == 4,
+          str(rep.get("unserved_cells")))
+    check("and the per-cell block records n_unserved",
+          rep["cells"][f"{MODEL}|full"]["n_unserved"] == 4
+          and rep["cells"][f"{MODEL}|baseline"]["n_unserved"] == 0,
+          str(rep["cells"][f"{MODEL}|full"])[:200])
+
+with tempfile.TemporaryDirectory() as root:
+    write_tree(root, [src("m__full__t", [0, 1], TASKS),
+                      src("m__baseline__t", [0, 1], TASKS, cfg="baseline",
+                          flags={"envboot": False})])
+    r = run_compare(root, "--tag", "t")
+    check("a clean grid is not accused of anything",
+          "REFUSING TO CERTIFY" not in r.stdout and "UNSERVED" not in r.stdout,
+          r.stdout[-300:])
+
+# ------------------------------------------------- H4 across two tags and arms
+#
+# The interaction is the reason the hosted arm exists, and it could not be
+# computed: compare.py needs both models under one --tag, the local arms live
+# under `hard`, and the hosted one under `ext-cerebras`. --tag already pools a
+# comma-separated list, so the plumbing was there; what was missing was any
+# statement that the two arms ran under DIFFERENT protocols. A reader would
+# have seen two pass rates in one table and compared them.
+print("interaction across two tags, two arms, two protocols")
+with tempfile.TemporaryDirectory() as root:
+    local = dict(PROTO)                       # 32768 / 4096, on a GH200
+    hosted = dict(PROTO, num_ctx=65536, num_predict=16384,
+                  env_gpu=None, env_node=None, env_ollama_version=None,
+                  env_api_provider="cerebras",
+                  env_api_endpoint="https://api.cerebras.ai/v1/chat/completions")
+    srcs = []
+    for cfg, flags in (("full", None), ("baseline", {"envboot": False})):
+        a = src(f"local__{cfg}__hard", [0, 1, 2], TASKS, proto=local, cfg=cfg,
+                flags=flags, passed=lambda t, r, c=cfg: c == "full" or t != "alpha")
+        a["_model"] = MODEL
+        b = src(f"hosted__{cfg}__ext", [0, 1, 2], TASKS, proto=hosted, cfg=cfg,
+                flags=flags, passed=lambda t, r, c=cfg: c == "full" or t == "alpha")
+        b["_model"] = OTHER
+        srcs += [a, b]
+    write_tree(root, srcs)
+    out = os.path.join(root, "h4.json")
+    r = run_compare(root, "--tag", "hard,ext", "--json-out", out)
+    check("compare.py loads both tags as two arms", r.returncode == 0,
+          r.stdout[-500:] + r.stderr[-500:])
+    check("the interaction is actually computed",
+          "need >=2 models" not in r.stdout
+          and "need \u22652 models" not in r.stdout
+          and "need ≥2 models" not in r.stdout, r.stdout[-600:])
+    rep = json.load(open(out))
+    check("and lands in the report", bool(rep.get("interaction")),
+          str(list(rep.get("interaction", {}))[:4]))
+    check("the differing protocol between arms is declared",
+          "different protocols" in r.stdout, r.stdout[-800:])
+    drift = rep.get("arm_protocol_drift") or []
+    check("and the differing keys are named in the report",
+          "num_ctx" in drift and "num_predict" in drift, str(drift))
+    check("the note says pass rates are not comparable across arms",
+          "NOT comparable" in r.stdout, r.stdout[-800:])
+
+with tempfile.TemporaryDirectory() as root:
+    srcs = []
+    for cfg, flags in (("full", None), ("baseline", {"envboot": False})):
+        a = src(f"a__{cfg}__t", [0, 1, 2], TASKS, cfg=cfg, flags=flags)
+        a["_model"] = MODEL
+        b = src(f"b__{cfg}__t", [0, 1, 2], TASKS, cfg=cfg, flags=flags,
+                passed=lambda t, r: t != "alpha")
+        b["_model"] = OTHER
+        srcs += [a, b]
+    write_tree(root, srcs)
+    r = run_compare(root, "--tag", "t")
+    check("two arms on the SAME protocol are not accused of differing",
+          "different protocols" not in r.stdout, r.stdout[-400:])
+
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

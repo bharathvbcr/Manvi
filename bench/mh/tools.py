@@ -139,23 +139,41 @@ def containment_backend():
 def _bwrap_argv(exe, argv, allow_write, protected_roots):
     """bubblewrap arguments. Order matters: later binds win over earlier ones.
 
-    Everything is readable and nothing is writable by default; the protected
-    roots are covered with an empty tmpfs so they are neither readable nor
-    writable; then the sandbox -- which lives *under* one of those roots -- is
-    bound back in read-write. Doing it in that order is what lets a sandbox
-    inside the benchmark tree stay usable while the tree around it disappears.
+    Everything is readable and nothing is writable by default. The order is
+    therefore: the temp root read-write, then the protected roots covered with
+    an empty tmpfs so they are neither readable nor writable, then the sandbox
+    -- which lives *under* one of those roots -- bound back read-write. That
+    sequence is what lets a sandbox inside the benchmark tree stay usable while
+    the tree around it disappears, AND keeps a protected root that happens to
+    live under TMPDIR masked rather than re-exposed by the temp bind.
     """
     out = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+    # The temp root FIRST, because a later bind wins and this one must not be
+    # allowed to undo the masks below. It used to come last, which re-exposed
+    # everything under TMPDIR read-write -- including any protected root that
+    # happened to live there. On a box where the benchmark tree sits outside
+    # /tmp that is invisible, and the Linux containment assertions were gated
+    # to macOS so nothing ever tried it: the hidden tests were readable and
+    # writable from the model's shell.
+    tmp = os.environ.get("TMPDIR") or "/tmp"
+    out += ["--bind", os.path.realpath(tmp), os.path.realpath(tmp)]
+    # Then the masks, so a protected root under TMPDIR is still protected.
     for p in protected_roots:
         if p:
             out += ["--tmpfs", os.path.realpath(p)]
+    # Then the sandbox, last, because it lives *under* a masked root and has to
+    # win over the tmpfs that just covered its parent.
     for p in allow_write:
         if p:
             r = os.path.realpath(p)
             out += ["--bind", r, r]
-    tmp = os.environ.get("TMPDIR") or "/tmp"
-    out += ["--bind", os.path.realpath(tmp), os.path.realpath(tmp)]
-    out += ["--die-with-parent", "--new-session", "--"]
+    # --unshare-pid makes bwrap PID 1 of a private PID namespace, so when it is
+    # killed the kernel takes every descendant with it. Without it, --new-session
+    # setsid()s the payload into a process group that is NOT bwrap's, so
+    # run_bounded's killpg on a timeout reached the wrapper and left the model's
+    # children running: three orphans per timed-out command, measured on the
+    # GH200. macOS has no bwrap, so the suite never saw it.
+    out += ["--unshare-pid", "--die-with-parent", "--new-session", "--"]
     return out + list(argv)
 
 
@@ -202,11 +220,21 @@ def containment_proves_itself(sandbox=None):
         f'if cat {shlex.quote(canary)} >/dev/null 2>&1; then echo READ_OK; fi; '
         f'if echo x > {shlex.quote(outside)} 2>/dev/null; then echo WRITE_OK; fi; '
         f'echo PROBE_RAN')
+    escaped = False
     try:
         argv, _ = contained_argv(["/bin/sh", "-c", script],
                                 allow_write=[work])
         r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
         out = (r.stdout or "") + (r.stderr or "")
+        # The invariant is that the benchmark tree did not change, NOT that the
+        # write syscall returned an error. The two backends refuse differently:
+        # macOS sandbox-exec denies the write outright, while bwrap covers the
+        # tree with a tmpfs, so the write lands in an ephemeral overlay and
+        # succeeds. Asking "did the write succeed?" therefore reported a
+        # perfectly confined Linux host as broken -- and the tempting way to get
+        # past that is MH_UNCONTAINED, which removes the protection for the
+        # entire grid. Checked before the cleanup below deletes the evidence.
+        escaped = os.path.exists(outside)
     except Exception as e:  # a backend that cannot even start is not containment
         res = (False, backend, f"probe failed to run: {type(e).__name__}: {e}")
         _PROBE_CACHE[key] = res
@@ -223,8 +251,13 @@ def containment_proves_itself(sandbox=None):
         res = (False, backend, f"probe did not run under {backend}: {out.strip()[:200]}")
     elif "READ_OK" in out:
         res = (False, backend, f"{backend} did not stop a read of {canary}")
+    elif escaped:
+        res = (False, backend,
+               f"{backend} let a write reach {outside} on the host filesystem")
     elif "WRITE_OK" in out:
-        res = (False, backend, f"{backend} did not stop a write to {outside}")
+        res = (True, backend,
+               f"{backend} confined reads; the write succeeded into a masked "
+               f"overlay and did not reach {outside} on the host")
     else:
         res = (True, backend, f"{backend} confined reads and writes")
     _PROBE_CACHE[key] = res

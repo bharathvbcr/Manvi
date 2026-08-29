@@ -647,8 +647,16 @@ check("C4 no copy of the hidden test is left on disk anywhere",
               for d in (s_, tempfile.gettempdir())))
 
 print("C5 run_shell is contained")
+# bwrap was missing from this list, so the Linux backend -- the one the grid
+# actually runs under on a rented GPU -- failed the check that asserts a
+# backend is in use. Worse, the substantive block below was gated on
+# `== "sandbox-exec"`, so every real containment assertion was SKIPPED on
+# Linux and the else-branch demanded the backend be "off". The Linux
+# confinement path had therefore never been exercised by this suite on the
+# platform that matters.
 check("C5 a containment backend is in use or explicitly disabled",
-      containment_backend() in ("sandbox-exec", "off", None))
+      containment_backend() in ("sandbox-exec", "bwrap", "off", None),
+      f"backend={containment_backend()!r}")
 # A replica of the real layout: <root>/tasks/<name> beside <root>/.work/<slug>.
 rep_root = tmpdir()
 rep_tasks = os.path.join(rep_root, "tasks")
@@ -662,7 +670,7 @@ rsb = Sandbox(rsand, protected_roots=rtask.guard_roots)
 victim = os.path.join(rep_tasks, "cryptic", "hidden_test.py")
 before = open(victim, "rb").read()
 
-if containment_backend() == "sandbox-exec":
+if containment_backend() in ("sandbox-exec", "bwrap"):
     got = rsb.run_shell(cmd="cat ../../tasks/cryptic/hidden_test.py")
     check("C5 the hidden test is not readable from the shell",
           "invoice_total" not in got, got[:200])

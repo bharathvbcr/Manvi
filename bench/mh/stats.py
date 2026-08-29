@@ -437,6 +437,15 @@ def multiplicity_report(n_intervals, n_excluding_zero,
 def role_of(model):
     """Name-based label only. Capability for the interaction test is empirical."""
     m = (model or "").lower()
+    # Every rule below was written for a specific local build. None of them was
+    # written for a hosted model, and applying them by substring gets it wrong
+    # in the direction that matters: "gemma" was the 4B-class local e4b build,
+    # so it would label Cerebras' 31B dense Gemma 4 "weak" in a published table
+    # before a single episode has been run against it. An unmeasured arm is
+    # unknown; capability_arms_detail assigns the real roles from measured
+    # full-harness means anyway.
+    if m.startswith("cerebras:"):
+        return "unknown"
     if "gemini" in m:
         return "strong"
     if "gemma" in m:

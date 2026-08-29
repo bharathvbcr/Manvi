@@ -491,11 +491,18 @@ fi
 # containment the verifier relies on. An instrument nothing checks is an
 # instrument nobody can trust, so it is checked here with everything else.
 step "Bench — instrument, statistics and cell assembly"
-for t in test_stats.py test_pool.py test_runtime.py test_compute.py stress_test.py; do
+# The two wire suites are in this list for the same reason the rest of it is.
+# A provider client that talks to no one during verification is never exercised,
+# and that is exactly how a Gemini serialization defect produced a 315-episode
+# arm with zero `finished` stops before anything noticed. Neither suite needs a
+# network or a credential.
+for t in test_stats.py test_pool.py test_runtime.py test_compute.py stress_test.py \
+         test_gemini_wire.py test_cerebras_wire.py; do
   (cd bench && python3 "$t" >/dev/null) || fail "bench/$t"
 done
 (cd bench && python3 selftest.py >/dev/null) || fail "bench/selftest.py"
 printf '    covered: bootstrap CIs, paired deltas, seed pinning, cell-assembly refusals,\n'
-printf '             sandbox containment, and 19 tasks that start broken and reject tampering\n'
+printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
+printf '             and 19 tasks that start broken and reject tampering\n'
 
 printf '\n\033[32mPASS\033[0m all gates\n'

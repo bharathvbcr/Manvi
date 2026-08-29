@@ -20,9 +20,21 @@ here is either checked or refused.
 # wall clock. env_* identify the machine actually serving the model: a Metal
 # run and a CUDA run are not the same experiment, and an absent value is
 # treated as drift rather than as agreement.
+# env_api_provider / env_api_endpoint identify the serving side of an API arm,
+# the way env_gpu / env_ollama_version identify it for a local one. env_client_node
+# is deliberately absent: on an API arm the box that ran the loop is provenance,
+# not protocol, and making it a key would refuse to pool two identical remote
+# cells that happened to be launched from different laptops. That omission is
+# the same fact as mh.runtime.PROVENANCE_KEYS, and the two must agree: this is
+# an allowlist and that is a denylist over the same stamp, so a key treated as
+# provenance here and as protocol there makes the two disagree about whether
+# one cell is one experiment. Measured once, on a cell resumed from a second
+# laptop: mh.pool said the episodes pooled, protocol_diff said they did not.
 PROTOCOL_KEYS = ("max_steps", "max_wall", "num_ctx", "num_predict",
-                 "temperature", "think", "share_gpu",
-                 "env_node", "env_gpu", "env_platform", "env_ollama_version")
+                 "temperature", "top_p", "think", "reasoning_effort",
+                 "share_gpu", "concurrency",
+                 "env_node", "env_gpu", "env_platform", "env_ollama_version",
+                 "env_api_provider", "env_api_endpoint")
 
 # The ablation flags themselves, mirroring harness.Config.FLAGS. A config name
 # is a label; these are what it is supposed to mean. Runtime settings that also
@@ -96,6 +108,25 @@ def ragged_reps(rows):
     # short repeat is flagged rather than a full one.
     modal = max(counts, key=lambda n: (counts[n], n))
     return [rep for rep, n in dens.items() if n != modal]
+
+
+def arm_drift(protocol_a, protocol_b):
+    """Protocol keys on which two ARMS (different models) disagree.
+
+    Distinct in purpose from `protocol_drift`, which asks whether two sources
+    are the same cell and refuses them if not. Two arms are *supposed* to be
+    different models, and they may legitimately be served under different
+    protocols -- a hosted 120B at num_ctx 65536 against a local 27B at 32768.
+
+    The interaction statistic is a difference of within-model deltas, and each
+    delta is seed-paired inside one arm under one protocol, so a protocol
+    difference BETWEEN arms does not invalidate it. Pass rates across those
+    same arms are not comparable at all. Nothing said either of those things
+    out loud, so this returns the keys that differ and the caller prints them:
+    an interaction across two protocols is a valid statistic with a caveat, and
+    the caveat has to travel with it.
+    """
+    return protocol_drift(protocol_a, protocol_b)
 
 
 def pooled_drift(sources):

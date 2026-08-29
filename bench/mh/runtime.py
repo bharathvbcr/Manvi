@@ -21,6 +21,51 @@ HOST = "http://127.0.0.1:11434"
 SHARE_GPU_MAX_PEERS = 1
 STARVE_ABORT_DEFAULT = 3
 
+# --- who serves a model ------------------------------------------------------
+#
+# A model name routes to exactly one provider, and that routing decides three
+# separate things: which client is built, whether the runner may evict a local
+# model for it, and what the episode's protocol stamp claims about the serving
+# hardware. One table, so a drift cannot route a request one way and manage the
+# GPU the other.
+#
+# Cerebras models are addressed with an explicit `cerebras:` prefix rather than
+# by bare id. `gpt-oss-120b` is also a local ollama tag on this machine, and a
+# bare name that silently means "the remote 120B" on one host and "the local
+# quantised build" on another is precisely the confusion the protocol stamp
+# exists to prevent.
+API_PREFIXES = {"cerebras:": "cerebras"}
+API_ENDPOINTS = {
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/interactions",
+    "cerebras": "https://api.cerebras.ai/v1/chat/completions",
+}
+
+
+def api_provider(model):
+    """The provider serving `model`, or None when local ollama serves it.
+
+    Canonical owner. `is_api_model` and `is_gemini_model` are both derived from
+    it, and mh.model imports it rather than keeping a second copy.
+    """
+    if not model:
+        return None
+    for prefix, provider in API_PREFIXES.items():
+        if model.startswith(prefix):
+            return provider
+    if (model.startswith("gemini")
+            or model.startswith("models/gemini")
+            or model == "live-gemini"):
+        return "gemini"
+    return None
+
+
+def api_model_id(model):
+    """The id the provider itself expects, with any routing prefix stripped."""
+    for prefix in API_PREFIXES:
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
 
 def keep_existing_episode(row, force=False):
     """Skip-existing must not treat a 0-token timeout as a finished episode."""
@@ -36,7 +81,7 @@ def should_retry_starved(row, attempt):
     return attempt == 0 and is_first_turn_failure(row)
 
 
-def serving_env(host=None):
+def serving_env(host=None, model=None):
     """Where this run is actually being served.
 
     Nothing in the summary recorded the machine, GPU or serving backend, so a
@@ -44,8 +89,27 @@ def serving_env(host=None):
     written to disk -- which is how MLX rows were pooled into a CUDA contrast.
     Values are best-effort; an unknown field records None rather than a guess,
     and an unrecorded field never certifies a match.
+
+    An API-served model is NOT served by this box, and stamping the local GPU
+    on it is not a harmless extra field: env_gpu is a pooling key, so a remote
+    cell launched from the GH200 claimed the GH200 as its serving hardware and
+    would have refused to pool with the identical cell launched from a laptop.
+    For those models the serving environment is the provider endpoint, and the
+    local machine is recorded as `client_node` -- provenance, deliberately not
+    a pooling key.
     """
-    env = {"node": None, "gpu": None, "ollama_version": None, "platform": None}
+    provider = api_provider(model) if model else None
+    if provider:
+        env = {"node": None, "gpu": None, "ollama_version": None,
+               "platform": None, "api_provider": provider,
+               "api_endpoint": API_ENDPOINTS[provider], "client_node": None}
+        try:
+            env["client_node"] = platform.node() or None
+        except Exception:
+            pass
+        return env
+    env = {"node": None, "gpu": None, "ollama_version": None, "platform": None,
+           "api_provider": None, "api_endpoint": None, "client_node": None}
     try:
         env["node"] = platform.node() or None
         env["platform"] = f"{platform.system()}/{platform.machine()}"
@@ -67,6 +131,7 @@ def serving_env(host=None):
             env["ollama_version"] = json.loads(r.read()).get("version") or None
     except Exception:
         pass
+    env["client_node"] = env["node"]
     return env
 
 
@@ -90,14 +155,6 @@ def extension_reps(rep_offset, repeat):
 # grid.complete() answer for the whole cell instead of for one invocation.
 
 EPISODE_RE = re.compile(r"^(?P<task>.+)\.rep(?P<rep>\d+)\.json$")
-
-# Settings that decide what the model does, or whether an episode survives its
-# wall clock, plus the machine that served it. Stamped on every episode: an
-# episode carries the protocol it actually ran under, so no later invocation
-# can claim it.
-PROTOCOL_ARGS = ("max_steps", "max_wall", "share_gpu", "num_ctx",
-                 "num_predict", "temperature", "think")
-
 
 class CellError(RuntimeError):
     """A cell on disk cannot be read soundly.
@@ -219,18 +276,35 @@ def cell_rows(outdir):
 
 
 def protocol_block(max_steps, max_wall, share_gpu, num_ctx, num_predict,
-                   temperature, think, env=None):
+                   temperature, think, env=None, model=None, top_p=None,
+                   reasoning_effort=None, concurrency=None):
     """The protocol stamp for one episode: intent plus the machine serving it.
 
     share_gpu is the value in force for THIS episode, not the flag as typed:
     a cell demoted mid-run really did run its first episodes with a peer on
     the GPU, and the stamp has to say so.
+
+    `reasoning_effort` and `top_p` are stamped because on an API arm they are
+    settings that change what the model does and `think` alone cannot express
+    them: gpt-oss-120b at effort "low" and at effort "high" are two different
+    experiments that both record think=True. They are None on a local arm,
+    and a stamp written before this key existed also reads None, so adding
+    them does not make two older cells look like they disagree.
     """
-    env = serving_env() if env is None else env
+    env = serving_env(model=model) if env is None else env
     block = {"max_steps": int(max_steps), "max_wall": int(max_wall),
              "share_gpu": bool(share_gpu), "num_ctx": int(num_ctx),
              "num_predict": int(num_predict), "temperature": float(temperature),
-             "think": bool(think)}
+             "think": bool(think),
+             "top_p": None if top_p is None else float(top_p),
+             "reasoning_effort": reasoning_effort,
+             # How many cells were deliberately in flight on this box. A
+             # contended GPU moves wall time, --max-wall scores a fail, and a
+             # cell run four-up is therefore not the same experiment as one run
+             # alone even when every other setting matches. share_gpu already
+             # records the two-models case; this records the N-episodes-one-
+             # model case, which is the shape that actually saves rent.
+             "concurrency": None if concurrency is None else int(concurrency)}
     block.update({f"env_{k}": v for k, v in (env or {}).items()})
     return block
 
@@ -241,15 +315,50 @@ def protocol_of(ep):
     return p if isinstance(p, dict) else None
 
 
+# Recorded on every episode, and deliberately NOT part of what makes two
+# episodes the same experiment. env_client_node names the box that drove the
+# loop; for an API arm that box did not serve the model, so two episodes that
+# differ only in it ran the same experiment.
+#
+# This has to be honoured in both directions or it is worse than not existing.
+# mh.pool.PROTOCOL_KEYS is an allowlist and simply omits it; protocol_diff is a
+# denylist over every key present, so without this it flagged the difference and
+# a cell resumed from a second laptop was declared to have no single protocol
+# and refused pooling -- while mh.pool, asked the same question, said the two
+# agreed. Two definitions of "protocol", disagreeing. Measured on a real cell:
+# 159 episodes from one host and 1 from another published protocol_variants over
+# two groups for no reason but the hostname.
+PROVENANCE_KEYS = ("env_client_node",)
+
+
+def protocol_identity(stamp):
+    """The part of a stamp that decides whether two episodes are one experiment.
+
+    Everything except PROVENANCE_KEYS. Every comparison of two protocols goes
+    through this or through protocol_diff, which is built on the same set --
+    that is the point. Four separate places had grown their own answer to "are
+    these the same protocol": whole-dict `!=` in resume_conflicts, whole-dict
+    grouping in _merge_protocols, an allowlist in mh.pool, and this denylist.
+    They agreed until a key existed that one of them should ignore, and then a
+    cell resumed from a second machine was simultaneously poolable, unresumable,
+    and possessed of two protocols.
+    """
+    if not isinstance(stamp, dict):
+        return None
+    return {k: v for k, v in stamp.items() if k not in PROVENANCE_KEYS}
+
+
 def protocol_diff(a, b):
     """Keys on which two protocol stamps disagree.
 
     An absent stamp disagrees on everything. An unrecorded setting is not
-    evidence of a matching one.
+    evidence of a matching one. Provenance keys are excluded: see
+    PROVENANCE_KEYS.
     """
     if not isinstance(a, dict) or not isinstance(b, dict):
         return ["<unrecorded>"]
-    return [k for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)]
+    keys = (set(a) | set(b)) - set(PROVENANCE_KEYS)
+    return [k for k in sorted(keys) if a.get(k) != b.get(k)]
 
 
 def _peek_protocol(path):
@@ -351,11 +460,30 @@ def _merge_protocols(cell):
     the LAST invocation's settings onto episodes it had merely read off disk,
     so resuming a cell with a different --max-steps rewrote history.
     """
-    groups = _group_by_value([(n, protocol_of(ep)) for n, ep in cell])
+    groups = _group_by_value([(n, protocol_identity(protocol_of(ep)))
+                              for n, ep in cell])
     if not groups:
         return None, []
     if len(groups) == 1 and groups[0]["value"] is not None:
-        return groups[0]["value"], []
+        # One experiment. Provenance is reattached rather than dropped: a key
+        # every episode agrees on keeps its value, and one they do not agree on
+        # records None, which every drift check already reads as "not one
+        # value". A cell legitimately resumed from a second machine gets a
+        # single protocol and an honest env_client_node of None -- not two
+        # protocols, and not a claim that all 160 episodes ran on whichever
+        # host happened to be first in the directory listing.
+        common = dict(groups[0]["value"])
+        stamps = [protocol_of(ep) or {} for _, ep in cell]
+        for key in PROVENANCE_KEYS:
+            if not any(key in st for st in stamps):
+                # No episode recorded it. Writing None would invent a key the
+                # stamps never had, and an absent field is not a field whose
+                # value is None -- every drift check here rests on that
+                # distinction.
+                continue
+            seen = {st.get(key) for st in stamps}
+            common[key] = seen.pop() if len(seen) == 1 else None
+        return common, []
     return None, [{"protocol": g["value"], "episodes": g["episodes"]}
                   for g in groups]
 
@@ -596,9 +724,19 @@ def resume_conflicts(outdir, task_names, reps, protocol, force=False):
             stamp = protocol_of(ep)
             if stamp is None:
                 unattributed.append(os.path.basename(path))
-            elif protocol is not None and stamp != protocol:
-                conflicts.append((os.path.basename(path),
-                                  protocol_diff(stamp, protocol)))
+                continue
+            if protocol is None:
+                continue
+            # Decided BY protocol_diff, not by dict inequality. Deciding one way
+            # and explaining the other is how this refused 90 episodes and then
+            # printed "differs on " with nothing after it: the stamps differed
+            # only in env_client_node, which protocol_diff excludes as
+            # provenance, so the whole-dict `!=` saw a conflict that the diff
+            # could not name. A cell resumed from a second machine could not be
+            # resumed at all, and the message did not say why.
+            diff = protocol_diff(stamp, protocol)
+            if diff:
+                conflicts.append((os.path.basename(path), diff))
     return conflicts, unattributed
 
 
@@ -639,6 +777,46 @@ def is_starved_episode(row):
     return (stop == "wall_timeout"
             or "timed out" in blob
             or "timeouterror" in blob)
+
+
+# 401 / 402 / 403 as they appear in a recorded row. Episodes written before
+# AccountRefused existed carry `error:ModelError` with the HTTP code in the
+# error text; ones written after carry `error:AccountRefused`. Both are the
+# same thing and both must be recognised, or the 314 rows the quota incident
+# already produced stay invisible to the tooling that exists to catch them.
+_REFUSAL_CODES = ("HTTP 401", "HTTP 402", "HTTP 403")
+
+
+def is_unserved_episode(row):
+    """True when the provider refused the ACCOUNT, so nothing was measured.
+
+    Distinct from is_starved_episode, which is about a local server that failed
+    to serve a request. This is about a key that is out of quota, revoked, or
+    unauthorised: no episode after the first one is a measurement, and a cell
+    holding these must never be reported as a pass rate. `no-envboot` came out
+    of the quota incident at 0.0% over 160 such rows, which is indistinguishable
+    from an ablation that destroys the model unless something names it.
+
+    Not wired into mh.stats.usable_rows. The registered exclusion rule is
+    'zero output tokens, at most one step, stopped on a timeout -- and that is
+    the only exclusion', and quietly adding a second one would move a
+    preregistered denominator. These rows are not to be rescued statistically;
+    they are to be re-run, which keep_existing_episode already arranges.
+    """
+    if not isinstance(row, dict):
+        return False
+    stop = str(row.get("stop_reason") or "")
+    if stop.startswith("error:AccountRefused"):
+        return True
+    if not stop.startswith("error:"):
+        return False
+    return any(code in e for e in (row.get("errors") or [])
+               for code in _REFUSAL_CODES)
+
+
+def unserved_count(rows):
+    """How many of these rows were never served because the account was refused."""
+    return sum(1 for r in (rows or []) if is_unserved_episode(r))
 
 
 def is_first_turn_failure(row):
@@ -700,19 +878,136 @@ def unload_all(host=HOST, keep=None, settle_s=30):
     return evicted
 
 
-def is_api_model(model):
-    """True for a model served over someone else's API, not by local ollama.
+# --- concurrent runners on one GPU -------------------------------------------
+#
+# Parallelising the grid is the obvious way to use a rented GH200, and the
+# runner as written makes it unsafe in a way nothing would report. Every runner
+# calls unload_all(keep=its own model), which evicts every OTHER resident model
+# -- including one a sibling runner is mid-episode on. The victim's next
+# /api/chat returns 0 tokens and times out, which lands as a scored failure. It
+# is exactly the starvation the v1 grid already suffered under --share-gpu, and
+# nothing in the episode says the cause was another process.
+#
+# So a runner announces the model it holds, and refuses to start if a live
+# sibling holds a different one. Parallel cells of the SAME model are the
+# supported shape: one set of weights resident, N episodes in flight. Two
+# models at once is what --share-gpu means, it is a different protocol, and it
+# is not made safe by this.
+RUNNERS_DIRNAME = ".runners"
 
-    Canonical owner of this predicate. mh.model carries a byte-identical copy
-    named is_gemini_model; the alias below exists so that copy can become
-    `from mh.runtime import is_gemini_model` without a second definition
-    drifting from this one.
+
+def _runners_dir(results_root):
+    return os.path.join(results_root, RUNNERS_DIRNAME)
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def active_runners(results_root, exclude_pid=None):
+    """Live sibling runners and the model each holds.
+
+    A lease whose process is gone is stale and is deleted rather than believed:
+    a crashed runner must not lock the GPU against every later one.
     """
-    return (model.startswith("gemini")
-            or model.startswith("models/gemini")
-            or model == "live-gemini")
+    out = []
+    d = _runners_dir(results_root)
+    if not os.path.isdir(d):
+        return out
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(d, name)
+        try:
+            with open(path) as f:
+                lease = json.load(f)
+        except (OSError, ValueError):
+            lease = None
+        pid = (lease or {}).get("pid")
+        if not lease or not _pid_alive(pid):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        if exclude_pid is not None and int(pid) == int(exclude_pid):
+            continue
+        out.append(lease)
+    return out
 
 
+def register_runner(results_root, model, pid=None):
+    """Announce that this process holds `model`. Returns the lease path."""
+    pid = os.getpid() if pid is None else int(pid)
+    d = _runners_dir(results_root)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{pid}.json")
+    write_json_atomic(path, {"pid": pid, "model": model,
+                             "started": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                      time.gmtime())})
+    return path
+
+
+def release_runner(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def conflicting_runners(results_root, model, pid=None):
+    """Live siblings holding a model other than `model`."""
+    pid = os.getpid() if pid is None else pid
+    return [r for r in active_runners(results_root, exclude_pid=pid)
+            if r.get("model") != model]
+
+
+def observed_parallel_slots():
+    """Decode slots the loaded runner ACTUALLY has, or None if unknowable.
+
+    OLLAMA_NUM_PARALLEL is documented as a *maximum*; the scheduler picks the
+    real number. Measured on ollama 0.33.0 with the env var set to 4, both
+    grid models launched `llama-server ... -c 32768 -np 1` and four concurrent
+    requests all landed on slot id 0 -- aggregate throughput at four-way
+    concurrency was 1.01x the serial rate.
+
+    So checking the environment variable is checking an intention. This reads
+    the running runner's own `-np`, which is the number that decides whether a
+    parallel grid decodes or queues. None means no runner is loaded yet, or
+    this platform does not expose the argv -- reported as unknown, never as
+    agreement.
+    """
+    try:
+        out = subprocess.run(["ps", "-eo", "args"], capture_output=True,
+                             text=True, timeout=10)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    for line in (out.stdout or "").splitlines():
+        if "llama-server" not in line and "ollama runner" not in line:
+            continue
+        parts = line.split()
+        for i, tok in enumerate(parts):
+            if tok in ("-np", "--parallel") and i + 1 < len(parts):
+                try:
+                    return int(parts[i + 1])
+                except ValueError:
+                    return None
+    return None
+
+
+def is_api_model(model):
+    """True for a model served over someone else's API, not by local ollama."""
+    return api_provider(model) is not None
+
+
+# mh.model used to carry a byte-identical copy of this predicate under the
+# older name; the alias keeps that import working against the one definition.
 is_gemini_model = is_api_model
 
 
@@ -744,7 +1039,8 @@ def unstick_server(model, host=HOST, restart=True):
         time.sleep(1)
 
 
-def ensure_sole_tenant(model, host=HOST, evict=True, share_gpu=False):
+def ensure_sole_tenant(model, host=HOST, evict=True, share_gpu=False,
+                       results_root=None, pid=None):
     """Make `model` runnable, or raise.
 
     Distinguishes 'nothing else is loaded' from 'I could not tell', because a
@@ -755,6 +1051,18 @@ def ensure_sole_tenant(model, host=HOST, evict=True, share_gpu=False):
     """
     if is_api_model(model):
         return []
+    # Checked before the server check and before any eviction: the failure this
+    # prevents is destroying another process's work, which is worse than not
+    # starting.
+    if results_root:
+        clash = conflicting_runners(results_root, model, pid=pid)
+        if clash:
+            held = ", ".join(f"{c['model']} (pid {c['pid']})" for c in clash)
+            raise RuntimeError(
+                f"refusing to start: another runner on this box holds {held}. "
+                f"Starting {model} would evict it mid-episode and score its "
+                f"cell as a 0-token failure. Run parallel cells of the SAME "
+                f"model, or wait for that runner to finish.")
     if not server_up(host):
         raise RuntimeError(f"ollama at {host} is not reachable; cannot confirm "
                            f"that no other model is resident")
