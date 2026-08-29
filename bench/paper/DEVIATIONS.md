@@ -130,10 +130,15 @@ overstatement; **this entry is authoritative where the two disagree.**
 statistical weakness. Two specifics belong in the manuscript rather than being
 left to a reader inferring from an `n` column:
 
-1. **Interval coverage degrades.** Measured on the completed `ext-cerebras`
-   grid, the percentile bootstrap delivered 94.1% against 95% nominal at n=20.
-   At n=5 it is materially worse — this is the defect §5 was written to address,
-   and these six cells reintroduce it.
+1. **Interval coverage degrades — now measured, and worse than estimated.**
+   The percentile bootstrap delivers 94.1% against 95% nominal at n=20. At the
+   n=5 cell shape `compare.py` audits it at **82.3%** (±0.5 over 5,000
+   Monte-Carlo trials). The consequence is stated by the tool itself: across
+   the 16 ladder intervals of the v2 grid, 4 exclude zero, and
+   **P(≥1 excludes zero | global null) = 96% at the measured coverage.**
+   Four exclusions is what pure noise produces almost every time at this
+   coverage. The n=5 H3 cells therefore support no claim of effect — only
+   "not detectable at this n" — and this is the direct, quantified cost of D2.
 2. **H4 on those six is not inferential.** The capability × harness interaction
    over the six reduced ablations will be very wide and should be reported as
    descriptive. H4 on the *primary* contrast is unaffected: both arms hold
@@ -391,9 +396,12 @@ manuscript next to v1's, whatever it says.
   timeout. Still the only exclusion. Notably, the account-refusal rows that the
   `ext-cerebras` run produced are *not* excluded by any rule; they are re-run.
 - **§7 infrastructure-failure dual report.**
-- **§8 stopping rule** — all cells run to completion, no interim analysis, no
-  early stop. The observations in this document are marginal rates and
-  operational health, not contrasts; no hypothesis has been evaluated.
+- **§8 stopping rule** — honoured in full. All 18 cells ran to completion; there
+  was no early stop and no contrast was computed at any point during
+  collection. Everything observed while the grid ran was a marginal rate or an
+  operational health field. **The registered analysis (`compare.py --tag v2`)
+  was run once, after the final episode was written and the grid was verified
+  complete at 1,440/1,440.**
 - **Protocol** — `--max-steps 0 --max-wall 1800 --num-ctx 32768
   --num-predict 4096 --temperature 0.6 --think`, sole tenant, `concurrency 1`,
   one runner revision (`82e453a`) throughout. Stamped on every episode.
