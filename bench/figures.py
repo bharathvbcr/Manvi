@@ -345,6 +345,100 @@ def interaction_svg(report, path, section="interaction"):
     _write(path, parts)
 
 
+# --- Figure 1: graphical abstract -------------------------------------------
+
+def graphical_abstract_svg(report, path, source=None):
+    """The graphical abstract, drawn from the report rather than by hand.
+
+    The hand-drawn PNG this replaces carried protocol-1 numbers (97.5% versus
+    75%, delta +22.5) long after those were archived as not-the-headline -- the
+    same failure mode the paper records for the hand-drawn Figure 4. Generating
+    it from the same report as every other figure is the only way the front
+    page cannot disagree with Table 3.
+    """
+    cells = report.get("cells", {})
+    models = sorted({k.split("|", 1)[0] for k in cells},
+                    key=lambda m: "qwen" not in m.lower())
+    arms = []
+    for m in models:
+        full, base = cells.get(f"{m}|full"), cells.get(f"{m}|baseline")
+        if full and base:
+            arms.append((_short(m), full["mean"] * 100, base["mean"] * 100,
+                         _colour_for(m)))
+    if not arms:
+        return
+
+    W, H = 900, 250 + 96 * len(arms)
+    FLAGS = ["envboot", "nativetools", "outcap", "checklist",
+             "verifygate", "loopbreak", "groundfs"]
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'viewBox="0 0 {W} {H}" {FONT}>',
+        f'<rect width="{W}" height="{H}" fill="#fff"/>',
+        f'<text x="{W//2}" y="34" text-anchor="middle" font-size="19" '
+        f'font-weight="700" fill="#111">Harness architecture as an experimental object</text>',
+    ]
+    # the pipeline: model -> switchable harness -> hidden verifier -> outcome
+    boxes = [("Local coding model", "weights held fixed"),
+             ("Switchable harness", "7 independent flags"),
+             ("Hidden verifier", "outside the sandbox"),
+             ("Pass / fail", "unrun never passes")]
+    bw, gap, by, bh = 190, 26, 58, 104
+    bx0 = (W - (len(boxes) * bw + (len(boxes) - 1) * gap)) // 2
+    for i, (head, sub) in enumerate(boxes):
+        x = bx0 + i * (bw + gap)
+        parts.append(f'<rect x="{x}" y="{by}" width="{bw}" height="{bh}" rx="8" '
+                     f'fill="#f7f9fc" stroke="#c8d2e0"/>')
+        parts.append(f'<text x="{x+bw//2}" y="{by+26}" text-anchor="middle" '
+                     f'font-size="12" font-weight="600" fill="#111">{_esc(head)}</text>')
+        parts.append(f'<text x="{x+bw//2}" y="{by+44}" text-anchor="middle" '
+                     f'font-size="10" fill="#666">{_esc(sub)}</text>')
+        if i == 1:
+            for j, fl in enumerate(FLAGS):
+                fx = x + 14 + (j % 2) * 88
+                fy = by + 62 + (j // 2) * 13
+                parts.append(f'<circle cx="{fx}" cy="{fy-3}" r="3" fill="{QWEN}"/>')
+                parts.append(f'<text x="{fx+7}" y="{fy}" font-size="8.5" '
+                             f'fill="#444">{_esc(fl)}</text>')
+        if i < len(boxes) - 1:
+            ax = x + bw + 4
+            parts.append(f'<path d="M{ax} {by+bh//2} L{ax+gap-8} {by+bh//2}" '
+                         f'stroke="#8a97a8" stroke-width="1.5" fill="none"/>')
+            parts.append(f'<path d="M{ax+gap-12} {by+bh//2-4} l5 4 -5 4" '
+                         f'stroke="#8a97a8" stroke-width="1.5" fill="none"/>')
+
+    # one paired bar group per arm, full against baseline
+    lab_w, bar_l, bar_r = 150, 250, W - 150
+    y = by + bh + 46
+    for name, full, base, colour in arms:
+        for k, (tag, val, fill) in enumerate((("full", full, colour),
+                                              ("baseline", base, "#cfd6de"))):
+            yy = y + k * 26
+            w = (bar_r - bar_l) * (val / 100.0)
+            parts.append(f'<text x="{bar_l-10}" y="{yy+13}" text-anchor="end" '
+                         f'font-size="11" fill="#333">{_esc(name)} {tag}</text>')
+            parts.append(f'<rect x="{bar_l}" y="{yy}" width="{w:.1f}" height="18" '
+                         f'rx="3" fill="{fill}"/>')
+            parts.append(f'<text x="{bar_l+w+8:.1f}" y="{yy+13}" font-size="11" '
+                         f'font-weight="600" fill="#111">{val:.1f}%</text>')
+        d = report.get("confirmatory", {})
+        key = next((k for k in d if k.startswith("H1|") and _short(k.split("|")[1]) == name), None)
+        if key:
+            c = d[key]
+            verdict = "supported" if c.get("supported") else "not supported"
+            parts.append(
+                f'<text x="{bar_l}" y="{y+64}" font-size="10.5" fill="#444">'
+                f'&#916; = {c["delta"]:+.3f}, {c["level"]:.1f}% CI '
+                f'[{c["lo"]:+.3f}, {c["hi"]:+.3f}] &#8212; {verdict}</text>')
+        y += 96
+
+    parts.append(f'<text x="{W//2}" y="{H-10}" text-anchor="middle" font-size="9.5" '
+                 f'fill="#777">Preregistered, 1,440 episodes. '
+                 f'{_source_note(source)}</text>')
+    parts.append("</svg>")
+    _write(path, parts)
+
+
 def from_report(report, outdir, source=None):
     """Render every figure into `outdir`. The directory is written in place.
 
@@ -377,6 +471,9 @@ def from_report(report, outdir, source=None):
             degenerate=degenerate)
     repeat_deltas_svg(report, os.path.join(outdir, "repeat_deltas.generated.svg"),
                       source=source)
+    graphical_abstract_svg(report,
+                           os.path.join(outdir, "graphical_abstract.generated.svg"),
+                           source=source)
     interaction_svg(report, os.path.join(outdir, "interaction.generated.svg"))
     if report.get("interaction_paired"):
         interaction_svg(report,

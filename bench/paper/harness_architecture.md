@@ -4,9 +4,9 @@
 
 **Revision 3 replaces the headline.** Revision 2 reported a 720-episode grid under tag `hard`. A subsequent audit of that instrument found five defects, two of which bear directly on the full-versus-baseline contrast: the verify gate returned hidden-test output, including expected values, on a failed `finish` — 77 of 760 episodes received it, and **only in gate-on configurations** — and `run_shell` had no containment, leaving hidden tests readable and writable. Five of the hard tasks also accepted demonstrably wrong solutions. All are fixed. Because the tasks are now stricter and the gate no longer leaks, **v1 pass rates are not comparable with v2 and the two are never pooled.** An audit of all 760 v1 episodes and 3,879 file-writing tool calls found **zero** episodes that exploited any defect; v1's numbers are not fabricated, they are measured on an instrument that could not rule the exploits out. v1 is retained in §5.8 as the instrument-failure record, not as a measurement. The design, hypotheses, directions, and analysis for v2 were registered before the first v2 episode (`paper/preregistration.md`); every departure is recorded in `paper/DEVIATIONS.md` with what had been observed when it was decided.
 
-![Graphical abstract](figures/graphical_abstract.png)
+![Graphical abstract](figures/graphical_abstract.generated.svg)
 
-**Figure 1.** Graphical abstract. The object of measurement is the harness around a frozen local model: seven independently switchable components, a sandbox the agent can write, and a verifier the agent cannot. On the eight-task hard suite under the registered v2 protocol, Qwen 3.8 27B goes from 79.4% (baseline) to 95.0% (full) and Ornith-1.5 35B-A3B from 40.0% to 60.6%. Both deltas exclude zero at the Šidák-corrected 98.7% level. The 720-episode v1 grid that revision 2 reported is superseded and appears only as §5.8's instrument-failure record.
+**Figure 1.** Graphical abstract. The object of measurement is the harness around a frozen local model: seven independently switchable components, a sandbox the agent can write, and a verifier the agent cannot. On the eight-task hard suite under the registered v2 protocol, Qwen 3.8 27B goes from 79.4% (baseline) to 95.0% (full) and Ornith-1.5 35B-A3B from 40.0% to 60.6%. Both deltas exclude zero at the Šidák-corrected 98.7% level. The 720-episode v1 grid that revision 2 reported is superseded and appears only as §5.8's instrument-failure record. This figure is generated from `stats-v2.json` like every other data figure; the hand-drawn version it replaces still carried protocol-1's 97.5%-versus-75% and \(\Delta +22.5\), which revision 2 had already archived as not-the-headline.
 
 ## Abstract
 
@@ -259,10 +259,10 @@ The superseded v1 grid is §5.8. Protocol-1 is §4.6. Neither is pooled here.
 
 ### 5.1 Pass rates
 
-**Table 3.** Registered v2 pass rate on the eight-task hard suite. \(n\) is repeats; each repeat is eight tasks. CI is the percentile bootstrap 95% interval on the weighted mean of the per-repeat pass rates. Source: `stats-v2.json`.
+**Table 3.** Registered v2 pass rate on the eight-task hard suite. Qwen is `qwen3.8:27b`, Ornith is `Ornith-1.5-35B-A3B-GGUF:Q8_0`. \(n\) is repeats; each repeat is eight tasks. CI is the percentile bootstrap 95% interval on the weighted mean of the per-repeat pass rates. Source: `stats-v2.json`.
 
-| Configuration | Qwen 3.8 27B | 95% CI | Ornith-1.5 35B-A3B | 95% CI |
-|---|---:|---|---:|---|
+| Configuration | Qwen | 95% CI | Ornith | 95% CI |
+|----------------------------|---:|---------------|---:|---------------|
 | `full` (\(n=20\)) | **95.0%** | [90.0, 98.8] | **60.6%** | [53.8, 66.9] |
 | `baseline` (\(n=20\)) | **79.4%** | [73.8, 85.0] | **40.0%** | [33.8, 46.2] |
 | `no-outcap` (\(n=20\)) | 92.5% | [88.8, 95.6] | 53.1% | [49.4, 56.9] |
@@ -283,8 +283,8 @@ Qwen is the stronger arm on every configuration, so the arms are assigned empiri
 
 **Table 4.** Passes per task on the confirmatory contrast, out of twenty repeats. \(\Delta\) is episodes gained by the full harness.
 
-| Task | Qwen `full` | Qwen `base` | \(\Delta\) | Ornith `full` | Ornith `base` | \(\Delta\) |
-|---|---:|---:|---:|---:|---:|---:|
+| Task | Qwen `full` | Qwen `base` | \(\Delta\) | Orn. `full` | Orn. `base` | \(\Delta\) |
+|--------------------------------|---:|---:|---:|---:|---:|---:|
 | `ast_transformer` | 17 | 16 | +1 | 0 | 0 | 0 |
 | `cache_invalidation_dist` | 19 | 20 | \(-1\) | 18 | 17 | +1 |
 | `concurrency_race` | 18 | 9 | **+9** | 13 | 13 | 0 |
@@ -304,7 +304,7 @@ The two arms reach comparable aggregate deltas by different routes. Two-thirds o
 **Table 5.** Stop reasons and finish rate, v2 grid. Finish rate is the fraction of episodes ending in a `finish` call, which bounds how much of `verifygate` was ever exercised in that cell.
 
 | Cell | \(n\) | finished | context exhausted | no tool call | model error | finish rate |
-|---|---:|---:|---:|---:|---:|---:|
+|--------------------------------|---:|---:|---:|---:|---:|---:|
 | Qwen `full` | 160 | 147 | 4 | 8 | 1 | 92% |
 | Qwen `baseline` | 160 | 152 | 5 | 0 | 3 | 95% |
 | Qwen `no-outcap` | 160 | 144 | 9 | 6 | 0 | 90% |
@@ -323,7 +323,7 @@ Four confirmatory tests, so Šidák \(\alpha = 0.0127\) and the decision is made
 **Table 6.** Preregistered confirmatory tests. Directions were fixed before the first episode.
 
 | | Model | Contrast | \(\Delta\) | 98.7% CI | Verdict |
-|---|---|---|---:|---|---|
+|-----|--------|----------------------|---:|--------------------|--------------|
 | **H1** | Ornith | `full − baseline` | **+0.206** | [+0.113, +0.300] | **supported** |
 | **H1** | Qwen | `full − baseline` | **+0.156** | [+0.069, +0.244] | **supported** |
 | H2 | Ornith | `full − no-outcap` | +0.075 | [\(-0.006\), +0.156] | **not supported** |
@@ -342,7 +342,7 @@ Four confirmatory tests, so Šidák \(\alpha = 0.0127\) and the decision is made
 **Table 7.** One-flag-off ladder, \(\Delta = \text{full} - \text{ablation}\), paired by repeat, 95% intervals. Positive means the flag earned its keep. **These are exploratory and the family-wise number below applies.**
 
 | Ablation | Qwen \(\Delta\) | 95% CI | Ornith \(\Delta\) | 95% CI |
-|---|---:|---|---:|---|
+|----------------------------|---:|---------------|---:|---------------|
 | `no-verifygate` | **+0.225** | [+0.150, +0.300] | +0.075 | [\(-0.075\), +0.225] |
 | `no-envboot` | +0.050 | [+0.000, +0.100] | +0.025 | [\(-0.175\), +0.225] |
 | `no-groundfs` | +0.050 | [+0.000, +0.100] | +0.000 | [\(-0.225\), +0.225] |
@@ -361,7 +361,7 @@ We flag one consequence of the pairing scheme that a reader comparing tables wil
 **Table 8.** Interaction \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\), Ornith minus Qwen, with bootstrap 95% intervals. A positive value is the direction the hypothesis predicts.
 
 | Ablation | \(\Delta_w - \Delta_s\) | 95% CI | Seed-paired | 95% CI |
-|---|---:|---|---:|---|
+|----------------------------|---:|---------------|---:|---------------|
 | `baseline` | +0.050 | [\(-0.050\), +0.150] | +0.050 | [\(-0.044\), +0.144] |
 | `no-outcap` | +0.050 | [\(-0.031\), +0.125] | +0.050 | [\(-0.019\), +0.119] |
 | `no-nativetools` | +0.025 | [\(-0.075\), +0.125] | +0.025 | [\(-0.050\), +0.100] |

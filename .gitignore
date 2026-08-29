@@ -96,3 +96,6 @@ bench/paper/workshop/*.pdf
 
 # Third-party reference documentation kept locally for study, not redistributed.
 reference/
+
+# LaTeX build scratch for the paper (harness_architecture.tex/pdf are committed)
+bench/paper/.build/
