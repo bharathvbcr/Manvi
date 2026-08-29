@@ -22,6 +22,11 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | **Interactive Questions** | 1 | Ask the operator to resolve underspecified requirements or pick between options. |
 | **MCP 2.0 & Open Plugins** | 4 | List and call tools, and list and read resources, on external MCP servers over stateless JSON-RPC. |
 
+One further tool, `devcouncil_fetch_url`, is **conditional and not counted above**:
+it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
+unconfigured harness offers the counted set and a configured one offers exactly
+one more. See [Documentation lookup](#documentation-lookup).
+
 The thirteen rows above sum to the 44 tools `manvi tools` reports.
 
 **Specification coverage is not yet complete.** The first eight categories (30 tools) have full parameter and permission specifications in this document. The last five (14 tools — `devcouncil_search_tools`, `devcouncil_activate_tools`, `devcouncil_define_subagent`, `devcouncil_invoke_subagent`, `devcouncil_manage_subagents`, `devcouncil_send_message`, `devcouncil_create_artifact`, `devcouncil_list_artifacts`, `devcouncil_update_artifact`, `devcouncil_ask_question`, `mcp_list_tools`, `mcp_call_tool`, `mcp_list_resources`, `mcp_read_resource`) are registered in `manvi/devcouncil/` and dispatch normally, but are not written up below. Run `manvi tools` for their live schemas until they are.
@@ -139,4 +144,45 @@ Every tool execution follows a 4-phase pipeline:
 1. **`tools/pre-execute`**: Schema validation, context deadline check, and argument normalization.
 2. **Policy Gate Evaluation**: Evaluates Write Gate or Command Gate rules against active task scope and grants.
 3. **Native Tool Body Execution**: Dispatches directly in Go or calls Rust analysis binaries over stdio IPC.
-4. **`tools/post-execute` Qualification**: Attaches outcome metadata (`Passed`, `Blocked`, `Granted`, `Demoted`, `Degraded`) and appends result to the append-only `session.jsonl` log.
+4. **`tools/post-execute` Qualification**: Attaches outcome metadata (`Passed`, `Blocked`, `Granted`, `Demoted`, `Degraded`) and appends result to the append-only session log.
+
+## Documentation lookup
+
+`devcouncil_fetch_url` is this harness's only outbound network path. It is
+**off by default** and does not appear on the tool surface at all until an
+operator sets a host allowlist:
+
+```bash
+MANVI_FETCH_HOSTS="go.dev,pkg.go.dev,docs.python.org"
+```
+
+The allowlist is read from the environment and from nowhere else. It is
+deliberately not a settings key: settings load from `.devcouncil/config.yaml`,
+the restricted-path rung protecting that file lives inside the hard-rules block,
+and a relaxed posture switches that block off — so an allowlist expressed as a
+setting would be one the agent could extend by writing a file.
+
+Entries match a host and its subdomains on whole labels, so `go.dev` admits
+`pkg.go.dev` and does not admit `notgo.dev`.
+
+**What it refuses, on every request and on every redirect hop:**
+
+| Rule | Reason |
+|---|---|
+| Anything but `https` | A network position that can rewrite a plaintext response can write the model's instructions. |
+| Hosts outside the allowlist | The operator decides what this harness may reach. |
+| Loopback, private, link-local, unique-local, multicast, and reserved ranges | `169.254.169.254` is cloud instance metadata; `127.0.0.1` is whatever else runs on the box. |
+| Ports other than the default | The allowlist names hosts, not endpoints. |
+| Credentials in the URL | This path reads public documentation and never needs one. |
+| Non-text content types | A binary body reduced to "text" costs context and says nothing. |
+
+Addresses are re-resolved and re-checked inside the dialer, and the connection
+is made to the vetted literal address rather than to the name — resolving once,
+checking, and then handing the name to the transport is the hole DNS rebinding
+aims at. Proxies from the environment are ignored for the same reason: a proxy
+would send the request somewhere nothing vetted.
+
+Every response is bounded (20s, 2 MiB, 5 redirects) and returned wrapped in
+`BEGIN/END UNTRUSTED WEB CONTENT` markers that tell the model the enclosed text
+is evidence and not instruction. That framing is steering, not a boundary — the
+boundary is the policy gate that every subsequent tool call still passes.

@@ -163,13 +163,22 @@ func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("creating artifact: %v", err)
 	}
 
-	return annotate(ok(map[string]any{
+	// The artifact's path is reported like any other write. Whether an
+	// end-of-turn check has anything useful to say about a plan document is
+	// the checker's judgement, not this handler's: a handler that quietly
+	// withheld paths it thought uninteresting would be deciding coverage by
+	// omission, and the one thing downstream must never have to guess is
+	// whether a short list is short because little was written or because
+	// something filtered it.
+	result := ok(map[string]any{
 		"status":   "created",
 		"artifact": art.Name,
 		"revision": art.Revision,
 		"path":     art.Path,
 		"summary":  art.Metadata.Summary,
-	}), decision)
+	})
+	result.Wrote = []string{art.Path}
+	return annotate(result, decision)
 }
 
 func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Result {
@@ -200,13 +209,22 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("updating artifact: %v", err)
 	}
 
-	return annotate(ok(map[string]any{
+	// The artifact's path is reported like any other write. Whether an
+	// end-of-turn check has anything useful to say about a plan document is
+	// the checker's judgement, not this handler's: a handler that quietly
+	// withheld paths it thought uninteresting would be deciding coverage by
+	// omission, and the one thing downstream must never have to guess is
+	// whether a short list is short because little was written or because
+	// something filtered it.
+	result := ok(map[string]any{
 		"status":   "updated",
 		"artifact": art.Name,
 		"revision": art.Revision,
 		"path":     art.Path,
 		"summary":  art.Metadata.Summary,
-	}), decision)
+	})
+	result.Wrote = []string{art.Path}
+	return annotate(result, decision)
 }
 
 func (r *Registry) listArtifacts(ctx context.Context, call tools.Call) tools.Result {

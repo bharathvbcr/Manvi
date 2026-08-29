@@ -275,12 +275,33 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	if dynamic {
 		pipeline.EnableDynamic()
 	}
-	systemPrompt := assemblePrompt(reg, PromptOptions{
+	// Read once, under the lock, before either the prompt or the runner needs
+	// it. Two lookups would be two chances to see different state.
+	subRunner, caps := harnessFor(pipeline)
+	promptOpts := PromptOptions{
 		Provider:         provider.Name(),
 		TaskToolsOffered: taskToolsOffered(pipeline, coreOnly),
 		DynamicTools:     dynamic,
 		ActiveGroups:     pipeline.ActiveGroups(),
-	})
+		CodeMapAvailable: codeMapAvailable(caps, pipeline, dynamic, coreOnly),
+		// No first-party fetch exists here, so this is false on any harness
+		// without an MCP server attached — and the prompt then says nothing
+		// about checking documentation rather than instructing work whose only
+		// available form of compliance is to recall something and call it
+		// checked.
+		DocLookupAvailable: caps.DocLookup,
+		Areas:              caps.Areas,
+	}
+	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
+	for _, fault := range promptFaults {
+		fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)
+	}
+	// Recorded before the turn runs, so a log that explains the turn is
+	// complete by the time anything reads it.
+	if err := recordPromptAssembly(log, promptReport,
+		promptTokenBudget(reg, provider.Name())); err != nil {
+		return err
+	}
 
 	// Give devcouncil_spawn_subagents the ability to actually run a child.
 	// Without this the tool refuses, which is honest but is not the capability
@@ -290,7 +311,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// runner, so excluding only the spawn tool left the depth bound one name
 	// wide; see the floor predicate in subagent.go.
 	meter := &subAgentMeter{}
-	if runner := subRunners[pipeline]; runner != nil {
+	if runner := subRunner; runner != nil {
 		runner.attach(subAgentConfig{
 			provider:        provider,
 			models:          registry,
@@ -307,6 +328,12 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		})
 	}
 
+	// The loop's bus is held rather than built inline, because the terminal
+	// checkpoint listener has to be registered on this instance. Compaction
+	// already had to be, for the same reason; the checkpoint is the second
+	// listener that only works when it is attached to the bus the loop actually
+	// dispatches on.
+	loopBus := bus.New()
 	loop, err := agent.NewLoop(agent.Config{
 		Provider:        provider,
 		Registry:        registry,
@@ -318,9 +345,20 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		MaxTokens:       0,
 		CoreToolsOnly:   coreOnly,
 		AssertInvariant: assertInvariant(reg),
-	}, bus.New(), log, pipeline)
+	}, loopBus, log, pipeline)
 	if err != nil {
 		return err
+	}
+	// Registered before the turn runs, and its failure is fatal rather than
+	// logged. A harness that silently ran without its end-of-turn check would
+	// report every turn as finished, which is the exact condition this was
+	// built to make impossible.
+	if err := attachSensor(loopBus, &sensor{
+		native: native, log: log, flags: reg,
+		runner:  subRunner,
+		command: operatorVerifyCommand(),
+	}); err != nil {
+		return fmt.Errorf("the end-of-turn check could not be attached: %w", err)
 	}
 
 	outcome, err := loop.Run(ctx, llm.Message{

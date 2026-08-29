@@ -39,6 +39,47 @@ type ToolSurface struct {
 	// cannot hand a child something those rules took away. An empty list is
 	// "the role did not narrow by name", not "no tools".
 	Allowed []string
+	// Writes names mutating tools a read-only role may nonetheless use.
+	//
+	// SECURITY IMPACT, stated because this is the one field here that widens
+	// rather than narrows. Everything else on this type can only take capability
+	// away; this hands a child a tool the read-only floor would otherwise have
+	// removed, so every entry is a permission that has to be justified on its
+	// own and reviewed as one.
+	//
+	// It exists for a contradiction that shipped: the planner role's own system
+	// prompt tells it to "draft structured plans under .devcouncil/artifacts/"
+	// and the role sets EnableWriteTools false, so the artifact tools were
+	// removed by the floor and the instruction could not be followed. That is
+	// the same defect as a prompt naming a tool the model was not offered, in a
+	// role definition instead of a section — and the honest options were to
+	// stop claiming it or to make it true.
+	//
+	// Three properties keep the widening small. It is per-tool and by name, not
+	// per-group: "the planner may write artifacts" is expressible and "the
+	// planner may write" is not. It is intersected with the registry, so a name
+	// that is not a registered tool grants nothing. And it does not touch the
+	// policy gate: an artifact write still passes authoriseArtifactWrite like
+	// any other, so this decides which door the child may knock on, never
+	// whether the door opens.
+	Writes []string
+}
+
+// PermitsWrite reports whether a role explicitly allows this mutating tool
+// despite the read-only floor.
+//
+// Names are matched exactly. A prefix or glob here would be a permission whose
+// scope changes whenever a tool is added, which is the opposite of reviewable.
+func (s ToolSurface) PermitsWrite(name string) bool {
+	if !s.Declared {
+		return false
+	}
+	for _, allowed := range s.Writes {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Surface returns the tool surface this definition declares.
@@ -47,6 +88,7 @@ func (d Definition) Surface() ToolSurface {
 		Declared: true,
 		MCP:      d.EnableMCPTools,
 		Allowed:  d.AllowedTools,
+		Writes:   d.WriteExceptions,
 	}
 }
 
@@ -54,7 +96,7 @@ func (d Definition) Surface() ToolSurface {
 // constrains nothing lets a caller skip the narrowing work entirely, and — more
 // importantly — skip reporting a narrowing that did not happen.
 func (s ToolSurface) Constrains() bool {
-	return s.Declared && (!s.MCP || len(s.Allowed) > 0)
+	return s.Declared && (!s.MCP || len(s.Allowed) > 0 || len(s.Writes) > 0)
 }
 
 // Permits reports whether this surface admits one tool, named and grouped as

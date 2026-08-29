@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"manvi/llm/local"
+	"manvi/repomap"
 )
 
 // The prompt used to be identical for a frontier model and a 4-bit 27B. The
@@ -104,6 +105,10 @@ func TestThePromptNeverNamesAToolTheProfileRemoved(t *testing.T) {
 // could see — telling it "There is no task to check out here" with the tool in
 // its list. Deriving TaskToolsOffered from the registry fixes the second; this
 // test is what notices either one coming back.
+// someAreas stands in for a loaded code map, so the capability-gated sections
+// are exercised rather than skipped by this guard.
+var someAreas = []repomap.AreaSummary{{Name: "policy", Files: 9}}
+
 func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 	reg := newTestRegistry(t)
 	_, pipeline, err := nativeToolsWith(reg, nil)
@@ -111,13 +116,36 @@ func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 		t.Skipf("the native tool surface could not be built here: %v", err)
 	}
 
+	// The dynamic surface is the third profile and it is the one this class of
+	// defect actually shipped on: it is smaller than the registry at the start
+	// of a turn, so a section written against the full surface names tools the
+	// model does not have. It is built on its own registry because
+	// EnableDynamic is not reversible.
+	dynamicReg := newTestRegistry(t)
+	_, dynamicPipeline, err := nativeToolsWith(dynamicReg, nil)
+	if err != nil {
+		t.Skipf("the native tool surface could not be built here: %v", err)
+	}
+	dynamicPipeline.EnableDynamic()
+
+	// The whole registry, so a tool absent from a narrowed profile is still
+	// something this test knows to look for. Taken from the unnarrowed
+	// pipeline, which is the only one that has them all.
+	var allTools []string
+	for _, s := range pipeline.Schemas() {
+		allTools = append(allTools, s.Name)
+	}
+
 	for _, provider := range []string{"anthropic", "gemini", "xai", local.Name} {
-		for _, coreOnly := range []bool{false, true} {
-			name := provider
-			if coreOnly {
-				name += "/core-only"
-			}
-			t.Run(name, func(t *testing.T) {
+		for _, profile := range []string{"full", "core-only", "dynamic"} {
+			t.Run(provider+"/"+profile, func(t *testing.T) {
+				pipeline, coreOnly, dynamic := pipeline, false, false
+				switch profile {
+				case "core-only":
+					coreOnly = true
+				case "dynamic":
+					pipeline, dynamic = dynamicPipeline, true
+				}
 				offered := pipeline.Schemas()
 				if coreOnly {
 					offered = pipeline.CoreSchemas()
@@ -130,14 +158,36 @@ func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 				text := assemblePrompt(reg, PromptOptions{
 					Provider:         provider,
 					TaskToolsOffered: taskToolsOffered(pipeline, coreOnly),
+					DynamicTools:     dynamic,
+					ActiveGroups:     pipeline.ActiveGroups(),
+					// Resolved the same way the faces resolve it, so this test
+					// exercises the decision that ships rather than a second
+					// one written for the test.
+					CodeMapAvailable: codeMapAvailable(
+						harnessCapability{CodeMapConfigured: true, Areas: someAreas},
+						pipeline, dynamic, coreOnly),
+					DocLookupAvailable: true,
+					Areas:              someAreas,
 				})
 
 				// Direction one: every devcouncil_* tool the prompt names by
 				// its full id must be in the set the model will be given.
-				for _, s := range pipeline.Schemas() {
-					if strings.Contains(text, s.Name) && !inProfile[s.Name] {
-						t.Errorf("the prompt names %q, which this profile does not offer", s.Name)
+				//
+				// Under dynamic loading the offered set can grow during the
+				// turn, so naming an unlisted tool is no longer a dead end —
+				// but only because tool-discovery tells the model how to fetch
+				// it. Naming one without that section is the same defect as
+				// before, so the exemption is conditional on the section being
+				// there rather than on the mode being on.
+				fetchable := dynamic && strings.Contains(text, "activate_tools")
+				for _, s := range allTools {
+					if !strings.Contains(text, s) || inProfile[s] {
+						continue
 					}
+					if fetchable {
+						continue
+					}
+					t.Errorf("the prompt names %q, which this profile does not offer", s)
 				}
 
 				// Direction two: the prompt must not deny the task lifecycle
@@ -156,8 +206,15 @@ func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 	}
 }
 
-// TestPromptContainsCoreEngineeringPrinciples asserts that all 5 foundational
-// engineering principles are embedded and attributable in the prompt across providers.
+// TestPromptContainsCoreEngineeringPrinciples asserts that the unconditional
+// engineering principles are embedded and attributable across providers.
+//
+// The two that used to be listed here and no longer are — check the
+// documentation, navigate by the dev map — moved to
+// TestCapabilityGuidanceFollowsTheCapability, because they are no longer
+// unconditional. Both name something this harness may not have: there is no
+// first-party fetch at all, and the code graph needs a binary, an index and an
+// activated tool group. They are asserted there in both directions.
 func TestPromptContainsCoreEngineeringPrinciples(t *testing.T) {
 	reg := registryWith(t, nil)
 	for _, provider := range []string{"anthropic", "gemini", "xai", local.Name} {
@@ -168,7 +225,6 @@ func TestPromptContainsCoreEngineeringPrinciples(t *testing.T) {
 		}{
 			{"Systematic Review & Core Reuse", "Systematic Review & Core Reuse"},
 			{"No duplication/bloat", "Strictly avoid duplication"},
-			{"Grounding & Dev Map", "Grounding & Dev Map Guidance"},
 			{"Problem Deconstruction & Hypotheses", "Problem Deconstruction & Hypotheses"},
 			{"Characterize baseline tests", "characterize baseline behavior with tests"},
 			{"Hardening & Adversarial Testing", "Hardening & Adversarial Stress-Testing"},
@@ -179,5 +235,53 @@ func TestPromptContainsCoreEngineeringPrinciples(t *testing.T) {
 				t.Errorf("provider %q: prompt missing principle %s (%q)", provider, p.name, p.key)
 			}
 		}
+	}
+}
+
+// TestCapabilityGuidanceFollowsTheCapability is the rule PromptOptions already
+// stated for the task tools, applied to the rest: the prompt never instructs
+// work this harness cannot do.
+//
+// It fails against the shape it replaced, where one unconditional section told
+// every run — including a local one with no MCP server and no code index — to
+// "verify current documentation and online references" and to "utilize the
+// repository dev map". Neither was reachable. An instruction whose only
+// available form of compliance is to recall something and present it as checked
+// is worse than no instruction.
+func TestCapabilityGuidanceFollowsTheCapability(t *testing.T) {
+	reg := registryWith(t, nil)
+	for _, provider := range []string{"anthropic", local.Name} {
+		t.Run(provider+"/absent", func(t *testing.T) {
+			got := assemblePrompt(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
+			for _, forbidden := range []string{"current documentation", "dev map", "code index"} {
+				if strings.Contains(strings.ToLower(got), forbidden) {
+					t.Errorf("the prompt mentions %q while the harness cannot do it", forbidden)
+				}
+			}
+		})
+		t.Run(provider+"/present", func(t *testing.T) {
+			got := assemblePrompt(reg, PromptOptions{
+				Provider: provider, TaskToolsOffered: true,
+				CodeMapAvailable:   true,
+				DocLookupAvailable: true,
+				Areas: []repomap.AreaSummary{
+					{Name: "policy", Files: 9}, {Name: "llm", Files: 40},
+				},
+			})
+			for _, required := range []string{"current documentation", "dev map"} {
+				if !strings.Contains(strings.ToLower(got), required) {
+					t.Errorf("the prompt omits %q while the harness can do it", required)
+				}
+			}
+			// And the shape is supplied rather than requested: the largest area
+			// first, with its size.
+			if !strings.Contains(got, "llm (40 files)") {
+				t.Errorf("the repository shape did not reach the prompt:\n%s", got)
+			}
+			if strings.Index(got, "llm (40 files)") > strings.Index(got, "policy (9 files)") {
+				t.Error("areas are not ordered largest first, so the list does not answer " +
+					"\"where would this live\" at a glance")
+			}
+		})
 	}
 }

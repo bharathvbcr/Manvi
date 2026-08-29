@@ -109,7 +109,7 @@ If the server exposes no dimensions, MANVI falls back to `llm.local.context_wind
 ### 4. Prefix-Cache-Preserving Compaction (1.5s vs 120s)
 Local server inference throughput relies heavily on prompt-prefix KV cache reuse. Rewriting history on every turn invalidates the KV cache, triggering a full prompt re-prefill (**120s for a 14.7k-token prompt on a 4-bit 27B model**). 
 
-MANVI records one-way compactions in `session.jsonl` and projects them deterministically so that the token prefix **only ever grows**, reducing step latency to **1.5s warm**.
+MANVI records one-way compactions in the session log and projects them deterministically so that the token prefix **only ever grows**, reducing step latency to **1.5s warm**.
 
 ### 5. Self-Calibrating Token Budget
 Token estimators can diverge from model tokenizers (e.g. ~25% high on Qwen, up to 58% on structured JSON tool outputs). MANVI reads the exact `prompt_tokens` returned by the server on each response and self-calibrates its estimation over successive steps. Tool schemas are explicitly budgeted (~1,755 tokens on the shipped surface).

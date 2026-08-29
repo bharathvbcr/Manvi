@@ -111,6 +111,13 @@ type Definition struct {
 	// AllowedTools, when non-empty, is an allowlist of tool names. It only ever
 	// removes — see ToolSurface.
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// WriteExceptions names mutating tools a read-only role may still use.
+	//
+	// SECURITY IMPACT: this is the only field on a role that widens what a
+	// child can do. See ToolSurface.Writes for the reasoning and the bounds.
+	// A role that sets EnableWriteTools true has no use for it — the floor is
+	// already down.
+	WriteExceptions []string `json:"write_exceptions,omitempty"`
 }
 
 // Registry stores dynamic subagent definitions.
@@ -171,6 +178,26 @@ func NewRegistry() *Registry {
 		Model:            "inherit",
 		EnableMCPTools:   true,
 		EnableWriteTools: false,
+		// The two tools this role's own prompt tells it to use.
+		//
+		// Without them the instruction above — "draft structured plans under
+		// .devcouncil/artifacts/" — described work the child could not do: the
+		// read-only floor removed the artifact tools, so a planner asked for a
+		// plan could only describe one in prose that died with its turn. That
+		// is the same defect as a system-prompt section naming a tool the model
+		// was not offered, wearing a role definition instead.
+		//
+		// SECURITY IMPACT, small and stated. It admits exactly two names, both
+		// of which write only through the artifact store — contained under
+		// .devcouncil/artifacts/, revisioned, and passing the same policy gate
+		// as any other artifact write. It does not admit write_file, patch_file,
+		// delete_file or exec_command, so a planner still cannot touch
+		// repository source or run a command. The widening is from "no
+		// mutations" to "may record a plan".
+		WriteExceptions: []string{
+			"devcouncil_create_artifact",
+			"devcouncil_update_artifact",
+		},
 	})
 
 	_ = r.register(true, Definition{

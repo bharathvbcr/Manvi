@@ -239,14 +239,36 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	// harness delegates nothing at all. agents.max_fanout cannot say that; its
 	// floor is one child.
 	if maxDepth < 1 {
+		// The reason, not the flag, when something other than the flag decided.
+		// A refusal citing agents.max_spawn_depth=0 to an operator who set it
+		// to 2 sends them to look at a setting that is not the cause.
+		cause := fmt.Sprintf("%s=%d", flags.AgentsMaxSpawnDepth, maxDepth)
+		if bounds.DepthReason != "" {
+			cause = bounds.DepthReason
+		}
 		res := tools.Errorf(
-			"delegation is off: %s=%d, so no sub-agent may be dispatched at any width. "+
+			"delegation is off: %s, so no sub-agent may be dispatched at any width. "+
 				"Nothing was dispatched and no child ran — this is not a report of zero results. "+
-				"Carry out the work in this turn, or ask the operator to change the setting",
-			flags.AgentsMaxSpawnDepth, maxDepth)
+				"Carry out the work in this turn.",
+			cause)
 		res.Rule = flags.AgentsMaxSpawnDepth
 		return res
 	}
+
+	// The same narrowing the other dispatcher applies, from the same function:
+	// how many children may run at once depends on where they will run, and the
+	// bound above was resolved from the session's default provider.
+	placements := make([]string, 0, len(args.Subagents))
+	for _, sub := range args.Subagents {
+		if override := strings.TrimSpace(sub.Model); override != "" {
+			placements = append(placements, override)
+			continue
+		}
+		if def, ok := reg.Get(sub.TypeName); ok {
+			placements = append(placements, def.Model)
+		}
+	}
+	maxFanout, fanoutNarrowed := agents.FanoutFor(bounds, placements)
 
 	pool, err := agents.New(maxDepth, maxFanout, r.deps.Store)
 	if err != nil {
@@ -379,6 +401,18 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					"steps":           out.Steps,
 					"usage":           out.Usage,
 				}
+				if len(out.Wrote) > 0 {
+					outcome["wrote"] = out.Wrote
+				}
+				if out.WroteTruncated {
+					outcome["wrote_truncated"] = true
+				}
+				if out.Verdict.Judged {
+					// Carried structured rather than left in the prose. A
+					// judgement a caller has to read out of a paragraph is a
+					// judgement a caller will read wrong.
+					outcome["verdict"] = out.Verdict.Reconcile()
+				}
 				if !ok {
 					// Carried on the child's own outcome as well as on the
 					// payload, because this is the line a dispatching model
@@ -447,6 +481,9 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	if spent.Any() {
 		payload["usage"] = spent
 	}
+	if fanoutNarrowed != "" {
+		payload["fanout_narrowed"] = fanoutNarrowed
+	}
 	if len(unknownTypes) > 0 {
 		payload["unknown_types"] = unknownTypes
 		payload["unknown_types_note"] = fmt.Sprintf(
@@ -455,11 +492,37 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 				"policy. Check the spelling against the registered roles, or define the role first",
 			strings.Join(unknownTypes, ", "))
 	}
-	if report.Children > 0 && report.Failed == report.Children {
-		return failure(payload, fmt.Sprintf(
-			"all %d sub-agent(s) failed; nothing was dispatched successfully", report.Children))
+
+	// Children changed paths on their own logs, and this is the only hop that
+	// carries them to the parent's terminal checkpoint. See SubAgentResult.Wrote.
+	var wrote []string
+	truncated := false
+	for _, res := range results {
+		value, isMap := res.Value.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if paths, ok := value["wrote"].([]string); ok {
+			wrote, truncated = mergeWrites(wrote, truncated, paths)
+		}
+		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
+			truncated = true
+		}
 	}
-	return ok(payload)
+
+	if report.Children > 0 && report.Failed == report.Children {
+		res := failure(payload, fmt.Sprintf(
+			"all %d sub-agent(s) failed; nothing was dispatched successfully", report.Children))
+		res.Wrote = wrote
+		return res
+	}
+	res := ok(payload)
+	res.Wrote = wrote
+	if truncated {
+		res.Degraded = append(res.Degraded,
+			"a sub-agent changed more paths than it reported; the list is incomplete")
+	}
+	return res
 }
 
 // recordFailure moves an instance to errored and returns the failure the child

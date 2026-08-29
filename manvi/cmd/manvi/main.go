@@ -31,6 +31,7 @@ import (
 	"manvi/dc/devmap"
 	"manvi/dc/store"
 	"manvi/devcouncil"
+	"manvi/fetch"
 	"manvi/flags"
 	"manvi/gate"
 	"manvi/grants"
@@ -1666,6 +1667,9 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	// harness instead of outliving it; CloseAll existed and was tested, but
 	// nothing ever called it.
 	onProcessExit(func() { mcpMgr.CloseAll() })
+	// Operator scope only. See operatorFetchHosts: an allowlist the agent could
+	// write into the repository would not be one.
+	fetcher := fetch.New(operatorFetchHosts(), fetch.Limits{})
 	subRegistry := agents.NewRegistry()
 	subMgr := agents.NewInstanceManager()
 
@@ -1675,13 +1679,16 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	subRunner := &subAgentRunner{}
 
 	native, err := devcouncil.New(devcouncil.Deps{
-		Store:            storeClient(),
-		Gate:             g,
-		Root:             root,
-		LeaseTTL:         15 * time.Minute,
-		VerifierBinary:   toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
-		CoverageFile:     os.Getenv("MANVI_COVERAGE"),
-		Map:              mapClient(root),
+		Store:          storeClient(),
+		Gate:           g,
+		Root:           root,
+		LeaseTTL:       15 * time.Minute,
+		VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
+		CoverageFile:   os.Getenv("MANVI_COVERAGE"),
+		Map:            mapClient(root),
+		// Operator scope only. See operatorFetchHosts: an allowlist the agent
+		// could write into the repository would not be one.
+		Fetch:            fetcher,
 		Subsystems:       subsystems,
 		Approver:         approver,
 		QuestionAsker:    questionAsker(approver),
@@ -1703,7 +1710,14 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	if err := native.Register(pipeline); err != nil {
 		return nil, nil, err
 	}
-	subRunners[pipeline] = subRunner
+	caps := harnessCapability{
+		CodeMapConfigured: native.CodeMapConfigured(),
+		DocLookup:         docLookupAvailable(fetcher, mcpMgr),
+	}
+	if subsystems != nil {
+		caps.Areas = subsystems.Areas()
+	}
+	rememberHarness(pipeline, subRunner, caps)
 	return native, pipeline, nil
 }
 
@@ -1778,7 +1792,53 @@ func questionAsker(approver ui.Approver) devcouncil.QuestionAsker {
 // resolves a provider would be a worse trade than this lookup. A caller that
 // never resolves a provider simply never attaches, and the tool goes on
 // refusing.
+// Guarded because tool surfaces are built per session and the TUI builds them
+// off the lock it takes to assign a tab number. Two tabs opening at once — a
+// startup that restores several, or a fast hand on the shortcut — is two
+// unsynchronised writes to the same map, which in Go is a process-ending panic
+// rather than a lost entry. The maps were unguarded before this and the window
+// was real; it had simply never been hit.
+var harnessMu sync.Mutex
+
 var subRunners = map[*tools.Registry]*subAgentRunner{}
+
+// harnessCapability is what this build can actually do, resolved once where the
+// dependencies are assembled.
+//
+// It is looked up by tool registry for the same reason subRunners is: the
+// answers are decided in nativeToolsWith, where the code map, the MCP manager
+// and the tool surface all exist together, and they are needed in the two
+// faces, where none of them do. Threading three more values through every call
+// site to serve two callers is the worse trade.
+type harnessCapability struct {
+	// CodeMapConfigured is whether a navigator is attached.
+	CodeMapConfigured bool
+	// DocLookup is whether anything here can fetch documentation.
+	DocLookup bool
+	// Areas is the repository's own shape, for orienting the model.
+	Areas []repomap.AreaSummary
+}
+
+var harnessCaps = map[*tools.Registry]harnessCapability{}
+
+// rememberHarness records one tool surface's runner and capabilities together,
+// under one lock, because they are written at one point and read at one point
+// and splitting the guard would only invite them to diverge.
+func rememberHarness(pipeline *tools.Registry, runner *subAgentRunner, caps harnessCapability) {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	subRunners[pipeline] = runner
+	harnessCaps[pipeline] = caps
+}
+
+// harnessFor returns what was recorded for a tool surface. A surface nothing
+// recorded yields the zero values, which is the same answer the bare map
+// lookups gave: no runner attached, and no capability claimed.
+func harnessFor(pipeline *tools.Registry) (*subAgentRunner, harnessCapability) {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	return subRunners[pipeline], harnessCaps[pipeline]
+}
 
 func listTools(out io.Writer, reg *flags.Registry) error {
 	_, pipeline, err := nativeTools(reg)

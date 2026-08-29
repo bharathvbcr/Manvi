@@ -390,6 +390,52 @@ func (m *Map) AreNeighbors(a, b string) bool {
 	return m.adjacent[a][b]
 }
 
+// Areas lists every area the map knows, sorted, with how many files each holds.
+//
+// It exists so the harness can tell a model what the repository is made of
+// instead of instructing it to go and find out. The instruction was already in
+// the system prompt — "utilise the repository dev map for structured
+// navigation" — while the map itself sat behind a tool group the model had to
+// discover and activate first, and the guidance for using that group only
+// appeared after it had. Supplying the shape up front costs a few dozen tokens
+// and removes a round trip the model was paying for on every task.
+//
+// Counts travel with the names because an area's size is what makes the list
+// navigable: "this repository has thirty areas" is trivia, and "policy holds
+// nine files and llm holds forty" is a place to start.
+func (m *Map) Areas() []AreaSummary {
+	counts := make(map[string]int, len(m.adjacent))
+	for _, area := range m.areaOf {
+		counts[area]++
+	}
+	// An area with adjacency but no file of its own is still an area, and
+	// dropping it here would make this disagree with AreNeighbors about what
+	// exists — two answers to one question, which is the defect this package's
+	// own doc comment is about.
+	for area := range m.adjacent {
+		if _, ok := counts[area]; !ok {
+			counts[area] = 0
+		}
+	}
+	out := make([]AreaSummary, 0, len(counts))
+	for area, n := range counts {
+		out = append(out, AreaSummary{Name: area, Files: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Files != out[j].Files {
+			return out[i].Files > out[j].Files
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// AreaSummary is one subsystem and its size.
+type AreaSummary struct {
+	Name  string
+	Files int
+}
+
 // Neighbours lists an area's neighbours, sorted, for reporting.
 func (m *Map) Neighbours(area string) []string {
 	out := make([]string, 0, len(m.adjacent[area]))

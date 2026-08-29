@@ -199,11 +199,14 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		// that still holds the write tools honours nothing: Registry.Run
 		// dispatches by name whether or not the schema was offered.
 		//
-		// It is a floor and not a ceiling: it is applied before a role is
-		// consulted and cannot be lifted by one, so a caller that asked for a
-		// non-mutating child never receives a writing one because the role
-		// permits writes.
-		if req.ReadOnly && !t.ReadOnly {
+		// It is a floor and not a ceiling for the caller: a dispatch that asked
+		// for a non-mutating child never receives a writing one because the
+		// role permits writes. The named exceptions below are not an escape
+		// from that. They are stripped at the dispatch site whenever the caller
+		// asked for read-only — see spawnSubagents and invokeSubagents — so
+		// what reaches here is only ever a role lifting its *own* floor for
+		// tools it named one at a time.
+		if req.ReadOnly && !t.ReadOnly && !req.Surface.PermitsWrite(t.Schema.Name) {
 			return false
 		}
 		return true
@@ -281,6 +284,13 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		systemPrompt = req.SystemPrompt
 	}
+	// A child asked for a judgement is told, in its own prompt, the exact shape
+	// the judgement has to arrive in. The instruction and the reader are
+	// written together in verdict.go for the reason every parse-the-prose
+	// scheme fails: a contract only one side knows about is not a contract.
+	if strings.TrimSpace(req.Verdict) != "" {
+		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + verdictInstruction()
+	}
 
 	loop, err := agent.NewLoop(agent.Config{
 		Provider: provider,
@@ -337,8 +347,13 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	}
 	cfg.meter.add(spent)
 	if err != nil {
-		return devcouncil.SubAgentResult{Steps: outcome.Steps, Usage: spent},
-			fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
+		// The paths travel even on the failure path. A child that wrote three
+		// files and then died left three changed files behind, and a parent
+		// told nothing about them cannot verify what is now in its tree.
+		return devcouncil.SubAgentResult{
+			Steps: outcome.Steps, Usage: spent,
+			Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+		}, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
 	}
 
 	summary := strings.TrimSpace(outcome.Final.Text())
@@ -347,8 +362,11 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		// to: a child that finished with nothing to say did not do the work its
 		// prompt described. Saying so here means the report names the child
 		// rather than leaving the caller to infer it from a blank field.
-		return devcouncil.SubAgentResult{Steps: outcome.Steps, Usage: spent}, fmt.Errorf(
-			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
+		return devcouncil.SubAgentResult{
+				Steps: outcome.Steps, Usage: spent,
+				Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+			}, fmt.Errorf(
+				"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
 	}
 	// Everything worth saying about the turn, from the one function that
 	// answers that question, rather than a third hand-rolled copy.
@@ -367,7 +385,16 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		summary += "\n\n[this sub-agent: " + n.Text + "]"
 	}
 
-	return devcouncil.SubAgentResult{Summary: summary, Steps: outcome.Steps, Usage: spent}, nil
+	return devcouncil.SubAgentResult{
+		Summary: summary, Steps: outcome.Steps, Usage: spent,
+		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+		// Read out of the child's own answer against a stated contract, and
+		// reconciled to fail closed. A judging role is asked for one line in a
+		// fixed shape; anything else — a missing line, a pass that still lists
+		// objections — comes back as no judgement rather than as a pass, which
+		// is the only direction it is safe to be wrong in.
+		Verdict: parseVerdict(req.Verdict, summary),
+	}, nil
 }
 
 // spawnSubagentsTool is the dispatching tool a child must never be given.

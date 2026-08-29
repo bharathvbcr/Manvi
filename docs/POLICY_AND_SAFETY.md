@@ -294,7 +294,7 @@ flowchart LR
     Scrubber --> PatternMatch["Detect Key Formats:<br/>sk-*, ghp_*, AKIA*, AIza*, Bearer tokens"]
     PatternMatch --> Redact["Redact to [REDACTED_SECRET]"]
     Redact --> Sanitize["ui.Sanitize:<br/>Strip ANSI escape injections & Bidi controls"]
-    Sanitize --> Sink["Terminal / TUI / session.jsonl"]
+    Sanitize --> Sink["Terminal / TUI / session log"]
 ```
 
 - **`credentials.Scrubber`**: Regex-based token hunter that matches provider API keys, GitHub tokens, AWS credentials, and arbitrary high-entropy strings.

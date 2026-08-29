@@ -36,8 +36,79 @@ type outcomeNotice struct {
 func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 	var out []outcomeNotice
 
-	// First, because it invalidates the result more completely than anything
-	// below it: there is no answer to qualify.
+	// Ahead of everything else, because it is the one notice that contradicts
+	// the turn's own appearance. A natural stop with prose and no tool calls
+	// looks finished from every other signal here; if the check that ran over
+	// its changes failed, saying so anywhere but first invites the reader to
+	// have already decided.
+	switch o.Sensor {
+	case agent.SensorNone, agent.SensorSkipped, agent.SensorPassed:
+		// Nothing to say. No check was owed, none was attempted, or one ran
+		// and was satisfied — and a line on every clean turn is a line an
+		// operator learns to skip, which is how the failing one gets skipped
+		// too.
+	case agent.SensorFailed:
+		text := "the end-of-turn check failed on this turn's changes — the work is not verified"
+		if o.BouncesExhausted {
+			text += ", and the turn ended with the check still failing after " +
+				fmt.Sprintf("%d attempt(s) to put it right", o.Bounces)
+		}
+		out = append(out, outcomeNotice{
+			Text:     text,
+			Degraded: []string{"end-of-turn check failed"},
+		})
+	case agent.SensorDegraded:
+		// Never folded into the pass. A check that could not run is the exact
+		// state that must not read like a check that ran and found nothing:
+		// that equivalence is how "verified" comes to mean "unexamined".
+		out = append(out, outcomeNotice{
+			Text: "the end-of-turn check could not run over this turn's changes, so nothing here " +
+				"is evidence that they are sound",
+			Degraded: []string{"end-of-turn check degraded"},
+		})
+	default:
+		// A verdict this build does not recognise. Reported rather than
+		// ignored, and reported as a degradation: a value nobody anticipated
+		// is not evidence that anything passed, and the default that treats it
+		// as one is how a renamed constant silently disarms a gate.
+		out = append(out, outcomeNotice{
+			Text: fmt.Sprintf("the end-of-turn check returned %q, which this build does not "+
+				"recognise; treat this turn as unverified", string(o.Sensor)),
+			Degraded: []string{"end-of-turn check returned an unrecognised verdict"},
+		})
+	}
+
+	// A turn that had to be sent back says so even when it eventually passed:
+	// the operator asked for one answer and paid for three, and the reason is
+	// not otherwise visible anywhere in the transcript.
+	if o.Bounces > 0 || o.BouncesExhausted {
+		notice := outcomeNotice{
+			Text: fmt.Sprintf("the end-of-turn check sent this turn back %d time(s) before it closed",
+				o.Bounces),
+		}
+		if o.BouncesExhausted {
+			notice.Text = fmt.Sprintf(
+				"the end-of-turn check was still not satisfied after %d attempt(s), which is the "+
+					"limit; the turn ended with the objection standing", o.Bounces)
+			notice.Degraded = []string{"the end-of-turn check was never satisfied"}
+		}
+		out = append(out, notice)
+	}
+
+	// The written-path list is what the check ran against, so a list that was
+	// cut short is a check with a hole in it — whatever verdict it reached.
+	if o.WroteTruncated {
+		out = append(out, outcomeNotice{
+			Text: fmt.Sprintf("this turn changed more than %d files, and only the first %d were "+
+				"tracked; anything checked here covers that subset, not the whole change",
+				agent.MaxTrackedWrites, agent.MaxTrackedWrites),
+			Degraded: []string{"the changed-file list was truncated"},
+		})
+	}
+
+	// First among the response-shaped notices, because it invalidates the
+	// result more completely than anything below it: there is no answer to
+	// qualify.
 	if o.FinalEmpty {
 		out = append(out, outcomeNotice{
 			Text: "the turn ended without an answer — the last response carried no text and no tool call, " +

@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"manvi/dc"
 	"manvi/dc/devmap"
 	"manvi/dc/store"
+	"manvi/fetch"
 	"manvi/flags"
 	"manvi/gate"
 	"manvi/grants"
@@ -56,6 +58,14 @@ type Deps struct {
 	Root string
 	// LeaseTTL is how long a checkout lasts before it must be renewed.
 	LeaseTTL time.Duration
+	// Fetch is the documentation-lookup client. A nil or unconfigured one
+	// removes the fetch tool from the surface entirely.
+	//
+	// SECURITY IMPACT: this is the only outbound network path in the harness.
+	// It is off unless an operator names hosts out of band — see
+	// fetch.New — because a harness nobody configured for network access does
+	// not have network access.
+	Fetch *fetch.Client
 	// Map is the repo-navigation client. Nil disables the navigation tools,
 	// which then report themselves unavailable rather than returning empty
 	// results that read like answers.
@@ -146,6 +156,15 @@ type SubAgentRequest struct {
 	// left seven leases held for the full TTL after the run exited cleanly,
 	// and the fan-out reported "clean": true with no orphans.
 	Leases LeaseSink
+	// Verdict asks the child for a structured judgement in addition to its
+	// prose, and is set only by a dispatcher that is going to act on one.
+	//
+	// It carries the marker the child is told to emit. The runner reads that
+	// line out of the answer against a stated contract rather than guessing at
+	// the prose, and a child that never emits it comes back having reached no
+	// judgement — which is not a pass. Empty means the caller wants no
+	// judgement, and none is parsed.
+	Verdict string
 }
 
 // SubAgentResult is what one sub-agent actually produced.
@@ -166,6 +185,68 @@ type SubAgentResult struct {
 	// — reported as the whole of it. A benchmark reading that number is being
 	// told the harness is seventeen times cheaper than it is.
 	Usage SubAgentUsage
+	// Wrote names the repository-relative paths the child changed.
+	//
+	// A child runs on its own bus and its own log, so nothing it does reaches
+	// the parent's terminal checkpoint by itself. Without this a fan-out of
+	// builders leaves the parent with an empty written-path set and a
+	// dispatch tool that merely counts as a mutation, so the parent's
+	// end-of-turn check runs against nothing and reports a pass for work it
+	// never looked at. The paths come back so the parent can verify what its
+	// children did.
+	Wrote []string
+	// WroteTruncated is true when the child changed more paths than Wrote
+	// lists, so the incompleteness survives the handoff rather than being
+	// re-derived — or, worse, assumed away.
+	WroteTruncated bool
+	// Verdict is a structured judgement, set only by children dispatched to
+	// judge something. It is empty for ordinary work.
+	//
+	// It exists because "completed" does not mean "passed". A child's status
+	// is set from whether its summary was non-empty, so a critic that ran,
+	// found three defects and said so in prose is reported exactly like one
+	// that found none. Scraping the summary for a word like PASSED is not a
+	// contract — it is a hope about prose — and an advance rule built on it
+	// certifies whatever the model happened to write.
+	Verdict SubAgentVerdict
+}
+
+// SubAgentVerdict is a judging child's structured answer.
+//
+// Passed is deliberately not the zero value. A verdict that was never set, a
+// child that died, and a child that ran and found nothing wrong must not
+// serialise to the same thing: the first two are the absence of a judgement and
+// the third is a judgement, and an advance rule that cannot tell them apart
+// advances on silence.
+type SubAgentVerdict struct {
+	// Judged is false unless a judgement was actually reached. Nothing may read
+	// Passed without it.
+	Judged bool `json:"judged"`
+	// Passed is the judgement itself, meaningful only when Judged is true.
+	Passed bool `json:"passed"`
+	// Findings are what the judge objected to, already capped by its producer.
+	// A verdict that failed with no findings is still a failure — the reason
+	// may simply not have survived — but a verdict that passed while carrying
+	// findings is a contradiction, and Reconcile refuses it.
+	Findings []string `json:"findings,omitempty"`
+}
+
+// Reconcile folds a claimed verdict into a safe one, failing closed.
+//
+// Three ways a judgement can be untrustworthy, and all three resolve to the
+// same answer: not passed. A judgement that was never reached is not a pass. A
+// judgement that says it passed while listing objections is not internally
+// consistent, and the direction that is safe to be wrong in is the one that
+// asks a human. Being generous here is how "approved" comes to mean
+// "unexamined".
+func (v SubAgentVerdict) Reconcile() SubAgentVerdict {
+	if !v.Judged {
+		return SubAgentVerdict{Judged: false}
+	}
+	if v.Passed && len(v.Findings) > 0 {
+		v.Passed = false
+	}
+	return v
 }
 
 // SubAgentUsage is one child's token cost.
@@ -535,6 +616,10 @@ func (r *Registry) Tools() []tools.Tool {
 	set = append(set, r.gitTools()...)
 	// Bridge to the external DevCouncil CLI's project-level views.
 	set = append(set, r.devTools()...)
+	// Documentation lookup. Contributes nothing unless an operator configured
+	// a host allowlist, so an unconfigured harness offers no network tool at
+	// all rather than one that always refuses.
+	set = append(set, r.webTools()...)
 	return set
 }
 
@@ -1230,6 +1315,11 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	if refusal != nil {
 		return *refusal
 	}
+	// Asked before the write, because afterwards every path exists. See
+	// reuse.go: this is what turns "extend existing seams rather than
+	// duplicating" from a line in the system prompt into something that
+	// actually looks.
+	reusePath, creating := r.createdPath(args.Path)
 	// The target is pinned BEFORE the ladder runs and before any approval
 	// prompt: the identity snapshot has to predate human-scale delays, or a
 	// concurrent actor could swap a directory for a symlink while the prompt
@@ -1274,9 +1364,21 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		}
 	}
 
-	return annotate(
-		tools.Result{Text: fmt.Sprintf("wrote %s (%d bytes)", decision.Target, len(args.Content))},
+	// The path is claimed only here, after the bytes have landed. A refusal, a
+	// failed open or a pin that could not be taken all return above without it,
+	// because none of them changed a file and a checker handed a path that was
+	// never written would report on the wrong thing — or, worse, report a pass
+	// for a write the gate refused.
+	result := annotate(
+		tools.Result{
+			Text:  fmt.Sprintf("wrote %s (%d bytes)", decision.Target, len(args.Content)),
+			Wrote: []string{decision.Target},
+		},
 		decision)
+	if creating {
+		result = annotateReuse(result, r.checkReuse(ctx, reusePath))
+	}
+	return result
 }
 
 func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result {
@@ -1317,7 +1419,10 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 			return tools.Errorf("%v", err)
 		}
 		return annotate(
-			tools.Result{Text: fmt.Sprintf("deleted %s", decision.Target)},
+			tools.Result{
+				Text:  fmt.Sprintf("deleted %s", decision.Target),
+				Wrote: []string{decision.Target},
+			},
 			decision)
 	}
 
@@ -1335,7 +1440,10 @@ func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result
 	}
 
 	return annotate(
-		tools.Result{Text: fmt.Sprintf("deleted %s", decision.Target)},
+		tools.Result{
+			Text:  fmt.Sprintf("deleted %s", decision.Target),
+			Wrote: []string{decision.Target},
+		},
 		decision)
 }
 
@@ -2400,7 +2508,10 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 	}
 
 	return annotate(
-		tools.Result{Text: fmt.Sprintf("patched %s (%d bytes)", decision.Target, len(content))},
+		tools.Result{
+			Text:  fmt.Sprintf("patched %s (%d bytes)", decision.Target, len(content)),
+			Wrote: []string{decision.Target},
+		},
 		decision)
 }
 
@@ -2549,11 +2660,18 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// harness delegates nothing at all. agents.max_fanout cannot say that; its
 	// floor is one child.
 	if maxDepth < 1 {
+		// The reason, not the flag, when something other than the flag decided.
+		// A refusal citing agents.max_spawn_depth=0 to an operator who set it
+		// to 2 sends them to look at a setting that is not the cause.
+		cause := fmt.Sprintf("%s=%d", flags.AgentsMaxSpawnDepth, maxDepth)
+		if bounds.DepthReason != "" {
+			cause = bounds.DepthReason
+		}
 		res := tools.Errorf(
-			"delegation is off: %s=%d, so no sub-agent may be dispatched at any width. "+
+			"delegation is off: %s, so no sub-agent may be dispatched at any width. "+
 				"Nothing was dispatched and no child ran — this is not a report of zero results. "+
-				"Carry out the work in this turn, or ask the operator to change the setting",
-			flags.AgentsMaxSpawnDepth, maxDepth)
+				"Carry out the work in this turn.",
+			cause)
 		res.Rule = flags.AgentsMaxSpawnDepth
 		return res
 	}
@@ -2573,12 +2691,28 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 				"carry out the work in this turn instead of fanning it out")
 	}
 
+	roles := r.getSubagentRegistry()
+
+	// Where the children will actually run decides how many may run at once.
+	// The bound above came from the session's default provider, which is the
+	// wrong answer for a mixed team: a frontier parent placing builders on a
+	// local model resolved to the frontier width and dispatched all of them
+	// onto the one device the local cap exists to protect.
+	placements := make([]string, 0, len(args.Tasks))
+	for _, t := range args.Tasks {
+		if t.Type == "" {
+			continue
+		}
+		if def, ok := roles.Get(t.Type); ok {
+			placements = append(placements, def.Model)
+		}
+	}
+	maxFanout, narrowed := agents.FanoutFor(bounds, placements)
+
 	pool, err := agents.New(maxDepth, maxFanout, r.deps.Store)
 	if err != nil {
 		return tools.Errorf("creating subagent pool: %v", err)
 	}
-
-	roles := r.getSubagentRegistry()
 
 	subTasks := make([]agents.Task, 0, len(args.Tasks))
 	for _, t := range args.Tasks {
@@ -2623,6 +2757,15 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 						// asked for a non-mutating child must not be handed a
 						// writing one because the role permits writes.
 						req.ReadOnly = t.ReadOnly || !def.EnableWriteTools
+						if t.ReadOnly {
+							// The caller demanded a non-mutating child, so the
+							// role's named write exceptions do not apply. Both
+							// facts arrive as one bool at the runner, so the
+							// distinction has to be made here, where the
+							// caller's own request is still separable from the
+							// role's default.
+							req.Surface.Writes = nil
+						}
 					}
 				}
 
@@ -2637,13 +2780,23 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 					return nil, fmt.Errorf("sub-agent %s returned no summary; "+
 						"it produced nothing that can be reported as its work", t.Label)
 				}
-				return map[string]any{
+				child := map[string]any{
 					"status":  "completed",
 					"task_id": t.TaskID,
 					"summary": out.Summary,
 					"steps":   out.Steps,
 					"usage":   out.Usage,
-				}, nil
+				}
+				if len(out.Wrote) > 0 {
+					child["wrote"] = out.Wrote
+				}
+				if out.WroteTruncated {
+					child["wrote_truncated"] = true
+				}
+				if out.Verdict.Judged {
+					child["verdict"] = out.Verdict.Reconcile()
+				}
+				return child, nil
 			},
 		})
 	}
@@ -2702,8 +2855,34 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 		"clean":   report.Clean(),
 		"results": outcomes,
 	}
+	if narrowed != "" {
+		// Said out loud. An operator who set max_fanout to eight and watched
+		// two children run has to be able to find out which of their settings
+		// did not decide it.
+		payload["fanout_narrowed"] = narrowed
+	}
 	if spent.Any() {
 		payload["usage"] = spent
+	}
+
+	// The children's changed paths are carried onto this call's own result so
+	// the parent turn's terminal checkpoint can see them. Without this hop the
+	// paths stop at the child's log: the parent's checkpoint would be told the
+	// turn mutated — a dispatch is a mutating tool — and handed no file to
+	// look at, which is a check that runs against nothing and passes.
+	var wrote []string
+	truncated := false
+	for _, res := range results {
+		value, isMap := res.Value.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if paths, ok := value["wrote"].([]string); ok {
+			wrote, truncated = mergeWrites(wrote, truncated, paths)
+		}
+		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
+			truncated = true
+		}
 	}
 	// A fan-out in which every child failed is a failed check, and this package
 	// has one rule for those: "a failed check is an error result, never an empty
@@ -2716,11 +2895,49 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// Partial failure stays a success result: some work did land, and the
 	// per-child status and clean=false in the payload say what did not.
 	if report.Children > 0 && report.Failed == report.Children {
-		return failure(payload, fmt.Sprintf(
+		res := failure(payload, fmt.Sprintf(
 			"all %d sub-agent(s) failed; nothing was delegated successfully", report.Children))
+		// Reported even on a total failure. A child that wrote a file and then
+		// failed still changed the tree, and a checkpoint told otherwise would
+		// leave those bytes unexamined.
+		res.Wrote = wrote
+		return res
 	}
-	return ok(payload)
+	res := ok(payload)
+	res.Wrote = wrote
+	if truncated {
+		res.Degraded = append(res.Degraded,
+			"a sub-agent changed more paths than it reported; the list is incomplete")
+	}
+	return res
 }
+
+// mergeWrites folds one child's changed paths into a fan-out's set, ordered,
+// de-duplicated and capped. The cap reports itself for the same reason the
+// loop's does: a truncated list passed on as a complete one is how files come
+// to be recorded as checked without anything having looked at them.
+func mergeWrites(have []string, truncated bool, add []string) ([]string, bool) {
+	for _, p := range add {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if slices.Contains(have, p) {
+			continue
+		}
+		if len(have) >= maxReportedChildWrites {
+			return have, true
+		}
+		have = append(have, p)
+	}
+	return have, truncated
+}
+
+// maxReportedChildWrites bounds how many child-changed paths one fan-out
+// reports upward. Sized to the loop's own per-turn cap: carrying more than the
+// parent can track would be counted and then discarded a layer later, which is
+// a truncation nobody records.
+const maxReportedChildWrites = 256
 
 func (r *Registry) searchTools(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {

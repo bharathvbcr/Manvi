@@ -27,6 +27,20 @@ import (
 // Type is a session event's kind.
 type Type string
 
+// Origin names who authored a model-visible message.
+type Origin string
+
+const (
+	// OriginOperator is the default and the zero value: a message the person
+	// or the model at the keyboard produced. Left empty on the wire so logs
+	// written before the harness could speak decode unchanged.
+	OriginOperator Origin = ""
+	// OriginHarness marks a message this harness wrote and put in front of the
+	// model itself — a verifier's verdict at the terminal checkpoint, not
+	// something anyone typed.
+	OriginHarness Origin = "harness"
+)
+
 const (
 	TurnStart Type = "turn/start"
 	TurnEnd   Type = "turn/end"
@@ -92,6 +106,27 @@ const (
 	// turn that quietly re-requested its way past four of them is a turn whose
 	// cost and latency need an explanation.
 	NullResponseRetried Type = "llm/null_response_retried"
+	// VerifyReport records what the harness's own end-of-turn check found, and
+	// is the only durable trace of it.
+	//
+	// The alternative was a field on the run outcome, which reaches the face
+	// and nothing else. That is not enough for three separate readers: the next
+	// turn's model context loses the verdict as soon as compaction replaces the
+	// message carrying it, a resumed session never had it, and a trip wire on
+	// "the sensor pass rate dropped" has nothing to read. A check whose result
+	// is not in the log is a check that did not happen, as far as everything
+	// downstream of the turn is concerned.
+	VerifyReport Type = "verify/report"
+	// PromptAssembled records which sections of the system prompt a turn
+	// actually carried, and which the budget dropped.
+	//
+	// The assembler has always computed this and always thrown it away: the
+	// faults went to stderr, which is invisible under the TUI's alternate
+	// screen and is not part of any session. So a turn whose hypothesis and
+	// hardening guidance had been displaced by an oversized instructions file
+	// looked exactly like one that carried them, and the evidence trail could
+	// not explain the difference in behaviour.
+	PromptAssembled Type = "system/prompt_assembled"
 )
 
 // Event is one durable record.
@@ -116,9 +151,54 @@ type (
 		Attempt int `json:"attempt"`
 		Of      int `json:"of"`
 	}
+	// VerifyReportData is one end-of-turn check, as it was decided.
+	//
+	// Verdict is deliberately not a boolean. "Could not run" and "ran and
+	// found nothing wrong" must never serialise to the same value: that
+	// equivalence is how "verified" comes to mean "unexamined", and it is the
+	// specific failure this event exists to make impossible.
+	VerifyReportData struct {
+		// Verdict is one of passed, failed, degraded or skipped.
+		Verdict string `json:"verdict"`
+		// Source names what produced it — the leased task verifier, the
+		// lease-free path check, or an operator-configured command.
+		Source string `json:"source"`
+		// Paths are the files this turn changed, which is what was checked.
+		Paths []string `json:"paths,omitempty"`
+		// Findings are the check's own words, already capped by the producer.
+		Findings []string `json:"findings,omitempty"`
+		// Degraded names checks that could not run, and is why a passed
+		// verdict is still not a clean one.
+		Degraded []string `json:"degraded,omitempty"`
+		// Bounce is which attempt this was within the turn: 0 for the first
+		// check, 1 for the one after an inject, and so on.
+		Bounce int `json:"bounce"`
+	}
+	// PromptAssembledData is the account of one system prompt's assembly.
+	PromptAssembledData struct {
+		Included []string `json:"included,omitempty"`
+		// Dropped names sections the budget refused, each with the reason the
+		// assembler gave.
+		Dropped []string `json:"dropped,omitempty"`
+		Tokens  int      `json:"tokens"`
+		Budget  int      `json:"budget,omitempty"`
+	}
 	// MessageData carries a whole message.
 	MessageData struct {
 		Message llm.Message `json:"message"`
+		// Origin says who put this message in the log. Empty means the
+		// operator or the model, which is every message that existed before
+		// the harness could speak, so an old log reads back unchanged.
+		//
+		// It is metadata, never content: the projection ignores it entirely,
+		// so what the model sees is the same either way. It exists for the
+		// faces and for resume. A checkpoint that keeps a turn open has to
+		// give the model something it did not have, and the only model-visible
+		// role available for that is `user` — which meant the transcript, the
+		// evidence report and every resumed session showed the harness's own
+		// words as though the operator had typed them. A log that cannot tell
+		// those apart is a log that lies about who asked for what.
+		Origin Origin `json:"origin,omitempty"`
 	}
 	// ToolCallData is a tool invocation as the model asked for it.
 	ToolCallData struct {

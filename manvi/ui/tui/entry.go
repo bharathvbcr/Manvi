@@ -90,7 +90,7 @@ func (e *Entry) marker(g Glyphs) string {
 		return g.Tool
 	case ui.KindLease:
 		return g.Lease
-	case ui.KindTurnStart:
+	case ui.KindTurnStart, ui.KindHarnessMessage:
 		return g.VBar
 	case ui.KindText, ui.KindReasoning:
 		return " "
@@ -240,6 +240,13 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 
 	case ui.KindTurnStart:
 		add(render.Styled(ev.Text, th.Strong()))
+
+	case ui.KindHarnessMessage:
+		// Prefixed rather than merely styled. Colour alone is not a label: it
+		// is invisible in a copied transcript, and a copied transcript is
+		// exactly where a harness message attributed to the operator does its
+		// damage.
+		addWrapped("harness: "+ev.Text, th.Status(StatusWarn))
 
 	case ui.KindText:
 		for _, l := range renderMarkdown(e.text(), th, body, false) {

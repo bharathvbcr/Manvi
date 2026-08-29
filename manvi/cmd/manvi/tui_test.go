@@ -464,7 +464,7 @@ func TestPromptAssemblyFaultsAreReportedNotSwallowed(t *testing.T) {
 	}}
 	good := prompt.Static("identity", 10, true, "you are a builder agent")
 
-	text, faults := assembleSections([]prompt.Source{good, failing}, 0)
+	text, _, faults := assembleSections([]prompt.Source{good, failing}, 0)
 	if len(faults) == 0 {
 		t.Fatal("a source that failed to load produced no fault; the prompt was assembled without it and said nothing")
 	}
@@ -483,7 +483,7 @@ func TestPromptAssemblyFaultsAreReportedNotSwallowed(t *testing.T) {
 func TestPromptAssemblyRefusesADuplicateSectionQuietly(t *testing.T) {
 	first := prompt.Static("policy", 40, true, "first")
 	second := prompt.Static("policy", 40, true, "second")
-	_, faults := assembleSections([]prompt.Source{first, second}, 0)
+	_, _, faults := assembleSections([]prompt.Source{first, second}, 0)
 	if len(faults) == 0 {
 		t.Fatal("a duplicate section name was dropped silently")
 	}

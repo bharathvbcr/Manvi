@@ -334,14 +334,22 @@ func TestPreStepCanRejectAStep(t *testing.T) {
 	}
 }
 
+// TestTurnStoppingCanKeepTheTurnOpen holds the checkpoint's reason to exist:
+// a listener can refuse to let a turn close.
+//
+// It used to assert that by returning an error, and passed only because the
+// replayed fixture had a second turn queued. What a live model does with an
+// unchanged history is stop again, so the contract now requires the listener to
+// supply what the next step is supposed to act on — see checkpoint_test.go for
+// the rest of it.
 func TestTurnStoppingCanKeepTheTurnOpen(t *testing.T) {
 	h := build(t, []replay.Turn{textTurn("first"), textTurn("second")}, nil)
 
 	calls := 0
-	if _, err := bus.OnSerial(h.bus, func(_ context.Context, e TurnStopping) error {
+	if _, err := bus.OnSerial(h.bus, func(_ context.Context, e *TurnStopping) error {
 		calls++
 		if calls == 1 {
-			return errors.New("verification wants one more step")
+			e.Inject = "verification wants one more step"
 		}
 		return nil
 	}); err != nil {
@@ -1741,12 +1749,13 @@ func TestATerminalFlagDoesNotSurviveIntoALaterStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened := false
-	if _, err := bus.OnSerial(h.bus, func(_ context.Context, _ TurnStopping) error {
+	if _, err := bus.OnSerial(h.bus, func(_ context.Context, e *TurnStopping) error {
 		if reopened {
 			return nil
 		}
 		reopened = true
-		return errors.New("keep the turn open for one more step")
+		e.Inject = "keep the turn open for one more step"
+		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}

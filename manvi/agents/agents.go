@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,14 @@ type Bounds struct {
 	MaxDepth int
 	// MaxFanout is how many children may run at once.
 	MaxFanout int
+	// DepthReason explains a MaxDepth this harness imposed rather than read
+	// from the setting, so a refusal can name what actually decided it.
+	//
+	// Without it the refusal cites agents.max_spawn_depth and its value, which
+	// is a lie whenever the operator set that flag to two and something else
+	// overrode it — and "the setting says 2 but the tool says the setting is 0"
+	// is the kind of contradiction that costs an afternoon.
+	DepthReason string
 }
 
 // ResolveBounds reads the delegation bounds from the flag registry, narrowed
@@ -73,9 +82,101 @@ func ResolveBounds(reg *flags.Registry) Bounds {
 	}
 	if provider, _, err := reg.String(flags.LLMDefaultProvider); err == nil {
 		b.MaxFanout = AdaptiveFanoutLimit(provider, b.MaxFanout)
+		// A local session delegates nothing. Not "narrowly" — at all.
+		//
+		// The fan-out cap above is the wrong instrument for this and always
+		// was: its floor is one, so the tightest it can express is "one child
+		// at a time", and one child at a time is still a team. On a single
+		// consumer GPU a team is the worst available shape — the children
+		// contend for the same weights the parent is using, each one pays a
+		// full prefill of its own prompt, and the wall clock is the sum rather
+		// than the maximum. The measurement that motivated the fan-out cap
+		// (VRAM exhaustion, Metal command-buffer panics, prefill starvation)
+		// is the same measurement that says the right number here is zero.
+		//
+		// It overrides the setting rather than yielding to it, and that is
+		// deliberate: this is a bound on the hardware, and the operator's
+		// escape is to point the session at a provider that has the headroom,
+		// not to raise a number until the machine falls over. DepthReason
+		// carries the "why" so the refusal never blames the flag.
+		if provider == localProviderName {
+			b.MaxDepth = 0
+			b.DepthReason = "the default provider is " + localProviderName +
+				", and a local session runs solo: children would contend with the parent for the " +
+				"same weights and the same memory"
+		}
 	}
 	return b
 }
+
+// FanoutFor narrows the dispatch bounds to where the children will actually
+// run.
+//
+// ResolveBounds answers from the session's default provider, which is the right
+// answer for a fan-out whose children inherit it and the wrong one for a mixed
+// team. A frontier parent placing builders on a local model resolved to the
+// frontier width — measured at eight — and dispatched all eight onto the single
+// GPU the local cap exists to protect. The cap and the placement never met: one
+// is decided here from a setting, the other in the runner from a role's model
+// spec, and nothing carried the second back to the first.
+//
+// The rule is deliberately blunt: if any child will run locally, the whole
+// fan-out takes the local width. The pool enforces one concurrency limit across
+// its tasks, so a per-provider answer would need a per-provider pool, and
+// splitting the pool to let six frontier children run wide beside two local ones
+// is a large change to buy back parallelism on the plane that has least of it.
+// Over-narrowing costs wall clock; under-narrowing costs the machine.
+//
+// It is never silent. The returned reason is empty when nothing was narrowed and
+// names the cause when something was — an operator who set max_fanout to eight
+// and watched two children run needs to know which of their settings did not
+// decide it.
+//
+// placements are the model specs the children will run under, in the form
+// Definition.Model uses.
+func FanoutFor(b Bounds, placements []string) (int, string) {
+	for _, spec := range placements {
+		if !PlacesLocally(spec) {
+			continue
+		}
+		narrowed := AdaptiveFanoutLimit(localProviderName, b.MaxFanout)
+		if narrowed >= b.MaxFanout {
+			return b.MaxFanout, ""
+		}
+		return narrowed, fmt.Sprintf(
+			"%d of %d concurrent children: at least one runs on %s, and children there contend "+
+				"with each other and with the parent for one device's memory and prefill queue",
+			narrowed, b.MaxFanout, localProviderName)
+	}
+	return b.MaxFanout, ""
+}
+
+// PlacesLocally reports whether a model spec puts a child on the local plane.
+//
+// It answers from the spec alone rather than through ParsePlacement, because
+// the caller that needs it — a dispatch handler — has no provider registry to
+// resolve bare names against, and threading one there to answer a yes/no
+// question would put a second reader of the registry in a package that has
+// managed without it.
+//
+// "inherit" and the empty spec are not local *here*: they take the session's
+// provider, and ResolveBounds has already narrowed for that. Saying otherwise
+// would double-count the ordinary case.
+func PlacesLocally(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	if provider, _, ok := strings.Cut(spec, "/"); ok {
+		return strings.EqualFold(strings.TrimSpace(provider), localProviderName)
+	}
+	return strings.EqualFold(spec, localProviderName)
+}
+
+// localProviderName is the provider whose sessions run solo.
+//
+// Named by provider rather than inferred from the context window, because the
+// property that matters is where the weights live. A local model with a 128k
+// window is still one GPU being asked to serve a parent and its children at
+// once; a hosted model with a small window is not.
+const localProviderName = "local"
 
 // AdaptiveFanoutLimit returns safe concurrency bounds for subagents based on the provider.
 // For local LLMs running on single consumer GPUs or Apple Silicon unified memory,

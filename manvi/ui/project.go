@@ -36,7 +36,15 @@ func Project(e session.Event) []Event {
 		if err := json.Unmarshal(e.Data, &data); err != nil {
 			return []Event{decodeFailure(e, err)}
 		}
-		base.Kind = KindTurnStart
+		// Who wrote it decides how it is shown. A harness inject occupies the
+		// user role because that is the only model-visible slot a natural stop
+		// leaves, and rendering it as the operator's turn would put words in
+		// their mouth in the one record this system reasons from.
+		if data.Origin == session.OriginHarness {
+			base.Kind = KindHarnessMessage
+		} else {
+			base.Kind = KindTurnStart
+		}
 		base.Text = data.Message.Text()
 		return []Event{base}
 

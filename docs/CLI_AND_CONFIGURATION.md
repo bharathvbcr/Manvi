@@ -87,6 +87,25 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 
 ### Full Flag Catalogue
 
+## Operator-scope settings
+
+Two values are read from the process environment and from nowhere else. Both are
+deliberately absent from the settings table below, because settings load from
+`.devcouncil/config.yaml` — a file inside the repository, protected by a rung
+that a relaxed posture switches off. A value the agent can write into the
+repository is not a value that can authorise anything.
+
+| Variable | Effect |
+|---|---|
+| `MANVI_VERIFY_COMMAND` | The command the end-of-turn check runs over a mutating turn's changes. Unset means the built-in path-scoped gates run alone. |
+| `MANVI_FETCH_HOSTS` | Comma- or space-separated hosts `devcouncil_fetch_url` may reach. **Unset means no outbound network access, and the tool is not offered at all.** |
+
+```bash
+MANVI_VERIFY_COMMAND="go test ./..." \
+MANVI_FETCH_HOSTS="go.dev,pkg.go.dev" \
+  manvi run -p "update the retry helper for the new API"
+```
+
 | Flag Key | Environment Variable | Default | Safety Critical | Mutability | Description |
 |---|---|---|---|---|---|
 | `harness.posture` | `MANVI_HARNESS_POSTURE` | `dev` | **Yes** | `human` | Security posture: `dev` (advisory scope), `strict` (enforce all), `yolo` (all gates off). |

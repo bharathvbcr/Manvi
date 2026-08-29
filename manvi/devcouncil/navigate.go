@@ -51,6 +51,15 @@ func (r *Registry) navigationTools() []tools.Tool {
 	}
 }
 
+// CodeMapConfigured reports whether a navigator is attached at all.
+//
+// Asked by the prompt assembler, which has to decide whether to tell the model
+// to navigate by the code graph. The alternative was for the assembler to reach
+// into these dependencies itself, which would have put a second reader of
+// "is there a map" outside the package that owns the answer — and the two would
+// have disagreed the first time either changed.
+func (r *Registry) CodeMapConfigured() bool { return r.deps.Map != nil }
+
 // navigator returns the client, or an error phrased as the unavailability it is.
 func (r *Registry) navigator() (*devmap.Client, error) {
 	if r.deps.Map == nil {

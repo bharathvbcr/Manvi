@@ -39,6 +39,16 @@ const (
 	KindReport       Kind = "run.report"
 	KindError        Kind = "error"
 	KindNotice       Kind = "notice"
+	// KindHarnessMessage is a model-visible message this harness wrote itself —
+	// a verifier's verdict handed back at the terminal checkpoint.
+	//
+	// It is a separate kind rather than a flag on KindTurnStart because the two
+	// must not render alike. The only model-visible role available for such a
+	// message is `user`, so without this a face shows the harness's own words
+	// in the position the operator's words occupy, and a transcript — or a
+	// resumed session, or an evidence report — says the person asked for
+	// something they never said.
+	KindHarnessMessage Kind = "harness.message"
 )
 
 // Event is one thing that happened, in terms both faces understand.

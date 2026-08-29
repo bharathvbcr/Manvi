@@ -455,7 +455,7 @@
           <li><span class="pkg">manvi/gate</span> <span class="role">5-tier policy composition</span></li>
           <li><span class="pkg">manvi/grants</span> <span class="role">Human & agent override ledger</span></li>
           <li><span class="pkg">manvi/ui/tui</span> <span class="role">Elm-loop fullscreen terminal</span></li>
-          <li><span class="pkg">manvi/session</span> <span class="role">Immutable session.jsonl</span></li>
+          <li><span class="pkg">manvi/session</span> <span class="role">Immutable session log</span></li>
         </ul>
       </div>
 
@@ -586,7 +586,7 @@
   <section id="turn-lifecycle">
     <h2>4. Evidence-Driven Turn Lifecycle</h2>
     <p class="lead">
-      The agent loop terminates on tangible evidence, not model declaration. History is always projected from the immutable <code>session.jsonl</code> disk log.
+      The agent loop terminates on tangible evidence, not model declaration. History is always projected from the immutable session log on disk.
     </p>
 
     <table class="matrix">
@@ -601,7 +601,7 @@
         <tr>
           <td><strong>1. History Projection</strong></td>
           <td><code>session.Project()</code></td>
-          <td>Messages projected fresh from <code>session.jsonl</code>; in-memory drift is impossible.</td>
+          <td>Messages projected fresh from the session log; in-memory drift is impossible.</td>
         </tr>
         <tr>
           <td><strong>2. Pre-Step Waterfall</strong></td>

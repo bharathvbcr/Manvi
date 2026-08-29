@@ -13,7 +13,7 @@ sequenceDiagram
     autonumber
     actor User as User / Harness CLI
     participant AL as Agent Loop (manvi/agent)
-    participant Log as Session Log (session.jsonl)
+    participant Log as Session Log
     participant Waterfall as Event Bus Waterfalls
     participant Provider as LLM Provider (Anthropic/Gemini/xAI)
     participant ToolReg as Tool Registry (manvi/tools)
@@ -64,15 +64,58 @@ sequenceDiagram
                 
                 AL->>Log: Append Tool Result Record
             end
-        else No Tool Calls (Evidence of Completion)
+        else No Tool Calls (Apparent Completion)
             AL->>Waterfall: Trigger TurnStopping Serial Check
-            Waterfall-->>AL: OK -> Terminate Loop
+            alt Listener sets Inject and bounces remain
+                Waterfall-->>AL: Inject + Verdict
+                AL->>Log: Append harness message (Origin=harness)
+                Note over AL: Turn stays open for one more step
+            else No Inject, or the bounce budget is spent
+                Waterfall-->>AL: Verdict -> Terminate Loop
+            end
         end
     end
     
     AL-->>User: Turn Summary & Report
     deactivate AL
 ```
+
+### 1a. The terminal checkpoint
+
+`TurnStopping` is where a turn that *looks* finished is judged. It carries what
+the turn actually did — whether a mutating tool ran, which paths were changed,
+whether the final answer was cut off by the output cap — and a listener answers
+by setting a verdict and, when it wants another step, the text the model is to
+act on.
+
+Four rules hold it together:
+
+- **A listener supplies the reason, and the loop appends it.** The contract used
+  to be "return an error to keep the turn open", and the loop's response was to
+  re-ask the model with an unchanged history — a spin, not a gate. A listener
+  that wants another step now says what changed.
+- **The inject is marked.** It occupies the `user` role on the wire, because a
+  natural stop leaves no other model-visible slot, so it is written with
+  `Origin: harness`. The transcript, a resumed session and an evidence report all
+  render it as the harness speaking rather than as the operator.
+- **Bounces are bounded** at `MaxCheckpointBounces` (two) per turn. Past that the
+  turn closes and `Outcome.BouncesExhausted` records that the objection was still
+  standing — the alternative, riding the 500-step ceiling, finds the same dead end
+  an hour later.
+- **A listener error closes the turn as degraded.** A check that could not run has
+  not asked for anything, and it is never reported as a pass.
+
+The harness registers one listener on both faces: the end-of-turn check in
+`manvi/cmd/manvi/sensor.go`. It skips a turn that changed nothing, verifies the
+paths a mutating turn actually wrote, and escalates to an adversarial reviewer
+only on the evidence that telling the model was not enough — a second failure on
+the same turn, or a turn the loop already judges to be going in circles. That is
+the same rule `manvi/agent/effort.go` uses to decide when to buy more reasoning,
+and it is deliberate: classifying the prompt up front would be a judgement made
+on the least information the harness will ever have.
+
+`manvi serve` is out of scope for all of this. The host owns the model call
+there, `agent.Loop` does not run, and the checkpoint never fires.
 
 ---
 

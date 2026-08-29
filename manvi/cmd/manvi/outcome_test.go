@@ -231,6 +231,13 @@ func TestEveryOutcomeFieldIsClassified(t *testing.T) {
 		"ToolCalls":  "the denominator in the Denied and Qualified notices, never reported alone",
 		"EffortFrom": "reported as part of the EffortRaised notice",
 		"EffortTo":   "reported as part of the EffortRaised notice",
+		"Mutated": "an input to the end-of-turn check rather than a result; what it decided is " +
+			"reported by the Sensor notice, and 'this turn changed something' on its own is not " +
+			"news to an operator who just watched it happen",
+		"Wrote": "carried into the verify/report session event, which is where a reader looks for " +
+			"what was checked; repeating the file list in the run summary would restate the " +
+			"transcript. Its one dangerous property — being incomplete — is reported by " +
+			"WroteTruncated, which has a notice of its own",
 	}
 	// Fields whose notice fires from a different field being set. Listing them
 	// keeps the map honest rather than letting them fall into `silent`.
@@ -273,6 +280,13 @@ func fieldProducesANotice(t *testing.T, field string) bool {
 		// Decoding: any one flag is enough to make Clean() false.
 		if field == "Decoding" {
 			o.Decoding = llm.DecodingReport{PrefillDisproved: true}
+		}
+	case reflect.Slice:
+		// One element is enough: the question is whether a non-zero value says
+		// anything, not how much of it there is.
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		if v.Type().Elem().Kind() == reflect.String {
+			v.Index(0).SetString("set")
 		}
 	default:
 		t.Fatalf("Outcome.%s has kind %s, which this guard does not know how to set", field, v.Kind())

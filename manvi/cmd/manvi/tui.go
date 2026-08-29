@@ -93,6 +93,15 @@ func runTUI(reg *flags.Registry, args []string) error {
 type tuiSession struct {
 	id    string
 	title string
+	// storeID is the identifier this session is persisted under, which is not
+	// the same string as id.
+	//
+	// id is a tab label — "S1", "S2" — assigned in the order tabs open, and it
+	// is neither stable across runs nor a valid session identifier: the store
+	// requires lowercase hex, and it refused every one of these. Separating the
+	// two is what lets the label stay legible while the file stays resumable by
+	// the same `manvi run --resume` the headless face uses.
+	storeID string
 
 	log      *session.Log
 	gate     *gate.Gate
@@ -122,6 +131,32 @@ type tuiSession struct {
 	// prompt has been typed reads as the harness losing the turn.
 	effortCeiling string
 	registry      *llm.Registry
+}
+
+// persist writes a session's log to the same store the headless face resumes
+// from.
+//
+// Called at the end of every turn rather than at shutdown, because a face whose
+// durability depends on exiting cleanly is not durable: the case that loses the
+// work is the crash, the kill and the closed laptop, and none of them run a
+// shutdown hook. Writing per turn also matches what the store is built for —
+// checksummed generations, an atomic link, and the oldest whole turns dropped
+// at the size bound.
+func (h *harnessHost) persist(s *tuiSession) error {
+	if s == nil || s.log == nil {
+		return nil
+	}
+	if s.storeID == "" {
+		// A session that never got an identifier cannot be written anywhere.
+		// Reported rather than skipped: silently not saving is the behaviour
+		// being replaced.
+		return errors.New("this session has no durable identifier")
+	}
+	store := session.NewStore(sessionsDir())
+	if _, err := store.Save(s.storeID, s.log); err != nil {
+		return err
+	}
+	return nil
 }
 
 // attached is the resolved provider block, taken as one consistent snapshot.
@@ -291,6 +326,13 @@ func (h *harnessHost) NewSession(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// Minted here rather than derived from the tab label, which is not a valid
+	// identifier and is reused by the next run's first tab.
+	storeID, err := session.NewID()
+	if err != nil {
+		return "", "", fmt.Errorf("this session could not be given a durable identifier: %w", err)
+	}
+	s.storeID = storeID
 
 	sink := h.sinkFor(id)
 	// The face reads the log rather than a stream emitted beside it, so what
@@ -979,18 +1021,37 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	if dynamic {
 		s.pipeline.EnableDynamic()
 	}
-	systemPrompt := assemblePrompt(h.reg, PromptOptions{
-		Provider:         at.provider.Name(),
-		TaskToolsOffered: taskToolsOffered(s.pipeline, coreOnly),
-		DynamicTools:     dynamic,
-		ActiveGroups:     s.pipeline.ActiveGroups(),
-	})
+	subRunner, caps := harnessFor(s.pipeline)
+	promptOpts := PromptOptions{
+		Provider:           at.provider.Name(),
+		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
+		DynamicTools:       dynamic,
+		ActiveGroups:       s.pipeline.ActiveGroups(),
+		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
+		DocLookupAvailable: caps.DocLookup,
+		Areas:              caps.Areas,
+	}
+	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
+	// Surfaced in the transcript rather than on stderr. Under the alternate
+	// screen stderr goes nowhere a person can read, which is how a prompt
+	// missing four of its sections came to look identical to a whole one.
+	promptSink := h.sinkFor(sessionID)
+	for _, fault := range promptFaults {
+		promptSink.Emit(ui.Event{
+			Kind: ui.KindNotice, At: time.Now().UTC(),
+			Text: "system prompt: " + fault,
+		})
+	}
+	if err := recordPromptAssembly(s.log, promptReport,
+		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+		return err
+	}
 
 	// Re-attached on every submission rather than once at session start: the
 	// provider, model and effort are all switchable mid-session from this face,
 	// and a child running under the model the user chose two turns ago would be
 	// a surprise nothing reported.
-	if runner := subRunners[s.pipeline]; runner != nil {
+	if runner := subRunner; runner != nil {
 		runner.attach(subAgentConfig{
 			provider:        at.provider,
 			models:          at.registry,
@@ -1014,6 +1075,10 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	// apart from what earlier turns of this session already spent.
 	before := s.subMeter.Total()
 
+	// One bus per submit, and the checkpoint listener goes on this one. A
+	// listener registered on any other instance is a listener that never fires,
+	// which is how compaction was nearly shipped inert.
+	loopBus := bus.New()
 	loop, err := agent.NewLoop(agent.Config{
 		Provider:        at.provider,
 		Registry:        at.registry,
@@ -1025,20 +1090,46 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		MaxTokens:       maxTokens,
 		CoreToolsOnly:   coreOnly,
 		AssertInvariant: assertInvariant(h.reg),
-	}, bus.New(), s.log, s.pipeline)
+	}, loopBus, s.log, s.pipeline)
 	if err != nil {
 		return err
+	}
+	if err := attachSensor(loopBus, &sensor{
+		native: s.native, log: s.log, flags: h.reg,
+		runner:  subRunner,
+		command: operatorVerifyCommand(),
+	}); err != nil {
+		return fmt.Errorf("the end-of-turn check could not be attached: %w", err)
 	}
 
 	outcome, err := loop.Run(ctx, llm.Message{
 		Role:    llm.RoleUser,
 		Content: []llm.ContentBlock{llm.TextBlock{Text: text}},
 	})
+	// Persisted whether or not the turn succeeded, and before the error is
+	// returned. A turn that failed part-way still produced a log, and that log
+	// is the only account of what it did — losing it is losing the evidence for
+	// the failure the operator is about to investigate.
+	//
+	// This face persisted nothing at all until now, while root.go's own comment
+	// said "headless and TUI sessions persist". Only the headless path ever
+	// called Save: closing the window discarded the whole conversation, and the
+	// resume that the CLI advertises had no counterpart here.
+	persistErr := h.persist(s)
+
+	sink := h.sinkFor(sessionID)
+	if persistErr != nil {
+		// Reported, never silent. A session that is not being written to disk
+		// looks exactly like one that is, right up to the moment someone needs
+		// it back.
+		sink.Emit(ui.Event{
+			Kind: ui.KindNotice, At: time.Now().UTC(),
+			Text: "this session is not being saved: " + persistErr.Error(),
+		})
+	}
 	if err != nil {
 		return err
 	}
-
-	sink := h.sinkFor(sessionID)
 	// This turn's delegated spend, not the session's: the meter accumulates
 	// across every turn of the session, so the figure for one turn is the
 	// difference against the snapshot taken before it ran. Reporting the
@@ -1222,6 +1313,26 @@ type PromptOptions struct {
 	// turn, from tools.Registry.ActiveGroups. Guidance for a group the model
 	// does not hold is context spent on a capability that is not there.
 	ActiveGroups []string
+	// CodeMapAvailable reports whether the code graph can actually be reached
+	// this turn: the navigation tools are held or can be activated, and an
+	// index and a binary exist behind them.
+	//
+	// All three have to be true and any one of them can be false
+	// independently, which is why this is a resolved answer rather than
+	// something the prompt infers from the group list.
+	CodeMapAvailable bool
+	// DocLookupAvailable reports whether this harness can reach documentation
+	// at all — which, absent an MCP server that provides it, it cannot: there
+	// is no first-party fetch, and a shell `curl` without a lease is refused
+	// by name.
+	//
+	// Instructing a model to consult current documentation when nothing here
+	// can fetch any is not harmless advice. It is an instruction whose only
+	// available compliance is to recall something and present it as checked.
+	DocLookupAvailable bool
+	// Areas is the repository's own shape, from the code map, used to orient
+	// the model instead of asking it to go and discover the layout.
+	Areas []repomap.AreaSummary
 }
 
 // systemPromptFor assembles the prompt for a specific provider.
@@ -1267,7 +1378,46 @@ func assemblePrompt(reg *flags.Registry, opts PromptOptions) string {
 // assemblePromptWithFaults is the same assembly with the account kept, so a
 // test can assert on it rather than scraping stderr.
 func assemblePromptWithFaults(reg *flags.Registry, opts PromptOptions) (string, []string) {
+	text, _, faults := assemblePromptReported(reg, opts)
+	return text, faults
+}
+
+// assemblePromptReported is the assembly with its own account kept.
+//
+// The Report has always been computed and always been thrown away: the faults
+// went to stderr, which is invisible under this face's alternate screen and is
+// not part of any session. So a turn whose hypothesis and hardening guidance
+// had been displaced by an oversized instructions file looked, in the log and
+// in every resumed session, exactly like one that carried them — and the
+// evidence trail could not explain the difference in behaviour.
+func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, prompt.Report, []string) {
 	return assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+}
+
+// recordPromptAssembly writes what a turn's prompt actually carried into the
+// session log.
+//
+// Failure to record is returned rather than swallowed. This is the event that
+// explains a turn behaving unlike the prompt an operator believes it sent, and
+// a log missing it is a log that will be read as though the prompt were whole.
+func recordPromptAssembly(log *session.Log, report prompt.Report, budget int) error {
+	if log == nil {
+		return nil
+	}
+	data := session.PromptAssembledData{Tokens: report.Tokens, Budget: budget}
+	for _, in := range report.Included {
+		data.Included = append(data.Included, in.Name)
+	}
+	// Both lists, because they mean different things: Omitted holds sections
+	// the budget refused *and* essential ones kept past it, and Failed holds
+	// contributors that broke. Flattening them would lose which happened.
+	for _, group := range [][]prompt.Omitted{report.Omitted, report.Failed} {
+		for _, o := range group {
+			data.Dropped = append(data.Dropped, o.Name+": "+o.Reason)
+		}
+	}
+	_, err := log.Append(session.PromptAssembled, data)
+	return err
 }
 
 // promptTokenBudget is how many estimated tokens the system prompt may spend
@@ -1376,18 +1526,58 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 			"rather than standing up duplicate implementations."
 	})
 
-	r.Vary("devmap-grounding", 24, false, func(cfg prompt.RouterConfig) string {
-		if cfg.Density == prompt.DensityCompact {
-			return "Grounding & Dev Map Guidance:\n" +
-				"Verify current documentation rather than relying on memory, and use the repository\n" +
-				"dev map for structured symbol navigation."
-		}
-		return "Grounding & Dev Map Guidance:\n" +
-			"When engaging with languages, libraries, or frameworks, consistently verify current\n" +
-			"documentation and online references. Refrain from relying on unverified memory or intuition.\n" +
-			"Utilize the repository dev map and code intelligence for structured navigation and exact\n" +
-			"symbol relationships."
-	})
+	// This was one section telling the model to do two things it could not
+	// necessarily do: check current documentation, and navigate by the dev map.
+	// Neither capability is guaranteed — there is no first-party fetch in this
+	// harness at all, and the code-graph tools are Extended, so on a dynamic
+	// surface they are not offered until something activates them, and even
+	// then they need an index and a binary. The section shipped unconditionally
+	// in both densities, so the ordinary local run was instructed to use tools
+	// it did not hold and to consult sources it could not reach.
+	//
+	// PromptOptions already states the rule this breaks — "naming a tool that is
+	// not offered spends tokens teaching the model to reach for something that
+	// does not exist" — and already applies it to the task tools. Split in two
+	// and gated the same way, so each half appears exactly when the thing it
+	// names is real.
+	if opts.DocLookupAvailable {
+		r.Vary("grounding-docs", 23, false, func(cfg prompt.RouterConfig) string {
+			if cfg.Density == prompt.DensityCompact {
+				return "Grounding:\n" +
+					"Check current documentation rather than relying on memory."
+			}
+			return "Grounding:\n" +
+				"When working with a language, library, or framework, check its current documentation\n" +
+				"rather than relying on memory or intuition. Recall of an API is a guess about the\n" +
+				"version in front of you; the documentation is the version in front of you."
+		})
+	}
+
+	if opts.CodeMapAvailable {
+		r.Vary("devmap-grounding", 24, false, func(cfg prompt.RouterConfig) string {
+			if cfg.Density == prompt.DensityCompact {
+				return "Dev map:\n" +
+					"Use the repository dev map for structured symbol navigation rather than guessing\n" +
+					"at paths."
+			}
+			return "Dev map:\n" +
+				"This repository has a code index. Use the dev map and code intelligence for structured\n" +
+				"navigation and exact symbol relationships rather than guessing at paths or grepping for\n" +
+				"names you expect to exist."
+		})
+	}
+
+	// The shape of the repository, supplied rather than requested.
+	//
+	// The section above used to tell the model to go and find the structure;
+	// this hands it over. It costs a few dozen tokens and removes the round
+	// trips a model otherwise spends discovering that a repository has a policy
+	// layer and where it lives.
+	if len(opts.Areas) > 0 {
+		r.Vary("repo-orientation", 21, false, func(cfg prompt.RouterConfig) string {
+			return repoOrientationSection(opts.Areas, cfg.Density)
+		})
+	}
 
 	// Kept in both densities. Which of these two the model is reading is the
 	// difference between it asking before acting and it acting alone, and a
@@ -1484,7 +1674,7 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	onLocal := prompt.WhenProvider(local.Name)
 	r.Vary("environment", 15, true, func(prompt.RouterConfig) string { return environmentSection() }, onLocal)
 	r.Vary("tool-contract", 45, true, func(prompt.RouterConfig) string {
-		return toolContractSection(opts.DynamicTools)
+		return toolContractSection(opts.DynamicTools, opts.CodeMapAvailable)
 	}, onLocal)
 	if opts.DynamicTools {
 		// Essential, and not only for local. The offered set is smaller than
@@ -1495,7 +1685,8 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 			return toolDiscoverySection()
 		})
 	}
-	r.Vary("working-method", 50, false, func(prompt.RouterConfig) string { return workingMethodSection() }, onLocal)
+	r.Vary("working-method", 50, false,
+		func(prompt.RouterConfig) string { return workingMethodSection(opts.CodeMapAvailable) }, onLocal)
 
 	// Guidance that follows capability. These sections cost nothing on a turn
 	// where their tools are not loaded, and appear on the turn the model
@@ -1506,13 +1697,21 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	// load-bearing: gating the hint on the same condition would mean a model
 	// could only learn a group exists after activating it, which it would
 	// never do.
-	r.Vary("nav-guidance", 26, false, func(prompt.RouterConfig) string {
+	// Gated on the capability as well as on the group. "Active group" and
+	// "offered tool" are different questions and core_tools_only is where they
+	// diverge: it narrows the schemas the model receives and leaves the group
+	// list alone, so this section named devcouncil_graph_query to a model that
+	// had not been given it.
+	navGuidance := func(prompt.RouterConfig) string {
 		return "Dev map navigation:\n" +
 			"  - devcouncil_graph_query and devcouncil_graph_context resolve exact symbol\n" +
 			"    relationships. Prefer them to grep for \"who calls this\" and \"what breaks\".\n" +
 			"  - The graph is built from an index that can be stale. When it disagrees with\n" +
 			"    the file you just read, the file wins."
-	}, prompt.WhenGroupActive(tools.GroupNav))
+	}
+	if opts.CodeMapAvailable {
+		r.Vary("nav-guidance", 26, false, navGuidance, prompt.WhenGroupActive(tools.GroupNav))
+	}
 
 	r.Vary("subagent-guidance", 27, false, func(prompt.RouterConfig) string {
 		return "Delegating to sub-agents:\n" +
@@ -1527,21 +1726,72 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	// size: AGENTS.md is whatever the repo wrote. It is not Essential for that
 	// reason — a file that grew past the budget must lose to the rules, not
 	// push them out.
-	if pSrc, ok := projectInstructionsSource(); ok {
+	if pSrc, ok := projectInstructionsSource(promptTokenBudget(reg, provider)); ok {
 		r.Add(pSrc)
 	}
 	return r
 }
 
-func projectInstructionsSource() (prompt.Source, bool) {
+func projectInstructionsSource(budget int) (prompt.Source, bool) {
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md"} {
 		data, err := os.ReadFile(name)
 		if err == nil && len(bytes.TrimSpace(data)) > 0 {
+			body := boundProjectInstructions(strings.TrimSpace(string(data)), budget)
 			return prompt.Static("project-instructions", 35, false,
-				fmt.Sprintf("Project instructions (%s):\n%s", name, strings.TrimSpace(string(data)))), true
+				fmt.Sprintf("Project instructions (%s):\n%s", name, body)), true
 		}
 	}
 	return nil, false
+}
+
+// projectInstructionShare is the fraction of the prompt budget this file may
+// occupy: one over this, so 2 means half.
+//
+// It exists because assembly is a single greedy pass in section order and this
+// section sits at 35, ahead of the four that carry hypotheses, hardening,
+// inquiry and working method at 42 through 50. An instructions file large
+// enough to fit and large enough to exhaust what remains therefore displaced
+// exactly those four — silently, since the report went to stderr, which is
+// invisible under the TUI's alternate screen.
+//
+// Bounding this rather than reordering the sections is the deliberate half of
+// the fix. The operator's own instructions are more specific to the task than
+// any generic guidance here, so they should not be the first thing dropped;
+// what they should not be able to do is take everything else with them.
+const projectInstructionShare = 2
+
+// boundProjectInstructions trims the instructions file to its share of the
+// budget, on a line boundary, and says that it did.
+//
+// Cut at a line rather than at a character because half a sentence of a rule is
+// worse than no rule: it reads as a complete instruction that happens to be
+// wrong. The marker is not decoration — an operator whose instructions stop
+// being followed needs to know the file is too long for the window rather than
+// concluding the model ignores them.
+func boundProjectInstructions(body string, budget int) string {
+	if budget <= 0 {
+		// No budget means an unbounded prompt, which is what every non-local
+		// provider gets. Nothing here is scarce, so nothing is cut.
+		return body
+	}
+	limit := budget / projectInstructionShare
+	if prompt.EstimateTokens(body) <= limit {
+		return body
+	}
+	var kept strings.Builder
+	spent := 0
+	for line := range strings.Lines(body) {
+		cost := prompt.EstimateTokens(line)
+		if spent+cost > limit {
+			break
+		}
+		kept.WriteString(line)
+		spent += cost
+	}
+	return strings.TrimRight(kept.String(), "\n") +
+		fmt.Sprintf("\n\n[this instructions file was cut here: it exceeds %d tokens, which is "+
+			"half the system-prompt budget on this model. The rest was not sent. Shorten it, or "+
+			"the guidance after it in the prompt is what pays for the excess]", limit)
 }
 
 // assembleSections registers every source, assembles, and names every source
@@ -1553,7 +1803,7 @@ func projectInstructionsSource() (prompt.Source, bool) {
 // in the direction of crying wolf on a healthy prompt. Comparing what was
 // registered against Report.Included answers the question directly, and stays
 // correct if the Report grows new reasons.
-func assembleSections(sources []prompt.Source, maxTokens int) (string, []string) {
+func assembleSections(sources []prompt.Source, maxTokens int) (string, prompt.Report, []string) {
 	a := prompt.New()
 	a.MaxTokens = maxTokens
 	var faults, registered []string
@@ -1581,7 +1831,7 @@ func assembleSections(sources []prompt.Source, maxTokens int) (string, []string)
 		}
 		faults = append(faults, fmt.Sprintf("%q is missing from the prompt: %s", name, whyMissing(report, name)))
 	}
-	return text, faults
+	return text, report, faults
 }
 
 // whyMissing recovers the Report's own account of a source that did not
@@ -1619,7 +1869,7 @@ func environmentSection() string {
 // Every line here is a failure seen from a smaller model: inventing a tool that
 // was not offered, describing an edit instead of making it, and re-reading the
 // same file because nothing said the result was already in the conversation.
-func toolContractSection(dynamic bool) string {
+func toolContractSection(dynamic, codeMap bool) string {
 	unlisted := "  - Use only the tools listed for you. A tool that is not listed does not exist,\n" +
 		"    and naming one wastes a step.\n"
 	if dynamic {
@@ -1630,10 +1880,19 @@ func toolContractSection(dynamic bool) string {
 		unlisted = "  - The tools listed for you are a working set, not the whole registry. Do not\n" +
 			"    name a tool that is not listed — activate it first, see below.\n"
 	}
+	// The same rule as the sections above: this used to say "consult the dev
+	// map" on every local run, including the ones with no index and no
+	// navigator, which is an instruction whose only available compliance is to
+	// pretend. What is left when there is no map is still true.
+	beforeEditing := "  - Read a file before editing it; do not re-read unchanged files.\n"
+	if codeMap {
+		beforeEditing = "  - Read a file and consult the dev map before editing it; do not re-read\n" +
+			"    unchanged files.\n"
+	}
 	return "Calling tools:\n" + unlisted +
 		"  - To change a file, call the write or patch tool. Describing the change in prose\n" +
 		"    does not change anything on disk.\n" +
-		"  - Read a file and consult the dev map before editing it; do not re-read unchanged files.\n" +
+		beforeEditing +
 		"  - One step may contain several tool calls when they are independent. Calls that\n" +
 		"    depend on each other's results belong in separate steps.\n" +
 		"  - If a call is refused, read the reason before trying anything else. Repeating\n" +
@@ -1659,9 +1918,16 @@ func toolDiscoverySection() string {
 // workingMethodSection gives the shape of a turn and, importantly, its end.
 // Not essential: it is guidance rather than contract, so it yields to budget
 // before the policy and tool sections do.
-func workingMethodSection() string {
-	return "Working method:\n" +
-		"  - Systematically review existing code and dev map navigation before changing anything.\n" +
+func workingMethodSection(codeMap bool) string {
+	// The same conditional as the sections above. "Review existing code" is
+	// true everywhere; "and dev map navigation" is only true where there is a
+	// dev map, and it shipped on every local run regardless.
+	review := "  - Systematically review existing code before changing anything.\n"
+	if codeMap {
+		review = "  - Systematically review existing code and dev map navigation before changing\n" +
+			"    anything.\n"
+	}
+	return "Working method:\n" + review +
 		"  - Deconstruct problems, formulate hypotheses, and identify gaps upfront.\n" +
 		"  - Characterize baseline behavior with tests first; reuse and extend the core without bloat.\n" +
 		"  - Make the smallest change that does the job, then check it.\n" +

@@ -28,6 +28,20 @@ import (
 //	chat.settle   — after it:  what the reply actually contained
 //
 // Together they are one step of a turn, which is why they share a session.
+//
+// What this plane therefore does NOT provide, stated because the absence is
+// otherwise invisible: agent.Loop does not run here, so the terminal checkpoint
+// does not fire, and the harness's own end-of-turn check never runs. The host
+// owns turn completion. Every guarantee the two faces get from that
+// checkpoint — a mutating turn is verified before it closes, a failed check
+// bounces the model once with the findings, a check that could not run is
+// recorded as degraded rather than as a pass — is the host's responsibility on
+// this plane and not this package's.
+//
+// It is a scope boundary rather than a gap to close. Running a checkpoint here
+// would mean this package deciding a turn is over, which is precisely the
+// decision the split above hands to the host. A host that wants the guarantee
+// runs the turn through `manvi run` instead.
 
 // ChatSession is the state that must survive between steps.
 type ChatSession struct {

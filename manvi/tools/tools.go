@@ -7,10 +7,22 @@
 //	tools/post-execute  redaction, truncation, added context
 //
 // A pre-execute listener that returns without calling next short-circuits: the
-// tool body never runs and the loop is not told which listener decided. That is
-// what lets the DevCouncil write gate and an interactive approval prompt sit
-// side by side as ordinary listeners, neither knowing the other exists and
-// neither requiring a change to the loop.
+// tool body never runs and the loop is not told which listener decided.
+//
+// What that seam is NOT, despite what this comment used to say: it is not where
+// the policy gate lives. The DevCouncil write gate is enforced per handler —
+// each of writeFile, patchFile, deleteFile and execCommand calls it directly —
+// and nothing in production registers a pre-execute listener at all. The
+// paragraph describing the gate and an approval prompt sitting side by side as
+// ordinary listeners described a design, in the present tense, that was never
+// built.
+//
+// It is corrected rather than deleted because the difference matters to anyone
+// reasoning about where a refusal can come from. A reader who believed this
+// would look for the gate here, find nothing, and conclude that writes are
+// ungated — or, worse, add a second gate at this seam beside the one that is
+// already deciding. The waterfall is real and is used for redaction and
+// panic containment; the gate is in the handlers.
 package tools
 
 import (
@@ -36,6 +48,11 @@ const (
 	GroupMCP      = "mcp"
 	GroupArtifact = "artifact"
 	GroupQuestion = "question"
+	// GroupWeb is documentation lookup over the network. It is its own group
+	// because it is the only one whose results come from outside this machine,
+	// and an operator deciding what a child may reach needs to be able to name
+	// that separately from everything else.
+	GroupWeb = "web"
 )
 
 // ToolSummary is a compact descriptive summary of a registered tool for discovery.
@@ -89,6 +106,25 @@ type Result struct {
 	// is not a stage that approved". Under --quiet that line is the only trace,
 	// and it says the opposite of what happened.
 	PipelinePanic string
+	// Wrote names the repository-relative paths whose bytes this call changed —
+	// created, modified, or removed. Only a handler that actually landed the
+	// change sets it, and it is the difference between two questions the loop
+	// had been answering with one bit.
+	//
+	// "A tool that is allowed to mutate ran without error" is what the progress
+	// tracker means by a mutation, and for its purpose that is right: it is
+	// deciding whether a step got anywhere, and over-crediting there costs at
+	// most a stall it did not declare. It is the wrong answer for a verifier.
+	// Under that definition `exec git log`, a task checkout and a sub-agent
+	// dispatch are all mutations, so a turn that only read would be handed to a
+	// sensor and bounced — and the sensor still would not know which files to
+	// look at, because the tracker keys on a digest of the result and never on
+	// the arguments.
+	//
+	// So the handler says what it touched, and says it only once the write has
+	// landed. A gate refusal, a failed open, a patch whose target was not found
+	// leave this empty, because none of them changed a byte.
+	Wrote []string
 	// Blocked reports that the gate refused this call. It is the gate's own
 	// verdict, carried rather than re-derived.
 	//

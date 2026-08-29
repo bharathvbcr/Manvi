@@ -56,13 +56,123 @@ type LLMRequest struct {
 	Request llm.Request
 }
 
-// TurnStopping is the serial terminal checkpoint. A listener returning an error
-// keeps the turn open; returning nil lets it close.
+// TurnStopping is the serial terminal checkpoint: the last chance to say that a
+// turn which looks finished is not.
+//
+// It is dispatched by pointer so a listener can answer rather than only object.
+// The contract it replaced was "return an error to keep the turn open", and
+// that shape could not work. The loop's response to the error was to take
+// another step with the *same* history, so the model was re-asked a question it
+// had already answered, with nothing added; a replayed fixture obligingly
+// produced a second turn and the test passed, while a live model seeing an
+// unchanged history has no reason to do anything but stop again. Riding that to
+// the step ceiling is not a verification gate, it is a spin.
+//
+// So a listener that wants another step has to supply the reason, and the loop
+// is what puts it in front of the model. That split is not stylistic: appending
+// through the loop is what keeps model-visible-means-logged enforceable, and a
+// listener holding the log could append something the model never saw.
+//
+// An error now means the listener itself failed. It does not keep the turn
+// open — a check that could not run has not asked for anything — and it is
+// never silent: the turn closes with Outcome.Sensor degraded.
 type TurnStopping struct {
 	Turn     int
 	Steps    int
 	Response llm.Response
+
+	// Mutated reports that at least one tool that can change the world ran
+	// without error this turn. It is the progress tracker's definition, and it
+	// is deliberately wider than Wrote: a command that touched the working tree
+	// through the shell sets this and names no path.
+	Mutated bool
+	// Wrote names the repository-relative paths whose bytes this turn changed,
+	// as reported by the handlers that changed them. This is what a lease-free
+	// check runs against; `git diff` is not, because it also carries whatever
+	// the operator had in the tree before the turn started.
+	//
+	// Bounded — see MaxTrackedWrites — and WroteTruncated says when the bound bit.
+	Wrote []string
+	// WroteTruncated is true when more paths were written than are listed. A
+	// checker that reads Wrote as the complete set would certify files it never
+	// looked at, so the incompleteness travels with the list.
+	WroteTruncated bool
+	// Truncated reports that the response ending this turn hit the output cap.
+	// A cut-off answer is not a finished one, and a checkpoint that certified it
+	// would be certifying a sentence that stops mid-word.
+	Truncated bool
+	// Empty reports that the ending response carried no answer and no tool
+	// call.
+	Empty bool
+
+	// Inject, when a listener sets it, is appended to the log as a message from
+	// the harness and the turn takes another step. Bounded by
+	// MaxCheckpointBounces per turn; past that the loop ignores it and closes,
+	// recording BouncesExhausted rather than pretending the turn was clean.
+	Inject string
+	// Verdict is what the listener's check concluded, carried onto the outcome
+	// so no face can render a failed check as a completed turn. A listener that
+	// leaves it empty is treated as having run no check at all.
+	Verdict SensorVerdict
+	// Bounce is which attempt this is within the turn: zero the first time the
+	// checkpoint fires, one after a single inject, and so on. A listener that
+	// wants to escalate on the second look reads this rather than keeping its
+	// own counter — a counter in a listener closure outlives the turn, and the
+	// two faces disagree about how long a bus does.
+	Bounce int
+	// Circling is how many calls this turn were refused for repeating
+	// themselves or for getting nowhere. It is the same evidence the loop
+	// already escalates reasoning effort on, offered here so a listener can
+	// escalate on it too rather than inventing a second definition of "stuck".
+	//
+	// Offered rather than acted on: what to do about a circling turn is a
+	// policy question, and this package deliberately holds no policy.
+	Circling int
 }
+
+// SensorVerdict is what an end-of-turn check concluded.
+//
+// Four values, not a boolean, and the distinction between the last two is the
+// whole point: a check that could not run must never report what a check that
+// ran and passed reports.
+type SensorVerdict string
+
+const (
+	// SensorNone means no check was attempted, because none was registered.
+	SensorNone SensorVerdict = ""
+	// SensorSkipped means a check was registered and deliberately did not run —
+	// a turn that changed nothing has nothing to verify.
+	SensorSkipped SensorVerdict = "skipped"
+	// SensorPassed means a check ran and found nothing blocking.
+	SensorPassed SensorVerdict = "passed"
+	// SensorFailed means a check ran and found something.
+	SensorFailed SensorVerdict = "failed"
+	// SensorDegraded means a check was owed and could not be completed. It is
+	// never a pass.
+	SensorDegraded SensorVerdict = "degraded"
+)
+
+// MaxCheckpointBounces is how many times one turn may be sent back for another
+// step by the terminal checkpoint.
+//
+// Two. The shape it is sized for is the one the bench produces: a check fails,
+// the model is told what failed and fixes it, the check runs again. A third
+// bounce has never been the difference between a fixed turn and a stuck one —
+// a model that has been told twice and changed nothing is not going to be told
+// into it — and every bounce is a full model call plus the steps it drags
+// behind it. The alternative that was rejected is riding MaxSteps, which
+// defaults to 500 and charges StallCost 3 for the steps a bounced turn tends to
+// produce: the same dead end, discovered an hour later.
+const MaxCheckpointBounces = 2
+
+// MaxTrackedWrites bounds the per-turn written-path set.
+//
+// A turn can rewrite a thousand files, and the paths are carried into a session
+// event and a checker's argument list. Capped rather than unbounded, and the
+// cap is reported: a truncated list that claimed to be complete would let a
+// verifier certify files nobody looked at, which is exactly the failure the
+// whole checkpoint exists to prevent.
+const MaxTrackedWrites = 256
 
 // Config drives one loop.
 type Config struct {
@@ -564,6 +674,29 @@ type Outcome struct {
 	// zero on every turn that never escalated, including every turn run without
 	// a ceiling configured.
 	EffortRaised int
+
+	// Mutated reports that at least one tool that can change the world ran
+	// without error. See TurnStopping.Mutated for why it is not the same
+	// question as Wrote.
+	Mutated bool
+	// Wrote names the repository-relative paths this turn changed, as reported
+	// by the handlers that changed them.
+	Wrote []string
+	// WroteTruncated is true when more paths were changed than Wrote lists.
+	WroteTruncated bool
+	// Sensor is what the end-of-turn check concluded. It is on the outcome so
+	// that no face can render a turn whose verification failed as a turn that
+	// finished: a natural stop with text and no tool calls is otherwise
+	// completely silent, and looks identical either way.
+	Sensor SensorVerdict
+	// Bounces counts the times the checkpoint sent this turn back for another
+	// step.
+	Bounces int
+	// BouncesExhausted is true when the checkpoint was still asking for another
+	// step at the point the cap ran out. The turn ended without the check being
+	// satisfied, and saying so is the difference between a bounded gate and a
+	// gate that quietly gave up.
+	BouncesExhausted bool
 }
 
 // Run drives one turn to completion.
@@ -805,6 +938,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 				if l.progress.observe(call.Name, result) {
 					progressed = true
 				}
+				// Recorded here rather than derived later, and only for calls
+				// that actually ran: a refused call changed nothing, and a
+				// repeat or stall refusal above never reached a handler.
+				if l.progress.mutated(call.Name, result) {
+					out.Mutated = true
+				}
+				out.Wrote, out.WroteTruncated = trackWrites(out.Wrote, out.WroteTruncated, result.Wrote)
 			}
 			out.ToolCalls++
 
@@ -943,12 +1083,80 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 
 			// Natural stop. The terminal checkpoint may keep the turn open —
 			// a verification gate that wants one more step, for instance.
-			if err := bus.Serial(l.bus, ctx, TurnStopping{
-				Turn: currentTurn, Steps: out.Steps, Response: response,
-			}); err != nil {
-				continue
+			//
+			// Cancellation short-circuits it. A cancelled turn is the operator
+			// saying stop, and a bounce fired on the way out would spend
+			// another model call on work nobody is waiting for. Checked before
+			// the listeners run rather than after, so a sensor that shells out
+			// is not started either.
+			if ctx.Err() != nil {
+				break
 			}
-			break
+			checkpoint := &TurnStopping{
+				Turn: currentTurn, Steps: out.Steps, Response: response,
+				Mutated: out.Mutated, Wrote: out.Wrote,
+				WroteTruncated: out.WroteTruncated,
+				Truncated:      out.FinalTruncated, Empty: out.FinalEmpty,
+				Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
+			}
+			if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {
+				// The listener failed. It did not ask for another step, and
+				// re-sending an identical history is not a recovery — it is
+				// the same request with the same answer, charged again. So the
+				// turn closes, and closes loudly: a check that was owed and
+				// could not be completed is degraded, never a pass.
+				out.Sensor = SensorDegraded
+				if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
+					Verdict: string(SensorDegraded),
+					Source:  "checkpoint",
+					Paths:   out.Wrote,
+					Degraded: []string{
+						"the terminal checkpoint failed: " + err.Error(),
+					},
+					Bounce: out.Bounces,
+				}); appendErr != nil {
+					return out, appendErr
+				}
+				break
+			}
+			if checkpoint.Verdict != "" {
+				out.Sensor = checkpoint.Verdict
+			}
+			inject := strings.TrimSpace(checkpoint.Inject)
+			if inject == "" {
+				break
+			}
+			// Asked again after the listeners rather than only before them. A
+			// sensor that shells out is exactly the place a turn gets
+			// cancelled, and honouring an inject decided before the cancel
+			// would spend the model call the cancel was meant to stop.
+			if ctx.Err() != nil {
+				break
+			}
+			if out.Bounces >= MaxCheckpointBounces {
+				// Still asking, out of budget. The turn ends, and the outcome
+				// says the check was not satisfied — the alternative is a turn
+				// that looks complete because the thing objecting to it ran out
+				// of ways to object.
+				out.BouncesExhausted = true
+				break
+			}
+			// The loop appends, not the listener. A user-role message is the
+			// only model-visible slot a natural stop leaves — there is no tool
+			// call to answer, so an orphan tool result would break projection —
+			// and the origin marks it as the harness's own words so no face
+			// attributes it to the operator.
+			if _, err := l.log.Append(session.UserMessage, session.MessageData{
+				Message: llm.Message{
+					Role:    llm.RoleUser,
+					Content: []llm.ContentBlock{llm.TextBlock{Text: inject}},
+				},
+				Origin: session.OriginHarness,
+			}); err != nil {
+				return out, err
+			}
+			out.Bounces++
+			continue
 		}
 	}
 

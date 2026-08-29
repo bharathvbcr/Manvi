@@ -29,7 +29,7 @@ MANVI is built on a handful of deliberate design decisions that shape everything
 2. **Process boundary, not CGO.** Go and Rust communicate exclusively via `fork`/`exec` child processes exchanging line-delimited JSON over stdio. This preserves static binaries, instant cross-compilation, and fault isolation — a crash in the analysis plane cannot take down the execution plane.
 3. **Non-cheating invariants.** A check that did not run never reports as passed. A grant that cleared a rule never reports as a clean pass. Blocks are overridable when appropriate, but never invisible.
 4. **Mutual exclusion in storage, not application code.** Multi-agent task concurrency is enforced by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`) — not by an in-memory lock that dies with the process.
-5. **The log is the source of truth.** Model-visible history is *always* projected on demand from the append-only `session.jsonl`; nothing lives only in volatile memory. What the model saw is provably what was logged.
+5. **The log is the source of truth.** Model-visible history is *always* projected on demand from the append-only session log; nothing lives only in volatile memory. What the model saw is provably what was logged.
 
 ---
 
@@ -71,7 +71,7 @@ flowchart TB
     subgraph Storage["Persistent Storage"]
         SQLite[("state.sqlite<br/>partial unique index")]
         CodeGraph[(".devcouncil/code_graph.json")]
-        SessionLog[("session.jsonl<br/>append-only")]
+        SessionLog[("session log<br/>append-only")]
     end
 
     TUI --> Bus
@@ -115,7 +115,7 @@ Every turn is an evidence-driven state machine: project history → call the mod
 sequenceDiagram
     autonumber
     participant AL as Agent Loop (Go)
-    participant Log as Session Log (session.jsonl)
+    participant Log as Session Log
     participant Provider as LLM Provider
     participant Gate as Policy Gate
     participant Tool as Native Tool

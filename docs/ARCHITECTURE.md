@@ -42,7 +42,7 @@ flowchart TB
     subgraph Storage["Persistent Storage"]
         SQLite[("state.sqlite (partial unique index)")]
         CodeGraph[(".devcouncil/code_graph.json")]
-        SessionLog[("session.jsonl (append-only)")]
+        SessionLog[("session log (append-only)")]
     end
 
     UserInterface --> Bus
@@ -65,7 +65,7 @@ flowchart TB
 
 1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries (`fork`/`exec`) exchanging single line-delimited JSON objects over `stdin`/`stdout`. Linking them via `cgo` would sacrifice `CGO_ENABLED=0`, instantaneous cross-compilation, static binary portability, and process isolation.
 2. **Mutual Exclusion in Storage, Not Application Code**: Multi-agent task concurrency is guaranteed by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`), not by an in-memory lock in Go.
-3. **Session Log Invariant**: The history provided to LLMs is *always* projected on demand from the append-only `session.jsonl` log, never accumulated in volatile local memory.
+3. **Session Log Invariant**: The history provided to LLMs is *always* projected on demand from the append-only session log, never accumulated in volatile local memory.
 4. **Zero Third-Party Runtime Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines, custom damage-diffed terminal painting, and zero external packages.
 
 ---
@@ -219,18 +219,22 @@ sequenceDiagram
 
 ## 6. The Session Log & Invariant Engine
 
-The session log (`session.jsonl`) is the immutable ledger of an agent's lifecycle.
+The session log is the immutable ledger of an agent's lifecycle. On disk it is one
+checksummed JSON document per generation — `<id>.<generation>.json` under the
+sessions directory — not a single appended `.jsonl` stream: a generation is
+written whole and linked into place atomically, which is what lets a corrupt
+write be refused rather than half-read.
 
 ```mermaid
 flowchart TD
-    TurnStart["Agent Turn Invoked"] --> ReadLog["Project History from session.jsonl"]
+    TurnStart["Agent Turn Invoked"] --> ReadLog["Project History from the session log"]
     ReadLog --> InvariantCheck{"Assert: Model-Visible == Logged?"}
     InvariantCheck -- Invariant Violated --> Halt["Panic / Abort Turn"]
     InvariantCheck -- Valid --> Assemble["Build LLM Request Payload"]
     Assemble --> Stream["Stream from Provider"]
     Stream --> RecordDelta["Log Delta & Replay State"]
     RecordDelta --> ToolRun["Execute Tools"]
-    ToolRun --> RecordTool["Log Tool Result to session.jsonl"]
+    ToolRun --> RecordTool["Log Tool Result to the session log"]
     RecordTool --> TurnEnd["Step Completed"]
 ```
 

@@ -373,6 +373,14 @@ func (r *Renderer) Emit(e Event) {
 		r.endStream()
 		r.write("\n%s▌%s %s\n", p.Blue, p.Reset, r.safe(e.Text))
 
+	case KindHarnessMessage:
+		// Labelled, and in a different colour from the operator's own turn.
+		// This message occupies the same role on the wire; the whole reason it
+		// is a distinct kind is that a reader must never mistake it for
+		// something a person typed.
+		r.endStream()
+		r.write("\n%s▌ harness%s %s\n", p.Yellow, p.Reset, r.safe(e.Text))
+
 	case KindReasoning:
 		r.endStream()
 		r.write("%s%s%s\n", p.Dim, r.bounded(e.Text, 400), p.Reset)

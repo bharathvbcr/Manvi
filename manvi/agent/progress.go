@@ -2,6 +2,8 @@ package agent
 
 import (
 	"crypto/sha256"
+	"slices"
+	"strings"
 
 	"manvi/tools"
 )
@@ -139,6 +141,35 @@ func (p *progressTracker) interrupted() {
 	}
 }
 
+// trackWrites folds one call's changed paths into the turn's set.
+//
+// Ordered, de-duplicated and capped. Ordered because a checker's argument list
+// and a session event both read better in the order the work happened;
+// de-duplicated because a file edited eight times is one file to verify; capped
+// because the set is carried into both, and an unbounded one is a turn that can
+// make its own evidence unreadable.
+//
+// The cap reports itself. A truncated list handed on as though it were complete
+// is how a check that examined 256 of 900 files comes to be recorded as having
+// examined all of them, and "never present a capped sample as complete
+// coverage" is the rule that failure breaks.
+func trackWrites(have []string, truncated bool, add []string) ([]string, bool) {
+	for _, p := range add {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if slices.Contains(have, p) {
+			continue
+		}
+		if len(have) >= MaxTrackedWrites {
+			return have, true
+		}
+		have = append(have, p)
+	}
+	return have, truncated
+}
+
 // observe records the outcome of one dispatched call and reports whether it was
 // progress. Refused calls must not be passed here: they never ran, so they can
 // neither demonstrate progress nor its absence.
@@ -154,6 +185,26 @@ func (p *progressTracker) observe(name string, result tools.Result) bool {
 	}
 	// The same answer as before. Only a tool that could have changed something
 	// counts now.
+	return p.mutating[name] && !result.IsError && result.Rule == ""
+}
+
+// mutated reports whether this call could have changed the world and did not
+// error. It is the same test rule (b) above applies, named and exported to the
+// loop because the terminal checkpoint asks the same question for a different
+// reason: it wants to know whether the turn has anything to verify.
+//
+// It stays deliberately wide — a shell command that ran is a mutation here even
+// though this cannot see what it did — and that width is why it is not the
+// signal a verifier runs against. Wide is right for "is there anything to check
+// at all", and wrong for "which files". tools.Result.Wrote answers the second,
+// and the two must not be collapsed: a turn where the model ran `git log`
+// through the shell sets this and names no path, and a checker handed that as a
+// file list would either check nothing and report a pass, or refuse a turn that
+// wrote nothing.
+func (p *progressTracker) mutated(name string, result tools.Result) bool {
+	if p == nil {
+		return false
+	}
 	return p.mutating[name] && !result.IsError && result.Rule == ""
 }
 

@@ -135,7 +135,7 @@ func TestABudgetDropsGuidanceBeforeRules(t *testing.T) {
 
 	// A budget far below any real prompt, so every non-essential section is a
 	// candidate and only the essential ones can survive.
-	text, _ := assembleSections(sources, 50)
+	text, _, _ := assembleSections(sources, 50)
 
 	for _, must := range []string{
 		"devcouncil_*",         // identity
@@ -190,16 +190,24 @@ func TestBothDensitiesCarryTheEngineeringPrinciples(t *testing.T) {
 	principles := []string{
 		"Systematic Review & Core Reuse",
 		"Strictly avoid duplication",
-		"Grounding & Dev Map Guidance",
 		"Problem Deconstruction & Hypotheses",
 		"characterize baseline behavior with tests",
 		"Hardening & Adversarial Stress-Testing",
 		"Inquiry & Decision Impact",
+		// Capability-gated, and asserted here with the capability present so
+		// that compacting is still what this test measures. Their absence when
+		// the capability is absent is TestCapabilityGuidanceFollowsTheCapability's
+		// job.
+		"dev map",
+		"current documentation",
 	}
 	for _, router := range []string{"false", "true"} {
 		reg := routerRegistry(t, map[string]string{flags.LLMLocalGuidanceRouter: router})
 		text, faults := assemblePromptWithFaults(reg,
-			PromptOptions{Provider: local.Name, TaskToolsOffered: true})
+			PromptOptions{
+				Provider: local.Name, TaskToolsOffered: true,
+				CodeMapAvailable: true, DocLookupAvailable: true,
+			})
 		if len(faults) != 0 {
 			t.Fatalf("router=%s: %v", router, faults)
 		}
@@ -268,7 +276,15 @@ func TestLocalDefaultsAreTheOptimizedPair(t *testing.T) {
 // config ever satisfied it.
 func TestGroupGuidanceFollowsTheActiveGroups(t *testing.T) {
 	reg := routerRegistry(t, nil)
-	base := PromptOptions{Provider: local.Name, TaskToolsOffered: true, DynamicTools: true}
+	// The code map is present here, because this test is about the group
+	// condition and not about the capability one. Both have to hold, and
+	// TestCapabilityGuidanceFollowsTheCapability is where the other half is
+	// asserted: activating the nav group on a harness with no index would give
+	// the model guidance for tools whose backing service is not there.
+	base := PromptOptions{
+		Provider: local.Name, TaskToolsOffered: true, DynamicTools: true,
+		CodeMapAvailable: true, Areas: someAreas,
+	}
 
 	without := base
 	without.ActiveGroups = []string{tools.GroupCore}
