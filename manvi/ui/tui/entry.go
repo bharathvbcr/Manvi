@@ -239,7 +239,11 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		}
 
 	case ui.KindTurnStart:
-		add(render.Styled(ev.Text, th.Strong()))
+		turnLine := render.Styled(ev.Text, th.Strong())
+		if !ev.At.IsZero() {
+			turnLine = turnLine.Append("  "+ev.At.Local().Format("15:04"), th.Subtle())
+		}
+		add(turnLine)
 
 	case ui.KindHarnessMessage:
 		// Prefixed rather than merely styled. Colour alone is not a label: it
@@ -260,6 +264,9 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		head := render.Styled(ev.Tool, th.Status(StatusInfo).With(render.Bold))
 		if detail := toolDetail(ev); detail != "" {
 			head = head.Append("  "+detail, th.Subtle())
+		}
+		if !ev.At.IsZero() {
+			head = head.Append("  "+ev.At.Local().Format("15:04"), th.Subtle())
 		}
 		add(head.Truncate(body))
 

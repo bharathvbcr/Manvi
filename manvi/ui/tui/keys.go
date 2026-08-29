@@ -45,6 +45,9 @@ const (
 	CmdFoldAll
 	CmdExpandAll
 	CmdCopy
+	CmdSearch
+	CmdFindNext
+	CmdFindPrev
 
 	// Prompt editing.
 	CmdCursorLeft
@@ -59,6 +62,12 @@ const (
 	CmdDeleteToStart
 	CmdDeleteToEnd
 	CmdClearDraft
+	CmdExpandPaste
+	CmdYank
+	CmdUndo
+
+	// Dashboard.
+	CmdRenameSession
 
 	// Overlays.
 	CmdAccept
@@ -156,11 +165,17 @@ var bindings = []Binding{
 	{Keys: []string{"ctrl+w", "alt+backspace"}, Cmd: CmdDeleteWord, Ctx: CtxPrompt},
 	{Keys: []string{"ctrl+u"}, Cmd: CmdDeleteToStart, Ctx: CtxPrompt},
 	{Keys: []string{"ctrl+k"}, Cmd: CmdDeleteToEnd, Ctx: CtxPrompt},
+	{Keys: []string{"ctrl+y"}, Cmd: CmdYank, Ctx: CtxPrompt, Label: "yank"},
+	{Keys: []string{"ctrl+z", "ctrl+_"}, Cmd: CmdUndo, Ctx: CtxPrompt, Label: "undo"},
+	{Keys: []string{"ctrl+o"}, Cmd: CmdExpandPaste, Ctx: CtxPrompt, Label: "expand paste"},
 	{Keys: []string{"esc"}, Cmd: CmdClearDraft, Ctx: CtxPrompt, Label: "clear"},
 
 	// Scrollback.
 	{Keys: []string{"up", "k"}, Cmd: CmdSelectPrev, Ctx: CtxScrollback, Label: "prev entry", Hint: true},
 	{Keys: []string{"down", "j"}, Cmd: CmdSelectNext, Ctx: CtxScrollback, Label: "next entry", Hint: true},
+	{Keys: []string{"ctrl+f", "/"}, Cmd: CmdSearch, Ctx: CtxScrollback, Label: "search", Hint: true},
+	{Keys: []string{"n"}, Cmd: CmdFindNext, Ctx: CtxScrollback, Label: "next match"},
+	{Keys: []string{"N"}, Cmd: CmdFindPrev, Ctx: CtxScrollback, Label: "prev match"},
 	{Keys: []string{"ctrl+k"}, Cmd: CmdScrollUp, Ctx: CtxScrollback},
 	{Keys: []string{"ctrl+j"}, Cmd: CmdScrollDown, Ctx: CtxScrollback},
 	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxScrollback},
@@ -179,6 +194,7 @@ var bindings = []Binding{
 	{Keys: []string{"up", "k"}, Cmd: CmdPrevItem, Ctx: CtxDashboard, Label: "prev", Hint: true},
 	{Keys: []string{"down", "j"}, Cmd: CmdNextItem, Ctx: CtxDashboard, Label: "next", Hint: true},
 	{Keys: []string{"enter"}, Cmd: CmdAccept, Ctx: CtxDashboard, Label: "open", Hint: true},
+	{Keys: []string{"r"}, Cmd: CmdRenameSession, Ctx: CtxDashboard, Label: "rename", Hint: true},
 	{Keys: []string{"ctrl+x"}, Cmd: CmdCloseSession, Ctx: CtxDashboard, Label: "close session"},
 	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxDashboard, Label: "back", Hint: true},
 

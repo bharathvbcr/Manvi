@@ -63,6 +63,11 @@ type Scrollback struct {
 	// when nothing was scrollable enough to draw one. The click handler grabs
 	// the thumb on that column rather than treating it as transcript text.
 	barCol int
+
+	// Search state.
+	searchQuery string
+	matches     []int
+	matchIdx    int
 }
 
 // rowRef points a rendered row back at the entry that produced it.
@@ -350,12 +355,125 @@ func (s *Scrollback) SetFoldAll(folded bool) {
 }
 
 // SelectedText is the selected entry's body, for copying.
+// If the entry contains exactly one fenced code block, it extracts only the inner code.
 func (s *Scrollback) SelectedText() string {
 	e := s.Selected()
 	if e == nil {
 		return ""
 	}
-	return e.text()
+	raw := e.text()
+	first := strings.Index(raw, "```")
+	if first >= 0 {
+		afterFirst := raw[first+3:]
+		if nl := strings.IndexByte(afterFirst, '\n'); nl >= 0 {
+			rest := afterFirst[nl+1:]
+			if end := strings.Index(rest, "```"); end >= 0 {
+				if !strings.Contains(rest[end+3:], "```") {
+					return strings.TrimRight(rest[:end], "\r\n")
+				}
+			}
+		}
+	}
+	return raw
+}
+
+// SearchQuery returns the active search query.
+func (s *Scrollback) SearchQuery() string { return s.searchQuery }
+
+// MatchCount returns the number of matches for the active search.
+func (s *Scrollback) MatchCount() int { return len(s.matches) }
+
+// SearchStatus returns a label describing match position.
+func (s *Scrollback) SearchStatus() string {
+	if s.searchQuery == "" {
+		return ""
+	}
+	if len(s.matches) == 0 {
+		return "no matches: " + s.searchQuery
+	}
+	return "match " + itoa(s.matchIdx+1) + " of " + itoa(len(s.matches)) + ": " + s.searchQuery
+}
+
+// SetSearch filters entries matching the query and jumps to the nearest match.
+func (s *Scrollback) SetSearch(query string, th Theme) bool {
+	s.searchQuery = strings.TrimSpace(query)
+	s.matches = nil
+	s.matchIdx = 0
+	if s.searchQuery == "" {
+		return false
+	}
+	qLower := strings.ToLower(s.searchQuery)
+	for i, e := range s.entries {
+		if strings.Contains(strings.ToLower(e.text()), qLower) {
+			s.matches = append(s.matches, i)
+		}
+	}
+	if len(s.matches) == 0 {
+		return false
+	}
+	// Select the first match at or after current selection, or match 0
+	s.matchIdx = 0
+	if s.selected >= 0 {
+		for mIdx, eIdx := range s.matches {
+			if eIdx >= s.selected {
+				s.matchIdx = mIdx
+				break
+			}
+		}
+	}
+	s.selected = s.matches[s.matchIdx]
+	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
+		s.entries[s.selected].Folded = false
+		s.touch()
+	}
+	s.revealSelected(th)
+	return true
+}
+
+// NextMatch jumps to the next search match.
+func (s *Scrollback) NextMatch(th Theme) bool {
+	if len(s.matches) == 0 {
+		return false
+	}
+	s.matchIdx = (s.matchIdx + 1) % len(s.matches)
+	s.selected = s.matches[s.matchIdx]
+	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
+		s.entries[s.selected].Folded = false
+		s.touch()
+	}
+	s.revealSelected(th)
+	return true
+}
+
+// PrevMatch jumps to the previous search match.
+func (s *Scrollback) PrevMatch(th Theme) bool {
+	if len(s.matches) == 0 {
+		return false
+	}
+	s.matchIdx = (s.matchIdx - 1 + len(s.matches)) % len(s.matches)
+	s.selected = s.matches[s.matchIdx]
+	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
+		s.entries[s.selected].Folded = false
+		s.touch()
+	}
+	s.revealSelected(th)
+	return true
+}
+
+// ClearSearch clears the active search query.
+func (s *Scrollback) ClearSearch() {
+	s.searchQuery = ""
+	s.matches = nil
+	s.matchIdx = 0
+}
+
+func (s *Scrollback) isMatch(entryIdx int) bool {
+	for _, m := range s.matches {
+		if m == entryIdx {
+			return true
+		}
+	}
+	return false
 }
 
 // Draw paints the viewport.
@@ -422,6 +540,11 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 		line := rows[i].line
 		y := body.Y + row
 		line.Truncate(body.W).Draw(b, body.X, y)
+		if s.searchQuery != "" && s.isMatch(rows[i].entry) && rows[i].entry != s.selected {
+			// Subtle match tint for search results
+			band := render.Rect{X: r.X, Y: y, W: r.W, H: 1}
+			b.BlendBackground(band, th.Warning, 0.25)
+		}
 		if rows[i].entry == s.selected {
 			// A tint rather than a fill, so the severity colouring underneath —
 			// which is the thing the operator is selecting in order to read —

@@ -315,7 +315,12 @@ func (a *App) Dispatch(act Action) []Effect {
 
 	case ActionPaste:
 		if p := a.textTarget(); p != nil {
-			p.InsertString(t.Text)
+			if v := a.Current(); v != nil && p == v.Prompt && len(t.Text) > 200 {
+				chip := p.InsertPaste(t.Text)
+				a.setNotice("pasted "+itoa(len(t.Text))+" chars (Ctrl+O expands) "+chip, StatusInfo)
+			} else {
+				p.InsertString(t.Text)
+			}
 			if a.overlay != nil && a.overlay.Searchable {
 				a.overlay.Refilter()
 			} else {
@@ -462,6 +467,18 @@ func (a *App) key(binding string) []Effect {
 		return nil
 	case CmdDashboard:
 		return a.toggleDashboard()
+	case CmdRenameSession:
+		current := ""
+		if a.mode == ModeDashboard && len(a.views) > 0 {
+			idx := a.dashboard.Selected()
+			if idx >= 0 && idx < len(a.views) {
+				current = a.views[idx].Title
+			}
+		} else if v := a.Current(); v != nil {
+			current = v.Title
+		}
+		a.overlay = RenameOverlay(current)
+		return nil
 	case CmdNewSession:
 		return []Effect{EffectNewSession{}}
 	case CmdCloseSession:
@@ -580,6 +597,28 @@ func (a *App) scrollbackKey(v *AgentView, binding string, ctx Context) bool {
 		sb.SetFoldAll(true)
 	case CmdExpandAll:
 		sb.SetFoldAll(false)
+	case CmdSearch:
+		query := ""
+		if sb.SearchQuery() != "" {
+			query = sb.SearchQuery()
+		}
+		a.overlay = SearchOverlay(query)
+	case CmdFindNext:
+		if sb.NextMatch(a.Theme) {
+			a.setNotice(sb.SearchStatus(), StatusInfo)
+		} else if sb.SearchQuery() != "" {
+			a.setNotice("no matches for: "+sb.SearchQuery(), StatusWarn)
+		} else {
+			a.setNotice("no active search — press ctrl+f to search", StatusInfo)
+		}
+	case CmdFindPrev:
+		if sb.PrevMatch(a.Theme) {
+			a.setNotice(sb.SearchStatus(), StatusInfo)
+		} else if sb.SearchQuery() != "" {
+			a.setNotice("no matches for: "+sb.SearchQuery(), StatusWarn)
+		} else {
+			a.setNotice("no active search — press ctrl+f to search", StatusInfo)
+		}
 	default:
 		return false
 	}
@@ -614,6 +653,14 @@ func (a *App) promptKey(p *Prompt, binding string, ctx Context) bool {
 		p.DeleteToStart()
 	case CmdDeleteToEnd:
 		p.DeleteToEnd()
+	case CmdYank:
+		p.Yank()
+	case CmdUndo:
+		p.Undo()
+	case CmdExpandPaste:
+		if p.ExpandPastes() {
+			a.setNotice("expanded paste", StatusInfo)
+		}
 	default:
 		return false
 	}
@@ -877,6 +924,49 @@ func decisionText(d ui.Decision) string {
 
 func (a *App) acceptOverlay() []Effect {
 	o := a.overlay
+	if o == nil {
+		return nil
+	}
+	if o.Kind == OverlaySearch {
+		query := ""
+		if o.Query() != nil {
+			query = o.Query().Value()
+		}
+		a.overlay = nil
+		if v := a.Current(); v != nil {
+			v.Focus = CtxScrollback
+			if query != "" {
+				v.Scroll.SetSearch(query, a.Theme)
+				if v.Scroll.MatchCount() > 0 {
+					a.setNotice(v.Scroll.SearchStatus()+" (n/N jumps)", StatusInfo)
+				} else {
+					a.setNotice("no matches for: "+query, StatusWarn)
+				}
+			} else {
+				v.Scroll.ClearSearch()
+			}
+		}
+		return nil
+	}
+	if o.Kind == OverlayRename {
+		newTitle := ""
+		if o.Query() != nil {
+			newTitle = strings.TrimSpace(o.Query().Value())
+		}
+		a.overlay = nil
+		if newTitle != "" {
+			if a.mode == ModeDashboard && len(a.views) > 0 {
+				idx := a.dashboard.Selected()
+				if idx >= 0 && idx < len(a.views) {
+					a.views[idx].SetTitle(newTitle)
+				}
+			} else if v := a.Current(); v != nil {
+				v.SetTitle(newTitle)
+			}
+			a.setNotice("session renamed to "+newTitle, StatusInfo)
+		}
+		return nil
+	}
 	item, ok := o.Selected()
 	if !ok {
 		return nil

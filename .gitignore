@@ -94,5 +94,10 @@ bench/results/
 *.blg
 bench/paper/workshop/*.pdf
 
+# Coverage reports, from ad-hoc runs rather than ./verify.sh — the gate does
+# not write these. lcov.info records absolute paths from the machine that
+# produced it, so a committed one describes somebody else's checkout.
+lcov.info
+
 # Third-party reference documentation kept locally for study, not redistributed.
 reference/

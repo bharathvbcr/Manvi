@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"manvi/ui"
@@ -48,6 +50,10 @@ type ApprovalCard struct {
 	// option alone.
 	picked map[int]bool
 
+	// Index and Total track position in the pending approval queue.
+	Index int
+	Total int
+
 	// cardRect is the whole card as last drawn, and optionRows and reasonRect
 	// are its controls, recorded against screen coordinates so a click is
 	// tested against what the operator is looking at rather than a layout
@@ -77,7 +83,7 @@ const (
 func NewApprovalCard(req ui.Request, reply chan ui.Decision) *ApprovalCard {
 	p := NewPrompt()
 	p.Placeholder = "why this is safe — recorded on the grant"
-	return &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now()}
+	return &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
 }
 
 // isQuestion reports whether this card asks the operator to choose rather than
@@ -93,11 +99,11 @@ func (c *ApprovalCard) options() []string {
 		return append(out, writeInOption)
 	}
 	if !c.Request.Grantable {
-		return []string{"acknowledge — this rule is never grantable"}
+		return []string{"acknowledge — this rule is never grantable [esc/enter]"}
 	}
 	return []string{
-		"deny — the operation is refused",
-		"allow once — record a scoped, reasoned grant",
+		"deny — the operation is refused [d/esc]",
+		"allow once — record a scoped, reasoned grant [a/enter]",
 	}
 }
 
@@ -311,6 +317,31 @@ func (c *ApprovalCard) content(th Theme, width int) (lines []render.Line, reason
 	}
 	blank()
 
+	// Syntax-colored diff preview for file writes and edits.
+	if c.Request.Diff != "" {
+		add(render.Styled("┌─ diff preview ", render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}))
+		diffLines := strings.Split(c.Request.Diff, "\n")
+		maxDiff := 8
+		for idx, dl := range diffLines {
+			if idx >= maxDiff {
+				add(render.Styled(fmt.Sprintf("│ … %d more diff lines", len(diffLines)-maxDiff), muted))
+				break
+			}
+			st := muted
+			switch {
+			case strings.HasPrefix(dl, "+") && len(dl) > 1 && dl[1] != '+':
+				st = render.Style{Fg: th.Success, Bg: th.BgOverlay}
+			case strings.HasPrefix(dl, "-") && len(dl) > 1 && dl[1] != '-':
+				st = render.Style{Fg: th.Danger, Bg: th.BgOverlay}
+			case strings.HasPrefix(dl, "@@"):
+				st = render.Style{Fg: th.Info, Bg: th.BgOverlay, Attrs: render.Bold}
+			}
+			add(render.Styled("│ ", muted).Append(render.TruncateWidth(dl, width-3, "…"), st))
+		}
+		add(render.Styled("└─", muted))
+		blank()
+	}
+
 	// Where the clickable choices begin. Draw records these rows so a pointer
 	// click is mapped against the layout the operator can see.
 	optStart = len(lines)
@@ -387,9 +418,15 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 	}
 
 	title := " " + g.Warn + " approval required "
+	if c.Total > 1 {
+		title = " " + g.Warn + " approval " + itoa(c.Index) + " of " + itoa(c.Total) + " "
+	}
 	waiting := " blocked " + shortDuration(time.Since(c.arrived)) + " "
 	if c.isQuestion() {
 		title = " ? the model is asking "
+		if c.Total > 1 {
+			title = " ? question " + itoa(c.Index) + " of " + itoa(c.Total) + " "
+		}
 		waiting = " waiting " + shortDuration(time.Since(c.arrived)) + " "
 	}
 
