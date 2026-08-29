@@ -178,10 +178,10 @@ An easier eleven-task suite exists in the same repository and is not the headlin
 An instrument that has not been checked is not evidence. Three suites run without a GPU and were green at the time of writing, on the same commit that produced the grid:
 
 - `selftest.py` — **19/19 tasks valid.** For every task it asserts three things: the shipped `setup/` tree *starts broken* (the hidden test fails on it), the shipped `reference/` solution *passes* the hidden test, and *tampering is caught* (a modified protected file fails verification). This is what rules out a task that is trivially satisfied, a task whose reference does not actually pass, and a task whose grade can be bought by editing the visible test.
-- `stress_test.py` — **106 assertions passed, 0 failed.** Adversarial tests of the harness itself against a mock model: sandbox escapes via `..`, absolute paths and symlinks; malformed and unknown tool calls; JSON-string arguments; multi-call turns; duplicate `finish`; loop-break windows; cap boundaries.
-- `test_stats.py` — **84 assertions passed.** Bootstrap intervals, paired \(\Delta\), the interaction statistic, and seed pinning.
+- `stress_test.py` — **189 assertions passed, 0 failed.** Adversarial tests of the harness itself against a mock model: sandbox escapes via `..`, absolute paths and symlinks; malformed and unknown tool calls; JSON-string arguments; multi-call turns; duplicate `finish`; loop-break windows; cap boundaries. The count grew from revision 2's 106 with the containment and account-refusal work that the v2 instrument required.
+- `test_stats.py` — **166 assertions passed.** Bootstrap intervals, paired \(\Delta\), the interaction statistic, seed pinning, the Šidák correction, the Monte-Carlo coverage audit, and the figure renderers.
 
-The repository `README.md` still describes this suite as 87 tests; the current count is 106. We report the count we ran.
+Counts are the ones we ran on the instrument commit, not the ones any `README` records; where a `README` disagrees it is stale and the suite output governs.
 
 ### 4.3 Models and serving
 
@@ -253,7 +253,7 @@ All eighteen cells report a single protocol block, zero starved rows, zero unser
 
 ## 5. Results
 
-All 1,440 v2 episodes completed. Every one of the eighteen cells reports zero starved (0-token first-turn) rows, zero unserved rows, a single protocol block, no `--force`, and no shared-GPU demotion; episode counts match each cell's `summary.json`. Table 3 reports pass rates, Table 4 the per-task matrix for the confirmatory contrast, Table 5 stop reasons and cost, Table 6 the two confirmatory hypotheses at the corrected level, Table 7 the exploratory ladder, Table 8 the interaction. Table 9 is the device envelope and Table 10 an off-grid single-flag contrast; neither is part of the 1,440.
+All 1,440 v2 episodes completed. Every one of the eighteen cells reports zero starved (0-token first-turn) rows, zero unserved rows, a single protocol block, no `--force`, and no shared-GPU demotion; episode counts match each cell's `summary.json`. Table 3 reports pass rates, Table 4 the per-task matrix for the confirmatory contrast, Table 5 stop reasons and cost, Table 6 the two confirmatory hypotheses at the corrected level, Table 7 the exploratory ladder, Table 8 the interaction. Table 9 is the device envelope and Table 10 an off-grid single-flag contrast; neither is part of the 1,440. Figures 3–6 plot the cell means, the per-seed paired deltas, and the interaction intervals under both pairing schemes; all four are rendered from `stats-v2.json` by `figures.py`, so a figure cannot disagree with a table.
 
 The superseded v1 grid is §5.8. Protocol-1 is §4.6. Neither is pooled here.
 
@@ -272,6 +272,10 @@ The superseded v1 grid is §5.8. Protocol-1 is §4.6. Neither is pooled here.
 | `no-groundfs` (\(n=5\)) | 95.0% | [90.0, 100.0] | 60.0% | [52.5, 67.5] |
 | `no-loopbreak` (\(n=5\)) | 95.0% | [85.0, 100.0] | 55.0% | [45.0, 62.5] |
 | `no-verifygate` (\(n=5\)) | 77.5% | [70.0, 85.0] | 52.5% | [45.0, 60.0] |
+
+![Pass rates by configuration](figures/pass_rates.generated.svg)
+
+**Figure 3.** v2 pass rate by configuration and model, with percentile bootstrap 95% intervals. Rendered from `stats-v2.json` by `figures.py`; a figure cannot disagree with a table. Note the interval widths: the three \(n=20\) cells are visibly tighter than the six \(n=5\) cells, which is the D2 deviation made visual.
 
 Qwen is the stronger arm on every configuration, so the arms are assigned empirically as \(\text{stronger} = \text{Qwen}\) (full mean 0.950), \(\text{weaker} = \text{Ornith}\) (0.606). Parameter count again gives the wrong ordering. No cell produced a degenerate zero-width interval, unlike v1.
 
@@ -325,6 +329,10 @@ Four confirmatory tests, so Šidák \(\alpha = 0.0127\) and the decision is made
 | H2 | Ornith | `full − no-outcap` | +0.075 | [\(-0.006\), +0.156] | **not supported** |
 | H2 | Qwen | `full − no-outcap` | +0.025 | [\(-0.031\), +0.081] | not detected |
 
+![Per-repeat paired deltas](figures/repeat_deltas.generated.svg)
+
+**Figure 4.** Paired \(\Delta\) (`full` \(-\) `baseline`) at each of the twenty pinned seeds, both arms. Every point is one repeat's difference of eight-task pass rates. The spread is the quantity the bootstrap resamples; it is what an interval on a single run cannot show.
+
 **H1 is supported on both arms.** This is the result the grid was built to obtain, and it is the claim revision 2 could not make: v1's Qwen contrast was \(+5.0\) points with an interval touching zero, on an instrument whose verify gate leaked hidden-test values into gate-on cells only.
 
 **H2 is not supported.** Ornith's interval excludes zero at 95% ([+0.013, +0.138]) and includes it at the corrected level. We report the corrected verdict, because that is the level the family was registered at, and note that this is exactly the case a multiplicity correction exists to catch. What the cell does establish is a sign reversal: v1 reported \(\Delta = -0.100\), interval \([-0.175, -0.025]\), excluding zero — a result that *contradicted* H2 and was stated in the registration as the reason H2 was worth testing. On the corrected instrument the same cell, same model, same tasks, same \(n\), gives \(+0.075\). The anomaly did not survive the fix.
@@ -362,6 +370,14 @@ We flag one consequence of the pairing scheme that a reader comparing tables wil
 | `no-groundfs` | \(-0.050\) | [\(-0.300\), +0.175] | \(-0.050\) | [\(-0.275\), +0.175] |
 | `no-checklist` | \(-0.100\) | [\(-0.300\), +0.075] | \(-0.100\) | [\(-0.275\), +0.050] |
 | `no-verifygate` | \(-0.150\) | [\(-0.325\), +0.000] | \(-0.150\) | [\(-0.375\), +0.075] |
+
+![Interaction intervals, unpaired](figures/interaction.generated.svg)
+
+**Figure 5.** Interaction \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) per ablation, unpaired resampling, 95% intervals. This is the block the manuscript cites.
+
+![Interaction intervals, seed-paired](figures/interaction_paired.generated.svg)
+
+**Figure 6.** The same statistic under the seed-paired scheme the protocol describes. Published side by side deliberately: the two procedures give different interval widths on the same data, and choosing one silently is the error this pair is meant to prevent.
 
 **Every interval includes zero under both schemes**, as every v1 interval did. H4 is not answered by this grid. We report both pairing schemes because they are different procedures and publishing one beside a power analysis computed under the other is a contradiction the section exists to expose; the manuscript cites the unpaired block.
 
@@ -518,14 +534,14 @@ Reproduction:
 
 ```bash
 python3 selftest.py                 # 19 tasks: start broken, accept reference, reject tampering
-python3 stress_test.py              # 106 adversarial harness tests, no GPU
-python3 test_stats.py               # 84 bootstrap / delta / seed tests, no GPU
+python3 stress_test.py              # 189 adversarial harness tests, no GPU
+python3 test_stats.py               # 166 bootstrap / delta / coverage / figure tests, no GPU
 python3 compare.py --tag v2 --json-out paper/stats-v2.json         # Tables 3-8
 python3 compare.py --tag v2,ext-cerebras                            # three-arm family (§5.7)
 python3 compare.py --tag hard --exclude gemini --json-out results/stats-hard.json   # v1 record (§5.8)
 ```
 
-Figures 3, 4 and 5 are written by `figures.py` and are pure functions of the stats JSON passed to them; regenerating them after a re-run is the only supported way to update them. **They have not yet been regenerated against `stats-v2.json` and still render the superseded v1 grid; they are not cited by any table in this revision.** Figures 1 and 2 (graphical abstract, control-flow diagram) are drawn by hand and carry no data values. The superseded `paper/figures/repeat_deltas.svg` and `pass_rates.svg` are retained only as a record of the protocol-1 era.
+Figures 3–6 are written by `figures.py` and are pure functions of the stats JSON passed to them; regenerating them after a re-run is the only supported way to update them. They are rendered from `stats-v2.json` and carry the source filename in the SVG. Figure 6, the seed-paired interaction, is new in this revision: v1's report had no `interaction_paired` block for `figures.py` to render. Figures 1 and 2 (graphical abstract, control-flow diagram) are drawn by hand and carry no data values. The superseded `paper/figures/repeat_deltas.svg` and `pass_rates.svg` are retained only as a record of the protocol-1 era.
 
 ## Acknowledgments
 

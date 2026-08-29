@@ -55,7 +55,7 @@ change.
 
 **Added.** Tamper detection and the three non-cheating mechanisms (§3.2); per-task
 characterization with `protect` sets (Table 2); instrument validation counts — selftest 19/19,
-stress 106/106, stats 84 (§4.2); an explicit interaction table and figure (Table 7, Figure 5);
+stress 106/106, stats 84 (§4.2, superseded by revision 3's 189 and 166); an explicit interaction table and figure (Table 7, Figure 5);
 a GH200 compute envelope from 78,027 samples over 43.8 h (Table 8); an explicit limitations
 section (§7); a corrections section (§8); citation verification status (Appendix B).
 

@@ -399,6 +399,7 @@ probe("all-crossing is stated as all-crossing",
 probe("an empty ladder says so",
       lambda: "No interaction" in figures.interaction_caption(REPORT_A, []))
 
+import re
 import tempfile as _tf
 
 
@@ -413,6 +414,46 @@ probe("the rendered SVG does not carry the old literal caption",
       lambda: "Every interval crosses zero" not in _render_interaction(REPORT_A))
 probe("the rendered SVG counts what it drew",
       lambda: "1 of 2 intervals excludes zero" in _render_interaction(REPORT_A))
+
+
+def _render_deltas(nrep):
+    """Render repeat_deltas for a grid with `nrep` repeats and return the SVG."""
+    rates_full = {str(r): (0.5 if r % 2 else 1.0) for r in range(nrep)}
+    rates_base = {str(r): 0.0 for r in range(nrep)}
+    report = {"cells": {"qwen3.8:27b|full": {"rates": rates_full},
+                        "qwen3.8:27b|baseline": {"rates": rates_base},
+                        "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {"rates": rates_full},
+                        "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {"rates": rates_base}}}
+    with _tf.TemporaryDirectory() as d:
+        path = os.path.join(d, "d.svg")
+        figures.repeat_deltas_svg(report, path, source="stats-v2.json")
+        return open(path).read()
+
+
+def _legend_ys(svg):
+    """y of every legend swatch: the <rect> elements that are not the canvas."""
+    return [float(m) for m in re.findall(r'<rect x="[-\d.]+" y="([\d.]+)" width="10"', svg)]
+
+
+probe("the delta figure no longer claims the superseded protocol in its title",
+      lambda: "frozen protocol" not in _render_deltas(20),
+      lambda: [l for l in _render_deltas(20).splitlines() if "Paired" in l])
+probe("the legend sits above the plot area, not inside it",
+      # plot top is y=70; a swatch at or below that overlaps the series, which
+      # is what happened at 20 repeats when the legend was pinned to the right.
+      lambda: _legend_ys(_render_deltas(20)) and
+              all(y + 10 <= 70 for y in _legend_ys(_render_deltas(20))),
+      lambda: _legend_ys(_render_deltas(20)))
+probe("the legend clears the plot at 5 repeats too",
+      lambda: all(y + 10 <= 70 for y in _legend_ys(_render_deltas(5))),
+      lambda: _legend_ys(_render_deltas(5)))
+probe("both series are named in the legend",
+      lambda: "qwen3.8" in _render_deltas(20) and "Ornith" in _render_deltas(20))
+probe("the model name is not truncated mid-token",
+      lambda: "Ornith-1.5-35B-A3B" in _render_deltas(20),
+      lambda: re.findall(r">(Ornith[^<]*)<", _render_deltas(20)))
+probe("the delta figure names the report it was rendered from",
+      lambda: "stats-v2.json" in _render_deltas(20))
 probe("a ladder that all crosses zero is rendered as such",
       lambda: "crosses zero" in _render_interaction(REPORT_B)
       or "cross zero" in _render_interaction(REPORT_B))

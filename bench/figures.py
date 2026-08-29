@@ -24,7 +24,7 @@ QWEN, ORNITH = "#2f6fed", "#c45c26"
 
 
 def _short(model):
-    return model.split("/")[-1].split(":")[0][:12]
+    return model.split("/")[-1].split(":")[0][:18]
 
 
 def _colour_for(model):
@@ -246,8 +246,8 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="340" viewBox="0 0 720 340" {FONT}>',
         '<rect width="720" height="340" fill="#fff"/>',
         f'<text x="360" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">'
-        f'Paired &#916; = full &#8722; {_esc(ablation)}, by repeat (frozen protocol)</text>',
-        f'<text x="360" y="44" text-anchor="middle" font-size="11" fill="#555">'
+        f'Paired &#916; = full &#8722; {_esc(ablation)}, by repeat</text>',
+        f'<text x="360" y="42" text-anchor="middle" font-size="11" fill="#555">'
         f'Each point is one pinned seed. {_source_note(source)}</text>',
         f'<line x1="{left}" y1="{zero}" x2="{right}" y2="{zero}" stroke="#222"/>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bot}" stroke="#222"/>',
@@ -275,9 +275,18 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         parts.append(f'<text x="{xs[i]:.1f}" y="318" text-anchor="middle">{i}</text>')
     parts.append(f'<text x="{(left+right)/2:.0f}" y="334" text-anchor="middle" fill="#555">repeat (pinned seed)</text>')
     parts.append("</g>")
-    for j, (name, _, colour) in enumerate(series):
-        parts.append(f'<rect x="{right-150}" y="{62+j*16}" width="10" height="10" fill="{colour}"/>')
-        parts.append(f'<text x="{right-134}" y="{71+j*16}" font-size="10" fill="#333">{_esc(name)}</text>')
+    # Legend sits in the clear band between the subtitle and the plot top, laid
+    # out horizontally and centred. It used to be pinned inside the plot at
+    # (right-150, 62), which collided with any series reaching the top-right --
+    # at 20 repeats the Ornith line runs straight through the label.
+    entries = [(name, colour) for name, _, colour in series]
+    widths = [16 + int(len(name) * 5.6) for name, _ in entries]
+    total = sum(widths) + 18 * (len(entries) - 1)
+    x = (left + right) / 2 - total / 2
+    for name, colour in entries:
+        parts.append(f'<rect x="{x:.0f}" y="52" width="10" height="10" fill="{colour}"/>')
+        parts.append(f'<text x="{x+16:.0f}" y="61" font-size="10" fill="#333">{_esc(name)}</text>')
+        x += 16 + len(name) * 5.6 + 18
     parts.append("</svg>")
     _write(path, parts)
 
