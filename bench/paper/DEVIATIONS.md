@@ -239,17 +239,32 @@ zero. The two arms lose signal in opposite directions:
   `pratt_parse` 0.80–1.00 across the nine cells — while `json_patch` spans
   0.20–1.00. Signal is unevenly distributed, not absent.
 - Ornith: `ast_transformer` is floored at 0/20 in `full`, and `json_patch` and
-  `ot_transform` sit at 19/20. Whether the floor holds across *every* Ornith
-  cell cannot be settled until P6 completes, and the same §11.2 check should be
-  run on this arm then — under §11's own definition it is the **weaker** arm,
-  so condition 2 does not formally apply to it, which is precisely the
-  asymmetry named above.
+  `ot_transform` sit at 19/20.
 
-The two arms therefore lose signal on different tasks: `ast_transformer` is
-qwen's third-most-variable task and may be Ornith's least informative. So
-per-arm deltas are weighted toward different tasks, and any cross-arm
-interaction (H4) compares two means whose informative mass sits in different
-places. **The per-task profile must be
+**Resolved — the floor does not hold across the arm.** With all nine Ornith
+cells complete, `ast_transformer` scores 0/20 in `full`, `baseline` and
+`no-outcap`, but **1/5 in `no-checklist` and 3/5 in `no-nativetools`**. It is
+not floored in every cell, and no other task is either. Running the same check
+in the saturation direction: no Ornith task is passed in every cell (`json_patch`
+comes closest and drops to 3/5 under `no-verifygate`).
+
+So **both arms clear §11.2's condition in both directions** — zero tasks
+saturated, zero floored, on either arm. The task set required no revision and
+none was made.
+
+This is the second time a degeneracy that looked absolute in one cell dissolved
+when the whole arm was examined; O1 was the first. The lesson is recorded rather
+than quietly dropped: **a task pinned at 0 or 20 in the `full` cell says nothing
+about whether it is informative in the experiment**, because the ablations are
+precisely the cells where it moves. Both O1's and O2's original framings
+generalised from `full` alone, and both were wrong to.
+
+The two arms still weight their deltas differently — `ast_transformer` carries
+real signal on qwen and almost none on Ornith, where it moves only under two of
+nine configurations — so any cross-arm interaction (H4) compares two means whose
+informative mass sits in different places. But that is a statement about
+*weighting*, not about dead tasks, and it is much weaker than what this entry
+originally claimed. **The per-task profile must be
 reported alongside H4**, not just the aggregate; the aggregate can agree while
 the profiles disagree, which is already visible between qwen and `ext-cerebras`.
 
