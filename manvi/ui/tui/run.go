@@ -55,6 +55,8 @@ type Runner struct {
 	stderrWriter *os.File
 	// done closes when the runner stops, retiring the stderr reader.
 	done chan struct{}
+
+	focused bool
 }
 
 // New builds a runner.
@@ -83,6 +85,7 @@ func New(cfg Config) (*Runner, error) {
 		actions: make(chan Action, 512),
 		cancels: map[string]context.CancelFunc{},
 		done:    make(chan struct{}),
+		focused: true,
 	}, nil
 }
 
@@ -151,7 +154,7 @@ const (
 // Run drives the UI until the operator quits or ctx is cancelled.
 func (r *Runner) Run(ctx context.Context) (err error) {
 	if err := r.term.Start(term.Options{
-		AltScreen: true, Mouse: true, Motion: true, BracketedPaste: true, Title: r.cfg.Title,
+		AltScreen: true, Mouse: true, Motion: true, BracketedPaste: true, Focus: true, Title: r.cfg.Title,
 	}); err != nil {
 		return err
 	}
@@ -326,6 +329,18 @@ func (r *Runner) clean(text string) string {
 // a string: the call sites are where this was missed in the first place, and a
 // new one added tomorrow would miss it again.
 func (r *Runner) apply(ctx context.Context, act Action) {
+	switch t := act.(type) {
+	case ActionFocus:
+		r.focused = t.In
+	case ActionApprovalRequest:
+		if !r.focused {
+			r.term.Notify("MANVI: Approval Required", t.Request.Rule+" ("+t.Request.SubjectLabel()+")")
+		}
+	case ActionTurnEnded:
+		if !r.focused {
+			r.term.Notify("MANVI: Turn Finished", "Session "+t.SessionID+" completed")
+		}
+	}
 	for _, e := range r.app.Dispatch(cleanAction(act, r.clean)) {
 		r.runEffect(ctx, e)
 	}
@@ -530,6 +545,9 @@ func actionsFor(ev input.Event) []Action {
 
 	case input.Resize:
 		return []Action{ActionResize{W: t.W, H: t.H}}
+
+	case input.Focus:
+		return []Action{ActionFocus{In: t.In}}
 
 	case input.Mouse:
 		switch t.Action {

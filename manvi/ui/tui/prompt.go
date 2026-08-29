@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -27,10 +28,34 @@ type Prompt struct {
 	// walking off the end of history restores it rather than clearing it.
 	draft string
 
+	// killRing holds text removed by delete-word / delete-line operations.
+	killRing []string
+	// undoStack holds previous buffer snapshots for Ctrl+Z / undo.
+	undoStack [][]rune
+	// pastes tracks collapsed paste chips and their original text.
+	pastes map[string]string
+
 	// Multiline makes Enter insert a newline instead of submitting.
 	Multiline bool
 	// Placeholder is shown when the buffer is empty.
 	Placeholder string
+}
+
+// Rotating placeholder tips for feature discovery.
+var rotatingTips = []string{
+	"ask, or / for commands",
+	"@ to attach file context",
+	"Tab switches to transcript • Ctrl+F searches",
+	"Ctrl+G opens dashboard",
+	"Ctrl+P opens command palette",
+}
+
+// Tip returns a discoverability hint rotating on session activity.
+func Tip(index int) string {
+	if len(rotatingTips) == 0 {
+		return "ask, or / for commands"
+	}
+	return rotatingTips[(index%len(rotatingTips)+len(rotatingTips))%len(rotatingTips)]
 }
 
 // NewPrompt builds an empty composer.
@@ -38,28 +63,131 @@ func NewPrompt() *Prompt {
 	return &Prompt{Placeholder: "ask, or / for commands"}
 }
 
-// Value is the current text.
-func (p *Prompt) Value() string { return string(p.runes) }
+// Value is the current text, with any collapsed paste chips expanded.
+func (p *Prompt) Value() string {
+	s := string(p.runes)
+	if len(p.pastes) > 0 {
+		for chip, full := range p.pastes {
+			s = strings.ReplaceAll(s, chip, full)
+		}
+	}
+	return s
+}
+
+// RawValue returns the literal runes in the buffer without expanding paste chips.
+func (p *Prompt) RawValue() string { return string(p.runes) }
+
+// InsertPaste inserts text, collapsing large pastes (>200 chars) into a compact chip.
+func (p *Prompt) InsertPaste(s string) string {
+	if len(s) <= 200 {
+		p.InsertString(s)
+		return ""
+	}
+	if p.pastes == nil {
+		p.pastes = make(map[string]string)
+	}
+	chip := fmt.Sprintf("[pasted %d chars]", len(s))
+	if _, exists := p.pastes[chip]; exists {
+		chip = fmt.Sprintf("[pasted %d chars #%d]", len(s), len(p.pastes)+1)
+	}
+	p.pastes[chip] = s
+	p.InsertString(chip)
+	return chip
+}
+
+// ExpandPastes expands all collapsed paste chips in the buffer into their raw text.
+func (p *Prompt) ExpandPastes() bool {
+	if len(p.pastes) == 0 {
+		return false
+	}
+	p.saveUndo()
+	s := string(p.runes)
+	expanded := false
+	for chip, full := range p.pastes {
+		if strings.Contains(s, chip) {
+			s = strings.ReplaceAll(s, chip, full)
+			expanded = true
+		}
+	}
+	if expanded {
+		p.runes = []rune(s)
+		p.cursor = len(p.runes)
+		p.pastes = nil
+		return true
+	}
+	return false
+}
 
 // Empty reports whether anything has been typed.
 func (p *Prompt) Empty() bool { return len(p.runes) == 0 }
 
 // SetValue replaces the buffer and puts the cursor at the end.
 func (p *Prompt) SetValue(s string) {
+	p.saveUndo()
 	p.runes = []rune(s)
 	p.cursor = len(p.runes)
 }
 
 // Clear empties the buffer and stops history browsing.
 func (p *Prompt) Clear() {
+	p.saveUndo()
 	p.runes = p.runes[:0]
 	p.cursor = 0
 	p.histIdx = len(p.history)
 	p.draft = ""
 }
 
+func (p *Prompt) saveUndo() {
+	if len(p.runes) == 0 && len(p.undoStack) == 0 {
+		return
+	}
+	snapshot := append([]rune(nil), p.runes...)
+	p.undoStack = append(p.undoStack, snapshot)
+	if len(p.undoStack) > 50 {
+		p.undoStack = p.undoStack[len(p.undoStack)-50:]
+	}
+}
+
+func (p *Prompt) pushKill(s string) {
+	if s == "" {
+		return
+	}
+	p.killRing = append(p.killRing, s)
+	if len(p.killRing) > 32 {
+		p.killRing = p.killRing[len(p.killRing)-32:]
+	}
+}
+
+// Undo restores the previous buffer state.
+func (p *Prompt) Undo() bool {
+	if len(p.undoStack) == 0 {
+		return false
+	}
+	prev := p.undoStack[len(p.undoStack)-1]
+	p.undoStack = p.undoStack[:len(p.undoStack)-1]
+	p.runes = append([]rune(nil), prev...)
+	if p.cursor > len(p.runes) {
+		p.cursor = len(p.runes)
+	}
+	return true
+}
+
+// Yank inserts the most recently killed text at the cursor.
+func (p *Prompt) Yank() bool {
+	if len(p.killRing) == 0 {
+		return false
+	}
+	text := p.killRing[len(p.killRing)-1]
+	p.InsertString(text)
+	return true
+}
+
+// KillRing exposes killed text fragments for testing.
+func (p *Prompt) KillRing() []string { return p.killRing }
+
 // Insert adds a rune at the cursor.
 func (p *Prompt) Insert(r rune) {
+	p.saveUndo()
 	p.runes = append(p.runes, 0)
 	copy(p.runes[p.cursor+1:], p.runes[p.cursor:])
 	p.runes[p.cursor] = r
@@ -68,6 +196,10 @@ func (p *Prompt) Insert(r rune) {
 
 // InsertString adds text at the cursor, which is how a paste lands.
 func (p *Prompt) InsertString(s string) {
+	if s == "" {
+		return
+	}
+	p.saveUndo()
 	rs := []rune(s)
 	p.runes = append(p.runes, rs...)
 	copy(p.runes[p.cursor+len(rs):], p.runes[p.cursor:len(p.runes)-len(rs)])
@@ -80,6 +212,7 @@ func (p *Prompt) Backspace() {
 	if p.cursor == 0 {
 		return
 	}
+	p.saveUndo()
 	p.runes = append(p.runes[:p.cursor-1], p.runes[p.cursor:]...)
 	p.cursor--
 }
@@ -89,12 +222,18 @@ func (p *Prompt) Delete() {
 	if p.cursor >= len(p.runes) {
 		return
 	}
+	p.saveUndo()
 	p.runes = append(p.runes[:p.cursor], p.runes[p.cursor+1:]...)
 }
 
 // DeleteWord removes the word before the cursor — Ctrl+W.
 func (p *Prompt) DeleteWord() {
 	start := p.wordStart()
+	if start == p.cursor {
+		return
+	}
+	p.saveUndo()
+	p.pushKill(string(p.runes[start:p.cursor]))
 	p.runes = append(p.runes[:start], p.runes[p.cursor:]...)
 	p.cursor = start
 }
@@ -102,6 +241,11 @@ func (p *Prompt) DeleteWord() {
 // DeleteToStart removes everything before the cursor on this line — Ctrl+U.
 func (p *Prompt) DeleteToStart() {
 	start := p.lineStart()
+	if start == p.cursor {
+		return
+	}
+	p.saveUndo()
+	p.pushKill(string(p.runes[start:p.cursor]))
 	p.runes = append(p.runes[:start], p.runes[p.cursor:]...)
 	p.cursor = start
 }
@@ -109,6 +253,11 @@ func (p *Prompt) DeleteToStart() {
 // DeleteToEnd removes everything after the cursor on this line — Ctrl+K.
 func (p *Prompt) DeleteToEnd() {
 	end := p.lineEnd()
+	if end == p.cursor {
+		return
+	}
+	p.saveUndo()
+	p.pushKill(string(p.runes[p.cursor:end]))
 	p.runes = append(p.runes[:p.cursor], p.runes[end:]...)
 }
 
@@ -179,10 +328,37 @@ func (p *Prompt) IndexAt(width, row, col int) int {
 	return len(p.runes)
 }
 
-// MoveRight steps forward one rune.
+// Autosuggestion returns the ghost text matching history for the current prefix.
+func (p *Prompt) Autosuggestion() string {
+	if len(p.runes) == 0 || p.histIdx < len(p.history) {
+		return ""
+	}
+	cur := string(p.runes)
+	for i := len(p.history) - 1; i >= 0; i-- {
+		h := p.history[i]
+		if strings.HasPrefix(h, cur) && len(h) > len(cur) {
+			return h[len(cur):]
+		}
+	}
+	return ""
+}
+
+// AcceptAutosuggestion accepts any visible history suggestion.
+func (p *Prompt) AcceptAutosuggestion() bool {
+	sug := p.Autosuggestion()
+	if sug == "" {
+		return false
+	}
+	p.InsertString(sug)
+	return true
+}
+
+// MoveRight steps forward one rune, or accepts ghost autosuggestion at line end.
 func (p *Prompt) MoveRight() {
 	if p.cursor < len(p.runes) {
 		p.cursor++
+	} else if p.cursor == len(p.runes) {
+		p.AcceptAutosuggestion()
 	}
 }
 
@@ -204,8 +380,14 @@ func (p *Prompt) MoveWordRight() {
 // MoveHome goes to the start of the current line.
 func (p *Prompt) MoveHome() { p.cursor = p.lineStart() }
 
-// MoveEnd goes to the end of the current line.
-func (p *Prompt) MoveEnd() { p.cursor = p.lineEnd() }
+// MoveEnd goes to the end of the current line, or accepts autosuggestion at line end.
+func (p *Prompt) MoveEnd() {
+	if p.cursor == p.lineEnd() && p.cursor == len(p.runes) && p.Autosuggestion() != "" {
+		p.AcceptAutosuggestion()
+		return
+	}
+	p.cursor = p.lineEnd()
+}
 
 // MoveStart goes to the start of the whole buffer.
 func (p *Prompt) MoveStart() { p.cursor = 0 }
@@ -414,6 +596,16 @@ func (p *Prompt) Draw(b *render.Buffer, r render.Rect, th Theme, focused bool) r
 	}
 	for i := 0; i < r.H && top+i < len(lines); i++ {
 		b.SetString(r.X, r.Y+i, lines[top+i], th.Base())
+	}
+	if focused && p.cursor == len(p.runes) {
+		if sug := p.Autosuggestion(); sug != "" && curRow >= top && curRow < top+r.H {
+			gy := r.Y + curRow - top
+			gx := r.X + curCol
+			if gx < r.Right() {
+				ghost := render.Styled(sug, th.Subtle())
+				ghost.Truncate(r.Right()-gx).Draw(b, gx, gy)
+			}
+		}
 	}
 	if !focused {
 		return render.Rect{}

@@ -194,6 +194,11 @@ func (v *AgentView) promptHeight(width int) int {
 	return v.Prompt.Height(inner, max)
 }
 
+// SetTitle updates the session title.
+func (v *AgentView) SetTitle(title string) {
+	v.Title = title
+}
+
 // Draw paints the whole session view and returns the caret position.
 //
 // fxOn gates the ambient motion: the composer border's sweep while a turn
@@ -206,6 +211,18 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		return render.Rect{}
 	}
 	b.Fill(r, ' ', th.Base())
+
+	// Rotate placeholder tip if empty
+	if v.Prompt.Empty() {
+		v.Prompt.Placeholder = Tip(tick / 50)
+	}
+
+	// Calculate stall duration during busy turns
+	if v.Status.Busy && !v.lastActivity.IsZero() {
+		v.Status.StallSecs = int(time.Since(v.lastActivity).Seconds())
+	} else {
+		v.Status.StallSecs = 0
+	}
 
 	area := r
 	statusRow, area := area.SplitTop(1)
@@ -245,6 +262,8 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	// in the stack so nothing can overlap it.
 	var caret render.Rect
 	if v.approval != nil && area.H > 6 {
+		v.approval.Index = 1
+		v.approval.Total = 1 + v.PendingApprovals()
 		h := v.approval.Height(th, area.W)
 		if h > area.H-2 {
 			h = area.H - 2
@@ -275,6 +294,9 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 	}
 	if !v.Scroll.Following() {
 		extra = append(extra, "scrolled back — G for latest")
+	}
+	if v.Scroll.SearchQuery() != "" {
+		extra = append(extra, v.Scroll.SearchStatus()+" (n/N)")
 	}
 	DrawShortcutBar(b, hintRow, th, ctx, extra...)
 	return caret

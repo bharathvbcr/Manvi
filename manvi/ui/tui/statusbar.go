@@ -31,6 +31,16 @@ type Status struct {
 	OutputTokens int
 	Steps        int
 
+	// ContextUsed and ContextMax track context-window pressure.
+	ContextUsed int
+	ContextMax  int
+
+	// Git status context.
+	GitBranch string
+	GitAhead  int
+	GitBehind int
+	GitDirty  int
+
 	// Weakened names safety flags moved off their defaults.
 	Weakened []string
 	// Degraded names checks that could not run in this session.
@@ -41,6 +51,7 @@ type Status struct {
 
 	Busy       bool
 	BusyLabel  string
+	StallSecs  int
 	Sessions   int
 	Interrupts int
 }
@@ -110,16 +121,22 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 		if label == "" {
 			label = "working"
 		}
+		if st.StallSecs >= 15 {
+			label = label + " (no progress " + itoa(st.StallSecs) + "s)"
+		}
 		busyFg := th.Accent
+		if st.StallSecs >= 30 {
+			busyFg = th.Warning
+		}
 		if fxOn {
 			// The label breathes, and one that outgrows its strip scrolls
 			// rather than truncating — a phase like "waiting on the gate,
 			// retrying" is the difference between a stall and a slow step.
-			busyFg = th.Accent.Blend(th.Fg, fx.Pulse(tick, 16)*0.45)
-			label = fx.Marquee(label, 28, tick)
+			busyFg = busyFg.Blend(th.Fg, fx.Pulse(tick, 16)*0.45)
+			label = fx.Marquee(label, 32, tick)
 		}
 		line = line.Append(render.Spinner(g.Spinner, tick)+" ",
-			render.Style{Fg: th.Accent, Bg: bg, Attrs: render.Bold}).
+			render.Style{Fg: busyFg, Bg: bg, Attrs: render.Bold}).
 			Append(label+" ", render.Style{Fg: busyFg, Bg: bg})
 	} else {
 		line = line.Append(g.Pass+" ready ", render.Style{Fg: th.FgSubtle, Bg: bg})
@@ -155,14 +172,51 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 		line = line.Append(" ", base)
 	}
 
-	// Right-hand cluster: counters, and while a turn runs, the recent
-	// throughput as a sparkline. A flat line and a busy one look different at
-	// a glance, which is the whole question an operator asks of this row.
+	if st.GitBranch != "" {
+		gitLine := " " + g.Bullet + " " + st.GitBranch
+		if st.GitAhead > 0 {
+			gitLine += "↑" + itoa(st.GitAhead)
+		}
+		if st.GitBehind > 0 {
+			gitLine += "↓" + itoa(st.GitBehind)
+		}
+		if st.GitDirty > 0 {
+			gitLine += " ●" + itoa(st.GitDirty)
+		}
+		line = line.Append(gitLine+" ", render.Style{Fg: th.AccentDim, Bg: bg})
+	}
+
+	// Right-hand cluster: counters, context pressure gauge, and throughput sparkline.
 	right := render.Line{}
 	if st.Busy && len(spark) > 2 && r.W >= 110 {
 		right = render.Sparkline(spark, render.Style{Fg: th.AccentDim, Bg: bg}).
 			Append("  ", base).
 			Concat(right)
+	}
+	if st.ContextMax > 0 && st.ContextUsed > 0 {
+		pct := (st.ContextUsed * 100) / st.ContextMax
+		if pct > 100 {
+			pct = 100
+		}
+		filled := (pct * 5) / 100
+		blocks := ""
+		for i := 0; i < 5; i++ {
+			if i < filled {
+				blocks += "▓"
+			} else {
+				blocks += "░"
+			}
+		}
+		if !th.Unicode {
+			blocks = strings.Repeat("#", filled) + strings.Repeat("-", 5-filled)
+		}
+		gaugeStyle := render.Style{Fg: th.Success, Bg: bg}
+		if pct >= 90 {
+			gaugeStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
+		} else if pct >= 70 {
+			gaugeStyle = render.Style{Fg: th.Warning, Bg: bg}
+		}
+		right = right.Append("ctx "+blocks+" "+itoa(pct)+"%  ", gaugeStyle)
 	}
 	if st.Steps > 0 {
 		right = right.Append("step "+itoa(st.Steps)+"  ", base)
@@ -219,16 +273,31 @@ func DrawShortcutBar(b *render.Buffer, r render.Rect, th Theme, ctx Context, ext
 	for _, s := range extra {
 		line = line.Append(" "+s, render.Style{Fg: th.FgMuted, Bg: bg, Attrs: render.Italic})
 	}
-	for _, bd := range hintsFor(ctx) {
+	truncated := false
+	hints := hintsFor(ctx)
+	for i, bd := range hints {
 		if bd.Label == "" || len(bd.Keys) == 0 {
 			continue
 		}
+		itemLine := render.Line{}
 		if line.Width() > 0 {
-			line = line.Append("  "+th.Glyphs().VBar+" ", sep)
+			itemLine = itemLine.Append("  "+th.Glyphs().VBar+" ", sep)
 		}
-		line = line.Append(bd.Keys[0], keyStyle).Append(" "+bd.Label, labelStyle)
-		if line.Width() > r.W {
+		itemLine = itemLine.Append(bd.Keys[0], keyStyle).Append(" "+bd.Label, labelStyle)
+		if line.Width()+itemLine.Width() > r.W-12 && i < len(hints)-1 {
+			truncated = true
 			break
+		}
+		line = line.Concat(itemLine)
+		if line.Width() > r.W {
+			truncated = true
+			break
+		}
+	}
+	if truncated && r.W > 25 {
+		more := render.Styled(" … ", sep).Append("F1", keyStyle).Append(" more", labelStyle)
+		if line.Width()+more.Width() <= r.W {
+			line = line.Concat(more)
 		}
 	}
 	line.Truncate(r.W).Draw(b, r.X, r.Y)
@@ -304,6 +373,9 @@ func DrawSessionTabBar(b *render.Buffer, r render.Rect, th Theme, views []*Agent
 		}
 
 		title := itoa(i+1) + ":" + v.ID
+		if v.Title != "" {
+			title = itoa(i+1) + ":" + v.Title
+		}
 		tabLine := render.Styled(" ", tabStyle).
 			Append(badge, badgeStyle).
 			Append(title+" ", tabStyle)

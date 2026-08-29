@@ -29,8 +29,11 @@ type Request struct {
 	// file and approving the execution of a command are not the same decision,
 	// and the prompt must not be able to confuse them.
 	Subject string
-	Reason  string
-	TaskID  string
+	// Reason is the justification or question context.
+	Reason string
+	// Diff, when non-empty, carries the unified diff of a file write/edit for preview.
+	Diff   string
+	TaskID string
 	// Grantable is false for a rule no authority can clear. The prompt still
 	// shows it, because a human being told what happened is useful even when
 	// there is nothing to decide — but it is shown as a refusal, not a question.

@@ -47,11 +47,12 @@ type Terminal struct {
 
 	profile render.Profile
 	unicode bool
-	// mouse, motion, and paste record what was enabled, so teardown disables
+	// mouse, motion, paste, and focus record what was enabled, so teardown disables
 	// exactly what setup turned on.
 	mouse  bool
 	motion bool
 	paste  bool
+	focus  bool
 }
 
 // New builds a terminal over the given files, normally os.Stdin and os.Stdout.
@@ -128,6 +129,8 @@ type Options struct {
 	// indistinguishable from the user pressing Enter — which sends a
 	// half-pasted prompt to a model.
 	BracketedPaste bool
+	// Focus enables focus in/out reporting (CSI ?1004h).
+	Focus bool
 	// Title, when set, is written to the window title and restored on exit.
 	Title string
 }
@@ -178,6 +181,10 @@ func (t *Terminal) Start(opts Options) error {
 		b.WriteString("\x1b[?2004h")
 		t.paste = true
 	}
+	if opts.Focus {
+		b.WriteString("\x1b[?1004h")
+		t.focus = true
+	}
 	b.WriteString("\x1b[?25l") // hide the cursor; the painter places it
 	if _, err := io.WriteString(t.out, b.String()); err != nil {
 		// A failure here leaves the terminal raw with the UI never drawn, which
@@ -188,6 +195,32 @@ func (t *Terminal) Start(opts Options) error {
 
 	t.watchSignals()
 	return nil
+}
+
+// Bell emits a terminal alert.
+func (t *Terminal) Bell() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.started && t.out != nil {
+		_, _ = io.WriteString(t.out, "\a")
+	}
+}
+
+// Notify emits a desktop notification via OSC 777 and BEL.
+func (t *Terminal) Notify(title, body string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.started && t.out != nil {
+		cleanTitle := sanitizeTitle(title)
+		cleanBody := sanitizeTitle(body)
+		_, _ = io.WriteString(t.out, "\x1b]777;notify;"+cleanTitle+";"+cleanBody+"\x1b\\\a")
+	}
 }
 
 // Stop restores everything Start changed. It is idempotent and safe to call
@@ -209,6 +242,10 @@ func (t *Terminal) restoreLocked() error {
 	}
 
 	var b strings.Builder
+	if t.focus {
+		b.WriteString("\x1b[?1004l")
+		t.focus = false
+	}
 	if t.paste {
 		b.WriteString("\x1b[?2004l")
 	}

@@ -51,6 +51,8 @@ type (
 	}
 	// ActionTick advances animations.
 	ActionTick struct{}
+	// ActionFocus reports terminal window focus in/out events.
+	ActionFocus struct{ In bool }
 )
 
 // Harness actions.
@@ -97,6 +99,7 @@ func (ActionRelease) action()         {}
 func (ActionMotion) action()          {}
 func (ActionScroll) action()          {}
 func (ActionTick) action()            {}
+func (ActionFocus) action()           {}
 func (ActionEvent) action()           {}
 func (ActionApprovalRequest) action() {}
 func (ActionTurnStarted) action()     {}

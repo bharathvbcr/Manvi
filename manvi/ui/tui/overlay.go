@@ -28,6 +28,10 @@ const (
 	// OverlaySettings is the harness settings picker: every flag, its value,
 	// where the value came from, and whether it can be moved from here.
 	OverlaySettings
+	// OverlaySearch is the transcript search bar.
+	OverlaySearch
+	// OverlayRename is the session rename modal.
+	OverlayRename
 )
 
 // Item is one row in an overlay.
@@ -424,4 +428,28 @@ func SettingsOverlay(specs []SettingSpec) *Overlay {
 		items = append(items, Item{Label: label, Detail: detail, Value: s.Key, Status: status})
 	}
 	return NewOverlay(OverlaySettings, "settings", items, true)
+}
+
+// SearchOverlay builds the transcript search prompt.
+func SearchOverlay(initial string) *Overlay {
+	o := NewOverlay(OverlaySearch, "search transcript", nil, true)
+	if o.query != nil {
+		o.query.Placeholder = "type query • enter jumps • n/N moves • esc closes"
+		if initial != "" {
+			o.query.SetValue(initial)
+		}
+	}
+	return o
+}
+
+// RenameOverlay builds the session rename prompt.
+func RenameOverlay(current string) *Overlay {
+	o := NewOverlay(OverlayRename, "rename session", nil, true)
+	if o.query != nil {
+		o.query.Placeholder = "new session title"
+		if current != "" {
+			o.query.SetValue(current)
+		}
+	}
+	return o
 }
