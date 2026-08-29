@@ -46,6 +46,8 @@ The rest of the paper is organized as follows. Section 2 situates the work again
 
 Lee et al. define a harness as the code that determines what to store, retrieve, and present to a frozen model, and they treat harness engineering as a search problem rather than a one-off prompt edit [1]. Their outer loop is itself agentic: a proposer with filesystem access to every prior candidate's source, scores, and execution traces. The inner objects of that search, in the coding domain, are complete agent loops evaluated on Terminal-Bench 2.0, a suite of long-horizon interactive terminal tasks whose tests score final container state rather than the agent's command trace [2]. Merrill et al. built that benchmark, in part, because existing benchmarks "either do not measure real-world tasks, or are not sufficiently difficult to meaningfully measure frontier models" [2] — and because the same model under OpenHands [3], Mini-SWE-Agent in the SWE-agent line [4], Claude Code, or their own Terminus scaffold is not the same agent. Terminus 2 is deliberately thin: one headless terminal tool and Bash [2]. Terminus-KIRA, which Meta-Harness uses as a coding-domain parent, replaces in-context JSON parsing with native tool calling and adds a 30 kB output cap and a multi-perspective completion checklist [1], [5]. The Meta-Harness discovery on top of that parent is environment bootstrap: one compound shell command before the first model turn [1, §B.3]. Three of our seven flags — `nativetools`, `outcap`, `envboot` — are direct implementations of components from that lineage, which is why we can ablate them rather than re-derive them.
 
+The harness has since become an object of study in its own right, and a 2026 review catalogues the shift as *externalization*: capabilities earlier expected of the weights are moved into memory stores, skills, protocols, and the harness itself [20]. Two systems automate its construction on different objectives — AutoHarness synthesizes a code wrapper that prevents an agent from attempting environment-prohibited actions [21], while Self-Harness has the harness revise itself [22]. **Self-Harness states our central empirical finding as its motivating premise**: "Because different models exhibit distinct behaviors, effective harness design is inherently model-specific" [22]. That is asserted there to justify per-model search. We arrive at it from the other direction and measure it: on our suite the single largest component effect, native file tools at \(\Delta = +0.144\), appears on one of three models and is close to free on the other two (§5.7). A claim used as a design premise and a claim supported by a paired ablation are different objects, and the second is what this paper contributes.
+
 The finding that matters for this paper is not the search algorithm. It is the empirical fact that, for a fixed base model, published harnesses on Terminal-Bench 2.0 already differ by more than twenty points [1, Table 7]. OpenHands on Haiku 4.5 is 13.9%; the Meta-Harness discovery is 37.6%. Claude Code on Opus 4.6 is 58.0%; ForgeCode is 81.8%. Once those gaps exist, a component nobody A/B-tested is a guess, even if the full loop looks strong.
 
 ### 2.2 Scaffolds, pipelines, and the disagreement about where value lives
@@ -53,6 +55,8 @@ The finding that matters for this paper is not the search algorithm. It is the e
 SWE-agent's thesis is that the loop is where the value is: a purpose-built agent–computer interface, with tools shaped for a language model rather than for a human shell user, is what makes the model effective [4]. Agentless is the null hypothesis made concrete — Xia et al. replaced the agent entirely with a fixed three-phase pipeline and reported competitive SWE-bench resolution at lower cost, arguing that autonomy per se was not carrying the result [8], [9]. AutoCodeRover sits between them, keeping an agentic loop but locating its gains in code-aware retrieval over an AST representation [10]. Magentic-One goes the other direction, adding a generalist orchestrator over specialized agents [19]. Liu et al.'s survey catalogues the resulting proliferation [11].
 
 Our position is methodological rather than partisan. All four are claims about which component pays, and none was measured by holding the rest of the system fixed and flipping one flag. That is the measurement we build the instrument to make. Meta-Harness asks which harness an outer agent can *discover*; we ask which declared components, implemented once, *move pass rate* when switched. The two questions compose: a switchable inner loop is the right substrate for an outer search, because a proposer that rewrites a monolith cannot tell which edit paid.
+
+Tool use in particular is not a uniform competence. Shen et al. find that smaller models are weak tool learners, with performance limitations in query understanding, tool invocation, and result summarization that are specifically pronounced below frontier scale, and decompose the role across several models to recover it [23]. Our `nativetools` result is the harness-side counterpart: withdrawing the native calling path and requiring the model to emit calls the loop must parse costs one arm \(+0.144\) and the other two nothing measurable (§5.7). Which models can afford that withdrawal is a property of the model, not of the harness.
 
 ### 2.3 Verification, self-repair, and the gate
 
@@ -70,7 +74,9 @@ The output cap and the loud context-exhaustion stop are not conveniences. Liu et
 
 ### 2.6 Statistics and reproducibility
 
-Pass rates on small suites with sampling temperature are noisy, and a point estimate over a handful of episodes is not a result. Worse, identical prompts need not produce identical outputs even with temperature and decoding parameters fixed; Nicholson's repeated-run experiments quantify that drift directly [15]. Reproducibility of the surrounding artifact is its own research problem, as CORE-Bench makes explicit by turning computational reproducibility into an agent benchmark [18]. We respond on three fronts: a seed pinned per repeat index so any cell can be re-run, percentile bootstrap confidence intervals throughout following the standard treatment [6], and a `protocol` object serialized into every result file so a cell's stop conditions travel with its numbers.
+Pass rates on small suites with sampling temperature are noisy, and a point estimate over a handful of episodes is not a result. Worse, identical prompts need not produce identical outputs even with temperature and decoding parameters fixed; Nicholson's repeated-run experiments quantify that drift directly [15]. Reproducibility of the surrounding artifact is its own research problem, as CORE-Bench makes explicit by turning computational reproducibility into an agent benchmark [18]. We respond on four fronts: a seed pinned per repeat index so any cell can be re-run, percentile bootstrap confidence intervals throughout following the standard treatment [6], a `protocol` object serialized into every result file so a cell's stop conditions travel with its numbers, and **preregistration** of the design, the hypothesis directions, and the analysis before the first episode.
+
+The last is uncommon in this literature and is borrowed from an adjacent one. Ernst and Baldassarre argue for registered reports in software engineering precisely because reviewing a protocol before results exist removes the degrees of freedom that outcome-dependent analysis introduces [24]. We do not submit a registered report, but we do fix the directions, the estimator, and the multiplicity correction in a document written before any v2 episode ran (`paper/preregistration.md`), and we record every departure from it with what had been observed when the departure was decided (`paper/DEVIATIONS.md`). Two of this paper's results depend on that discipline being real rather than nominal: H2 clears an uncorrected 95% bar and fails the registered one (§5.4), and our own largest deviation is recorded as **not** blind (§4.4). An analysis choice made after seeing data is reported as exploratory regardless of how it was arrived at, which is why §5.8 is labelled post-hoc.
 
 ### 2.7 Scope
 
@@ -654,6 +660,16 @@ The component list and the 30 kB output cap follow the coding-harness setting st
 
 [19] A. Fourney, G. Bansal, H. Mozannar, C. Tan, E. Salinas, E. Zhu, F. Niedtner, G. Proebsting, G. Bassman, J. Gerrits, J. Alber, P. Chang, R. Loynd, R. West, V. Dibia, A. Awadallah, E. Kamar, R. Hosn, and S. Amershi, "Magentic-One: A Generalist Multi-Agent System for Solving Complex Tasks," 2024. arXiv:2411.04468. doi:10.48550/arXiv.2411.04468.
 
+[20] C. Zhou, H. Chai, W. Chen, Z. Guo, R. Shan, Y. Song, *et al.*, "Externalization in LLM Agents: A Unified Review of Memory, Skills, Protocols and Harness Engineering," 2026. arXiv:2604.08224.
+
+[21] X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W. Lehrach, and K. P. Murphy, "AutoHarness: improving LLM agents by automatically synthesizing a code harness," 2026. arXiv:2603.03329.
+
+[22] H. Zhang, S. Zhang, K. Li, C. Zhang, Y. Chen, Y. Zhang, L. Bai, and S. Hu, "Self-Harness: Harnesses That Improve Themselves," 2026. arXiv:2606.09498.
+
+[23] W. Shen, C. Li, H. Chen, M. Yan, X. Quan, H. Chen, J. Zhang, and F. Huang, "Small LLMs Are Weak Tool Learners: A Multi-LLM Agent," 2024. arXiv:2401.07324.
+
+[24] N. A. Ernst and M. T. Baldassarre, "Registered reports in software engineering," *Empirical Software Engineering*, vol. 28, no. 2, art. 55, 2023. doi:10.1007/s10664-022-10277-5.
+
 ## Appendix A. Serving and protocol
 
 Hard-grid models in Tables 3–8 were `qwen3.8:27b` and `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0` under Ollama 0.32.14 on the GH200 (aarch64, CUDA 13, 97,871 MiB HBM, 900 W power cap, 1,980 MHz max SM clock).
@@ -668,7 +684,9 @@ The verify-gate case (§5.7) used `qwen3.8:27b-mlx` and Ornith Q8 on Apple silic
 
 ## Appendix B. Citation verification status
 
-Citations were checked against the academic providers reachable from this workstation (arXiv and OpenAlex, via the local ScholarLM MCP server). Status is recorded so that a reader can see which identifiers were machine-confirmed and which were carried over from the author's notes. All twelve original references and all seven added in this revision now resolve, except [5], which has no independent identifier.
+Citations were checked against the academic providers reachable from this workstation (arXiv and OpenAlex, via the local ScholarLM/WisDev MCP server). Status is recorded so that a reader can see which identifiers were machine-confirmed and which were carried over from the author's notes. **All twenty-four references resolve except [5]**, which has no independent identifier.
+
+The five references added in revision 3 were found through the MCP server's search tool but **verified outside it**: that deployment's `paperLookup` returns `no provider found`, so each arXiv entry was confirmed against its abstract page and [24] against its Crossref record. This matters for the same reason §5.9 does — a retrieval tool that returns a plausible record is not a tool that has confirmed one, and the server's evidence mode labels every retrieved abstract a "supporting source" without testing entailment.
 
 | Ref | Identifier | Status |
 |---|---|---|
@@ -678,6 +696,11 @@ Citations were checked against the academic providers reachable from this workst
 | [4] SWE-agent | arXiv:2405.15793 | Verified — title, 7 authors, 2024, DOI `10.48550/arxiv.2405.15793`. |
 | [5] Terminus-KIRA | — (no independent identifier) | **Not resolved.** Cited as it appears in [1]; a secondary citation, not one we checked at source. The 30 kB cap in §3.1 rests on it. |
 | [6] DiCiccio & Efron | doi:10.1214/ss/1032280214 | Verified — *Statistical Science*, 1996. |
+| [20] Externalization review | arXiv:2604.08224 | Verified — title and first six authors confirmed at the arXiv abstract page, submitted 9 April 2026. |
+| [21] AutoHarness | arXiv:2603.03329 | Verified — title and all six authors (X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W. Lehrach, K. P. Murphy), submitted 10 February 2026. |
+| [22] Self-Harness | arXiv:2606.09498 | **Verified.** Title, all eight authors, submitted 8 June 2026. The sentence quoted in §2.1 — "Because different models exhibit distinct behaviors, effective harness design is inherently model-specific" — was confirmed verbatim against the abstract. |
+| [23] Small LLMs Are Weak Tool Learners | arXiv:2401.07324 | Verified — title and all eight authors, submitted 14 January 2024. Abstract confirms the claim attributed in §2.2 that performance limitations in tool use are pronounced for smaller models. |
+| [24] Ernst & Baldassarre | doi:10.1007/s10664-022-10277-5 | Verified via Crossref — *Empirical Software Engineering*, vol. 28, no. 2, art. 55, 2023; authors N. A. Ernst and M. T. Baldassarre. |
 | [7] Liu et al. | doi:10.1162/tacl_a_00638 | Verified — TACL 2024; preprint arXiv:2307.03172 also resolved. |
 | [8] Agentless | arXiv:2407.01489 | Verified — 2024. |
 | [9] Xia et al. (published) | doi:10.1145/3715754 | Verified — 2025. Same work as [8]; both records cited because the identifiers differ. |
