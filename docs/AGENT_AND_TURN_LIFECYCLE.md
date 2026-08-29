@@ -155,7 +155,7 @@ choice, not a pipeline the harness enforces.
 
 ```mermaid
 flowchart TB
-    Parent["Parent Turn<br/>(agent loop, holds the lease)<br/>fan-out bounded by agents.max_fanout"]
+    Parent["Parent Turn<br/>(agent loop, holds the lease)<br/>fan-out bounded by agents.max_fanout,<br/>narrowed to where children are placed"]
 
     Research["research<br/>read-only, MCP allowed"]
     Planner["planner<br/>read-only, MCP allowed"]

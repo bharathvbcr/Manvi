@@ -139,12 +139,39 @@ sequenceDiagram
                 end
                 AL->>Log: Append tool result record
             end
-        else No tool calls (completion evidence)
-            AL->>AL: Serial stop-check waterfall → terminate
+        else No tool calls (apparent completion)
+            AL->>AL: Terminal checkpoint — harness verifies what the turn wrote
+            alt Check failed and bounces remain
+                AL->>Log: Append harness message carrying the findings
+                Note over AL: Turn stays open for one more step
+            else Passed, skipped, or bounce budget spent
+                AL->>AL: Close, carrying the verdict on the outcome
+            end
         end
     end
     AL-->>AL: Turn summary & report
 ```
+
+### The turn ends on a check, not on a claim
+
+A turn that stops emitting tool calls looks finished. Whether it *is* finished is
+decided by the harness, not by the model saying so:
+
+- **The check runs itself.** A mutating turn is verified against the paths its own
+  handlers reported writing — not against `git diff`, which also carries whatever
+  was uncommitted before the turn began. A turn that changed nothing is skipped,
+  and the skip is recorded, so "not owed" stays distinguishable from "did not run".
+- **A failure is handed back once.** The findings are appended as a message from
+  the harness — marked as such, so no face or resumed session shows them as the
+  operator's words — and the turn takes another step. Bounced at most twice; past
+  that it closes with `BouncesExhausted` set rather than riding the step ceiling.
+- **A check that could not run is never a pass.** Missing verifier, unreadable
+  diff, no file list: each reports `degraded`, which the run summary renders as a
+  warning rather than a completion.
+- **A second opinion is bought on evidence.** Only a turn that has already been
+  told and failed again — or one the loop measures as going in circles — dispatches
+  an adversarial reviewer, which answers against a fixed contract where a missing
+  or self-contradicting verdict counts as *not* passed.
 
 ### Tool Execution Pipeline
 
@@ -217,6 +244,19 @@ stateDiagram-v2
 
 Leases live in SQLite, so mutual exclusion survives process death. Interrupting a run releases held leases using an uncancelled context — orphaned locks are impossible by construction.
 
+Two bounds decide how wide a fan-out may go, and both answer to the hardware rather
+than to intent:
+
+- **A local session delegates nothing.** Not narrowly — at all. Children would
+  contend with the parent for the same weights and the same memory, and the
+  tightest a fan-out cap can express is "one child at a time", which is still a
+  team. The escape is to point the session at a provider with the headroom.
+- **The width follows where the children actually run.** A frontier parent placing
+  builders on a local model resolves to the frontier width, and then dispatches all
+  of them onto one device. The bound is now narrowed by the children's own
+  placement, and the narrowing is reported — an operator who set 8 and got 2 is
+  told which rule decided it.
+
 ```mermaid
 flowchart TB
     Planner["Planner — read-only, fast model<br/>explores codebase, drafts tasks"] --> Orchestrator["Orchestrator — high-reasoning<br/>decomposes work, acquires leases"]
@@ -263,6 +303,42 @@ flowchart TD
 ```
 
 Coverage has three semantic states — **covered**, **uncovered** (ran tests, line never executed), and **unmeasured** (no profile provided). Unmeasured is a warning; it can never masquerade as covered.
+
+---
+
+## Documentation Lookup
+
+The prompt used to tell every run to "verify current documentation" while nothing
+here could fetch anything. `manvi/fetch` is the capability behind that instruction,
+built on the standard library alone — this module still has **zero dependencies**.
+
+It is in-process on purpose. An out-of-process fetcher (an MCP server, a sidecar, a
+hosted crawler) can be gated on the *call* and not on where it then goes; an egress
+policy is only enforceable where the socket is opened.
+
+**Off by default.** With no `MANVI_FETCH_HOSTS` the tool is not on the surface at
+all — not a tool that refuses, which would cost schema tokens and teach a model to
+retry. The allowlist is read from the environment and never from settings: those
+load from a file inside the repository, and the rung protecting it is disabled
+under a relaxed posture.
+
+```bash
+MANVI_FETCH_HOSTS="go.dev,pkg.go.dev,docs.python.org" manvi
+```
+
+| Refused, on every request and every redirect hop | Reason |
+|---|---|
+| Anything but `https` | A position that can rewrite plaintext can write the model's instructions |
+| Hosts off the allowlist | Whole-label matching: `go.dev` admits `pkg.go.dev`, not `notgo.dev` |
+| Loopback, private, link-local, ULA, multicast, CGNAT, reserved | `169.254.169.254` is cloud metadata; `127.0.0.1` is whatever else runs on the box |
+| Non-default ports, URLs carrying credentials, non-text bodies | The allowlist names hosts, not endpoints |
+
+Addresses are re-resolved and re-checked inside the dialer, which then connects to
+the vetted literal rather than the name — resolving once and handing the name to
+the transport is the hole DNS rebinding aims at. Responses are bounded (20s, 2 MiB,
+5 hops) and wrapped in `BEGIN/END UNTRUSTED WEB CONTENT` markers stating that the
+enclosed text is evidence, not instruction. That framing is steering; the boundary
+is still the gate every subsequent tool call passes.
 
 ---
 

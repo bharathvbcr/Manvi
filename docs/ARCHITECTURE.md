@@ -140,7 +140,8 @@ classDiagram
 - **`manvi/grants`**: In-memory and persisted override ledger with expiration and authority scoping.
 - **`manvi/llm`**: Normalized interface for Anthropic, Gemini, xAI Grok, and local models with `AssistantProvenance.ReplayState` tracking.
 - **`manvi/tools`**: Guarded tool execution pipeline with pre-execution validation and post-execution qualification.
-- **`manvi/session`**: Append-only session event store with verification that all model-visible context is persisted.
+- **`manvi/session`**: Append-only session event store with verification that all model-visible context is persisted. Records who authored each model-visible message, so a verdict the harness handed back is never rendered as the operator's words.
+- **`manvi/fetch`**: The only outbound network path. Standard library only; refuses plaintext, unlisted hosts and every private address range, re-checking on each redirect hop and pinning the vetted address into the dialer against DNS rebinding. Off unless an operator sets an allowlist.
 - **`manvi/ui`**: Damage-diffed terminal painter, Unicode width calculation, raw mode handling, and Elm-loop TUI.
 
 ---
@@ -274,6 +275,7 @@ Dev_Harness/
 │   │   ├── devmap/            # Code graph IPC client
 │   │   └── store/             # Task lease IPC client
 │   ├── devcouncil/            # Native tool implementations & TUI escalation
+│   ├── fetch/                 # Bounded https documentation lookup & egress policy
 │   ├── flags/                 # Settings catalog, origin tracking & postures
 │   ├── gate/                  # Composite policy & override gate
 │   ├── grants/                # Human & agent grant ledger
