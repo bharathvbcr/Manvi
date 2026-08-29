@@ -1,0 +1,2942 @@
+{
+  "cells": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.25,
+        "1": 0.375,
+        "2": 0.375,
+        "3": 0.5,
+        "4": 0.25,
+        "5": 0.375,
+        "6": 0.5,
+        "7": 0.5,
+        "8": 0.375,
+        "9": 0.5,
+        "10": 0.75,
+        "11": 0.25,
+        "12": 0.5,
+        "13": 0.5,
+        "14": 0.5,
+        "15": 0.25,
+        "16": 0.25,
+        "17": 0.125,
+        "18": 0.5,
+        "19": 0.375
+      },
+      "mean": 0.4,
+      "lo": 0.3375,
+      "hi": 0.4625,
+      "finished": 66,
+      "finish_rate": 0.4125
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.25,
+        "1": 0.75,
+        "2": 0.5,
+        "3": 0.75,
+        "4": 0.75,
+        "5": 0.5,
+        "6": 0.5,
+        "7": 0.75,
+        "8": 0.5,
+        "9": 0.5,
+        "10": 0.875,
+        "11": 0.625,
+        "12": 0.375,
+        "13": 0.75,
+        "14": 0.625,
+        "15": 0.625,
+        "16": 0.5,
+        "17": 0.625,
+        "18": 0.75,
+        "19": 0.625
+      },
+      "mean": 0.60625,
+      "lo": 0.5375,
+      "hi": 0.66875,
+      "finished": 80,
+      "finish_rate": 0.5
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.625,
+        "1": 0.625,
+        "2": 0.75,
+        "3": 0.625,
+        "4": 0.75
+      },
+      "mean": 0.675,
+      "lo": 0.625,
+      "hi": 0.725,
+      "finished": 24,
+      "finish_rate": 0.6
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.5,
+        "1": 0.625,
+        "2": 0.75,
+        "3": 0.5,
+        "4": 0.5
+      },
+      "mean": 0.575,
+      "lo": 0.5,
+      "hi": 0.675,
+      "finished": 17,
+      "finish_rate": 0.425
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.625,
+        "1": 0.5,
+        "2": 0.75,
+        "3": 0.5,
+        "4": 0.625
+      },
+      "mean": 0.6,
+      "lo": 0.525,
+      "hi": 0.675,
+      "finished": 20,
+      "finish_rate": 0.5
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.5,
+        "1": 0.625,
+        "2": 0.375,
+        "3": 0.625,
+        "4": 0.625
+      },
+      "mean": 0.55,
+      "lo": 0.45,
+      "hi": 0.625,
+      "finished": 20,
+      "finish_rate": 0.5
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.375,
+        "1": 0.625,
+        "2": 0.375,
+        "3": 0.75,
+        "4": 0.625
+      },
+      "mean": 0.55,
+      "lo": 0.425,
+      "hi": 0.675,
+      "finished": 19,
+      "finish_rate": 0.475
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.375,
+        "1": 0.5,
+        "2": 0.5,
+        "3": 0.625,
+        "4": 0.5,
+        "5": 0.625,
+        "6": 0.375,
+        "7": 0.5,
+        "8": 0.625,
+        "9": 0.5,
+        "10": 0.625,
+        "11": 0.625,
+        "12": 0.5,
+        "13": 0.625,
+        "14": 0.5,
+        "15": 0.625,
+        "16": 0.625,
+        "17": 0.375,
+        "18": 0.5,
+        "19": 0.5
+      },
+      "mean": 0.53125,
+      "lo": 0.49375,
+      "hi": 0.56875,
+      "finished": 79,
+      "finish_rate": 0.49375
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.375,
+        "1": 0.625,
+        "2": 0.625,
+        "3": 0.5,
+        "4": 0.5
+      },
+      "mean": 0.525,
+      "lo": 0.45,
+      "hi": 0.6,
+      "finished": 27,
+      "finish_rate": 0.675
+    },
+    "qwen3.8:27b|baseline": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.5,
+        "2": 0.875,
+        "3": 0.75,
+        "4": 0.75,
+        "5": 1.0,
+        "6": 0.75,
+        "7": 0.625,
+        "8": 0.75,
+        "9": 0.75,
+        "10": 0.875,
+        "11": 0.75,
+        "12": 0.75,
+        "13": 0.75,
+        "14": 0.625,
+        "15": 0.875,
+        "16": 1.0,
+        "17": 0.75,
+        "18": 1.0,
+        "19": 0.75
+      },
+      "mean": 0.79375,
+      "lo": 0.7375,
+      "hi": 0.85,
+      "finished": 152,
+      "finish_rate": 0.95
+    },
+    "qwen3.8:27b|full": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0,
+        "5": 1.0,
+        "6": 1.0,
+        "7": 0.875,
+        "8": 1.0,
+        "9": 0.75,
+        "10": 1.0,
+        "11": 0.625,
+        "12": 1.0,
+        "13": 0.875,
+        "14": 1.0,
+        "15": 1.0,
+        "16": 0.875,
+        "17": 1.0,
+        "18": 1.0,
+        "19": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.9,
+      "hi": 0.9875,
+      "finished": 147,
+      "finish_rate": 0.91875
+    },
+    "qwen3.8:27b|no-checklist": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.875,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.975,
+      "lo": 0.925,
+      "hi": 1.0,
+      "finished": 39,
+      "finish_rate": 0.975
+    },
+    "qwen3.8:27b|no-envboot": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 0.875,
+        "4": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.9,
+      "hi": 1.0,
+      "finished": 36,
+      "finish_rate": 0.9
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.875,
+        "2": 0.875,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.9,
+      "hi": 1.0,
+      "finished": 36,
+      "finish_rate": 0.9
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.75,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.95,
+      "lo": 0.85,
+      "hi": 1.0,
+      "finished": 37,
+      "finish_rate": 0.925
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 1.0,
+        "4": 1.0
+      },
+      "mean": 0.975,
+      "lo": 0.925,
+      "hi": 1.0,
+      "finished": 36,
+      "finish_rate": 0.9
+    },
+    "qwen3.8:27b|no-outcap": {
+      "role": "mid",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 0.875,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0,
+        "5": 1.0,
+        "6": 0.875,
+        "7": 0.875,
+        "8": 1.0,
+        "9": 0.75,
+        "10": 1.0,
+        "11": 0.875,
+        "12": 0.875,
+        "13": 1.0,
+        "14": 0.875,
+        "15": 1.0,
+        "16": 0.875,
+        "17": 1.0,
+        "18": 0.75,
+        "19": 0.875
+      },
+      "mean": 0.925,
+      "lo": 0.8875,
+      "hi": 0.95625,
+      "finished": 144,
+      "finish_rate": 0.9
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "role": "mid",
+      "n_repeats": 5,
+      "n": 40,
+      "n_usable": 40,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.75,
+        "2": 0.625,
+        "3": 0.875,
+        "4": 0.875
+      },
+      "mean": 0.775,
+      "lo": 0.7,
+      "hi": 0.85,
+      "finished": 37,
+      "finish_rate": 0.925
+    }
+  },
+  "deltas": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "role": "mid",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.20625,
+      "lo": 0.13125,
+      "hi": 0.28125
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": -0.175,
+      "hi": 0.225
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.075,
+      "lo": -0.075,
+      "hi": 0.225
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": -0.075,
+      "lo": -0.25,
+      "hi": 0.1
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.05,
+      "lo": -0.1,
+      "hi": 0.125
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "role": "mid",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.075,
+      "lo": 0.0125,
+      "hi": 0.1375
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.0,
+      "lo": -0.225,
+      "hi": 0.225
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.05,
+      "lo": -0.05,
+      "hi": 0.125
+    },
+    "qwen3.8:27b|baseline": {
+      "role": "mid",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.15625,
+      "lo": 0.0875,
+      "hi": 0.225
+    },
+    "qwen3.8:27b|no-envboot": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.05,
+      "lo": 0.0,
+      "hi": 0.1
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.225,
+      "lo": 0.15,
+      "hi": 0.3
+    },
+    "qwen3.8:27b|no-checklist": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": 0.0,
+      "hi": 0.075
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.05,
+      "lo": 0.0,
+      "hi": 0.15
+    },
+    "qwen3.8:27b|no-outcap": {
+      "role": "mid",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.025,
+      "lo": -0.01875,
+      "hi": 0.06875
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.05,
+      "lo": 0.0,
+      "hi": 0.1
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "role": "mid",
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "mean": 0.025,
+      "lo": 0.0,
+      "hi": 0.075
+    }
+  },
+  "interaction": {
+    "_arms": {
+      "weaker": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+      "stronger": "qwen3.8:27b",
+      "weaker_full_mean": 0.60625,
+      "stronger_full_mean": 0.95
+    },
+    "baseline": {
+      "delta_weak_minus_strong": 0.04999999999999999,
+      "lo": -0.04999999999999999,
+      "hi": 0.15,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-envboot": {
+      "delta_weak_minus_strong": -0.025,
+      "lo": -0.22499999999999998,
+      "hi": 0.175,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-verifygate": {
+      "delta_weak_minus_strong": -0.15000000000000002,
+      "lo": -0.325,
+      "hi": 0.0,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-checklist": {
+      "delta_weak_minus_strong": -0.1,
+      "lo": -0.3,
+      "hi": 0.07500000000000001,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-loopbreak": {
+      "delta_weak_minus_strong": 0.0,
+      "lo": -0.175,
+      "hi": 0.125,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-outcap": {
+      "delta_weak_minus_strong": 0.049999999999999996,
+      "lo": -0.031249999999999993,
+      "hi": 0.125,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-groundfs": {
+      "delta_weak_minus_strong": -0.05,
+      "lo": -0.3,
+      "hi": 0.175,
+      "detectable": false,
+      "underpowered": true
+    },
+    "no-nativetools": {
+      "delta_weak_minus_strong": 0.025,
+      "lo": -0.07500000000000001,
+      "hi": 0.125,
+      "detectable": false,
+      "underpowered": true
+    }
+  },
+  "per_task": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 17,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 13,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 13,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 4,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 13,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 1,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 20
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 18,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 13,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 19,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 6,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 19,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 13,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 9,
+        "n": 20
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "ast_transformer": {
+        "passed": 1,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 1,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 4,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 3,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 3,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 2,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 4,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 2,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 4,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 3,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 0,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 2,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 2,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 3,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 3,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 2,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 2,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "ast_transformer": {
+        "passed": 3,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 4,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 2,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 2,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 3,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 3,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 0,
+        "n": 5
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 17,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 16,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 3,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 17,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 8,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 4,
+        "n": 20
+      }
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "ast_transformer": {
+        "passed": 0,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 2,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 3,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 2,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 4,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 2,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|baseline": {
+      "ast_transformer": {
+        "passed": 16,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 9,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 12,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 15,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 18,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 20,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 17,
+        "n": 20
+      }
+    },
+    "qwen3.8:27b|full": {
+      "ast_transformer": {
+        "passed": 17,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 19,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 18,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 19,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 20,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 19,
+        "n": 20
+      }
+    },
+    "qwen3.8:27b|no-checklist": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-envboot": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 4,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 4,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 4,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 4,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 5,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "ast_transformer": {
+        "passed": 5,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 5,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 5,
+        "n": 5
+      }
+    },
+    "qwen3.8:27b|no-outcap": {
+      "ast_transformer": {
+        "passed": 13,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 19,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 16,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 20,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 20,
+        "n": 20
+      }
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "ast_transformer": {
+        "passed": 3,
+        "n": 5
+      },
+      "cache_invalidation_dist": {
+        "passed": 5,
+        "n": 5
+      },
+      "concurrency_race": {
+        "passed": 4,
+        "n": 5
+      },
+      "json_patch": {
+        "passed": 1,
+        "n": 5
+      },
+      "nfa_match": {
+        "passed": 5,
+        "n": 5
+      },
+      "ot_transform": {
+        "passed": 5,
+        "n": 5
+      },
+      "pratt_parse": {
+        "passed": 5,
+        "n": 5
+      },
+      "state_machine_fuzz": {
+        "passed": 3,
+        "n": 5
+      }
+    }
+  },
+  "stops": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "no_tool_call": 26,
+      "finished": 66,
+      "error:ModelError": 38,
+      "context_exhausted": 30
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "context_exhausted": 48,
+      "error:ModelError": 20,
+      "finished": 80,
+      "no_tool_call": 12
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "context_exhausted": 8,
+      "finished": 24,
+      "no_tool_call": 4,
+      "error:ModelError": 4
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "no_tool_call": 8,
+      "context_exhausted": 10,
+      "finished": 17,
+      "error:ModelError": 5
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "no_tool_call": 3,
+      "finished": 20,
+      "error:ModelError": 9,
+      "context_exhausted": 8
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "no_tool_call": 7,
+      "finished": 20,
+      "error:ModelError": 3,
+      "context_exhausted": 10
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "context_exhausted": 8,
+      "finished": 19,
+      "error:ModelError": 9,
+      "no_tool_call": 4
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "context_exhausted": 26,
+      "error:ModelError": 38,
+      "finished": 79,
+      "no_tool_call": 17
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "no_tool_call": 3,
+      "finished": 27,
+      "context_exhausted": 7,
+      "error:ModelError": 3
+    },
+    "qwen3.8:27b|baseline": {
+      "finished": 152,
+      "context_exhausted": 5,
+      "error:ModelError": 3
+    },
+    "qwen3.8:27b|full": {
+      "finished": 147,
+      "context_exhausted": 4,
+      "no_tool_call": 8,
+      "error:ModelError": 1
+    },
+    "qwen3.8:27b|no-checklist": {
+      "finished": 39,
+      "no_tool_call": 1
+    },
+    "qwen3.8:27b|no-envboot": {
+      "finished": 36,
+      "context_exhausted": 4
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "finished": 36,
+      "context_exhausted": 3,
+      "no_tool_call": 1
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "finished": 37,
+      "context_exhausted": 3
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "finished": 36,
+      "context_exhausted": 3,
+      "no_tool_call": 1
+    },
+    "qwen3.8:27b|no-outcap": {
+      "finished": 144,
+      "no_tool_call": 6,
+      "context_exhausted": 9,
+      "wall_timeout": 1
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "context_exhausted": 3,
+      "finished": 37
+    }
+  },
+  "provenance": {
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__baseline__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__full__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-checklist__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-envboot__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-groundfs__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-loopbreak__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-nativetools__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-outcap__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+      "dirs": [
+        "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-verifygate__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|baseline": {
+      "dirs": [
+        "qwen3.8_27b__baseline__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|full": {
+      "dirs": [
+        "qwen3.8_27b__full__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-checklist": {
+      "dirs": [
+        "qwen3.8_27b__no-checklist__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-envboot": {
+      "dirs": [
+        "qwen3.8_27b__no-envboot__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-groundfs": {
+      "dirs": [
+        "qwen3.8_27b__no-groundfs__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-loopbreak": {
+      "dirs": [
+        "qwen3.8_27b__no-loopbreak__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-nativetools": {
+      "dirs": [
+        "qwen3.8_27b__no-nativetools__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-outcap": {
+      "dirs": [
+        "qwen3.8_27b__no-outcap__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "qwen3.8:27b|no-verifygate": {
+      "dirs": [
+        "qwen3.8_27b__no-verifygate__v2"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 32768,
+        "num_predict": 4096,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": null,
+        "concurrency": 1,
+        "env_node": "192-222-56-85",
+        "env_gpu": "NVIDIA GH200 480GB",
+        "env_ollama_version": "0.33.0",
+        "env_platform": "Linux/aarch64",
+        "env_api_provider": null,
+        "env_api_endpoint": null,
+        "env_client_node": "192-222-56-85"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    }
+  },
+  "interaction_paired": {
+    "_arms": {
+      "weaker": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+      "stronger": "qwen3.8:27b",
+      "weaker_full_mean": 0.60625,
+      "stronger_full_mean": 0.95,
+      "capability_gap": 0.34375,
+      "tied": false,
+      "n_models_ranked": 2,
+      "ignored": []
+    },
+    "_scheme": "One bootstrap index vector per resample, applied to both arms: repeat r pins seed r in both, so the arms are paired by seed. The `interaction` section above uses independent index streams per arm, which is what the published intervals were computed with and what this file therefore keeps reproducing. Where the arms correlate, the unpaired interval is the wider one and the paired one is correct.",
+    "baseline": {
+      "delta_weak_minus_strong": 0.04999999999999999,
+      "lo": -0.04375000000000001,
+      "hi": 0.14375,
+      "detectable": false,
+      "underpowered": true,
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "pair_correlation": 0.11322318747994733,
+      "paired_width": 0.1875,
+      "unpaired_width": 0.19999999999999998,
+      "width_ratio_unpaired_over_paired": 1.0666666666666667
+    },
+    "no-envboot": {
+      "delta_weak_minus_strong": -0.025,
+      "lo": -0.25,
+      "hi": 0.175,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": -0.0890870806374748,
+      "paired_width": 0.425,
+      "unpaired_width": 0.39999999999999997,
+      "width_ratio_unpaired_over_paired": 0.9411764705882353
+    },
+    "no-verifygate": {
+      "delta_weak_minus_strong": -0.15000000000000002,
+      "lo": -0.375,
+      "hi": 0.07500000000000001,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": -0.8669214468630105,
+      "paired_width": 0.45,
+      "unpaired_width": 0.325,
+      "width_ratio_unpaired_over_paired": 0.7222222222222222
+    },
+    "no-checklist": {
+      "delta_weak_minus_strong": -0.1,
+      "lo": -0.275,
+      "hi": 0.05,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": 0.4923659639173309,
+      "paired_width": 0.325,
+      "unpaired_width": 0.375,
+      "width_ratio_unpaired_over_paired": 1.1538461538461537
+    },
+    "no-loopbreak": {
+      "delta_weak_minus_strong": 0.0,
+      "lo": -0.15000000000000002,
+      "hi": 0.125,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": 0.24999999999999994,
+      "paired_width": 0.275,
+      "unpaired_width": 0.3,
+      "width_ratio_unpaired_over_paired": 1.0909090909090908
+    },
+    "no-outcap": {
+      "delta_weak_minus_strong": 0.049999999999999996,
+      "lo": -0.01875,
+      "hi": 0.11875,
+      "detectable": false,
+      "underpowered": true,
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "pair_correlation": 0.24457016078399024,
+      "paired_width": 0.13749999999999998,
+      "unpaired_width": 0.15625,
+      "width_ratio_unpaired_over_paired": 1.1363636363636365
+    },
+    "no-groundfs": {
+      "delta_weak_minus_strong": -0.05,
+      "lo": -0.275,
+      "hi": 0.17500000000000002,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": 2.160768631136242e-17,
+      "paired_width": 0.45000000000000007,
+      "unpaired_width": 0.475,
+      "width_ratio_unpaired_over_paired": 1.0555555555555554
+    },
+    "no-nativetools": {
+      "delta_weak_minus_strong": 0.025,
+      "lo": -0.05,
+      "hi": 0.1,
+      "detectable": false,
+      "underpowered": true,
+      "n": 5,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "dropped_reps": [],
+      "weak_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "strong_reps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "pair_correlation": 0.37499999999999994,
+      "paired_width": 0.15000000000000002,
+      "unpaired_width": 0.2,
+      "width_ratio_unpaired_over_paired": 1.3333333333333333
+    }
+  },
+  "degenerate_intervals": {},
+  "confirmatory": {
+    "H1|hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+      "hypothesis": "H1",
+      "claim": "full harness beats all-off baseline",
+      "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+      "ablation": "baseline",
+      "n": 20,
+      "delta": 0.20625,
+      "lo": 0.1125,
+      "hi": 0.3,
+      "level": 98.72585449014338,
+      "sidak_alpha": 0.012741455098566168,
+      "n_tests": 4,
+      "ci95": [
+        0.13125,
+        0.28125
+      ],
+      "supported": true,
+      "clears_95_only": false
+    },
+    "H1|qwen3.8:27b|baseline": {
+      "hypothesis": "H1",
+      "claim": "full harness beats all-off baseline",
+      "model": "qwen3.8:27b",
+      "ablation": "baseline",
+      "n": 20,
+      "delta": 0.15625,
+      "lo": 0.06875,
+      "hi": 0.24375,
+      "level": 98.72585449014338,
+      "sidak_alpha": 0.012741455098566168,
+      "n_tests": 4,
+      "ci95": [
+        0.0875,
+        0.225
+      ],
+      "supported": true,
+      "clears_95_only": false
+    },
+    "H2|hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+      "hypothesis": "H2",
+      "claim": "the output cap does not hurt",
+      "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+      "ablation": "no-outcap",
+      "n": 20,
+      "delta": 0.075,
+      "lo": -0.00625,
+      "hi": 0.15625,
+      "level": 98.72585449014338,
+      "sidak_alpha": 0.012741455098566168,
+      "n_tests": 4,
+      "ci95": [
+        0.0125,
+        0.1375
+      ],
+      "supported": false,
+      "clears_95_only": true
+    },
+    "H2|qwen3.8:27b|no-outcap": {
+      "hypothesis": "H2",
+      "claim": "the output cap does not hurt",
+      "model": "qwen3.8:27b",
+      "ablation": "no-outcap",
+      "n": 20,
+      "delta": 0.025,
+      "lo": -0.03125,
+      "hi": 0.08125,
+      "level": 98.72585449014338,
+      "sidak_alpha": 0.012741455098566168,
+      "n_tests": 4,
+      "ci95": [
+        -0.01875,
+        0.06875
+      ],
+      "supported": false,
+      "clears_95_only": false
+    }
+  },
+  "arm_protocol_drift": [],
+  "unserved_cells": {},
+  "coverage": {
+    "nominal": 0.95,
+    "measured": 0.823,
+    "mc_stderr": 0.005397610582470729,
+    "zero_width_fraction": 0.0018,
+    "trials": 5000,
+    "n_repeats": 5,
+    "n_tasks": 8,
+    "p": 0.60625,
+    "n_boot": 10000,
+    "rng_seed": 20260824,
+    "distinct_samples": 395,
+    "note": "Monte-Carlo coverage of the percentile bootstrap against a known Binomial truth at this grid's cell shape. Measured well below nominal is the known small-n deficiency of the percentile method, not an implementation fault -- but an interval reported as 95% that covers less than that is a reader-facing error either way.",
+    "p_source": "weaker arm's full-harness mean",
+    "cell_mean_range": [
+      0.4,
+      0.975
+    ]
+  },
+  "multiplicity": {
+    "n_intervals": 16,
+    "n_excluding_zero": 4,
+    "nominal_per_interval_coverage": 0.95,
+    "fwer_at_nominal_coverage": 0.5598733313482347,
+    "sidak_alpha_for_fwer": 0.0032006977101884937,
+    "fwer_target": 0.05,
+    "correction_applied": false,
+    "note": "No multiplicity correction is applied to the reported intervals; these are the numbers needed to read them. With this many intervals, one excluding zero is the expected outcome under a global null, not a finding.",
+    "measured_per_interval_coverage": 0.823,
+    "fwer_at_measured_coverage": 0.9557006490323319
+  }
+}

@@ -1,26 +1,49 @@
 # Paper draft
 
-Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 2, 22 August 2026**.
+Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 3, 29 August 2026**.
 
 Three protocol documents sit beside it and are not part of the manuscript:
 [`preregistration.md`](preregistration.md), the registered v2 grid (two locally
 served models); [`DEVIATIONS.md`](DEVIATIONS.md), which records every departure
 from it under §12 along with what had been observed when each was decided; and
-[`extension-cerebras.md`](extension-cerebras.md), a separately
-registered extension adding API-served `gpt-oss-120b` and `gemma-4-31b` arms.
-The extension runs under its own tag and does not touch the frozen grid or the
-registered design; it carries its own pilot gates and its own suitability
-assessment, including what an arm with no sole tenancy and a best-effort seed
-costs the analysis.
+[`extension-cerebras.md`](extension-cerebras.md), a separately registered
+extension adding the API-served `gpt-oss-120b` arm. [`run_v2.sh`](run_v2.sh) is
+the six-phase driver that ran the grid, committed verbatim.
 
-Figures are in `figures/`. The draft is NeurIPS-style IMRAD. Headline metrics are the **frozen**
-720-episode hard grid (Tables 3–8), re-derived for this revision from `stats-hard.json` and the
-per-episode `summary.json` rows. Protocol-1's 160-episode full-versus-baseline contrast
-(Qwen 75%→97.5%, \(\Delta +22.5\) pp) is archived and noted, not the headline. The draft does
-**not** claim \(\Delta_{\text{weak}} > \Delta_{\text{strong}}\); all eight interaction intervals
-include zero (Table 7).
+Headline metrics are the **registered 1,440-episode v2 grid** (tag `v2`), drawn
+from [`stats-v2.json`](stats-v2.json). The frozen 720-episode v1 grid that
+revision 2 headlined is **superseded** and appears only in §5.8 as an
+instrument-failure record; the two are never pooled.
 
-## Revision 2
+## Revision 3
+
+**The headline is replaced, not corrected.** An audit found five defects in the
+v1 instrument — most consequentially a verify gate that returned hidden-test
+output including expected values on a failed `finish`, in gate-on cells only
+(77 of 760 episodes), and five hard tasks that accepted demonstrably wrong
+solutions. An audit of all 760 v1 episodes and 3,879 file-writing tool calls
+found **zero** exploiting episodes, so v1's numbers were not produced by
+cheating — but they were measured on an instrument that could not have detected
+it. The response is a new registered experiment, not a corrected table.
+
+**What the v2 grid shows.** H1 is **supported on both arms** at the Šidák-corrected
+98.7% level: Qwen 79.4% → 95.0% (Δ +0.156, [+0.069, +0.244]) and Ornith
+40.0% → 60.6% (Δ +0.206, [+0.113, +0.300]). H2 is **not supported** — removing
+the output cap leaves the weaker arm at [−0.006, +0.156], reversing the sign of
+v1's Δ −0.100 whose interval had excluded zero. All eight interaction intervals
+include zero again, under both pairing schemes.
+
+**What it cannot show.** Deviation D2 left the six exploratory cells at n=5,
+where a 5,000-trial Monte-Carlo audit puts the percentile bootstrap's coverage
+at **82.3%** against a nominal 95%. Four of sixteen ladder intervals exclude
+zero, and a global null produces at least one **96%** of the time at that
+coverage. Table 7 is reported as uninformative except for Qwen `no-verifygate`
+(Δ +0.225, [+0.150, +0.300]).
+
+**Known gap.** Figures 3–5 have **not** been regenerated against `stats-v2.json`
+and still render the superseded v1 grid. No table in revision 3 cites them.
+
+## Revision 2 (superseded)
 
 **Corrected.** §5.7's verify-gate contrast previously read 12/12 vs 7/12 (\(p=0.037\)) and
 13/13 vs 7/13 (\(p=0.015\)). Both counted `qwen3.8_27b-mlx__full__rep` — which holds three
