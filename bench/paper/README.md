@@ -11,9 +11,15 @@ extension adding the API-served `gpt-oss-120b` arm. [`run_v2.sh`](run_v2.sh) is
 the six-phase driver that ran the grid, committed verbatim.
 
 Headline metrics are the **registered 1,440-episode v2 grid** (tag `v2`), drawn
-from [`stats-v2.json`](stats-v2.json). The frozen 720-episode v1 grid that
-revision 2 headlined is **superseded** and appears only in §5.8 as an
-instrument-failure record; the two are never pooled.
+from [`stats-v2.json`](stats-v2.json). The third arm, API-served
+`gpt-oss-120b`, is a further 1,440 episodes under tag `ext-cerebras`
+([`stats-ext-cerebras.json`](stats-ext-cerebras.json)) and is reported in §5.7.
+The frozen 720-episode v1 grid that revision 2 headlined is **superseded** and
+appears only in §5.9 as an instrument-failure record; none of the three are
+pooled for pass rates.
+
+Build the PDF and TeX with [`build_pdf.sh`](build_pdf.sh) (pandoc + xelatex).
+The markdown is the source of truth; the script works on a copy.
 
 ## Revision 3
 
@@ -33,12 +39,20 @@ the output cap leaves the weaker arm at [−0.006, +0.156], reversing the sign o
 v1's Δ −0.100 whose interval had excluded zero. All eight interaction intervals
 include zero again, under both pairing schemes.
 
-**What it cannot show.** Deviation D2 left the six exploratory cells at n=5,
-where a 5,000-trial Monte-Carlo audit puts the percentile bootstrap's coverage
-at **82.3%** against a nominal 95%. Four of sixteen ladder intervals exclude
-zero, and a global null produces at least one **96%** of the time at that
-coverage. Table 7 is reported as uninformative except for Qwen `no-verifygate`
-(Δ +0.225, [+0.150, +0.300]).
+**Where the component-level evidence lives.** Deviation D2 left the *local*
+exploratory cells at n=5, where measured bootstrap coverage is **82.3%**; four
+of sixteen intervals exclude zero against a null expectation of 2.83, so Table 7
+is reported as uninformative except for Qwen `no-verifygate`. The third arm kept
+n=20 on all nine cells: there four of eight exclude zero against a null
+expectation of **0.47** at 94.1% coverage, and `no-nativetools` (+0.144) and
+`no-verifygate` (+0.100) survive a Šidák correction across its whole ladder
+(Table 10). The same four exclusions mean opposite things on the two ladders.
+
+**§5.8** gives a post-hoc mechanism for the `no-checklist` result: the checklist
+moves 31 of 160 episodes out of `finish` and into a no-tool-call stall, and
+those buckets pass at ~100% and ~67% respectively, which accounts for the whole
+delta. It buys nothing because `verifygate` already prevents the failure it
+targets.
 
 **Known gap.** Figures 3–5 have **not** been regenerated against `stats-v2.json`
 and still render the superseded v1 grid. No table in revision 3 cites them.

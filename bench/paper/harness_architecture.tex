@@ -186,7 +186,7 @@ v2 and the two are never pooled.} An audit of all 760 v1 episodes and
 3,879 file-writing tool calls found \textbf{zero} episodes that
 exploited any defect; v1's numbers are not fabricated, they are measured
 on an instrument that could not rule the exploits out. v1 is retained in
-§5.8 as the instrument-failure record, not as a measurement. The design,
+§5.9 as the instrument-failure record, not as a measurement. The design,
 hypotheses, directions, and analysis for v2 were registered before the
 first v2 episode (\texttt{paper/preregistration.md}); every departure is
 recorded in \texttt{paper/DEVIATIONS.md} with what had been observed
@@ -201,7 +201,7 @@ cannot. On the eight-task hard suite under the registered v2 protocol,
 Qwen 3.8 27B goes from 79.4\% (baseline) to 95.0\% (full) and Ornith-1.5
 35B-A3B from 40.0\% to 60.6\%. Both deltas exclude zero at the
 Šidák-corrected 98.7\% level. The 720-episode v1 grid that revision 2
-reported is superseded and appears only as §5.8's instrument-failure
+reported is superseded and appears only as §5.9's instrument-failure
 record. This figure is generated from \texttt{stats-v2.json} like every
 other data figure; the hand-drawn version it replaces still carried
 protocol-1's 97.5\%-versus-75\% and \(\Delta +22.5\), which revision 2
@@ -248,21 +248,27 @@ superseded v1 grid had reported the opposite sign for the same cell ---
 and that reversal is the clearest single piece of evidence that v1's
 anomaly was an instrument artefact rather than a harness effect.
 
-The exploratory one-flag ladder is \textbf{reported as uninformative
-rather than as a set of findings}, and the reason is measured rather
-than asserted. A deviation from the registered design moved seeds out of
-the six exploratory cells and into the confirmatory contrasts, leaving
-those cells at \(n=5\); at that cell shape a Monte-Carlo audit puts the
-percentile bootstrap's actual coverage at \textbf{82.3\% against a
-nominal 95\%}, and across the grid's sixteen ladder intervals four
-exclude zero where a global null produces at least one \textbf{96\%} of
-the time at that coverage. Four exclusions is what noise looks like
-here. Only one ladder result is large enough to survive the deficiency:
-turning the verify gate off costs Qwen \(\Delta = +0.225\), interval
-\([+0.150, +0.300]\). The capability-by-harness interaction is again not
-detected --- every \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\)
-interval includes zero under both the unpaired and the seed-paired
-scheme, as it did in v1.
+The exploratory one-flag ladder \textbf{on the local arms} is reported
+as uninformative rather than as a set of findings, and the reason is
+measured rather than asserted. A deviation from the registered design
+moved seeds out of the six exploratory cells and into the confirmatory
+contrasts, leaving those cells at \(n=5\); at that cell shape a
+Monte-Carlo audit puts the percentile bootstrap's actual coverage at
+\textbf{82.3\% against a nominal 95\%}, and across the grid's sixteen
+ladder intervals four exclude zero where a global null produces at least
+one \textbf{96\%} of the time at that coverage. Four exclusions is what
+noise looks like here. Only one local ladder result is large enough to
+survive the deficiency: turning the verify gate off costs Qwen
+\(\Delta = +0.225\), interval \([+0.150, +0.300]\). \textbf{The
+component-level evidence in this paper therefore rests on the third
+arm}, which ran twenty repeats on all nine cells: there four of eight
+intervals exclude zero against a null expectation of 0.47 at 94.1\%
+coverage, and two components --- native file tools and the verify gate
+--- survive a Šidák correction across that arm's entire ladder. The
+capability-by-harness interaction is again not detected --- every
+\(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) interval includes
+zero under both the unpaired and the seed-paired scheme, as it did in
+v1.
 
 A separately registered extension adds a third arm, API-served
 \texttt{gpt-oss-120b}, at a further 1,440 episodes under a different
@@ -357,7 +363,7 @@ enough to inflate reported pass rates beyond genuine capability
 SWE-bench passes to solution leakage and weak test suites {[}12{]}. We
 therefore built the grader to be unreachable --- hidden tests outside
 the sandbox, visible tests content-hashed, the checker unshadowable
-(§3.2) --- and §5.10 reports a case where a model does exactly what this
+(§3.2) --- and §5.11 reports a case where a model does exactly what this
 literature predicts. The second is that repeated runs of the same prompt
 do not agree even with decoding parameters fixed {[}15{]}, which makes a
 single-run pass rate an anecdote. We pin a seed per repeat and report
@@ -931,7 +937,7 @@ headline grid, because several cells saturated and could not move: Qwen
 3.8 27B scored 11/11 on it, which is why the hard tier was written. A
 model at ceiling cannot show a harness effect, since every ablation can
 only move downward. One task from the easier suite, \texttt{navigate},
-is used only in §5.10 as a single-flag case. The repository holds
+is used only in §5.11 as a single-flag case. The repository holds
 nineteen tasks in total across both tiers.
 
 \subsubsection{4.2 Instrument validation}\label{instrument-validation}
@@ -998,7 +1004,7 @@ pooling keys, and \texttt{n\_starved\ =\ 0} and
 Pass/fail is not a function of tokens per second, but wall-clock is. We
 therefore do not compare \texttt{wall\_s} across configurations or
 models. Cost is reported as steps and peak prompt tokens, which are
-properties of the transcript, and as the device envelope in §5.9.
+properties of the transcript, and as the device envelope in §5.10.
 
 \textbf{A third arm was attempted and is excluded by declaration.} We
 tried to add \texttt{gemini-3.7-flash} as a third rung. It is excluded,
@@ -1079,17 +1085,17 @@ directions:
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# the v1 record (§5.8)}
+\ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# the v1 record (§5.9)}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}json{-}out}\NormalTok{ /tmp/with{-}gemini.json                      }\CommentTok{\# including the arm}
 \end{Highlighting}
 \end{Shaded}
 
-The v1 record (§5.8) reports what happened to the interaction test when
+The v1 record (§5.9) reports what happened to the interaction test when
 the \emph{original} arm was included, so that the reader can check the
 exclusion was not outcome-shopping. The excluded arm predates v2 and
 appears in no v2 cell.
 
-The verify-gate case in §5.10 was not run on the GH200. It used Qwen 3.8
+The verify-gate case in §5.11 was not run on the GH200. It used Qwen 3.8
 27B MLX (\texttt{qwen3.8:27b-mlx}) and Ornith Q8 on the Apple host where
 those episodes were logged, with \texttt{max\_steps=40}. It is a
 different serving stack, a different task, and the pre-fix instrument;
@@ -1197,7 +1203,7 @@ whose recorded maximum is exactly the old ceiling is a cell still
 carrying it, and Qwen's protocol-1 baseline has a maximum of exactly 40
 steps. \textbf{The v1 \texttt{hard} grid} was 720 episodes under the
 frozen protocol and was revision 2's headline. It is superseded for the
-reasons in the revision-3 note above and analysed in §5.8 as an
+reasons in the revision-3 note above and analysed in §5.9 as an
 instrument-failure record. Neither is pooled with v2;
 \texttt{compare.py\ -\/-tag\ hard} matches every directory ending in
 that tag, which is why v2 carries its own tag.
@@ -1236,14 +1242,15 @@ episode counts match each cell's \texttt{summary.json}. Table 3 reports
 pass rates, Table 4 the per-task matrix for the confirmatory contrast,
 Table 5 stop reasons and cost, Table 6 the two confirmatory hypotheses
 at the corrected level, Table 7 the exploratory ladder, Table 8 the
-interaction. Table 9 is the device envelope and Table 10 an off-grid
-single-flag contrast; neither is part of the 1,440. Figures 3--6 plot
-the cell means, the per-seed paired deltas, and the interaction
-intervals under both pairing schemes; all four are rendered from
-\texttt{stats-v2.json} by \texttt{figures.py}, so a figure cannot
-disagree with a table.
+interaction. Tables 9 and 10 report the third arm, Table 11 a post-hoc
+mechanism for the checklist result, Table 12 the device envelope, and
+Table 13 an off-grid single-flag contrast; the last two are not part of
+the registered grids. Figures 3--6 plot the cell means, the per-seed
+paired deltas, and the interaction intervals under both pairing schemes;
+all four are rendered from \texttt{stats-v2.json} by
+\texttt{figures.py}, so a figure cannot disagree with a table.
 
-The superseded v1 grid is §5.8. Protocol-1 is §4.6. Neither is pooled
+The superseded v1 grid is §5.9. Protocol-1 is §4.6. Neither is pooled
 here.
 
 \subsubsection{5.1 Pass rates}\label{pass-rates}
@@ -1575,9 +1582,17 @@ One result is large enough to survive the deficiency on its own terms:
 \textbf{Qwen \texttt{no-verifygate}, \(\Delta = +0.225\), interval
 {[}+0.150, +0.300{]}}, whose lower bound sits three times the interval
 half-width away from zero. It is also the one ladder result with an
-independent mechanism behind it (§5.9) and a matching sign on the third
+independent mechanism behind it (§5.10) and a matching sign on the third
 arm (§5.7). Everything else in Table 7 should be read as ``not
 detectable at this \(n\).''
+
+\textbf{This is a statement about the local ladder, not about H3.} The
+third arm ran twenty repeats on all nine cells and its ladder is
+informative: four of eight intervals exclude zero against a null
+expectation of 0.47, at 94.1\% measured coverage (Table 10, §5.7). The
+component-level results this paper reports come from there. What D2 cost
+is the \emph{replication} of those results on two local models, which is
+a real loss and the reason the interaction in §5.6 stays undetectable.
 
 We flag one consequence of the pairing scheme that a reader comparing
 tables will otherwise hit. Because \(\Delta\) is paired by repeat, a
@@ -1664,8 +1679,8 @@ not claim that --- the interval touches zero --- but it is worth stating
 that the largest movement in the table runs against the predicted
 direction.
 
-\subsubsection{5.7 The third arm, and the component that does not
-generalise}\label{the-third-arm-and-the-component-that-does-not-generalise}
+\subsubsection{5.7 The third arm, which carries the component-level
+evidence}\label{the-third-arm-which-carries-the-component-level-evidence}
 
 A separately registered extension (\texttt{paper/extension-cerebras.md})
 adds API-served \texttt{gpt-oss-120b} at 1,440 episodes under tag
@@ -1676,36 +1691,219 @@ to Table 3} and \texttt{compare.py} prints the differing keys and says
 so. Its within-arm deltas are comparable, because each is seed-paired
 inside one arm under one protocol.
 
-That arm reproduces H1 in direction and magnitude: \texttt{full} 81.2\%
-against \texttt{baseline} 66.2\%, \(\Delta = +0.150\). Three arms at
-three capability levels give \(+0.150\), \(+0.156\) and \(+0.206\).
+This arm ran \textbf{twenty repeats on all nine cells}, which the local
+arms did not (§4.4, deviation D2). That makes it the only ladder in the
+study whose intervals are worth reading, and the component-level results
+below rest on it rather than on Table 7.
 
-It also produces the study's sharpest disagreement. Removing native file
-tools costs \texttt{gpt-oss-120b} \(\Delta = +0.144\), an effect that
-survives a Šidák correction across all eight of that arm's ladder tests
-and collapses \texttt{ast\_transformer} from 13/20 to 4/20 and
-\texttt{pratt\_parse} from 10/20 to 2/20. The same ablation costs Qwen
-\(+0.025\) and Ornith \(+0.050\), neither distinguishable from zero.
-\textbf{The largest single-component effect we measured anywhere does
-not appear on either of the other two arms.} The natural reading ---
-that native tools matter more to weaker models --- is not what the data
-shows either, since \texttt{gpt-oss-120b} sits between the two local
-arms in capability while showing an effect three times Ornith's. The
-property that varies is the model's ability to emit a well-formed tool
-call in plain text when the native path is removed, and that is a
-model-specific competence rather than a monotone function of capability.
+\textbf{Table 9.} \texttt{gpt-oss-120b} pass rate and finish rate, nine
+cells, \(n=20\) each. Source: \texttt{stats-ext-cerebras.json}.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lrlr@{}}
+\toprule\noalign{}
+Configuration & Pass rate & 95\% CI & Finish rate \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{no-checklist} & 88.8\% & {[}83.8, 93.8{]} & 64\% \\
+\texttt{no-outcap} & 84.4\% & {[}78.8, 89.4{]} & 46\% \\
+\texttt{no-loopbreak} & 82.5\% & {[}76.9, 87.5{]} & 43\% \\
+\textbf{\texttt{full}} & \textbf{81.2\%} & {[}76.2, 86.2{]} & 45\% \\
+\texttt{no-envboot} & 80.6\% & {[}75.6, 86.2{]} & 42\% \\
+\texttt{no-groundfs} & 80.6\% & {[}75.0, 86.2{]} & 41\% \\
+\texttt{no-verifygate} & 71.2\% & {[}66.2, 75.6{]} & 54\% \\
+\texttt{no-nativetools} & 66.9\% & {[}61.9, 72.5{]} & 29\% \\
+\textbf{\texttt{baseline}} & \textbf{66.2\%} & {[}55.6, 75.6{]} &
+91\% \\
+\end{longtable}
+}
+
+\textbf{Table 10.} \texttt{gpt-oss-120b} one-flag ladder,
+\(\Delta = \text{full} - \text{ablation}\), paired by repeat, 95\%
+intervals. Bold rows exclude zero.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Ablation & \(\Delta\) & 95\% CI \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\textbf{\texttt{no-nativetools}} & \textbf{+0.144} & {[}+0.075,
++0.212{]} \\
+\textbf{\texttt{no-verifygate}} & \textbf{+0.100} & {[}+0.037,
++0.169{]} \\
+\texttt{no-groundfs} & +0.006 & {[}\(-0.075\), +0.094{]} \\
+\texttt{no-envboot} & +0.006 & {[}\(-0.062\), +0.069{]} \\
+\texttt{no-loopbreak} & \(-0.013\) & {[}\(-0.087\), +0.075{]} \\
+\texttt{no-outcap} & \(-0.031\) & {[}\(-0.087\), +0.031{]} \\
+\textbf{\texttt{no-checklist}} & \textbf{\(-0.075\)} & {[}\(-0.144\),
+\(-0.006\){]} \\
+\textbf{\texttt{baseline}} & \textbf{+0.150} & {[}+0.031, +0.275{]} \\
+\end{longtable}
+}
+
+\textbf{This ladder carries signal and Table 7's does not, and the
+difference is quantified rather than asserted.} Both produced four
+intervals excluding zero. At this arm's measured coverage of
+\textbf{94.1\%} the expected number under a global null is
+\textbf{0.47}, and the probability that at least one excludes zero is
+39\%. On the local arms, at 82.3\% coverage over sixteen intervals, the
+expected number is \textbf{2.83} and the probability is 96\%. Four
+exclusions out of eight here is roughly eight times the null
+expectation; four out of sixteen there is barely above it. The same
+count means opposite things, and the reason is the twenty repeats D2
+removed from the local ladder.
+
+Two components survive a Šidák correction across all eight of this arm's
+ladder tests (\(\alpha = 0.0064\), 99.36\% intervals):
+\texttt{no-nativetools} at {[}+0.044, +0.244{]} and
+\texttt{no-verifygate} at {[}+0.013, +0.200{]}. \texttt{no-checklist}
+survives no correction --- it stops excluding zero at 97.47\% --- and is
+reported as exploratory with the family-wise number attached; §5.8 gives
+it a mechanism instead.
+
+\textbf{The confirmatory tests on this arm.} Two registered tests, so
+Šidák \(\alpha = 0.0253\) and 97.47\% intervals: H1 is \(+0.150\),
+{[}+0.019, +0.300{]}, \textbf{supported}; H2 is \(-0.031\),
+{[}\(-0.100\), +0.037{]}, not detected. Three arms at three capability
+levels now give H1 as \(+0.150\), \(+0.156\) and \(+0.206\).
+
+\textbf{The component that does not generalise.} Removing native file
+tools costs this arm \(\Delta = +0.144\) --- the largest
+single-component effect anywhere in this work --- and collapses
+\texttt{ast\_transformer} from 13/20 to 4/20 and \texttt{pratt\_parse}
+from 10/20 to 2/20. Its finish rate falls to 29\%, the lowest in the
+study. The same ablation costs Qwen \(+0.025\) and Ornith \(+0.050\),
+neither distinguishable from zero. \textbf{The largest effect we
+measured does not appear on either of the other two arms.} The natural
+reading --- that native tools matter more to weaker models --- is not
+what the data shows either, since \texttt{gpt-oss-120b} sits between the
+two local arms in capability while showing an effect three times
+Ornith's. The property that varies is the model's ability to emit a
+well-formed tool call in plain text when the native path is withdrawn,
+and that is a model-specific competence rather than a monotone function
+of capability.
+
+\textbf{The finish rate moves with the ablation, which bounds what any
+gate result means.} It spans 29\% (\texttt{no-nativetools}) to 91\%
+(\texttt{baseline}) across this arm's nine cells --- a factor of three.
+\texttt{verifygate} can only fire on a \texttt{finish} call, so a cell's
+finish rate is a ceiling on how much of that component was ever
+exercised in it: the gate was idle in 55\% of \texttt{full} episodes.
+Any cross-model reading of a gate result has to carry this number, and
+\texttt{compare.py} reports it per cell.
 
 We note the corresponding multiplicity subtlety, because it changes a
 verdict. Pooling all three arms into one confirmatory family makes six
-tests, Šidák \(\alpha = 0.0085\), 99.1\% intervals --- at which
-\texttt{gpt-oss-120b}'s H1 becomes \emph{not supported} (\(+0.150\),
-\([-0.006, +0.325]\)) despite being supported at that arm's own
-registered two-test level. Same data, different verdict, purely from how
-the family is drawn. The registered v2 family is the two local arms, so
-Table 6 is the primary claim; we report the pooled alternative rather
-than let it be discovered.
+tests, Šidák \(\alpha = 0.0085\), 99.1\% intervals --- at which this
+arm's H1 becomes \emph{not supported} (\(+0.150\), \([-0.006, +0.325]\))
+despite being supported at its own registered two-test level. Same data,
+different verdict, purely from how the family is drawn. The registered
+v2 family is the two local arms, so Table 6 is the primary claim; we
+report the pooled alternative rather than let it be discovered.
 
-\subsubsection{5.8 The v1 grid as an instrument-failure
+\subsubsection{5.8 Why the checklist costs episodes: a post-hoc
+mechanism}\label{why-the-checklist-costs-episodes-a-post-hoc-mechanism}
+
+\texttt{no-checklist} is the one ablation whose sign is negative on the
+best-powered arm, and it is the only ladder result on that arm that
+survives no multiplicity correction (§5.7). \textbf{This subsection is
+post-hoc.} It was written after the result was seen, it is not a
+registered analysis, and it is reported as a mechanism rather than as
+evidence for an effect size. What makes it worth reporting is that the
+mechanism is arithmetically complete: it accounts for the whole delta,
+and it is visible in the stop-reason field rather than inferred.
+
+The checklist fires on the model's first \texttt{finish} call and
+returns it to work with a prompt asking whether any test was weakened
+and whether the fix addresses the cause. On \texttt{gpt-oss-120b} its
+effect is not on the quality of the work. It is on whether the episode
+ends at all.
+
+\textbf{Table 11.} Outcome of the same 160 episodes with and without the
+prompt-side checklist, \texttt{gpt-oss-120b}. \texttt{verifygate} is on
+in both cells.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lrrrr@{}}
+\toprule\noalign{}
+Outcome & \texttt{full} & passed & \texttt{no-checklist} & passed \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+ended in a \texttt{finish} call & 72 & 71 (98.6\%) & \textbf{103} & 103
+(100.0\%) \\
+stalled with no tool call & \textbf{88} & 59 (67.0\%) & 57 & 39
+(68.4\%) \\
+\textbf{total} & 160 & \textbf{130} & 160 & \textbf{142} \\
+\end{longtable}
+}
+
+The checklist moves \textbf{31 episodes} out of the finished bucket and
+into the stalled bucket; both columns shift by the same 31 in opposite
+directions. Those buckets carry very different pass rates --- an episode
+that reaches \texttt{finish} passes essentially always, one that stalls
+passes about two-thirds of the time --- so the predicted cost is
+\(31 \times (0.986 - 0.670) \approx 10\) episodes against an observed
+12. The mechanism accounts for the effect without residual.
+
+Counting assistant turns after the checklist event separates the two
+populations. Episodes that recover and finish take a \textbf{mean of 3.4
+turns} after it; episodes that stall take \textbf{16.5}. The checklist
+reopens an episode that was ready to end, and in the failing cases the
+model then wanders for a dozen-plus turns before emitting a turn with no
+tool call, which ends the episode unsuccessfully. That the stalled
+episodes still pass 67\% of the time is the tell: the work was usually
+already correct, and what was lost was the declaration that it was done.
+
+\textbf{The checklist buys nothing to offset that, because the gate
+already covers its job.} Conditional on reaching a \texttt{finish}, pass
+rate is 98.6\% with the checklist and 100.0\% without. The failure the
+checklist exists to prevent --- asserting completion on work that does
+not pass --- is prevented structurally by \texttt{verifygate}, which
+re-runs the hidden tests and refuses the finish whatever the model
+claims. \texttt{verifygate} is on in both cells here. The checklist is
+therefore prompt-side insurance against a failure mode an external check
+already makes impossible, and its only measurable effect is spending
+turns. §5.11 records the same thing from the other direction: in that
+contrast the checklist was on in \textbf{both} arms and did not prevent
+a contract-breaking finish.
+
+The other two arms are consistent with this and explain why their point
+estimates differ:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Qwen} reaches the checklist in essentially every episode and
+  spends \textbf{2.1 turns} on it. It has the turn budget to absorb the
+  reopening, and 147 of 160 \texttt{full} episodes still end in
+  \texttt{finish}. Its \(\Delta\) is inside noise.
+\item
+  \textbf{Ornith} mostly never reaches the checklist at all. Of the 48
+  \texttt{full} episodes that end in \texttt{context\_exhausted}, only
+  \textbf{7} had the checklist fire; those episodes die long before they
+  would call \texttt{finish}. The mechanism cannot be operating on the
+  cells that fail, so Ornith's 6.9-point gap has no mechanistic support
+  here and, at \(n=5\) with 82.3\% coverage (§5.5), we read it as noise.
+\end{itemize}
+
+The generalisation we draw is narrow and is the paper's thesis in
+miniature: \textbf{a component's value is conditional on what else is in
+the harness.} A prompt asking the model to check its work is redundant
+beside a check the model cannot reach, and once redundant its cost ---
+turns, and the episodes those turns lose --- is all that remains. This
+is not an argument against checklists in harnesses that have no external
+verifier. It is an argument that the two components cannot be evaluated
+independently, which is precisely what a one-flag-at-a-time ladder
+around a single \texttt{full} configuration cannot see (§7, item 9).
+
+\subsubsection{5.9 The v1 grid as an instrument-failure
 record}\label{the-v1-grid-as-an-instrument-failure-record}
 
 Revision 2 headlined a 720-episode grid under tag \texttt{hard}. An
@@ -1766,7 +1964,7 @@ we can say is that a published, interval-excluding-zero effect did not
 survive the instrument being fixed, and that this is the most useful
 thing v1 contributes to the literature.
 
-\subsubsection{5.9 Cost proxies that are not
+\subsubsection{5.10 Cost proxies that are not
 wall-clock}\label{cost-proxies-that-are-not-wall-clock}
 
 We make no wall-clock claim in either direction. On the easier suite we
@@ -1787,7 +1985,7 @@ seconds on a shared GPU.
 
 \textbf{Device envelope.} A sidecar sampled \texttt{nvidia-smi} every 2
 s for the duration of the grid, independently of the runner, producing
-78,027 samples over 43.8 hours. Table 9 is that log. Its point is a
+78,027 samples over 43.8 hours. Table 12 is that log. Its point is a
 systems one: on a serial, batch-1 agent loop, \texttt{utilization.gpu}
 reads a median 89\% while the device draws a median 302 W of a 900 W cap
 and the memory controller sits at 23\%. Utilization near 90\% here means
@@ -1799,10 +1997,10 @@ envelope. Anyone budgeting GPU-hours for an agent grid from a
 utilization percentage will overestimate what the device is doing and
 underestimate how much of it a batched design could reclaim.
 
-\textbf{Table 9.} GH200 envelope during the v1 grid. 78,027 samples at
+\textbf{Table 12.} GH200 envelope during the v1 grid. 78,027 samples at
 \textasciitilde2.0 s cadence over 43.8 h. Source:
 \texttt{results/compute.jsonl}. The envelope is a property of the
-serving stack and the serial loop, not of the defects in §5.8, so it is
+serving stack and the serial loop, not of the defects in §5.9, so it is
 retained.
 
 {\def\LTcaptype{none} % do not increment counter
@@ -1846,8 +2044,8 @@ Qwen-resident regime and the median of 56.7 GiB is the regime with the
 larger Q8 model loaded, with a 94 GiB maximum during the share-gpu
 window when both were resident.
 
-\subsubsection{\texorpdfstring{5.10 Verify gate on \texttt{navigate}
-(corrected)}{5.10 Verify gate on navigate (corrected)}}\label{verify-gate-on-navigate-corrected}
+\subsubsection{\texorpdfstring{5.11 Verify gate on \texttt{navigate}
+(corrected)}{5.11 Verify gate on navigate (corrected)}}\label{verify-gate-on-navigate-corrected}
 
 The hard grid does not isolate a flag against a legible failure mode. A
 prior single-flag experiment on the easier \texttt{navigate} task does,
@@ -1885,7 +2083,7 @@ gate.
 \texttt{full} in the \texttt{verifygate} flag alone, at
 \texttt{max\_steps=40}, on \texttt{navigate}:
 
-\textbf{Table 10.} Verify-gate contrast on \texttt{navigate}. Two-sided
+\textbf{Table 13.} Verify-gate contrast on \texttt{navigate}. Two-sided
 Fisher exact. Directories are
 \texttt{results/\textless{}model\textgreater{}\_\_\{full,no-verifygate\}\_\_\textless{}tag\textgreater{}}.
 The tag named \texttt{v2} in the pooled row is an early
@@ -1967,13 +2165,18 @@ difficulty sits relative to the model.
 
 \textbf{What it does not support.} H2 fails at the corrected level, the
 interaction is undetectable for the second time, and the exploratory
-ladder cannot carry component-level claims at all. We want to be plain
-about the last one because it is our own design's fault and not a
-property of the world: a deviation moved seeds out of those cells, and
-at \(n=5\) the bootstrap's measured coverage is 82.3\%, at which four of
-sixteen intervals excluding zero is what a global null produces 96\% of
-the time. A reader is entitled to treat Table 7 as uninformative except
-for Qwen \texttt{no-verifygate}, and we treat it that way ourselves.
+ladder \emph{on the local arms} cannot carry component-level claims. We
+want to be plain about the last one because it is our own design's fault
+and not a property of the world: a deviation moved seeds out of those
+cells, and at \(n=5\) the bootstrap's measured coverage is 82.3\%, at
+which four of sixteen intervals excluding zero is what a global null
+produces 96\% of the time. A reader is entitled to treat Table 7 as
+uninformative except for Qwen \texttt{no-verifygate}, and we treat it
+that way ourselves. The component-level claims we do make come from
+Table 10, the third arm's ladder at \(n=20\), where four of eight
+intervals exclude zero against a null expectation of 0.47. What D2 cost
+is not the ladder; it is the replication of the ladder on two local
+models, and with it any chance at the interaction.
 
 \textbf{Three components are bounded small, which is not the same as
 inert.} Environment bootstrap, filesystem grounding, and loop breaking
@@ -1992,7 +2195,7 @@ bound.
 
 Two further caveats point the same way. A component whose value is
 insurance against a rare, expensive event --- which is what
-\texttt{verifygate} is (§5.10) --- is what a pass-rate ablation is worst
+\texttt{verifygate} is (§5.11) --- is what a pass-rate ablation is worst
 at valuing. And \texttt{envboot} and \texttt{groundfs} are the two
 components most plausibly redundant \emph{with the task prompts
 themselves} on a suite where the working directory is already the
@@ -2084,8 +2287,11 @@ capability-by-harness interaction remains undetectable.
   nominal 95\%, and
   \(P(\geq 1 \text{ interval excludes } 0 \mid \text{global null}) = 96\%\)
   across the sixteen ladder intervals. Table 7 supports no
-  component-level claim except Qwen \texttt{no-verifygate}. This is the
-  single largest weakness of the study and it was self-inflicted.
+  component-level claim except Qwen \texttt{no-verifygate}. The third
+  arm's ladder (Table 10) is unaffected and carries the component-level
+  results; what was lost is their replication on the local arms, and
+  with it the interaction. This is the single largest weakness of the
+  study and it was self-inflicted.
 \item
   \textbf{D2 was not a blind deviation.} The reallocation of seeds was
   decided after Qwen's \texttt{full} cell had completed at 95.0\%. No
@@ -2115,7 +2321,7 @@ capability-by-harness interaction remains undetectable.
   \texttt{ast\_transformer} is at the floor for Ornith in three of nine
   cells and contributes almost nothing to that arm.
 \item
-  \textbf{The verify-gate case is off-grid.} §5.10 uses a different
+  \textbf{The verify-gate case is off-grid.} §5.11 uses a different
   task, a different serving stack (Apple MLX), a 40-step ceiling, and
   the pre-fix instrument. It is a mechanism demonstration, not a grid
   result, and its matched-tag contrast does not reach \(\alpha = 0.05\).
@@ -2155,7 +2361,7 @@ draft}\label{corrections-to-the-previous-draft}
 Revision 3 does not correct revision 2's arithmetic. It \textbf{retires
 revision 2's evidentiary base.} Every headline number in that draft came
 from the 720-episode \texttt{hard} grid, and an audit of that instrument
-found the five defects tabulated in §5.8. The numbers were re-derived
+found the five defects tabulated in §5.9. The numbers were re-derived
 correctly from the data they had; the data was collected on an
 instrument that could not rule out the exploits it was supposed to. The
 correct response is not a corrected table but a new experiment, which is
@@ -2193,7 +2399,7 @@ Ornith \texttt{no-outcap} & \(\Delta -10.0\), CI {[}\(-17.5\),
 \(-2.5\){]} --- ``a component can cost the weaker model'' &
 \(\Delta +0.075\), 98.7\% CI {[}\(-0.006\), +0.156{]} --- \textbf{sign
 reversed, not supported} & The only interval in revision 2 that excluded
-zero. It did not survive the instrument fix. This is §5.8's central
+zero. It did not survive the instrument fix. This is §5.9's central
 example. \\
 ``Neither model's best configuration is \texttt{full}'' & asserted from
 point estimates at \(n=5\) & withdrawn & At \(n=5\) with 82.3\% measured
@@ -2223,7 +2429,7 @@ pass rates. \\
 Revision 2's own corrections to revision 1 --- the \texttt{navigate}
 census, the median midpoints, the hand-drawn Figure 4 --- stand as
 recorded there and are not restated. The \texttt{navigate} contrast in
-§5.10 is unchanged and still does not reach \(\alpha = 0.05\) on its
+§5.11 is unchanged and still does not reach \(\alpha = 0.05\) on its
 matched-tag reading.
 
 \subsection{9. Conclusion}\label{conclusion}
@@ -2255,12 +2461,18 @@ tools, has that effect on exactly one of the three models, and that
 model is not the weakest. Component-level advice that does not name the
 model is not supported by evidence of this shape.
 
-We are equally clear about what this grid cannot say. A deviation left
-the six exploratory cells at \(n=5\), where the percentile bootstrap's
-measured coverage is 82.3\% rather than 95\% and four of sixteen
-intervals excluding zero is what a global null yields 96\% of the time.
-That table is reported with the number that makes it unreadable as
-findings, rather than with the findings it superficially offers.
+We are equally clear about what the local grid cannot say. A deviation
+left its six exploratory cells at \(n=5\), where the percentile
+bootstrap's measured coverage is 82.3\% rather than 95\% and four of
+sixteen intervals excluding zero is what a global null yields 96\% of
+the time. That table is reported with the number that makes it
+unreadable as findings. The third arm, which kept twenty repeats on all
+nine cells, is where the component-level results come from: four of
+eight intervals exclude zero there against a null expectation of 0.47,
+and two components survive a correction across its whole ladder. The
+same four exclusions mean opposite things on the two ladders, which is
+the clearest argument in this paper for reporting measured coverage
+alongside an interval.
 
 The contribution we are most confident in is not an effect size. It is
 the pairing of two things this literature usually separates: an
@@ -2295,7 +2507,7 @@ files. The registered design, hypotheses and analysis are
 \texttt{paper/run\_v2.sh}, committed verbatim.
 
 \textbf{Superseded collections, retained and never pooled.} Tag
-\texttt{hard} is the 720-episode v1 grid analysed in §5.8 as an
+\texttt{hard} is the 720-episode v1 grid analysed in §5.9 as an
 instrument-failure record; its compare summary is
 \texttt{results/stats-hard.json}. Because
 \texttt{compare.py\ -\/-tag\ hard} matches every directory ending in
@@ -2303,7 +2515,7 @@ that tag, v2 carries its own tag rather than extending \texttt{hard}.
 Protocol-1 archives are \texttt{results/*-protocol1}. The device
 envelope in Table 9 is \texttt{results/compute.jsonl} (78,027 samples),
 collected during the v1 grid. The \texttt{navigate} transcripts used in
-§5.10 are the
+§5.11 are the
 \texttt{qwen3.8\_27b-mlx\_\_\{full,no-verifygate\}\_\_\{rep,rep2,rep3,v2,abl\}}
 and Ornith \texttt{\_\_\{full,no-verifygate\}\_\_\{orep,v1\}}
 directories --- note that the \texttt{v2} there is an early
@@ -2343,7 +2555,7 @@ Reproduction:
 \ExtensionTok{python3}\NormalTok{ test\_stats.py               }\CommentTok{\# 166 bootstrap / delta / coverage / figure tests, no GPU}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2 }\AttributeTok{{-}{-}json{-}out}\NormalTok{ paper/stats{-}v2.json         }\CommentTok{\# Tables 3{-}8}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2,ext{-}cerebras                            }\CommentTok{\# three{-}arm family (§5.7)}
-\ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# v1 record (§5.8)}
+\ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# v1 record (§5.9)}
 \end{Highlighting}
 \end{Shaded}
 
