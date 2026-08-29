@@ -21,13 +21,42 @@ OUT = os.path.join(HERE, "paper", "figures")
 
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
 QWEN, ORNITH = "#2f6fed", "#c45c26"
+# A third arm needs a third colour. Everything not Qwen used to render in the
+# Ornith brown, so a three-arm chart drew two different models identically.
+THIRD = "#2e8b57"
+PALETTE = (QWEN, ORNITH, THIRD, "#7d3c98", "#b8860b")
+
+# Serving-provider prefixes, mirroring mh.runtime.API_PREFIXES. Kept as a
+# literal so figures.py stays importable without the harness package.
+_PROVIDERS = ("cerebras:",)
 
 
 def _short(model):
-    return model.split("/")[-1].split(":")[0][:12]
+    """Display name for an arm: the model, never the provider.
+
+    `cerebras:gpt-oss-120b` used to render as "cerebras" -- the split on ":"
+    that strips an ollama quantisation tag also strips an API provider prefix,
+    leaving the vendor where the model should be.
+    """
+    name = model.split("/")[-1]
+    for pref in _PROVIDERS:
+        if name.lower().startswith(pref):
+            return name[len(pref):][:18]
+    return name.split(":")[0][:18]
 
 
-def _colour_for(model):
+def _colour_for(model, order=()):
+    """Stable colour per arm.
+
+    `order` is the arms present in this figure; a model in it takes its
+    palette slot, so three arms get three colours. Falls back to the original
+    two-colour rule when the caller does not pass an ordering.
+    """
+    if order:
+        try:
+            return PALETTE[list(order).index(model) % len(PALETTE)]
+        except ValueError:
+            pass
     return QWEN if "qwen" in model.lower() else ORNITH
 
 
@@ -145,28 +174,39 @@ def pass_rates_svg(cells, path, subtitle=None, degenerate=()):
     """
     degenerate = set(degenerate)
     subtitle = subtitle or "Shape not available from this report."
-    w, h = 760, 380
-    top, bot, axis_l, axis_r = 90, 300, 80, 720
+    # Width follows the cell count. It was fixed at 760 for the eighteen cells
+    # of a two-arm grid; a three-arm pool has twenty-seven and overran the
+    # canvas, and the rasteriser refused the truncated result rather than
+    # writing a chart with its first bars sliced off.
+    n_cells = max(len(cells), 1)
+    top, bot, axis_l = 90, 300, 80
+    span = max(640, int(36 * n_cells))
+    axis_r = axis_l + span
+    w, h = axis_r + 40, 380
+    mid = w // 2
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
         f'viewBox="0 0 {w} {h}" {FONT}>',
         f'<rect width="{w}" height="{h}" fill="#fff"/>',
-        '<text x="380" y="26" text-anchor="middle" font-size="14" font-weight="600" '
-        'fill="#111">Pass rate by (model, configuration), bootstrap 95% CI</text>',
-        f'<text x="380" y="44" text-anchor="middle" font-size="11" fill="#555">'
+        f'<text x="{mid}" y="26" text-anchor="middle" font-size="14" font-weight="600" '
+        f'fill="#111">Pass rate by (model, configuration), bootstrap 95% CI</text>',
+        f'<text x="{mid}" y="44" text-anchor="middle" font-size="11" fill="#555">'
         f'{subtitle}</text>',
     ]
     for t in (0, 25, 50, 75, 100):
         yy = _bar_y(t, top, bot)
         parts.append(f'<line x1="{axis_l}" y1="{yy:.1f}" x2="{axis_r}" y2="{yy:.1f}" stroke="#eee"/>')
         parts.append(f'<text x="{axis_l-8}" y="{yy+4:.1f}" text-anchor="end" font-size="10" fill="#444">{t}</text>')
-    parts.append(f'<text x="30" y="200" transform="rotate(-90 30 200)" font-size="11" fill="#333">pass rate (%)</text>')
+    parts.append(f'<text x="30" y="{(top+bot)//2}" transform="rotate(-90 30 {(top+bot)//2})" font-size="11" fill="#333">pass rate (%)</text>')
     parts.append(f'<line x1="{axis_l}" y1="{bot}" x2="{axis_r}" y2="{bot}" stroke="#222"/>')
     parts.append(f'<line x1="{axis_l}" y1="{top}" x2="{axis_l}" y2="{bot}" stroke="#222"/>')
 
-    n = max(len(cells), 1)
-    span = axis_r - axis_l - 20
-    gap = span / n
+    n = n_cells
+    gap = (span - 20) / n
+    arm_order = []
+    for _m, *_r in cells:
+        if _m not in arm_order:
+            arm_order.append(_m)
     width = max(6.0, gap * 0.66)
     prev_model = None
     for i, (model, cfg, mean, lo, hi) in enumerate(cells):
@@ -176,7 +216,7 @@ def pass_rates_svg(cells, path, subtitle=None, degenerate=()):
             sep = x - gap * 0.18
             parts.append(f'<line x1="{sep:.1f}" y1="{top}" x2="{sep:.1f}" y2="{bot+26}" stroke="#bbb" stroke-dasharray="2,3"/>')
         prev_model = model
-        colour = _colour_for(model)
+        colour = _colour_for(model, arm_order)
         y, ylo, yhi = _bar_y(100*mean, top, bot), _bar_y(100*lo, top, bot), _bar_y(100*hi, top, bot)
         opacity = "1" if cfg in ("full", "baseline") else "0.55"
         parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{bot-y:.1f}" '
@@ -200,9 +240,10 @@ def pass_rates_svg(cells, path, subtitle=None, degenerate=()):
     for model, *_ in cells:
         if model not in seen:
             seen.append(model)
+    stride = max(150, (span - 20) // max(len(seen), 1))
     for j, model in enumerate(seen):
-        parts.append(f'<rect x="{axis_l+10+j*160}" y="62" width="10" height="10" fill="{_colour_for(model)}"/>')
-        parts.append(f'<text x="{axis_l+26+j*160}" y="71" font-size="10" fill="#333">{_esc(_short(model))}</text>')
+        parts.append(f'<rect x="{axis_l+10+j*stride}" y="62" width="10" height="10" fill="{_colour_for(model, seen)}"/>')
+        parts.append(f'<text x="{axis_l+26+j*stride}" y="71" font-size="10" fill="#333">{_esc(_short(model))}</text>')
     n_deg = sum(1 for m, c, *_ in cells if f"{m}|{c}" in degenerate)
     if n_deg:
         # Footer rather than legend: the note has to fit, and a cell with no
@@ -231,7 +272,7 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
             continue
         reps = sorted(full["rates"], key=int)
         d = [full["rates"][r] - base["rates"][r] for r in reps]
-        series.append((_short(m), d, _colour_for(m)))
+        series.append((_short(m), d, _colour_for(m, models)))
     if not series:
         return
     nrep = max(len(d) for _, d, _ in series)
@@ -246,8 +287,8 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="340" viewBox="0 0 720 340" {FONT}>',
         '<rect width="720" height="340" fill="#fff"/>',
         f'<text x="360" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">'
-        f'Paired &#916; = full &#8722; {_esc(ablation)}, by repeat (frozen protocol)</text>',
-        f'<text x="360" y="44" text-anchor="middle" font-size="11" fill="#555">'
+        f'Paired &#916; = full &#8722; {_esc(ablation)}, by repeat</text>',
+        f'<text x="360" y="42" text-anchor="middle" font-size="11" fill="#555">'
         f'Each point is one pinned seed. {_source_note(source)}</text>',
         f'<line x1="{left}" y1="{zero}" x2="{right}" y2="{zero}" stroke="#222"/>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bot}" stroke="#222"/>',
@@ -275,9 +316,18 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         parts.append(f'<text x="{xs[i]:.1f}" y="318" text-anchor="middle">{i}</text>')
     parts.append(f'<text x="{(left+right)/2:.0f}" y="334" text-anchor="middle" fill="#555">repeat (pinned seed)</text>')
     parts.append("</g>")
-    for j, (name, _, colour) in enumerate(series):
-        parts.append(f'<rect x="{right-150}" y="{62+j*16}" width="10" height="10" fill="{colour}"/>')
-        parts.append(f'<text x="{right-134}" y="{71+j*16}" font-size="10" fill="#333">{_esc(name)}</text>')
+    # Legend sits in the clear band between the subtitle and the plot top, laid
+    # out horizontally and centred. It used to be pinned inside the plot at
+    # (right-150, 62), which collided with any series reaching the top-right --
+    # at 20 repeats the Ornith line runs straight through the label.
+    entries = [(name, colour) for name, _, colour in series]
+    widths = [16 + int(len(name) * 5.6) for name, _ in entries]
+    total = sum(widths) + 18 * (len(entries) - 1)
+    x = (left + right) / 2 - total / 2
+    for name, colour in entries:
+        parts.append(f'<rect x="{x:.0f}" y="52" width="10" height="10" fill="{colour}"/>')
+        parts.append(f'<text x="{x+16:.0f}" y="61" font-size="10" fill="#333">{_esc(name)}</text>')
+        x += 16 + len(name) * 5.6 + 18
     parts.append("</svg>")
     _write(path, parts)
 
@@ -336,6 +386,105 @@ def interaction_svg(report, path, section="interaction"):
     _write(path, parts)
 
 
+# --- Figure 1: graphical abstract -------------------------------------------
+
+def graphical_abstract_svg(report, path, source=None):
+    """The graphical abstract, drawn from the report rather than by hand.
+
+    The hand-drawn PNG this replaces carried protocol-1 numbers (97.5% versus
+    75%, delta +22.5) long after those were archived as not-the-headline -- the
+    same failure mode the paper records for the hand-drawn Figure 4. Generating
+    it from the same report as every other figure is the only way the front
+    page cannot disagree with Table 3.
+    """
+    cells = report.get("cells", {})
+    models = sorted({k.split("|", 1)[0] for k in cells},
+                    key=lambda m: "qwen" not in m.lower())
+    arms = []
+    for m in models:
+        full, base = cells.get(f"{m}|full"), cells.get(f"{m}|baseline")
+        if full and base:
+            arms.append((_short(m), full["mean"] * 100, base["mean"] * 100,
+                         _colour_for(m, models)))
+    if not arms:
+        return
+
+    W, H = 900, 250 + 96 * len(arms)
+    FLAGS = ["envboot", "nativetools", "outcap", "checklist",
+             "verifygate", "loopbreak", "groundfs"]
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'viewBox="0 0 {W} {H}" {FONT}>',
+        f'<rect width="{W}" height="{H}" fill="#fff"/>',
+        f'<text x="{W//2}" y="34" text-anchor="middle" font-size="19" '
+        f'font-weight="700" fill="#111">Harness architecture as an experimental object</text>',
+    ]
+    # the pipeline: model -> switchable harness -> hidden verifier -> outcome
+    boxes = [("Local coding model", "weights held fixed"),
+             ("Switchable harness", "7 independent flags"),
+             ("Hidden verifier", "outside the sandbox"),
+             ("Pass / fail", "unrun never passes")]
+    bw, gap, by, bh = 190, 26, 58, 104
+    bx0 = (W - (len(boxes) * bw + (len(boxes) - 1) * gap)) // 2
+    for i, (head, sub) in enumerate(boxes):
+        x = bx0 + i * (bw + gap)
+        parts.append(f'<rect x="{x}" y="{by}" width="{bw}" height="{bh}" rx="8" '
+                     f'fill="#f7f9fc" stroke="#c8d2e0"/>')
+        parts.append(f'<text x="{x+bw//2}" y="{by+26}" text-anchor="middle" '
+                     f'font-size="12" font-weight="600" fill="#111">{_esc(head)}</text>')
+        parts.append(f'<text x="{x+bw//2}" y="{by+44}" text-anchor="middle" '
+                     f'font-size="10" fill="#666">{_esc(sub)}</text>')
+        if i == 1:
+            for j, fl in enumerate(FLAGS):
+                fx = x + 14 + (j % 2) * 88
+                fy = by + 62 + (j // 2) * 13
+                parts.append(f'<circle cx="{fx}" cy="{fy-3}" r="3" fill="{QWEN}"/>')
+                parts.append(f'<text x="{fx+7}" y="{fy}" font-size="8.5" '
+                             f'fill="#444">{_esc(fl)}</text>')
+        if i < len(boxes) - 1:
+            ax = x + bw + 4
+            parts.append(f'<path d="M{ax} {by+bh//2} L{ax+gap-8} {by+bh//2}" '
+                         f'stroke="#8a97a8" stroke-width="1.5" fill="none"/>')
+            parts.append(f'<path d="M{ax+gap-12} {by+bh//2-4} l5 4 -5 4" '
+                         f'stroke="#8a97a8" stroke-width="1.5" fill="none"/>')
+
+    # one paired bar group per arm, full against baseline
+    lab_w, bar_l, bar_r = 150, 250, W - 150
+    y = by + bh + 46
+    for name, full, base, colour in arms:
+        for k, (tag, val, fill) in enumerate((("full", full, colour),
+                                              ("baseline", base, "#cfd6de"))):
+            yy = y + k * 26
+            w = (bar_r - bar_l) * (val / 100.0)
+            parts.append(f'<text x="{bar_l-10}" y="{yy+13}" text-anchor="end" '
+                         f'font-size="11" fill="#333">{_esc(name)} {tag}</text>')
+            parts.append(f'<rect x="{bar_l}" y="{yy}" width="{w:.1f}" height="18" '
+                         f'rx="3" fill="{fill}"/>')
+            parts.append(f'<text x="{bar_l+w+8:.1f}" y="{yy+13}" font-size="11" '
+                         f'font-weight="600" fill="#111">{val:.1f}%</text>')
+        d = report.get("confirmatory", {})
+        key = next((k for k in d if k.startswith("H1|") and _short(k.split("|")[1]) == name), None)
+        if key:
+            c = d[key]
+            verdict = "supported" if c.get("supported") else "not supported"
+            parts.append(
+                f'<text x="{bar_l}" y="{y+64}" font-size="10.5" fill="#444">'
+                f'&#916; = {c["delta"]:+.3f}, {c["level"]:.1f}% CI '
+                f'[{c["lo"]:+.3f}, {c["hi"]:+.3f}] &#8212; {verdict}</text>')
+        y += 96
+
+    n_ep = sum(c.get("n", 0) for c in cells.values())
+    levels = sorted({round(c.get("level", 0), 1)
+                     for c in (report.get("confirmatory") or {}).values()})
+    lvl = (" Confirmatory level %.1f%% over %d test(s)."
+           % (levels[-1], len(report.get("confirmatory") or {}))) if levels else ""
+    parts.append(f'<text x="{W//2}" y="{H-10}" text-anchor="middle" font-size="9.5" '
+                 f'fill="#777">Preregistered, {n_ep:,} episodes.{lvl} '
+                 f'{_source_note(source)}</text>')
+    parts.append("</svg>")
+    _write(path, parts)
+
+
 def from_report(report, outdir, source=None):
     """Render every figure into `outdir`. The directory is written in place.
 
@@ -361,13 +510,27 @@ def from_report(report, outdir, source=None):
     degenerate = [k.split(":", 1)[1]
                   for k in (report.get("degenerate_intervals") or {})
                   if k.startswith("cells:")]
+    # A pass-rate chart spanning arms served under different protocols is a
+    # capability comparison the data does not support. compare.py prints that
+    # caveat; the figure has to carry it too, or the figure disagrees with the
+    # report it was rendered from.
+    pairs = report.get("arm_protocol_drift_pairs") or []
+    drift_note = ""
+    if pairs:
+        keys = sorted({k for p_ in pairs for k in p_.get("keys", [])
+                       if not k.startswith("env_")})
+        drift_note = (" NOT comparable across arms: %d arm pair(s) differ on %s."
+                      % (len(pairs), ", ".join(keys) or "protocol"))
     if cells:
         pass_rates_svg(
             cells, os.path.join(outdir, "pass_rates.generated.svg"),
-            subtitle=f"{episode_caption(report)} {_source_note(source)}",
+            subtitle=f"{episode_caption(report)} {_source_note(source)}{drift_note}",
             degenerate=degenerate)
     repeat_deltas_svg(report, os.path.join(outdir, "repeat_deltas.generated.svg"),
                       source=source)
+    graphical_abstract_svg(report,
+                           os.path.join(outdir, "graphical_abstract.generated.svg"),
+                           source=source)
     interaction_svg(report, os.path.join(outdir, "interaction.generated.svg"))
     if report.get("interaction_paired"):
         interaction_svg(report,

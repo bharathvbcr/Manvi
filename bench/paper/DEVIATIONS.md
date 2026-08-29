@@ -130,10 +130,15 @@ overstatement; **this entry is authoritative where the two disagree.**
 statistical weakness. Two specifics belong in the manuscript rather than being
 left to a reader inferring from an `n` column:
 
-1. **Interval coverage degrades.** Measured on the completed `ext-cerebras`
-   grid, the percentile bootstrap delivered 94.1% against 95% nominal at n=20.
-   At n=5 it is materially worse — this is the defect §5 was written to address,
-   and these six cells reintroduce it.
+1. **Interval coverage degrades — now measured, and worse than estimated.**
+   The percentile bootstrap delivers 94.1% against 95% nominal at n=20. At the
+   n=5 cell shape `compare.py` audits it at **82.3%** (±0.5 over 5,000
+   Monte-Carlo trials). The consequence is stated by the tool itself: across
+   the 16 ladder intervals of the v2 grid, 4 exclude zero, and
+   **P(≥1 excludes zero | global null) = 96% at the measured coverage.**
+   Four exclusions is what pure noise produces almost every time at this
+   coverage. The n=5 H3 cells therefore support no claim of effect — only
+   "not detectable at this n" — and this is the direct, quantified cost of D2.
 2. **H4 on those six is not inferential.** The capability × harness interaction
    over the six reduced ablations will be very wide and should be reported as
    descriptive. H4 on the *primary* contrast is unaffected: both arms hold
@@ -239,17 +244,32 @@ zero. The two arms lose signal in opposite directions:
   `pratt_parse` 0.80–1.00 across the nine cells — while `json_patch` spans
   0.20–1.00. Signal is unevenly distributed, not absent.
 - Ornith: `ast_transformer` is floored at 0/20 in `full`, and `json_patch` and
-  `ot_transform` sit at 19/20. Whether the floor holds across *every* Ornith
-  cell cannot be settled until P6 completes, and the same §11.2 check should be
-  run on this arm then — under §11's own definition it is the **weaker** arm,
-  so condition 2 does not formally apply to it, which is precisely the
-  asymmetry named above.
+  `ot_transform` sit at 19/20.
 
-The two arms therefore lose signal on different tasks: `ast_transformer` is
-qwen's third-most-variable task and may be Ornith's least informative. So
-per-arm deltas are weighted toward different tasks, and any cross-arm
-interaction (H4) compares two means whose informative mass sits in different
-places. **The per-task profile must be
+**Resolved — the floor does not hold across the arm.** With all nine Ornith
+cells complete, `ast_transformer` scores 0/20 in `full`, `baseline` and
+`no-outcap`, but **1/5 in `no-checklist` and 3/5 in `no-nativetools`**. It is
+not floored in every cell, and no other task is either. Running the same check
+in the saturation direction: no Ornith task is passed in every cell (`json_patch`
+comes closest and drops to 3/5 under `no-verifygate`).
+
+So **both arms clear §11.2's condition in both directions** — zero tasks
+saturated, zero floored, on either arm. The task set required no revision and
+none was made.
+
+This is the second time a degeneracy that looked absolute in one cell dissolved
+when the whole arm was examined; O1 was the first. The lesson is recorded rather
+than quietly dropped: **a task pinned at 0 or 20 in the `full` cell says nothing
+about whether it is informative in the experiment**, because the ablations are
+precisely the cells where it moves. Both O1's and O2's original framings
+generalised from `full` alone, and both were wrong to.
+
+The two arms still weight their deltas differently — `ast_transformer` carries
+real signal on qwen and almost none on Ornith, where it moves only under two of
+nine configurations — so any cross-arm interaction (H4) compares two means whose
+informative mass sits in different places. But that is a statement about
+*weighting*, not about dead tasks, and it is much weaker than what this entry
+originally claimed. **The per-task profile must be
 reported alongside H4**, not just the aggregate; the aggregate can agree while
 the profiles disagree, which is already visible between qwen and `ext-cerebras`.
 
@@ -269,6 +289,102 @@ the qwen-vs-Ornith interaction is a cleaner capability × harness test than
 either against `ext-cerebras`, and should be presented as the primary H4
 contrast, with the hosted arm as the third point.
 
+## O4 — Every v2 episode carries a false containment note
+
+Found while asking whether the v1 exploitation audit had ever been repeated on
+v2. It had not, and the first v2 episode inspected opened with this:
+
+```
+{"t": "containment", "backend": "bwrap",
+ "note": "shell commands are not OS-contained in this episode"}
+```
+
+Both halves cannot be true. `bwrap` **is** OS containment: `contained_argv()`
+routes Linux through `_bwrap_argv`, and the live process tree on the run host
+shows `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs <bench root>`
+wrapping every shell command.
+
+**Cause.** `harness.py` emitted the note on `backend != "sandbox-exec"` — the
+same macOS-only assumption that had already been found and fixed in the C5
+containment probe, surviving in a second place. On Linux the condition is always
+true, so **every episode of the entire GPU arm is stamped as uncontained while
+being contained.**
+
+**Scope.** Annotation only. The note lives in `events`, never in `row`,
+`protocol` or `summary`, so it touches no pass rate, no delta and no pooling
+key. `res.containment` separately records the correct backend. No result
+changes.
+
+**Why it still matters.** This is the paper's own subject: a provenance record
+that misstates a safety property. v1's defects overstated the instrument;
+this one understates it. Both leave an auditor unable to tell a contained run
+from a leaky one by reading the record — which is exactly the failure the v1
+audit existed to rule out.
+
+**Fixed, and deliberately not deployed.** The decision now lives in one place,
+`tools.containment_event()`, with a regression test in `test_runtime.py` that
+fails against the old condition. The run host is **not** being patched: the
+registered grid must finish on the single instrument revision `82e453a` that
+DEVIATIONS pins, and swapping harness code mid-grid would be a far worse
+deviation than a wrong annotation. So:
+
+- every v2 episode already on disk, and every one still to be written, carries
+  the incorrect note;
+- **the `ext-cerebras` arm is unaffected.** It ran from macOS, where the backend
+  *is* `sandbox-exec`, so the old condition was false and no note was emitted.
+  Its episodes read `{"t": "containment", "backend": "sandbox-exec"}`, correctly;
+- readers and any audit script must treat `events[].note` on the v2 grid as
+  known-wrong and take **`events[].backend`** as the record — it correctly says
+  `bwrap` on every episode;
+- the fix applies to the next grid, not this one.
+
+**Correction to an earlier draft of this entry**, which named
+`protocol.env_containment` and `res.containment` as the authoritative fields.
+Neither is persisted. A real episode's protocol block holds seventeen keys and
+**none of them is containment**; `Result.containment` is assigned in the harness
+and never written to disk. The containment event is the *only* per-episode
+record, which is what makes a wrong note in it worth correcting rather than
+shrugging at.
+
+**A second finding falls out of that.** Containment is not in `PROTOCOL_KEYS`,
+so it is **not a pooling key**: an episode run with `MH_UNCONTAINED=1` would
+pool silently with a contained one, and only the event would show it. No
+contamination occurred here — every v2 episode records `bwrap` and every
+`ext-cerebras` episode records `sandbox-exec` — but for a study whose central
+claim is that containment was active, the property should be stamped and
+pooled on, not merely logged. Owed for the next grid alongside the O4 fix.
+
+## O5 — The exploitation audit has not been repeated on v2
+
+v1's headline credibility claim is an audit of all 760 episodes and 3,879
+file-writing tool calls that found **zero** exploiting the five defects. **No
+equivalent audit has been run on v2, or on `ext-cerebras`.** There is no audit
+script in the repository; the v1 pass was one-off analysis.
+
+The gap is not that exploitation is suspected — the defects v1 had are fixed and
+the tasks are stricter. It is that "the fixes are correct, therefore no episode
+cheated" is inference, and the same inference was available for v1 before anyone
+checked. O4 is evidence for taking that distinction seriously: the containment
+record on this grid is demonstrably wrong in one direction, found only because
+someone looked.
+
+Two specifics make v2 *more* in need of an audit than v1, not less:
+
+1. **The Linux containment path is new code.** It had never been exercised
+   before this grid, and ungating it revealed hidden tests reachable through
+   `TMPDIR` bind ordering, orphaned children surviving their parent, and a probe
+   asserting the wrong invariant. All were fixed before the grid started, but
+   the whole GPU arm is the first real workload that path has carried.
+2. **The episode record supports the query.** Every episode stores `events` and
+   `verify_output`, so the audit is a query over data already on disk, not a
+   re-run.
+
+**Owed before publication:** an audit script, run over all v2 and `ext-cerebras`
+episodes, checking that no episode read or wrote a hidden test, that no pass was
+recorded without the verifier running, and that the containment backend in each
+episode matches the one its host could provide. Its result belongs in the
+manuscript next to v1's, whatever it says.
+
 ## What has *not* been deviated from
 
 - **§4 primary analysis** — per-repeat pass rate, weighted mean over repeats,
@@ -280,9 +396,12 @@ contrast, with the hosted arm as the third point.
   timeout. Still the only exclusion. Notably, the account-refusal rows that the
   `ext-cerebras` run produced are *not* excluded by any rule; they are re-run.
 - **§7 infrastructure-failure dual report.**
-- **§8 stopping rule** — all cells run to completion, no interim analysis, no
-  early stop. The observations in this document are marginal rates and
-  operational health, not contrasts; no hypothesis has been evaluated.
+- **§8 stopping rule** — honoured in full. All 18 cells ran to completion; there
+  was no early stop and no contrast was computed at any point during
+  collection. Everything observed while the grid ran was a marginal rate or an
+  operational health field. **The registered analysis (`compare.py --tag v2`)
+  was run once, after the final episode was written and the grid was verified
+  complete at 1,440/1,440.**
 - **Protocol** — `--max-steps 0 --max-wall 1800 --num-ctx 32768
   --num-predict 4096 --temperature 0.6 --think`, sole tenant, `concurrency 1`,
   one runner revision (`82e453a`) throughout. Stamped on every episode.

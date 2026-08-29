@@ -1,0 +1,1620 @@
+{
+  "cells": {
+    "cerebras:gpt-oss-120b|baseline": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.625,
+        "1": 0.875,
+        "2": 0.625,
+        "3": 0.75,
+        "4": 0.75,
+        "5": 0.75,
+        "6": 0.5,
+        "7": 0.625,
+        "8": 0.875,
+        "9": 0.25,
+        "10": 0.0,
+        "11": 0.5,
+        "12": 0.625,
+        "13": 1.0,
+        "14": 0.5,
+        "15": 0.75,
+        "16": 0.875,
+        "17": 0.625,
+        "18": 1.0,
+        "19": 0.75
+      },
+      "mean": 0.6625,
+      "lo": 0.55625,
+      "hi": 0.75625,
+      "finished": 145,
+      "finish_rate": 0.90625
+    },
+    "cerebras:gpt-oss-120b|full": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.875,
+        "1": 0.625,
+        "2": 0.625,
+        "3": 0.75,
+        "4": 0.875,
+        "5": 0.875,
+        "6": 0.75,
+        "7": 0.75,
+        "8": 0.75,
+        "9": 0.875,
+        "10": 0.875,
+        "11": 1.0,
+        "12": 0.875,
+        "13": 0.625,
+        "14": 0.75,
+        "15": 0.75,
+        "16": 0.875,
+        "17": 0.75,
+        "18": 1.0,
+        "19": 1.0
+      },
+      "mean": 0.8125,
+      "lo": 0.7625,
+      "hi": 0.8625,
+      "finished": 72,
+      "finish_rate": 0.45
+    },
+    "cerebras:gpt-oss-120b|no-checklist": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 0.875,
+        "3": 1.0,
+        "4": 0.75,
+        "5": 0.75,
+        "6": 1.0,
+        "7": 0.75,
+        "8": 0.625,
+        "9": 0.875,
+        "10": 1.0,
+        "11": 1.0,
+        "12": 1.0,
+        "13": 0.75,
+        "14": 0.875,
+        "15": 0.875,
+        "16": 0.75,
+        "17": 1.0,
+        "18": 1.0,
+        "19": 0.875
+      },
+      "mean": 0.8875,
+      "lo": 0.8375,
+      "hi": 0.9375,
+      "finished": 103,
+      "finish_rate": 0.64375
+    },
+    "cerebras:gpt-oss-120b|no-envboot": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 1.0,
+        "2": 0.625,
+        "3": 0.875,
+        "4": 0.875,
+        "5": 0.75,
+        "6": 0.75,
+        "7": 0.875,
+        "8": 0.625,
+        "9": 0.75,
+        "10": 1.0,
+        "11": 0.875,
+        "12": 0.875,
+        "13": 0.625,
+        "14": 0.75,
+        "15": 1.0,
+        "16": 0.625,
+        "17": 0.75,
+        "18": 0.875,
+        "19": 0.875
+      },
+      "mean": 0.80625,
+      "lo": 0.75625,
+      "hi": 0.8625,
+      "finished": 68,
+      "finish_rate": 0.425
+    },
+    "cerebras:gpt-oss-120b|no-groundfs": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.75,
+        "2": 0.875,
+        "3": 0.75,
+        "4": 0.875,
+        "5": 0.625,
+        "6": 0.875,
+        "7": 0.875,
+        "8": 1.0,
+        "9": 1.0,
+        "10": 0.75,
+        "11": 0.625,
+        "12": 0.75,
+        "13": 0.5,
+        "14": 0.875,
+        "15": 1.0,
+        "16": 0.75,
+        "17": 1.0,
+        "18": 0.75,
+        "19": 0.75
+      },
+      "mean": 0.80625,
+      "lo": 0.75,
+      "hi": 0.8625,
+      "finished": 66,
+      "finish_rate": 0.4125
+    },
+    "cerebras:gpt-oss-120b|no-loopbreak": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.875,
+        "1": 0.875,
+        "2": 0.875,
+        "3": 0.875,
+        "4": 0.5,
+        "5": 0.5,
+        "6": 0.75,
+        "7": 0.875,
+        "8": 0.875,
+        "9": 0.875,
+        "10": 0.875,
+        "11": 0.75,
+        "12": 0.875,
+        "13": 0.75,
+        "14": 1.0,
+        "15": 0.875,
+        "16": 0.875,
+        "17": 0.875,
+        "18": 0.75,
+        "19": 1.0
+      },
+      "mean": 0.825,
+      "lo": 0.76875,
+      "hi": 0.875,
+      "finished": 69,
+      "finish_rate": 0.43125
+    },
+    "cerebras:gpt-oss-120b|no-nativetools": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.5,
+        "2": 0.75,
+        "3": 0.625,
+        "4": 0.625,
+        "5": 0.625,
+        "6": 0.875,
+        "7": 0.625,
+        "8": 0.5,
+        "9": 0.625,
+        "10": 0.75,
+        "11": 0.5,
+        "12": 0.75,
+        "13": 0.5,
+        "14": 0.875,
+        "15": 0.625,
+        "16": 0.625,
+        "17": 0.875,
+        "18": 0.75,
+        "19": 0.625
+      },
+      "mean": 0.66875,
+      "lo": 0.61875,
+      "hi": 0.725,
+      "finished": 46,
+      "finish_rate": 0.2875
+    },
+    "cerebras:gpt-oss-120b|no-outcap": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.875,
+        "1": 0.875,
+        "2": 0.75,
+        "3": 0.75,
+        "4": 1.0,
+        "5": 0.875,
+        "6": 0.875,
+        "7": 1.0,
+        "8": 0.5,
+        "9": 1.0,
+        "10": 0.875,
+        "11": 0.875,
+        "12": 1.0,
+        "13": 0.75,
+        "14": 0.75,
+        "15": 0.75,
+        "16": 0.875,
+        "17": 0.875,
+        "18": 0.75,
+        "19": 0.875
+      },
+      "mean": 0.84375,
+      "lo": 0.7875,
+      "hi": 0.89375,
+      "finished": 74,
+      "finish_rate": 0.4625
+    },
+    "cerebras:gpt-oss-120b|no-verifygate": {
+      "role": "unknown",
+      "n_repeats": 20,
+      "n": 160,
+      "n_usable": 160,
+      "n_starved": 0,
+      "n_unserved": 0,
+      "rates": {
+        "0": 0.75,
+        "1": 0.5,
+        "2": 0.75,
+        "3": 0.625,
+        "4": 0.75,
+        "5": 0.75,
+        "6": 0.625,
+        "7": 0.75,
+        "8": 0.875,
+        "9": 0.75,
+        "10": 0.75,
+        "11": 0.75,
+        "12": 0.75,
+        "13": 0.625,
+        "14": 0.875,
+        "15": 0.625,
+        "16": 0.625,
+        "17": 0.875,
+        "18": 0.75,
+        "19": 0.5
+      },
+      "mean": 0.7125,
+      "lo": 0.6625,
+      "hi": 0.75625,
+      "finished": 86,
+      "finish_rate": 0.5375
+    }
+  },
+  "deltas": {
+    "cerebras:gpt-oss-120b|baseline": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.15,
+      "lo": 0.03125,
+      "hi": 0.275
+    },
+    "cerebras:gpt-oss-120b|no-envboot": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.00625,
+      "lo": -0.0625,
+      "hi": 0.06875
+    },
+    "cerebras:gpt-oss-120b|no-verifygate": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.1,
+      "lo": 0.0375,
+      "hi": 0.16875
+    },
+    "cerebras:gpt-oss-120b|no-checklist": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": -0.075,
+      "lo": -0.14375,
+      "hi": -0.00625
+    },
+    "cerebras:gpt-oss-120b|no-loopbreak": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": -0.0125,
+      "lo": -0.0875,
+      "hi": 0.075
+    },
+    "cerebras:gpt-oss-120b|no-outcap": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": -0.03125,
+      "lo": -0.0875,
+      "hi": 0.03125
+    },
+    "cerebras:gpt-oss-120b|no-groundfs": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.00625,
+      "lo": -0.075,
+      "hi": 0.09375
+    },
+    "cerebras:gpt-oss-120b|no-nativetools": {
+      "role": "unknown",
+      "n": 20,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "mean": 0.14375,
+      "lo": 0.075,
+      "hi": 0.2125
+    }
+  },
+  "interaction": {
+    "_note": "need two models with full+baseline"
+  },
+  "per_task": {
+    "cerebras:gpt-oss-120b|baseline": {
+      "ast_transformer": {
+        "passed": 6,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 17,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 13,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 18,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 17,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 17,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 6,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 12,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|full": {
+      "ast_transformer": {
+        "passed": 13,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 19,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 16,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 19,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 20,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 10,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 13,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-checklist": {
+      "ast_transformer": {
+        "passed": 15,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 20,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 20,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 13,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 14,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-envboot": {
+      "ast_transformer": {
+        "passed": 11,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 18,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 17,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 6,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 17,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-groundfs": {
+      "ast_transformer": {
+        "passed": 12,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 18,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 17,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 11,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 11,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-loopbreak": {
+      "ast_transformer": {
+        "passed": 8,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 17,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 18,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 12,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 17,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-nativetools": {
+      "ast_transformer": {
+        "passed": 4,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 9,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 19,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 13,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 2,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 20,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-outcap": {
+      "ast_transformer": {
+        "passed": 10,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 15,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 17,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 16,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 17,
+        "n": 20
+      }
+    },
+    "cerebras:gpt-oss-120b|no-verifygate": {
+      "ast_transformer": {
+        "passed": 10,
+        "n": 20
+      },
+      "cache_invalidation_dist": {
+        "passed": 20,
+        "n": 20
+      },
+      "concurrency_race": {
+        "passed": 14,
+        "n": 20
+      },
+      "json_patch": {
+        "passed": 20,
+        "n": 20
+      },
+      "nfa_match": {
+        "passed": 16,
+        "n": 20
+      },
+      "ot_transform": {
+        "passed": 20,
+        "n": 20
+      },
+      "pratt_parse": {
+        "passed": 2,
+        "n": 20
+      },
+      "state_machine_fuzz": {
+        "passed": 12,
+        "n": 20
+      }
+    }
+  },
+  "stops": {
+    "cerebras:gpt-oss-120b|baseline": {
+      "finished": 145,
+      "no_tool_call": 15
+    },
+    "cerebras:gpt-oss-120b|full": {
+      "no_tool_call": 88,
+      "finished": 72
+    },
+    "cerebras:gpt-oss-120b|no-checklist": {
+      "no_tool_call": 57,
+      "finished": 103
+    },
+    "cerebras:gpt-oss-120b|no-envboot": {
+      "no_tool_call": 92,
+      "finished": 68
+    },
+    "cerebras:gpt-oss-120b|no-groundfs": {
+      "no_tool_call": 94,
+      "finished": 66
+    },
+    "cerebras:gpt-oss-120b|no-loopbreak": {
+      "no_tool_call": 91,
+      "finished": 69
+    },
+    "cerebras:gpt-oss-120b|no-nativetools": {
+      "no_tool_call": 111,
+      "finished": 46,
+      "context_exhausted": 3
+    },
+    "cerebras:gpt-oss-120b|no-outcap": {
+      "no_tool_call": 86,
+      "finished": 74
+    },
+    "cerebras:gpt-oss-120b|no-verifygate": {
+      "no_tool_call": 74,
+      "finished": 86
+    }
+  },
+  "provenance": {
+    "cerebras:gpt-oss-120b|baseline": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__baseline__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": null
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|full": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__full__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13027.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-checklist": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-checklist__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13212.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-envboot": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-envboot__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13212.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-groundfs": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-groundfs__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13295.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-loopbreak": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-loopbreak__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13212.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-nativetools": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-nativetools__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13295.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-outcap": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-outcap__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13295.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    },
+    "cerebras:gpt-oss-120b|no-verifygate": {
+      "dirs": [
+        "cerebras_gpt-oss-120b__no-verifygate__ext-cerebras"
+      ],
+      "pooled": false,
+      "reps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "rep_denominators": {
+        "0": 8,
+        "1": 8,
+        "2": 8,
+        "3": 8,
+        "4": 8,
+        "5": 8,
+        "6": 8,
+        "7": 8,
+        "8": 8,
+        "9": 8,
+        "10": 8,
+        "11": 8,
+        "12": 8,
+        "13": 8,
+        "14": 8,
+        "15": 8,
+        "16": 8,
+        "17": 8,
+        "18": 8,
+        "19": 8
+      },
+      "ragged_reps": [],
+      "protocol": {
+        "max_steps": 0,
+        "max_wall": 1800,
+        "share_gpu": false,
+        "num_ctx": 65536,
+        "num_predict": 16384,
+        "temperature": 0.6,
+        "think": true,
+        "top_p": 0.95,
+        "reasoning_effort": "medium",
+        "env_node": null,
+        "env_gpu": null,
+        "env_ollama_version": null,
+        "env_platform": null,
+        "env_api_provider": "cerebras",
+        "env_api_endpoint": "https://api.cerebras.ai/v1/chat/completions",
+        "env_client_node": "Mac-13212.lan"
+      },
+      "protocol_drift": [],
+      "protocol_drift_allowed": false
+    }
+  },
+  "interaction_paired": {
+    "_note": "need two models with full+baseline"
+  },
+  "degenerate_intervals": {},
+  "confirmatory": {
+    "H1|cerebras:gpt-oss-120b|baseline": {
+      "hypothesis": "H1",
+      "claim": "full harness beats all-off baseline",
+      "model": "cerebras:gpt-oss-120b",
+      "ablation": "baseline",
+      "n": 20,
+      "delta": 0.15,
+      "lo": 0.01875,
+      "hi": 0.3,
+      "level": 97.46794344808963,
+      "sidak_alpha": 0.025320565519103666,
+      "n_tests": 2,
+      "ci95": [
+        0.03125,
+        0.275
+      ],
+      "supported": true,
+      "clears_95_only": false
+    },
+    "H2|cerebras:gpt-oss-120b|no-outcap": {
+      "hypothesis": "H2",
+      "claim": "the output cap does not hurt",
+      "model": "cerebras:gpt-oss-120b",
+      "ablation": "no-outcap",
+      "n": 20,
+      "delta": -0.03125,
+      "lo": -0.1,
+      "hi": 0.0375,
+      "level": 97.46794344808963,
+      "sidak_alpha": 0.025320565519103666,
+      "n_tests": 2,
+      "ci95": [
+        -0.0875,
+        0.03125
+      ],
+      "supported": false,
+      "clears_95_only": false
+    }
+  },
+  "unserved_cells": {},
+  "coverage": {
+    "nominal": 0.95,
+    "measured": 0.9408,
+    "mc_stderr": 0.0033375248313683007,
+    "zero_width_fraction": 0.0,
+    "trials": 5000,
+    "n_repeats": 20,
+    "n_tasks": 8,
+    "p": 0.80625,
+    "n_boot": 10000,
+    "rng_seed": 20260824,
+    "distinct_samples": 1765,
+    "note": "Monte-Carlo coverage of the percentile bootstrap against a known Binomial truth at this grid's cell shape. Measured well below nominal is the known small-n deficiency of the percentile method, not an implementation fault -- but an interval reported as 95% that covers less than that is a reader-facing error either way.",
+    "p_source": "median cell mean",
+    "cell_mean_range": [
+      0.6625,
+      0.8875
+    ]
+  },
+  "multiplicity": {
+    "n_intervals": 8,
+    "n_excluding_zero": 4,
+    "nominal_per_interval_coverage": 0.95,
+    "fwer_at_nominal_coverage": 0.33657956871093775,
+    "sidak_alpha_for_fwer": 0.006391150954545011,
+    "fwer_target": 0.05,
+    "correction_applied": false,
+    "note": "No multiplicity correction is applied to the reported intervals; these are the numbers needed to read them. With this many intervals, one excluding zero is the expected outcome under a global null, not a finding.",
+    "measured_per_interval_coverage": 0.9408,
+    "fwer_at_measured_coverage": 0.3862684213247122
+  }
+}

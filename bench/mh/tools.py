@@ -136,6 +136,21 @@ def containment_backend():
     return None
 
 
+def containment_event(backend):
+    """The provenance record of this episode's containment.
+
+    Only a missing backend and an explicit opt-out are uncontained. Naming one
+    platform's mechanism as the sole real containment is how a correctly
+    contained episode comes to be stamped as an uncontained one -- the record
+    then understates the instrument, and an auditor reading it cannot tell a
+    contained run from a leaky one.
+    """
+    ev = {"t": "containment", "backend": backend}
+    if backend in (None, "off"):
+        ev["note"] = "shell commands are not OS-contained in this episode"
+    return ev
+
+
 def _bwrap_argv(exe, argv, allow_write, protected_roots):
     """bubblewrap arguments. Order matters: later binds win over earlier ones.
 

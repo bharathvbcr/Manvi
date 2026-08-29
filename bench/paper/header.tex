@@ -1,0 +1,23 @@
+% Wide result tables are the reason for most of this preamble.
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+
+% Tables in this paper are numerous and wide; shrink them rather than let them
+% run into the margin.
+\AtBeginEnvironment{longtable}{\small}
+\AtBeginEnvironment{tabular}{\small}
+
+% Keep figures near their captions.
+\floatplacement{figure}{H}
+
+% Code spans appear constantly (flag names, file paths). Make them tight.
+\let\oldtexttt\texttt
+\renewcommand{\texttt}[1]{{\small\oldtexttt{#1}}}
+
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}

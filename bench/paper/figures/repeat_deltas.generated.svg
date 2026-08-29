@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="340" viewBox="0 0 720 340" font-family="Helvetica, Arial, sans-serif">
 <rect width="720" height="340" fill="#fff"/>
-<text x="360" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Paired &#916; = full &#8722; baseline, by repeat (frozen protocol)</text>
-<text x="360" y="44" text-anchor="middle" font-size="11" fill="#555">Each point is one pinned seed. Generated from stats-hard.json.</text>
+<text x="360" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Paired &#916; = full &#8722; baseline, by repeat</text>
+<text x="360" y="42" text-anchor="middle" font-size="11" fill="#555">Each point is one pinned seed. Generated from stats-all3.json.</text>
 <line x1="70" y1="190" x2="680" y2="190" stroke="#222"/>
 <line x1="70" y1="70" x2="70" y2="300" stroke="#222"/>
 <text x="28" y="185" transform="rotate(-90 28 185)" font-size="11" fill="#333">&#916; pass rate</text>
@@ -14,32 +14,102 @@
 <text x="64" y="254.0" text-anchor="end">-0.25</text>
 <line x1="70" y1="250.0" x2="680" y2="250.0" stroke="#f0f0f0"/>
 </g>
-<polyline fill="none" stroke="#2f6fed" stroke-width="2" points="140.0,160.0 265.0,190.0 390.0,160.0 515.0,190.0 640.0,190.0"/>
+<polyline fill="none" stroke="#2f6fed" stroke-width="2" points="140.0,190.0 166.3,70.0 192.6,160.0 218.9,130.0 245.3,130.0 271.6,190.0 297.9,130.0 324.2,130.0 350.5,130.0 376.8,190.0 403.2,160.0 429.5,220.0 455.8,130.0 482.1,160.0 508.4,100.0 534.7,160.0 561.1,220.0 587.4,130.0 613.7,190.0 640.0,130.0"/>
 <g fill="#2f6fed">
-<circle cx="140.0" cy="160.0" r="5"/>
-<circle cx="265.0" cy="190.0" r="5"/>
-<circle cx="390.0" cy="160.0" r="5"/>
-<circle cx="515.0" cy="190.0" r="5"/>
-<circle cx="640.0" cy="190.0" r="5"/>
+<circle cx="140.0" cy="190.0" r="5"/>
+<circle cx="166.3" cy="70.0" r="5"/>
+<circle cx="192.6" cy="160.0" r="5"/>
+<circle cx="218.9" cy="130.0" r="5"/>
+<circle cx="245.3" cy="130.0" r="5"/>
+<circle cx="271.6" cy="190.0" r="5"/>
+<circle cx="297.9" cy="130.0" r="5"/>
+<circle cx="324.2" cy="130.0" r="5"/>
+<circle cx="350.5" cy="130.0" r="5"/>
+<circle cx="376.8" cy="190.0" r="5"/>
+<circle cx="403.2" cy="160.0" r="5"/>
+<circle cx="429.5" cy="220.0" r="5"/>
+<circle cx="455.8" cy="130.0" r="5"/>
+<circle cx="482.1" cy="160.0" r="5"/>
+<circle cx="508.4" cy="100.0" r="5"/>
+<circle cx="534.7" cy="160.0" r="5"/>
+<circle cx="561.1" cy="220.0" r="5"/>
+<circle cx="587.4" cy="130.0" r="5"/>
+<circle cx="613.7" cy="190.0" r="5"/>
+<circle cx="640.0" cy="130.0" r="5"/>
 </g>
-<polyline fill="none" stroke="#c45c26" stroke-width="2" points="140.0,130.0 265.0,220.0 390.0,130.0 515.0,190.0 640.0,190.0"/>
+<polyline fill="none" stroke="#c45c26" stroke-width="2" points="140.0,190.0 166.3,100.0 192.6,160.0 218.9,130.0 245.3,70.0 271.6,160.0 297.9,190.0 324.2,130.0 350.5,160.0 376.8,190.0 403.2,160.0 429.5,100.0 455.8,220.0 482.1,130.0 508.4,160.0 534.7,100.0 561.1,130.0 587.4,70.0 613.7,130.0 640.0,130.0"/>
 <g fill="#c45c26">
+<circle cx="140.0" cy="190.0" r="5"/>
+<circle cx="166.3" cy="100.0" r="5"/>
+<circle cx="192.6" cy="160.0" r="5"/>
+<circle cx="218.9" cy="130.0" r="5"/>
+<circle cx="245.3" cy="70.0" r="5"/>
+<circle cx="271.6" cy="160.0" r="5"/>
+<circle cx="297.9" cy="190.0" r="5"/>
+<circle cx="324.2" cy="130.0" r="5"/>
+<circle cx="350.5" cy="160.0" r="5"/>
+<circle cx="376.8" cy="190.0" r="5"/>
+<circle cx="403.2" cy="160.0" r="5"/>
+<circle cx="429.5" cy="100.0" r="5"/>
+<circle cx="455.8" cy="220.0" r="5"/>
+<circle cx="482.1" cy="130.0" r="5"/>
+<circle cx="508.4" cy="160.0" r="5"/>
+<circle cx="534.7" cy="100.0" r="5"/>
+<circle cx="561.1" cy="130.0" r="5"/>
+<circle cx="587.4" cy="70.0" r="5"/>
+<circle cx="613.7" cy="130.0" r="5"/>
+<circle cx="640.0" cy="130.0" r="5"/>
+</g>
+<polyline fill="none" stroke="#2e8b57" stroke-width="2" points="140.0,130.0 166.3,250.0 192.6,190.0 218.9,190.0 245.3,160.0 271.6,160.0 297.9,130.0 324.2,160.0 350.5,220.0 376.8,40.0 403.2,-20.0 429.5,70.0 455.8,130.0 482.1,280.0 508.4,130.0 534.7,190.0 561.1,190.0 587.4,160.0 613.7,190.0 640.0,130.0"/>
+<g fill="#2e8b57">
 <circle cx="140.0" cy="130.0" r="5"/>
-<circle cx="265.0" cy="220.0" r="5"/>
-<circle cx="390.0" cy="130.0" r="5"/>
-<circle cx="515.0" cy="190.0" r="5"/>
-<circle cx="640.0" cy="190.0" r="5"/>
+<circle cx="166.3" cy="250.0" r="5"/>
+<circle cx="192.6" cy="190.0" r="5"/>
+<circle cx="218.9" cy="190.0" r="5"/>
+<circle cx="245.3" cy="160.0" r="5"/>
+<circle cx="271.6" cy="160.0" r="5"/>
+<circle cx="297.9" cy="130.0" r="5"/>
+<circle cx="324.2" cy="160.0" r="5"/>
+<circle cx="350.5" cy="220.0" r="5"/>
+<circle cx="376.8" cy="40.0" r="5"/>
+<circle cx="403.2" cy="-20.0" r="5"/>
+<circle cx="429.5" cy="70.0" r="5"/>
+<circle cx="455.8" cy="130.0" r="5"/>
+<circle cx="482.1" cy="280.0" r="5"/>
+<circle cx="508.4" cy="130.0" r="5"/>
+<circle cx="534.7" cy="190.0" r="5"/>
+<circle cx="561.1" cy="190.0" r="5"/>
+<circle cx="587.4" cy="160.0" r="5"/>
+<circle cx="613.7" cy="190.0" r="5"/>
+<circle cx="640.0" cy="130.0" r="5"/>
 </g>
 <g font-size="10" fill="#333">
 <text x="140.0" y="318" text-anchor="middle">0</text>
-<text x="265.0" y="318" text-anchor="middle">1</text>
-<text x="390.0" y="318" text-anchor="middle">2</text>
-<text x="515.0" y="318" text-anchor="middle">3</text>
-<text x="640.0" y="318" text-anchor="middle">4</text>
+<text x="166.3" y="318" text-anchor="middle">1</text>
+<text x="192.6" y="318" text-anchor="middle">2</text>
+<text x="218.9" y="318" text-anchor="middle">3</text>
+<text x="245.3" y="318" text-anchor="middle">4</text>
+<text x="271.6" y="318" text-anchor="middle">5</text>
+<text x="297.9" y="318" text-anchor="middle">6</text>
+<text x="324.2" y="318" text-anchor="middle">7</text>
+<text x="350.5" y="318" text-anchor="middle">8</text>
+<text x="376.8" y="318" text-anchor="middle">9</text>
+<text x="403.2" y="318" text-anchor="middle">10</text>
+<text x="429.5" y="318" text-anchor="middle">11</text>
+<text x="455.8" y="318" text-anchor="middle">12</text>
+<text x="482.1" y="318" text-anchor="middle">13</text>
+<text x="508.4" y="318" text-anchor="middle">14</text>
+<text x="534.7" y="318" text-anchor="middle">15</text>
+<text x="561.1" y="318" text-anchor="middle">16</text>
+<text x="587.4" y="318" text-anchor="middle">17</text>
+<text x="613.7" y="318" text-anchor="middle">18</text>
+<text x="640.0" y="318" text-anchor="middle">19</text>
 <text x="375" y="334" text-anchor="middle" fill="#555">repeat (pinned seed)</text>
 </g>
-<rect x="530" y="62" width="10" height="10" fill="#2f6fed"/>
-<text x="546" y="71" font-size="10" fill="#333">qwen3.8</text>
-<rect x="530" y="78" width="10" height="10" fill="#c45c26"/>
-<text x="546" y="87" font-size="10" fill="#333">Ornith-1.5-3</text>
+<rect x="230" y="52" width="10" height="10" fill="#2f6fed"/>
+<text x="246" y="61" font-size="10" fill="#333">qwen3.8</text>
+<rect x="303" y="52" width="10" height="10" fill="#c45c26"/>
+<text x="319" y="61" font-size="10" fill="#333">Ornith-1.5-35B-A3B</text>
+<rect x="438" y="52" width="10" height="10" fill="#2e8b57"/>
+<text x="454" y="61" font-size="10" fill="#333">gpt-oss-120b</text>
 </svg>
