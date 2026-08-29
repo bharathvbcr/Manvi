@@ -12,6 +12,17 @@ SRC=harness_architecture.md
 BUILD=.build
 mkdir -p "$BUILD"
 
+# Figures are regenerated from the reports they belong to, then rasterised.
+# The pass-rate chart spans all three arms (it carries its own not-comparable
+# caveat); the graphical abstract shows the REGISTERED two-arm family, because
+# its confirmatory level must match Table 6 rather than the six-test pooled
+# sensitivity analysis reported in §5.7.
+( cd .. && python3 figures.py paper/stats-all3.json paper/figures ) >/dev/null
+( cd .. && python3 -c "
+import json, figures
+r = json.load(open('paper/stats-v2.json'))
+figures.graphical_abstract_svg(r, 'paper/figures/graphical_abstract.generated.svg', source='stats-v2.json')
+" ) >/dev/null
 python3 svg2png.py figures/*.svg >/dev/null
 
 TITLE=$(sed -n '1s/^# //p' "$SRC")

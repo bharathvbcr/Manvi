@@ -18,7 +18,7 @@ from mh.stats import (aligned_interaction, bootstrap_ci,
                       interaction, mean, multiplicity_report,
                       pass_counts_by_repeat, pearson_r, rates_of,
                       role_of, sidak_alpha, usable_rows)
-from mh.pool import (arm_drift, contrast_conflicts, contrast_drift,
+from mh.pool import (arm_drift, arms_drift, contrast_conflicts, contrast_drift,
                      merge_conflicts, pooled_drift, ragged_reps,
                      rep_denominators, reps_of, seed_conflicts, seed_reuse,
                      unseeded_cells)
@@ -617,17 +617,24 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
     # normal case once one of them is API-served. The interaction stays valid
     # (each Δ is seed-paired within one arm) but the difference has to be
     # declared, and the pass-rate table above must not be read across arms.
-    arm_keys = arm_drift(prov.get(f"{weak}|full", {}).get("protocol"),
-                         prov.get(f"{strong}|full", {}).get("protocol"))
+    # Every arm in the pool, not just the two the interaction happens to pick.
+    # Comparing only (weak, strong) missed a divergent arm ranked between them.
+    protos = {m: prov.get(f"{m}|full", {}).get("protocol")
+              for m in by_model if prov.get(f"{m}|full", {}).get("protocol")}
+    pairs = arms_drift(protos)
+    arm_keys = sorted({k for _, _, ks in pairs for k in ks})
     report["arm_protocol_drift"] = arm_keys
-    if arm_keys:
-        print(f"\n## NOTE: the two arms ran under different protocols\n")
-        print(f"  {weak}\n  {strong}\n  differ on: {', '.join(arm_keys)}")
-        print("  The interaction below is a difference of WITHIN-arm deltas, "
-              "each seed-paired inside one arm under one protocol, so it "
-              "remains valid across this difference. The pass rates above are "
-              "NOT comparable between these arms and must not be quoted as a "
-              "capability comparison.\n")
+    report["arm_protocol_drift_pairs"] = [
+        {"a": a, "b": b, "keys": ks} for a, b, ks in pairs]
+    if pairs:
+        print("\n## NOTE: arms in this pool ran under different protocols\n")
+        for a, b, ks in pairs:
+            print(f"  {a}\n  {b}\n  differ on: {', '.join(ks)}\n")
+        print("  Each Δ below is seed-paired inside ONE arm under ONE "
+              "protocol, so the interaction remains valid across these "
+              "differences. The pass rates above are NOT comparable between "
+              "the arms named here and must not be quoted as a capability "
+              "comparison.\n")
     # The frozen `_arms` block carries four keys and nothing else; the gap,
     # the tie flag and the models dropped for a non-finite mean go in the
     # paired section, which is not under a reproduction contract.

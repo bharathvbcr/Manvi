@@ -129,6 +129,34 @@ def arm_drift(protocol_a, protocol_b):
     return protocol_drift(protocol_a, protocol_b)
 
 
+def arms_drift(protocol_by_model):
+    """Every pair of ARMS that disagree on protocol, and on what.
+
+    `arm_drift` answers the question for one pair. That was enough while a tag
+    held two arms, and silently stopped being enough at three: the caller
+    picked the two *interaction* arms -- the lowest and highest full-harness
+    mean -- and compared only those. With a hosted arm sitting between two
+    local ones, the comparison ran between the two locals, found them
+    identical, and printed nothing, while the pass-rate table above it listed
+    all three arms with no caveat at all. A check that cannot see the arm it
+    exists to flag reports the same result as a check that ran and passed.
+
+    Returns a sorted list of (model_a, model_b, [keys]) for every differing
+    pair, so the caller can name which arms diverge rather than assert that
+    some do. Arms with no recorded protocol are skipped rather than treated as
+    agreeing with everything.
+    """
+    models = sorted(m for m, p in (protocol_by_model or {}).items() if p)
+    out = []
+    for i in range(len(models)):
+        for j in range(i + 1, len(models)):
+            a, b = models[i], models[j]
+            keys = protocol_drift(protocol_by_model[a], protocol_by_model[b])
+            if keys:
+                out.append((a, b, keys))
+    return out
+
+
 def pooled_drift(sources):
     """Protocol keys that actually disagree somewhere in this pool.
 

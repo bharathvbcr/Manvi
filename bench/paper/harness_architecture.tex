@@ -1355,12 +1355,16 @@ Ornith
 
 \pandocbounded{\includegraphics[keepaspectratio]{figures/pass_rates.generated.png}}
 
-\textbf{Figure 3.} v2 pass rate by configuration and model, with
-percentile bootstrap 95\% intervals. Rendered from
-\texttt{stats-v2.json} by \texttt{figures.py}; a figure cannot disagree
-with a table. Note the interval widths: the three \(n=20\) cells are
-visibly tighter than the six \(n=5\) cells, which is the D2 deviation
-made visual.
+\textbf{Figure 3.} Pass rate by configuration for \textbf{all three
+arms}, 27 cells, with percentile bootstrap 95\% intervals. Rendered from
+\texttt{stats-all3.json} by \texttt{figures.py}; a figure cannot
+disagree with a table. Two things are visible here that no table shows
+as directly. The local arms' six \(n=5\) cells carry visibly wider
+intervals than their three \(n=20\) cells --- the D2 deviation made
+visual --- while every one of the hosted arm's nine cells is at
+\(n=20\). And the subtitle carries the comparability caveat: the hosted
+arm's \emph{heights} may not be read against the local arms', only its
+within-arm differences (§5.7).
 
 Qwen is the stronger arm on every configuration, so the arms are
 assigned empirically as \(\text{stronger} = \text{Qwen}\) (full mean
@@ -1732,11 +1736,16 @@ evidence}\label{the-third-arm-which-carries-the-component-level-evidence}
 A separately registered extension (\texttt{paper/extension-cerebras.md})
 adds API-served \texttt{gpt-oss-120b} at 1,440 episodes under tag
 \texttt{ext-cerebras}. Its serving protocol differs from the local arms
-on \texttt{num\_ctx} (65536), \texttt{num\_predict} (16384) and
-\texttt{reasoning\_effort}, so \textbf{its pass rates are not comparable
-to Table 3} and \texttt{compare.py} prints the differing keys and says
-so. Its within-arm deltas are comparable, because each is seed-paired
-inside one arm under one protocol.
+on \texttt{num\_ctx} (65536), \texttt{num\_predict} (16384),
+\texttt{reasoning\_effort} and \texttt{concurrency}, so \textbf{its pass
+rates are not comparable to Table 3}. \texttt{compare.py} prints the
+differing keys and says so --- though only after a defect found while
+preparing this revision, recorded in §8: the check had compared just the
+two \emph{interaction} arms, the lowest and highest full-harness mean,
+and this arm ranks between them, so pooling all three printed
+twenty-seven pass rates with no caveat at all. Its within-arm deltas are
+comparable, because each is seed-paired inside one arm under one
+protocol.
 
 This arm ran \textbf{twenty repeats on all nine cells}, which the local
 arms did not (§4.4, deviation D2). That makes it the only ladder in the
@@ -2465,6 +2474,16 @@ New. It changes how Table 7 must be read. \\
 Interaction & eight nulls at \(n=5\) & eight nulls, both pairing schemes
 reported & Unchanged in conclusion; the paired-versus-unpaired
 discrepancy is now shown rather than chosen silently. \\
+Cross-arm protocol check & fired on the two interaction arms only &
+fires on every pair of arms in the pool & \textbf{Instrument defect
+found in revision 3.} \texttt{compare.py} compared the protocol of the
+weakest and strongest arm. With three arms and the divergent one ranked
+between them, it compared the two matching local arms, found nothing,
+and printed no caveat beneath a pass-rate table spanning all three. A
+check that cannot see the case it exists to flag reports the same result
+as a check that ran and passed --- the invariant of §3.2, violated by
+our own analysis tool. Fixed (\texttt{arms\_drift}), tested, and the
+figure now carries the caveat too. \\
 Table 8 \(\to\) Table 9, Table 9 \(\to\) Table 10 & --- & renumbered &
 §5 gained subsections. The device envelope and the \texttt{navigate}
 gate case are retained; both are properties of the serving stack or of a

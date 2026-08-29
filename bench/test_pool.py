@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mh.pool import (CONFIG_FLAGS, PROTOCOL_KEYS, config_drift,
+from mh.pool import (CONFIG_FLAGS, PROTOCOL_KEYS, arms_drift, config_drift,
                      contrast_conflicts, contrast_drift, duplicate_episodes,
                      malformed_reps, merge_conflicts, pooled_drift,
                      protocol_drift, ragged_reps, rep_denominators, reps_of,
@@ -146,6 +146,31 @@ check("three-way overlap caught", merge_conflicts(three) != [], str(merge_confli
 
 check("pooled_drift empty when clean",
       pooled_drift([src("a", range(5)), src("b", range(5, 10))]) == [])
+# --- arms_drift: the divergent arm need not be an extreme -------------------
+# compare.py used to compare only the two INTERACTION arms (lowest and highest
+# full-harness mean). With three arms and the odd one ranked between them, the
+# check ran between the two matching arms, found nothing, and printed no
+# caveat under a pass-rate table listing all three.
+_LOCAL = dict(PROTO)
+_HOSTED = dict(PROTO, num_ctx=65536, num_predict=16384, reasoning_effort="medium")
+
+check("arms_drift is silent when every arm matches",
+      arms_drift({"a": dict(_LOCAL), "b": dict(_LOCAL), "c": dict(_LOCAL)}) == [])
+_mid = arms_drift({"weak": dict(_LOCAL), "mid": dict(_HOSTED), "strong": dict(_LOCAL)})
+check("arms_drift catches a divergent MIDDLE arm",
+      len(_mid) == 2 and all("num_ctx" in ks for _, _, ks in _mid),
+      f"got {_mid}")
+check("arms_drift names both offending pairs, not the matching one",
+      sorted({p for a, b, _ in _mid for p in (a, b)}) == ["mid", "strong", "weak"]
+      and all("mid" in (a, b) for a, b, _ in _mid),
+      f"got {[(a, b) for a, b, _ in _mid]}")
+check("arms_drift still handles the two-arm case",
+      len(arms_drift({"a": dict(_LOCAL), "b": dict(_HOSTED)})) == 1)
+check("arms_drift skips an arm with no recorded protocol",
+      arms_drift({"a": dict(_LOCAL), "b": None}) == [])
+check("arms_drift reports the differing keys, not just that some differ",
+      "reasoning_effort" in arms_drift({"a": dict(_LOCAL), "b": dict(_HOSTED)})[0][2])
+
 check("pooled_drift finds a late pair",
       pooled_drift([src("a", range(5)), src("b", range(5, 10)),
                     src("c", range(10, 15), proto=dict(PROTO, think=False))]) == ["think"])

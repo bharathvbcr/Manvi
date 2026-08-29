@@ -281,7 +281,7 @@ The superseded v1 grid is §5.9. Protocol-1 is §4.6. Neither is pooled here.
 
 ![Pass rates by configuration](figures/pass_rates.generated.svg)
 
-**Figure 3.** v2 pass rate by configuration and model, with percentile bootstrap 95% intervals. Rendered from `stats-v2.json` by `figures.py`; a figure cannot disagree with a table. Note the interval widths: the three \(n=20\) cells are visibly tighter than the six \(n=5\) cells, which is the D2 deviation made visual.
+**Figure 3.** Pass rate by configuration for **all three arms**, 27 cells, with percentile bootstrap 95% intervals. Rendered from `stats-all3.json` by `figures.py`; a figure cannot disagree with a table. Two things are visible here that no table shows as directly. The local arms' six \(n=5\) cells carry visibly wider intervals than their three \(n=20\) cells — the D2 deviation made visual — while every one of the hosted arm's nine cells is at \(n=20\). And the subtitle carries the comparability caveat: the hosted arm's *heights* may not be read against the local arms', only its within-arm differences (§5.7).
 
 Qwen is the stronger arm on every configuration, so the arms are assigned empirically as \(\text{stronger} = \text{Qwen}\) (full mean 0.950), \(\text{weaker} = \text{Ornith}\) (0.606). Parameter count again gives the wrong ordering. No cell produced a degenerate zero-width interval, unlike v1.
 
@@ -393,7 +393,7 @@ The one interval that reaches the boundary is `no-verifygate` at \(-0.150\), and
 
 ### 5.7 The third arm, which carries the component-level evidence
 
-A separately registered extension (`paper/extension-cerebras.md`) adds API-served `gpt-oss-120b` at 1,440 episodes under tag `ext-cerebras`. Its serving protocol differs from the local arms on `num_ctx` (65536), `num_predict` (16384) and `reasoning_effort`, so **its pass rates are not comparable to Table 3** and `compare.py` prints the differing keys and says so. Its within-arm deltas are comparable, because each is seed-paired inside one arm under one protocol.
+A separately registered extension (`paper/extension-cerebras.md`) adds API-served `gpt-oss-120b` at 1,440 episodes under tag `ext-cerebras`. Its serving protocol differs from the local arms on `num_ctx` (65536), `num_predict` (16384), `reasoning_effort` and `concurrency`, so **its pass rates are not comparable to Table 3**. `compare.py` prints the differing keys and says so — though only after a defect found while preparing this revision, recorded in §8: the check had compared just the two *interaction* arms, the lowest and highest full-harness mean, and this arm ranks between them, so pooling all three printed twenty-seven pass rates with no caveat at all. Its within-arm deltas are comparable, because each is seed-paired inside one arm under one protocol.
 
 This arm ran **twenty repeats on all nine cells**, which the local arms did not (§4.4, deviation D2). That makes it the only ladder in the study whose intervals are worth reading, and the component-level results below rest on it rather than on Table 7.
 
@@ -573,6 +573,7 @@ Revision 3 does not correct revision 2's arithmetic. It **retires revision 2's e
 | Multiplicity | not corrected; family-wise number not reported | Šidák across a registered four-test confirmatory family (98.7%); family-wise number reported for the exploratory ladder | Registered in §5 of the preregistration. |
 | Interval calibration | described qualitatively as "not asymptotic" | measured: 94.1% at \(n=20\), **82.3%** at \(n=5\), 5,000 trials | New. It changes how Table 7 must be read. |
 | Interaction | eight nulls at \(n=5\) | eight nulls, both pairing schemes reported | Unchanged in conclusion; the paired-versus-unpaired discrepancy is now shown rather than chosen silently. |
+| Cross-arm protocol check | fired on the two interaction arms only | fires on every pair of arms in the pool | **Instrument defect found in revision 3.** `compare.py` compared the protocol of the weakest and strongest arm. With three arms and the divergent one ranked between them, it compared the two matching local arms, found nothing, and printed no caveat beneath a pass-rate table spanning all three. A check that cannot see the case it exists to flag reports the same result as a check that ran and passed — the invariant of §3.2, violated by our own analysis tool. Fixed (`arms_drift`), tested, and the figure now carries the caveat too. |
 | Table 8 \(\to\) Table 9, Table 9 \(\to\) Table 10 | — | renumbered | §5 gained subsections. The device envelope and the `navigate` gate case are retained; both are properties of the serving stack or of a pre-fix mechanism demonstration, and neither depends on the v1 grid's pass rates. |
 
 Revision 2's own corrections to revision 1 — the `navigate` census, the median midpoints, the hand-drawn Figure 4 — stand as recorded there and are not restated. The `navigate` contrast in §5.11 is unchanged and still does not reach \(\alpha = 0.05\) on its matched-tag reading.
