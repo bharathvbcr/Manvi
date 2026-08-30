@@ -130,13 +130,19 @@ flowchart TB
 1. **Interactive Multi-Session Tab Strip**:
    - Visual tab bar displaying active sessions: `[ 1: S1 (ready) ]` `[ 2: S2 ⠋ ]` `[ + ]`.
    - Real-time status badges: busy spinner (`⠋`), pending human approval (`⚠`), and errors (`✕`).
-   - Direct session navigation via `Ctrl+1`–`Ctrl+9`, `Ctrl+T` (new session), `Ctrl+W` (close), and mouse click hit-testing.
+   - Direct session navigation via `Ctrl+T` / `Shift+Tab` (next / previous), `Ctrl+N` (new session), mouse click hit-testing, and wheel-over-strip cycling.
 2. **Live Dynamic Theme Switcher (`/theme`, `Ctrl+Y`)**:
    - Instant live switching between **Dark**, **Light**, and **Plain** (monochrome) themes without restarting the process.
    - Interactive theme picker overlay modal with live palette preview.
 3. **Interactive Session Switcher Modal (`/sessions`, `Ctrl+S`)**:
    - Searchable overlay modal displaying all running and idle sessions with task IDs, token counts, elapsed time, and status chips.
-4. **Settings Picker (`/settings`)**:
+4. **Uniform Pointer Grammar (mouse or trackpad)**:
+   - Every list surface — palette, pickers, help, dashboard — follows one rule: a left click moves the highlight, a left click on the highlighted row confirms it, and a left click outside a floating surface dismisses it. Hover highlights without stealing the keyboard's selection, and non-left buttons never confirm anything.
+   - The wheel scrolls the topmost surface regardless of what is behind it: an open overlay pages, an unanswered approval card moves between its options, the session strip cycles sessions, and only then the transcript scrolls.
+   - Hit tests read the geometry the last frame actually drew; session membership changes invalidate the record rather than letting a click land on a removed session's ghost.
+5. **Fan-Out-Ready Dashboard (`Ctrl+G`)**:
+   - Arrow keys (`↑↓←→`, `hjkl`), page keys, and `g`/`G`/`home`/`end` navigate the session list; the drawn window follows the selection so fleets larger than the screen stay reachable, with overflow cues in both directions.
+6. **Settings Picker (`/settings`)**:
    - Searchable overlay listing every setting in the catalogue with its value, origin layer, and mutability scope.
 5. **Rich Markdown, Syntax Highlighting & Unified Diffs**:
    - Syntax highlighting for `go`, `rust`, `json`, `bash`, `python`, and `sql` with inset container borders (`┌─ go ─┐` / `└────┘`).
@@ -147,13 +153,15 @@ flowchart TB
 | Shortcut | Scope | Action |
 |---|---|---|
 | `Ctrl+P` | Global | Open Command Palette / Fuzzy Tool Action Picker |
-| `Ctrl+N` / `Ctrl+T` | Global | Spawn new concurrent agent session tab |
-| `Ctrl+W` | Global | Close current agent session tab |
+| `Ctrl+N` | Global | Spawn new concurrent agent session tab |
+| `Ctrl+X` | Dashboard | Close the highlighted agent session |
 | `Ctrl+S` | Global | Open Interactive Session Switcher Modal |
 | `Ctrl+Y` | Global | Open Live Theme Switcher Modal (`/theme`) |
 | `Ctrl+G` | Global | Toggle System Telemetry Dashboard & Active Lease Inspector |
-| `Ctrl+1` – `Ctrl+9` | Navigation | Switch directly to Session Tab 1–9 |
-| `Tab` / `Shift+Tab` | Navigation | Cycle focus between panes / Accept autocompletion in prompt |
+| `Ctrl+T` / `Shift+Tab` | Navigation | Cycle to the next / previous session |
+| `Tab` | Navigation | Cycle focus between composer and transcript |
+| `PgUp` / `PgDn` | Overlays & Dashboard | Page through long lists |
+| `←→` / `h` / `l`, `g` / `G` | Dashboard | Step through sessions, jump to first / last |
 | `Enter` | Composer | Send prompt / Confirm modal decision |
 | `Ctrl+C` | Agent Turn | Cancel currently executing turn (releasing all held leases) |
 | `Ctrl+Z` | Shell | Suspend TUI and restore host terminal |

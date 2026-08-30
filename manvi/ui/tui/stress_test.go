@@ -203,3 +203,127 @@ func TestOverlayInvariantsHoldUnderRandomNavigation(t *testing.T) {
 		}
 	}
 }
+
+// fuzzNavActions is the pointer-and-geometry half of the alphabet: clicks and
+// releases with every button the decoder can report, hovers, drags, wheel
+// notches, and resizes through degenerate sizes. The original fuzz pressed
+// keys; the navigation repair round added pointer behaviour, and a fuzz that
+// never releases a button or resizes the frame never reaches it.
+func fuzzNavActions(rng *rand.Rand) Action {
+	switch rng.Intn(7) {
+	case 0:
+		return ActionClick{X: rng.Intn(120), Y: rng.Intn(36), Button: rng.Intn(4)}
+	case 1:
+		return ActionRelease{X: rng.Intn(120), Y: rng.Intn(36), Button: rng.Intn(4)}
+	case 2:
+		return ActionMotion{X: rng.Intn(120), Y: rng.Intn(36), Button: rng.Intn(4)}
+	case 3:
+		return ActionScroll{X: rng.Intn(120), Y: rng.Intn(36), Delta: rng.Intn(9) - 4}
+	case 4:
+		return ActionResize{W: 1 + rng.Intn(200), H: 1 + rng.Intn(60)}
+	case 5:
+		keys := []string{"pgup", "pgdn", "g", "G", "h", "l", "home", "end", "shift+tab", "left", "right"}
+		return ActionKey{Binding: keys[rng.Intn(len(keys))]}
+	default:
+		return ActionKey{Binding: "ctrl+g"} // the dashboard, the surface this fuzz stresses
+	}
+}
+
+// checkNavInvariants asserts what must hold after every dispatch, in every
+// state the fuzz can reach. Each clause is one of the repaired seams.
+func checkNavInvariants(t *testing.T, a *App, seed int64, step int) {
+	t.Helper()
+	if o := a.overlay; o != nil && !o.Empty() {
+		if o.Sel() < 0 || o.Sel() >= len(o.filtered) {
+			t.Fatalf("seed %d step %d: overlay selection %d outside %d rows", seed, step, o.Sel(), len(o.filtered))
+		}
+	}
+	if len(a.views) > 0 {
+		if sel := a.dashboard.Selected(); sel < 0 || sel >= len(a.views) {
+			t.Fatalf("seed %d step %d: dashboard selection %d outside %d sessions", seed, step, sel, len(a.views))
+		}
+	}
+	if len(a.dashboard.rows) > len(a.views) {
+		t.Fatalf("seed %d step %d: the dashboard recorded %d rows for %d sessions",
+			seed, step, len(a.dashboard.rows), len(a.views))
+	}
+}
+
+// TestRandomPointerAndGeometryNeverPanicsAndKeepsTheInvariants drives the
+// whole app — sessions coming and going, an approval pending half the time,
+// the dashboard opening over everything — with the pointer alphabet above.
+// Beyond not panicking it asserts the approval seam's one invariant under
+// pointer input: no EffectDecide may be produced unless a card is pending,
+// from any button, at any coordinate, in any window size.
+func TestRandomPointerAndGeometryNeverPanicsAndKeepsTheInvariants(t *testing.T) {
+	for seed := int64(100); seed <= 112; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		host := &stubHost{}
+		a := NewApp(Dark(), host)
+		a.Dispatch(ActionResize{W: 120, H: 36})
+		a.AddSession("S0", "session zero")
+		pending := 0
+
+		for step := 0; step < 4000; step++ {
+			var act Action
+			switch rng.Intn(10) {
+			case 0, 1, 2, 3:
+				act = fuzzNavActions(rng)
+			case 4:
+				act = fuzzActions(rng)
+			case 5:
+				if rng.Intn(2) == 0 && len(a.views) < 6 {
+					a.AddSession("SX"+itoa(step), "session "+itoa(step))
+				} else if len(a.views) > 1 {
+					a.RemoveSession(a.views[rng.Intn(len(a.views))].ID)
+				}
+				continue
+			case 6:
+				if v := a.Current(); v != nil && v.Approval() == nil && rng.Intn(2) == 0 {
+					reply := make(chan ui.Decision, 1)
+					a.Dispatch(ActionApprovalRequest{SessionID: v.ID, Request: blockedRequest(true), Reply: reply})
+					pending++
+				}
+				continue
+			default:
+				act = fuzzActions(rng)
+			}
+
+			effects := func() []Effect {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("seed %d step %d: %#v panicked: %v", seed, step, act, r)
+					}
+				}()
+				return a.Dispatch(act)
+			}()
+
+			for _, e := range effects {
+				if _, ok := e.(EffectDecide); ok {
+					if pending == 0 {
+						t.Fatalf("seed %d step %d: %#v decided an approval nobody was asked", seed, step, act)
+					}
+					pending--
+				}
+			}
+			checkNavInvariants(t, a, seed, step)
+
+			if a.Quitting() {
+				break
+			}
+			if step%89 == 0 {
+				w, h := 1+rng.Intn(200), 1+rng.Intn(60)
+				b := render.NewBuffer(w, h)
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Fatalf("seed %d step %d: Draw at %dx%d panicked: %v", seed, step, w, h, r)
+						}
+					}()
+					a.Draw(b)
+				}()
+				checkNavInvariants(t, a, seed, step)
+			}
+		}
+	}
+}

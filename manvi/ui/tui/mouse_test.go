@@ -249,11 +249,11 @@ func TestDashboardSecondClickOpensTheSession(t *testing.T) {
 	drawAt(a, 100, 30)
 
 	// The highlight starts on the active session (S2, index 1); the row the
-	// pointer is NOT on is session 0.
-	full := render.Rect{X: 0, Y: 0, W: 100, H: 30}
+	// pointer is NOT on is session 0. The hit test reads the rows the frame
+	// above just drew, so finding the row is asking the frame.
 	y := -1
 	for row := 0; row < 30; row++ {
-		if idx := a.dashboard.HitTest(full, row, len(a.views)); idx == 0 {
+		if idx := a.dashboard.HitTest(10, row); idx == 0 {
 			y = row
 			break
 		}

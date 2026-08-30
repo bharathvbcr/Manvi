@@ -115,6 +115,8 @@ var bindings = []Binding{
 	{Keys: []string{"enter"}, Cmd: CmdAccept, Ctx: CtxOverlay, Label: "select", Hint: true},
 	{Keys: []string{"down", "ctrl+n"}, Cmd: CmdNextItem, Ctx: CtxOverlay, Label: "next"},
 	{Keys: []string{"up", "ctrl+p"}, Cmd: CmdPrevItem, Ctx: CtxOverlay, Label: "prev"},
+	{Keys: []string{"pgdn"}, Cmd: CmdPageDown, Ctx: CtxOverlay, Label: "page down"},
+	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxOverlay, Label: "page up"},
 	{Keys: []string{"tab"}, Cmd: CmdComplete, Ctx: CtxOverlay, Label: "complete", Hint: true},
 	{Keys: []string{"left"}, Cmd: CmdCursorLeft, Ctx: CtxOverlay},
 	{Keys: []string{"right"}, Cmd: CmdCursorRight, Ctx: CtxOverlay},
@@ -190,9 +192,14 @@ var bindings = []Binding{
 	{Keys: []string{"y"}, Cmd: CmdCopy, Ctx: CtxScrollback, Label: "copy", Hint: true},
 	{Keys: []string{"esc"}, Cmd: CmdDismiss, Ctx: CtxScrollback, Label: "back to prompt"},
 
-	// Dashboard.
-	{Keys: []string{"up", "k"}, Cmd: CmdPrevItem, Ctx: CtxDashboard, Label: "prev", Hint: true},
-	{Keys: []string{"down", "j"}, Cmd: CmdNextItem, Ctx: CtxDashboard, Label: "next", Hint: true},
+	// Dashboard. Built for fan-out, so it moves in every way a list can:
+	// one row, one page, or to an end.
+	{Keys: []string{"up", "k", "left", "h"}, Cmd: CmdPrevItem, Ctx: CtxDashboard, Label: "prev", Hint: true},
+	{Keys: []string{"down", "j", "right", "l"}, Cmd: CmdNextItem, Ctx: CtxDashboard, Label: "next", Hint: true},
+	{Keys: []string{"pgup"}, Cmd: CmdPageUp, Ctx: CtxDashboard, Label: "page up"},
+	{Keys: []string{"pgdn"}, Cmd: CmdPageDown, Ctx: CtxDashboard, Label: "page down"},
+	{Keys: []string{"g", "home"}, Cmd: CmdTop, Ctx: CtxDashboard, Label: "first"},
+	{Keys: []string{"G", "end"}, Cmd: CmdBottom, Ctx: CtxDashboard, Label: "last"},
 	{Keys: []string{"enter"}, Cmd: CmdAccept, Ctx: CtxDashboard, Label: "open", Hint: true},
 	{Keys: []string{"r"}, Cmd: CmdRenameSession, Ctx: CtxDashboard, Label: "rename", Hint: true},
 	{Keys: []string{"ctrl+x"}, Cmd: CmdCloseSession, Ctx: CtxDashboard, Label: "close session"},
@@ -209,6 +216,11 @@ var bindings = []Binding{
 	{Keys: []string{"ctrl+n"}, Cmd: CmdNewSession, Ctx: CtxGlobal, Label: "new session"},
 	{Keys: []string{"ctrl+g"}, Cmd: CmdDashboard, Ctx: CtxGlobal, Label: "dashboard", Hint: true},
 	{Keys: []string{"ctrl+t"}, Cmd: CmdNextSession, Ctx: CtxGlobal, Label: "next session"},
+	// Shift+Tab is the one "previous" chord every terminal encodes (CSI Z);
+	// ctrl+shift+t exists only on keyboards the wire protocol cannot see.
+	// The command it binds existed from the start but had no key, so the
+	// strip advertised "next" and offered no way back.
+	{Keys: []string{"shift+tab"}, Cmd: CmdPrevSession, Ctx: CtxGlobal, Label: "prev session"},
 	{Keys: []string{"ctrl+s"}, Cmd: CmdSessions, Ctx: CtxGlobal, Label: "sessions", Hint: true},
 	{Keys: []string{"ctrl+y"}, Cmd: CmdTheme, Ctx: CtxGlobal, Label: "theme"},
 	{Keys: []string{"ctrl+z"}, Cmd: CmdSuspend, Ctx: CtxGlobal, Label: "suspend"},

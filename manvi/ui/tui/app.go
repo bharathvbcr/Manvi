@@ -139,6 +139,7 @@ func (a *App) AddSession(id, title string) *AgentView {
 	v.Status = Status{Sessions: len(a.views) + 1}
 	a.views = append(a.views, v)
 	a.active = len(a.views) - 1
+	a.dashboard.Invalidate()
 	a.syncCounts()
 	return v
 }
@@ -536,6 +537,38 @@ func (a *App) key(binding string) []Effect {
 		return a.history(-1)
 	case CmdHistoryNext:
 		return a.history(1)
+	case CmdPageUp:
+		if a.overlay != nil {
+			a.overlay.MovePage(-1)
+			return nil
+		}
+		if ctx == CtxDashboard {
+			a.dashboard.Page(-1, len(a.views))
+			return nil
+		}
+	case CmdPageDown:
+		if a.overlay != nil {
+			a.overlay.MovePage(1)
+			return nil
+		}
+		if ctx == CtxDashboard {
+			a.dashboard.Page(1, len(a.views))
+			return nil
+		}
+	case CmdTop:
+		if ctx == CtxDashboard {
+			a.dashboard.Select(0)
+			return nil
+		}
+	case CmdBottom:
+		if ctx == CtxDashboard {
+			a.dashboard.Select(len(a.views) - 1)
+			a.dashboard.Clamp(len(a.views))
+			return nil
+		}
+		// No return outside the handled surfaces: the transcript's own
+		// pgup/pgdn/g/G resolve to the same commands and are answered by
+		// scrollbackKey below.
 	}
 
 	if v := a.Current(); v != nil {
@@ -1111,6 +1144,7 @@ func (a *App) RemoveSession(id string) {
 			a.active = len(a.views) - 1
 		}
 		a.dashboard.Clamp(len(a.views))
+		a.dashboard.Invalidate()
 		a.syncCounts()
 		return
 	}
@@ -1356,10 +1390,10 @@ func (a *App) refreshCompletion() {
 }
 
 func (a *App) scroll(t ActionScroll) []Effect {
-	v := a.Current()
-	if v == nil {
-		return nil
-	}
+	// The overlay comes first and unconditionally: it is the topmost
+	// surface, and gating its wheel on a session existing made the palette
+	// wheel-dead on the empty startup screen — the one screen where the
+	// palette is the way forward.
 	if a.overlay != nil {
 		a.overlay.Move(sign(t.Delta))
 		return nil
@@ -1367,6 +1401,22 @@ func (a *App) scroll(t ActionScroll) []Effect {
 	if a.mode == ModeDashboard {
 		a.dashboard.Move(sign(t.Delta), len(a.views))
 		return nil
+	}
+	v := a.Current()
+	if v == nil {
+		return nil
+	}
+	if card := v.Approval(); card != nil {
+		// The card is modal for the wheel exactly as it is for keys and
+		// clicks: a notch moves the highlight between options, and the
+		// transcript behind an unanswered question does not scroll.
+		card.Next(sign(t.Delta))
+		return nil
+	}
+	// The session strip is a control, not content: a wheel notch over it
+	// cycles sessions, as it does over a browser's tab strip.
+	if len(a.views) > 1 && a.tabRow.Contains(t.X, t.Y) {
+		return a.cycleSession(sign(t.Delta))
 	}
 	v.Scroll.ScrollBy(t.Delta)
 	return nil
@@ -1395,10 +1445,21 @@ func (a *App) click(t ActionClick) []Effect {
 	if a.overlay != nil {
 		o := a.overlay
 		if !a.overlayRect.Contains(t.X, t.Y) {
-			// Click-away dismisses, as Esc does.
+			// Click-away dismisses, as Esc does — with the left button. Any
+			// other press outside the frame is swallowed rather than
+			// dismissed: it is as likely a mis-aim as an intent, and the
+			// list costs a keystroke to reopen.
 			if t.Button == 1 {
 				a.overlay = nil
 			}
+			return nil
+		}
+		if t.Button != 1 {
+			// Inside the frame a non-left press changes nothing. The
+			// grammar is "left-click moves the highlight, left-click again
+			// confirms", and a confirmation a middle-click can trigger is
+			// one the ledger cannot tell from a deliberate one — the row it
+			// would accept can be a mutating command.
 			return nil
 		}
 		idx := o.ItemAt(t.X, t.Y)
@@ -1416,7 +1477,12 @@ func (a *App) click(t ActionClick) []Effect {
 	}
 
 	if a.mode == ModeDashboard {
-		idx := a.dashboard.HitTest(render.Rect{X: 0, Y: 0, W: a.width, H: a.height}, t.Y, len(a.views))
+		if t.Button != 1 {
+			// Selection and open are left-button verbs, as they are in the
+			// overlays.
+			return nil
+		}
+		idx := a.dashboard.HitTest(t.X, t.Y)
 		if idx < 0 {
 			return nil
 		}
@@ -1513,7 +1579,7 @@ func (a *App) click(t ActionClick) []Effect {
 }
 
 // motion handles the pointer moving: a scrollbar drag in progress, or a hover
-// crossing an open overlay's rows.
+// crossing the rows of whatever list is on top.
 func (a *App) motion(t ActionMotion) []Effect {
 	if a.dragBar {
 		if v := a.Current(); v != nil && v.Scroll.ScrollbarCol() >= 0 {
@@ -1521,8 +1587,15 @@ func (a *App) motion(t ActionMotion) []Effect {
 		}
 		return nil
 	}
-	if t.Button == 0 && a.overlay != nil {
+	if t.Button != 0 {
+		return nil
+	}
+	if a.overlay != nil {
 		a.overlay.HoverAt(t.X, t.Y)
+		return nil
+	}
+	if a.mode == ModeDashboard {
+		a.dashboard.HoverAt(t.X, t.Y)
 	}
 	return nil
 }

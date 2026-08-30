@@ -166,6 +166,19 @@ func (o *Overlay) Move(delta int) {
 	o.sel = (o.sel + delta + len(o.filtered)) % len(o.filtered)
 }
 
+// MovePage moves the highlight by a window of rows, for pgup/pgdn in a long
+// list. The window is the list's own height as the last frame drew it — the
+// same record the pointer hit-test reads — so a page key moves exactly one
+// screenful of what is visible. Before a frame has been drawn it falls back
+// to a fixed step rather than doing nothing.
+func (o *Overlay) MovePage(delta int) {
+	page := o.listRect.H
+	if page < 1 {
+		page = 8
+	}
+	o.Move(delta * page)
+}
+
 // MoveTo puts the highlight on a specific row, for a pointer click.
 func (o *Overlay) MoveTo(i int) {
 	if i < 0 || i >= len(o.filtered) {
