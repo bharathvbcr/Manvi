@@ -91,6 +91,49 @@ if (( RACE )); then
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
+# A skipped test is coverage that silently is not there, and nothing in this
+# gate could see one. `go test ./...` prints ok whether a package ran its tests
+# or skipped every one of them, and the count below covers two packages out of
+# forty. MANVI_TEST_ALLOW_SKIP is refused above precisely because a skip must
+# not be able to hide — but that only closes the skips this repository's own
+# helper produces, not a bare t.Skip anywhere else.
+#
+# This names them instead of failing on them. Two are legitimate today: the
+# frame-sanitisation test skips the fields that action does not draw, and says
+# so, with the structural half of the claim asserted by reflection over every
+# field of the type in package ui. A rule that failed here would be wrong about
+# those; a rule that says nothing was how they stayed invisible. Naming is the
+# honest middle, and a skip that appears without a reason a reader accepts is
+# then visible in the diff of this gate's own output.
+#
+# The run is all cache hits — `go test ./...` above has just populated it — so
+# this re-reads the same results rather than re-running the suite.
+step "Go — coverage that did not run"
+skip_json="$(mktemp)"
+(cd manvi && go test -json ./... > "$skip_json" 2>/dev/null) || true
+skipped="$(python3 -c '
+import json, sys
+names = []
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("Test") and e.get("Action") == "skip":
+        names.append(e["Package"] + "." + e["Test"])
+print("\n".join(names))
+' "$skip_json")"
+rm -f "$skip_json"
+if [[ -z "$skipped" ]]; then
+  printf '    covered: no test skipped; every case the suite declares was executed\n'
+else
+  printf '\033[33m    NOT COVERED\033[0m: %s test(s) skipped, so their assertions did not run:\n' "$(wc -l <<<"$skipped" | tr -d ' ')"
+  sed 's/^/                  /' <<<"$skipped"
+fi
+
 step "Go — cross-boundary coverage"
 for pkg in ./dc/store ./devcouncil; do
   ran="$( (cd manvi && go test -count=1 -v "$pkg" 2>/dev/null) | grep -c '^--- PASS' || true )"
@@ -108,8 +151,17 @@ fi
 step "Rust — clippy"
 (cd crates && cargo clippy --all-targets -- -D warnings) || fail "cargo clippy"
 
+# Counted, not merely run. `cargo test` prints ok for a binary that collected
+# zero tests exactly as it does for one that passed hundreds, so a suite that
+# stopped being compiled in — a renamed module, a #[cfg] that stopped matching,
+# a moved file — would leave this step green while checking nothing. That is the
+# same failure the Go cross-boundary count below exists to catch, and the Rust
+# half of the gate had no equivalent: it asserted only an exit code.
 step "Rust — test"
-(cd crates && cargo test) || fail "cargo test"
+rust_out="$( (cd crates && cargo test) 2>&1 )" || { printf '%s\n' "$rust_out" >&2; fail "cargo test"; }
+rust_ran="$(grep -oE '^test result: ok\. [0-9]+ passed' <<<"$rust_out" | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')"
+(( rust_ran >= 60 )) || { printf '%s\n' "$rust_out" >&2; fail "the Rust suite ran only ${rust_ran} tests; a suite that stopped being compiled in reports the same exit code as one that passed"; }
+printf '    covered: %s Rust tests across the workspace\n' "$rust_ran"
 
 # The parity fixtures are the contracts the ports are held to. If one is missing
 # or truncated the suites would still pass while checking nothing, so assert
@@ -596,12 +648,22 @@ step "Bench — instrument, statistics and cell assembly"
 # and that is exactly how a Gemini serialization defect produced a 315-episode
 # arm with zero `finished` stops before anything noticed. Neither suite needs a
 # network or a credential.
+#
+# Each of these suites already prints how many checks it ran, and this step used
+# to send that to /dev/null and keep the exit code. A hand-rolled runner that
+# collected nothing still exits 0 and still prints its summary line — with a
+# zero in it — so the one number that distinguishes a suite that ran from one
+# that did not was the number being discarded. It is read and totalled instead.
+bench_ran=0
 for t in test_stats.py test_pool.py test_runtime.py test_compute.py stress_test.py \
-         test_gemini_wire.py test_cerebras_wire.py; do
-  (cd bench && python3 "$t" >/dev/null) || fail "bench/$t"
+         test_gemini_wire.py test_cerebras_wire.py selftest.py; do
+  bench_out="$( (cd bench && python3 "$t") 2>&1 )" || { printf '%s\n' "$bench_out" >&2; fail "bench/$t"; }
+  n="$(tail -1 <<<"$bench_out" | grep -oE '[0-9]+' | head -1 || true)"
+  [[ -n "$n" ]] && (( n > 0 )) || { printf '%s\n' "$bench_out" >&2; fail "bench/$t reported no count on its summary line, so whether it ran anything is unknown"; }
+  bench_ran=$(( bench_ran + n ))
 done
-(cd bench && python3 selftest.py >/dev/null) || fail "bench/selftest.py"
-printf '    covered: bootstrap CIs, paired deltas, seed pinning, cell-assembly refusals,\n'
+(( bench_ran >= 600 )) || fail "the bench suites ran only ${bench_ran} checks in total"
+printf '    covered: %s checks — bootstrap CIs, paired deltas, seed pinning, cell-assembly refusals,\n' "$bench_ran"
 printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
 printf '             and 19 tasks that start broken and reject tampering\n'
 
