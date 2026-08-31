@@ -25,10 +25,36 @@ case "${1:-}" in
   *)      printf 'usage: %s [--fix|--race|--fuzz]\n' "$0" >&2; exit 2 ;;
 esac
 
-# MANVI_FUZZTIME is the budget each target gets under --fuzz. It is per target,
-# not per run, so the wall time is this times the number of declared targets —
-# and it is stated in the report rather than left for a reader to multiply.
-FUZZTIME="${MANVI_FUZZTIME:-30s}"
+# The --fuzz budget, which is per target and adaptive.
+#
+# A flat budget buys wildly different coverage per target, because the targets
+# are not alike. Measured on one 30s-each run: the pure-function targets reached
+# 13.6M inputs while FuzzShellDifferentialOracle reached 29,142 and the three
+# that drive a real child process reached 40–55k. Those slow ones fork a shell
+# or a binary per case, so they are three to four orders of magnitude behind —
+# and they are the differential oracles, which is where most of the defects this
+# gate has found actually came from. A budget calibrated on the fast targets
+# starves exactly the ones worth running.
+#
+# So a target that clears MANVI_FUZZMIN inputs in its first round is done, and
+# one that does not gets the rest of MANVI_FUZZMAX. Two invocations at most,
+# because each one re-gathers baseline coverage over the whole corpus and
+# looping in small rounds would spend the extra budget on that rather than on
+# fuzzing. Nothing here is a list of which targets are slow: that would be a
+# second source of truth about the targets, and it would be wrong the first time
+# someone made a slow target fast.
+FUZZTIME="${MANVI_FUZZTIME:-20s}"
+FUZZMIN="${MANVI_FUZZMIN:-1000000}"
+FUZZMAX="${MANVI_FUZZMAX:-120s}"
+
+# Seconds, with an optional trailing s. Anything else is refused rather than
+# silently passed to `go test`, which would take "2m" and make the arithmetic
+# below quietly wrong about how much budget it had spent.
+fuzz_seconds() {
+  local raw="${1%s}"
+  [[ "$raw" =~ ^[0-9]+$ ]] || fail "$2 must be a whole number of seconds (got '$1')"
+  printf '%s' "$raw"
+}
 
 # The Go plane is built and tested with cgo off, because "no cgo" is a claim
 # this repository makes in four source comments and in its own architecture
@@ -447,32 +473,68 @@ printf '    covered: all %s declared fuzz targets are reachable where they are d
 # resume rather than restart.
 if (( FUZZ )); then
   step "Fuzz targets — every declared target actually executed"
+  fuzz_base="$(fuzz_seconds "$FUZZTIME" MANVI_FUZZTIME)"
+  fuzz_cap="$(fuzz_seconds "$FUZZMAX" MANVI_FUZZMAX)"
+  (( fuzz_cap >= fuzz_base )) || fail "MANVI_FUZZMAX (${fuzz_cap}s) is below MANVI_FUZZTIME (${fuzz_base}s)"
   fuzz_ran=0
   fuzz_execs=0
-  while IFS= read -r decl; do
-    pkg="${decl%%:*}"
-    fn="${decl##*:}"
-    # -run '^$' so the seed corpus does not run twice: the engine replays the
-    # seeds itself while gathering baseline coverage.
-    if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "$FUZZTIME" "$pkg" 2>&1) )"; then
+  fuzz_starved=""
+
+  # One round of the sweep. Sets `execs` to what the round reported, and fails
+  # the gate on a crash or on a round that executed nothing.
+  fuzz_round() {
+    local pkg="$1" fn="$2" seconds="$3" out
+    if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "${seconds}s" "$pkg" 2>&1) )"; then
       printf '%s\n' "$out" >&2
       fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to manvi/${pkg#./}/testdata/fuzz/${fn}/ — commit it as a seed once the defect is fixed"
     fi
-    # The fuzzer reports a running total; the last line carries the whole run.
+    # The fuzzer reports a running total; the last line carries the whole round.
     execs="$(grep -o 'execs: [0-9]*' <<<"$out" | tail -1 | grep -o '[0-9]*$' || true)"
     if [[ -z "$execs" ]] || (( execs == 0 )); then
       printf '%s\n' "$out" >&2
-      fail "${pkg}:${fn} reported no executions, so it did not run. Either the target is not in that package (which \`go test -fuzz\` reports by exiting 0) or MANVI_FUZZTIME=${FUZZTIME} is too short to get past baseline coverage."
+      fail "${pkg}:${fn} reported no executions, so it did not run. Either the target is not in that package (which \`go test -fuzz\` reports by exiting 0) or ${seconds}s is too short to get past baseline coverage."
     fi
+  }
+
+  while IFS= read -r decl; do
+    pkg="${decl%%:*}"
+    fn="${decl##*:}"
+
+    fuzz_round "$pkg" "$fn" "$fuzz_base"
+    target_execs="$execs"
+    target_seconds="$fuzz_base"
+
+    # Under the floor, so this is one of the targets a flat budget starves.
+    # The corpus persists in GOCACHE, so the second round resumes from
+    # everything the first one found rather than starting over.
+    if (( target_execs < FUZZMIN && fuzz_cap > fuzz_base )); then
+      fuzz_round "$pkg" "$fn" "$(( fuzz_cap - fuzz_base ))"
+      target_execs=$(( target_execs + execs ))
+      target_seconds="$fuzz_cap"
+    fi
+
     fuzz_ran=$(( fuzz_ran + 1 ))
-    fuzz_execs=$(( fuzz_execs + execs ))
-    printf '    %s %s: %s executions\n' "$pkg" "$fn" "$execs"
+    fuzz_execs=$(( fuzz_execs + target_execs ))
+    printf '    %s %s: %s executions in %ss\n' "$pkg" "$fn" "$target_execs" "$target_seconds"
+    # Named, not tolerated silently. A target that cannot reach the floor even
+    # with the whole budget is one this gate is sampling rather than exploring,
+    # and that is a fact about the coverage it just claimed.
+    if (( target_execs < FUZZMIN )); then
+      fuzz_starved="${fuzz_starved}
+                  ${pkg} ${fn}: ${target_execs} of ${FUZZMIN}"
+    fi
   done < <(declared_fuzz_targets)
+
   # Both numbers, because a sweep that silently covered a subset would otherwise
   # read exactly like one that covered everything.
   (( fuzz_ran == fuzz_declared )) || fail "ran ${fuzz_ran} of ${fuzz_declared} declared targets"
-  printf '    covered: all %s declared targets executed, %s inputs total at %s each\n' \
-    "$fuzz_ran" "$fuzz_execs" "$FUZZTIME"
+  printf '    covered: all %s declared targets executed, %s inputs total (%ss each, extended to %ss below %s inputs)\n' \
+    "$fuzz_ran" "$fuzz_execs" "$fuzz_base" "$fuzz_cap" "$FUZZMIN"
+  if [[ -n "$fuzz_starved" ]]; then
+    printf '\033[33m    NOT COVERED\033[0m: these targets could not reach %s inputs inside %ss, so the sweep\n' \
+      "$FUZZMIN" "$fuzz_cap"
+    printf '                  sampled them rather than explored them:%s\n' "$fuzz_starved"
+  fi
 fi
 
 # The command gate has two verdicts to reconcile — one about the command, one

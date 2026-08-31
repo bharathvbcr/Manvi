@@ -137,8 +137,34 @@ has to be the shipped `CGO_ENABLED=0` configuration. `--fuzz` spends a budget
 rather than answering a fixed question, so a green unattended run would mean
 less each time the machine got busier.
 
-`--fuzz` gives every target `MANVI_FUZZTIME` (default `30s`) — per target, not
-per run, so the wall time is that times the number of declared targets. It
+`--fuzz`'s budget is per target and adaptive, because the targets are not
+alike. Measured on one flat-30s run: the pure-function targets reached 13.6M
+inputs while `FuzzShellDifferentialOracle` reached 29,142 and the three that
+drive a real child process reached 40–55k — three to four orders of magnitude
+behind, and they are the differential oracles, which is where most of the
+defects this gate has found actually came from. A budget calibrated on the fast
+targets starves exactly the ones worth running.
+
+So each target runs for `MANVI_FUZZTIME` (default `20s`); one that has not
+reached `MANVI_FUZZMIN` inputs (default `1000000`) by then gets the remainder of
+`MANVI_FUZZMAX` (default `120s`). Two invocations at most, because each one
+re-gathers baseline coverage over the whole corpus and looping in small rounds
+would spend the extra budget on setup rather than on fuzzing; the corpus
+persists in `GOCACHE`, so the second round resumes rather than restarts. No list
+of which targets are slow is kept anywhere — that would be a second source of
+truth about the targets, wrong the first time someone made a slow target fast —
+the measurement decides.
+
+A target that still cannot reach the floor with the whole budget is named under
+`NOT COVERED` with its actual count. Equalising the budget does not change the
+physics: a fork-per-case target will never reach millions of inputs. What the
+gate can do is stop reporting a sampled target as an explored one.
+
+All three knobs are a whole number of seconds (a trailing `s` is allowed, and
+anything else is refused rather than passed through to `go test`, which would
+accept `2m` and make the budget arithmetic quietly wrong).
+
+`--fuzz` also
 cannot trust `go test`: `go test -fuzz=X ./pkg` prints `no fuzz tests to fuzz`
 and **exits 0** when `X` is not in `pkg`, which is how a sweep once recorded
 three passes for targets it never ran. The proof required is the fuzzer's own
