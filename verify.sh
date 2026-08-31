@@ -507,10 +507,34 @@ if (( FUZZ )); then
     # Under the floor, so this is one of the targets a flat budget starves.
     # The corpus persists in GOCACHE, so the second round resumes from
     # everything the first one found rather than starting over.
+    #
+    # The extension is sized from the rate the first round measured, not handed
+    # the whole remaining cap. Handing over the cap looked equivalent and was
+    # not: FuzzExtractFallbackToolCallsHoldsItsContract missed the floor at 20s,
+    # took the full extra 100s, and finished at 4.69M — it needed about five of
+    # those seconds. Repeated across most of the extended set that turned a
+    # ~20-minute gate into a ~35-minute one, spent almost entirely past the
+    # point the floor was reached.
+    #
+    # Half again as much as the estimate, because the second round is slower
+    # than the first: it re-gathers baseline coverage over a corpus the first
+    # round has just grown, and coverage-guided fuzzing slows as that corpus
+    # fills. Estimating exactly would make a target that just missed the floor
+    # report as sampled when a few more seconds would have cleared it, and a
+    # false "not covered" teaches a reader to skim the one list in this gate
+    # that is worth reading.
     if (( target_execs < FUZZMIN && fuzz_cap > fuzz_base )); then
-      fuzz_round "$pkg" "$fn" "$(( fuzz_cap - fuzz_base ))"
+      extra=$(( fuzz_cap - fuzz_base ))
+      rate=$(( target_execs / fuzz_base ))
+      if (( rate > 0 )); then
+        needed=$(( ((FUZZMIN - target_execs) + rate - 1) / rate ))
+        needed=$(( needed + needed / 2 ))
+        (( needed < extra )) && extra="$needed"
+      fi
+      (( extra < 1 )) && extra=1
+      fuzz_round "$pkg" "$fn" "$extra"
       target_execs=$(( target_execs + execs ))
-      target_seconds="$fuzz_cap"
+      target_seconds=$(( fuzz_base + extra ))
     fi
 
     fuzz_ran=$(( fuzz_ran + 1 ))
@@ -528,8 +552,8 @@ if (( FUZZ )); then
   # Both numbers, because a sweep that silently covered a subset would otherwise
   # read exactly like one that covered everything.
   (( fuzz_ran == fuzz_declared )) || fail "ran ${fuzz_ran} of ${fuzz_declared} declared targets"
-  printf '    covered: all %s declared targets executed, %s inputs total (%ss each, extended to %ss below %s inputs)\n' \
-    "$fuzz_ran" "$fuzz_execs" "$fuzz_base" "$fuzz_cap" "$FUZZMIN"
+  printf '    covered: all %s declared targets executed, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
+    "$fuzz_ran" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
   if [[ -n "$fuzz_starved" ]]; then
     printf '\033[33m    NOT COVERED\033[0m: these targets could not reach %s inputs inside %ss, so the sweep\n' \
       "$FUZZMIN" "$fuzz_cap"
