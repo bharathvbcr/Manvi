@@ -524,6 +524,7 @@ func runGitCapped(ctx context.Context, root string, limit int, args ...string) (
 	// only would give the two readers different answers for the same file.
 	full := append([]string{"-c", "core.quotePath=false"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	proc.ConfigureGroup(cmd)
 	// Without this, cancelling the context kills git but the output copy keeps
 	// waiting on a pipe any grandchild — a hook, a credential helper — still
 	// holds open, so a bounded context still produces an unbounded wait.

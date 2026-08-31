@@ -91,6 +91,9 @@ func DCStore(t testing.TB) string { return cargoBin(t, "dc-store", "dcstore") }
 // DCVerify builds the Rust verifier binary and returns its path.
 func DCVerify(t testing.TB) string { return cargoBin(t, "dc-verify", "dcverify") }
 
+// DCGrep builds the Rust searcher binary and returns its path.
+func DCGrep(t testing.TB) string { return cargoBin(t, "dc-grep", "dcgrep") }
+
 // cargoBin builds one binary and returns the path to a stable copy of it.
 //
 // The copy is the point. `cargo build` does not leave its output alone: every

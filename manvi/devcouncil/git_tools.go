@@ -562,6 +562,9 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	cmdCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, "git", argv...)
+	// git starts helpers of its own — credential helpers, hooks, filters —
+	// and any of them can outlive it holding the pipe. See proc.ConfigureGroup.
+	proc.ConfigureGroup(cmd)
 	cmd.Dir = r.deps.Root
 	cmd.WaitDelay = 5 * time.Second
 

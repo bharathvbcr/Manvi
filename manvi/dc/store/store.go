@@ -603,7 +603,7 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	// timeout. WaitDelay bounds that second wait: after the context fires and
 	// the process is killed, the pipes are closed and Wait returns.
 	cmd.WaitDelay = 2 * time.Second
-	configureProcessGroup(cmd)
+	proc.ConfigureGroup(cmd)
 
 	// Run on its own goroutine so the bound covers the fork, not just the
 	// process. Everything above this line — the context, WaitDelay, the process

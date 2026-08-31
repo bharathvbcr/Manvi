@@ -1,22 +1,21 @@
 [workspace]
 resolver = "3"
-members = ["dc-glob", "dc-store", "dc-verify"]
+members = ["dc-glob", "dc-grep", "dc-store", "dc-verify"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-# One external dependency, taken deliberately: dc-store carries rusqlite 0.31
-# with `bundled`, because the store's mutual exclusion is a SQLite partial
-# unique index and compiling SQLite from source keeps that guarantee
-# independent of whatever libsqlite3 the host has. It reaches 22 crates
-# transitively, which is the dependency-audit surface this workspace pays for
-# and `cargo audit` in verify.sh is what pays it.
-#
-# dc-glob and dc-verify still have none, and the bar for the next one is the
-# same as it was for this one: a task that needs it, not a task that would be
-# tidier with it.
+# No shared external dependencies, deliberately. Every crate a member pulls in
+# is a dependency-audit surface paid for weekly; the analysis plane earns one
+# when a task needs it, not before, and it is declared by the single member
+# that needs it rather than hoisted here where it would look like a house
+# standard. Two members have earned theirs: dc-store takes rusqlite (bundled,
+# so the store does not depend on the host's libsqlite3), and dc-grep takes
+# ripgrep's engine (grep-regex, grep-searcher, ignore) because reimplementing
+# ignore-rule resolution and a line-oriented searcher is exactly the second
+# engine this workspace exists to avoid keeping in step with the first.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

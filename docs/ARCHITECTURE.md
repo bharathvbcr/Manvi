@@ -30,12 +30,14 @@ flowchart TB
         IPC1["fork/exec dcstore"]
         IPC2["fork/exec dcverify"]
         IPC3["fork/exec devmap"]
+        IPC4["fork/exec dcgrep"]
     end
 
     subgraph RustPlane["Rust Analysis Plane"]
         DCStore["dc-store (Tasks & Lease Mutex)"]
         DCVerify["dc-verify (Diff Parsing, Rigor Gates, Coverage)"]
         DCGlob["dc-glob (Zero-dependency fnmatch engine)"]
+        DCGrep["dc-grep (Ignore-aware repository search, ripgrep engine)"]
         DevMap["devmap (AST Code Graph & Adjacency)"]
     end
 
@@ -52,10 +54,11 @@ flowchart TB
     Gate --> Registry
     AgentLoop --> Providers
     AgentLoop --> Tools
-    Tools --> IPC1 & IPC2 & IPC3
+    Tools --> IPC1 & IPC2 & IPC3 & IPC4
     IPC1 --> DCStore
     IPC2 --> DCVerify
     IPC3 --> DevMap
+    IPC4 --> DCGrep
     DCStore --> SQLite
     DevMap --> CodeGraph
     AgentLoop --> SessionLog
@@ -82,6 +85,7 @@ flowchart TB
 | **Test Coverage Intersection** | Rust | `crates/dc-verify` | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
 | **Task & Lease Persistence** | Rust | `crates/dc-store` | `rusqlite` SQLite binding, ACID transactions, exclusion index |
 | **Glob Pattern Matching** | Rust & Go | `crates/dc-glob`, `manvi/internal/fnmatch` | Shared 775-case CPython `fnmatch` parity fixture |
+| **Repository Search** | Rust | `crates/dc-grep` | ripgrep's own `grep-regex`, `grep-searcher` and `ignore` crates; ignore-rule resolution and line-oriented matching |
 
 ---
 

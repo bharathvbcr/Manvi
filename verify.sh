@@ -25,6 +25,52 @@ case "${1:-}" in
   *)      printf 'usage: %s [--fix|--race|--fuzz]\n' "$0" >&2; exit 2 ;;
 esac
 
+# count_files reports how many files a directory holds, and zero for a directory
+# that is not there.
+#
+# It is a function rather than the `find … | wc -l` it replaces because that
+# pipeline killed this script. Most fuzz targets have no committed seed corpus,
+# so the directory does not exist, so `find` exits 1 — and under `pipefail`
+# that is the pipeline's status, and under `set -e` a failing assignment ends
+# the run. The sweep died after its first target, silently, four times, and the
+# log simply stopped: no error, no verdict, nothing to distinguish it from a
+# machine under load. The check added to stop this gate reporting a stall as a
+# defect was itself a stall reported as nothing at all.
+count_files() {
+  local dir="$1" n
+  if [[ ! -d "$dir" ]]; then
+    printf '0'
+    return 0
+  fi
+  # `|| true` inside the group, and an explicit `return 0`, because find also
+  # exits non-zero on a directory it could only partly read. The count is a
+  # diagnostic; it may be approximate. What it may not be is fatal — this
+  # helper exists because the version that could fail took the whole gate down
+  # without a word.
+  n=$( { find "$dir" -type f 2>/dev/null || true; } | wc -l | tr -d ' ' )
+  printf '%s' "${n:-0}"
+  return 0
+}
+
+# VERDICT_REACHED is set only by the final PASS. Until then, any exit — a failed
+# command under `set -e`, a signal, an unset variable — is an exit before this
+# script decided anything, and the trap below says so.
+#
+# This exists because that is exactly what happened and nobody could see it. A
+# gate that stops early must not be indistinguishable from a gate that finished:
+# it is the same invariant every check in this file asserts about the harness,
+# and it was the one thing the file did not assert about itself.
+VERDICT_REACHED=0
+on_exit() {
+  local code=$?
+  if (( VERDICT_REACHED == 0 )); then
+    printf '\n\033[31mINCOMPLETE\033[0m verify.sh exited (status %d) before reaching a verdict.\n' "$code" >&2
+    printf '           Nothing above is a pass: the gates that did not run are not gates that passed.\n' >&2
+  fi
+  return $code
+}
+trap on_exit EXIT
+
 # The --fuzz budget, which is per target and adaptive.
 #
 # A flat budget buys wildly different coverage per target, because the targets
@@ -457,6 +503,109 @@ fi
 rm -f "$tmpcov"
 printf '    covered: an unreadable profile errors rather than reporting zero coverage\n'
 
+# The searcher is the read tool an agent reaches for first, and the one whose
+# failure mode is silent: every clause below distinguishes "found nothing" from
+# "did not run". They are asserted from the shell against the built binary for
+# the same reason the rigor gates are — a boundary proven only by its own unit
+# tests is a boundary that can be disconnected from the harness without anything
+# going red.
+step "Searcher — ignore rules apply and a failed search never reads as empty"
+(cd crates && cargo build -q -p dc-grep --bin dcgrep) || fail "building dcgrep"
+
+grepdir="$(mktemp -d)"
+mkdir -p "$grepdir/src" "$grepdir/build" "$grepdir/.git" "$grepdir/.devcouncil"
+printf 'build/\n' > "$grepdir/.gitignore"
+printf 'func handle() { verifyNeedle() }\n' > "$grepdir/src/handler.go"
+printf 'func generated() { verifyNeedle() }\n' > "$grepdir/build/generated.go"
+printf 'verifyNeedle\n' > "$grepdir/.git/config"
+printf 'verifyNeedle\n' > "$grepdir/.devcouncil/log.json"
+
+grep_run() { printf '%s' "$1" | crates/target/debug/dcgrep search; }
+
+default_out="$(grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\"}")" \
+  || fail "a valid search failed: $default_out"
+grep -q '"path":"src/handler.go"' <<<"$default_out" || fail "the source file was not found: $default_out"
+grep -q '"build/generated.go"' <<<"$default_out" && fail "an ignored file was searched by default: $default_out"
+grep -q '"ignore_rules_applied":true' <<<"$default_out" \
+  || fail "the reply must say which mode it ran in: $default_out"
+printf '    covered: .gitignore is honoured by default, and the reply says so\n'
+
+ignored_out="$(grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\",\"include_ignored\":true}")" \
+  || fail "include_ignored search failed: $ignored_out"
+grep -q '"build/generated.go"' <<<"$ignored_out" \
+  || fail "include_ignored did not reach the ignored tree: $ignored_out"
+grep -qE '"path":"\.(git|devcouncil)/' <<<"$ignored_out" \
+  && fail "the harness's own state was returned as a search result: $ignored_out"
+printf '    covered: include_ignored reaches the build tree and still never reads .git or .devcouncil\n'
+
+# The three ways a search can fail. Each must be a non-zero exit naming the
+# fault — never exit 0 with an empty match list, which is the shape of a real
+# negative and the exact confusion that cost a run.
+if grep_run "{\"pattern\":\"unclosed(group\",\"root\":\"$grepdir\"}" >/dev/null 2>&1; then
+  fail "an unparseable pattern was accepted as a search that matched nothing"
+fi
+if grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\",\"path\":\"../..\"}" >/dev/null 2>&1; then
+  fail "a search root outside the repository was walked instead of refused"
+fi
+if printf 'not json\n' | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+  fail "a malformed request was accepted"
+fi
+printf '    covered: a bad pattern, an uncontained root and a malformed request all error rather than return zero matches\n'
+
+# The listing and the search must name the same files, because two tools that
+# walk a repository differently hand an agent two answers and no way to tell
+# which one is about the tree it is editing. That is not hypothetical: while
+# only grep honoured ignore rules, find_files reported dist/generated.go and
+# grep would never open it.
+listed="$(printf '%s' "{\"root\":\"$grepdir\"}" | crates/target/debug/dcgrep files)" \
+  || fail "listing failed: $listed"
+grep -q '"src/handler.go"' <<<"$listed" || fail "the listing must name the source file: $listed"
+grep -q '"build/generated.go"' <<<"$listed" && fail "the listing must honour ignore rules: $listed"
+grep -qE '"\.(git|devcouncil)/' <<<"$listed" && fail "the listing must never name harness state: $listed"
+printf '    covered: the file listing and the search walk one tree, under one set of rules\n'
+
+# Every bound on a model-supplied input. Each of these was measured doing real
+# damage before it existed: an unbounded request read turned 64 MiB of stdin
+# into a 75 MiB resident set, and a 300,000-branch alternation compiled to
+# 416 MiB in 4.3 seconds — from a pattern a model can type in one second.
+big_request="$(mktemp)"
+python3 -c "import sys; sys.stdout.write('{\"pattern\":\"x\",\"root\":\"'+sys.argv[1]+'\",\"pad\":\"'+'A'*2000000+'\"}')" \
+  "$grepdir" > "$big_request"
+if crates/target/debug/dcgrep search < "$big_request" >/dev/null 2>&1; then
+  fail "a request over the size limit was accepted"
+fi
+rm -f "$big_request"
+
+long_pattern="$(python3 -c "import json,sys; sys.stdout.write(json.dumps({'pattern':'a'*5000,'root':sys.argv[1]}))" "$grepdir")"
+if printf '%s' "$long_pattern" | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+  fail "a pattern over the length limit was accepted"
+fi
+
+for explode in 'a{1000}{1000}' '((((a{50}){50}){50}){50})'; do
+  payload="$(python3 -c "import json,sys; sys.stdout.write(json.dumps({'pattern':sys.argv[1],'root':sys.argv[2]}))" "$explode" "$grepdir")"
+  if printf '%s' "$payload" | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+    fail "a pattern compiling past the size ceiling was accepted: $explode"
+  fi
+done
+printf '    covered: request size, pattern length and compiled-regex size are all bounded and refuse loudly\n'
+
+# A search that opened no file is the one zero that says nothing about the
+# repository, and it is otherwise identical to the zero that says a great deal.
+blinddir="$(mktemp -d)"
+printf '*\n' > "$blinddir/.gitignore"
+printf 'verifyNeedle\n' > "$blinddir/code.go"
+blind="$(printf '%s' "{\"pattern\":\"verifyNeedle\",\"root\":\"$blinddir\"}" | crates/target/debug/dcgrep search)" \
+  || fail "search failed: $blind"
+grep -q '"files_searched":0' <<<"$blind" \
+  || fail "a search that opened nothing must report zero files searched: $blind"
+reached="$(printf '%s' "{\"pattern\":\"verifyNeedle\",\"root\":\"$blinddir\",\"include_ignored\":true}" | crates/target/debug/dcgrep search)"
+grep -q '"count":1' <<<"$reached" \
+  || fail "include_ignored must reach a file the rules hid: $reached"
+rm -rf "$blinddir"
+printf '    covered: a search that opened no files is distinguishable from one that found none\n'
+
+rm -rf "$grepdir"
+
 # Repo navigation. The index is optional — a machine without devmap can still
 # run everything else — so its absence is reported rather than failing the gate.
 #
@@ -479,7 +628,6 @@ if ! command -v "$mapbin" >/dev/null && [[ ! -x "$mapbin" ]]; then
   notcovered 'devmap not found — repo navigation is unverified here'
 elif ! mapout="$("$mapbin" status 2>&1)"; then
   notcovered "$(printf '`%s status` failed — the navigation tools cannot read the index: %s' "$mapbin" "$(printf '%s' "$mapout" | tr '\n' ' ')")"
-    "$mapbin" "$(printf '%s' "$mapout" | tr '\n' ' ')"
 elif [[ ! -f "$graph" ]]; then
   notcovered "$(printf 'no %s — run `manvi map build`; the neighbour rule will report repo_map.unavailable' "$graph")"
 else
@@ -500,7 +648,6 @@ else
     notcovered "$(printf '%s names no files — rebuild it with `manvi map build`' "$graph")"
   elif (( stale > 0 )); then
     notcovered "$(printf '%d of %d paths in %s no longer exist — the graph describes an older tree and the neighbour rule cannot place current files; run `manvi map build`' "$stale" "$indexed" "$graph")"
-      "$stale" "$indexed" "$graph"
   else
     # Every path resolving is still not the question. The graph is a separate
     # file from the index, written by a separate command, and a graph built from
@@ -540,7 +687,6 @@ else
       notcovered "$(printf '`%s status` reported no generation, so the graph cannot be checked against it' "$mapbin")"
     elif [[ "$index_gen" != "$graph_gen" ]]; then
       notcovered "$(printf '%s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`' "$graph" "$graph_gen" "$index_gen")"
-        "$graph" "$graph_gen" "$index_gen"
     elif [[ -z "$graph_head" ]]; then
       printf '\033[33m    NOT COVERED\033[0m: %s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one\n' "$graph"
     elif [[ -n "$head_sha" && "$graph_head" != "$head_sha" ]]; then
@@ -645,9 +791,7 @@ if (( FUZZ )); then
   fuzz_round() {
     local pkg="$1" fn="$2" seconds="$3" out corpus before after
     corpus="manvi/${pkg#./}/testdata/fuzz/${fn}"
-    # Braced with `|| true`: most targets have no corpus directory, `ls` then
-    # exits non-zero, and pipefail would take the whole script down under set -e.
-    before="$( { ls -1 "$corpus" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+    before="$(count_files "$corpus")"
     # -run '^$' so the seed corpus does not run twice: the engine replays the
     # seeds itself while gathering baseline coverage.
     if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "${seconds}s" \
@@ -656,7 +800,7 @@ if (( FUZZ )); then
       # and the two must not report the same thing: one is a defect in this
       # repository, the other is this gate mis-scheduling itself. Neither is
       # dropped — the second is reported as not covered, which is what it is.
-      after="$( { ls -1 "$corpus" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+      after="$(count_files "$corpus")"
       if (( after > before )); then
         printf '%s\n' "$out" >&2
         fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to ${corpus}/ — commit it as a seed once the defect is fixed"
@@ -961,6 +1105,7 @@ printf '    covered: %s checks — bootstrap CIs, paired deltas, seed pinning, c
 printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
 printf '             and 19 tasks that start broken and reject tampering\n'
 
+VERDICT_REACHED=1
 # "PASS all gates" is only true when all of them ran. Every NOT COVERED above
 # is collected rather than left to scroll past, and the verdict names them,
 # because a reader who sees a green PASS does not go back and re-read forty
