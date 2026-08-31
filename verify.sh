@@ -25,6 +25,52 @@ case "${1:-}" in
   *)      printf 'usage: %s [--fix|--race|--fuzz]\n' "$0" >&2; exit 2 ;;
 esac
 
+# count_files reports how many files a directory holds, and zero for a directory
+# that is not there.
+#
+# It is a function rather than the `find … | wc -l` it replaces because that
+# pipeline killed this script. Most fuzz targets have no committed seed corpus,
+# so the directory does not exist, so `find` exits 1 — and under `pipefail`
+# that is the pipeline's status, and under `set -e` a failing assignment ends
+# the run. The sweep died after its first target, silently, four times, and the
+# log simply stopped: no error, no verdict, nothing to distinguish it from a
+# machine under load. The check added to stop this gate reporting a stall as a
+# defect was itself a stall reported as nothing at all.
+count_files() {
+  local dir="$1" n
+  if [[ ! -d "$dir" ]]; then
+    printf '0'
+    return 0
+  fi
+  # `|| true` inside the group, and an explicit `return 0`, because find also
+  # exits non-zero on a directory it could only partly read. The count is a
+  # diagnostic; it may be approximate. What it may not be is fatal — this
+  # helper exists because the version that could fail took the whole gate down
+  # without a word.
+  n=$( { find "$dir" -type f 2>/dev/null || true; } | wc -l | tr -d ' ' )
+  printf '%s' "${n:-0}"
+  return 0
+}
+
+# VERDICT_REACHED is set only by the final PASS. Until then, any exit — a failed
+# command under `set -e`, a signal, an unset variable — is an exit before this
+# script decided anything, and the trap below says so.
+#
+# This exists because that is exactly what happened and nobody could see it. A
+# gate that stops early must not be indistinguishable from a gate that finished:
+# it is the same invariant every check in this file asserts about the harness,
+# and it was the one thing the file did not assert about itself.
+VERDICT_REACHED=0
+on_exit() {
+  local code=$?
+  if (( VERDICT_REACHED == 0 )); then
+    printf '\n\033[31mINCOMPLETE\033[0m verify.sh exited (status %d) before reaching a verdict.\n' "$code" >&2
+    printf '           Nothing above is a pass: the gates that did not run are not gates that passed.\n' >&2
+  fi
+  return $code
+}
+trap on_exit EXIT
+
 # MANVI_FUZZTIME is the budget each target gets under --fuzz. It is per target,
 # not per run, so the wall time is this times the number of declared targets —
 # and it is stated in the report rather than left for a reader to multiply.
@@ -462,9 +508,30 @@ if (( FUZZ )); then
     fn="${decl##*:}"
     # -run '^$' so the seed corpus does not run twice: the engine replays the
     # seeds itself while gathering baseline coverage.
+    # A crasher count taken before the run, so a failure can be told apart from
+    # a failure to run. See the two `fail` messages below.
+    crashdir="manvi/${pkg#./}/testdata/fuzz/${fn}"
+    before=$(count_files "$crashdir")
     if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "$FUZZTIME" "$pkg" 2>&1) )"; then
       printf '%s\n' "$out" >&2
-      fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to manvi/${pkg#./}/testdata/fuzz/${fn}/ — commit it as a seed once the defect is fixed"
+      after=$(count_files "$crashdir")
+      if (( after > before )); then
+        fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to ${crashdir}/ — commit it as a seed once the defect is fixed"
+      fi
+      # No crasher was written, so the fuzzer did not reject an input — it did
+      # not finish. Go reports a worker the coordinator lost as "context
+      # deadline exceeded" with a non-zero exit and nothing in testdata, which
+      # is what an oversubscribed machine produces: this gate ran 18 workers
+      # while a container VM held nine cores, and a target that passes with
+      # five million executions on its own was reported as a defect with an
+      # input file named that does not exist.
+      #
+      # It still fails. A sweep that could not run must never report as one
+      # that ran and found nothing — that is the invariant this whole file is
+      # built on. What changes is the diagnosis, because "we found a bug in
+      # your code" and "we could not finish looking" send an operator to two
+      # different places, and only one of them is where the problem is.
+      fail "${pkg}:${fn} did not complete under the fuzzer and wrote no failing input to ${crashdir}/, so this is neither a clean result nor a finding. The usual cause is CPU oversubscription (the fuzzer runs one worker per core); re-run this sweep on an idle machine, or lower the load, before treating it as a defect."
     fi
     # The fuzzer reports a running total; the last line carries the whole run.
     execs="$(grep -o 'execs: [0-9]*' <<<"$out" | tail -1 | grep -o '[0-9]*$' || true)"
@@ -683,4 +750,5 @@ printf '    covered: bootstrap CIs, paired deltas, seed pinning, cell-assembly r
 printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
 printf '             and 19 tasks that start broken and reject tampering\n'
 
+VERDICT_REACHED=1
 printf '\n\033[32mPASS\033[0m all gates\n'
