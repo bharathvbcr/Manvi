@@ -28,6 +28,7 @@ import (
 	"manvi/core/bus"
 	"manvi/credentials"
 	"manvi/dc"
+	"manvi/dc/dcgrep"
 	"manvi/dc/devmap"
 	"manvi/dc/store"
 	"manvi/devcouncil"
@@ -426,6 +427,11 @@ func mapClient(root string) *devmap.Client {
 	return devmap.New(toolBinary("MANVI_MAP_BINARY", "devmap"), root)
 }
 
+// grepClient builds the repository-search client.
+func grepClient(root string) *dcgrep.Client {
+	return dcgrep.New(toolBinary(dcgrep.BinaryEnv, "dcgrep"), root)
+}
+
 // scaffold prepares the repository this invocation is standing in.
 //
 // The artifact paths are handed over so their parents are created too: an
@@ -576,6 +582,15 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 		fmt.Fprintln(out, "                  secret_scan, stub_detection, and diff_coverage will report as degraded")
 	} else {
 		fmt.Fprintln(out, "                  reachable — secret_scan, stub_detection, diff_coverage will run")
+	}
+
+	searcher := grepClient(projectRoot())
+	fmt.Fprintf(out, "  searcher        %s\n", searcher.Binary)
+	if err := searcher.Available(context.Background()); err != nil {
+		fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
+		fmt.Fprintln(out, "                  devcouncil_grep will refuse rather than report zero matches")
+	} else {
+		fmt.Fprintln(out, "                  reachable — devcouncil_grep will search, honouring ignore rules")
 	}
 
 	client := storeClient()
@@ -1686,6 +1701,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 		CoverageFile:   os.Getenv("MANVI_COVERAGE"),
 		Map:            mapClient(root),
+		Grep:           grepClient(root),
 		// Operator scope only. See operatorFetchHosts: an allowlist the agent
 		// could write into the repository would not be one.
 		Fetch:            fetcher,

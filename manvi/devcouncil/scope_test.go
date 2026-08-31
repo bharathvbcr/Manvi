@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"manvi/core/bus"
+	"manvi/dc/dcgrep"
 	"manvi/dc/store"
 	"manvi/flags"
 	"manvi/gate"
@@ -40,6 +41,7 @@ func (f *fixture) secondSession(t *testing.T) *fixture {
 	reg, err := New(Deps{
 		Store: client, Gate: g, Root: f.root, LeaseTTL: 10 * time.Minute,
 		VerifierBinary: testsupport.DCVerify(t),
+		Grep:           dcgrep.New(testsupport.DCGrep(t), f.root),
 	})
 	if err != nil {
 		t.Fatal(err)

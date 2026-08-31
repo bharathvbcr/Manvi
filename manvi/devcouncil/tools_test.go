@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"manvi/core/bus"
+	"manvi/dc/dcgrep"
 	"manvi/dc/store"
 	"manvi/flags"
 	"manvi/gate"
@@ -113,6 +114,7 @@ func newFixtureFull(t *testing.T, settings map[string]string, runner SubAgentRun
 	reg, err := New(Deps{
 		Store: client, Gate: g, Root: root, LeaseTTL: 10 * time.Minute,
 		VerifierBinary: testsupport.DCVerify(t),
+		Grep:           dcgrep.New(testsupport.DCGrep(t), root),
 		CoverageFile:   coverage,
 		SubAgent:       runner,
 	})

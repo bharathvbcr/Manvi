@@ -7,7 +7,7 @@ Two costs are paid deliberately in MANVI's architecture. Both are documented her
 ## 1. Strict Posture Buys Write Discipline with Shell Breadth — Not with Visibility
 
 Declaring planned files in a task constrains **writing**, never **looking**.
-- `devcouncil_read_file`, `devcouncil_list_dir`, `devcouncil_grep`, and `devcouncil_find_files` reach the filesystem through root containment alone and never enter the policy gate. Exploratory bug hunting under `strict` costs exactly what it costs under `dev`.
+- `devcouncil_read_file`, `devcouncil_list_dir`, `devcouncil_grep`, and `devcouncil_find_files` reach the filesystem through root containment alone and never enter the policy gate. Exploratory bug hunting under `strict` costs exactly what it costs under `dev`. `devcouncil_grep` narrows what it *returns* by the repository's ignore rules, which is a readability decision rather than a policy one: `include_ignored` lifts it with no gate and no grant, and every reply states which mode it ran in.
 - A write outside the plan is also not an immediate stop: the neighbour rung admits a path in the same subsystem as a planned file, or in a declared neighbour of one, and only past that does `scope.unplanned` fire—a soft rule that an agent may clear for itself, bounded by a 15-minute TTL and a required justification reason. That is one extra tool call recorded as `granted`, with no human in the loop.
 
 ### The Command Allowlist Asymmetry
@@ -44,6 +44,7 @@ The requirement is not symmetric at runtime:
 |---|---|
 | `dcverify` | Secret scanning, stub detection, and diff coverage report as *did not run*, named in the decision's `degraded` list rather than counted as passing. |
 | `dcstore` | Every store-backed tool fails hard (no leases, no tasks, no mutual exclusion). Under `dev`, a Go-only build still drives turns; writes land as `allow [demoted]` because "no task authorises this" is a soft rule. |
+| `dcgrep` | `devcouncil_grep` refuses, naming the build command and `MANVI_GREP_BINARY`. It does not fall back to a Go walker: a second search implementation would answer the same question differently, and the failure this refusal prevents — a missing searcher reporting `{"count":0}` for a repository that does contain the symbol — is worse than the tool being unavailable. `manvi doctor` reports the searcher beside the store and the verifier. |
 
 ### Binary Discovery & Process Boundary
 

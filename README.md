@@ -59,12 +59,14 @@ flowchart TB
         P1["fork/exec dcstore"]
         P2["fork/exec dcverify"]
         P3["fork/exec devmap"]
+        P4["fork/exec dcgrep"]
     end
 
     subgraph RustPlane["Rust Analysis Plane"]
         DCStore["dc-store<br/>Tasks & Lease Mutex"]
         DCVerify["dc-verify<br/>Diff Parsing · Rigor Gates · Coverage"]
         DCGlob["dc-glob<br/>Zero-dep fnmatch engine"]
+        DCGrep["dc-grep<br/>Ignore-aware search · ripgrep engine"]
         DevMap["devmap<br/>AST Code Graph"]
     end
 
@@ -84,10 +86,11 @@ flowchart TB
     AgentLoop <--> Providers
     AgentLoop --> Tools
     AgentLoop --> SessionLog
-    Tools --> P1 & P2 & P3
+    Tools --> P1 & P2 & P3 & P4
     P1 --> DCStore
     P2 --> DCVerify
     P3 --> DevMap
+    P4 --> DCGrep
     DCStore --> SQLite
     DevMap --> CodeGraph
 ```
@@ -104,6 +107,7 @@ flowchart TB
 | Coverage intersection | Rust | `crates/dc-verify` | Line-level coverage bitsets (`-coverprofile`, LCOV) |
 | Task & lease persistence | Rust | `crates/dc-store` | `rusqlite`, ACID transactions, exclusion index |
 | Glob pattern matching | Both | `crates/dc-glob` ↔ `manvi/internal/fnmatch` | Shared 775-case CPython parity fixture |
+| Repository search | Rust | `crates/dc-grep` | ripgrep's engine (`grep-regex`, `grep-searcher`, `ignore`); ignore-rule resolution and line-oriented matching |
 
 ---
 
@@ -368,7 +372,7 @@ Append-only compaction means warm requests reuse the cached KV prefix — **1.5s
 
 # Build both planes
 go -C manvi build -o /tmp/manvi ./cmd/manvi
-cargo build --manifest-path crates/Cargo.toml --bin dcstore --bin dcverify
+cargo build --manifest-path crates/Cargo.toml --bin dcstore --bin dcverify --bin dcgrep
 
 # Interactive full-screen TUI
 /tmp/manvi

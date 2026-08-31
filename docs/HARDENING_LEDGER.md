@@ -258,3 +258,93 @@ pre-fix code.
 | **Dashboard Selection Walked Off-Screen** | With more sessions than fit — the fan-out case the dashboard exists for — the highlight, and the session Enter opened, moved into rows nobody could see. | The drawn window follows the selection with overflow cues in both directions; pgup/pgdn/g/G/home/end/h/l navigation added. | `ui/tui/navfix_test.go` (`TestTheDashboardDrawsOnlyTheWindowAroundTheSelection`, `TestTheDashboardMovesInPagesAndToItsEnds`) |
 | **`CmdPrevSession` Dispatched but Unbound** | The command existed in the dispatcher from the day it was written and was bound to no key, so the session strip offered "next" and no way back. | Bound to `shift+tab` (CSI Z), the one "previous" chord every terminal encodes. | `ui/tui/navfix_test.go` (`TestShiftTabCyclesBackThroughTheSessions`) |
 | **Removed Sessions Left Clickable Ghosts** | Found by the pointer fuzz: a session removed between frames left its row in the dashboard's geometry record; a click on where it had been selected an index the session list no longer held — one Enter or `ctrl+x` from an out-of-range access. | Session membership changes (`AddSession`/`RemoveSession`) invalidate the recorded geometry; the next frame rebuilds it. | `ui/tui/navfix_test.go` (`TestARemovedSessionLeavesNoClickableGhost`), `ui/tui/stress_test.go` (`TestRandomPointerAndGeometryNeverPanicsAndKeepsTheInvariants`) |
+
+---
+
+## Search Moved onto Ripgrep's Engine (2026-08)
+
+`devcouncil_grep` was a `filepath.WalkDir` over the whole tree with a four-name
+skip list. It now runs on ripgrep's own `grep-regex`, `grep-searcher` and
+`ignore` crates, in a new `crates/dc-grep` behind the same JSON-on-stdio process
+boundary as the store and the verifier.
+
+Two things changed on purpose, and both are stated on every reply rather than
+left for a caller to infer:
+
+- **Ignore rules apply.** `.gitignore`, `.ignore`, `.git/info/exclude` and
+  hidden files are honoured. A search of a repository with a build tree in it no
+  longer spends its match budget inside `target/`. `include_ignored` lifts the
+  rules; `ignore_rules_applied` on every reply says which mode ran, because a
+  zero count means something different in each.
+- **Coverage is reported, not implied.** `files_searched` and a `skipped`
+  breakdown (`too_large`, `binary`, `unreadable`) travel with the result. A
+  search that skipped nothing carries no note, so the note's presence means
+  something.
+
+`.git` and `.devcouncil` are excluded even under `include_ignored`: that flag
+means "search the build output too", not "search the session log too".
+
+| Defect Pattern | Failure Mode & Consequence | Resolution & Hardened Invariant | Verified In |
+|---|---|---|---|
+| **The Match Limit Outran Binary Detection** | Found by the test written to prove the opposite. `BinaryDetection::quit` fires when the reader *reaches* the NUL, and the sink stops the walk when the match limit is hit. A file that is text for longer than the limit and binary after it returned 5,000 lines of itself while the same reply counted it as skipped. The result was a report that contradicted itself and put binary junk into a model's context. | Matches collected from a file are discarded the moment it reports binary, so a file is either wholly searched or wholly skipped. A NUL anywhere in the first 64 KiB — every real binary format — is found before any match out of that file is emitted, on both the streaming path macOS takes and the memory-mapped path Linux takes. The one residual shape (a NUL past where the limit stopped the walk) is named in `Skipped::binary`'s own documentation rather than left as an implied guarantee. | `crates/dc-grep` (`a_nul_past_the_probe_window_still_voids_the_whole_file`, `a_large_binary_file_contributes_nothing`) |
+| **Unbounded Match Lines** | The walker had no line-length bound. One minified bundle or single-line data fixture put its entire contents into a match, and fifty of those is a context window. | Lines are clipped to 1 KiB and the clip is marked on the match that suffered it, so a clipped line never reads as the whole line. The cut walks back to a UTF-8 boundary rather than panicking off one. | `crates/dc-grep` (`a_very_long_line_is_clipped_and_says_so`, `a_line_clipped_mid_character_does_not_panic`) |
+| **Oversized Files Dropped in Silence** | A file over the 2 MiB read ceiling failed `readContained` and the walk returned `nil` — indistinguishable from a file that was searched and did not match. | Skipped files are counted by reason and reported. A check that could not run must never report the same result as one that ran and passed. | `crates/dc-grep` (`an_oversized_file_is_skipped_and_counted_rather_than_silently_dropped`), `devcouncil/grep_test.go` |
+| **Size Measured on the Name, Not the Descriptor** | The same `lstat`-measures-the-link defect `readContained` documents at length, reproduced in the new walk: `DirEntry::metadata` describes the name, and the file opened a moment later can be something else. | The file is opened once with `O_NOFOLLOW\|O_NONBLOCK` — so a symlink swapped in fails the open and a planted FIFO cannot block the process — and every question after that is asked of the descriptor. | `crates/dc-grep` (`a_symlink_pointing_out_of_the_repository_is_never_read`) |
+| **A Missing Analysis Plane Reading as an Empty Repository** | Putting the engine behind the process boundary introduces a failure the in-process walker did not have: a checkout where `cargo` never ran. Answering `{"count":0}` there is the same defect that cost a run when an unparseable pattern did it. | No searcher is an error naming the build command and the override variable, never a match list. `manvi doctor` reports the searcher beside the verifier and the store. | `devcouncil/grep_test.go` (`TestGrepWithoutASearcherRefusesRatherThanReportingNoMatches`) |
+| **Worktree `.git` Pointer Walked Past** | The same class already in this ledger under *Bare `.git` Worktree Pointers*, in new code: a `.git/` exclusion glob matches only a directory, and in a worktree — how this harness is routinely run — `.git` is a file. | Exclusions are written unslashed so they match a file or a directory at any depth. | `crates/dc-grep` (`a_git_pointer_file_is_excluded_the_way_a_git_directory_is`) |
+
+### Verified on both platforms
+
+Two claims in this section are platform-dependent, so they were run on both
+rather than reasoned about:
+
+- **The memory-mapped read path.** `grep-searcher` streams through a 64 KiB
+  buffer on macOS and memory-maps on Linux, and binary detection runs at a
+  different point in each. The engine suite (34 tests) passes on macOS arm64 and
+  on Linux aarch64 under `rust:1.98`, which is what makes "the answer is the
+  same on both" a measurement rather than a reading of the upstream source.
+- **Filenames that are not valid UTF-8.** APFS refuses to create them and ext4
+  accepts them, so the case is unreachable on the machine most of this was
+  written on. The test creates the file where the filesystem allows it and
+  returns early where it does not; on Linux, restoring the lossy rendering makes
+  it fail with `path: "ba\u{fffd}d.txt"` — a match naming a file that cannot be
+  opened. On macOS the same mutation passes, which is exactly why the claim
+  needed the second platform.
+
+The Go boundary packages (`dc/...`, `internal/...`, `devcouncil`) also pass on
+Linux aarch64 under `golang:1.26`.
+
+The dependency this buys is 31 crates, all from the ripgrep and rust-lang trees
+(`cargo tree -e normal -p dc-grep`). It is the second member to earn one, after
+`dc-store` took `rusqlite`, and it is declared by the member that needs it
+rather than hoisted into the workspace.
+
+---
+
+## Search Hardening Audit (2026-08)
+
+An adversarial pass over the searcher after it landed, plus the boundary
+fuzzers it had shipped without. Nine defects, every one of them reachable from
+input a model controls or a repository can contain.
+
+| Defect Pattern | Failure Mode & Consequence | Resolution & Hardened Invariant | Verified In |
+|---|---|---|---|
+| **Two Walks, Two Repositories** | The worst of the set, and it was introduced by the migration itself. `devcouncil_grep` moved onto ripgrep's ignore rules; `devcouncil_find_files` kept its own `filepath.WalkDir` and five-name skip list. In a repository ignoring `dist/`, find_files reported `dist/generated.go` and grep would never open it. Both answers were internally consistent, one described a tree the agent was not editing, and nothing in either said which. | One walk. `build_walker` is the only place a tree is enumerated, `list_files` exposes it, and `find_files` consumes that instead of walking. Glob matching stays in Go on the harness's `fnmatch` — the matching was never wrong, the second walk was. The correspondence is asserted by running both over hand-written *and* randomly generated trees. | `crates/dc-grep` (`the_listing_and_the_search_see_exactly_the_same_files`, `the_listing_matches_the_search_over_generated_trees`), `devcouncil/grep_test.go`, `dc/dcgrep/interop_test.go`, `verify.sh` |
+| **A Third Walk, Found By Looking For One** | The fix above unified two tools; a sweep for `filepath.WalkDir` found `devcouncil_list_dir` in recursive mode doing the same thing with a four-name skip list of its own. Three tools answered "what is in this repository" and could return three internally consistent answers, at most one of them about the tree the agent was editing. | The recursive branch routes through the same walk; directories are reconstructed from the returned paths, so the set reported is every directory holding a visible file. The flat branch is deliberately *not* routed there — "what is literally in this directory" is a different question, and an operator checking whether a build directory exists is asking it — which is itself pinned by a test so the exception cannot quietly become an inconsistency. | `devcouncil/grep_test.go` (`TestEveryToolThatEnumeratesTheRepositoryAgrees`, `TestListDirFlatStillReportsTheLiteralDirectory`) |
+| **A Hang In The Fix For The Third Walk** | Found by the package test hitting Go's ten-minute deadline with no failure message. Reconstructing ancestor directories from a path list, the loop advanced its index with `strings.Index(path[idx+1:], "/") + idx + 1` — which is `-1 + idx + 1` when no further separator exists, so the index never moved. `src/a.go` was enough to spin it forever. A tool handler is pure computation between the gate and the reply, so nothing in the harness bounds it: the turn does not time out, it stops. | A forward scan over the bytes, which terminates by construction. The regression test drives the handler on a goroutine behind a deadline, so a hang fails with a name in thirty seconds rather than as a silent package timeout — verified by restoring the original loop and watching it fail. | `devcouncil/grep_test.go` (`TestListDirRecursiveReconstructsAncestorsAndTerminates`) |
+| **The Fuzz Harness Itself Was Not Isolated** | Found by the source guard added two rows above, running on Linux against code written after it: `testsupport.RunChild` — the helper every child-process fuzz target drives — exec'd the real binaries with no process group. A grandchild holding the stdout pipe would hang the fuzzer instead of a turn, which is the same failure with a slower feedback loop, and the fuzzer is where a child is most likely to be handed input that makes it misbehave. | `proc.ConfigureGroup` applied there too. The finding is the guard's own first catch on code it did not exist for, which is the property a guard is written to have. | `internal/proc/proc_test.go` (`TestEverySubprocessBoundaryIsGroupIsolated`) |
+| **Replies Trusted Instead of Validated** | Found by the fuzzer within seconds of it existing. Go matches JSON field names case-insensitively, so `{"OK":true,"Count":1}` decoded to a reply claiming one match while sending none — a caller reading `count` and one reading `matches` then disagree, and one acts on a match that does not exist. The listing accepted `"/etc/passwd"` and `"../escape"` as repository contents, and `find_files` would have reported them as such. `truncated` with no limit, and negative skip counts that make the coverage arithmetic meaningless, were both accepted. | `validate` runs on every accepted reply: count must equal the list it describes, every path must be relative, contained, non-empty and valid UTF-8, truncation must name its limit, and no count may be negative. Containment asserted at one end only is containment a change at the other end silently removes. | `dc/dcgrep/protocolfuzz_test.go` (`FuzzReplyNeverDecodesIntoAnUnearnedAnswer`, `FuzzListReplyNeverDecodesIntoAnUnearnedAnswer`) |
+| **Unbounded Request Read** | `read_to_string` on stdin had no bound. A 64 MiB request produced a 75 MiB resident set before anything inspected it, and the pattern inside that request comes from a model. Every other boundary here bounds what it reads *back* from a child; none bounded what the child would accept. | Bounded during the read at 1 MiB, taking one byte past the limit so a truncated request is detected rather than parsed — a truncated request is very likely still valid JSON carrying a shorter pattern, which would run a search nobody asked for. Resident set fell from 75 MiB to 3.6 MiB. | `dc/dcgrep/interop_test.go`, `verify.sh` |
+| **Unbounded Regex Compilation** | A 300,000-branch alternation compiled to **416 MiB in 4.3 seconds**. Bounding the pattern's length does not bound this: `((((a{50}){50}){50}){50})` is 25 characters and expands without being long. | `MAX_PATTERN_BYTES` bounds the input, `size_limit` and `dfa_size_limit` bound what it compiles *to*, and exceeding either is reported as a refused pattern — the same shape as a syntactically invalid one. Peak fell from 416 MiB to 16 MiB. A large but honest pattern still runs. | `crates/dc-grep` (`an_over_long_pattern_is_refused_rather_than_compiled`, `a_pattern_that_compiles_enormous_is_refused`), `verify.sh` |
+| **Per-Request Knobs Trusted** | `max_file_bytes` and `max_line_bytes` exist so the Go plane can bound the searcher, and both accepted `u64::MAX` — which is the same as having no bound at all. | Clamped to ceilings rather than trusted. A field a caller can set is a field a caller can set to the maximum. | `crates/dc-grep` (`the_per_request_knobs_are_clamped_rather_than_trusted`) |
+| **Lost Process Group at Five of Twelve Boundaries** | `CommandContext` kills the direct child and nothing else; a grandchild keeps the inherited stdout pipe open, `os/exec`'s copy blocks on an EOF that never comes, and the call outlives the deadline its caller printed. The lesson was recorded in this ledger and applied at two sites. Ten others execed children without it — including `devbridge`, which runs an external Python CLI that spawns its own subprocesses on a five-minute bound. | One owner: `proc.ConfigureGroup`, beside `proc.RunBounded` because it is the same lesson at the same seam. Every boundary routes through it, and a source guard counts children started against children isolated per file, so the next boundary cannot be written without one. | `internal/proc/proc_test.go` (`TestEverySubprocessBoundaryIsGroupIsolated`) |
+| **Lossy Filenames Naming No File** | Unix filenames are bytes and ext4 accepts bytes that are not UTF-8 (APFS refuses them, which is why this is invisible on macOS and reachable in production). `to_string_lossy` rendered such a name with U+FFFD in it: a path that names no file, cannot be reopened, and would hand a model a match it can never act on, indistinguishable from a real one. | The match is dropped and the file counted under a skip reason of its own. Tested by constructing the byte sequence directly, because the filesystem the test runs on decides whether the case is reachable and the rendering must be right on both. | `crates/dc-grep` (`a_path_component_that_is_not_utf8_yields_no_path_at_all`) |
+| **"Everything Ignored" Reading as "Empty Repository"** | A `.gitignore` containing `*`, a path naming an empty directory, or a tree of entirely hidden files all produce `count: 0` with nothing opened — byte-identical to the zero that means the symbol genuinely is not there. Reachable with nothing broken. | `files_searched == 0` is marked explicitly, with a note denying that the result is evidence about the repository and naming `include_ignored` as the remedy. The test asserts the remedy actually finds the file, so the advice is not merely reassuring. | `devcouncil/grep_test.go` (`TestASearchThatOpenedNoFilesSaysSo`), `verify.sh` |
+| **A Boundary Nobody Fuzzed** | The store and the repo map each carry a protocol fuzzer. The searcher shipped without one, and it is the boundary where a decode error is *least* visible: a store reply that decodes wrongly fails at the next lease check, while a search reply that decodes wrongly is an empty match list, which is a valid and actionable answer. | Two targets over the reply decode, plus a randomized pattern target and a randomized-tree correspondence target in the engine. The pattern target's alphabet is regex metacharacters rather than letters, because random letters only ever produce valid, boring patterns. | `dc/dcgrep/protocolfuzz_test.go`, `crates/dc-grep` (`no_pattern_makes_the_engine_panic_or_lie`) |
+
+Stress coverage added alongside: concurrent searches asserted not to cross
+replies, cancellation exercised on both the completing and the cancelled path
+(the first attempt timed out all thirty-two calls in ten milliseconds and
+tested only one), and a repository built to break a walker — symlink loop,
+FIFO, links to `/dev/zero` and `/etc`, a 3 GB file, hundred-deep nesting —
+searched to completion in 30 ms with every skip accounted for.

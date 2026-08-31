@@ -1,0 +1,45 @@
+[package]
+name = "dc-grep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Repository search over ripgrep's engine: ignore-aware walking, line-oriented matching"
+
+# These are ripgrep's own libraries — the same crates BurntSushi/ripgrep builds
+# its binary from — rather than a shell-out to an `rg` on PATH.
+#
+# The reason is the one the analysis plane exists for. A tool the harness
+# execs by name is a tool whose presence, version and defaults are the host's
+# to decide: `rg` 13 does not take the flags `rg` 15 does, a `--type` alias
+# added upstream changes a result set, and a machine without it turns a core
+# read-only tool into an error at the exact moment an agent is trying to orient.
+# Linking the engine makes the search behaviour a property of this repository's
+# lockfile, which is what "deterministic" has meant on this side of the
+# boundary since dc-verify.
+#
+# The audit surface this buys is 22 crates, all from the ripgrep and rust-lang
+# trees; `cargo tree -e normal -p dc-grep` prints it.
+[dependencies]
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+ignore = "0.4.33"
+
+# serde is here and hand-rolled JSON is not, unlike dcstore and dcverify.
+# Those two emit values they generate themselves — gate names, severities,
+# paths from a diff. This binary emits arbitrary bytes out of arbitrary files
+# in the repository under search, which is the input a hand-written escaper
+# gets wrong: one unescaped control byte from a fixture file and the Go client
+# reads "unparseable output" for a search that ran perfectly.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
+
+# Already in the tree — grep-searcher pulls it through memmap2 — so naming it
+# directly costs nothing new to audit and buys the two open(2) flags below
+# from the platform rather than from memory. Spelling O_NOFOLLOW out per
+# architecture was the alternative, and a value that is right on x86_64 and
+# wrong on sparc would not fail loudly: it would mean some *other* flag.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1,15 +1,21 @@
 [workspace]
 resolver = "3"
-members = ["dc-glob", "dc-store", "dc-verify"]
+members = ["dc-glob", "dc-grep", "dc-store", "dc-verify"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-# No external dependencies yet, deliberately. Every crate added here is a
-# dependency-audit surface paid for weekly; the analysis plane earns its first
-# one when a task needs it (tree-sitter, rusqlite), not before.
+# No shared external dependencies, deliberately. Every crate a member pulls in
+# is a dependency-audit surface paid for weekly; the analysis plane earns one
+# when a task needs it, not before, and it is declared by the single member
+# that needs it rather than hoisted here where it would look like a house
+# standard. Two members have earned theirs: dc-store takes rusqlite (bundled,
+# so the store does not depend on the host's libsqlite3), and dc-grep takes
+# ripgrep's engine (grep-regex, grep-searcher, ignore) because reimplementing
+# ignore-rule resolution and a line-oriented searcher is exactly the second
+# engine this workspace exists to avoid keeping in step with the first.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

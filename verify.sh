@@ -212,6 +212,109 @@ fi
 rm -f "$tmpcov"
 printf '    covered: an unreadable profile errors rather than reporting zero coverage\n'
 
+# The searcher is the read tool an agent reaches for first, and the one whose
+# failure mode is silent: every clause below distinguishes "found nothing" from
+# "did not run". They are asserted from the shell against the built binary for
+# the same reason the rigor gates are — a boundary proven only by its own unit
+# tests is a boundary that can be disconnected from the harness without anything
+# going red.
+step "Searcher — ignore rules apply and a failed search never reads as empty"
+(cd crates && cargo build -q -p dc-grep --bin dcgrep) || fail "building dcgrep"
+
+grepdir="$(mktemp -d)"
+mkdir -p "$grepdir/src" "$grepdir/build" "$grepdir/.git" "$grepdir/.devcouncil"
+printf 'build/\n' > "$grepdir/.gitignore"
+printf 'func handle() { verifyNeedle() }\n' > "$grepdir/src/handler.go"
+printf 'func generated() { verifyNeedle() }\n' > "$grepdir/build/generated.go"
+printf 'verifyNeedle\n' > "$grepdir/.git/config"
+printf 'verifyNeedle\n' > "$grepdir/.devcouncil/log.json"
+
+grep_run() { printf '%s' "$1" | crates/target/debug/dcgrep search; }
+
+default_out="$(grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\"}")" \
+  || fail "a valid search failed: $default_out"
+grep -q '"path":"src/handler.go"' <<<"$default_out" || fail "the source file was not found: $default_out"
+grep -q '"build/generated.go"' <<<"$default_out" && fail "an ignored file was searched by default: $default_out"
+grep -q '"ignore_rules_applied":true' <<<"$default_out" \
+  || fail "the reply must say which mode it ran in: $default_out"
+printf '    covered: .gitignore is honoured by default, and the reply says so\n'
+
+ignored_out="$(grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\",\"include_ignored\":true}")" \
+  || fail "include_ignored search failed: $ignored_out"
+grep -q '"build/generated.go"' <<<"$ignored_out" \
+  || fail "include_ignored did not reach the ignored tree: $ignored_out"
+grep -qE '"path":"\.(git|devcouncil)/' <<<"$ignored_out" \
+  && fail "the harness's own state was returned as a search result: $ignored_out"
+printf '    covered: include_ignored reaches the build tree and still never reads .git or .devcouncil\n'
+
+# The three ways a search can fail. Each must be a non-zero exit naming the
+# fault — never exit 0 with an empty match list, which is the shape of a real
+# negative and the exact confusion that cost a run.
+if grep_run "{\"pattern\":\"unclosed(group\",\"root\":\"$grepdir\"}" >/dev/null 2>&1; then
+  fail "an unparseable pattern was accepted as a search that matched nothing"
+fi
+if grep_run "{\"pattern\":\"verifyNeedle\",\"root\":\"$grepdir\",\"path\":\"../..\"}" >/dev/null 2>&1; then
+  fail "a search root outside the repository was walked instead of refused"
+fi
+if printf 'not json\n' | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+  fail "a malformed request was accepted"
+fi
+printf '    covered: a bad pattern, an uncontained root and a malformed request all error rather than return zero matches\n'
+
+# The listing and the search must name the same files, because two tools that
+# walk a repository differently hand an agent two answers and no way to tell
+# which one is about the tree it is editing. That is not hypothetical: while
+# only grep honoured ignore rules, find_files reported dist/generated.go and
+# grep would never open it.
+listed="$(printf '%s' "{\"root\":\"$grepdir\"}" | crates/target/debug/dcgrep files)" \
+  || fail "listing failed: $listed"
+grep -q '"src/handler.go"' <<<"$listed" || fail "the listing must name the source file: $listed"
+grep -q '"build/generated.go"' <<<"$listed" && fail "the listing must honour ignore rules: $listed"
+grep -qE '"\.(git|devcouncil)/' <<<"$listed" && fail "the listing must never name harness state: $listed"
+printf '    covered: the file listing and the search walk one tree, under one set of rules\n'
+
+# Every bound on a model-supplied input. Each of these was measured doing real
+# damage before it existed: an unbounded request read turned 64 MiB of stdin
+# into a 75 MiB resident set, and a 300,000-branch alternation compiled to
+# 416 MiB in 4.3 seconds — from a pattern a model can type in one second.
+big_request="$(mktemp)"
+python3 -c "import sys; sys.stdout.write('{\"pattern\":\"x\",\"root\":\"'+sys.argv[1]+'\",\"pad\":\"'+'A'*2000000+'\"}')" \
+  "$grepdir" > "$big_request"
+if crates/target/debug/dcgrep search < "$big_request" >/dev/null 2>&1; then
+  fail "a request over the size limit was accepted"
+fi
+rm -f "$big_request"
+
+long_pattern="$(python3 -c "import json,sys; sys.stdout.write(json.dumps({'pattern':'a'*5000,'root':sys.argv[1]}))" "$grepdir")"
+if printf '%s' "$long_pattern" | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+  fail "a pattern over the length limit was accepted"
+fi
+
+for explode in 'a{1000}{1000}' '((((a{50}){50}){50}){50})'; do
+  payload="$(python3 -c "import json,sys; sys.stdout.write(json.dumps({'pattern':sys.argv[1],'root':sys.argv[2]}))" "$explode" "$grepdir")"
+  if printf '%s' "$payload" | crates/target/debug/dcgrep search >/dev/null 2>&1; then
+    fail "a pattern compiling past the size ceiling was accepted: $explode"
+  fi
+done
+printf '    covered: request size, pattern length and compiled-regex size are all bounded and refuse loudly\n'
+
+# A search that opened no file is the one zero that says nothing about the
+# repository, and it is otherwise identical to the zero that says a great deal.
+blinddir="$(mktemp -d)"
+printf '*\n' > "$blinddir/.gitignore"
+printf 'verifyNeedle\n' > "$blinddir/code.go"
+blind="$(printf '%s' "{\"pattern\":\"verifyNeedle\",\"root\":\"$blinddir\"}" | crates/target/debug/dcgrep search)" \
+  || fail "search failed: $blind"
+grep -q '"files_searched":0' <<<"$blind" \
+  || fail "a search that opened nothing must report zero files searched: $blind"
+reached="$(printf '%s' "{\"pattern\":\"verifyNeedle\",\"root\":\"$blinddir\",\"include_ignored\":true}" | crates/target/debug/dcgrep search)"
+grep -q '"count":1' <<<"$reached" \
+  || fail "include_ignored must reach a file the rules hid: $reached"
+rm -rf "$blinddir"
+printf '    covered: a search that opened no files is distinguishable from one that found none\n'
+
+rm -rf "$grepdir"
+
 # Repo navigation. The index is optional — a machine without devmap can still
 # run everything else — so its absence is reported rather than failing the gate.
 #

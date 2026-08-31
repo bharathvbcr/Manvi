@@ -27,7 +27,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -35,6 +34,7 @@ import (
 	"manvi/agents"
 	"manvi/artifacts"
 	"manvi/dc"
+	"manvi/dc/dcgrep"
 	"manvi/dc/devmap"
 	"manvi/dc/store"
 	"manvi/fetch"
@@ -70,6 +70,12 @@ type Deps struct {
 	// which then report themselves unavailable rather than returning empty
 	// results that read like answers.
 	Map *devmap.Client
+	// Grep is the repository-search client — the boundary to ripgrep's engine
+	// in the analysis plane. Nil makes devcouncil_grep report that no search
+	// ran, for the same reason Map's absence is reported: an empty match list
+	// is an answer about the repository, and a harness that cannot search must
+	// not be able to produce one.
+	Grep *dcgrep.Client
 	// Subsystems is the area map the write gate consults. The navigation tools
 	// read the same one, so what graph_context reports about a file's
 	// neighbourhood and what the gate will actually permit are one answer.
@@ -481,24 +487,32 @@ func (r *Registry) Tools() []tools.Tool {
 		},
 		{
 			Schema: schema("devcouncil_list_dir",
-				"List contents of a directory in the repository.",
-				`{"type":"object","properties":{"path":{"type":"string","description":"directory path (default: root)"},"recursive":{"type":"boolean","description":"recursively list subdirectories"}},"required":[]}`),
+				"List contents of a directory in the repository. Without recursive, reports the literal "+
+					"directory as it is on disk. With recursive, enumerates exactly the files "+
+					"devcouncil_grep would search — ignore rules apply, and include_ignored lifts them.",
+				`{"type":"object","properties":{"path":{"type":"string","description":"directory path (default: root)"},"recursive":{"type":"boolean","description":"recursively enumerate the repository under this path, honouring ignore rules"},"include_ignored":{"type":"boolean","description":"with recursive, also list files the ignore rules exclude (default: false)"}},"required":[]}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
 			Handler:  r.listDir,
 		},
 		{
 			Schema: schema("devcouncil_find_files",
-				"Find files in the repository matching a glob pattern (e.g. `*.go`, `src/**/*.rs`, `*test*`).",
-				`{"type":"object","properties":{"pattern":{"type":"string","description":"glob pattern to match"},"path":{"type":"string","description":"directory path to search within (default: root)"},"max_results":{"type":"integer","description":"maximum results to return (default: 100)"}},"required":["pattern"]}`),
+				"Find files in the repository matching a glob pattern (e.g. `*.go`, `src/**/*.rs`, `*test*`). "+
+					"Lists exactly the files devcouncil_grep would search: ignore rules apply by default, so "+
+					".gitignore'd and hidden files are excluded unless include_ignored is set.",
+				`{"type":"object","properties":{"pattern":{"type":"string","description":"glob pattern to match"},"path":{"type":"string","description":"directory path to search within (default: root)"},"max_results":{"type":"integer","description":"maximum results to return (default: 100)"},"include_ignored":{"type":"boolean","description":"also list files the ignore rules exclude, hidden files included (default: false)"}},"required":["pattern"]}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
 			Handler:  r.findFiles,
 		},
 		{
 			Schema: schema("devcouncil_grep",
-				"Search for pattern matches across files in the repository.",
-				`{"type":"object","properties":{"pattern":{"type":"string","description":"pattern or string to search for"},"path":{"type":"string","description":"directory or file path (default: root)"},"max_results":{"type":"integer","description":"maximum matches to return (default: 50)"}},"required":["pattern"]}`),
+				"Search for regular-expression matches across files in the repository. "+
+					"Ignore rules apply by default: .gitignore, .ignore, .git/info/exclude and "+
+					"hidden files are skipped, as are binary files. Set include_ignored to search "+
+					"them anyway. Every reply says how many files were searched and how many were "+
+					"skipped, so a result is never mistaken for full coverage.",
+				`{"type":"object","properties":{"pattern":{"type":"string","description":"regular expression to search for (RE2 syntax; an invalid one is an error, never an empty result)"},"path":{"type":"string","description":"directory or file path to search within (default: root)"},"max_results":{"type":"integer","description":"maximum matches to return (default: 50)"},"include_ignored":{"type":"boolean","description":"also search files the ignore rules exclude, hidden files included (default: false)"},"case_insensitive":{"type":"boolean","description":"match without regard to case; the inline (?i) prefix also works (default: false)"}},"required":["pattern"]}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
 			Handler:  r.grepSearch,
@@ -1676,6 +1690,9 @@ func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Path      string `json:"path"`
 		Recursive bool   `json:"recursive"`
+		// IncludeIgnored applies to the recursive branch, which enumerates the
+		// repository. The flat branch always reports the literal directory.
+		IncludeIgnored bool `json:"include_ignored"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
@@ -1736,54 +1753,129 @@ func (r *Registry) listDir(ctx context.Context, call tools.Call) tools.Result {
 		return ok(payload)
 	}
 
-	count := 0
-	truncated := false
-	if err := filepath.WalkDir(full, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if count >= maxEntries {
-			truncated = true
-			return filepath.SkipAll
-		}
-		rel, err := filepath.Rel(r.deps.Root, p)
-		if err != nil || rel == "." {
-			return nil
-		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == ".devcouncil" || d.Name() == "node_modules" || d.Name() == "target") {
-			return filepath.SkipDir
-		}
-		count++
+	// The recursive branch enumerates the repository under a path, which is the
+	// same question devcouncil_find_files and devcouncil_grep answer, so it
+	// goes through the same walk. It used to be a third filepath.WalkDir with a
+	// four-name skip list of its own, and once grep moved onto ripgrep's ignore
+	// rules that walk described a different repository than either of them.
+	//
+	// The flat branch above is deliberately not routed here. "What is literally
+	// in this directory" is a different question from "what files does this
+	// repository have", and an operator checking whether a build output
+	// directory exists is asking the first one.
+	if r.deps.Grep == nil {
+		return tools.Errorf("no searcher is configured, so no listing ran — this is not an " +
+			"empty directory. Build the analysis plane with `cargo build --release " +
+			"--manifest-path crates/Cargo.toml`, or set " + dcgrep.BinaryEnv + " to a dcgrep binary")
+	}
+	rel, contained := containedRelOf(r.deps.Root, full)
+	if !contained {
+		return tools.Errorf("path %q is outside the repository and this tool reads only inside it — "+
+			"this is not an empty result, no listing ran", targetPath)
+	}
+	listing, listErr := r.deps.Grep.List(ctx, dcgrep.ListRequest{
+		Path:           rel,
+		MaxResults:     maxEntries,
+		IncludeIgnored: args.IncludeIgnored,
+	})
+	if listErr != nil {
+		return tools.Errorf("%v — this is not an empty result, no listing ran", listErr)
+	}
+
+	// Directories are reconstructed from the paths rather than reported by the
+	// walk. The set that results is every directory holding at least one
+	// visible file, which is the set a caller can act on: a directory whose
+	// entire contents are excluded is not somewhere a search will look, and
+	// listing it as present invites exactly the "but I can see it there"
+	// confusion this change exists to remove.
+	seenDir := map[string]bool{}
+	for _, path := range listing.Paths {
 		var size int64
-		if info, err := d.Info(); err == nil && !d.IsDir() {
+		if info, statErr := os.Lstat(filepath.Join(r.deps.Root, filepath.FromSlash(path))); statErr == nil {
 			size = info.Size()
 		}
-		entries = append(entries, entry{
-			Name:  filepath.ToSlash(rel),
-			IsDir: d.IsDir(),
-			Size:  size,
-		})
-		return nil
-	}); err != nil {
-		return tools.Errorf("walking directory %s: %v", targetPath, err)
+		entries = append(entries, entry{Name: path, IsDir: false, Size: size})
+		// Every prefix ending at a separator is an ancestor directory.
+		//
+		// Written as a forward scan rather than as a loop that advances an
+		// index by a search result. The first attempt did the latter — and
+		// `strings.Index` returns -1 when there is no further separator, so
+		// `idx = -1 + idx + 1` left the index exactly where it was and the loop
+		// never terminated. `src/a.go` was enough to hang it. A tool handler is
+		// pure computation between the gate and the reply, so nothing in the
+		// harness bounds it: the turn simply stops.
+		for idx := range len(path) {
+			if path[idx] != '/' {
+				continue
+			}
+			parent := path[:idx]
+			if parent != "" && !seenDir[parent] {
+				seenDir[parent] = true
+				entries = append(entries, entry{Name: parent, IsDir: true})
+			}
+		}
 	}
 	payload := map[string]any{
-		"path":    targetPath,
-		"count":   len(entries),
-		"entries": entries,
+		"path":                 targetPath,
+		"count":                len(entries),
+		"entries":              entries,
+		"ignore_rules_applied": listing.IgnoreRulesApplied,
 	}
-	if truncated {
+	// A capped sample is never handed back looking like the whole tree: a
+	// caller that concluded "the file is not here" from a silently trimmed
+	// listing would be concluding it from nothing. The cap is on files, so the
+	// reconstructed directories can push the entry count past it — the limit
+	// reported is the one that actually applied.
+	if listing.Truncated {
 		payload["truncated"] = true
-		payload["limit"] = maxEntries
+		payload["limit"] = listing.Limit
+		payload["files_listed"] = len(listing.Paths)
+	}
+	if len(listing.Paths) == 0 {
+		payload["searched_nothing"] = true
+		payload["note"] = "no file was listed, so this result is not evidence about the " +
+			"repository's contents — the path may be empty, or every file under it may be " +
+			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
 }
 
+// grepSearch answers "where in this repository does this appear".
+//
+// The search itself runs in the analysis plane, on ripgrep's engine — see
+// manvi/dc/dcgrep and crates/dc-grep. What stays here is the contract this
+// tool has always had with the model, and every clause of it is a lesson:
+//
+//   - An unparseable pattern is an error naming the fault, never an empty match
+//     set. It used to be a substring search, and that is not a smaller feature,
+//     it is a wrong answer: the alternation `sys|time` matched nothing and came
+//     back as {"count":0}, which is exactly the shape of "this file does not use
+//     sys or time". A model asked to remove unused imports read that as proof,
+//     then read `subprocess|re|os` as proof of the same thing about imports the
+//     file plainly used, and spent its entire step budget trying to reconcile
+//     two contradictory facts it had been handed. Nothing in the result said
+//     the pattern had not been understood.
+//
+//   - An uncontained search root is refused outright rather than walked to an
+//     empty result, for the same reason.
+//
+//   - A searcher that could not be reached is an error naming what to build.
+//     This is the cost of putting the engine behind the process boundary, and
+//     paying it in an error beats paying it in a zero.
+//
+// What is new is that ignore rules now apply. `.gitignore`, `.ignore`,
+// `.git/info/exclude` and hidden files are honoured, so a search of a
+// repository with a build tree in it no longer spends its match budget inside
+// target/ before reaching the source. That is a real change in what comes back,
+// so the tool says which mode it ran in on every reply, and include_ignored
+// turns the rules off for the case where the build output is the question.
 func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
-		Pattern    string `json:"pattern"`
-		Path       string `json:"path"`
-		MaxResults int    `json:"max_results"`
+		Pattern         string `json:"pattern"`
+		Path            string `json:"path"`
+		MaxResults      int    `json:"max_results"`
+		IncludeIgnored  bool   `json:"include_ignored"`
+		CaseInsensitive bool   `json:"case_insensitive"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
@@ -1791,31 +1883,16 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	if strings.TrimSpace(args.Pattern) == "" {
 		return tools.Errorf("pattern is required")
 	}
-
-	// A regular expression, because the argument is called `pattern` and every
-	// model that reaches for this tool writes one.
-	//
-	// It used to be strings.Contains. That is not a smaller feature, it is a
-	// wrong answer: an alternation like `sys|time` matched nothing and came
-	// back as {"count":0}, which is exactly the shape of "this file does not
-	// use sys or time". A model asked to remove unused imports read that as
-	// proof, then read `subprocess|re|os` as proof of the same thing about
-	// imports the file plainly used, and spent its entire step budget trying to
-	// reconcile two contradictory facts it had been handed. Nothing in the
-	// result said the pattern had not been understood.
-	//
-	// So an unparseable pattern is now an error naming the fault, never an
-	// empty match set. A search that could not run must not look like a search
-	// that ran and found nothing.
-	expr, err := regexp.Compile(args.Pattern)
-	if err != nil {
-		return tools.Errorf("pattern %q is not a valid regular expression: %v — "+
-			"this is not a negative result, no search ran", args.Pattern, err)
+	if r.deps.Grep == nil {
+		return tools.Errorf("no searcher is configured, so no search ran — this is not a " +
+			"negative result. Build the analysis plane with `cargo build --release " +
+			"--manifest-path crates/Cargo.toml`, or set " + dcgrep.BinaryEnv + " to a dcgrep binary")
 	}
 
-	if args.MaxResults <= 0 {
-		args.MaxResults = 50
-	}
+	// Containment is checked here as well as in the searcher. The searcher
+	// enforces it because it is the process doing the reading; this check
+	// exists so the refusal names the path the model actually typed, before a
+	// child is spawned to reject it.
 	targetPath := args.Path
 	if targetPath == "" {
 		targetPath = "."
@@ -1824,87 +1901,68 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	if resolveErr != nil {
 		return tools.Errorf("%v", resolveErr)
 	}
-	// An uncontained search root is refused outright rather than walked to an
-	// empty result, for the same reason an unparseable pattern is: a search
-	// that could not run must never be reported as a search that found nothing.
-	if _, contained := containedRelOf(r.deps.Root, full); !contained {
+	rel, contained := containedRelOf(r.deps.Root, full)
+	if !contained {
 		return tools.Errorf("path %q is outside the repository and grep reads only inside it — "+
 			"this is not a negative result, no search ran", targetPath)
 	}
 
-	type match struct {
-		Path       string `json:"path"`
-		LineNumber int    `json:"line_number"`
-		Line       string `json:"line"`
-	}
-	var matches []match
-	truncated := false
-
-	err = filepath.WalkDir(full, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if len(matches) >= args.MaxResults {
-			truncated = true
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".devcouncil" || d.Name() == "target" || d.Name() == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// WalkDir does not follow symlinks, so a link arrives here as a link —
-		// but os.ReadFile did follow it, and d.Info() is an lstat that measured
-		// the link rather than its target. Anything that is not a plain file is
-		// skipped before it can be opened, and the read itself goes through the
-		// same contained reader read_file uses, so the size guard is an fstat on
-		// what was actually opened.
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		rel, contained := containedRelOf(r.deps.Root, p)
-		if !contained {
-			return nil
-		}
-
-		data, err := readContained(ctx, r.deps.Root, rel, maxToolReadBytes)
-		if err != nil {
-			return nil
-		}
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
-		}
-
-		lines := strings.Split(string(data), "\n")
-		for idx, line := range lines {
-			if expr.MatchString(line) {
-				matches = append(matches, match{
-					Path:       filepath.ToSlash(rel),
-					LineNumber: idx + 1,
-					Line:       firstLines(strings.TrimSpace(line), 1),
-				})
-				if len(matches) >= args.MaxResults {
-					truncated = true
-					return filepath.SkipAll
-				}
-			}
-		}
-		return nil
+	result, err := r.deps.Grep.Search(ctx, dcgrep.Request{
+		Pattern:         args.Pattern,
+		Path:            rel,
+		MaxResults:      args.MaxResults,
+		IncludeIgnored:  args.IncludeIgnored,
+		CaseInsensitive: args.CaseInsensitive,
 	})
-
 	if err != nil {
-		return tools.Errorf("grep error: %v", err)
+		// Every failure the searcher reports is a fault it named — a bad
+		// pattern, an unreadable root, a child that died. None of them may
+		// reach the model shaped like a result.
+		return tools.Errorf("%v — this is not a negative result, no search ran", err)
 	}
 
-	payload := map[string]any{
-		"pattern": args.Pattern,
-		"count":   len(matches),
-		"matches": matches,
+	matches := result.Matches
+	if matches == nil {
+		// A nil slice renders as JSON null, and null is not the same statement
+		// as "no matches" to anything reading this.
+		matches = []dcgrep.Match{}
 	}
-	if truncated {
+	payload := map[string]any{
+		"pattern":              args.Pattern,
+		"count":                result.Count,
+		"matches":              matches,
+		"files_searched":       result.FilesSearched,
+		"ignore_rules_applied": result.IgnoreRulesApplied,
+	}
+	if result.Truncated {
 		payload["truncated"] = true
-		payload["limit"] = args.MaxResults
+		payload["limit"] = result.Limit
+	}
+	// Reported only when there is something to report, but never inferred from
+	// silence: a search that skipped nothing carries no note, and one that
+	// skipped something says exactly what and why. A capped sample must not be
+	// presented as complete coverage.
+	if skipped := result.Skipped; skipped.Total() > 0 {
+		payload["skipped"] = map[string]any{
+			"too_large":            skipped.TooLarge,
+			"binary":               skipped.Binary,
+			"unreadable":           skipped.Unreadable,
+			"unrepresentable_name": skipped.UnrepresentableName,
+			"note": fmt.Sprintf("%d file(s) were not searched, so this result does not cover them",
+				skipped.Total()),
+		}
+	}
+	// A search that opened no files is the one zero that says nothing about the
+	// repository, and it is otherwise byte-identical to the zero that says a
+	// great deal. It is reachable without anything being broken: a `.gitignore`
+	// containing `*`, a path naming an empty directory, a tree whose every file
+	// is hidden. Left unmarked, a model reads "not present here" from a search
+	// that never looked at a single line.
+	if result.FilesSearched == 0 {
+		payload["searched_nothing"] = true
+		payload["note"] = "no file was opened, so this result is not evidence about the " +
+			"repository's contents — the path may be empty, or every file under it may be " +
+			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
 }
@@ -2517,9 +2575,10 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 
 func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
-		Pattern    string `json:"pattern"`
-		Path       string `json:"path,omitempty"`
-		MaxResults int    `json:"max_results,omitempty"`
+		Pattern        string `json:"pattern"`
+		Path           string `json:"path,omitempty"`
+		MaxResults     int    `json:"max_results,omitempty"`
+		IncludeIgnored bool   `json:"include_ignored,omitempty"`
 	}
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
@@ -2530,6 +2589,12 @@ func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result 
 	if args.MaxResults <= 0 {
 		args.MaxResults = 100
 	}
+	if r.deps.Grep == nil {
+		return tools.Errorf("no searcher is configured, so no listing ran — this is not an " +
+			"empty repository. Build the analysis plane with `cargo build --release " +
+			"--manifest-path crates/Cargo.toml`, or set " + dcgrep.BinaryEnv + " to a dcgrep binary")
+	}
+
 	targetPath := args.Path
 	if targetPath == "" {
 		targetPath = "."
@@ -2538,53 +2603,88 @@ func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result 
 	if err != nil {
 		return tools.Errorf("%v", err)
 	}
+	rel, contained := containedRelOf(r.deps.Root, full)
+	if !contained {
+		return tools.Errorf("path %q is outside the repository and this tool reads only inside it — "+
+			"this is not an empty result, no listing ran", targetPath)
+	}
 
-	var matches []string
-	truncated := false
-	err = filepath.WalkDir(full, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if len(matches) >= args.MaxResults {
-			truncated = true
-			return filepath.SkipAll
-		}
-		rel, err := filepath.Rel(r.deps.Root, p)
-		if err != nil || rel == "." {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == ".git" || name == ".devcouncil" || name == "node_modules" || name == "target" || name == ".venv" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		slashRel := filepath.ToSlash(rel)
-		fileName := d.Name()
-
-		if fnmatch.Match(args.Pattern, slashRel) || fnmatch.Match(args.Pattern, fileName) {
-			matches = append(matches, slashRel)
-			if len(matches) >= args.MaxResults {
-				truncated = true
-				return filepath.SkipAll
-			}
-		}
-		return nil
+	// The file list comes from the same walk devcouncil_grep searches, which is
+	// the whole point of routing this through the analysis plane.
+	//
+	// It used to be a second filepath.WalkDir with its own five-name skip list,
+	// and once grep moved onto ripgrep's ignore rules the two disagreed: this
+	// tool reported `dist/generated.go` in a repository whose .gitignore
+	// excluded `dist/`, and grep would never open it. An agent handed both
+	// answers had no way to tell which described the tree it was editing.
+	//
+	// The listing is over-fetched deliberately. Matching happens below, so the
+	// searcher's own limit would otherwise truncate the *candidates* rather
+	// than the results, and a glob matching one file deep in a large tree would
+	// come back empty because the first hundred paths did not match it.
+	listing, err := r.deps.Grep.List(ctx, dcgrep.ListRequest{
+		Path:           rel,
+		MaxResults:     dcgrep.MaxListResults,
+		IncludeIgnored: args.IncludeIgnored,
 	})
 	if err != nil {
-		return tools.Errorf("searching files in %s: %v", targetPath, err)
+		return tools.Errorf("%v — this is not an empty result, no listing ran", err)
+	}
+
+	// Matched here rather than in the analysis plane, and with the harness's
+	// own fnmatch. That engine is pinned to a 775-case CPython parity fixture
+	// shared with crates/dc-glob; moving the matching across the boundary would
+	// fork the glob semantics to gain nothing. What was wrong was never the
+	// matching — it was that there were two walks.
+	matches := []string{}
+	truncated := false
+	for _, path := range listing.Paths {
+		if len(matches) >= args.MaxResults {
+			truncated = true
+			break
+		}
+		name := path
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			name = path[idx+1:]
+		}
+		if fnmatch.Match(args.Pattern, path) || fnmatch.Match(args.Pattern, name) {
+			matches = append(matches, path)
+		}
 	}
 
 	payload := map[string]any{
-		"pattern": args.Pattern,
-		"path":    targetPath,
-		"count":   len(matches),
-		"files":   matches,
+		"pattern":              args.Pattern,
+		"path":                 targetPath,
+		"count":                len(matches),
+		"files":                matches,
+		"files_considered":     len(listing.Paths),
+		"ignore_rules_applied": listing.IgnoreRulesApplied,
 	}
 	if truncated {
 		payload["truncated"] = true
 		payload["limit"] = args.MaxResults
+	}
+	// The candidate list itself was capped, so even an untruncated match list
+	// does not cover the repository. Two different truncations, reported
+	// separately, because they mean different things: one says "more matched",
+	// the other says "more was never looked at".
+	if listing.Truncated {
+		payload["candidates_truncated"] = true
+		payload["note"] = fmt.Sprintf(
+			"only the first %d files were considered, so this list may be incomplete; "+
+				"narrow it with the path argument", listing.Limit)
+	}
+	if listing.Skipped.Total() > 0 {
+		payload["skipped"] = map[string]any{
+			"unreadable":           listing.Skipped.Unreadable,
+			"unrepresentable_name": listing.Skipped.UnrepresentableName,
+		}
+	}
+	if len(listing.Paths) == 0 {
+		payload["searched_nothing"] = true
+		payload["note"] = "no file was listed, so this result is not evidence about the " +
+			"repository's contents — the path may be empty, or every file under it may be " +
+			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
 }
