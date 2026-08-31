@@ -579,6 +579,33 @@ func (s *stream) Response() (llm.Response, error) {
 		case BlockRedactedThinking:
 			msg.Content = append(msg.Content, llm.ReasoningBlock{Redacted: true, Signature: acc.data})
 		case BlockToolUse:
+			// A tool call has to be routable and answerable, and both halves
+			// zero-value to the empty string. Without a name the tool layer
+			// looks up "" and cannot tell that from a tool that does not
+			// exist; without an id the tool_result this turn sends back
+			// references nothing, so the next request is malformed. Neither is
+			// a call — they are the absence of one wearing its shape, and the
+			// guard below already refuses the third way a block can arrive
+			// unusable.
+			//
+			// The sibling adapters both already refused this and this one did
+			// not: gemini errors with "a tool call arrived with no function
+			// name", and openaicompat records a MalformedCall reasoning that
+			// "inventing one would run a tool at random". Three ports of one
+			// contract, and the odd one out passed the empty call through.
+			// Found by FuzzStreamNeverSettlesIntoAToolCallItCannotRoute.
+			if strings.TrimSpace(acc.toolName) == "" {
+				return llm.Response{}, fmt.Errorf(
+					"anthropic: a tool call arrived with no name (id %q); it cannot be routed, "+
+						"and running a tool chosen some other way would be inventing the call",
+					acc.toolID)
+			}
+			if strings.TrimSpace(acc.toolID) == "" {
+				return llm.Response{}, fmt.Errorf(
+					"anthropic: tool call %q arrived with no id; the tool_result answering it "+
+						"would reference nothing and the next request would be rejected",
+					acc.toolName)
+			}
 			args := json.RawMessage(acc.args.String())
 			if len(args) == 0 {
 				args = json.RawMessage("{}")
