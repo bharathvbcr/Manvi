@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 )
 
@@ -396,7 +397,16 @@ func recoverID(head []byte) string {
 		if !ok {
 			return found
 		}
-		if key == "id" {
+		// Matched the way encoding/json matches it, not the way it is spelled.
+		// The decoder prefers an exact hit and otherwise folds case, and when
+		// several keys land on one field the last assignment is the one that
+		// survives — so `{"id":"0","iD":""}` decodes to an empty id while an
+		// exact-match recovery reported "0". A refusal then went out under an
+		// id the host never sent, which fails a call nobody made and leaves the
+		// real one waiting forever: the hang this whole protocol is written to
+		// prevent. Taking the last fold-equal key is what makes the two paths
+		// agree. Found by FuzzRecoverIDNeverAnswersUnderSomeoneElsesID.
+		if strings.EqualFold(key, "id") {
 			if head[i] != '"' {
 				// A non-string id fails the decoder on the ordinary path too.
 				// Refusing to guess keeps the two paths agreeing.
