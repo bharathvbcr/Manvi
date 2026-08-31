@@ -110,9 +110,16 @@ fi
 # this re-reads the same results rather than re-running the suite.
 step "Go — coverage that did not run"
 skip_json="$(mktemp)"
+# The run's own exit code is not this step's verdict — `go test ./...` above
+# already decided that — but its *output* is, and an empty one must not read as
+# "nothing skipped". A compile error, a killed run, or a `go` that is not there
+# all produce no test events at all, and a parser handed none of them finds no
+# skips and would report the clean answer. So the events are counted, and no
+# events is its own answer.
 (cd manvi && go test -json ./... > "$skip_json" 2>/dev/null) || true
-skipped="$(python3 -c '
+skip_report="$(python3 -c '
 import json, sys
+observed = 0
 names = []
 for line in open(sys.argv[1]):
     line = line.strip()
@@ -122,16 +129,27 @@ for line in open(sys.argv[1]):
         e = json.loads(line)
     except ValueError:
         continue
-    if e.get("Test") and e.get("Action") == "skip":
+    if not e.get("Test"):
+        continue
+    action = e.get("Action")
+    if action in ("pass", "fail", "skip"):
+        observed += 1
+    if action == "skip":
         names.append(e["Package"] + "." + e["Test"])
+print(observed)
 print("\n".join(names))
 ' "$skip_json")"
 rm -f "$skip_json"
-if [[ -z "$skipped" ]]; then
-  printf '    covered: no test skipped; every case the suite declares was executed\n'
+skip_observed="$(head -1 <<<"$skip_report")"
+skip_names="$(tail -n +2 <<<"$skip_report" | sed '/^$/d')"
+if [[ -z "$skip_observed" ]] || (( skip_observed == 0 )); then
+  printf '\033[33m    NOT COVERED\033[0m: the instrumented run produced no test results, so whether anything skipped is unknown\n'
+elif [[ -z "$skip_names" ]]; then
+  printf '    covered: %s test results seen, none skipped; every case the suite declares was executed\n' "$skip_observed"
 else
-  printf '\033[33m    NOT COVERED\033[0m: %s test(s) skipped, so their assertions did not run:\n' "$(wc -l <<<"$skipped" | tr -d ' ')"
-  sed 's/^/                  /' <<<"$skipped"
+  printf '\033[33m    NOT COVERED\033[0m: %s of %s test(s) skipped, so their assertions did not run:\n' \
+    "$(wc -l <<<"$skip_names" | tr -d ' ')" "$skip_observed"
+  sed 's/^/                  /' <<<"$skip_names"
 fi
 
 step "Go — cross-boundary coverage"
