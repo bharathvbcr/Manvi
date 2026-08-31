@@ -82,10 +82,11 @@ func FuzzReplyNeverDecodesIntoAnUnearnedAnswer(f *testing.F) {
 		// exactly what the client reads.
 		dir := t.TempDir()
 		body := filepath.Join(dir, "reply.json")
-		if err := os.WriteFile(body, []byte(reply), 0o644); err != nil {
+		if err := os.WriteFile(body, []byte(reply), 0o600); err != nil {
 			t.Skip("could not stage the reply")
 		}
 		script := filepath.Join(dir, "fake.sh")
+		// #nosec G306 -- a shell script this test execs; it needs the execute bit.
 		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat "+body+"\n"), 0o755); err != nil {
 			t.Skip("could not stage the binary")
 		}
@@ -158,10 +159,11 @@ func FuzzListReplyNeverDecodesIntoAnUnearnedAnswer(f *testing.F) {
 	f.Fuzz(func(t *testing.T, reply string) {
 		dir := t.TempDir()
 		body := filepath.Join(dir, "reply.json")
-		if err := os.WriteFile(body, []byte(reply), 0o644); err != nil {
+		if err := os.WriteFile(body, []byte(reply), 0o600); err != nil {
 			t.Skip("could not stage the reply")
 		}
 		script := filepath.Join(dir, "fake.sh")
+		// #nosec G306 -- a shell script this test execs; it needs the execute bit.
 		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat "+body+"\n"), 0o755); err != nil {
 			t.Skip("could not stage the binary")
 		}
@@ -224,10 +226,10 @@ func FuzzGrepChildAnswersEveryRequestWithExactlyOneObject(f *testing.F) {
 		".hidden/c.rs": "needle\n",
 	} {
 		full := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			f.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
 			f.Fatal(err)
 		}
 	}
@@ -307,10 +309,11 @@ func FuzzGrepChildAnswersEveryRequestWithExactlyOneObject(f *testing.F) {
 		}
 		dir := t.TempDir()
 		body := filepath.Join(dir, "reply.json")
-		if err := os.WriteFile(body, stdout, 0o644); err != nil {
+		if err := os.WriteFile(body, stdout, 0o600); err != nil {
 			t.Skip("could not stage the reply")
 		}
 		script := filepath.Join(dir, "replay.sh")
+		// #nosec G306 -- a shell script this test execs; it needs the execute bit.
 		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat "+body+"\nexit "+itoa(exitCode)+"\n"), 0o755); err != nil {
 			t.Skip("could not stage the replay")
 		}

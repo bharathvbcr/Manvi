@@ -201,6 +201,9 @@ func (c *Client) run(ctx context.Context, command string, req any, out any) erro
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// #nosec G204 -- c.Binary is the searcher this harness configured and
+	// command is one of the two literals this file passes ("search", "files").
+	// Neither reaches here from a caller, let alone from a model.
 	cmd := exec.CommandContext(ctx, c.Binary, command)
 	// See proc.ConfigureGroup. The searcher spawns nothing today, which is
 	// exactly the argument that was made at the boundaries where a grandchild
@@ -427,6 +430,7 @@ func (c *Client) Available(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// #nosec G204 -- the configured binary and a literal subcommand.
 	cmd := exec.CommandContext(ctx, c.Binary, "health")
 	proc.ConfigureGroup(cmd)
 	stdout := &cappedBuffer{limit: c.stderrBound()}

@@ -11,19 +11,27 @@
 # Per linter rather than as a sum, because one total lets a fix pay for a new
 # defect and the gate would report the wrong one half the time.
 #
-# Raised a second time, by 52, when the ripgrep integration merged: errcheck
-# 372 -> 376, errorlint 53 -> 56, forcetypeassert 65 -> 86, gosec 446 -> 470.
-# That branch predates this gate and so had never been measured against it, and
-# every one of the 52 is in code it adds or touches — dc/dcgrep and its tests,
-# devcouncil/grep_test.go, and internal/testsupport. None is in code the merge
-# itself wrote, and none is in the fuzz targets merged alongside it, which
-# measure zero.
+# Lowered again once that debt was paid down. The 52 the ripgrep integration
+# brought in are gone: 21 unchecked type assertions in devcouncil/grep_test.go
+# now go through helpers that name the field and its actual type instead of
+# panicking with "interface conversion" and nothing else; the file and
+# directory modes across dc/dcgrep and grep_test are 0600 and 0750; the three
+# `err != ErrNoBinary` comparisons use errors.Is, which is what the branch's own
+# wrapped errors need; and readStableArtifact reports the close it was
+# discarding, which on a file cargo may be replacing under it is evidence the
+# bytes just read came from a file that was moving.
 #
-# Recorded rather than fixed, and that is a debt not a verdict: 21 of them are
-# unchecked type assertions in one test file and most of the gosec entries are
-# file modes, both of which are a small change away from zero. The ratchet
-# caught the increase, which is what it is for. What it cannot do is tell
-# whether the number went up for a good reason, so the reason is written here.
+# Four suppressions rather than fixes, each narrow and each with its reason in
+# place: three writes of shell scripts the tests then exec, where no mode at or
+# below 0600 can work, and dc-grep's two subprocess launches, which take the
+# configured binary and one of two literals this package passes.
+#
+# gosec, errorlint and forcetypeassert land at or below where they stood before
+# that branch merged. errcheck lands one above, and where that one is has not
+# been established — the branch does not touch cmd/manvi/main.go, which holds
+# 113 of the 373. nilerr is six below and always was: these numbers have never
+# been an exact fingerprint of this tree, which is the argument for recording
+# what is measured rather than what was expected.
 #
 # Raised once before, from 1047, when this branch was rebased onto the
 # fuzz-sweep commits. Every one of the twelve is in a file those commits added —
@@ -35,11 +43,11 @@
 # A linter that reaches 0 moves to .golangci.yml and is deleted from here.
 bodyclose 11
 contextcheck 17
-errcheck 376
-errorlint 56
-forcetypeassert 86
-gosec 470
-nilerr 23
+errcheck 373
+errorlint 53
+forcetypeassert 65
+gosec 443
+nilerr 17
 noctx 29
 staticcheck 32
 unconvert 1

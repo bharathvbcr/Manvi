@@ -22,10 +22,10 @@ func seedGrepTree(t *testing.T, root string) {
 	write := func(rel, contents string) {
 		t.Helper()
 		full := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte(contents), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +46,7 @@ func grepPaths(t *testing.T, payload map[string]any) []string {
 		if !ok {
 			t.Fatalf("match is not an object: %v", entry)
 		}
-		out = append(out, match["path"].(string))
+		out = append(out, jsonStr(t, match["path"], "match.path"))
 	}
 	return out
 }
@@ -104,11 +104,11 @@ func TestGrepIncludeIgnoredReachesTheBuildTree(t *testing.T) {
 func TestGrepNeverSearchesTheHarnessOwnState(t *testing.T) {
 	f := newFixture(t)
 	seedGrepTree(t, f.root)
-	if err := os.MkdirAll(filepath.Join(f.root, ".devcouncil"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(f.root, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.root, ".devcouncil", "log.json"),
-		[]byte(`{"note":"grepNeedle"}`), 0o644); err != nil {
+		[]byte(`{"note":"grepNeedle"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestGrepReportsWhatItCouldNotSearch(t *testing.T) {
 	f := newFixture(t)
 	seedGrepTree(t, f.root)
 	if err := os.WriteFile(filepath.Join(f.root, "src", "blob.bin"),
-		append([]byte("grepNeedle\n"), 0x00, 0x01, 0x02), 0o644); err != nil {
+		append([]byte("grepNeedle\n"), 0x00, 0x01, 0x02), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -198,15 +198,15 @@ func TestGrepMatchesCaseInsensitivelyOnRequest(t *testing.T) {
 	f := newFixture(t)
 	seedGrepTree(t, f.root)
 
-	if payload := f.payload("devcouncil_grep", map[string]any{"pattern": "GREPNEEDLE"}); payload["count"].(float64) != 0 {
+	if payload := f.payload("devcouncil_grep", map[string]any{"pattern": "GREPNEEDLE"}); jsonNum(t, payload["count"], "count") != 0 {
 		t.Fatalf("case-sensitive is still the default: %v", payload)
 	}
 	if payload := f.payload("devcouncil_grep", map[string]any{
 		"pattern": "GREPNEEDLE", "case_insensitive": true,
-	}); payload["count"].(float64) == 0 {
+	}); jsonNum(t, payload["count"], "count") == 0 {
 		t.Fatalf("case_insensitive must match: %v", payload)
 	}
-	if payload := f.payload("devcouncil_grep", map[string]any{"pattern": "(?i)GREPNEEDLE"}); payload["count"].(float64) == 0 {
+	if payload := f.payload("devcouncil_grep", map[string]any{"pattern": "(?i)GREPNEEDLE"}); jsonNum(t, payload["count"], "count") == 0 {
 		t.Fatalf("the inline form must keep working: %v", payload)
 	}
 }
@@ -219,11 +219,11 @@ func TestGrepMatchesCarryTheFieldsTheModelReads(t *testing.T) {
 	seedGrepTree(t, f.root)
 
 	payload := f.payload("devcouncil_grep", map[string]any{"pattern": "grepNeedle"})
-	matches := payload["matches"].([]any)
+	matches := jsonList(t, payload["matches"], "matches")
 	if len(matches) != 1 {
 		t.Fatalf("expected one match: %v", payload)
 	}
-	match := matches[0].(map[string]any)
+	match := jsonObj(t, matches[0], "matches[0]")
 	if match["path"] != "src/handler.go" {
 		t.Fatalf("path must be repository-relative: %v", match)
 	}
@@ -271,8 +271,8 @@ func TestFindFilesAndGrepAgreeAboutTheRepository(t *testing.T) {
 		found := f.payload("devcouncil_find_files",
 			merge(args, map[string]any{"pattern": "*.go", "max_results": 1000}))
 		var listed []string
-		for _, entry := range found["files"].([]any) {
-			listed = append(listed, entry.(string))
+		for _, entry := range jsonList(t, found["files"], "files") {
+			listed = append(listed, jsonStr(t, entry, "files[]"))
 		}
 
 		searched := f.payload("devcouncil_grep",
@@ -330,15 +330,15 @@ func TestFindFilesWithoutASearcherRefusesRatherThanReportingAnEmptyRepository(t 
 // model reads "not present" from a search that never opened a line.
 func TestASearchThatOpenedNoFilesSaysSo(t *testing.T) {
 	f := newFixture(t)
-	if err := os.WriteFile(filepath.Join(f.root, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, ".gitignore"), []byte("*\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.root, "code.go"), []byte("grepNeedle\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "code.go"), []byte("grepNeedle\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	payload := f.payload("devcouncil_grep", map[string]any{"pattern": "grepNeedle"})
-	if payload["count"].(float64) != 0 {
+	if jsonNum(t, payload["count"], "count") != 0 {
 		t.Fatalf("everything is ignored, so nothing may match: %v", payload)
 	}
 	if marked, _ := payload["searched_nothing"].(bool); !marked {
@@ -352,7 +352,7 @@ func TestASearchThatOpenedNoFilesSaysSo(t *testing.T) {
 	// try — so the advice is not merely reassuring, it works.
 	reached := f.payload("devcouncil_grep",
 		map[string]any{"pattern": "grepNeedle", "include_ignored": true})
-	if reached["count"].(float64) != 1 {
+	if jsonNum(t, reached["count"], "count") != 1 {
 		t.Fatalf("the remedy the note names must actually find it: %v", reached)
 	}
 	if _, marked := reached["searched_nothing"]; marked {
@@ -401,18 +401,18 @@ func TestEveryToolThatEnumeratesTheRepositoryAgrees(t *testing.T) {
 		globbed := []string{}
 		found := f.payload("devcouncil_find_files",
 			merge(args, map[string]any{"pattern": "*.go", "max_results": 1000}))
-		for _, entry := range found["files"].([]any) {
-			globbed = append(globbed, entry.(string))
+		for _, entry := range jsonList(t, found["files"], "files") {
+			globbed = append(globbed, jsonStr(t, entry, "files[]"))
 		}
 
 		walked := []string{}
 		listed := f.payload("devcouncil_list_dir", merge(args, map[string]any{"recursive": true}))
-		for _, raw := range listed["entries"].([]any) {
-			item := raw.(map[string]any)
+		for _, raw := range jsonList(t, listed["entries"], "entries") {
+			item := jsonObj(t, raw, "entries[]")
 			if isDir, _ := item["is_dir"].(bool); isDir {
 				continue
 			}
-			if name := item["name"].(string); strings.HasSuffix(name, ".go") {
+			if name := jsonStr(t, item["name"], "entry.name"); strings.HasSuffix(name, ".go") {
 				walked = append(walked, name)
 			}
 		}
@@ -446,8 +446,8 @@ func TestListDirFlatStillReportsTheLiteralDirectory(t *testing.T) {
 
 	listed := f.payload("devcouncil_list_dir", map[string]any{})
 	var names []string
-	for _, raw := range listed["entries"].([]any) {
-		names = append(names, raw.(map[string]any)["name"].(string))
+	for _, raw := range jsonList(t, listed["entries"], "entries") {
+		names = append(names, jsonStr(t, jsonObj(t, raw, "entries[]")["name"], "entry.name"))
 	}
 	joined := strings.Join(names, ",")
 	if !strings.Contains(joined, "build") {
@@ -481,10 +481,10 @@ func TestListDirRecursiveReconstructsAncestorsAndTerminates(t *testing.T) {
 		"src/deep/deeper/three.go",
 	} {
 		full := filepath.Join(f.root, rel)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte("grepNeedle\n"), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte("grepNeedle\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -501,12 +501,12 @@ func TestListDirRecursiveReconstructsAncestorsAndTerminates(t *testing.T) {
 
 	dirs := map[string]bool{}
 	files := map[string]bool{}
-	for _, raw := range payload["entries"].([]any) {
-		item := raw.(map[string]any)
+	for _, raw := range jsonList(t, payload["entries"], "entries") {
+		item := jsonObj(t, raw, "entries[]")
 		if isDir, _ := item["is_dir"].(bool); isDir {
-			dirs[item["name"].(string)] = true
+			dirs[jsonStr(t, item["name"], "entry.name")] = true
 		} else {
-			files[item["name"].(string)] = true
+			files[jsonStr(t, item["name"], "entry.name")] = true
 		}
 	}
 
@@ -523,4 +523,48 @@ func TestListDirRecursiveReconstructsAncestorsAndTerminates(t *testing.T) {
 	if dirs[""] {
 		t.Fatal("the empty string is not a directory")
 	}
+}
+
+// jsonNum, jsonStr, jsonObj and jsonList read a field out of a decoded tool
+// payload and fail the test when it is not the type the tool's contract says.
+//
+// They exist because the bare assertions they replace panic with "interface
+// conversion: interface {} is nil, not float64" and nothing else — no field
+// name, no payload, no line of the contract that was broken. A tool whose
+// reply shape drifts is exactly what these tests are for, so the failure has
+// to say which field drifted and to what.
+func jsonNum(t *testing.T, v any, field string) float64 {
+	t.Helper()
+	n, ok := v.(float64)
+	if !ok {
+		t.Fatalf("%s is %T, not a number: %v", field, v, v)
+	}
+	return n
+}
+
+func jsonStr(t *testing.T, v any, field string) string {
+	t.Helper()
+	str, ok := v.(string)
+	if !ok {
+		t.Fatalf("%s is %T, not a string: %v", field, v, v)
+	}
+	return str
+}
+
+func jsonObj(t *testing.T, v any, field string) map[string]any {
+	t.Helper()
+	o, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("%s is %T, not an object: %v", field, v, v)
+	}
+	return o
+}
+
+func jsonList(t *testing.T, v any, field string) []any {
+	t.Helper()
+	l, ok := v.([]any)
+	if !ok {
+		t.Fatalf("%s is %T, not a list: %v", field, v, v)
+	}
+	return l
 }

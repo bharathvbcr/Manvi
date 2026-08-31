@@ -207,7 +207,7 @@ func readStableArtifact(path string) ([]byte, error) {
 		}
 		data, readErr := io.ReadAll(f)
 		info, statErr := f.Stat()
-		f.Close()
+		closeErr := f.Close()
 		switch {
 		case readErr != nil:
 			last = readErr
@@ -218,6 +218,13 @@ func readStableArtifact(path string) ([]byte, error) {
 				len(data), path, info.Size())
 		case len(data) == 0:
 			last = fmt.Errorf("%s is empty", path)
+		case closeErr != nil:
+			// Last, because the three above describe the read and this one
+			// only describes letting go of it. Still a retry rather than a
+			// pass: a close that fails on a file cargo may be replacing under
+			// us is evidence the bytes just read came from a file that was
+			// moving, which is the condition this loop exists to survive.
+			last = closeErr
 		default:
 			return data, nil
 		}
@@ -244,9 +251,12 @@ func publishArtifact(target, binary string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name())
+	// Best-effort: the success path renames this away, so a failure here means
+	// the rename already took it. Named rather than dropped so the next reader
+	// does not have to work out which.
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", err
 	}
 	if err := tmp.Close(); err != nil {

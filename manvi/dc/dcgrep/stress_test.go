@@ -148,17 +148,17 @@ func TestTheSearcherSurvivesARepositoryDesignedToBreakIt(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, body string) {
 		full := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	write("normal.txt", "needle\n")
 
 	// A symlink loop. Followed, this never terminates.
-	if err := os.MkdirAll(filepath.Join(root, "loop"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "loop"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.Symlink(filepath.Join(root, "loop"), filepath.Join(root, "loop", "self"))

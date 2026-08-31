@@ -2,6 +2,7 @@ package dcgrep
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,8 @@ func fake(t *testing.T, name, body string) string {
 		t.Skip("the fake binaries here are shell scripts")
 	}
 	path := filepath.Join(t.TempDir(), name)
+	// #nosec G306 -- this writes a shell script the test then execs, so the
+	// owner execute bit is the point; no mode at or below 0600 would work.
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -155,13 +158,13 @@ func TestACancelledContextStopsTheSearch(t *testing.T) {
 // and name the remedy rather than the symptom.
 func TestNoBinaryIsItsOwnError(t *testing.T) {
 	var nilClient *Client
-	if _, err := nilClient.Search(context.Background(), Request{Pattern: "x"}); err != ErrNoBinary {
+	if _, err := nilClient.Search(context.Background(), Request{Pattern: "x"}); !errors.Is(err, ErrNoBinary) {
 		t.Fatalf("a nil client must report ErrNoBinary, got %v", err)
 	}
-	if _, err := New("", "/tmp").Search(context.Background(), Request{Pattern: "x"}); err != ErrNoBinary {
+	if _, err := New("", "/tmp").Search(context.Background(), Request{Pattern: "x"}); !errors.Is(err, ErrNoBinary) {
 		t.Fatalf("an unconfigured client must report ErrNoBinary, got %v", err)
 	}
-	if err := New("", "/tmp").Available(context.Background()); err != ErrNoBinary {
+	if err := New("", "/tmp").Available(context.Background()); !errors.Is(err, ErrNoBinary) {
 		t.Fatalf("Available must agree with Search about what is configured, got %v", err)
 	}
 }
