@@ -109,7 +109,7 @@ func TestStoreIsSentExplicitlyAsFalse(t *testing.T) {
 	adaptertest.Drain(stream)
 
 	var body map[string]any
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	value, present := body["store"]
@@ -123,16 +123,16 @@ func TestStoreIsSentExplicitlyAsFalse(t *testing.T) {
 	}
 	// The user's own message must be in the request, not assumed to be held by
 	// the provider from an earlier interaction.
-	if !strings.Contains(server.Requests[0], "read a.go") {
-		t.Errorf("the request did not carry the conversation: %s", server.Requests[0])
+	if !strings.Contains(server.Requests()[0], "read a.go") {
+		t.Errorf("the request did not carry the conversation: %s", server.Requests()[0])
 	}
 	if body["system_instruction"] != "You are the builder." {
 		t.Errorf("system_instruction = %v", body["system_instruction"])
 	}
-	if got := server.Headers[0].Get(APIKeyHeader); got != "gemini-test-key-value" {
+	if got := server.Headers()[0].Get(APIKeyHeader); got != "gemini-test-key-value" {
 		t.Errorf("%s = %q — this API uses a bespoke header, not a bearer token", APIKeyHeader, got)
 	}
-	if server.Headers[0].Get("Authorization") != "" {
+	if server.Headers()[0].Get("Authorization") != "" {
 		t.Error("an Authorization header was sent; copying the bearer form from another adapter is the trap here")
 	}
 }
@@ -186,7 +186,7 @@ func TestToolResultReferencesItsCallByCallID(t *testing.T) {
 	var body struct {
 		Input []map[string]json.RawMessage `json:"input"`
 	}
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +229,7 @@ func TestToolResultReferencesItsCallByCallID(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("no function_result was sent: %s", server.Requests[0])
+		t.Fatalf("no function_result was sent: %s", server.Requests()[0])
 	}
 }
 
@@ -263,7 +263,7 @@ func TestAFailedToolResultSaysSoInItsText(t *testing.T) {
 	}
 	adaptertest.Drain(stream)
 
-	sent := server.Requests[0]
+	sent := server.Requests()[0]
 	if strings.Contains(sent, `"is_error"`) {
 		t.Errorf("is_error was sent; no documented example carries it and an unknown "+
 			"parameter fails the request: %s", sent)
@@ -333,11 +333,11 @@ func TestReasoningTextIsNeverPutOnTheWire(t *testing.T) {
 	}
 	adaptertest.Drain(stream)
 
-	if strings.Contains(server.Requests[0], "PRIVATE-THINKING") {
-		t.Errorf("reasoning text reached the wire: %s", server.Requests[0])
+	if strings.Contains(server.Requests()[0], "PRIVATE-THINKING") {
+		t.Errorf("reasoning text reached the wire: %s", server.Requests()[0])
 	}
-	if !strings.Contains(server.Requests[0], "visible answer") {
-		t.Errorf("the visible text was dropped along with the reasoning: %s", server.Requests[0])
+	if !strings.Contains(server.Requests()[0], "visible answer") {
+		t.Errorf("the visible text was dropped along with the reasoning: %s", server.Requests()[0])
 	}
 }
 
@@ -348,7 +348,7 @@ func TestAnUnknownModelIsRefusedAtAssembly(t *testing.T) {
 	if _, err := adapter.Stream(adaptertest.Ctx(), req); err == nil {
 		t.Fatal("an unknown model was sent")
 	}
-	if len(server.Requests) != 0 {
+	if len(server.Requests()) != 0 {
 		t.Fatal("an unknown model reached the network")
 	}
 }
@@ -371,7 +371,7 @@ func TestThinkingLevelCarriesTheRequestedEffort(t *testing.T) {
 			ThinkingLevel string `json:"thinking_level"`
 		} `json:"generation_config"`
 	}
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body.GenerationConfig == nil {
@@ -397,7 +397,7 @@ func TestNoEffortSendsNoThinkingLevel(t *testing.T) {
 	adaptertest.Drain(stream)
 
 	var body map[string]any
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	conf, present := body["generation_config"]
@@ -440,12 +440,12 @@ func TestAnUnsignedCallIsDroppedRatherThanRefusingTheRequest(t *testing.T) {
 	}
 	adaptertest.Drain(stream)
 
-	if strings.Contains(server.Requests[0], `"function_call"`) {
+	if strings.Contains(server.Requests()[0], `"function_call"`) {
 		t.Errorf("an unsigned function_call was replayed; the live API refuses it: %s",
-			server.Requests[0])
+			server.Requests()[0])
 	}
-	if !strings.Contains(server.Requests[0], `"function_result"`) {
-		t.Errorf("the tool result was dropped along with the call: %s", server.Requests[0])
+	if !strings.Contains(server.Requests()[0], `"function_result"`) {
+		t.Errorf("the tool result was dropped along with the call: %s", server.Requests()[0])
 	}
 }
 
@@ -484,14 +484,14 @@ func TestAssistantProseIsDroppedFromAToolUsingHistory(t *testing.T) {
 	}
 	adaptertest.Drain(stream)
 
-	if strings.Contains(server.Requests[0], "PROSE-THAT-MUST-NOT-BE-SENT") {
+	if strings.Contains(server.Requests()[0], "PROSE-THAT-MUST-NOT-BE-SENT") {
 		t.Errorf("assistant prose was sent alongside a tool result; the live API refuses "+
-			"model_output in that company: %s", server.Requests[0])
+			"model_output in that company: %s", server.Requests()[0])
 	}
 	// The user's own instruction is never dropped: without it this is a
 	// different request.
-	if !strings.Contains(server.Requests[0], "read a.go") {
-		t.Errorf("the user's instruction was dropped too: %s", server.Requests[0])
+	if !strings.Contains(server.Requests()[0], "read a.go") {
+		t.Errorf("the user's instruction was dropped too: %s", server.Requests()[0])
 	}
 }
 
@@ -517,9 +517,9 @@ func TestAssistantProseSurvivesWhenNoToolWasUsed(t *testing.T) {
 	}
 	adaptertest.Drain(stream)
 
-	if !strings.Contains(server.Requests[0], "KEEP-THIS-PROSE") {
+	if !strings.Contains(server.Requests()[0], "KEEP-THIS-PROSE") {
 		t.Errorf("assistant prose was dropped from a history with no tool results at all: %s",
-			server.Requests[0])
+			server.Requests()[0])
 	}
 }
 
@@ -592,7 +592,7 @@ func TestASignedCallIsReplayedSoTheModelSeesItsOwnWork(t *testing.T) {
 	var body struct {
 		Input []map[string]json.RawMessage `json:"input"`
 	}
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	var found bool
@@ -610,7 +610,7 @@ func TestASignedCallIsReplayedSoTheModelSeesItsOwnWork(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("the signed call was not replayed: %s", server.Requests[0])
+		t.Fatalf("the signed call was not replayed: %s", server.Requests()[0])
 	}
 }
 

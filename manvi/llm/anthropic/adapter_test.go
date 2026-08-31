@@ -145,7 +145,7 @@ func TestAFullTurnDecodes(t *testing.T) {
 	}
 
 	// The request carried the documented auth and version headers.
-	h := server.Headers[0]
+	h := server.Headers()[0]
 	if h.Get(APIKeyHeader) != "sk-test-key-value" {
 		t.Errorf("%s = %q", APIKeyHeader, h.Get(APIKeyHeader))
 	}
@@ -307,7 +307,7 @@ func TestRequestShapeMatchesTheDocumentedContract(t *testing.T) {
 	adaptertest.Drain(stream)
 
 	var body map[string]any
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body["model"] != "claude-opus-5" || body["stream"] != true {
@@ -349,7 +349,7 @@ func TestAMissingCredentialFailsBeforeTheRequest(t *testing.T) {
 	if _, err := adapter.Stream(adaptertest.Ctx(), request()); err == nil {
 		t.Fatal("a request was sent with no credential")
 	}
-	if len(server.Requests) != 0 {
+	if len(server.Requests()) != 0 {
 		t.Fatal("the request reached the server despite having no credential")
 	}
 }
@@ -373,7 +373,7 @@ func TestAnUnknownModelIsRefusedAtAssembly(t *testing.T) {
 	if _, err := adapter.Stream(adaptertest.Ctx(), req); err == nil {
 		t.Fatal("an unknown model was sent")
 	}
-	if len(server.Requests) != 0 {
+	if len(server.Requests()) != 0 {
 		t.Fatal("an unknown model reached the network")
 	}
 }

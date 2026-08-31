@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"manvi/credentials"
@@ -22,13 +23,43 @@ import (
 )
 
 // Server is a scripted SSE endpoint.
+//
+// The recorded requests are guarded by a mutex: the handler runs on the
+// httptest server's own goroutines while the test reads from its goroutine, so
+// unguarded slices would be a data race under any test that issues concurrent
+// requests.
 type Server struct {
 	*httptest.Server
-	// Requests holds each decoded request body, so a test can assert on what
+
+	mu sync.Mutex
+	// requests holds each decoded request body, so a test can assert on what
 	// was actually sent rather than on what the builder was asked to send.
-	Requests []string
-	// Headers holds the headers of each request.
-	Headers []http.Header
+	requests []string
+	// headers holds the headers of each request.
+	headers []http.Header
+}
+
+// record captures one request. It is called from the handler goroutine.
+func (s *Server) record(r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, string(raw))
+	s.headers = append(s.headers, r.Header.Clone())
+}
+
+// Requests returns a copy of every request body the server has received.
+func (s *Server) Requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.requests...)
+}
+
+// Headers returns a copy of the headers of every request received.
+func (s *Server) Headers() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]http.Header(nil), s.headers...)
 }
 
 // NewServer returns a server that replies with the given raw stream body.
@@ -40,9 +71,7 @@ func NewServer(t *testing.T, body string) *Server {
 	t.Helper()
 	s := &Server{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		s.Requests = append(s.Requests, string(raw))
-		s.Headers = append(s.Headers, r.Header.Clone())
+		s.record(r)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -71,9 +100,7 @@ func NewStatusServer(t *testing.T, status int, body string) *Server {
 	t.Helper()
 	s := &Server{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		s.Requests = append(s.Requests, string(raw))
-		s.Headers = append(s.Headers, r.Header.Clone())
+		s.record(r)
 		w.WriteHeader(status)
 		io.WriteString(w, body)
 	}))

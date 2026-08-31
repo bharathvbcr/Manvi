@@ -98,7 +98,7 @@ func TestAFullTurnDecodes(t *testing.T) {
 
 	// The request shape.
 	var body map[string]any
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	messages := body["messages"].([]any)
@@ -116,7 +116,7 @@ func TestAFullTurnDecodes(t *testing.T) {
 	if opts["include_usage"] != true {
 		t.Error("usage must be requested, or the turn cannot be costed afterwards")
 	}
-	if got := server.Headers[0].Get("Authorization"); got != "Bearer xai-test-key-value" {
+	if got := server.Headers()[0].Get("Authorization"); got != "Bearer xai-test-key-value" {
 		t.Errorf("Authorization = %q", got)
 	}
 }
@@ -130,7 +130,7 @@ func TestReasoningEffortIsRefusedOnModelsThatLackIt(t *testing.T) {
 	if _, err := adapter.Stream(adaptertest.Ctx(), req); err == nil {
 		t.Fatal("reasoning_effort was sent to a model that does not document it")
 	}
-	if len(server.Requests) != 0 {
+	if len(server.Requests()) != 0 {
 		t.Fatal("the request reached the network")
 	}
 }
@@ -237,7 +237,7 @@ func TestToolResultsBecomeOneMessageEach(t *testing.T) {
 			ToolCallID string `json:"tool_call_id"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal([]byte(server.Requests[0]), &body); err != nil {
+	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
 		t.Fatal(err)
 	}
 	pairs := map[string]string{}
