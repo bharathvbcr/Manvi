@@ -269,6 +269,26 @@ else
     # rather than a heuristic over counts.
     index_gen="$(printf '%s' "$mapout" | grep -o '"generation_id":[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')"
     graph_gen="$(grep -o '"generation_id":[[:space:]]*[0-9]*' "$graph" | head -1 | grep -o '[0-9]*$')"
+    # And the commit the graph was built from, which is the question neither
+    # check above asks. Matching generations prove the two artifacts agree with
+    # each other; they say nothing about whether either describes the tree in
+    # front of them, and a graph built from an older generation of a tree that
+    # has only grown has every one of its paths resolve. That is not
+    # hypothetical: this repository stood at generation 9 with a graph naming
+    # 449 files while the tree held 517, and every signal above read healthy —
+    # matching stamps, zero stale paths, `is_fresh: true`, no degraded_reason —
+    # while `devmap search decodeReply` returned no results for a function that
+    # had been on main since its merge. A repo map answering "no results" for
+    # code that exists is the answer that authorises a deletion.
+    #
+    # The producer already stamps the commit it read, so this asks it rather
+    # than re-deriving which files should have been indexed — that would be a
+    # second opinion about devmap's own file selection, and two answers to one
+    # question is the shape of every other defect in this file. What the stamp
+    # cannot cover is edits made since that commit; an uncommitted change is
+    # invisible to it, and the covered line below claims only the commit.
+    graph_head="$(grep -o '"generated_head":[[:space:]]*"[0-9a-f]*"' "$graph" | head -1 | grep -oE '[0-9a-f]{7,}')"
+    head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     if [[ -z "$graph_gen" ]]; then
       printf '\033[33m    NOT COVERED\033[0m: %s carries no generation stamp, so whether it was written from the index the navigation tools read is unverified\n' "$graph"
     elif [[ -z "$index_gen" ]]; then
@@ -276,9 +296,14 @@ else
     elif [[ "$index_gen" != "$graph_gen" ]]; then
       printf '\033[33m    NOT COVERED\033[0m: %s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`\n' \
         "$graph" "$graph_gen" "$index_gen"
+    elif [[ -z "$graph_head" ]]; then
+      printf '\033[33m    NOT COVERED\033[0m: %s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one\n' "$graph"
+    elif [[ -n "$head_sha" && "$graph_head" != "$head_sha" ]]; then
+      printf '\033[33m    NOT COVERED\033[0m: %s was built from commit %s and the tree is at %s — every query answers about the older one; run `manvi map build`\n' \
+        "$graph" "${graph_head:0:12}" "${head_sha:0:12}"
     else
-      printf '    covered: `%s status` opened the index; all %d paths in %s resolve, and both stand at generation %s\n' \
-        "$mapbin" "$indexed" "$graph" "$index_gen"
+      printf '    covered: `%s status` opened the index; all %d paths in %s resolve, both stand at generation %s, and it was built from this commit (%s)\n' \
+        "$mapbin" "$indexed" "$graph" "$index_gen" "${graph_head:0:12}"
     fi
   fi
 fi
