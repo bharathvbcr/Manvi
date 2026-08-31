@@ -1,0 +1,32 @@
+# Findings per linter in .golangci-debt.yml, as of the change that introduced
+# this gate. verify.sh re-counts and fails when any number here goes up.
+#
+# These are true counts, not what golangci-lint prints by default. Its own
+# summary reported 197 for this same tree, because max-issues-per-linter stops
+# at 50, max-same-issues at 3, and uniq-by-line keeps one finding per line.
+# With those three caps off the number is 1059. The gap is the reason the caps
+# are disabled in both config files: findings were being withheld from a line
+# that read like a total.
+#
+# Per linter rather than as a sum, because one total lets a fix pay for a new
+# defect and the gate would report the wrong one half the time.
+#
+# Raised once, from 1047, when this branch was rebased onto the fuzz-sweep
+# commits. Every one of the twelve is in a file those commits added —
+# llm/adaptertest/adaptertest_test.go, devcouncil/protocolfuzz_test.go,
+# dc/store/protocolfuzz_test.go — and none is in code this change touches. The
+# ratchet caught the increase, which is what it is for; the provenance is
+# recorded here rather than the number being edited quietly.
+#
+# A linter that reaches 0 moves to .golangci.yml and is deleted from here.
+bodyclose 11
+contextcheck 17
+errcheck 372
+errorlint 53
+forcetypeassert 65
+gosec 446
+nilerr 23
+noctx 29
+staticcheck 32
+unconvert 1
+wastedassign 10

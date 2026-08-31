@@ -94,10 +94,16 @@ flowchart TD
     G1 --> G2["Go: go vet static analysis"]
     G2 --> G3["Go: go test with real subprocesses"]
     G3 --> G4["Go: Cross-boundary test assertion (>= 5 real calls)"]
-    
-    G4 --> R1["Rust: cargo fmt --check"]
+    G4 --> G5["Go: Dependency surface — build graph held to the allowlist"]
+    G5 --> G6["Go: golangci-lint enforced set — 20 linters at zero, plus ruleguard"]
+    G6 --> G7["Go: golangci-lint debt ratchet — 11 linters, counts may only fall"]
+    G7 --> G8["Go: govulncheck — reachable standard-library advisories"]
+    G8 --> G9["Go: nilaway — cross-package nil analysis, held under a ceiling"]
+
+    G9 --> R1["Rust: cargo fmt --check"]
     R1 --> R2["Rust: cargo clippy -D warnings"]
-    R2 --> R3["Rust: cargo test (unit & integration)"]
+    R2 --> R2a["Rust: cargo audit — Cargo.lock against the RustSec database"]
+    R2a --> R3["Rust: cargo test (unit & integration)"]
     
     R3 --> P1["Parity: fnmatch-parity.tsv >= 500 cases"]
     P1 --> P2["Parity: command-parity.tsv >= 200 cases"]
@@ -148,6 +154,49 @@ carried alongside the per-target numbers.
 A target that fails leaves its input under
 `manvi/<pkg>/testdata/fuzz/<Target>/`; the gate names that path, and the input
 is committed as a seed once the defect is fixed.
+
+Workers are bounded (`MANVI_FUZZ_WORKERS`, default 4). `go test -fuzz` otherwise
+starts one per CPU, and this step runs after the suite, the linters and nilaway
+have already saturated the machine; unbounded, the engine reported `context
+deadline exceeded` — its own coordination timing out, with no failing input
+written. The gate tells that apart from a real finding by whether the corpus
+directory grew, and reports the first as a gate that did not run rather than as
+a defect.
+
+### Tooling the gate needs
+
+Four of the steps above call binaries this repository cannot vendor. A missing
+one is recorded and reprinted next to the final verdict rather than scrolling
+past mid-run, because a gate that could not run must not be indistinguishable
+from a gate that ran and passed — the run then ends in `PASS with gates that
+did not run`, naming each.
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+go install golang.org/x/vuln/cmd/govulncheck@latest
+go install go.uber.org/nilaway/cmd/nilaway@latest
+cargo install cargo-audit
+```
+
+### Why the lint gate is two files
+
+`manvi/.golangci.yml` holds the linters that are clean on the whole tree, so its
+verdict is a number and the number is zero. `manvi/.golangci-debt.yml` holds the
+checks worth having that this tree does not pass yet: 1059 findings, too many to
+gate on and too many to leave unnamed. Their counts are recorded per linter in
+`manvi/.golangci-debt.counts` and may only go down. Per linter rather than as a
+sum, because one total lets a fix pay for a new defect.
+
+Those counts are larger than any default `golangci-lint` run reports. Its own
+summary said **197** for this same tree. `max-issues-per-linter` stops at 50,
+`max-same-issues` at 3, and `uniq-by-line` keeps one finding per line — three
+caps, all silent, withholding 850 findings behind a line that reads like a
+total. Both config files turn all three off.
+
+`manvi/gorules/rules.go` carries this repository's own invariants as ruleguard
+patterns, loaded by the enforced set: the credential that must not reach `fmt`,
+the verdict that must not be set from a literal, the peer-controlled stream that
+must be bounded, the skip that must say what it is gating on.
 
 ---
 

@@ -2716,7 +2716,6 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 
 	subTasks := make([]agents.Task, 0, len(args.Tasks))
 	for _, t := range args.Tasks {
-		t := t
 		subTasks = append(subTasks, agents.Task{
 			Label: t.Label,
 			Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {

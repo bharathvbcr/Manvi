@@ -236,8 +236,9 @@ func TestOpenAICompatToolCallWithMarkdownSanitizationAndSyntheticID(t *testing.T
 func TestOpenAICompatSamplingParametersInWirePayload(t *testing.T) {
 	var receivedBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &receivedBody)
+		// Bounded: a stub that reads whatever the client sends spends the
+		// test process's memory at the client's discretion.
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&receivedBody)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

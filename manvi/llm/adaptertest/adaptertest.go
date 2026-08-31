@@ -39,9 +39,35 @@ type Server struct {
 	headers []http.Header
 }
 
-// record captures one request. It is called from the handler goroutine.
-func (s *Server) record(r *http.Request) {
-	raw, _ := io.ReadAll(r.Body)
+// maxRecordedRequest bounds what a scripted server will hold for one request.
+// These adapters send prompts, not uploads, so a body past this is a defect in
+// the caller — and reading it whole would spend the test process's memory
+// answering to the thing under test instead of failing it.
+const maxRecordedRequest = 1 << 20
+
+// record captures one request, bounded, under the lock.
+//
+// It is called from the handler goroutine, which is why the append is guarded:
+// the handler runs on the httptest server's goroutines while the test reads
+// through Requests and Headers from its own.
+//
+// The bound is checked rather than applied silently. A truncating read would
+// hand the test a shorter request than the adapter built, and the assertion
+// that then failed would name the wrong culprit. t.Errorf rather than t.Fatalf
+// because this runs off the test goroutine, where Fatalf does not stop the test
+// it is reporting on.
+func (s *Server) record(t *testing.T, r *http.Request) {
+	t.Helper()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRecordedRequest+1))
+	if err != nil {
+		t.Errorf("adaptertest: reading request body: %v", err)
+		return
+	}
+	if len(raw) > maxRecordedRequest {
+		t.Errorf("adaptertest: request body is over the %d-byte bound; the adapter sent at least %d",
+			maxRecordedRequest, len(raw))
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, string(raw))
@@ -71,7 +97,7 @@ func NewServer(t *testing.T, body string) *Server {
 	t.Helper()
 	s := &Server{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.record(r)
+		s.record(t, r)
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -100,7 +126,7 @@ func NewStatusServer(t *testing.T, status int, body string) *Server {
 	t.Helper()
 	s := &Server{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.record(r)
+		s.record(t, r)
 		w.WriteHeader(status)
 		io.WriteString(w, body)
 	}))

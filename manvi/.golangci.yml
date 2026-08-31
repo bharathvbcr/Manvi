@@ -1,0 +1,80 @@
+# The enforced set: linters that are clean on this whole tree today.
+#
+# Membership has one rule. A linter belongs here when `golangci-lint run` over
+# every package reports nothing for it, so the gate's verdict is "zero" and any
+# non-zero result is a regression introduced by the change under review. A
+# linter with pre-existing findings would turn this file into a list of numbers
+# somebody has to remember, which is the same as no gate at all — those live in
+# .golangci-debt.yml, counted, where the count can only go down.
+#
+# gocritic is enabled for exactly one checker: ruleguard, which loads this
+# repository's own invariants from gorules/rules.go. Its DSL import is the only
+# entry in go.mod, is excluded from every build by the `ruleguard` tag, and is
+# absent from the build graph — `go list -deps ./...` reports no external
+# packages, which verify.sh asserts rather than assumes.
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+
+# golangci-lint's reporting defaults all truncate, and all of them truncate
+# silently. uniq-by-line keeps one finding per line, which hid the tree's only
+# unconvert finding behind a gosec finding on the same line of safefs.go:79.
+# max-issues-per-linter stops at 50 and max-same-issues at 3, so a linter with
+# 200 findings reports 50 and says nothing about the rest — a capped sample
+# presented as the whole count. Every cap is turned off here: a gate that
+# reports a number has to report the number.
+issues:
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    # This repository's own invariants, via ruleguard.
+    - gocritic
+
+    # Correctness.
+    - govet                      # already gated by verify.sh; named here so one file lists the set
+    - copyloopvar                # a loop-variable copy that Go 1.22+ made redundant
+    - durationcheck              # two durations multiplied is always a unit error
+    - makezero                   # append to a non-zero-length slice declaration
+    - reassign                   # assignment to another package's variable
+    - gochecksumtype             # non-exhaustive switch over a sum type
+    - iface                      # interface declarations that no call site needs
+    - fatcontext                 # a context rebuilt inside a loop, growing each pass
+    - spancheck                  # a trace span opened and never ended
+    - protogetter                # a proto field read past its getter
+    - sqlclosecheck              # sql.Rows or sql.Stmt left open
+    - rowserrcheck               # Rows.Err never consulted, so a mid-scan failure reads as end-of-rows
+    - asasalint                  # []any passed to a variadic any, silently becoming one argument
+    - loggercheck                # key/value logger call with an odd number of arguments
+
+    # Things that make a check untrustworthy rather than wrong.
+    - decorder                   # declaration order, so a file's shape is not a matter of opinion
+    - gocheckcompilerdirectives  # a misspelled //go: directive is a comment, and comments do nothing
+    - testableexamples           # an Example without output is compiled and never run
+    - usestdlibvars              # a hand-written "GET" or "200" that the stdlib already names
+    - mirror                     # the string/[]byte twin that avoids a conversion
+    - zerologlint                # a log event built and never dispatched
+
+  settings:
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ruleguard
+      settings:
+        ruleguard:
+          failOn: all
+          rules: gorules/rules.go
+
+  # No preset exclusion lists. `presets: [comments, std-error-handling]` was
+  # tried and removed: it silently dropped the one unconvert finding in the
+  # tree (devcouncil/safefs.go:79) along with whatever else it covers, and a
+  # gate whose suppressions nobody has read reports "clean" for reasons nobody
+  # can name. Exclusions belong here, one at a time, each with the reason it
+  # is not a defect.
+  exclusions:
+    generated: lax

@@ -3,11 +3,14 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/samber/mo"
 
 	"manvi/credentials"
 	"manvi/llm/transport"
@@ -239,7 +242,7 @@ func probeEndpoint(ctx context.Context, baseURL string, timeout time.Duration, o
 		BaseURL:          baseURL,
 		SupportsTools:    true,
 		DiscoveryTimeout: timeout,
-	}, credentialOrNone(opts.Credential))
+	}, opts.Credential)
 
 	// One attempt, no backoff. The transport retries a refused connection four
 	// times over roughly fifteen seconds, which is right for the server an
@@ -292,12 +295,37 @@ func (a *Adapter) Survey(ctx context.Context, withCapabilities bool) (Server, er
 	return srv, nil
 }
 
-// credentialOrNone adapts an absent resolver to the shape New expects.
-func credentialOrNone(resolve func() (credentials.Secret, error)) func() (credentials.Secret, error) {
-	if resolve != nil {
-		return resolve
+// credential resolves this endpoint's credential, if there is one.
+//
+// Three outcomes, and before this they travelled on two channels with
+// overlapping meanings. A nil resolver, an *ErrMissing, and a Secret whose
+// Present reports false all meant "no key, and that is fine"; a non-nil error
+// might mean that too. The Header builder therefore tested for absence twice,
+// in two different ways, and dropping either test sent `Bearer ` — an empty
+// bearer, which some servers reject as malformed where they would have
+// accepted no header at all.
+//
+// mo.Option gives absence one spelling and leaves the error channel for
+// failures only. It replaces credentialOrNone, which was this same Option
+// hand-rolled at one call site: a function whose name said "or none" while its
+// return type had no way to say it.
+func credential(resolve func() (credentials.Secret, error)) (mo.Option[credentials.Secret], error) {
+	if resolve == nil {
+		return mo.None[credentials.Secret](), nil
 	}
-	return func() (credentials.Secret, error) { return credentials.Secret{}, nil }
+	secret, err := resolve()
+	if err != nil {
+		var missing *credentials.ErrMissing
+		if errors.As(err, &missing) {
+			// Absent is the normal case on loopback, not a failure.
+			return mo.None[credentials.Secret](), nil
+		}
+		return mo.None[credentials.Secret](), err
+	}
+	if !secret.Present() {
+		return mo.None[credentials.Secret](), nil
+	}
+	return mo.Some(secret), nil
 }
 
 // ollamaVersion is the useful part of Ollama's /api/version.

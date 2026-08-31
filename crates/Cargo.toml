@@ -7,9 +7,16 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-# No external dependencies yet, deliberately. Every crate added here is a
-# dependency-audit surface paid for weekly; the analysis plane earns its first
-# one when a task needs it (tree-sitter, rusqlite), not before.
+# One external dependency, taken deliberately: dc-store carries rusqlite 0.31
+# with `bundled`, because the store's mutual exclusion is a SQLite partial
+# unique index and compiling SQLite from source keeps that guarantee
+# independent of whatever libsqlite3 the host has. It reaches 22 crates
+# transitively, which is the dependency-audit surface this workspace pays for
+# and `cargo audit` in verify.sh is what pays it.
+#
+# dc-glob and dc-verify still have none, and the bar for the next one is the
+# same as it was for this one: a task that needs it, not a task that would be
+# tidier with it.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

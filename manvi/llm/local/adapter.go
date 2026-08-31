@@ -73,24 +73,26 @@ func New(cfg Config, resolve func() (credentials.Secret, error)) *Adapter {
 		AssumeReasoningPrefill: cfg.AssumeReasoningPrefill,
 		Header: func() (http.Header, error) {
 			h := http.Header{}
-			secret, err := resolve()
+			held, err := credential(resolve)
 			if err != nil {
-				var missing *credentials.ErrMissing
-				if errors.As(err, &missing) {
-					// Absent is the normal case on loopback. Send no
-					// Authorization header at all rather than an empty bearer,
-					// which some servers reject as malformed where they would
-					// have accepted no header.
-					return h, nil
-				}
 				return nil, err
 			}
-			if secret.Present() {
-				if err := checkCredentialDestination(cfg.BaseURL, secret); err != nil {
-					return nil, err
-				}
-				h.Set("Authorization", "Bearer "+secret.Reveal())
+			secret, present := held.Get()
+			if !present {
+				// No credential, and none is required on loopback. Send no
+				// Authorization header at all rather than an empty bearer,
+				// which some servers reject as malformed where they would
+				// have accepted no header.
+				return h, nil
 			}
+			if err := checkCredentialDestination(cfg.BaseURL, secret); err != nil {
+				return nil, err
+			}
+			key, err := secret.Reveal()
+			if err != nil {
+				return nil, err
+			}
+			h.Set("Authorization", "Bearer "+key)
 			return h, nil
 		},
 	})

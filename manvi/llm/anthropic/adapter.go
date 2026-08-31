@@ -82,8 +82,12 @@ func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
 		if err != nil {
 			return nil, err
 		}
+		key, err := secret.Reveal()
+		if err != nil {
+			return nil, err
+		}
 		h := http.Header{}
-		h.Set(APIKeyHeader, secret.Reveal())
+		h.Set(APIKeyHeader, key)
 		h.Set(VersionHeader, APIVersion)
 		return h, nil
 	})

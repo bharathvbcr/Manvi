@@ -1,0 +1,55 @@
+# The debt set: linters this tree does not pass yet.
+#
+# These are the checks worth having and not yet earned. Enabling them as a gate
+# today would mean disabling them tomorrow, so verify.sh runs this file for a
+# count instead of a verdict, compares that count against .golangci-debt.counts,
+# and fails when any linter's number goes up.
+#
+# The counts are recorded per linter, not as a total, because a single total
+# lets a fix pay for a new defect. That is the same trade this repository
+# refuses everywhere else: a number that can be satisfied two ways reports the
+# wrong one half the time.
+#
+# A linter reaching zero should be moved to .golangci.yml and deleted here. The
+# debt file getting shorter is the point.
+version: "2"
+
+run:
+  timeout: 10m
+  tests: true
+
+# golangci-lint's reporting defaults all truncate, and all of them truncate
+# silently. uniq-by-line keeps one finding per line, which hid the tree's only
+# unconvert finding behind a gosec finding on the same line of safefs.go:79.
+# max-issues-per-linter stops at 50 and max-same-issues at 3, so a linter with
+# 200 findings reports 50 and says nothing about the rest — a capped sample
+# presented as the whole count. Every cap is turned off here: a gate that
+# reports a number has to report the number.
+issues:
+  uniq-by-line: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - errcheck        # a returned error assigned to _ or dropped entirely
+    - staticcheck     # the staticcheck + stylecheck + simple rule sets
+    - gosec           # the security rule set, G1xx-G6xx
+    - nilerr          # returns nil on a path where err is not nil
+    - errorlint       # %v where %w was meant, and == where errors.Is was meant
+    - bodyclose       # an HTTP response body never closed
+    - contextcheck    # a function that builds its own context instead of taking one
+    - noctx           # a request issued with no context at all
+    - forcetypeassert # an unchecked type assertion, which panics rather than reports
+    - wastedassign    # a value assigned and overwritten before any read
+    - unconvert       # a conversion the type already satisfies
+
+  # No preset exclusion lists. `presets: [comments, std-error-handling]` was
+  # tried and removed: it silently dropped the one unconvert finding in the
+  # tree (devcouncil/safefs.go:79) along with whatever else it covers, and a
+  # gate whose suppressions nobody has read reports "clean" for reasons nobody
+  # can name. Exclusions belong here, one at a time, each with the reason it
+  # is not a defect.
+  exclusions:
+    generated: lax

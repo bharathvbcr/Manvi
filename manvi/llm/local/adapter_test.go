@@ -541,8 +541,9 @@ func TestAnUncappedRequestIsBoundedByTheDiscoveredWindow(t *testing.T) {
 			var body struct {
 				MaxTokens int `json:"max_tokens"`
 			}
-			raw, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(raw, &body)
+			// Bounded: a stub that reads whatever the client sends spends the
+			// test process's memory at the client's discretion.
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 			sentMaxTokens.Store(int64(body.MaxTokens))
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
