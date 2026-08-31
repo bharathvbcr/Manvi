@@ -105,6 +105,84 @@ func TestEverySubprocessBoundaryUsesTheBound(t *testing.T) {
 	}
 }
 
+// TestEverySubprocessBoundaryIsGroupIsolated is the companion invariant to the
+// one above, and it exists because the bound alone was not enough.
+//
+// CommandContext kills the direct child and nothing else. A child that started
+// its own children leaves them holding the inherited stdout pipe, os/exec's
+// copy goroutine blocks on an EOF that never arrives, and Wait does not return
+// — so the call outlives the deadline its caller printed. Group isolation is
+// what closes that, and it had been applied at only two of the twelve places
+// this repository execs something: the shell tool and the MCP client. The
+// store, the verifier, the repo map, the searcher, the incumbent CLI, both git
+// paths and the quick actions each ran a child the deadline could not fully
+// reach.
+//
+// A lesson applied at some call sites is a lesson the next call site is
+// written without, so it is asserted over all of them here.
+func TestEverySubprocessBoundaryIsGroupIsolated(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Counted per file rather than by proximity. The configuration and the
+	// construction are not always adjacent — in dc/store a fourteen-line
+	// comment about WaitDelay sits between them, and it belongs there — so a
+	// proximity window either rejects correct code or has to be widened until
+	// it would accept a call belonging to some other command. What actually
+	// matters is that no file execs more children than it isolates.
+	//
+	// Two packages configure the group through their own helper, each for a
+	// documented reason the shared one does not cover: the shell tool merges
+	// into a SysProcAttr it also uses for other fields, and the MCP client
+	// manages long-lived servers rather than one bounded call. Both are
+	// counted.
+	configures := []string{"proc.ConfigureGroup(cmd)", "ConfigureGroup(cmd)", "setOwnProcessGroup(cmd)"}
+
+	var offenders []string
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		spawns, isolates := 0, 0
+		for _, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if strings.Contains(trimmed, "exec.CommandContext(") {
+				spawns++
+			}
+			for _, marker := range configures {
+				if strings.Contains(trimmed, marker) {
+					isolates++
+					break
+				}
+			}
+		}
+		if spawns > isolates {
+			rel, _ := filepath.Rel(root, path)
+			offenders = append(offenders, rel+": "+itoa(spawns)+" child(ren) started, "+
+				itoa(isolates)+" isolated")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("these children can outlive their deadline, because killing them "+
+			"does not reach what they started:\n  %s", strings.Join(offenders, "\n  "))
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

@@ -1,20 +1,26 @@
 //go:build unix
 
-package store
+package proc
 
 import (
 	"os/exec"
 	"syscall"
 )
 
-// configureProcessGroup puts the store in its own process group so a timeout
-// can reach anything it spawned.
+// ConfigureGroup puts a child in its own process group so a timeout can reach
+// anything it spawned.
 //
 // Killing only the direct child leaves a grandchild running and holding the
 // stdout pipe, which is the difference between a bounded call and a harness
 // that stops responding. WaitDelay alone unblocks this harness; the group kill
-// also stops the orphan from continuing to run against the database.
-func configureProcessGroup(cmd *exec.Cmd) {
+// also stops the orphan from continuing to run against whatever it was given.
+//
+// This lives beside RunBounded because it is the same lesson at the same seam,
+// and because it had been learned at only two of the five places that exec a
+// child: the store and the shell tool had it, while the verifier, the repo map
+// and the searcher did not. A hardening applied at some call sites is a
+// hardening the next call site will be written without.
+func ConfigureGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

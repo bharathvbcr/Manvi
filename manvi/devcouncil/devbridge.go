@@ -118,6 +118,11 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	cmdCtx, cancel := context.WithTimeout(ctx, devInspectTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, argv[0], argv[1:]...)
+	// The incumbent is a Python CLI that runs its own subprocesses, on a
+	// five-minute bound. Killing only the interpreter leaves those children
+	// holding the inherited stdout pipe, and os/exec then waits on an EOF that
+	// never comes — the deadline expires and the turn stays wedged anyway.
+	proc.ConfigureGroup(cmd)
 	cmd.Dir = r.deps.Root
 	cmd.WaitDelay = 5 * time.Second
 

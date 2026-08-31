@@ -76,6 +76,9 @@ func (osQuickCommandRunner) Run(
 	defer cancel()
 
 	cmd := exec.CommandContext(bound, name, args...)
+	// The deadline must reach descendants, not just the command named here.
+	// See proc.ConfigureGroup.
+	proc.ConfigureGroup(cmd)
 	cmd.Dir = dir
 	cmd.WaitDelay = 2 * time.Second
 	out := &cappedBuffer{limit: maxQuickOutputBytes}

@@ -97,6 +97,9 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 		args = append(args, "--root", c.Root)
 	}
 	cmd := exec.CommandContext(ctx, c.Binary, args...)
+	// Group-isolated so the deadline reaches anything the verifier spawned,
+	// not just the verifier. See proc.ConfigureGroup.
+	proc.ConfigureGroup(cmd)
 	cmd.Stdin = strings.NewReader(diff)
 	// Capped during the copy, not checked after it: a verifier gone rogue on
 	// a large diff used to be able to allocate the whole result before the
@@ -144,6 +147,7 @@ func (c rigorClient) available(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.Binary, "health")
+	proc.ConfigureGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.Output()
 	if err != nil {

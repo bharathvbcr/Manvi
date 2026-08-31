@@ -157,6 +157,7 @@ func (c *Client) runProbe(ctx context.Context) error {
 
 	out := &capped{limit: maxProbeOutput, hard: true}
 	cmd := exec.CommandContext(probeCtx, c.Binary, "--json", "manifest", "--help")
+	proc.ConfigureGroup(cmd)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.WaitDelay = time.Second
@@ -987,6 +988,8 @@ func (c *Client) decode(ctx context.Context, into any, timeout time.Duration, ar
 
 	full := append([]string{"--json"}, args...)
 	cmd := exec.CommandContext(ctx, c.Binary, full...)
+	// See proc.ConfigureGroup: the deadline must reach the whole group.
+	proc.ConfigureGroup(cmd)
 	cmd.Dir = c.Root
 	outLimit, errLimit := c.maxOutput, c.maxStderr
 	if outLimit <= 0 {
