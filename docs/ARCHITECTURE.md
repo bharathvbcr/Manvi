@@ -248,14 +248,20 @@ Before any request is transmitted to an LLM provider, `session.AssertModelVisibl
 
 ---
 
-## 7. Zero-Dependency Design
+## 7. Restricted-Dependency Design
 
-MANVI strictly restricts external dependencies across both Go and Rust:
+MANVI restricts external dependencies across both planes, and the restriction is
+a gate rather than a habit: `verify.sh` walks `go list -deps ./...` and fails on
+any package outside the allowlist below, so a dependency cannot arrive without
+the allowlist being edited and reviewed alongside it.
 
-| Plane | Dependencies | Rationale |
+| Plane | Direct dependencies | Rationale |
 |---|---|---|
-| **Go (`manvi/go.mod`)** | *Zero external dependencies* (`empty`) | Direct `syscall` for raw terminal mode; pure Go UTF-8 / ANSI renderers; standard library HTTP & crypto. Guarantees pure static compilation (`CGO_ENABLED=0`) and zero supply-chain risk. |
-| **Rust (`crates/Cargo.toml`)** | `rusqlite`, `serde`, `serde_json`, `chrono` | Embedded SQLite engine with static linking; zero web or heavy framework crates. |
+| **Go (`manvi/go.mod`)** | `awnumar/memguard`, `samber/mo`, and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; `mo.Option` gives absence one spelling at the local provider's credential seam; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. `CGO_ENABLED=0` still holds — all three are pure Go. |
+| **Rust (`crates/Cargo.toml`)** | `rusqlite` (with `bundled`) | Compiles SQLite from source so the store's partial unique index does not depend on the host's libsqlite3. It reaches 22 crates transitively, which `cargo audit` checks on every run. `dc-glob` and `dc-verify` have no dependencies at all. |
+
+`valyala/fastjson` was measured for this list and refused; see the hardening
+ledger for the numbers and the benchmark that was measuring the wrong condition.
 
 ---
 

@@ -2,7 +2,7 @@
 # One gate for both planes. Every phase in the strategy ends in a command that
 # can fail; this is that command.
 #
-#   ./verify.sh          format check, vet/clippy, and both test suites
+#   ./verify.sh          format check, vet/clippy, lint, vulnerabilities, tests
 #   ./verify.sh --fix    rewrite formatting in place first
 #   ./verify.sh --race   the Go suite again under the race detector
 #   ./verify.sh --fuzz   every declared fuzz target actually executed
@@ -68,6 +68,18 @@ export CGO_ENABLED=0
 
 fail() { printf '\n\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
 step() { printf '\n\033[36m==>\033[0m %s\n' "$1"; }
+
+# A gate that could not run must not be indistinguishable from a gate that ran
+# and passed. The steps below need tools this repository cannot vendor, so a
+# missing one is recorded here and reprinted next to the final verdict rather
+# than scrolling past in the middle of a long run.
+NOT_COVERED=""
+notcovered() {
+  NOT_COVERED="${NOT_COVERED}
+    - $1"
+  printf '\033[33m    NOT COVERED\033[0m: %s\n' "$1"
+}
+have() { command -v "$1" >/dev/null 2>&1; }
 
 step "Go — format"
 if (( FIX )); then
@@ -185,6 +197,130 @@ for pkg in ./dc/store ./devcouncil; do
   printf '    %s: %s tests against the real binaries\n' "$pkg" "$ran"
 done
 
+# The Go plane carries three direct dependencies and no more. That used to be
+# zero, and "zero" needed no gate because an empty go.mod said it. It is not
+# zero any longer, so the property has to be measured: this is an allowlist, and
+# a package outside it is a build failure rather than a thing somebody notices
+# in a diff.
+#
+# memguard seals credentials at rest and brings memcall, x/crypto and x/sys.
+# samber/mo gives absence one spelling at the local provider's credential seam.
+# The ruleguard DSL is lint-only — excluded from every build by its tag, which
+# is why it must NOT appear below: if it ever does, the tag has stopped working
+# and a lint dependency has entered a shipped binary.
+#
+# valyala/fastjson was measured for this list and refused. On the streaming path
+# it saves ~900ns per chunk against a ~16ms gap between tokens. On the code
+# graph — the one document big enough to matter — it looked 3x faster until the
+# benchmark was corrected to allocate a fresh Parser per call, which is what a
+# once-at-startup decode actually does: 8.3x the memory, and slower than
+# encoding/json once the parser was made to refuse everything the struct decoder
+# refused. The first measurement was not wrong, it was measuring the wrong
+# condition.
+step "Go — dependency surface"
+allowed='^(github\.com/awnumar/(memguard|memcall)|github\.com/samber/mo|golang\.org/x/(crypto|sys))(/|$)'
+unexpected="$( (cd manvi && go list -deps ./... 2>/dev/null) \
+  | grep -E '^[a-z0-9-]+\.[a-z]+/' \
+  | grep -v '^crypto/internal' \
+  | grep -Ev "$allowed" || true )"
+[[ -z "$unexpected" ]] || fail "packages outside the allowed dependency surface reached the build graph:
+$unexpected
+  add them to the allowlist in verify.sh, with the reason, or take them back out of the module"
+direct="$( (cd manvi && go list -deps ./... 2>/dev/null) | grep -cE '^(github\.com/awnumar|github\.com/samber)' || true )"
+printf '    covered: the build graph holds nothing outside the standard library and %s allowed packages\n' "$direct"
+
+step "Go — lint (enforced set)"
+if have golangci-lint; then
+  (cd manvi && golangci-lint run --config .golangci.yml ./...) || fail "golangci-lint (enforced set)"
+  printf '    covered: 20 linters at zero tolerance, plus this repository'"'"'s own ruleguard rules\n'
+else
+  notcovered "golangci-lint is not installed — the enforced lint set did not run"
+fi
+
+# The debt set is the checks worth having that this tree does not pass yet.
+# 1059 findings is too many to gate on and too many to leave unnamed, so the
+# count is recorded per linter and may only go down.
+#
+# The count is the true one. golangci-lint's own summary said 197 for this same
+# tree, because max-issues-per-linter stops at 50, max-same-issues at 3, and
+# uniq-by-line keeps one finding per line — three caps, all silent, hiding 850
+# findings behind a line that reads like a total. Both config files turn them
+# off, which is why the numbers here are larger than any default run reports.
+step "Go — lint (debt ratchet)"
+if have golangci-lint; then
+  debt_json="$(mktemp)"
+  (cd manvi && golangci-lint run --config .golangci-debt.yml \
+      --output.json.path="$debt_json" --output.text.path= ./... >/dev/null 2>&1) || true
+  [[ -s "$debt_json" ]] || fail "the debt lint run produced no report; the ratchet has nothing to compare"
+  regressed=""
+  improved=""
+  while read -r linter recorded; do
+    [[ -n "$linter" ]] || continue
+    now="$(python3 -c "
+import json,sys
+d=json.load(open('$debt_json'))
+print(sum(1 for i in (d.get('Issues') or []) if i['FromLinter']=='$linter'))")"
+    if (( now > recorded )); then
+      regressed="${regressed} ${linter}: ${recorded} -> ${now}"
+    elif (( now < recorded )); then
+      improved="${improved} ${linter}: ${recorded} -> ${now}"
+    fi
+  done < <(grep -E '^[a-z]+ [0-9]+$' manvi/.golangci-debt.counts)
+  rm -f "$debt_json"
+  [[ -z "$regressed" ]] || fail "lint debt increased:${regressed}
+  every one of these is a finding this change introduced — fix it, or say why it is not a defect in .golangci.yml"
+  if [[ -n "$improved" ]]; then
+    printf '    \033[32mimproved\033[0m:%s — lower the numbers in manvi/.golangci-debt.counts\n' "$improved"
+  fi
+  printf '    covered: 11 linters held at or below their recorded counts\n'
+else
+  notcovered "golangci-lint is not installed — the lint debt ratchet did not run"
+fi
+
+# go.mod pins go 1.26.6 rather than 1.26 because of this gate. The looser
+# directive resolved to a toolchain with seven reachable standard-library
+# vulnerabilities, among them a root escape via symlink in os that safefs.go
+# calls directly through os.Root.OpenFile. Nothing here imports a third-party
+# package, so the standard library is the entire supply chain, and the patch
+# level is the only place to say which one.
+step "Go — known vulnerabilities"
+if have govulncheck; then
+  (cd manvi && govulncheck ./...) || fail "govulncheck found reachable vulnerabilities"
+  printf '    covered: every standard-library advisory reachable from this code\n'
+else
+  notcovered "govulncheck is not installed — reachable vulnerabilities are unchecked"
+fi
+
+# nilaway reports possible nil dereferences across package boundaries, which
+# neither vet nor staticcheck attempt. It is a ceiling rather than a gate: a
+# large share of its findings here are variadic slicing it cannot prove safe,
+# and a check tuned until it says nothing is a check nobody reads. The number
+# may not grow.
+step "Go — nil analysis"
+if have nilaway; then
+  nilaway_max=79
+  # Counted off a colour-stripped copy. The first version of this line matched
+  # 'error: Potential nil panic detected' and reported 0 against a real 79,
+  # because nilaway writes the verb in red and the ANSI reset sits between
+  # 'error: ' and 'Potential'. A gate that reports zero because its pattern
+  # stopped matching is the failure this repository exists to refuse, so the
+  # run is also required to produce output at all.
+  nilaway_out="$(mktemp)"
+  (cd manvi && nilaway -include-pkgs=manvi ./... 2>&1) | sed -E 's/\x1b\[[0-9;]*m//g' > "$nilaway_out" || true
+  [[ -s "$nilaway_out" ]] || { rm -f "$nilaway_out"; fail "nilaway produced no output at all; the ceiling has nothing to compare"; }
+  grep -qE 'Potential nil panic detected|^# ' "$nilaway_out" || {
+    head -5 "$nilaway_out" >&2; rm -f "$nilaway_out"
+    fail "nilaway output matched no known shape; the count below would be meaningless"
+  }
+  found="$(grep -c 'Potential nil panic detected' "$nilaway_out" || true)"
+  rm -f "$nilaway_out"
+  (( found <= nilaway_max )) || fail "nilaway reports ${found} potential nil panics, above the recorded ceiling of ${nilaway_max}"
+  printf '    covered: %s potential nil panics, ceiling %s\n' "$found" "$nilaway_max"
+else
+  notcovered "nilaway is not installed — cross-package nil analysis did not run"
+fi
+
+
 step "Rust — format"
 if (( FIX )); then
   (cd crates && cargo fmt --all)
@@ -194,6 +330,19 @@ fi
 
 step "Rust — clippy"
 (cd crates && cargo clippy --all-targets -- -D warnings) || fail "cargo clippy"
+
+# The Go plane's supply chain is the standard library and govulncheck covers it.
+# The Rust plane's is not: dc-store carries rusqlite with `bundled`, which
+# reaches 22 crates transitively and compiles SQLite from source. That is 22
+# more things than the workspace comment claimed for a long time, and until this
+# step existed nothing checked any of them against an advisory.
+step "Rust — supply chain"
+if have cargo-audit; then
+  (cd crates && cargo audit --quiet) || fail "cargo audit found a vulnerable crate"
+  printf '    covered: every crate in Cargo.lock against the RustSec advisory database\n'
+else
+  notcovered "cargo-audit is not installed — the Rust dependency tree is unaudited"
+fi
 
 # Counted, not merely run. `cargo test` prints ok for a binary that collected
 # zero tests exactly as it does for one that passed hundreds, so a suite that
@@ -250,14 +399,14 @@ if command -v sqlite3 >/dev/null; then
   (( index == 1 )) || fail "the partial unique index is missing; mutual exclusion is not enforced by the schema"
   printf '    covered: an independent sqlite3 reader agrees, and the exclusion index exists\n'
 else
-  printf '\033[33m    NOT COVERED\033[0m: sqlite3 not on PATH — schema readability is unverified here\n'
+  notcovered 'sqlite3 not on PATH — schema readability is unverified here'
 fi
 
 step "Cross-language — Python interop"
 if [[ -x ../DevCouncil/.venv/bin/python && -d ../DevCouncil/src ]]; then
   printf '    covered: Rust and Python drive one state.sqlite\n'
 else
-  printf '\033[33m    NOT COVERED\033[0m: ../DevCouncil/.venv not found — lease interop against the incumbent is unverified here\n'
+  notcovered '../DevCouncil/.venv not found — lease interop against the incumbent is unverified here'
 fi
 
 # The verifier's content gates are the ones whose absence used to be reported as
@@ -327,12 +476,12 @@ step "Repo navigation"
 mapbin="${MANVI_MAP_BINARY:-devmap}"
 graph="${MANVI_GRAPH:-.devcouncil/code_graph.json}"
 if ! command -v "$mapbin" >/dev/null && [[ ! -x "$mapbin" ]]; then
-  printf '\033[33m    NOT COVERED\033[0m: devmap not found — repo navigation is unverified here\n'
+  notcovered 'devmap not found — repo navigation is unverified here'
 elif ! mapout="$("$mapbin" status 2>&1)"; then
-  printf '\033[33m    NOT COVERED\033[0m: `%s status` failed — the navigation tools cannot read the index: %s\n' \
+  notcovered "$(printf '`%s status` failed — the navigation tools cannot read the index: %s' "$mapbin" "$(printf '%s' "$mapout" | tr '\n' ' ')")"
     "$mapbin" "$(printf '%s' "$mapout" | tr '\n' ' ')"
 elif [[ ! -f "$graph" ]]; then
-  printf '\033[33m    NOT COVERED\033[0m: no %s — run `manvi map build`; the neighbour rule will report repo_map.unavailable\n' "$graph"
+  notcovered "$(printf 'no %s — run `manvi map build`; the neighbour rule will report repo_map.unavailable' "$graph")"
 else
   # A readable index is not the same question as a graph that describes this
   # tree, and only the second one is what the neighbour rule reads. A directory
@@ -348,9 +497,9 @@ else
     [[ -e "$indexed_path" ]] || stale=$(( stale + 1 ))
   done < <(grep -o '"path": "[^"]*"' "$graph" | sed 's/.*: "//; s/"$//' | sort -u)
   if (( indexed == 0 )); then
-    printf '\033[33m    NOT COVERED\033[0m: %s names no files — rebuild it with `manvi map build`\n' "$graph"
+    notcovered "$(printf '%s names no files — rebuild it with `manvi map build`' "$graph")"
   elif (( stale > 0 )); then
-    printf '\033[33m    NOT COVERED\033[0m: %d of %d paths in %s no longer exist — the graph describes an older tree and the neighbour rule cannot place current files; run `manvi map build`\n' \
+    notcovered "$(printf '%d of %d paths in %s no longer exist — the graph describes an older tree and the neighbour rule cannot place current files; run `manvi map build`' "$stale" "$indexed" "$graph")"
       "$stale" "$indexed" "$graph"
   else
     # Every path resolving is still not the question. The graph is a separate
@@ -386,11 +535,11 @@ else
     graph_head="$(grep -o '"generated_head":[[:space:]]*"[0-9a-f]*"' "$graph" | head -1 | grep -oE '[0-9a-f]{7,}')"
     head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
     if [[ -z "$graph_gen" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s carries no generation stamp, so whether it was written from the index the navigation tools read is unverified\n' "$graph"
+      notcovered "$(printf '%s carries no generation stamp, so whether it was written from the index the navigation tools read is unverified' "$graph")"
     elif [[ -z "$index_gen" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: `%s status` reported no generation, so the graph cannot be checked against it\n' "$mapbin"
+      notcovered "$(printf '`%s status` reported no generation, so the graph cannot be checked against it' "$mapbin")"
     elif [[ "$index_gen" != "$graph_gen" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`\n' \
+      notcovered "$(printf '%s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`' "$graph" "$graph_gen" "$index_gen")"
         "$graph" "$graph_gen" "$index_gen"
     elif [[ -z "$graph_head" ]]; then
       printf '\033[33m    NOT COVERED\033[0m: %s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one\n' "$graph"
@@ -476,17 +625,45 @@ if (( FUZZ )); then
   fuzz_base="$(fuzz_seconds "$FUZZTIME" MANVI_FUZZTIME)"
   fuzz_cap="$(fuzz_seconds "$FUZZMAX" MANVI_FUZZMAX)"
   (( fuzz_cap >= fuzz_base )) || fail "MANVI_FUZZMAX (${fuzz_cap}s) is below MANVI_FUZZTIME (${fuzz_base}s)"
+
+  # Workers are bounded for the reason -p 1 bounds the race suite above. `go
+  # test -fuzz` starts one worker per CPU, and this step runs after the whole
+  # test suite and the linters have already saturated the machine. Unbounded,
+  # the engine reported `context deadline exceeded` — its own coordination
+  # timing out, with no failing input written — and a gate that fails for
+  # reasons unrelated to the code is a gate people learn to skip.
+  fuzz_workers="${MANVI_FUZZ_WORKERS:-4}"
   fuzz_ran=0
+  fuzz_incomplete=0
   fuzz_execs=0
   fuzz_starved=""
 
-  # One round of the sweep. Sets `execs` to what the round reported, and fails
-  # the gate on a crash or on a round that executed nothing.
+  # One round of the sweep. Sets `execs` to what the round reported. Fails the
+  # gate on a real finding, and returns non-zero when the engine could not
+  # complete a run at all, which is the caller's cue to report the target as
+  # unexercised rather than as passed.
   fuzz_round() {
-    local pkg="$1" fn="$2" seconds="$3" out
-    if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "${seconds}s" "$pkg" 2>&1) )"; then
-      printf '%s\n' "$out" >&2
-      fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to manvi/${pkg#./}/testdata/fuzz/${fn}/ — commit it as a seed once the defect is fixed"
+    local pkg="$1" fn="$2" seconds="$3" out corpus before after
+    corpus="manvi/${pkg#./}/testdata/fuzz/${fn}"
+    # Braced with `|| true`: most targets have no corpus directory, `ls` then
+    # exits non-zero, and pipefail would take the whole script down under set -e.
+    before="$( { ls -1 "$corpus" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+    # -run '^$' so the seed corpus does not run twice: the engine replays the
+    # seeds itself while gathering baseline coverage.
+    if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "${seconds}s" \
+        -parallel "$fuzz_workers" "$pkg" 2>&1) )"; then
+      # A finding writes the input that produced it. An engine error does not,
+      # and the two must not report the same thing: one is a defect in this
+      # repository, the other is this gate mis-scheduling itself. Neither is
+      # dropped — the second is reported as not covered, which is what it is.
+      after="$( { ls -1 "$corpus" 2>/dev/null || true; } | wc -l | tr -d ' ')"
+      if (( after > before )); then
+        printf '%s\n' "$out" >&2
+        fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to ${corpus}/ — commit it as a seed once the defect is fixed"
+      fi
+      notcovered "$(printf '%s:%s did not complete a fuzz run (%s) — no failing input was produced, so this target went unexercised' \
+        "$pkg" "$fn" "$(grep -m1 -oE 'context deadline exceeded|[a-z ]*timed out|fuzzing process terminated[^:]*' <<<"$out" || echo 'see the log above')")"
+      return 1
     fi
     # The fuzzer reports a running total; the last line carries the whole round.
     execs="$(grep -o 'execs: [0-9]*' <<<"$out" | tail -1 | grep -o '[0-9]*$' || true)"
@@ -494,13 +671,20 @@ if (( FUZZ )); then
       printf '%s\n' "$out" >&2
       fail "${pkg}:${fn} reported no executions, so it did not run. Either the target is not in that package (which \`go test -fuzz\` reports by exiting 0) or ${seconds}s is too short to get past baseline coverage."
     fi
+    return 0
   }
 
   while IFS= read -r decl; do
     pkg="${decl%%:*}"
     fn="${decl##*:}"
 
-    fuzz_round "$pkg" "$fn" "$fuzz_base"
+    if ! fuzz_round "$pkg" "$fn" "$fuzz_base"; then
+      # Counted, not skipped. The total below reconciles against the declared
+      # count, and a target dropped silently here would make that reconciliation
+      # fail for a reason unrelated to the one that actually happened.
+      fuzz_incomplete=$(( fuzz_incomplete + 1 ))
+      continue
+    fi
     target_execs="$execs"
     target_seconds="$fuzz_base"
 
@@ -513,7 +697,7 @@ if (( FUZZ )); then
     # not: FuzzExtractFallbackToolCallsHoldsItsContract missed the floor at 20s,
     # took the full extra 100s, and finished at 4.69M — it needed about five of
     # those seconds. Repeated across most of the extended set that turned a
-    # ~20-minute gate into a ~35-minute one, spent almost entirely past the
+    # ~20-minute gate into a ~32-minute one, spent almost entirely past the
     # point the floor was reached.
     #
     # Half again as much as the estimate, because the second round is slower
@@ -532,9 +716,12 @@ if (( FUZZ )); then
         (( needed < extra )) && extra="$needed"
       fi
       (( extra < 1 )) && extra=1
-      fuzz_round "$pkg" "$fn" "$extra"
-      target_execs=$(( target_execs + execs ))
-      target_seconds=$(( fuzz_base + extra ))
+      # An extension the engine could not finish leaves the first round's count
+      # standing rather than discarding a target that did run.
+      if fuzz_round "$pkg" "$fn" "$extra"; then
+        target_execs=$(( target_execs + execs ))
+        target_seconds=$(( fuzz_base + extra ))
+      fi
     fi
 
     fuzz_ran=$(( fuzz_ran + 1 ))
@@ -549,11 +736,14 @@ if (( FUZZ )); then
     fi
   done < <(declared_fuzz_targets)
 
-  # Both numbers, because a sweep that silently covered a subset would otherwise
-  # read exactly like one that covered everything.
-  (( fuzz_ran == fuzz_declared )) || fail "ran ${fuzz_ran} of ${fuzz_declared} declared targets"
-  printf '    covered: all %s declared targets executed, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
-    "$fuzz_ran" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
+  # Every declared target is accounted for as either exercised or reported
+  # unexercised. Reconciling against the sum rather than against fuzz_ran alone
+  # is what lets an engine failure be a named degradation instead of a count
+  # mismatch blamed on something else.
+  (( fuzz_ran + fuzz_incomplete == fuzz_declared )) \
+    || fail "accounted for ${fuzz_ran} exercised and ${fuzz_incomplete} unexercised of ${fuzz_declared} declared targets"
+  printf '    covered: %s of %s declared targets executed on %s workers, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
+    "$fuzz_ran" "$fuzz_declared" "$fuzz_workers" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
   if [[ -n "$fuzz_starved" ]]; then
     printf '\033[33m    NOT COVERED\033[0m: these targets could not reach %s inputs inside %ss, so the sweep\n' \
       "$FUZZMIN" "$fuzz_cap"
@@ -617,7 +807,7 @@ if command -v node >/dev/null && command -v npm >/dev/null; then
   fi
   node scripts/check-mermaid.mjs || fail "a mermaid diagram does not parse with the real grammar"
 else
-  printf '\033[33m    NOT COVERED\033[0m: node/npm not on PATH — diagrams are checked structurally only\n'
+  notcovered 'node/npm not on PATH — diagrams are checked structurally only'
 fi
 
 step "Brand — the published mark is the drawn mark"
@@ -697,11 +887,11 @@ else
   # unreachable server from an ambiguous model and says what to do about each,
   # so restating it here would be a second wording of the same fact — free to
   # drift, and drifting toward whichever one is read less often.
-  printf '\033[33m    NOT COVERED\033[0m: local — this gate makes no request. The harness reports:\n'
+  notcovered 'local — this gate makes no request. The harness reports:'
   sed 's/^/                  /' "$resolve_err"
 fi
 rm -f "$probe_bin" "$resolve_err"
-printf '\033[33m    NOT COVERED\033[0m: anthropic, gemini and xai are verified against scripted servers only.\n'
+notcovered 'anthropic, gemini and xai are verified against scripted servers only.'
 printf '                  Run `manvi probe anthropic|gemini|xai` with a credential to check a live endpoint.\n'
 
 # The TUI's one non-negotiable property is that it hands the terminal back. A
@@ -737,7 +927,7 @@ if command -v script >/dev/null; then
   fi
   printf '    covered: alternate screen, mouse, bracketed paste and the cursor are all restored on exit\n'
 else
-  printf '\033[33m    NOT COVERED\033[0m: script(1) not available — TUI terminal restoration is unverified here\n'
+  notcovered 'script(1) not available — TUI terminal restoration is unverified here'
 fi
 
 # The benchmark is the instrument the paper's numbers come from, and it was
@@ -771,4 +961,19 @@ printf '    covered: %s checks — bootstrap CIs, paired deltas, seed pinning, c
 printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
 printf '             and 19 tasks that start broken and reject tampering\n'
 
-printf '\n\033[32mPASS\033[0m all gates\n'
+# "PASS all gates" is only true when all of them ran. Every NOT COVERED above
+# is collected rather than left to scroll past, and the verdict names them,
+# because a reader who sees a green PASS does not go back and re-read forty
+# lines to find out which checks were absent from it.
+if [[ -n "$NOT_COVERED" ]]; then
+  printf '\n\033[33mPASS\033[0m with gates that did not run:%s\n' "$NOT_COVERED"
+  if [[ "$NOT_COVERED" == *"is not installed"* ]]; then
+    printf '\ninstall the missing analysis tools with:\n'
+    printf '  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest\n'
+    printf '  go install golang.org/x/vuln/cmd/govulncheck@latest\n'
+    printf '  go install go.uber.org/nilaway/cmd/nilaway@latest\n'
+    printf '  cargo install cargo-audit\n'
+  fi
+else
+  printf '\n\033[32mPASS\033[0m all gates\n'
+fi

@@ -70,7 +70,7 @@ func TestASecretNeverRendersItself(t *testing.T) {
 		}
 	}
 
-	if s.Reveal() != probe {
+	if mustReveal(t, s) != probe {
 		t.Fatal("Reveal must return the credential; it is the one way out")
 	}
 	if s.Source() != "ANTHROPIC_API_KEY" || s.Len() != len(probe) {
@@ -98,29 +98,29 @@ func TestResolutionOrderAndDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Reveal() != "first" || got.Source() != "XAI_API_KEY" {
-		t.Fatalf("resolved %q from %q, want the first listed variable to win", got.Reveal(), got.Source())
+	if mustReveal(t, got) != "first" || got.Source() != "XAI_API_KEY" {
+		t.Fatalf("resolved %q from %q, want the first listed variable to win", mustReveal(t, got), got.Source())
 	}
 
 	// The fallback name is honoured, because an operator with a working CLI
 	// should not have to learn a second name for the same key.
 	r = resolverWith(map[string]string{"GROK_API_KEY": "second"})
-	if got, err = r.Resolve("xai"); err != nil || got.Reveal() != "second" {
-		t.Fatalf("fallback variable: %q %v", got.Reveal(), err)
+	if got, err = r.Resolve("xai"); err != nil || mustReveal(t, got) != "second" {
+		t.Fatalf("fallback variable: %q %v", mustReveal(t, got), err)
 	}
 
 	// Set-but-empty is a misconfiguration, not a credential: treating it as
 	// present produces a 401 that looks like a bad key rather than a missing one.
 	r = resolverWith(map[string]string{"XAI_API_KEY": "   ", "GROK_API_KEY": "real-key"})
-	if got, err = r.Resolve("xai"); err != nil || got.Reveal() != "real-key" {
-		t.Fatalf("empty variable was treated as a credential: %q %v", got.Reveal(), err)
+	if got, err = r.Resolve("xai"); err != nil || mustReveal(t, got) != "real-key" {
+		t.Fatalf("empty variable was treated as a credential: %q %v", mustReveal(t, got), err)
 	}
 
 	// Surrounding whitespace is stripped: a key pasted with a trailing newline
 	// is the single commonest way this fails, and it fails as "invalid key".
 	r = resolverWith(map[string]string{"ANTHROPIC_API_KEY": "  " + probe + "\n"})
-	if got, err = r.Resolve("anthropic"); err != nil || got.Reveal() != probe {
-		t.Fatalf("whitespace was not trimmed: %q %v", got.Reveal(), err)
+	if got, err = r.Resolve("anthropic"); err != nil || mustReveal(t, got) != probe {
+		t.Fatalf("whitespace was not trimmed: %q %v", mustReveal(t, got), err)
 	}
 
 	r = resolverWith(nil)
@@ -240,10 +240,24 @@ func TestOverridesDoNotEscapeToTheEnvironment(t *testing.T) {
 	r := resolverWith(nil)
 	r.Set("anthropic", NewSecret(probe, "in-process"))
 	got, err := r.Resolve("anthropic")
-	if err != nil || got.Reveal() != probe {
-		t.Fatalf("override not honoured: %q %v", got.Reveal(), err)
+	if err != nil || mustReveal(t, got) != probe {
+		t.Fatalf("override not honoured: %q %v", mustReveal(t, got), err)
 	}
 	if fmt.Sprintf("%+v", r.Statuses()) == "" || strings.Contains(fmt.Sprintf("%+v", r.Statuses()), probe) {
 		t.Fatal("statuses disclosed an in-process credential")
 	}
+}
+
+// mustReveal opens a sealed credential or fails the test.
+//
+// Reveal returns an error now that the value lives in a memguard enclave, and
+// a test that dropped it would turn "the enclave could not be opened" into
+// "the credential was empty" — the failure mode the error exists to prevent.
+func mustReveal(t *testing.T, s Secret) string {
+	t.Helper()
+	v, err := s.Reveal()
+	if err != nil {
+		t.Fatalf("Reveal: %v", err)
+	}
+	return v
 }

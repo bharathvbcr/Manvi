@@ -38,7 +38,11 @@ func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
 		// A bespoke header rather than an Authorization bearer. Copying the
 		// bearer form from another adapter is the single easiest way to get
 		// this wrong, and it fails as a 401 that looks like a bad key.
-		h.Set(APIKeyHeader, secret.Reveal())
+		key, err := secret.Reveal()
+		if err != nil {
+			return nil, err
+		}
+		h.Set(APIKeyHeader, key)
 		return h, nil
 	})
 	return &Adapter{client: client}

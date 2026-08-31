@@ -286,7 +286,6 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	var unknownTypes []string
 
 	for _, s := range args.Subagents {
-		s := s
 		def, ok := reg.Get(s.TypeName)
 		// The surface is taken only from a role that actually exists. The
 		// fallback below is synthetic — nobody wrote it down — so it declares

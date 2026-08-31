@@ -61,7 +61,11 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 			"-c", "commit.gpgsign=false",
 			"-C", repo,
 		}, args...)
-		cmd := exec.Command(gitBin, full...)
+		// CommandContext, not Command: every subprocess in this repository is
+		// bounded, and a git that wedges would hang the fuzzer rather than
+		// fail it. #nosec G204 -- the binary is located by testsupport and the
+		// arguments are fixed; driving a real git is the point of the target.
+		cmd := exec.CommandContext(t.Context(), gitBin, full...) // #nosec G204
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -83,10 +87,10 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 	const baseline = "base\nline two\nline three\n"
 	for _, name := range names {
 		path := filepath.Join(repo, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			f.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(baseline), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(baseline), 0o600); err != nil {
 			f.Fatal(err)
 		}
 	}
@@ -128,7 +132,7 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 		// Restoring here, and reading the unstaged diff rather than staging
 		// first, takes it from six to three.
 		for _, name := range names {
-			if err := os.WriteFile(filepath.Join(repo, name), []byte(baseline), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(baseline), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -141,16 +145,22 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 			switch (b >> 3) % 3 {
 			case 0: // rewrite
 				body := fmt.Sprintf("%s\n%s\n", content, name)
-				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			case 1: // append, which produces a diff with no removed lines
-				fh, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+				// #nosec G304 G302 -- path is one of the five fixed names above,
+				// joined to the test's own temporary repository.
+				fh, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 				if err != nil {
 					t.Fatal(err)
 				}
-				fmt.Fprintf(fh, "appended %d %s\n", i, content)
-				fh.Close()
+				if _, err := fmt.Fprintf(fh, "appended %d %s\n", i, content); err != nil {
+					t.Fatal(err)
+				}
+				if err := fh.Close(); err != nil {
+					t.Fatal(err)
+				}
 			case 2: // delete
 				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)

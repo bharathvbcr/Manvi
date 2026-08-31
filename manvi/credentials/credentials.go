@@ -29,25 +29,74 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/awnumar/memguard"
 )
+
+// memguard.CatchInterrupt and memguard.Purge are deliberately not called here.
+//
+// CatchInterrupt installs memguard's own signal handler, and this harness
+// already owns signals: the TUI catches SIGWINCH to re-measure the terminal and
+// SIGTSTP/SIGCONT to hand the terminal back and take it again, and a second
+// handler that exits the process on a signal would break the suspend path
+// outright. Purge would be correct at a clean exit, and buys little: the pages
+// are mlocked, so the kernel reclaims and zeroes them at process death whether
+// or not they were wiped first, and a harness that dies on a panic never
+// reaches a deferred Purge anyway.
+//
+// The protection this package claims is therefore about the *running* process —
+// no plaintext on the Go heap, nothing pageable to swap, nothing in a core dump
+// taken while the harness is alive — and not about exit.
 
 // Redacted is what a secret renders as everywhere.
 const Redacted = "[redacted]"
 
 // Secret holds a credential. The zero value is "not present".
+//
+// The value is sealed in a memguard Enclave rather than held as a string: it
+// is encrypted at rest, and the plaintext exists only inside an mlocked buffer
+// for the duration of a Reveal, which wipes it on the way out. What that buys
+// is narrow and worth stating exactly, because a protection nobody can
+// describe is a protection nobody can rely on:
+//
+//   - A Go string cannot be wiped. It lives on the heap until the collector
+//     takes it, it can be paged to swap, and it appears in a core dump. That
+//     was the shape a credential had here for its whole lifetime, and it is
+//     the shape it no longer has.
+//
+//   - What this does NOT fix: keys arrive from os.LookupEnv, so the plaintext
+//     is already in this process's environment block before Secret exists —
+//     readable from /proc/<pid>/environ, from `ps e`, and in the same core
+//     dump. Sealing the harness's copy does not reach the origin, and nothing
+//     inside this package can. An operator who needs that closed has to stop
+//     passing keys through the environment, which is a deployment decision
+//     rather than a code one.
+//
+// Enclave is a pointer, so a Secret stays copyable and its zero value stays
+// "absent".
 type Secret struct {
-	value string
+	sealed *memguard.Enclave
 	// source names where it came from, for diagnostics. Safe to print.
 	source string
+	// length is cached because reporting it must not require an Open. It is
+	// the one fact about a credential this package prints.
+	length int
 }
 
-// NewSecret wraps a value read from source.
+// NewSecret seals a value read from source.
+//
+// The caller hands in a string it cannot wipe, which is unavoidable at this
+// boundary — os.LookupEnv has no other shape. That copy is the last unsealed
+// one; everything downstream holds the enclave.
 func NewSecret(value, source string) Secret {
-	return Secret{value: value, source: source}
+	if value == "" {
+		return Secret{source: source}
+	}
+	return Secret{sealed: memguard.NewEnclave([]byte(value)), source: source, length: len(value)}
 }
 
 // Present reports whether a credential was found.
-func (s Secret) Present() bool { return s.value != "" }
+func (s Secret) Present() bool { return s.sealed != nil }
 
 // Source names where the credential came from — an environment variable name,
 // never its contents.
@@ -58,11 +107,52 @@ func (s Secret) Source() string { return s.source }
 // Every call is a place the value can escape, so there should be very few, and
 // each should hand the result straight to the thing that consumes it. Assigning
 // it to a variable that later reaches a formatted string undoes the type.
-func (s Secret) Reveal() string { return s.value }
+//
+// It returns an error rather than an empty string on failure. Opening a sealed
+// enclave can fail — a wiped or tampered container is exactly the case worth
+// hearing about — and an empty key produces a 401 that reads like a bad
+// credential, which sends whoever is holding the pager to the wrong place.
+// Every call site is already inside a function that returns an error.
+func (s Secret) Reveal() (string, error) {
+	if s.sealed == nil {
+		return "", nil
+	}
+	buf, err := s.sealed.Open()
+	if err != nil {
+		return "", fmt.Errorf("credentials: opening the sealed credential from %s: %w", s.source, err)
+	}
+	defer buf.Destroy()
+	// string(buf.Bytes()) copies. LockedBuffer.String is a zero-copy view into
+	// the guarded page, and Destroy unmaps that page — returning the view
+	// hands the caller a string over freed memory, which faults on the next
+	// read rather than at the mistake. The copy is the unavoidable cost of a
+	// signature that returns a string, and it is why RevealBytes exists.
+	return string(buf.Bytes()), nil
+}
+
+// RevealBytes runs fn with the credential in guarded memory, and wipes it
+// afterwards whatever fn does.
+//
+// This is the form to prefer. Reveal has to materialise a Go string, which
+// cannot be wiped and outlives the call; the bytes handed to fn live in an
+// mlocked buffer that is destroyed on return. fn must not retain the slice —
+// it is unmapped before this returns. Reveal remains for the callers that hand
+// the value to an API taking a string, which is what http.Header.Set is.
+func (s Secret) RevealBytes(fn func([]byte) error) error {
+	if s.sealed == nil {
+		return fn(nil)
+	}
+	buf, err := s.sealed.Open()
+	if err != nil {
+		return fmt.Errorf("credentials: opening the sealed credential from %s: %w", s.source, err)
+	}
+	defer buf.Destroy()
+	return fn(buf.Bytes())
+}
 
 // Len returns the credential's length, which is safe to report and is often
 // enough to diagnose a truncated or padded key without printing it.
-func (s Secret) Len() int { return len(s.value) }
+func (s Secret) Len() int { return s.length }
 
 // String redacts.
 func (s Secret) String() string {
@@ -307,8 +397,20 @@ func (r *Resolver) Statuses() []Status {
 // that prints its own environment, a stack trace assembled by something outside
 // this program.
 type Scrubber struct {
-	mu     sync.RWMutex
-	values []string
+	mu sync.RWMutex
+	// values are held in guarded, mlocked buffers rather than as strings.
+	//
+	// This matters more than the Secret type does. A Scrubber keeps every
+	// credential it watches for the lifetime of the process — that is its job —
+	// so before this it held the longest-lived plaintext copy in the program,
+	// and sealing Secret while this held strings would have been ceremony.
+	//
+	// Clean runs on every rendered line, every appended log payload and every
+	// tool result, so opening an enclave per call was not an option. It does
+	// not have to: LockedBuffer.String is a view into the guarded page, not a
+	// copy, so the match reads the plaintext in place. The buffers are frozen
+	// (read-only) and destroyed by Purge at exit.
+	values []*memguard.LockedBuffer
 }
 
 // NewScrubber returns an empty scrubber.
@@ -327,15 +429,27 @@ func (s *Scrubber) Watch(secret Secret) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, existing := range s.values {
-		if existing == secret.value {
-			return
+	// RevealBytes rather than Reveal: the value goes from one guarded buffer
+	// straight into another without a Go string in between.
+	_ = secret.RevealBytes(func(raw []byte) error {
+		for _, existing := range s.values {
+			if existing.EqualTo(raw) {
+				return nil
+			}
 		}
-	}
-	s.values = append(s.values, secret.value)
-	// Longest first, so a key that contains another key's prefix is replaced
-	// whole rather than leaving a tail behind.
-	sort.Slice(s.values, func(i, j int) bool { return len(s.values[i]) > len(s.values[j]) })
+		// Allocate-and-copy, not NewBufferFromBytes. That constructor *moves*:
+		// it wipes its source, and the source here is the buffer Enclave.Open
+		// returned, which memguard hands back read-only. Writing to it is a
+		// SIGBUS on a guarded page — a fault at the wipe, not at the mistake.
+		buf := memguard.NewBuffer(len(raw))
+		buf.Copy(raw)
+		buf.Freeze()
+		s.values = append(s.values, buf)
+		// Longest first, so a key that contains another key's prefix is
+		// replaced whole rather than leaving a tail behind.
+		sort.Slice(s.values, func(i, j int) bool { return s.values[i].Size() > s.values[j].Size() })
+		return nil
+	})
 }
 
 // WatchAll adds every credential a resolver can currently produce.
@@ -356,7 +470,9 @@ func (s *Scrubber) Clean(text string) string {
 	values := s.values
 	s.mu.RUnlock()
 	for _, v := range values {
-		text = strings.ReplaceAll(text, v, Redacted)
+		// v.String() is a view into the guarded page, so the credential is
+		// never copied onto the heap to be searched for.
+		text = strings.ReplaceAll(text, v.String(), Redacted)
 	}
 	return text
 }

@@ -333,6 +333,8 @@ func runChild(t *testing.T, binary string, args []string, stdin string) ([]byte,
 	ctx, cancel := context.WithTimeout(context.Background(), childBound)
 	defer cancel()
 
+	// #nosec G204 -- the binary is the one testsupport built; driving it
+	// across the real process boundary is what this target exists for.
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	// The same second bound the production clients set. Killing the process

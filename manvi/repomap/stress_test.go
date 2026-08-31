@@ -331,7 +331,11 @@ func FuzzLoad(f *testing.F) {
 	f.Fuzz(func(t *testing.T, doc string) {
 		p := filepath.Join(t.TempDir(), "g.json")
 		if err := os.WriteFile(p, []byte(doc), 0o644); err != nil {
-			t.Skip()
+			// Not a skip. The corpus is strings this test just generated and a
+			// directory it just made; a write that fails here is the machine
+			// failing, and a silent skip would report "ok" for every remaining
+			// input in the run.
+			t.Fatalf("writing the generated graph to %s: %v", p, err)
 		}
 		m, err := Load(p)
 		if err != nil {

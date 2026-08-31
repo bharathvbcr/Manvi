@@ -84,7 +84,11 @@ func FuzzStreamNeverSettlesIntoAToolCallItCannotRoute(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, body string) {
 		s := newStream(io.NopCloser(strings.NewReader(body)), "fuzz-model", 0)
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				t.Errorf("closing the stream: %v", err)
+			}
+		}()
 
 		// Bounded rather than `for {}`. A decoder that stopped advancing would
 		// otherwise hang the fuzzer instead of failing it, and "it never

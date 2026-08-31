@@ -42,8 +42,12 @@ func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
 			if err != nil {
 				return nil, err
 			}
+			key, err := secret.Reveal()
+			if err != nil {
+				return nil, err
+			}
 			h := http.Header{}
-			h.Set("Authorization", "Bearer "+secret.Reveal())
+			h.Set("Authorization", "Bearer "+key)
 			return h, nil
 		},
 	})}

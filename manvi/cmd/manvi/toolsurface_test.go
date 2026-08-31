@@ -165,7 +165,6 @@ func surfaceRegistry(t *testing.T) *tools.Registry {
 		{"fake_mcp_call", tools.GroupMCP, false},
 		{"fake_nav", tools.GroupNav, true},
 	} {
-		spec := spec
 		if err := reg.Register(tools.Tool{
 			Schema:   llm.ToolSchema{Name: spec.name, Description: spec.name, InputSchema: json.RawMessage(`{"type":"object"}`)},
 			Group:    spec.group,

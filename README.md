@@ -310,7 +310,10 @@ Coverage has three semantic states — **covered**, **uncovered** (ran tests, li
 
 The prompt used to tell every run to "verify current documentation" while nothing
 here could fetch anything. `manvi/fetch` is the capability behind that instruction,
-built on the standard library alone — this module still has **zero dependencies**.
+built on the standard library alone. The module carries three direct dependencies
+in total — `memguard`, `samber/mo` and a lint-only ruleguard DSL — and `verify.sh`
+holds the build graph to that allowlist on every run; nothing in `fetch` is among
+them.
 
 It is in-process on purpose. An out-of-process fetcher (an MCP server, a sidecar, a
 hosted crawler) can be gated on the *call* and not on where it then goes; an egress

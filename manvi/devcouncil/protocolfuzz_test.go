@@ -48,7 +48,7 @@ func FuzzVerifierChildAnswersEveryRequestWithExactlyOneObject(f *testing.F) {
 	// which would only ever exercise the not-found branch.
 	dir := f.TempDir()
 	root := filepath.Join(dir, "root")
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o750); err != nil {
 		f.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ func FuzzVerifierChildAnswersEveryRequestWithExactlyOneObject(f *testing.F) {
 		}
 		if coverage != "" {
 			profile := filepath.Join(dir, "coverage.info")
-			if err := os.WriteFile(profile, []byte(coverage), 0o644); err != nil {
+			if err := os.WriteFile(profile, []byte(coverage), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			args = append(args, "--coverage", profile)
@@ -193,6 +193,8 @@ func runVerifierChild(t *testing.T, binary string, args []string, stdin string) 
 	ctx, cancel := context.WithTimeout(context.Background(), verifierBound)
 	defer cancel()
 
+	// #nosec G204 -- the binary is the one testsupport built; driving it
+	// across the real process boundary is what this target exists for.
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.WaitDelay = 2 * time.Second
