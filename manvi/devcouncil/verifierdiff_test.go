@@ -78,12 +78,15 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 	names := []string{"a.go", "pkg/b.go", "deep/nested/c.rs", "notes.txt", "Makefile"}
 
 	// A baseline commit, so every generated change is a diff against something.
+	// The content is named once because the per-case restore above rewrites it,
+	// and two spellings of "the baseline" would drift.
+	const baseline = "base\nline two\nline three\n"
 	for _, name := range names {
 		path := filepath.Join(repo, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			f.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte("base\nline two\nline three\n"), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(baseline), 0o644); err != nil {
 			f.Fatal(err)
 		}
 	}
@@ -113,10 +116,22 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, plan, content string) {
-		// Back to the baseline commit, so each case is judged on its own
-		// changes rather than on everything the corpus did before it.
-		git(t, "reset", "-q", "--hard")
-		git(t, "clean", "-fdq")
+		// Back to the baseline, so each case is judged on its own changes
+		// rather than on everything the corpus did before it — restored by
+		// rewriting the files rather than by `git reset --hard` plus `git
+		// clean`. The generated changes only ever touch the five known names,
+		// so rewriting them is exactly equivalent and costs no processes.
+		//
+		// Forks are the whole cost of this target. At six per case it managed
+		// 4,924 inputs in two minutes while a pure-function target does
+		// millions, which made it the one the sweep could only ever sample.
+		// Restoring here, and reading the unstaged diff rather than staging
+		// first, takes it from six to three.
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(baseline), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 
 		applied := false
 		for i := 0; i < len(plan); i++ {
@@ -147,8 +162,11 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 			return // no plan, no diff, nothing to reconcile
 		}
 
-		git(t, "add", "-A")
-		diff := git(t, "diff", "--cached")
+		// Unstaged, so nothing has to be added first. The index never moves
+		// off the baseline commit, so `git diff` is worktree-against-baseline
+		// — the same comparison staging would have produced, one process
+		// cheaper, and with no state carried between cases.
+		diff := git(t, "diff")
 		if strings.TrimSpace(diff) == "" {
 			return // the changes cancelled out; git sees nothing and neither should the verifier
 		}
@@ -157,7 +175,7 @@ func FuzzVerifierAgreesWithGitAboutWhatADiffTouches(f *testing.F) {
 		// generated name could in principle need quoting, and a quoted name
 		// compared against an unquoted one is a difference in the test rather
 		// than in the thing under test.
-		wantList := strings.Split(strings.TrimRight(git(t, "diff", "--cached", "--name-only", "-z"), "\x00"), "\x00")
+		wantList := strings.Split(strings.TrimRight(git(t, "diff", "--name-only", "-z"), "\x00"), "\x00")
 		want := map[string]bool{}
 		for _, n := range wantList {
 			if n != "" {
