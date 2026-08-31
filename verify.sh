@@ -5,17 +5,30 @@
 #   ./verify.sh          format check, vet/clippy, and both test suites
 #   ./verify.sh --fix    rewrite formatting in place first
 #   ./verify.sh --race   the Go suite again under the race detector
+#   ./verify.sh --fuzz   every declared fuzz target actually executed
+#
+# The last two are opt-in and take one flag at a time; run the script twice to
+# get both. They are separate from the default run for opposite reasons: --race
+# needs cgo, which the shipped configuration turns off, and --fuzz spends a
+# budget per target rather than answering a fixed question.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 FIX=0
 RACE=0
+FUZZ=0
 case "${1:-}" in
   --fix)  FIX=1 ;;
   --race) RACE=1 ;;
+  --fuzz) FUZZ=1 ;;
   "")     ;;
-  *)      printf 'usage: %s [--fix|--race]\n' "$0" >&2; exit 2 ;;
+  *)      printf 'usage: %s [--fix|--race|--fuzz]\n' "$0" >&2; exit 2 ;;
 esac
+
+# MANVI_FUZZTIME is the budget each target gets under --fuzz. It is per target,
+# not per run, so the wall time is this times the number of declared targets —
+# and it is stated in the report rather than left for a reader to multiply.
+FUZZTIME="${MANVI_FUZZTIME:-30s}"
 
 # The Go plane is built and tested with cgo off, because "no cgo" is a claim
 # this repository makes in four source comments and in its own architecture
@@ -285,13 +298,27 @@ fi
 # how this repository's own fuzz sweep once recorded three passes for targets it
 # never ran. Enumerate what is declared, and make each one prove it is reachable
 # where it lives.
+# declared_fuzz_targets prints one `<pkg>:<Fn>` line per target this repository
+# declares. Both fuzz steps read it, so a target cannot be visible to the
+# reachability check and invisible to the sweep that is supposed to run it —
+# which is the same "two answers about one thing" shape as every other defect
+# in this file, and the one most likely to reappear when a target is added.
+declared_fuzz_targets() {
+  local decl file fn
+  while IFS= read -r decl; do
+    file="${decl%%:*}"
+    fn="${decl##*:}"
+    printf './%s:%s\n' "$(dirname "${file#manvi/}")" "$fn"
+  done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' \
+    | sed -E 's/^([^:]+):[0-9]+:func (Fuzz[A-Za-z0-9_]+).*/\1:\2/')
+}
+
 step "Fuzz targets — every declared target is reachable"
 fuzz_declared=0
 fuzz_missing=""
 while IFS= read -r decl; do
-  file="${decl%%:*}"
+  pkg="${decl%%:*}"
   fn="${decl##*:}"
-  pkg="./$(dirname "${file#manvi/}")"
   fuzz_declared=$(( fuzz_declared + 1 ))
   # Capture before matching. Piping `go test` into `grep -q` lets grep exit on
   # the first match, `go test` take SIGPIPE, and `set -o pipefail` report the
@@ -300,10 +327,58 @@ while IFS= read -r decl; do
   if ! printf '%s\n' "$listing" | grep -qx "$fn"; then
     fuzz_missing="${fuzz_missing} ${pkg}:${fn}"
   fi
-done < <(grep -rn '^func Fuzz' manvi --include='*_test.go' | sed -E 's/^([^:]+):[0-9]+:func (Fuzz[A-Za-z0-9_]+).*/\1:\2/')
+done < <(declared_fuzz_targets)
 (( fuzz_declared >= 10 )) || fail "only ${fuzz_declared} fuzz targets found; the sweep is not looking at the harness"
 [[ -z "$fuzz_missing" ]] || fail "declared but not reachable in their own package:${fuzz_missing}"
 printf '    covered: all %s declared fuzz targets are reachable where they are defined\n' "$fuzz_declared"
+
+# Reachable is not the same question as run, and the step above deliberately
+# only answers the first: it lists targets, it does not execute them. A target
+# can be perfectly reachable and assert nothing, and the corpus committed beside
+# it can stop being exercised without anything going red.
+#
+# This step is the second question, and it cannot be answered from an exit code.
+# `go test -fuzz=X ./pkg` prints "no fuzz tests to fuzz" and exits **0** when X
+# is not in pkg — measured again while writing this — so a sweep that trusted
+# `go test` would report a pass per target while executing nothing, which is the
+# defect recorded in HARDENING_LEDGER.md as three passes for three targets that
+# never ran. The proof required here is the fuzzer's own execution count, taken
+# from its output and asserted positive for every target individually.
+#
+# Kept out of the default run because it spends a budget rather than answering a
+# fixed question: the answer depends on how long it was given, so a green
+# unattended run would mean less each time the machine got busier. The corpus
+# the engine writes into GOCACHE persists between runs, so successive sweeps
+# resume rather than restart.
+if (( FUZZ )); then
+  step "Fuzz targets — every declared target actually executed"
+  fuzz_ran=0
+  fuzz_execs=0
+  while IFS= read -r decl; do
+    pkg="${decl%%:*}"
+    fn="${decl##*:}"
+    # -run '^$' so the seed corpus does not run twice: the engine replays the
+    # seeds itself while gathering baseline coverage.
+    if ! out="$( (cd manvi && go test -run '^$' -fuzz "^${fn}\$" -fuzztime "$FUZZTIME" "$pkg" 2>&1) )"; then
+      printf '%s\n' "$out" >&2
+      fail "${pkg}:${fn} failed under the fuzzer; the input that did it was written to manvi/${pkg#./}/testdata/fuzz/${fn}/ — commit it as a seed once the defect is fixed"
+    fi
+    # The fuzzer reports a running total; the last line carries the whole run.
+    execs="$(grep -o 'execs: [0-9]*' <<<"$out" | tail -1 | grep -o '[0-9]*$' || true)"
+    if [[ -z "$execs" ]] || (( execs == 0 )); then
+      printf '%s\n' "$out" >&2
+      fail "${pkg}:${fn} reported no executions, so it did not run. Either the target is not in that package (which \`go test -fuzz\` reports by exiting 0) or MANVI_FUZZTIME=${FUZZTIME} is too short to get past baseline coverage."
+    fi
+    fuzz_ran=$(( fuzz_ran + 1 ))
+    fuzz_execs=$(( fuzz_execs + execs ))
+    printf '    %s %s: %s executions\n' "$pkg" "$fn" "$execs"
+  done < <(declared_fuzz_targets)
+  # Both numbers, because a sweep that silently covered a subset would otherwise
+  # read exactly like one that covered everything.
+  (( fuzz_ran == fuzz_declared )) || fail "ran ${fuzz_ran} of ${fuzz_declared} declared targets"
+  printf '    covered: all %s declared targets executed, %s inputs total at %s each\n' \
+    "$fuzz_ran" "$fuzz_execs" "$FUZZTIME"
+fi
 
 # The command gate has two verdicts to reconcile — one about the command, one
 # about the files its redirections open — and for a long time only the first was

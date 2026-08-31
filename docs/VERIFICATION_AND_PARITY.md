@@ -122,7 +122,32 @@ flowchart TD
 
 # Automatically fix Go and Rust formatting in place before running gates
 ./verify.sh --fix
+
+# The Go suite again under the race detector, with cgo on
+./verify.sh --race
+
+# Every declared fuzz target actually executed, and proven to have executed
+./verify.sh --fuzz
 ```
+
+`--race` and `--fuzz` take one flag at a time; run the script twice for both.
+
+Both are opt-in, for opposite reasons. `--race` needs cgo, and the default run
+has to be the shipped `CGO_ENABLED=0` configuration. `--fuzz` spends a budget
+rather than answering a fixed question, so a green unattended run would mean
+less each time the machine got busier.
+
+`--fuzz` gives every target `MANVI_FUZZTIME` (default `30s`) — per target, not
+per run, so the wall time is that times the number of declared targets. It
+cannot trust `go test`: `go test -fuzz=X ./pkg` prints `no fuzz tests to fuzz`
+and **exits 0** when `X` is not in `pkg`, which is how a sweep once recorded
+three passes for targets it never ran. The proof required is the fuzzer's own
+execution count, asserted positive for each target individually, with the total
+carried alongside the per-target numbers.
+
+A target that fails leaves its input under
+`manvi/<pkg>/testdata/fuzz/<Target>/`; the gate names that path, and the input
+is committed as a seed once the defect is fixed.
 
 ---
 
