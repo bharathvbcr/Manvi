@@ -545,7 +545,15 @@ func liveSubstitutions(command string) ([]string, error) {
 			}
 			spans = append(spans, text)
 			i = next
-		case (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
+		// Process substitution, unlike $( … ) and ` … `, is not performed
+		// inside double quotes: `echo "<(echo hi)"` prints the text, and
+		// `>"<(>0)"` creates a file actually named `<(>0)`. Both measured
+		// against bash rather than recalled. Guarding on the unquoted state is
+		// what keeps this scanner and redirectTargets describing the same
+		// string — without it this half reported a live substitution where the
+		// other half correctly saw a filename, and two answers about one line
+		// is the defect this pairing exists to catch.
+		case quote == 0 && (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
 			text, next, err := scanParenSpan(runes, i+1)
 			if err != nil {
 				return nil, err
@@ -974,6 +982,7 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 	}
 	var targets []string
 	opaque := false
+
 	runes := []rune(command)
 	n := len(runes)
 	quote := rune(0)
@@ -1016,8 +1025,20 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 			// path. Without it `echo `cat > f`` yielded the target "f`", and
 			// the gate then judged a filename the shell never opens — which
 			// took a write to .env past the secret rung as ".env`".
+			//
+			// Live inside double quotes as well as unquoted, which is the half
+			// this originally missed: sh expands `…` within "…", and only a
+			// single quote makes a backtick literal. While it was guarded on
+			// the unquoted state alone, `>"` followed by a backtick pair read
+			// as a filename spelled with backticks in it, so the gate judged
+			// "`>0`" while the shell ran the substitution and opened `0` — a
+			// write the enumeration never reported. Found by
+			// FuzzRedirectTargetsSeesInsideEverySubstitution.
+			if (q == 0 || q == '"') && r == '`' {
+				break
+			}
 			if q == 0 && (r == ' ' || r == '\n' || r == '\t' || r == ';' || r == '|' || r == '&' ||
-				r == '`' || r == '(' || r == ')') {
+				r == '(' || r == ')') {
 				break
 			}
 			b.WriteRune(r)
@@ -1069,9 +1090,12 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 				return nil, false, err
 			}
 			i = next
-		case (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
+		case quote == 0 && (r == '<' || r == '>') && i+1 < n && runes[i+1] == '(':
 			// Process substitution: the code inside runs, and its redirections
-			// write files, exactly like $( … ).
+			// write files, exactly like $( … ) — but only unquoted. Inside
+			// double quotes it is literal text, which is why this carries the
+			// same guard as its counterpart in liveSubstitutions; see the note
+			// there for the measurements.
 			text, next, err := scanParenSpan(runes, i+1)
 			if err != nil {
 				return nil, false, err
@@ -1129,6 +1153,60 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 			i++
 		}
 	}
+	// Reconciled against liveSubstitutions before this function answers, because
+	// the two scan one string against one grammar and have never fully agreed
+	// about what that grammar is. Only this half knew `<<` introduces a
+	// heredoc; only that half knew a backtick stays live inside double quotes;
+	// neither had process substitution right in quotes; and they still tokenise
+	// a backslash differently inside a substitution span. Every one of those
+	// ended the same way — this half answered "these are the writes, and I am
+	// sure" about a line its sibling read differently — and that is the answer
+	// EvaluateRedirects turns straight into an allow.
+	//
+	// Four instances were found in four runs, so the instances are not the
+	// thing to fix. The disagreement itself is the condition: if the sibling
+	// scanner cannot read this line, or finds a span that resolves to a write
+	// this scan did not reach, the enumeration is not complete and says so.
+	//
+	// It reports opacity rather than adopting the other scanner's targets on
+	// purpose. When two lexers disagree about a string, which one is right is
+	// exactly what is not known here, and stating a target under this scan's
+	// authority that this scan did not derive would be a guess wearing a
+	// result's clothes. Opacity is already this function's word for "there may
+	// be a write in here that I did not resolve", and it is what the caller
+	// fails closed on.
+	//
+	// The direction is deliberate: this only ever *adds* opacity, and opacity
+	// is a denial. It also runs after the scan rather than before it, because
+	// containment is a claim about the targets this scan produced and there are
+	// none to compare against until it has finished.
+	if spans, subErr := liveSubstitutions(command); subErr != nil {
+		opaque = true
+	} else {
+		have := make(map[string]struct{}, len(targets))
+		for _, target := range targets {
+			have[target] = struct{}{}
+		}
+	reconcile:
+		for _, span := range spans {
+			// depth+1 so this shares the recursion bound with descend rather
+			// than adding a second, independent one. Past the bound the call
+			// returns opacity immediately, which is both the fail-closed answer
+			// and what stops this walk.
+			spanTargets, spanOpaque, spanErr := redirectTargets(span, depth+1)
+			if spanErr != nil || spanOpaque {
+				opaque = true
+				break
+			}
+			for _, target := range spanTargets {
+				if _, ok := have[target]; !ok {
+					opaque = true
+					break reconcile
+				}
+			}
+		}
+	}
+
 	return targets, opaque, nil
 }
 
