@@ -39,9 +39,13 @@ import (
 // AllowSkipEnv opts a run into skipping when a toolchain is missing.
 const AllowSkipEnv = "MANVI_TEST_ALLOW_SKIP"
 
+// These helpers take testing.TB rather than *testing.T because the seams they
+// locate are driven from fuzz targets as well as from tests, and a *testing.F
+// cannot be passed as a *testing.T. Nothing here uses an API outside TB.
+
 // Unavailable reports a missing prerequisite: a hard failure by default, a skip
 // only when the operator has said an uncovered seam is acceptable for this run.
-func Unavailable(t *testing.T, format string, args ...any) {
+func Unavailable(t testing.TB, format string, args ...any) {
 	t.Helper()
 	if os.Getenv(AllowSkipEnv) == "1" {
 		t.Skipf(format+" (skipping because "+AllowSkipEnv+"=1)", args...)
@@ -53,7 +57,7 @@ func Unavailable(t *testing.T, format string, args ...any) {
 
 // RepoRoot returns the directory containing the Go module and the Rust
 // workspace, found by walking up from the test's working directory.
-func RepoRoot(t *testing.T) string {
+func RepoRoot(t testing.TB) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
@@ -82,10 +86,10 @@ var builds = map[string]*build{}
 var buildsMu sync.Mutex
 
 // DCStore builds the Rust store binary and returns its path.
-func DCStore(t *testing.T) string { return cargoBin(t, "dc-store", "dcstore") }
+func DCStore(t testing.TB) string { return cargoBin(t, "dc-store", "dcstore") }
 
 // DCVerify builds the Rust verifier binary and returns its path.
-func DCVerify(t *testing.T) string { return cargoBin(t, "dc-verify", "dcverify") }
+func DCVerify(t testing.TB) string { return cargoBin(t, "dc-verify", "dcverify") }
 
 // cargoBin builds one binary and returns the path to a stable copy of it.
 //
@@ -115,7 +119,7 @@ func DCVerify(t *testing.T) string { return cargoBin(t, "dc-verify", "dcverify")
 // everything else. They are not pruned during a run: a copy another test
 // process is about to exec is indistinguishable from a leftover, and deleting
 // the wrong one would reintroduce exactly the failure this exists to prevent.
-func cargoBin(t *testing.T, crate, binary string) string {
+func cargoBin(t testing.TB, crate, binary string) string {
 	t.Helper()
 	root := RepoRoot(t)
 
@@ -255,7 +259,7 @@ func publishArtifact(target, binary string, data []byte) (string, error) {
 }
 
 // Tool checks that an external command the test depends on exists.
-func Tool(t *testing.T, name string) string {
+func Tool(t testing.TB, name string) string {
 	t.Helper()
 	path, err := exec.LookPath(name)
 	if err != nil {

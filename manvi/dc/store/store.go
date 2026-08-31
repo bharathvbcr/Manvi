@@ -623,27 +623,62 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 		return nil, fmt.Errorf("store: %s did not return within %s (the process could not be started or reaped): %w",
 			args[0], timeout, ctx.Err())
 	}
-	if stdout.overflow {
-		return nil, fmt.Errorf("store: %s %w (%d bytes)", args[0], errOversize, maxOutput)
+	return decodeReply(args[0], stdout.buf.Bytes(), stdout.overflow, stderr.buf.Bytes(), runErr)
+}
+
+// decodeReply turns one invocation's raw streams into either a reply or a
+// reason there is none. It is the whole of what this package decides about a
+// child's answer, and it is a function rather than a tail of run() because that
+// decision is the boundary's actual contract: everything above it is process
+// mechanics, and everything a caller acts on comes out of here.
+//
+// Separating it also makes the contract testable at the rate it needs to be
+// tested at. The producer is a binary built from another language's toolchain,
+// so the bytes below are the least trustworthy input this package has, and
+// reaching them through a fork costs a process per case — which is the
+// difference between a fuzz target that explores this decision and one that
+// samples it. See FuzzStoreReplyIsNeverAZeroValueReadAsSuccess.
+//
+// The contract, which that target asserts rather than restates:
+//
+//   - Exactly one of the two returns is ever set. A nil reply with a nil error
+//     would be read by every caller here as an empty-but-healthy store.
+//   - A child that failed, or one whose output was cut off at the bound, never
+//     produces a reply, whatever its bytes happened to say.
+//   - A reply only ever comes back for a command whose ok:false is a real
+//     answer; for the rest, ok:false is a failure the store did not classify.
+func decodeReply(command string, stdout []byte, overflowed bool, stderr []byte, runErr error) (*response, error) {
+	if overflowed {
+		return nil, fmt.Errorf("store: %s %w (%d bytes)", command, errOversize, maxOutput)
 	}
 
 	// The contract is that every outcome — including a refusal — arrives as
 	// JSON on stdout, so parse before judging the exit code. An exit code with
 	// no parseable payload is the genuinely broken case.
 	var out response
-	if decodeErr := json.Unmarshal(bytes.TrimSpace(stdout.buf.Bytes()), &out); decodeErr != nil {
+	if decodeErr := json.Unmarshal(bytes.TrimSpace(stdout), &out); decodeErr != nil {
 		if runErr != nil {
 			return nil, fmt.Errorf("store: %s failed: %w (stderr: %s)",
-				args[0], runErr, bytes.TrimSpace(stderr.buf.Bytes()))
+				command, runErr, bytes.TrimSpace(stderr))
 		}
 		return nil, fmt.Errorf("store: %s returned unparseable output: %w (output: %q)",
-			args[0], decodeErr, stdout.buf.String())
+			command, decodeErr, stdout)
+	}
+	// `null` is valid JSON and unmarshals into a struct without error, leaving
+	// every field at its zero value — which is the one document that would
+	// otherwise arrive here indistinguishable from a real reply that said
+	// nothing. It is refused by name rather than left to the ok:false rule
+	// below, because that rule lets four commands through on ok:false and each
+	// of them would then be acting on a decode that produced no data at all.
+	if bytes.Equal(bytes.TrimSpace(stdout), []byte("null")) {
+		return nil, fmt.Errorf("store: %s returned a JSON null, which decodes to an empty reply "+
+			"that is indistinguishable from a store with nothing to say", command)
 	}
 	if runErr != nil && out.Error != "" {
-		return nil, fmt.Errorf("store: %s: %s", args[0], out.Error)
+		return nil, fmt.Errorf("store: %s: %s", command, out.Error)
 	}
 	if runErr != nil {
-		return nil, fmt.Errorf("store: %s failed: %w", args[0], runErr)
+		return nil, fmt.Errorf("store: %s failed: %w", command, runErr)
 	}
 
 	// A reply that says ok:false without naming a code is a failure the store
@@ -651,12 +686,12 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	// answer a caller branches on; for the rest, letting it through would hand
 	// back a zero value — no task, no leases — that reads exactly like a
 	// healthy empty store.
-	if !out.OK && !signalsOutcomeWithOK[args[0]] {
+	if !out.OK && !signalsOutcomeWithOK[command] {
 		reason := out.Error
 		if reason == "" {
 			reason = "no reason given"
 		}
-		return nil, fmt.Errorf("store: %s reported failure: %s", args[0], reason)
+		return nil, fmt.Errorf("store: %s reported failure: %s", command, reason)
 	}
 	return &out, nil
 }

@@ -240,6 +240,42 @@ func TestUnreachableStoreNeverReportsAValidLease(t *testing.T) {
 	})
 }
 
+// TestAJSONNullIsNotAnAnswer is the regression the protocol fuzzer found.
+//
+// `null` is the one document that unmarshals into the response struct without
+// error and leaves every field at its zero value, so it arrived at the caller
+// indistinguishable from a real reply that happened to say nothing. On renew
+// that zero value has a meaning — ok:false is how the store reports a lease
+// that has already expired — so a store printing `null` told the harness the
+// lease was gone, and the recovery for that is to check the task out again.
+// The same bytes make acquire report a failure with no reason and diagnose
+// report no code, both of which are at least errors; renew was the one that
+// turned an unreadable reply into a plausible answer.
+func TestAJSONNullIsNotAnAnswer(t *testing.T) {
+	dir := t.TempDir()
+	nul := filepath.Join(dir, "null.sh")
+	if err := os.WriteFile(nul, []byte("#!/bin/sh\necho null\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := New(nul, filepath.Join(dir, "state.sqlite"))
+	ctx := context.Background()
+
+	lease, err := c.Renew(ctx, "TASK-1", "tok", time.Minute)
+	if err == nil {
+		t.Errorf("Renew returned (%v, nil) against a store printing `null`; "+
+			"an unreadable reply must not read as an expired lease", lease)
+	}
+	if valid, err := c.Valid(ctx, "TASK-1", "tok"); valid || err == nil {
+		t.Errorf("Valid returned (%v, %v) against a store printing `null`", valid, err)
+	}
+	if err := c.Available(ctx); err == nil {
+		t.Error("Available reported healthy against a store printing `null`")
+	}
+	if _, err := c.ActiveLeases(ctx); err == nil {
+		t.Error("ActiveLeases returned an empty list rather than an error against a store printing `null`")
+	}
+}
+
 // TestEmptyIdentifiersAreRefused: an empty task id or token is a caller bug,
 // and answering it as "no such task" hides that bug behind a plausible result.
 func TestEmptyIdentifiersAreRefused(t *testing.T) {

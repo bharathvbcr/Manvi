@@ -26,7 +26,16 @@ use std::process::ExitCode;
 use dc_store::{AcquireRequest, Lease, LeaseCode, ScopeWrite, Store, StoreError};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = match collect_args() {
+        Ok(args) => args,
+        Err(message) => {
+            println!(
+                "{}",
+                object(&[("ok", &json_bool(false)), ("error", &quote(&message))])
+            );
+            return ExitCode::from(2);
+        }
+    };
     match run(&args) {
         Ok(json) => {
             println!("{json}");
@@ -46,6 +55,38 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Collects the command line, refusing an argument that is not valid Unicode
+/// rather than dying on it.
+///
+/// `std::env::args()` panics on such an argument, and a panic here breaks the
+/// one property this boundary rests on and this file's own header states: every
+/// outcome is JSON on stdout. What it produced instead was exit 101, a Rust
+/// backtrace on stderr, and an empty stdout — which the Go client can only
+/// report as "failed: exit status 101", handing an operator a panic dump in
+/// place of a diagnosis. Argument vectors on Unix are bytes, and the values
+/// crossing this boundary include branch names and identifiers that reach the
+/// harness from the environment, so bytes that are not UTF-8 are reachable
+/// input, not a hypothetical.
+///
+/// The offending value is named by position and never by content: one of the
+/// arguments carries a lease token, and an error message that echoed it would
+/// copy a credential into the caller's logs.
+fn collect_args() -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    for (index, arg) in std::env::args_os().skip(1).enumerate() {
+        match arg.into_string() {
+            Ok(value) => args.push(value),
+            Err(_) => {
+                return Err(format!(
+                    "argument {index} is not valid UTF-8; the store cannot parse a request it \
+                     cannot read, and its value is withheld here because one argument is a lease token"
+                ));
+            }
+        }
+    }
+    Ok(args)
 }
 
 /// Flags this binary accepts. Kept beside the parser so adding a flag without

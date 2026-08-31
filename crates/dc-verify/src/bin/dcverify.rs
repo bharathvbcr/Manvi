@@ -16,7 +16,13 @@ use dc_verify::rigor::{Finding, Severity, detect_stubs, intersect_coverage, scan
 use dc_verify::{classify_scope, parse_unified};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = match collect_args() {
+        Ok(args) => args,
+        Err(message) => {
+            println!("{{\"ok\":false,\"error\":{}}}", quote(&message));
+            return ExitCode::from(2);
+        }
+    };
     match run(&args) {
         Ok(json) => {
             println!("{json}");
@@ -27,6 +33,26 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Collects the command line, refusing an argument that is not valid Unicode
+/// rather than dying on it.
+///
+/// `std::env::args()` panics on such an argument: exit 101, a backtrace on
+/// stderr, and nothing on stdout, which the Go client can only report as a
+/// verifier that failed with no reason. A rigor check that could not run must
+/// not be indistinguishable from one that ran — and the paths this binary is
+/// handed come from a diff and from a working tree, where Unix filenames are
+/// bytes rather than Unicode.
+fn collect_args() -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    for (index, arg) in std::env::args_os().skip(1).enumerate() {
+        match arg.into_string() {
+            Ok(value) => args.push(value),
+            Err(_) => return Err(format!("argument {index} is not valid UTF-8")),
+        }
+    }
+    Ok(args)
 }
 
 const KNOWN_FLAGS: &[&str] = &["planned", "coverage", "root"];
