@@ -78,11 +78,17 @@ func TestConcurrentCancellationLeavesNothingBehind(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var completed atomic.Int64
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
 
+	// Every Add happens before the Wait that watches them, which is the
+	// WaitGroup's stated contract: "calls with a positive delta that start when
+	// the counter is zero must happen before a Wait". The watchdog below used
+	// to be started here, above the loop, so its Wait began on a zero counter
+	// and raced every Add — reported by the detector, and a real defect
+	// besides: a Wait that returns before the first Add closes `done`
+	// immediately, `select` takes it at once, and the run fails claiming 0 of
+	// 32 searches completed while every one of them was still in flight.
+	wg.Add(32)
 	for i := range 32 {
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			// Spread across the range where a search actually lands. A
@@ -113,6 +119,9 @@ func TestConcurrentCancellationLeavesNothingBehind(t *testing.T) {
 			completed.Add(1)
 		}()
 	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
 
 	select {
 	case <-done:
