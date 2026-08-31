@@ -122,10 +122,28 @@ fn check(
     coverage_path: Option<&str>,
     root: Option<&std::path::Path>,
 ) -> Result<String, String> {
-    let mut diff = String::new();
+    // Read as bytes and decode lossily, rather than requiring UTF-8.
+    //
+    // `read_to_string` refuses a stream that is not valid UTF-8, and git will
+    // hand this one raw bytes whenever a changed file is text by git's rule —
+    // no NUL in the first 8000 bytes — but not Unicode, which is every latin-1
+    // source file and every file carrying one stray byte. The refusal
+    // propagated as "the rigor gates did not run", the caller recorded that as
+    // a degradation, and a degradation produces no blocking finding: the
+    // secret scanner, the stub detector and the coverage gate were all skipped
+    // for the whole change while the report still said passed.
+    //
+    // That made a single byte a way to switch the credential scanner off, which
+    // is the opposite of what a scanner is for. Decoding lossily keeps the
+    // check running. Nothing it looks for is lost in the substitution: the
+    // secrets it matches are ASCII, and U+FFFD replaces the offending bytes
+    // in place without adding or removing a line, so both the patterns and the
+    // line numbers survive.
+    let mut raw = Vec::new();
     std::io::stdin()
-        .read_to_string(&mut diff)
+        .read_to_end(&mut raw)
         .map_err(|e| format!("reading the diff from stdin: {e}"))?;
+    let diff = String::from_utf8_lossy(&raw).into_owned();
 
     let files = parse_unified(&diff).map_err(|e| {
         format!(

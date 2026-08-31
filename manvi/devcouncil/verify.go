@@ -212,7 +212,38 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 	coverage := r.deps.CoverageFile
 	result, err := client.run(ctx, diff, planned, coverage)
 	if err != nil {
-		return nil, nil, []string{fmt.Sprintf("%s: did not run (%v)", owned, err)}
+		// Blocking, not merely degraded. The branch above already answered the
+		// one case that is about the machine rather than about this change —
+		// no verifier configured at all — so reaching here means a verifier was
+		// configured and did not produce an answer: missing on disk, timed out,
+		// or reached and refusing the input. In every one of those the secret
+		// scanner, the stub detector and the coverage gate did not look at a
+		// change that exists.
+		//
+		// It used to return a degradation and no gap, so `passed` — the field
+		// callers branch on — came back true with the credential scanner having
+		// never run. The test named TestAnUnreachableVerifierIsDegradedNotAPass
+		// asserted the degradation was present and never asserted the pass, so
+		// the name described an intent the suite did not check.
+		//
+		// This is also what closes the shape as a class rather than as the one
+		// trigger found: a diff the verifier refuses is one way to stop the
+		// gates running, and any future one lands on the same branch.
+		gap := Gap{
+			ID:       fmt.Sprintf("GAP-%s-RIGOR-UNAVAILABLE", taskID),
+			Type:     "rigor_did_not_run",
+			Severity: "high",
+			Blocking: true,
+			Detail: fmt.Sprintf("%s: did not run (%v); a change nothing scanned cannot be reported as verified",
+				owned, err),
+		}
+		return []Gap{gap}, []NextAction{{
+			GapID:    gap.ID,
+			Category: "fix_environment",
+			Blocking: true,
+			Action: "Repair or unset the dcverify binary, then verify again. " +
+				"Leaving it configured and broken stops the credential scan without stopping the run.",
+		}}, []string{fmt.Sprintf("%s: did not run (%v)", owned, err)}
 	}
 	if coverage == "" {
 		degraded = append(degraded,

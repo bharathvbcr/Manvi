@@ -524,6 +524,27 @@ func TestAnUnreachableVerifierIsDegradedNotAPass(t *testing.T) {
 			t.Errorf("the degradation does not name %s: %v", gate, degraded)
 		}
 	}
+
+	// The half this test is named for, and did not check. A degradation is a
+	// string in a list; `passed` is the field every caller branches on, and it
+	// came back true while the credential scanner had not run — so the name
+	// described an intent the assertions did not hold anyone to.
+	if passed, _ := report["passed"].(bool); passed {
+		t.Fatalf("passed = true with the rigor gates unreachable; the degradation was the "+
+			"only trace and nothing branching on passed would ever see it (degraded: %v)", degraded)
+	}
+	gaps, _ := report["gaps"].([]any)
+	blocking := 0
+	for _, raw := range gaps {
+		if g, _ := raw.(map[string]any); g != nil {
+			if b, _ := g["blocking"].(bool); b {
+				blocking++
+			}
+		}
+	}
+	if blocking == 0 {
+		t.Error("no blocking gap was recorded, so the refusal rests on nothing a caller can route on")
+	}
 }
 
 // TestNoCoverageFileIsReportedNotAssumed: without measurements every changed
