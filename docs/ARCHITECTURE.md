@@ -6,7 +6,17 @@ This document provides a comprehensive architectural reference for **MANVI** (*o
 
 ## 1. High-Level Architectural Vision
 
-MANVI executes DevCouncil's software development tools natively rather than shelling out to external agent scripts or runtime interpreters. It is architected around two planes split strictly on the axis of **IO-bound concurrency vs CPU-bound determinism**:
+**MANVI is the unification layer. DevCouncil is the components.**
+
+DevCouncil owns the components. Four are already Rust and ship as standalone binaries with a JSON-on-stdio contract: the code-intelligence graph (`devmap`), the task and lease store (`dcstore`), the deterministic verifier (`dcverify`), and the repository searcher (`dcgrep`). Each is useful on its own and to anything else that speaks the contract.
+
+**DevCouncil is mid-port.** Its remaining subsystems — the planning council, the deeper verification gates, campaign, knowledge and reporting — are still Python and are being ported to Rust/Go behind the same contract. As each lands, it becomes another binary on the boundary, and MANVI consumes it exactly the way it consumes the four above. Nothing in the harness changes shape when a component crosses over; that is the point of putting the contract at the process boundary. [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) is the current component inventory and the checklist a newly ported component has to satisfy.
+
+MANVI is the harness that unifies them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run.
+
+**That makes MANVI embeddable.** Because the harness is a single static Go binary (`CGO_ENABLED=0`) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
+
+The internal split is then a second, orthogonal decision: two planes divided strictly on **IO-bound concurrency vs CPU-bound determinism**.
 
 ```mermaid
 flowchart TB
@@ -33,14 +43,10 @@ flowchart TB
         IPC4["fork/exec dcgrep"]
     end
 
-    subgraph RustPlane["Rust Analysis Plane"]
-        DCStore["dc-store (Tasks & Lease Mutex)"]
-        DCVerify["dc-verify (Diff Parsing, Rigor Gates, Coverage)"]
-        DCGlob["dc-glob (Zero-dependency fnmatch engine)"]
-        DCGrep["dc-grep (Ignore-aware repository search, ripgrep engine)"]
-    end
-
-    subgraph External["External Tool (resolved from PATH, not built here)"]
+    subgraph Components["DevCouncil Components (resolved from PATH; MANVI links none of them)"]
+        DCStore["dcstore (Tasks & Lease Mutex)"]
+        DCVerify["dcverify (Diff Parsing, Rigor Gates, Coverage)"]
+        DCGrep["dcgrep (Ignore-aware repository search, ripgrep engine)"]
         DevMap["devmap (AST Code Graph & Adjacency)"]
     end
 
@@ -84,11 +90,12 @@ flowchart TB
 | **LLM Provider Seam** | Go | `manvi/llm` | HTTP SSE client, streaming parser, multi-provider normalization |
 | **Policy & Overrides** | Go | `manvi/gate`, `manvi/policy` | Fast in-memory evaluation, origin tracking, grant ledger |
 | **Terminal UI & Telemetry** | Go | `manvi/ui` | Event multiplexing, raw terminal IO, damage-diffed rendering |
-| **Diff & Scope Parsing** | Rust | `crates/dc-verify` | CPU-bound text processing, unified diff parsing, regex matching |
-| **Test Coverage Intersection** | Rust | `crates/dc-verify` | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
-| **Task & Lease Persistence** | Rust | `crates/dc-store` | `rusqlite` SQLite binding, ACID transactions, exclusion index |
-| **Glob Pattern Matching** | Rust & Go | `crates/dc-glob`, `manvi/internal/fnmatch` | Shared 775-case CPython `fnmatch` parity fixture |
-| **Repository Search** | Rust | `crates/dc-grep` | ripgrep's own `grep-regex`, `grep-searcher` and `ignore` crates; ignore-rule resolution and line-oriented matching |
+| **Diff & Scope Parsing** | DevCouncil component | `dcverify` | CPU-bound text processing, unified diff parsing, regex matching |
+| **Test Coverage Intersection** | DevCouncil component | `dcverify` | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
+| **Task & Lease Persistence** | DevCouncil component | `dcstore` | `rusqlite` SQLite binding, ACID transactions, exclusion index |
+| **Code Graph & Adjacency** | DevCouncil component | `devmap` | Tree-sitter extraction, resolution, dead-code and impact analysis |
+| **Repository Search** | DevCouncil component | `dcgrep` | ripgrep's own `grep-regex`, `grep-searcher` and `ignore` crates; ignore-rule resolution and line-oriented matching |
+| **Glob Pattern Matching** | Both sides | `dc-glob` (linked into `dcverify`), `manvi/internal/fnmatch` | The one rule both planes must agree on, so it is implemented twice and pinned by a shared 775-case CPython `fnmatch` parity fixture. `dc-glob` is a *library*, never a process — it has no binary and is not on the boundary diagram. |
 
 ---
 
@@ -153,7 +160,15 @@ classDiagram
 
 ---
 
-## 4. The Rust Analysis Plane
+## 4. The Analysis Components (DevCouncil)
+
+These are **DevCouncil components**, not MANVI internals. The diagram below is
+the internal structure of the binaries the harness execs; MANVI never calls any
+of these functions directly, and never links the crates that contain them. The
+crate paths shown are DevCouncil's, mirrored under MANVI's `crates/` so the
+harness can be built and tested without a DevCouncil checkout — see
+[`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) §7.
+
 
 ```mermaid
 flowchart LR
@@ -317,8 +332,8 @@ Dev_Harness/
 │       ├── term/              # Terminal control & raw mode
 │       └── tui/               # Elm-style full-screen interactive UI
 │
-├── crates/                    # Rust Analysis Plane
-│   ├── dc-glob/               # Zero-dependency glob engine
+├── crates/                    # Mirror of DevCouncil's components (upstream: DevCouncil)
+│   ├── dc-glob/               # Zero-dependency glob engine (library, linked into dc-verify)
 │   ├── dc-grep/               # Ignore-aware repository search (ripgrep engine)
 │   ├── dc-store/              # SQLite lease mutex & task persistence
 │   └── dc-verify/             # Diff parser, rigor gates & coverage mapper

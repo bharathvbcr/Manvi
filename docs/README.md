@@ -2,6 +2,8 @@
 
 Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-performance coding-agent harness built in pure Go and Rust with native tool execution, dual-plane determinism, and zero external runtime dependencies.
 
+**Start here if you are new:** MANVI is the *unification layer*; DevCouncil is the *components*. DevCouncil owns `devmap`, `dcstore`, `dcverify` and `dcgrep` — standalone binaries with a JSON-on-stdio contract, being ported to Rust/Go as DevCouncil's port proceeds — and MANVI is the harness that unifies them into a runnable agent while linking none of them. That boundary is what makes MANVI embeddable in other applications. See [**Components and Harness**](COMPONENTS_AND_HARNESS.md).
+
 ---
 
 ## Interactive Visual Guides
@@ -19,6 +21,8 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 
 - [**Why MANVI is Different (Comparative Analysis)**](COMPARISON.md)  
   Comprehensive feature matrix and deep-dive comparison against SWE-agent, OpenHands, Aider, Claude Code, Pi, Oh My Pi, Kon, and traditional Python agent frameworks.
+- [**Components and Harness**](COMPONENTS_AND_HARNESS.md)  
+  How MANVI and DevCouncil divide the work: the component inventory, how each binary is resolved, where a given change belongs, the checklist a newly ported component must satisfy, and how to work across the two repositories.
 - [**Technical Architecture Specification**](ARCHITECTURE.md)  
   Dual-plane partition (Go IO/concurrency vs Rust CPU/determinism), stdio JSON IPC protocol, session log invariants, and complete package map.
 - [**Policy & Safety Engine Specification**](POLICY_AND_SAFETY.md)  
