@@ -17,6 +17,14 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 
 ## Core Architecture & Engine Specifications
 
+- [**Components and Harness**](COMPONENTS_AND_HARNESS.md)  
+  **Start here.** How MANVI and DevCouncil relate: DevCouncil is the component
+  layer (building blocks with a JSON-on-stdio contract, usable by any coding
+  agent), MANVI is the dynamic layer that unifies them and embeds into other
+  applications. Defines the contract a component satisfies and the checklist a
+  newly ported one must meet.
+- [**DevCouncil Port Roadmap**](DEVCOUNCIL_PORT_ROADMAP.md)  
+  What is ported, what is left, in what order, and the two open decisions.
 - [**Why MANVI is Different (Comparative Analysis)**](COMPARISON.md)  
   Comprehensive feature matrix and deep-dive comparison against SWE-agent, OpenHands, Aider, Claude Code, Pi, Oh My Pi, Kon, and traditional Python agent frameworks.
 - [**Technical Architecture Specification**](ARCHITECTURE.md)  
