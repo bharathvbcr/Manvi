@@ -94,9 +94,13 @@ bench/results/
 *.blg
 bench/paper/workshop/*.pdf
 
-# Coverage reports, from ad-hoc runs rather than ./verify.sh — the gate does
-# not write these. lcov.info records absolute paths from the machine that
-# produced it, so a committed one describes somebody else's checkout.
+# Coverage reports, from ad-hoc runs rather than ./verify.sh — the gate writes
+# its own profile to a temp file outside the tree and removes it on exit.
+# coverage.out is already caught by the `*.out` rule above, which is there for
+# LaTeX; it is named here so that rule can change without silently un-ignoring
+# a profile. lcov.info records absolute paths from the machine that produced
+# it, so a committed one describes somebody else's checkout.
+coverage.out
 lcov.info
 
 # Third-party reference documentation kept locally for study, not redistributed.

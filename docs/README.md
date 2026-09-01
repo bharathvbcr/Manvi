@@ -26,7 +26,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Agent & Turn Lifecycle Specification**](AGENT_AND_TURN_LIFECYCLE.md)  
   Turn execution loop, tool waterfalls (`pre-execute`, `post-execute`), append-only context compaction, SQLite task leases, and clean cancellation.
 - [**Architectural Trade-offs**](TRADE_OFFS.md)  
-  Explicit rationale for strict posture write discipline vs command allowlists, and two toolchains (Go + Rust) with static `CGO_ENABLED=0` guarantees.
+  Explicit rationale for strict posture write discipline vs command allowlists, two toolchains (Go + Rust) with static `CGO_ENABLED=0` guarantees, and why the provider set is four adapters rather than every OpenAI-compatible endpoint.
 
 ---
 
@@ -41,7 +41,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  
   Complete CLI subcommand reference, exit codes (`0` through `5`), full flag catalogue, mutability scopes (`human` vs `startup`), `.devcouncil/config.yaml` schema, and posture matrix.
 - [**DevCouncil Native Tool Suite Reference**](TOOLS_REFERENCE.md)  
-  Category summary of all 44 native tools, with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are tabulated but not yet specified there.
+  Category summary of all 44 native tools, with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are specified alongside the rest.
 
 ---
 
@@ -51,3 +51,13 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   Cross-language testing methodology, 1,031 parity fixtures (`fnmatch-parity.tsv`, `command-parity.tsv`), diff-coverage intersection, anti-stub rigor gates, and the master `./verify.sh` gate.
 - [**Hardening Ledger & Defect Catalogue**](HARDENING_LEDGER.md)  
   Complete catalogue of 30+ hardened invariants, defect patterns, failure modes, and automated regression tests.
+
+---
+
+## Working on MANVI
+
+- [**Contributing Guide**](../CONTRIBUTING.md)  
+  What to install, how to read `./verify.sh`'s verdict, what the gate refuses, how the parity fixtures are regenerated, and the commit conventions.
+- [**Changelog**](../CHANGELOG.md)  
+  What changed per release. Organised by version; the hardening ledger below is organised by defect.
+

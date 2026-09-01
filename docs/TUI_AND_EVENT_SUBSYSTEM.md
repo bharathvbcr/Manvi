@@ -144,7 +144,7 @@ flowchart TB
    - Arrow keys (`↑↓←→`, `hjkl`), page keys, and `g`/`G`/`home`/`end` navigate the session list; the drawn window follows the selection so fleets larger than the screen stay reachable, with overflow cues in both directions.
 6. **Settings Picker (`/settings`)**:
    - Searchable overlay listing every setting in the catalogue with its value, origin layer, and mutability scope.
-5. **Rich Markdown, Syntax Highlighting & Unified Diffs**:
+7. **Rich Markdown, Syntax Highlighting & Unified Diffs**:
    - Syntax highlighting for `go`, `rust`, `json`, `bash`, `python`, and `sql` with inset container borders (`┌─ go ─┐` / `└────┘`).
    - Colored diff line rendering (`+` additions in green, `-` deletions in red, `@@` hunk headers in cyan).
 

@@ -1,0 +1,227 @@
+# One gate, run by a machine instead of by whoever remembered.
+#
+# verify.sh is the whole check — this file exists to run it on a machine nobody
+# has been developing on, and to make sure it runs *fully*. That second half is
+# the point. Almost every gate inside verify.sh degrades to "NOT COVERED" when
+# its tool is absent, which is the honest answer on a laptop and the wrong one
+# here: a CI run that quietly skipped the linter, the vulnerability scan and the
+# nil analysis would print a green check indistinguishable from one that ran
+# them. So the analysis tools are installed before the gate, and the run is
+# rejected afterwards if any of them turned out to be missing.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # The opt-in gates below, once a day. Off-peak so a wedged fuzz run is not
+  # competing with the pull requests it exists to protect.
+  schedule:
+    - cron: '17 6 * * *'
+
+# A superseded push has nothing to say about the branch's current head.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: verify.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both halves of the matrix report. A failure on one platform is a fact
+      # about the code, not a reason to stop learning about the other.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version comes from go.mod so this file cannot drift away from the
+      # toolchain the module declares.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: manvi/go.mod
+          cache-dependency-path: manvi/go.sum
+
+      # No third-party action for Rust: both runner images ship rustup, and a
+      # marketplace action here would be a supply-chain dependency bought for
+      # two lines of shell. Edition 2024 in crates/Cargo.toml needs >= 1.85.
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # cargo-audit is a compile, not a download, and it is the same compile on
+      # every run. Keyed on the toolchain so a rustup bump rebuilds it.
+      - name: Cache cargo-audit
+        id: cache-cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.os }}-
+
+      # Every tool verify.sh will otherwise report as NOT COVERED. The versions
+      # float on purpose: this gate is meant to catch a new linter's new rule
+      # while the change that trips it is still in review.
+      - name: Analysis tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install go.uber.org/nilaway/cmd/nilaway@latest
+          if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
+            cargo install cargo-audit --locked
+          fi
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # Tee rather than pipe: the exit status being checked is verify.sh's own,
+      # and `set -o pipefail` is not on by default in an Actions step.
+      - name: verify.sh
+        run: ./verify.sh 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+
+      # verify.sh always ends with gates it could not run — the hosted provider
+      # adapters are checked against scripted servers, devmap is not built by
+      # this repository, and no local model server is listening here. Those are
+      # expected. A missing *analysis tool* is not: it means the step above
+      # failed to provision and the gate that did not run would have been read
+      # as a gate that passed.
+      - name: Every installable gate actually ran
+        if: always()
+        run: |
+          if [ ! -s verify.log ]; then
+            echo "verify.sh produced no output; there is no verdict to check." >&2
+            exit 1
+          fi
+          if grep -n 'is not installed' verify.log; then
+            echo >&2
+            echo "An analysis tool was missing, so its gate did not run." >&2
+            echo "This is a provisioning failure in the 'Analysis tools' step," >&2
+            echo "not a property of the code under test." >&2
+            exit 1
+          fi
+          echo "No analysis tool was missing."
+
+      # The colour codes are stripped first, and the pattern deliberately does
+      # not start at "PASS". verify.sh writes that verdict as
+      # `\033[33mPASS\033[0m with gates that did not run:` — there is an ANSI
+      # reset between the word and the rest of the sentence, so a grep for the
+      # whole line matches nothing and reports "(none reported)" for every run,
+      # including the ones with gates that did not run. A summary that says
+      # "none" because its pattern stopped matching is the exact failure this
+      # repository refuses everywhere else.
+      - name: Verdict
+        if: always()
+        run: |
+          sed $'s/\033\[[0-9;]*m//g' verify.log > verify.plain
+          {
+            echo '### verify.sh — ${{ matrix.os }}'
+            echo
+            echo '```'
+            grep -A 100 'with gates that did not run' verify.plain \
+              || tail -1 verify.plain
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-log-${{ matrix.os }}
+          path: verify.log
+          retention-days: 14
+
+  # Windows compiles, and that is all this job claims.
+  #
+  # verify.sh is bash and reaches for mktemp, script(1), process groups and a
+  # POSIX shell throughout; it does not run here and pretending otherwise would
+  # produce a green check for a gate that never executed. What Windows *can*
+  # answer cheaply is the question the build-tag split exists for: `procgroup`
+  # and `mkfifo` each have a `_unix.go` and an `_other.go`, and the `_other`
+  # half is compiled by nothing in the matrix above. A build break in it would
+  # otherwise reach a user before it reached CI.
+  #
+  # So: the platform-specific code compiles and vets. The Go suite is NOT run
+  # here — many of its tests fork shells and drive the Rust binaries over a
+  # process boundary, and neither this job nor anything else in this repository
+  # has established that they pass on Windows. That remains an open gap, named
+  # rather than papered over.
+  windows-build:
+    name: compile (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: manvi/go.mod
+          cache-dependency-path: manvi/go.sum
+      - name: Go — the _other build-tag half compiles and vets
+        working-directory: manvi
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build ./...
+          go vet ./...
+      - name: Rust — the analysis plane compiles
+        working-directory: crates
+        run: cargo build --all-targets
+
+  # The two opt-in gates. They take a flag each and cost real time, which is
+  # why verify.sh keeps them out of the default run and why they are not on
+  # every pull request. Nightly is often enough to find what they find, and
+  # workflow_dispatch is there for the change that warrants one on demand.
+  deep:
+    name: verify.sh --${{ matrix.mode }}
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [race, fuzz]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: manvi/go.mod
+          cache-dependency-path: manvi/go.sum
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+          rustup default stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Analysis tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install go.uber.org/nilaway/cmd/nilaway@latest
+          cargo install cargo-audit --locked
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      # --race and --fuzz each re-run the default gate first, so this is the
+      # whole file plus the extra mode. 90 minutes is above the serialised
+      # race run's measured 4.4 minutes by a wide margin and exists to bound a
+      # wedge, not to accommodate one.
+      - name: verify.sh --${{ matrix.mode }}
+        timeout-minutes: 90
+        run: ./verify.sh --${{ matrix.mode }}

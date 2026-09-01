@@ -30,7 +30,8 @@ Most coding-agent frameworks and evaluation harnesses (e.g., SWE-agent, SWE-benc
 
 MANVI partitions its architecture strictly on the axis of **IO-bound concurrency vs CPU-bound determinism**:
 - **Go Execution Plane (`CGO_ENABLED=0`)**: Drives high-concurrency event loops, SSE streams, multi-provider LLM adapters, policy gates, and damage-diffed terminal rendering without garbage collection stalls or cgo overhead.
-- **Rust Analysis Plane (`dc-verify`, `dc-store`, `dc-glob`, `dc-grep`, `devmap`)**: Executes CPU-intensive unified diff parsing, regex-free glob matching, ignore-aware repository search on ripgrep's engine, AST code graph indexing, and SQLite ACID state persistence.
+- **Rust Analysis Plane (`dc-verify`, `dc-store`, `dc-glob`, `dc-grep`)**: Executes CPU-intensive unified diff parsing, regex-free glob matching, ignore-aware repository search on ripgrep's engine, and SQLite ACID state persistence. These four crates are the entire contents of `crates/` and are built from this repository.
+- **External Index (`devmap`)**: AST code graph indexing is *not* built here. `devmap` is a separate tool resolved from `PATH` (or `MANVI_MAP_BINARY`) and spoken to over the same stdio boundary; `manvi/dc/devmap` is only the IPC client. It is optional — without it the neighbour rule reports `repo_map.unavailable` and `verify.sh` records repo navigation as a gate that did not run, rather than one that passed.
 - **Strict Process Boundary**: The two planes communicate exclusively over child process boundaries (`fork`/`exec`) with line-delimited JSON over stdio. This preserves instantaneous static cross-compilation, avoids shared-memory safety pitfalls, and eliminates runtime dependency hell.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the complete architecture specification.

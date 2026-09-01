@@ -468,7 +468,8 @@
           <li><span class="pkg">crates/dc-verify</span> <span class="role">Diff parser & rigor gates</span></li>
           <li><span class="pkg">crates/dc-verify</span> <span class="role">Go & LCOV coverage bitsets</span></li>
           <li><span class="pkg">crates/dc-glob</span> <span class="role">CPython fnmatch glob engine</span></li>
-          <li><span class="pkg">devmap</span> <span class="role">AST code graph & adjacency</span></li>
+          <li><span class="pkg">crates/dc-grep</span> <span class="role">Ignore-aware search (ripgrep)</span></li>
+          <li><span class="pkg">devmap</span> <span class="role">AST code graph & adjacency — external tool, resolved from PATH</span></li>
         </ul>
       </div>
     </div>
@@ -477,7 +478,7 @@
       <div class="ipc-content">
         <div class="ipc-title">Process Boundary, Not CGO</div>
         <p class="ipc-desc">
-          Go execs <code>dcstore</code> and <code>dcverify</code> passing arguments and JSON over pipes. Mutexes live in SQLite's partial unique index, not in Go memory. A crash in Rust never corrupts Go memory.
+          Go execs <code>dcstore</code>, <code>dcverify</code>, <code>dcgrep</code>, and <code>devmap</code> passing arguments and JSON over pipes. Mutexes live in SQLite's partial unique index, not in Go memory. A crash in Rust never corrupts Go memory.
         </p>
       </div>
       <span class="badge-no-cgo">CGO_ENABLED=0</span>

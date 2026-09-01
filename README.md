@@ -67,6 +67,9 @@ flowchart TB
         DCVerify["dc-verify<br/>Diff Parsing · Rigor Gates · Coverage"]
         DCGlob["dc-glob<br/>Zero-dep fnmatch engine"]
         DCGrep["dc-grep<br/>Ignore-aware search · ripgrep engine"]
+    end
+
+    subgraph External["External Tool — resolved from PATH, not built here"]
         DevMap["devmap<br/>AST Code Graph"]
     end
 
@@ -448,3 +451,5 @@ Full specifications live in [`docs/`](docs/README.md):
 | [Comparison](docs/COMPARISON.md) | MANVI vs SWE-agent, OpenHands, Aider, Claude Code |
 | [Trade-offs](docs/TRADE_OFFS.md) | Write discipline vs shell breadth, two toolchains, zero-cgo costs |
 | [Hardening Ledger](docs/HARDENING_LEDGER.md) | 30+ hardened invariants, bug patterns, test locations |
+| [Contributing](CONTRIBUTING.md) | Toolchains, reading `./verify.sh`'s verdict, what the gate refuses, commit conventions |
+| [Changelog](CHANGELOG.md) | What changed per release |

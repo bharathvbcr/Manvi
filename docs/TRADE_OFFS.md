@@ -1,6 +1,6 @@
 # Architectural Trade-offs
 
-Two costs are paid deliberately in MANVI's architecture. Both are documented here at their real size, because a trade-off described as worse than it is gets worked around, and one described as smaller than it is gets discovered by an operator instead of read by one.
+Three costs are paid deliberately in MANVI's architecture. All are documented here at their real size, because a trade-off described as worse than it is gets worked around, and one described as smaller than it is gets discovered by an operator instead of read by one.
 
 ---
 
@@ -56,3 +56,69 @@ Discovery locates binaries automatically:
 Loosening the two-toolchain requirement would mean reimplementing the lease store in Go. However, the invariant it protects is a partial unique index in the SQLite schema (`WHERE status = 'active'`). Having two implementations of that would create two competing owners of a single guarantee—the exact architectural defect the dual-plane split was created to prevent.
 
 The boundary stays a clean process boundary: stdio, one JSON object per call, zero cgo.
+
+---
+
+## 3. Four Provider Adapters, and a Hosted OpenAI-Compatible Endpoint Is Not a Config Change
+
+The provider seam serves four adapters: `anthropic`, `gemini`, `xai`, and
+`local`. There is no OpenAI adapter, no DeepSeek adapter, and no Groq, Together,
+or Cerebras adapter. That is a decision, not a backlog item, and this is the
+size of it.
+
+### The wire is already here; the credential rule is what stops it
+
+`manvi/llm/openaicompat` implements the OpenAI wire in full — streaming,
+tool-call assembly, and recovery from the truncations local servers produce —
+and the `local` adapter speaks it. Every provider named above serves an
+OpenAI-compatible API, so the obvious move is to point `llm.local.base_url` at
+one of them and call the question answered.
+
+It does not work, and the reason it does not is deliberate. The `local` adapter
+accepts `OPENAI_API_KEY` as a convenience, and `llm.local.base_url` does not
+have to name this machine. Those two facts together once meant that an operator
+who pointed this provider at a remote inference host shipped their real key to
+that host as a bearer token, silently. The adapter now refuses to attach a
+credential to any destination that is not this machine, before the request
+reaches the network — `TestABorrowedCredentialIsNotSentOffThisMachine` in
+`manvi/llm/local` is that rule, and the refusal names the variable it declined
+to send without quoting its value.
+
+So `local` is the adapter for a server on this machine. Relaxing the destination
+check to reach a hosted endpoint would trade a class of silent credential
+exfiltration for the convenience of not writing an adapter, which is the wrong
+side of that trade at any price.
+
+### What a hosted provider therefore costs
+
+A first-class adapter, with its own credential requirement registered in
+`manvi/credentials`, its own `Capability` table (context window, output cap,
+tool support, and the *ordered* reasoning tiers the loop escalates through), and
+its own entry in `buildProvider`. On the OpenAI wire most of the body is
+`openaicompat` already, so the work is small — but it is not zero, and it is not
+the part that costs.
+
+The part that costs is keeping it honest. `verify.sh` already ends every run by
+reporting that `anthropic, gemini and xai are verified against scripted servers
+only` — a gate that did not run, named as such. Each additional hosted provider
+is one more wire whose real behaviour nothing in the gate observes, and the
+`bench` rig's two wire suites (`test_gemini_wire.py`, `test_cerebras_wire.py`)
+exist because a Gemini serialization defect produced a 315-episode arm with zero
+`finished` stops before anything noticed. A provider list that grows faster than
+that scrutiny is a list of adapters nobody is checking.
+
+### What exists and what it is
+
+- **`bench/` has a Cerebras client.** It is a benchmark instrument, not a
+  harness provider. Promoting it means the paragraph above, in full.
+- **`reference/deepseek-harness` is study material**, kept locally and
+  `.gitignore`d. It is not a partially-landed adapter.
+
+### If you want one of these models today
+
+Serve it locally — through Ollama, vLLM, llama.cpp, LM Studio, or Jan — and the
+`local` adapter drives it with no credential leaving the machine, which is the
+case this harness is built for. A hosted endpoint needs the adapter, and the
+adapter needs the scrutiny; a pull request that brings both is welcome, and one
+that relaxes the destination check instead is not.
+

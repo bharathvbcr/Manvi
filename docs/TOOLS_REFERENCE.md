@@ -29,7 +29,10 @@ one more. See [Documentation lookup](#documentation-lookup).
 
 The thirteen rows above sum to the 44 tools `manvi tools` reports.
 
-**Specification coverage is not yet complete.** The first eight categories (30 tools) have full parameter and permission specifications in this document. The last five (14 tools — `devcouncil_search_tools`, `devcouncil_activate_tools`, `devcouncil_define_subagent`, `devcouncil_invoke_subagent`, `devcouncil_manage_subagents`, `devcouncil_send_message`, `devcouncil_create_artifact`, `devcouncil_list_artifacts`, `devcouncil_update_artifact`, `devcouncil_ask_question`, `mcp_list_tools`, `mcp_call_tool`, `mcp_list_resources`, `mcp_read_resource`) are registered in `manvi/devcouncil/` and dispatch normally, but are not written up below. Run `manvi tools` for their live schemas until they are.
+Every tool in every row is specified below, and
+`TestToolsReferenceSpecifiesEveryTool` fails the build if one is added without
+a row here. `manvi tools` remains the live schema; this document is what the
+schema means.
 
 ---
 
@@ -118,6 +121,99 @@ The thirteen rows above sum to the 44 tools `manvi tools` reports.
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
 | `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Queries the incumbent `dev`/`devcouncil` CLI over JSON (`MANVI_DEVCOUNCIL_BINARY` overrides discovery). `check` always runs the deterministic evidence gate (`--verify`), never the LLM audit; non-JSON output is returned labelled as degraded, never parsed as structure. |
+
+---
+
+### 9. Tool Discovery & Activation Tools
+
+These two exist for `llm.local.dynamic_tools` (default `true`): a small local
+model starts with a lean core working set, and the rest of the surface is
+loaded on demand rather than spent on context up front. A tool that is
+registered but not active is not silently absent — calling it returns an error
+naming the exact `devcouncil_activate_tools` call that would admit it.
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_search_tools` | Read-only | `query` (string, optional) | Searches the registry by keyword against names, groups, and descriptions, returning name, group, description, and active state per hit plus a count — without loading full schemas into context. An unattached registry reports *unavailable* rather than an empty result set, so "found nothing" and "could not look" stay distinguishable. |
+| `devcouncil_activate_tools` | Read-only | `tools` (array of strings, required) | Activates tools by name or whole groups by name (`task`, `nav`, `subagent`, `artifact`, `mcp`). Prerequisites declared in a tool's `requires` are resolved and activated with it. Returns the activated names and the new active count. An empty array is an error, not a no-op. |
+
+---
+
+### 10. Sub-Agent Management Tools
+
+Category 3 dispatches a fan-out; this category defines the roles it dispatches
+and inspects what is running. Depth and width come from `agents.max_spawn_depth`
+(default 2, max 8) and `agents.max_fanout` (default 8, max 32).
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_define_subagent` | Write | `name` (string), `description` (string), `system_prompt` (string), `role` (string, optional), `model` (string, optional — a model name or `inherit`/`flash`/`pro`), `enable_write_tools` (bool, optional), `enable_mcp_tools` (bool, optional), `allowed_tools` (array of strings, optional) | Registers or updates a runtime role. Refused entirely when `subagents.dynamic.enabled=false`, with the already-registered roles named so dispatch by `type_name` remains possible. A role this harness *ships* can never be redefined at runtime whatever that setting says — otherwise "define a role" and "rewrite the reviewed read-only critic to permit writes" would be the same call, under a name every later dispatch still reads as the reviewed one. `allowed_tools` only ever narrows; it cannot widen what the two booleans permit. |
+| `devcouncil_invoke_subagent` | Write | `subagents` (array of objects: `type_name`, `role`, `prompt` required; `model` optional) | Dispatches the named roles concurrently and returns a conversation ID and outcome per child. `agents.max_spawn_depth=0` means this harness delegates nothing at all: nothing is dispatched, and the refusal says so explicitly rather than returning an empty result that reads as zero findings. A `workspace` key is still decoded purely so it can be refused — a silently dropped isolation request is the defect its removal was for. A child that returns without a summary is a failure, never a completion. |
+| `devcouncil_manage_subagents` | Write | `action` (`list`\|`kill`\|`kill_all`), `conversation_ids` (array of strings, required for `kill`) | `list` returns a snapshot of each instance's live state — a snapshot rather than the instances themselves, because marshalling those raced with the pool goroutines writing them. `kill` accounts for every ID it was given: any that could not be terminated come back under `not_terminated` with the reason, so a caller cannot mistake "never existed" for "stopped". `kill_all` over a manager holding nothing is an error, not a claim to have terminated children that do not exist. |
+| `devcouncil_send_message` | Write | `recipient` (string), `message` (string) | **Refuses every call, by design.** A sub-agent here runs as one prompt in and one result out; there is no seam through which an instruction arriving mid-run could be delivered. This tool previously answered `{"delivered": true}` into a channel nothing reads. The refusal states whether the recipient is a registered sub-agent, and directs the caller to put the instruction in the dispatch prompt or to wait for the result and dispatch a follow-up. |
+
+---
+
+### 11. Artifact Tools
+
+Artifacts live under `.devcouncil/artifacts/`, which `devcouncil_write_file`
+refuses as a hard rule no override clears. These tools are not an exception to
+that rule — the general-purpose write tool pointed into `.devcouncil/` reaches
+the task store, the config, and the grant ledger, and that is what the rule
+protects. What these three have instead is *confinement*: a store-sanitised
+name under one subtree that holds nothing security-bearing.
+
+They still answer the two questions the write gate would ask. A write with no
+task checked out is refused under `policy.RuleNoTask` — an artifact recording
+work nothing can attribute — unless the file gate mode is `advisory` or `off`,
+in which case the demotion is named in the result. Every allow carries
+`scope.artifact_store` in its degraded list, so an allow reached through the
+store's confinement is never indistinguishable from one the task plan
+authorised.
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_create_artifact` | Write | `name` (string), `content` (string), `metadata` (object: `summary` required; `user_facing`, `request_feedback` optional booleans) | Creates a persistent structured artifact — implementation plan, walkthrough, research notes, design document — under `.devcouncil/artifacts/`. |
+| `devcouncil_update_artifact` | Write | `name` (string), `content` (string), `metadata` (object, optional) | Replaces an existing artifact's content and metadata, incrementing its revision. |
+| `devcouncil_list_artifacts` | Read-only | *None* | Lists every artifact currently recorded in `.devcouncil/artifacts/`. |
+
+---
+
+### 12. Interactive Question Tools
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `devcouncil_ask_question` | Write | `questions` (array of objects: `question` (string) and `options` (array of strings) required, `is_multi_select` (bool) optional) | Puts one or more questions to the operator to resolve underspecified requirements or choose between designs. An empty array is refused, as is any question with empty text or fewer than two options. The result says **who answered**: `answered:true` with `answered_by:"human"` carries real choices under `answers`; `answered:false` with `answered_by:"none"` means no human was available, no question was put to anyone, and the values under `assumed_defaults` are assumptions the run proceeded on — never to be reported back as a decision the user made. |
+
+---
+
+### 13. MCP 2.0 & Open Plugin Tools
+
+An MCP server is a separate program whose replies are entirely its own choice,
+so both bounds and the gate apply on this path.
+
+`mcp_call_tool` is arbitrated by the **command** gate, not the write gate,
+because that is what it is: an instruction to another program to act outside
+this harness, with effects the harness cannot observe. A server advertising
+`run_shell` or `write_file` would otherwise have been a complete route around
+the command gate, the write gate, and the approval prompt at once. The target
+is rendered as `mcp_call_tool <server>/<tool>`, which is stable and
+allowlistable — an operator who wants one server's tools to run unprompted adds
+`mcp_call_tool weather/*` to the task or global allowed commands, exactly as for
+any other command. Server and tool names that could not be rendered into that
+target unambiguously are rejected before the call is made.
+
+One tool call may return at most **256 KiB** across at most **512 content
+parts**. When no MCP manager was supplied at construction, calls are refused by
+a disabled manager that names *that* as the cause — deliberately distinct from
+the refusal `mcp.enabled=false` produces, because the remedies differ.
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `mcp_list_tools` | Read-only | `server_name` (string, optional) | Lists tools from configured MCP 2.0 servers and Open Plugins. With a server named, returns that server's tools; without one, returns every server's. |
+| `mcp_call_tool` | Write | `server_name` (string), `tool_name` (string), `arguments` (object) | Calls a tool on an external server over stateless JSON-RPC, through the command gate and the approver, with the result bounded as above. |
+| `mcp_list_resources` | Read-only | `server_name` (string) | Lists the resources a target server exposes. |
+| `mcp_read_resource` | Read-only | `server_name` (string), `uri` (string) | Reads one resource's contents from a target server by URI. |
 
 ---
 

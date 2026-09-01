@@ -1,0 +1,133 @@
+# Changelog
+
+What changed, per release, for someone deciding whether to upgrade.
+
+This is not the [hardening ledger](docs/HARDENING_LEDGER.md). That document is
+organised by *defect* — the pattern, its root cause, and the regression test
+that now holds it — and it is the better read for understanding why a rule
+exists. This one is organised by *release*, and answers a different question:
+what is different in the build I am about to run.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versions are `MAJOR.MINOR.PATCH`; while the leading zero stands, the surface —
+CLI flags, exit statuses, the settings catalogue, the `manvi serve` protocol,
+and the native tool schemas — may change in any release, and a change to any of
+them is listed here.
+
+Entries are written with the change, not reconstructed afterwards. Add yours
+under **Unreleased** in the same commit as the code.
+
+---
+
+## [Unreleased]
+
+### Added
+
+- **Continuous integration.** `.github/workflows/verify.yml` runs `./verify.sh`
+  on every pull request and every push to `main`, on Linux and macOS. The
+  workflow installs every analysis tool the gate can use and then *fails* if any
+  of them turned out to be missing — a gate that could not run must not report
+  as one that passed. `--race` and `--fuzz` run nightly and on demand.
+- **A statement-coverage gate.** `verify.sh` now measures how much of the tree
+  the suite executes (`-coverpkg=./...`, so a package is credited for what any
+  test reaches, not only its own) and fails below a floor of 78%. The profile is
+  produced by the existing test run rather than a second one. A missing, empty,
+  or unparseable profile fails loudly instead of reporting zero.
+- **An end-to-end test of the shipped binary.** `manvi/cmd/manvi/zgap_endtoend_test.go`
+  runs `manvi run` as a child process against a scripted OpenAI-compatible
+  server over real HTTP, and asserts the file the model asked for appears with
+  the right bytes, that the result is fed back for a second turn, that a write
+  outside the repository root is refused as a hard rule, that the step ceiling
+  exits 2, and that an unreachable model server fails non-zero rather than
+  rounding to success. Deterministic and offline.
+- **Specifications for the last fourteen tools.** `docs/TOOLS_REFERENCE.md` now
+  specifies all 44 — tool discovery and activation, sub-agent management,
+  artifacts, interactive questions, and MCP — where five categories were
+  previously tabulated only. `TestToolsReferenceSpecifiesEveryTool` replaces the
+  guard that policed the old disclaimer and now fails the build if a tool ships
+  without a specification row.
+- **A Windows compile job** in CI. It builds and vets the Go plane and builds
+  the Rust plane on `windows-latest`, which is what covers the `_other` half of
+  the `procgroup` and `mkfifo` build-tag splits — compiled by nothing else in
+  the matrix. It does **not** run the Go suite: `verify.sh` is bash, and whether
+  the tests that fork shells and drive the Rust binaries pass on Windows remains
+  unestablished. Named as a gap rather than covered by a green check.
+- **`CONTRIBUTING.md`** and this changelog.
+- **Trade-off 3 in `docs/TRADE_OFFS.md`**: why the provider set is four adapters
+  and why a hosted OpenAI-compatible endpoint is not a configuration change.
+
+### Changed
+
+- **Repository search runs on ripgrep's engine.** `dc-grep` joins the analysis
+  plane, and `devcouncil_grep`, `devcouncil_find_files`, and `devcouncil_list_dir`
+  now enumerate exactly the same file set through one walk and one set of ignore
+  rules. A missing `dcgrep` refuses rather than falling back to a second walker
+  that would answer the same question differently.
+- **The Rust plane takes three dependencies**, declared by the members that need
+  them: `rusqlite` (bundled) in `dc-store`, and `grep-regex`, `grep-searcher`,
+  and `ignore` in `dc-grep`. `cargo audit` covers all of them on every run.
+- **`verify.sh` gates the analysis tools themselves**, runs every fuzz target it
+  declares with a per-target budget sized by the rate that target just measured,
+  and reports a fuzz finding differently from a fuzz that could not run.
+
+### Fixed
+
+- Every analysis-plane subprocess now gets its own process group, so a killed
+  parent cannot leave a child holding the terminal.
+- An Anthropic tool call the harness cannot route is refused rather than
+  silently dropped.
+- The code graph is checked against the commit it was built from; a graph
+  describing an older tree reports as unavailable instead of resolving no area
+  for every file.
+- The command gate's two shell scanners agree; splitting bypasses that one saw
+  and the other did not are closed.
+- An empty instrumented test run is no longer read as "nothing skipped".
+- A `WaitGroup` is added to before it is waited on.
+
+### Documentation
+
+- `devmap` is no longer described as part of the Rust analysis plane. It is an
+  external tool this repository does not build, resolved from `PATH` or
+  `MANVI_MAP_BINARY`; `crates/` holds four members and `manvi/dc/devmap` is only
+  the client. Corrected in `README.md`, `docs/ARCHITECTURE.md`,
+  `docs/COMPARISON.md`, and the visual architecture guide.
+
+---
+
+## [0.0.2] — 2026-08-29
+
+### Added
+
+- **End-of-turn check.** The harness runs its own check when a turn ends,
+  rather than trusting the turn's own account of itself.
+- **Bounded documentation lookup.** `devcouncil_fetch_url` — off by default,
+  registered only when an operator sets `MANVI_FETCH_HOSTS`, `https`-only, with
+  private and link-local ranges refused on every request and every redirect hop.
+- **A Cerebras arm in the benchmark rig**, with a wire suite covering it.
+
+### Fixed
+
+- Bare letters can no longer answer an approval card.
+- A cross-arm protocol check could not see the arm it existed to flag.
+- Contained Linux episodes were being stamped as uncontained.
+- The runner's decode slots are counted, not the ceiling it was offered.
+
+### Changed
+
+- The benchmark paper's headline was replaced with the registered v2 grid, its
+  figures regenerated from the v2 report, and the "three inert components" claim
+  withdrawn as an upper bound rather than a measurement.
+
+---
+
+## [0.0.1] — 2026-08-29
+
+First tagged release: the MANVI harness, dual-plane in Go and Rust with zero
+cgo, the five-rung policy ladder and grants ledger, SQLite task leases across a
+process boundary, the native tool suite, the full-screen TUI, multi-provider
+support (Anthropic, Gemini, xAI, and local servers), the benchmark rig, and
+`verify.sh` as the single gate over all of it.
+
+[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/bharathvbcr/Manvi/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/bharathvbcr/Manvi/releases/tag/v0.0.1

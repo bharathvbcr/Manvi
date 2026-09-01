@@ -95,56 +95,97 @@ func TestToolsReferenceCategoryTableSumsToRegistry(t *testing.T) {
 	}
 }
 
-// TestToolsReferenceNamesEveryUnspecifiedTool keeps the coverage disclaimer
-// honest. The document specifies some tools in full and only tabulates the
-// rest; the disclaimer names the unspecified ones. If a tool is added and
-// documented nowhere, the disclaimer must grow to name it — otherwise a
-// reader cannot tell the difference between "not documented" and "does not
-// exist", which is the same non-cheating invariant the harness itself keeps.
-func TestToolsReferenceNamesEveryUnspecifiedTool(t *testing.T) {
+// TestToolsReferenceSpecifiesEveryTool holds the document to the whole
+// registry, in both directions.
+//
+// It replaces a guard that policed a disclaimer. The document used to specify
+// the first eight categories and merely tabulate the other five, and that
+// guard's job was to make sure the fourteen unspecified tools were at least
+// *named* as unspecified — so a reader could tell "not documented" from "does
+// not exist". All fourteen are specified now, the disclaimer is gone, and the
+// weaker invariant went with it.
+//
+// What replaces it is the stronger one: every tool the registry ships has a
+// row of its own under "Detailed Tool Specifications", and every row there
+// names a tool that exists. A row is the unit because a bare mention in prose
+// is what the old disclaimer was made of, and prose is exactly what drifted.
+//
+// Failing here means a tool was added, removed, or renamed. Write the row, do
+// not weaken the test.
+func TestToolsReferenceSpecifiesEveryTool(t *testing.T) {
 	body := readFile(t, filepath.Join(repoRoot(t), "docs/TOOLS_REFERENCE.md"))
 
-	const marker = "**Specification coverage is not yet complete.**"
+	const marker = "## Detailed Tool Specifications"
 	i := strings.Index(body, marker)
 	if i < 0 {
-		t.Fatal("docs/TOOLS_REFERENCE.md: the coverage disclaimer is gone; if every tool is now specified, delete this test with that change")
+		t.Fatalf("docs/TOOLS_REFERENCE.md: %q section is gone", marker)
 	}
-	disclaimer := body[i:]
-	if end := strings.Index(disclaimer, "\n\n"); end > 0 {
-		disclaimer = disclaimer[:end]
+	spec := body[i:]
+	if end := strings.Index(spec, "\n## Direct CLI Tool Invocation"); end > 0 {
+		spec = spec[:end]
 	}
-	// The body of the document, excluding the disclaimer, is where a tool
-	// counts as specified.
-	specified := body[:i] + body[i+len(disclaimer):]
 
-	named := map[string]bool{}
-	for _, m := range regexp.MustCompile("`((?:devcouncil|mcp)_[a-z_]+)`").FindAllStringSubmatch(disclaimer, -1) {
-		named[m[1]] = true
+	// The first cell of a specification row, and nothing else. Matching the
+	// name anywhere in the section would count a cross-reference in a
+	// paragraph as a specification, which is the drift this guard exists to
+	// catch.
+	// The name cell and the access cell together. Access is captured because a
+	// row that names a write tool as read-only is worse than no row at all:
+	// it is a permission claim, and a reader budgeting risk from this table
+	// would be reading a number the registry does not agree with.
+	rowName := regexp.MustCompile("(?m)^\\|\\s*`((?:devcouncil|mcp)_[a-z_0-9]+)`\\s*\\|\\s*([^|]+?)\\s*\\|")
+	specified := map[string]string{}
+	for _, m := range rowName.FindAllStringSubmatch(spec, -1) {
+		specified[m[1]] = m[2]
+	}
+	if len(specified) == 0 {
+		t.Fatal("docs/TOOLS_REFERENCE.md: no specification rows matched; the table format changed and this guard is now checking nothing")
+	}
+
+	// Access, against the registry's own ReadOnly flag.
+	r := &Registry{session: &Session{}}
+	for _, tl := range r.Tools() {
+		documented, ok := specified[tl.Schema.Name]
+		if !ok {
+			continue // reported as missing below
+		}
+		want := "Write"
+		if tl.ReadOnly {
+			want = "Read-only"
+		}
+		if documented != want {
+			t.Errorf("docs/TOOLS_REFERENCE.md: %s is documented as %q, the registry has it as %q",
+				tl.Schema.Name, documented, want)
+		}
 	}
 
 	reg := freshRegistry(t)
-	var undocumented []string
-	for _, s := range reg.Schemas() {
-		if strings.Contains(specified, s.Name) {
-			continue
-		}
-		if !named[s.Name] {
-			undocumented = append(undocumented, s.Name)
-		}
-	}
-	if len(undocumented) > 0 {
-		t.Errorf("docs/TOOLS_REFERENCE.md: %d tool(s) neither specified nor named in the coverage disclaimer: %v",
-			len(undocumented), undocumented)
-	}
-	// The converse: a tool named as unspecified that no longer exists is a
-	// disclaimer nobody pruned.
 	live := map[string]bool{}
+	var missing []string
 	for _, s := range reg.Schemas() {
 		live[s.Name] = true
+		if _, ok := specified[s.Name]; !ok {
+			missing = append(missing, s.Name)
+		}
 	}
-	for name := range named {
+	if len(missing) > 0 {
+		t.Errorf("docs/TOOLS_REFERENCE.md: %d registered tool(s) have no specification row: %v",
+			len(missing), missing)
+	}
+
+	// The converse. A row for a tool that no longer exists documents a surface
+	// the harness does not offer, which is the same lie pointing the other way.
+	//
+	// devcouncil_fetch_url is the one exception, and it is a real one rather
+	// than an allowance: it is registered only when an operator sets
+	// MANVI_FETCH_HOSTS, so it is absent from this registry by construction
+	// while being a tool a configured harness genuinely offers.
+	for name := range specified {
+		if name == "devcouncil_fetch_url" {
+			continue
+		}
 		if !live[name] {
-			t.Errorf("docs/TOOLS_REFERENCE.md: coverage disclaimer names %q, which is not in the registry", name)
+			t.Errorf("docs/TOOLS_REFERENCE.md specifies %q, which is not in the registry", name)
 		}
 	}
 }

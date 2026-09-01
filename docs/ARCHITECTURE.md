@@ -38,6 +38,9 @@ flowchart TB
         DCVerify["dc-verify (Diff Parsing, Rigor Gates, Coverage)"]
         DCGlob["dc-glob (Zero-dependency fnmatch engine)"]
         DCGrep["dc-grep (Ignore-aware repository search, ripgrep engine)"]
+    end
+
+    subgraph External["External Tool (resolved from PATH, not built here)"]
         DevMap["devmap (AST Code Graph & Adjacency)"]
     end
 
@@ -262,7 +265,7 @@ the allowlist being edited and reviewed alongside it.
 | Plane | Direct dependencies | Rationale |
 |---|---|---|
 | **Go (`manvi/go.mod`)** | `awnumar/memguard`, `samber/mo`, and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; `mo.Option` gives absence one spelling at the local provider's credential seam; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. `CGO_ENABLED=0` still holds — all three are pure Go. |
-| **Rust (`crates/Cargo.toml`)** | `rusqlite` (with `bundled`) | Compiles SQLite from source so the store's partial unique index does not depend on the host's libsqlite3. It reaches 22 crates transitively, which `cargo audit` checks on every run. `dc-glob` and `dc-verify` have no dependencies at all. |
+| **Rust (`crates/Cargo.toml`)** | `rusqlite` (with `bundled`) and ripgrep's engine (`grep-regex`, `grep-searcher`, `ignore`) | Compiles SQLite from source so the store's partial unique index does not depend on the host's libsqlite3 (22 transitive crates), and embeds ripgrep's ignore-rule resolution and regex matching engine for repository search in `dc-grep` (31 transitive crates). `cargo audit` checks all dependencies on every run. `dc-glob` and `dc-verify` have no external dependencies. |
 
 `valyala/fastjson` was measured for this list and refused; see the hardening
 ledger for the numbers and the benchmark that was measuring the wrong condition.
@@ -282,6 +285,7 @@ Dev_Harness/
 │   │   └── plugin/            # Topological plugin container
 │   ├── credentials/           # Credential detection & terminal scrubber
 │   ├── dc/                    # DevCouncil domain types & IPC client
+│   │   ├── dcgrep/            # Search & enumeration IPC client
 │   │   ├── devmap/            # Code graph IPC client
 │   │   └── store/             # Task lease IPC client
 │   ├── devcouncil/            # Native tool implementations & TUI escalation
@@ -315,6 +319,7 @@ Dev_Harness/
 │
 ├── crates/                    # Rust Analysis Plane
 │   ├── dc-glob/               # Zero-dependency glob engine
+│   ├── dc-grep/               # Ignore-aware repository search (ripgrep engine)
 │   ├── dc-store/              # SQLite lease mutex & task persistence
 │   └── dc-verify/             # Diff parser, rigor gates & coverage mapper
 │
@@ -326,6 +331,15 @@ Dev_Harness/
 ├── assets/                    # Static assets (manvi-mark.svg)
 └── verify.sh                  # Comprehensive cross-plane verification gate
 ```
+
+`crates/` holds four members and no more. `devmap` is deliberately absent from
+that list: it is a separate tool this repository does not build, resolved at run
+time from `PATH` or `MANVI_MAP_BINARY`, and `manvi/dc/devmap` is only the client
+that execs it. That is why the client probes capability rather than comparing
+versions — every build of it reports the same `devmap 0.1.0` — and why its
+absence is not fatal. Without it the neighbour rule answers
+`repo_map.unavailable`, and `verify.sh` records repo navigation as a gate that
+did not run rather than one that passed.
 
 ---
 

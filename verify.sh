@@ -2,7 +2,7 @@
 # One gate for both planes. Every phase in the strategy ends in a command that
 # can fail; this is that command.
 #
-#   ./verify.sh          format check, vet/clippy, lint, vulnerabilities, tests
+#   ./verify.sh          format check, vet/clippy, lint, vulnerabilities, tests, coverage
 #   ./verify.sh --fix    rewrite formatting in place first
 #   ./verify.sh --race   the Go suite again under the race detector
 #   ./verify.sh --fuzz   every declared fuzz target actually executed
@@ -61,8 +61,40 @@ count_files() {
 # it is the same invariant every check in this file asserts about the harness,
 # and it was the one thing the file did not assert about itself.
 VERDICT_REACHED=0
+
+# The Go suite's coverage profile. It is written by the `go test ./...` run
+# below rather than by a second run of its own: the coverage flags are part of
+# the test cache key, so they have to be on every invocation that wants to stay
+# a cache hit, and a coverage step that re-ran the tree would double the gate's
+# runtime to measure something the first run already knew.
+#
+# `-coverpkg=./...` rather than the default, and the difference is not a
+# rounding one. By default `go test` credits a package only for the lines its
+# *own* tests execute, so `llm/replay` — the offline replay provider that eight
+# other packages drive their loop tests through — measures 0.0%, and a gate
+# reading that number would report the tree's most-used test vehicle as dead
+# code. Instrumenting every package into every test binary answers the question
+# this step actually asks: how much of the tree does the suite reach, from
+# wherever it is reached. It costs one build of the tree, not one test run.
+GO_COVER_PROFILE="$(mktemp -t manvi-cover.XXXXXX)"
+
+# The floor the measured number must clear. It is 78 because the suite measured
+# 81.7% when this gate was written; the gap is churn headroom, not aspiration.
+# Raise it when the real number moves up and stays there. What this must never
+# become is a number nobody measured — a floor set above the truth turns every
+# run red, and one set at zero makes an unmeasured suite indistinguishable from
+# a covered one, which is the failure this whole file exists to prevent.
+GO_COVER_FLOOR=78
+
 on_exit() {
   local code=$?
+  # Guarded rather than `rm -f "${VAR:-}"`. An empty argument is an error to
+  # rm on some platforms even under -f, and a trap that fails partway through
+  # never reaches the verdict below — which is the one message this trap exists
+  # to print.
+  if [[ -n "${GO_COVER_PROFILE:-}" ]]; then
+    rm -f "$GO_COVER_PROFILE"
+  fi
   if (( VERDICT_REACHED == 0 )); then
     printf '\n\033[31mINCOMPLETE\033[0m verify.sh exited (status %d) before reaching a verdict.\n' "$code" >&2
     printf '           Nothing above is a pass: the gates that did not run are not gates that passed.\n' >&2
@@ -147,7 +179,7 @@ step "Go — test"
 if [[ -n "${MANVI_TEST_ALLOW_SKIP:-}" ]]; then
   fail "MANVI_TEST_ALLOW_SKIP is set; this gate will not certify a run that is permitted to skip seams"
 fi
-(cd manvi && go test ./...) || fail "go test"
+(cd manvi && go test -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./...) || fail "go test"
 
 # A package whose tests all skip still prints "ok". Count what actually ran in
 # the packages that cross the process boundary, so a silent skip cannot pass.
@@ -200,7 +232,7 @@ skip_json="$(mktemp)"
 # all produce no test events at all, and a parser handed none of them finds no
 # skips and would report the clean answer. So the events are counted, and no
 # events is its own answer.
-(cd manvi && go test -json ./... > "$skip_json" 2>/dev/null) || true
+(cd manvi && go test -json -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./... > "$skip_json" 2>/dev/null) || true
 skip_report="$(python3 -c '
 import json, sys
 observed = 0
@@ -242,6 +274,47 @@ for pkg in ./dc/store ./devcouncil; do
   (( ran >= 5 )) || fail "$pkg ran only ${ran} tests; the process boundary is not being exercised"
   printf '    %s: %s tests against the real binaries\n' "$pkg" "$ran"
 done
+
+# Two steps above count tests that ran and tests that skipped. Neither answers
+# how much of the tree those tests actually execute, and until this step the
+# only available answer was the number of test files — a measure of how much
+# was written, not of how much is reached. A package can carry a dozen test
+# files and leave every error path in it untouched.
+#
+# The floor is deliberately a floor and not a ratchet against the last run.
+# A ratchet fails the build for a refactor that deletes covered code, which
+# teaches people to delete tests instead.
+#
+# What must not happen is the third outcome: a profile that is missing, empty,
+# or unparseable being read as a pass. An empty file is the dangerous one —
+# `go tool cover -func` prints `total: 0.0%` for it and exits 0, so the
+# emptiness arrives looking exactly like a measurement of a tree with no tests.
+# It is caught before the tool sees it. An unparseable one exits 2 and is
+# caught by the status; a parseable one with no total line yields an empty
+# string and is caught by the emptiness test. An unmeasured suite is not a
+# covered one, and none of the three may reach the floor comparison.
+step "Go — statement coverage"
+if [[ ! -s "$GO_COVER_PROFILE" ]]; then
+  fail "the test run left no coverage profile at $GO_COVER_PROFILE, so the suite's reach is unmeasured"
+fi
+cover_func="$( (cd manvi && go tool cover -func="$GO_COVER_PROFILE") 2>&1 )" \
+  || fail "go tool cover could not read the profile, so the suite's reach is unmeasured: $cover_func"
+cover_total="$(awk '$1 == "total:" { gsub(/%/, "", $NF); print $NF }' <<<"$cover_func")"
+[[ -n "$cover_total" ]] \
+  || fail "the coverage profile carried no total line, so the suite's reach is unmeasured"
+awk -v got="$cover_total" -v floor="$GO_COVER_FLOOR" 'BEGIN { exit !(got + 0 >= floor + 0) }' \
+  || fail "Go statement coverage is ${cover_total}%, below the ${GO_COVER_FLOOR}% floor"
+# The weakest package is named rather than merely averaged into the total,
+# because the aggregate is the number that gets quoted and an aggregate clears
+# its floor with a package well under it. Naming it costs one line and makes
+# the next person's decision about where to write a test an informed one.
+cover_worst="$(awk 'NF == 3 {
+    split($1, f, ":"); pkg = f[1]; sub(/\/[^\/]*$/, "", pkg)
+    gsub(/%/, "", $3); n[pkg]++; total[pkg] += $3
+  }
+  END { for (k in n) printf "%.1f %s\n", total[k] / n[k], k }' <<<"$cover_func" | sort -n | head -1)"
+printf '    covered: %s%% of statements across the tree (floor %s%%); weakest package %s\n' \
+  "$cover_total" "$GO_COVER_FLOOR" "${cover_worst:-unknown}"
 
 # The Go plane carries three direct dependencies and no more. That used to be
 # zero, and "zero" needed no gate because an empty go.mod said it. It is not

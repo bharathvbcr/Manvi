@@ -132,7 +132,7 @@ Models like Qwen 2.5 / 3.x prefill `<think>` tags in prompt templates, emitting 
 Local servers frequently enforce output token caps (e.g. MLX defaults to 2048). If a tool call is truncated mid-arguments, MANVI catches the cut-off, formats a retryable hint for the model, and prompts for continuation without crashing the turn. Both `max_completion_tokens` and `max_tokens` are transmitted to ensure compatibility with llama.cpp.
 
 ### 10. Streaming Stall Detection
-The delay between streamed tokens is bounded separately from overall turn timeout (`llm.local.stall_timeout`, default `15s`). If a local server emits one token and freezes due to GPU lockups, the turn fails fast with actionable diagnostics rather than hanging indefinitely.
+The delay between streamed tokens is bounded separately from overall turn timeout (`llm.local.stall_timeout`, default `5m`). If a local server emits one token and freezes due to GPU lockups, the turn fails fast with actionable diagnostics rather than hanging indefinitely.
 
 ### 11. Model-Aware Prompting
 Local open-weight models receive explicit environment descriptions, tool contracts, and stopping conditions that larger frontier models infer automatically. The `llm.local.core_tools_only` flag allows restricting the offered tools to a minimal subset for smaller parameter models.
