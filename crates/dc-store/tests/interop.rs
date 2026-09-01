@@ -16,20 +16,72 @@ use std::process::Command;
 
 use dc_store::{AcquireRequest, LeaseCode, Store};
 
+/// Where DevCouncil is checked out, or None.
+///
+/// This counted exactly three parents and re-entered by name, which is right
+/// only when this crate sits at `<something>/Manvi/crates/dc-store` with
+/// DevCouncil beside `Manvi`. Run from a git worktree — `Manvi/.claude/
+/// worktrees/<branch>/crates/dc-store` — the same three steps land in
+/// `.claude/worktrees/`, and `DevCouncil` is not there. The tests then took
+/// the "no venv" path and cargo reported **ok** for three checks that never
+/// ran, which is the precise failure this file's header says must not happen.
+/// It was doing it on every worktree run.
+///
+/// So the search is now a search: walk up from the manifest and take the first
+/// ancestor with a `DevCouncil` beside it that actually looks like the
+/// repository, rather than betting on a fixed depth. `DEVCOUNCIL_ROOT`
+/// overrides it for a checkout that lives somewhere else entirely.
+fn devcouncil_root() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("DEVCOUNCIL_ROOT") {
+        let root = PathBuf::from(explicit);
+        return looks_like_devcouncil(&root).then_some(root);
+    }
+    let mut dir: Option<&Path> = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
+    while let Some(current) = dir {
+        let candidate = current.join("DevCouncil");
+        if looks_like_devcouncil(&candidate) {
+            return Some(candidate);
+        }
+        dir = current.parent();
+    }
+    None
+}
+
+/// The two things this test actually needs from a checkout, so a directory
+/// that merely has the right name is not mistaken for the repository.
+fn looks_like_devcouncil(root: &Path) -> bool {
+    root.join("src/devcouncil").is_dir() && root.join(".venv/bin/python").is_file()
+}
+
 /// Locates a Python interpreter with DevCouncil importable, or None.
 fn devcouncil_python() -> Option<(PathBuf, PathBuf)> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
-        .parent()?
-        .join("DevCouncil");
+    let repo = devcouncil_root()?;
     let python = repo.join(".venv/bin/python");
     let src = repo.join("src");
-    if python.is_file() && src.is_dir() {
-        Some((python, src))
-    } else {
-        None
-    }
+    Some((python, src))
+}
+
+/// Reports that interop could not be exercised, and decides whether that is
+/// tolerable.
+///
+/// `eprintln!` + `return` is what let this rot: cargo prints `ok`, and stderr
+/// from a passing test is hidden without `--nocapture`, so three unrun checks
+/// were invisible in every summary. `DC_STORE_REQUIRE_INTEROP=1` turns the
+/// skip into a failure so CI can demand the evidence; unset, a contributor
+/// without a DevCouncil checkout still gets a message rather than a broken
+/// build.
+fn skip_or_fail(test: &str) {
+    let message = format!(
+        "interop unverified: no DevCouncil checkout with .venv/bin/python found above {} \
+         (set DEVCOUNCIL_ROOT) — the Python side was never driven, so schema and \
+         timestamp agreement is UNPROVEN for {test}",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    assert!(
+        std::env::var_os("DC_STORE_REQUIRE_INTEROP").is_none(),
+        "{message} (DC_STORE_REQUIRE_INTEROP is set, so this is a failure)"
+    );
+    eprintln!("SKIP: {message}");
 }
 
 /// Runs a snippet with DevCouncil on the path, returning stdout.
@@ -61,7 +113,7 @@ fn temp_db(name: &str) -> PathBuf {
 #[test]
 fn python_reads_a_lease_the_rust_store_wrote() {
     let Some((python, src)) = devcouncil_python() else {
-        eprintln!("SKIP: DevCouncil venv not found; interop unverified in this environment");
+        skip_or_fail("python_reads_a_lease_the_rust_store_wrote");
         return;
     };
     let db = temp_db("rust-writes");
@@ -112,7 +164,7 @@ with Session(engine) as s:
 #[test]
 fn the_rust_store_reads_a_lease_python_wrote_and_refuses_to_double_book_it() {
     let Some((python, src)) = devcouncil_python() else {
-        eprintln!("SKIP: DevCouncil venv not found; interop unverified in this environment");
+        skip_or_fail("the_rust_store_reads_a_lease_python_wrote_and_refuses_to_double_book_it");
         return;
     };
     let db = temp_db("python-writes");
@@ -169,7 +221,7 @@ with Session(engine) as s:
 #[test]
 fn both_sides_agree_on_when_a_lease_expires() {
     let Some((python, src)) = devcouncil_python() else {
-        eprintln!("SKIP: DevCouncil venv not found; interop unverified in this environment");
+        skip_or_fail("both_sides_agree_on_when_a_lease_expires");
         return;
     };
     let db = temp_db("expiry");
