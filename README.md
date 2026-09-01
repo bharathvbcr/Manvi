@@ -2,7 +2,9 @@
 
 # MANVI
 
-A lightweight, high-performance coding-agent harness in pure Go and Rust — designed for local models, customizable for specialized tools and use cases, and featuring additional capabilities from its dual-plane architecture.
+A lightweight, high-performance coding-agent harness in pure Go and Rust — designed for local models, customizable for specialized tools and use cases, and embeddable in other applications.
+
+**MANVI is the unification layer; [DevCouncil](https://github.com/bharathvbcr/DevCouncil) is the components.** DevCouncil owns the analysis components — `devmap` (code graph), `dcstore` (tasks and leases), `dcverify` (diff, rigor, coverage) and `dcgrep` (search) — each a standalone binary with a JSON-on-stdio contract, and each being ported to Rust/Go as the port proceeds. MANVI is the harness that unifies them into a working agent and reaches every one of them across a process boundary, linking none. That is what lets MANVI drop into another application as a single static binary. See [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md).
 
 **Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 44 native tools (including a native git integration, an MCP 2.0 client, and a bridge to the external `devcouncil` CLI), and the Go↔Rust process boundary — all verified against **1,031 parity cases** generated from the Python incumbent. Everything is certified by `./verify.sh`.
 
@@ -25,8 +27,8 @@ MANVI was created as a new lightweight coding harness designed for local models,
 
 MANVI is built on a handful of deliberate design decisions that shape everything else:
 
-1. **Two planes, split by workload.** IO-bound concurrency (event loops, streaming, cancellation) runs in pure Go (`CGO_ENABLED=0`); CPU-bound determinism (unified diff parsing, coverage intersection, AST indexing, SQLite persistence) runs in Rust. They never link.
-2. **Process boundary, not CGO.** Go and Rust communicate exclusively via `fork`/`exec` child processes exchanging line-delimited JSON over stdio. This preserves static binaries, instant cross-compilation, and fault isolation — a crash in the analysis plane cannot take down the execution plane.
+1. **Components, unified by a harness.** The analysis work — unified diff parsing, coverage intersection, AST indexing, SQLite persistence — belongs to DevCouncil's components and runs in their own processes. MANVI owns the harness: event loops, streaming, cancellation, policy, the session log and the terminal, in pure Go (`CGO_ENABLED=0`). They never link, so a component can be replaced, upgraded or reused elsewhere without touching the harness.
+2. **Process boundary, not CGO.** The harness reaches every component via `fork`/`exec` exchanging line-delimited JSON over stdio. This preserves static binaries, instant cross-compilation, and fault isolation — a crash in a component cannot take down the harness — and it is what makes MANVI embeddable: an application takes the harness without inheriting any component's dependency tree.
 3. **Non-cheating invariants.** A check that did not run never reports as passed. A grant that cleared a rule never reports as a clean pass. Blocks are overridable when appropriate, but never invisible.
 4. **Mutual exclusion in storage, not application code.** Multi-agent task concurrency is enforced by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`) — not by an in-memory lock that dies with the process.
 5. **The log is the source of truth.** Model-visible history is *always* projected on demand from the append-only session log; nothing lives only in volatile memory. What the model saw is provably what was logged.
@@ -62,14 +64,10 @@ flowchart TB
         P4["fork/exec dcgrep"]
     end
 
-    subgraph RustPlane["Rust Analysis Plane"]
-        DCStore["dc-store<br/>Tasks & Lease Mutex"]
-        DCVerify["dc-verify<br/>Diff Parsing · Rigor Gates · Coverage"]
-        DCGlob["dc-glob<br/>Zero-dep fnmatch engine"]
-        DCGrep["dc-grep<br/>Ignore-aware search · ripgrep engine"]
-    end
-
-    subgraph External["External Tool — resolved from PATH, not built here"]
+    subgraph Components["DevCouncil Components — resolved from PATH, linked by nothing"]
+        DCStore["dcstore<br/>Tasks & Lease Mutex"]
+        DCVerify["dcverify<br/>Diff Parsing · Rigor Gates · Coverage"]
+        DCGrep["dcgrep<br/>Ignore-aware search · ripgrep engine"]
         DevMap["devmap<br/>AST Code Graph"]
     end
 

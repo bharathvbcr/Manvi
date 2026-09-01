@@ -31,9 +31,17 @@ cargo install cargo-audit
 ```
 
 `node` and `npm` (the mermaid grammar gate), `sqlite3` (schema readability), and
-`script(1)` (TUI terminal restoration) are picked up if present. `devmap` is an
-external tool this repository does not build; without it the repo-navigation
-gate reports as not covered, which is expected on a fresh clone.
+`script(1)` (TUI terminal restoration) are picked up if present.
+
+**DevCouncil's components.** MANVI links none of them and builds only one —
+`devmap` comes from DevCouncil and is not built here. On a fresh clone, without
+`devmap` on `PATH`, the repo-navigation gate reports as *not covered*, which is
+expected. `crates/` mirrors DevCouncil's other three component sources so the
+gate can run without a DevCouncil checkout; at runtime the harness prefers an
+installed component over that mirror. `manvi doctor` prints which binary each
+component resolved to and whether it answered — read it before assuming which
+one you are testing, because an installed component can be older than the
+contract the harness expects, and `doctor` is where that shows up.
 
 ---
 
@@ -126,6 +134,17 @@ incumbent, applied by hand after generation and named in the file's own header.
 Regenerating drops them; re-apply them, or the port starts matching a behaviour
 this harness decided against.
 
+**This fixture has an expiry date, and it will not announce it.** Its source of
+truth — `devcouncil.execution.policy_engine.TaskPolicyEngine` — is itself being
+ported to Rust/Go. When that lands, `scripts/gen-command-parity.py` stops
+working, and nothing here fails: no build step imports the generator, so
+`TestCommandParityWithPythonEngine` keeps passing against a snapshot of an
+implementation that no longer runs. `fnmatch-parity.tsv` is not exposed the same
+way — it is generated from CPython's own `fnmatch`, which nobody is porting.
+What to do before that happens is in
+[`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md) §6, under
+*Before retiring the Python you ported from*.
+
 Regenerate either fixture only when the reference behaviour itself is what
 changed, and say so in the commit — a regenerated fixture that quietly absorbs
 a divergence is the fixture no longer doing its job. The methodology is in
@@ -133,7 +152,50 @@ a divergence is the fixture no longer doing its job. The methodology is in
 
 ---
 
-## 5. Changes, tests, and commits
+## 5. Which repository does this change belong in?
+
+Ask what the change is *about*, not which checkout is open. MANVI is the
+unification layer; **DevCouncil owns the components**, and DevCouncil is
+upstream for all of them.
+
+| The change is about… | It belongs in |
+|---|---|
+| Diff parsing, what counts as a stub, coverage intersection | DevCouncil — `dcverify` |
+| The code graph: extraction, resolution, dead code, impact | DevCouncil — `devmap` |
+| The task schema, the lease, mutual exclusion | DevCouncil — `dcstore` |
+| Tree walking, ignore rules, search semantics | DevCouncil — `dcgrep` |
+| Driving a turn, cancelling a stream, dispatching a tool | MANVI |
+| Whether a write is allowed; how a grant is recorded | MANVI — `gate`, `policy`, `grants` |
+| Rendering, logging, replay | MANVI — `ui`, `session` |
+| What the harness *asks* a component for | MANVI — `manvi/dc/…` |
+
+The last row is the one that goes wrong. `manvi/dc/store`, `manvi/dc/devmap` and
+`manvi/dc/dcgrep` are **clients**: they transport answers, they do not compute
+them. A client that starts deciding whether a lease is valid — or caching one —
+is reimplementing a component badly and on the wrong side of the boundary. A
+cached lease is a lease that has already expired somewhere else.
+
+**MANVI links no component.** Not by `cgo`, not by vendoring a crate, not by
+importing a module. Every component is resolved as a binary
+(`MANVI_<NAME>_BINARY` → `PATH` → a local build) and spoken to in JSON over
+stdio. That rule is what keeps the harness a single static binary that another
+application can embed, so it does not bend for convenience.
+
+`crates/` holds a **mirror** of DevCouncil's component sources so MANVI can be
+built and tested without a DevCouncil checkout. Edit the component in DevCouncil
+and mirror it here; a change made only here forks silently, because nothing in
+either build will notice. See
+[`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md) §7.
+
+**Changing a component's contract** — a field name, a new key, a changed default
+— breaks every consumer, not only MANVI. Version the payload (`dcverify` carries
+`schema_version`; `devmap` a store `user_version`), fail closed on an unknown
+version rather than guessing, and run MANVI's live-contract tests against the
+new binary. Those tests are the only thing that will notice.
+
+---
+
+## 6. Changes, tests, and commits
 
 **Every fix ships with a test that fails against the pre-fix code.** Write the
 failing test first and watch it fail; a test written after the fix proves only
@@ -166,7 +228,7 @@ the second.
 
 ---
 
-## 6. Continuous integration
+## 7. Continuous integration
 
 [`.github/workflows/verify.yml`](.github/workflows/verify.yml) runs `./verify.sh`
 on every pull request and every push to `main`, on Linux and macOS. It installs

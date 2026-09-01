@@ -47,7 +47,10 @@ fn task_with_links(name: &str) -> std::path::PathBuf {
 fn a_tasks_requirements_survive_the_read() {
     let db = task_with_links("requirements-read");
     let store = Store::open(&db).expect("open store");
-    let task = store.task("TASK-1").expect("read task").expect("task exists");
+    let task = store
+        .task("TASK-1")
+        .expect("read task")
+        .expect("task exists");
 
     assert_eq!(
         task.requirement_ids_json, "[\"REQ-1\",\"REQ-2\"]",
@@ -67,7 +70,9 @@ fn the_links_reach_the_boundary_reply() {
 
     assert_eq!(reply.code, 0, "task read failed: {}", reply.stdout);
     assert!(
-        reply.stdout.contains("\"requirement_ids\":[\"REQ-1\",\"REQ-2\"]"),
+        reply
+            .stdout
+            .contains("\"requirement_ids\":[\"REQ-1\",\"REQ-2\"]"),
         "requirement_ids never reached the Go plane: {}",
         reply.stdout
     );
@@ -101,7 +106,10 @@ fn a_task_with_no_links_reads_as_empty_rather_than_absent() {
     drop(store);
 
     let store = Store::open(&db).expect("reopen store");
-    let task = store.task("TASK-1").expect("read task").expect("task exists");
+    let task = store
+        .task("TASK-1")
+        .expect("read task")
+        .expect("task exists");
     assert_eq!(task.requirement_ids_json, "[]");
     assert_eq!(task.acceptance_criterion_ids_json, "[]");
 
