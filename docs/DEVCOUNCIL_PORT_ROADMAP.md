@@ -187,26 +187,34 @@ Subsystem sizes are **verified** (`wc -l`); shape and status judgements are
 **inferred** from reading both sides. An inventory, not a burn-down: a Go port is
 not line-for-line with the Python it replaces.
 
-| DevCouncil subsystem | Python LOC | Shape as a component | Status |
-|---|---|---|---|
-| `integrations` | 11,284 | **MCP server, 29 `devcouncil_*` tools** | **The headline deliverable.** This *is* "MCP layer for coding agents" — the surface Claude Code, Cursor and MANVI all drive it through. MANVI's `mcp/` is already a client, so it consumes this the day it exists. Highest priority. |
-| `cli` | 16,547 | Per-component CLIs | **Partial, and not a like-for-like port.** DevCouncil's 54 commands are one application's surface; as components they split across `devmap`, `dcstore`, `dcverify` and new binaries. MANVI's 17 commands are the *harness's* own and are not meant to match. Port the commands that are component operations; drop the ones that were only application glue. |
-| `verification` | 9,800 | Extend `dcverify` | **Partial, and Python leads.** `stub_detector.py` does AST analysis where `dc-verify` does substring matching; Python also has the acceptance compiler, diff-coverage instrumentation, gap ids and next-actions. Do not cut over without a differential run. |
-| `execution` | 5,881 | Split | **Needs an audit.** Lease/scope operations are component work (`dcstore`). The turn-driving parts are harness work MANVI already owns. Checkpoints, handoff, stop-gate history and correction manifests have no counterpart on either side. |
-| `executors` | 3,765 | Probably nothing | **Likely obsolete.** Adapters that shell out to Claude Code / OpenHands / Aider. Under this architecture those agents consume DevCouncil's MCP server directly instead of being driven by it. **Confirm before deleting** — inverting a dependency is not the same as removing a feature. |
-| `knowledge` | 2,338 | Binary or MCP tools | Absent. OKF knowledge base / wiki. |
-| `reporting` | 1,947 | Binary | Absent. Evidence bundles, HTML reports. |
-| `campaign` | 1,700 | Binary or MCP tools | Absent. Multi-task campaign orchestration. |
-| `storage` | 1,574 | Extend `dcstore` | **Partial: 2 of 16 tables.** `tasks` and `task_leases` only. Absent: requirements, critique findings, gaps, evidence, assumptions, artifact graph, planning state, shell sessions/commands, file-change events, semantic diffs, handoffs, correction manifests, verification runs, project state. |
-| `planning` + `council` | 1,470 | Schemas + prompts here, execution in MANVI | **Absent — see D2**, which is about where the split falls. |
-| `app` | 1,472 | Mostly harness | Config and bootstrap; MANVI has `flags`, `bootstrap`, `core`. Unaudited. |
-| `live` | 1,212 | MCP tools | Absent. Live review cards, repair prompts. |
-| `optimization` | 998 | Binary | Absent. |
-| `telemetry` | 918 | Split | Partial. Component-side counters vs the harness's event bus. |
-| `repo` | 870 | Binary | Absent. CI scaffold, gitignore, SCA. |
-| `skills` | 487 | Assets | Absent. |
-| `utils` | 529 | Internal | Partial. |
-| `domain` | 305 | **Shared schemas** | **Partial.** Task and requirement done and cross-checked against pydantic. Gap, evidence, assumption, critique and checkpoint refs remain. These are the contract every other component reads, so they lead. |
+The **Lang** column is the recommendation from
+[`COMPONENTS_AND_HARNESS.md` §4](COMPONENTS_AND_HARNESS.md#4-which-language-each-component-belongs-in),
+which carries the decision rule and the reasoning per component. The short
+version: **1,574 lines of the 64,828 remaining are Rust work** (`storage`,
+extending `dcstore`) plus targeted extensions to `dcverify` and `devmap`.
+Everything else is Go, because the parsing-heavy, memory-sensitive half of
+DevCouncil is already done as `devmap`.
+
+| DevCouncil subsystem | Python LOC | Shape as a component | Lang | Status |
+|---|---|---|---|---|
+| `integrations` | 11,284 | **MCP server, 29 `devcouncil_*` tools** | Go | **The headline deliverable.** This *is* "MCP layer for coding agents" — the surface Claude Code, Cursor and MANVI all drive it through. MANVI's `mcp/` is already a client, so it consumes this the day it exists. Highest priority. |
+| `cli` | 16,547 | Per-component CLIs | per component | **Partial, and not a like-for-like port.** DevCouncil's 54 commands are one application's surface; as components they split across `devmap`, `dcstore`, `dcverify` and new binaries. MANVI's 17 commands are the *harness's* own and are not meant to match. Port the commands that are component operations; drop the ones that were only application glue. |
+| `verification` | 9,800 | Extend `dcverify` | **split** | **Partial, and Python leads.** `stub_detector.py` does AST analysis where `dc-verify` does substring matching; Python also has the acceptance compiler, diff-coverage instrumentation, gap ids and next-actions. Do not cut over without a differential run. |
+| `execution` | 5,881 | Split | Go | **Needs an audit.** Lease/scope operations are component work (`dcstore`). The turn-driving parts are harness work MANVI already owns. Checkpoints, handoff, stop-gate history and correction manifests have no counterpart on either side. |
+| `executors` | 3,765 | Probably nothing | Go | **Likely obsolete.** Adapters that shell out to Claude Code / OpenHands / Aider. Under this architecture those agents consume DevCouncil's MCP server directly instead of being driven by it. **Confirm before deleting** — inverting a dependency is not the same as removing a feature. |
+| `knowledge` | 2,338 | Binary or MCP tools | Go | Absent. OKF knowledge base / wiki. |
+| `reporting` | 1,947 | Binary | Go | Absent. Evidence bundles, HTML reports. |
+| `campaign` | 1,700 | Binary or MCP tools | Go | Absent. Multi-task campaign orchestration. |
+| `storage` | 1,574 | Extend `dcstore` | **Rust** | **Partial: 2 of 16 tables.** `tasks` and `task_leases` only. Absent: requirements, critique findings, gaps, evidence, assumptions, artifact graph, planning state, shell sessions/commands, file-change events, semantic diffs, handoffs, correction manifests, verification runs, project state. |
+| `planning` + `council` | 1,470 | Schemas + prompts here, execution in MANVI | Go | **Absent — see D2**, which is about where the split falls. |
+| `app` | 1,472 | Mostly harness | Go | Config and bootstrap; MANVI has `flags`, `bootstrap`, `core`. Unaudited. |
+| `live` | 1,212 | MCP tools | Go | Absent. Live review cards, repair prompts. |
+| `optimization` | 998 | Binary | Go | Absent. |
+| `telemetry` | 918 | Split | Go | Partial. Component-side counters vs the harness's event bus. |
+| `repo` | 870 | Binary | Go | Absent. CI scaffold, gitignore, SCA. |
+| `skills` | 487 | Assets | Go | Absent. |
+| `utils` | 529 | Internal | Go | Partial. |
+| `domain` | 305 | **Shared schemas** | both | **Partial.** Task and requirement done and cross-checked against pydantic. Gap, evidence, assumption, critique and checkpoint refs remain. These are the contract every other component reads, so they lead. |
 
 ### The three that decide the schedule
 

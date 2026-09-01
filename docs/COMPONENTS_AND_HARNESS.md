@@ -152,7 +152,142 @@ this is literally what "MCP layer for coding agents" means), the council
 
 ---
 
-## 4. What this means for work in progress
+## 4. Which language each component belongs in
+
+**The contract in §1 is what makes this a real question.** Every component is a
+process exchanging JSON on stdio, so nothing links and no consumer knows or cares
+what a component is written in. Language is therefore a **per-component decision
+with no coupling cost** — chosen on the component's own merits, never for
+uniformity. Two toolchains are already paid for; a third component in the wrong
+one costs more than the split does.
+
+### The decision rule
+
+Ask in order. The first *yes* decides it.
+
+1. **Does it parse untrusted or complex input at volume?** → **Rust.** Source
+   files, diffs, coverage profiles. A parser is where a memory bug becomes a
+   security bug and where throughput actually matters.
+2. **Does it hold a large structure in memory where per-item cost multiplies?**
+   → **Rust.** Graphs, indices, bitsets. Go's GC and interface boxing are a real
+   cost at hundreds of thousands of nodes; deterministic memory is worth more
+   than it looks.
+3. **Would writing it here duplicate an engine that already exists in Rust?**
+   → **Rust.** Reimplementing ripgrep's ignore resolution or tree-sitter's
+   grammars in Go means keeping a second engine in step with the first, forever.
+   This is the reason `dc-grep` links ripgrep's crates instead of shelling out to
+   `rg`.
+4. **Otherwise** → **Go.** IO-bound work, process orchestration, RPC protocols,
+   templating, reporting, model calls, anything with a concurrency story.
+
+**Tiebreaker: build and iteration cost.** A full Rust build with tree-sitter
+grammars takes minutes; the Go module builds in seconds. A component that changes
+weekly and does no heavy lifting belongs in Go even when Rust would work.
+
+**Hard constraint on the Go side: `CGO_ENABLED=0`.** Verified in `verify.sh` —
+cgo is enabled only for the race detector, never for a shipped build. It is what
+buys the static binary and instant cross-compilation. A Go component needing
+SQLite would therefore need a pure-Go driver, which is a large third-party
+dependency in a module that today has **zero**. That pushes anything touching the
+store to Rust, on dependency grounds rather than speed.
+
+### Already ported — was the choice right?
+
+| Component | Language | Verdict |
+|---|---|---|
+| `devmap` | **Rust** | **Vital, and measured.** 12,821 files → 116,418 symbols and 853,421 edges in 70 s at 3.00 GiB peak, with memory linear in edges at ~410 B/edge (`rust-port/STATUS.md`, SC29). Rules 1, 2 and 3 all fire: it parses arbitrary source through 32 tree-sitter grammars, holds the whole graph, and the grammars are Rust. This is the clearest Rust case in the system. |
+| `dcgrep` | **Rust** | **Effectively forced** by rule 3. The value *is* ripgrep's `grep-regex` / `grep-searcher` / `ignore` crates. A Go rewrite would be a second search engine to keep in step. |
+| `dcverify` | **Rust** | **Right, by rule 1** — it parses diffs and coverage profiles, both untrusted, both adversarial. Note the subsystem it comes from does not port wholly; see the split below. |
+| `dcstore` | **Rust** | **Right, for the dependency reason rather than the speed one.** It is IO-bound, so rules 1–3 do not fire on their own. What decides it is `CGO_ENABLED=0`: `rusqlite` bundled compiles SQLite into the binary and keeps the store independent of the host's `libsqlite3`. Being honest about *why* matters — quoting speed here would set a bad precedent for the next component. |
+| `dc-glob` | **Both, deliberately** | Rust `rust/dc-glob` **and** Go `manvi/internal/fnmatch`, held together by a shared 775-case CPython parity fixture. The right answer for a small, pure, hot-path function both planes need: duplication is cheaper than a process call, and the fixture is what makes it safe. |
+
+### Not yet ported — the recommendation
+
+Confidence is **high** where the rule fires cleanly, **medium** where judgement is
+doing the work.
+
+| Subsystem | Python LOC | Language | Why | Confidence |
+|---|---|---|---|---|
+| `integrations` (MCP server) | 11,284 | **Go** | Rule 4, decisively. JSON-RPC over stdio with 29 handlers and concurrent tool calls is goroutine work; there is no CPU-bound step anywhere in it. Rust would buy nothing and cost an async runtime. MANVI's 4,492-line MCP **client** is also the closest existing reference for the wire format. | High |
+| `council` + `planning` | 1,470 | **Go** | Rule 4. Streaming HTTP, retries, schema-validated round trips. Per D2 the prompts and schemas are data that lives in DevCouncil; the execution is harness-side. | High |
+| `storage` (14 remaining tables) | 1,574 | **Rust** | Extends `dcstore`, same file, same schema, same connection. Splitting one SQLite database across two languages means two writers with different assumptions — which this system's own docs name as how "compatible" drifts apart. | High |
+| `verification` | 9,800 | **Split — see below** | The one subsystem that genuinely divides. | High |
+| `gating` (component-side write gate) | 692 | **Go** | Rule 4. In-memory policy evaluation with no heavy input. MANVI's own gate is Go (`gate` + `policy` = 8,496 lines) and is the natural shape to follow. | High |
+| `knowledge` | 2,338 | **Go** | Rule 4. Document store, wiki generation, templating. | High |
+| `reporting` | 1,947 | **Go** | Rule 4. HTML and bundle generation; Go's stdlib templating is the right tool. | High |
+| `campaign` | 1,700 | **Go** | Rule 4. Multi-task orchestration is concurrency and process supervision. | High |
+| `live` | 1,212 | **Go** | Rule 4. Review cards and repair prompts; model-adjacent, IO-bound. | High |
+| `optimization` | 998 | **Go** | Rule 4. GEPA / SkillOpt are rollout→reflect→propose loops around model calls, not computation. | High |
+| `telemetry` | 918 | **Go** | Rule 4. Counters and events. | High |
+| `repo` | 870 | **Go** | Rule 4. CI scaffolding, gitignore, SCA — file IO and process spawning. | High |
+| `app` | 1,472 | **Go** | Rule 4. Config and bootstrap. | Medium — audit first; MANVI's `flags`/`bootstrap` may already cover most of it. |
+| `skills` | 487 | **Go** (mostly assets) | Rule 4. Largely markdown that needs a loader, not a port. | Medium |
+| `executors` | 3,765 | **Go**, if any survives | Rule 4 — process spawning. But most of this likely disappears: under this architecture other agents consume DevCouncil's MCP server rather than being driven by it. **Confirm before deleting**; inverting a dependency is not removing a feature. | Medium |
+| `cli` | 16,547 | **Per component** | Not one decision. Each component's CLI is written in that component's language; commands that were only application glue are dropped rather than ported. | High |
+| `domain` | 305 | **Both, with parity gates** | These are the wire contract, so they exist wherever they are consumed — already Go (`dc.Requirement`) and Rust (`dcstore`). See the note below. | High |
+
+### The one subsystem that splits: `verification`
+
+Three parts, three answers, and the middle one is the interesting call.
+
+- **Diff, scope, coverage, secrets → Rust**, extending `dcverify`. Rule 1: these
+  parse untrusted input. Already largely done.
+- **Test execution, sandboxing, coverage instrumentation → Go.** `command_runner`,
+  `sandbox` and `coverage_measurement` spawn processes, bound timeouts, stream
+  output and clean up process groups. Rule 4, and MANVI's `internal/proc` already
+  does exactly this shape of work.
+- **AST-based stub detection → Rust, and specifically inside `devmap`.** This is
+  the recommendation that is not obvious. `dc-verify`'s `detect_stubs` is
+  substring matching, and §4 of the port ledger records that DevCouncil's Python
+  is genuinely ahead here because it parses the file. Reaching parity needs an AST
+  — and `devmap` already links 32 tree-sitter grammars and records byte spans per
+  symbol. Writing a second AST parser in Go, or a third in `dc-verify`, is rule 3
+  in its purest form: a second engine to keep in step with the first. The stub
+  question is better asked as a `devmap` query over spans it already has.
+  **Inferred, not verified** — no `devmap` surface for "is this body a stub"
+  exists yet, and whether the extraction retains enough of the body to answer is
+  unchecked.
+
+### Shared schemas need a parity gate, not a language
+
+`domain` types cross the wire, so each consumer implements them and the risk is
+silent divergence. Two patterns in this system already solve that and should be
+the standard for every shared schema:
+
+- **A generated fixture both sides read.** `dc-glob` and `manvi/internal/fnmatch`
+  share a 775-case CPython-generated `fnmatch` table; if they drift, one fails.
+- **A test that interrogates the other implementation directly.**
+  `dc/requirement_interop_test.go` reads the `verification_method`, `priority` and
+  `source` members out of DevCouncil's Python `Literal`s and fails if Go refuses
+  one. It caught a real hazard: pydantic's `required: bool = True` omitted on the
+  wire, against Go's zero value of `false`.
+
+Adding a schema to two languages without one of these is how the contract rots.
+
+### What this means for the schedule
+
+**The Rust surface is nearly complete; the remaining port is overwhelmingly Go.**
+
+Measured (`wc -l` over `src/devcouncil/`): **96,174** lines of Python total.
+**26,473** of it — `indexing` + `codeintel` — is already done as `devmap`, and it
+was the single hardest, most memory-sensitive part. **64,828** remain.
+
+Of that remainder, the Rust work is small and bounded: `storage`'s 14 outstanding
+tables (**1,574**) extending `dcstore`, plus targeted extensions to `dcverify`
+and `devmap` — call it **3,000–4,500** lines of Python's worth, most of it
+already scoped. **Everything else is Go**: the MCP server (11,284), the council,
+knowledge, reporting, campaign, live, telemetry, repo, and whatever of `cli`
+survives as component operations.
+
+So the ratio for what is left is roughly **1 : 15 in Go's favour**. That is worth
+knowing before planning: the slow-to-build, memory-sensitive, hard-to-get-right
+half of DevCouncil is **already behind you**. What remains is mostly the kind of
+work Go builds in seconds and iterates on quickly — which also means the
+tiebreaker above (build cost) will keep pointing the same way.
+
+---
+
+## 5. What this means for work in progress
 
 Three consequences worth stating plainly, because each reverses an earlier
 assumption in this repository's own docs.
@@ -176,7 +311,7 @@ and the same server serves every other coding agent too. The gap is not in MANVI
 
 ---
 
-## 5. Checklist for a newly ported component
+## 6. Checklist for a newly ported component
 
 When a DevCouncil subsystem lands in Rust/Go, it is done when:
 
