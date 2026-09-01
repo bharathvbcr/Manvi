@@ -336,7 +336,7 @@ func newStream(body io.ReadCloser, model string, maxTokensApplied int) *stream {
 	return &stream{
 		// No [DONE] sentinel: this API ends the stream with message_stop and
 		// then closes.
-		sse:    transport.NewSSEWithStall(body, "", transport.DefaultHostedStallTimeout),
+		sse:    transport.NewSSEWithStall(body, "", transport.DefaultHostedStallTimeout, nil),
 		model:  model,
 		blocks: map[int]*accumulator{},
 

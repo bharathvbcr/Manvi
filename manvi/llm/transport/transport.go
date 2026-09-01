@@ -496,6 +496,47 @@ type SSE struct {
 	closeErr error
 }
 
+// StallClock is the stall watchdog's view of time.
+//
+// It is a seam because the alternative is a test that cannot tell this
+// package's defect from the machine it runs on. A stream paced with real
+// sleeps reaches the reader as "no bytes for longer than the limit" in two
+// completely different situations — the watchdog moved its deadline wrongly,
+// which is the defect, and the scheduler simply did not run the sender for
+// that long, which is a statement about how busy the runner is — and from
+// inside the test the two are the same error. Measured on this repository: the
+// openaicompat case that asserts a slow-but-live stream survives failed in six
+// of eight `go test ./...` runs and in none of five runs on its own. Widening
+// the limit only moves the load at which that recurs.
+//
+// A driven clock removes the ambiguity rather than reducing its probability:
+// the gap between frames becomes a number the test states, so the assertion
+// can only fail for the first reason.
+//
+// Production has one implementation and reaches it by passing a nil clock.
+// Nothing outside a test is expected to supply one.
+type StallClock interface {
+	// Now reports the current time, which must not run backwards.
+	Now() time.Time
+	// AfterFunc schedules f to run once d has passed, and returns a handle
+	// that can re-arm or cancel it.
+	AfterFunc(d time.Duration, f func()) StallTimer
+}
+
+// StallTimer is the part of *time.Timer the watchdog uses.
+type StallTimer interface {
+	Reset(d time.Duration) bool
+	Stop() bool
+}
+
+// realTime is the clock a nil StallClock resolves to, and the only one that
+// ships.
+type realTime struct{}
+
+func (realTime) Now() time.Time { return time.Now() }
+
+func (realTime) AfterFunc(d time.Duration, f func()) StallTimer { return time.AfterFunc(d, f) }
+
 // stallWatchdog closes the body when the stream has been silent for too long.
 //
 // It closes rather than signalling because the read is blocked inside the
@@ -513,8 +554,11 @@ type SSE struct {
 // server.
 type stallWatchdog struct {
 	mu     sync.Mutex
-	timer  *time.Timer
+	timer  StallTimer
 	closer io.Closer
+
+	// clock is where every instant below comes from. See StallClock.
+	clock StallClock
 
 	// firstToken bounds the wait for the first byte of output; idle bounds
 	// every gap after that. limit is whichever is currently in force.
@@ -541,16 +585,20 @@ type stallWatchdog struct {
 	stopped      bool
 }
 
-func newStallWatchdog(closer io.Closer, firstToken, idle time.Duration) *stallWatchdog {
+func newStallWatchdog(closer io.Closer, firstToken, idle time.Duration, clock StallClock) *stallWatchdog {
+	if clock == nil {
+		clock = realTime{}
+	}
 	w := &stallWatchdog{
 		closer:     closer,
+		clock:      clock,
 		firstToken: firstToken,
 		idle:       idle,
 		limit:      firstToken,
 	}
-	w.deadline = time.Now().Add(firstToken)
+	w.deadline = clock.Now().Add(firstToken)
 	w.armed = w.deadline
-	w.timer = time.AfterFunc(firstToken, w.fire)
+	w.timer = clock.AfterFunc(firstToken, w.fire)
 	return w
 }
 
@@ -568,7 +616,7 @@ func (w *stallWatchdog) fire() {
 		w.mu.Unlock()
 		return
 	}
-	if remaining := time.Until(w.deadline); remaining > 0 {
+	if remaining := w.deadline.Sub(w.clock.Now()); remaining > 0 {
 		// Progress arrived while this callback was waiting for the mutex, or
 		// progress moved the deadline without paying for a timer reset. Either
 		// way this stream is not stalled; sleep for what is left.
@@ -603,7 +651,8 @@ func (w *stallWatchdog) progress() {
 		w.sawOutput = true
 		w.limit = w.idle
 	}
-	w.deadline = time.Now().Add(w.limit)
+	now := w.clock.Now()
+	w.deadline = now.Add(w.limit)
 
 	// Re-arming the runtime timer on every read would put a timer-heap
 	// operation on the hot path of a fast local stream. It is not needed:
@@ -616,7 +665,7 @@ func (w *stallWatchdog) progress() {
 	// is noticed to that same eighth.
 	if drift := w.deadline.Sub(w.armed); drift < 0 || drift > w.limit/8 {
 		w.armed = w.deadline
-		w.timer.Reset(time.Until(w.deadline))
+		w.timer.Reset(w.deadline.Sub(now))
 	}
 }
 
@@ -799,7 +848,10 @@ const RetainedAccumulatorBytes = 256
 // NewSSEWithStall wraps a response body and abandons it after silence, using
 // DefaultFirstTokenTimeout for the wait before the first token. A non-positive
 // idle disables the watchdog entirely, which is the documented escape hatch.
-func NewSSEWithStall(body io.ReadCloser, done string, idle time.Duration) *SSE {
+//
+// A nil clock means real time, which is what every caller outside a test
+// passes. See StallClock for why the parameter exists at all.
+func NewSSEWithStall(body io.ReadCloser, done string, idle time.Duration, clock StallClock) *SSE {
 	if idle <= 0 {
 		return NewSSE(body, done)
 	}
@@ -811,18 +863,19 @@ func NewSSEWithStall(body io.ReadCloser, done string, idle time.Duration) *SSE {
 	if idle > firstToken {
 		firstToken = idle
 	}
-	return NewSSEWithLimits(body, done, firstToken, idle)
+	return NewSSEWithLimits(body, done, firstToken, idle, clock)
 }
 
 // NewSSEWithLimits wraps a response body with both limits stated.
 //
 // It exists so a caller that knows the prompt size can size the first-token
 // allowance to it, rather than inheriting a constant chosen for the worst case.
-// A non-positive value for either limit disables the watchdog.
-func NewSSEWithLimits(body io.ReadCloser, done string, firstToken, idle time.Duration) *SSE {
+// A non-positive value for either limit disables the watchdog, and a nil clock
+// means real time.
+func NewSSEWithLimits(body io.ReadCloser, done string, firstToken, idle time.Duration, clock StallClock) *SSE {
 	s := NewSSE(body, done)
 	if firstToken > 0 && idle > 0 && body != nil {
-		s.watchdog = newStallWatchdog(body, firstToken, idle)
+		s.watchdog = newStallWatchdog(body, firstToken, idle, clock)
 	}
 	return s
 }

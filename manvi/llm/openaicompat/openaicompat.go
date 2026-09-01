@@ -94,6 +94,14 @@ type Options struct {
 	// default: the stream detects it and corrects the settled message, and this
 	// only makes the live view right from the first byte as well.
 	AssumeReasoningPrefill bool
+
+	// stallClock drives the stall watchdog. Unexported because production has
+	// exactly one clock and a nil value is it; the seam exists so a test can
+	// state the gap between frames instead of sleeping for it, which is the
+	// difference between an assertion about this package and an assertion
+	// about how busy the machine is. See transport.StallClock and
+	// TestASlowButLiveStreamOutlivesTheStallTimeout.
+	stallClock transport.StallClock
 }
 
 // MaxDecodedResponseBytes bounds how much of one response a stream will hold.
@@ -463,7 +471,7 @@ type callAccumulator struct {
 // never builds.
 func newStream(body io.ReadCloser, model string, tools []llm.ToolSchema, opts Options, maxTokensApplied int) *stream {
 	st := &stream{
-		sse:         transport.NewSSEWithStall(body, DoneSentinel, opts.StallTimeout),
+		sse:         transport.NewSSEWithStall(body, DoneSentinel, opts.StallTimeout, opts.stallClock),
 		model:       model,
 		name:        opts.Name,
 		tools:       tools,
