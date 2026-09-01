@@ -60,8 +60,6 @@ that needed MANVI to run would stop being a building block.
 
 ---
 
----
-
 ## 1. The division
 
 | | DevCouncil | MANVI |
@@ -72,11 +70,9 @@ that needed MANVI to run would stop being a building block.
 | **Consumed by** | MANVI, and anything else that speaks JSON on stdio | IDEs, editors, host applications, CI |
 | **Depends on** | Nothing in MANVI | Every component, at the process boundary only |
 
-The dependency runs one way. DevCouncil does not know MANVI exists, which is
-what keeps its components reusable; a component that had to be told about the
-harness would be a harness feature wearing a component's name.
-
----
+That one-way dependency is what keeps the components reusable: a component that
+had to be told about the harness would be a harness feature wearing a
+component's name.
 
 ---
 
@@ -106,9 +102,6 @@ make a component consumable by an agent that is not MANVI.
 
 Points 3–5 are why these are components rather than scripts. They are what let a
 consumer be written once against the contract instead of against a build.
-
----
-
 
 ---
 
@@ -417,9 +410,6 @@ tiebreaker above (build cost) will keep pointing the same way.
 
 ---
 
-
----
-
 ## 7. Where a change belongs
 
 Ask what the change is *about*, not which repository is convenient.
@@ -444,8 +434,6 @@ expired somewhere else.
 
 ---
 
----
-
 ## 8. What this means for work in progress
 
 Three consequences worth stating plainly, because each reverses an earlier
@@ -467,9 +455,6 @@ called it a structural problem that MANVI has no MCP *server*. Under this
 architecture that is exactly right: DevCouncil is the server, MANVI is a client,
 and the same server serves every other coding agent too. The gap is not in MANVI
 — it is that DevCouncil's MCP surface is still Python.
-
----
-
 
 ---
 
@@ -582,8 +567,6 @@ arrive with no test able to notice.
 
 Whoever takes the policy subsystem owns this decision; it is not the harness's
 to make, because the harness only consumes the outcome.
-
----
 
 ---
 
