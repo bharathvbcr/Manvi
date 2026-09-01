@@ -29,8 +29,12 @@ import (
 func devcouncilRepo(t *testing.T) (python string, src string) {
 	t.Helper()
 	if root := os.Getenv("DEVCOUNCIL_ROOT"); root != "" {
+		// DEVCOUNCIL_ROOT is an operator pointing this test at their own
+		// checkout, which is the whole purpose of the variable; the path is
+		// not reachable from any untrusted input, and the only thing done
+		// with it is a stat.
 		py := filepath.Join(root, ".venv/bin/python")
-		if _, err := os.Stat(py); err == nil {
+		if _, err := os.Stat(py); err == nil { // #nosec G703
 			return py, filepath.Join(root, "src")
 		}
 		t.Fatalf("DEVCOUNCIL_ROOT=%s has no .venv/bin/python", root)
@@ -58,7 +62,10 @@ func devcouncilRepo(t *testing.T) (python string, src string) {
 
 func runPython(t *testing.T, python, src, code string) []byte {
 	t.Helper()
-	cmd := exec.Command(python, "-c", code)
+	// Bound to the test's context so a hung interpreter dies with the test.
+	// #nosec G204 -- python is the interpreter devcouncilRepo located inside a
+	// checkout's own .venv, and code is a literal in this file.
+	cmd := exec.CommandContext(t.Context(), python, "-c", code)
 	cmd.Env = append(os.Environ(), "PYTHONPATH="+src)
 	out, err := cmd.Output()
 	if err != nil {
