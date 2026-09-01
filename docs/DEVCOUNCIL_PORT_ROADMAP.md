@@ -10,6 +10,10 @@ Read [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) first: it defines
 the boundary, the contract a component satisfies, and how the harness consumes
 them. This document is the inventory and the order.
 
+**If you have been assigned a piece of this**, go to
+[`PORTING_TASKS.md`](PORTING_TASKS.md) — it turns this inventory into numbered
+work packages with acceptance criteria, cautions and a testing protocol.
+
 **Correction (2026-09-01).** An earlier revision of this file said the goal was
 to "retire DevCouncil's Python by moving what only it has into MANVI." That was
 wrong, and the error mattered: it pointed the work at absorbing DevCouncil's

@@ -24,7 +24,11 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   applications. Defines the contract a component satisfies and the checklist a
   newly ported one must meet.
 - [**DevCouncil Port Roadmap**](DEVCOUNCIL_PORT_ROADMAP.md)  
-  What is ported, what is left, in what order, and the two open decisions.
+  What is ported, what is left, in what order, and the open decisions.
+- [**Port Work Packages**](PORTING_TASKS.md)  
+  **For anyone assigned a piece of the port.** Goals, ground rules, the cautions
+  earned from real defects, the mandatory testing protocol, a definition of done,
+  and the tasks themselves in dependency order.
 - [**Why MANVI is Different (Comparative Analysis)**](COMPARISON.md)  
   Comprehensive feature matrix and deep-dive comparison against SWE-agent, OpenHands, Aider, Claude Code, Pi, Oh My Pi, Kon, and traditional Python agent frameworks.
 - [**Technical Architecture Specification**](ARCHITECTURE.md)  

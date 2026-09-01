@@ -313,6 +313,9 @@ and the same server serves every other coding agent too. The gap is not in MANVI
 
 ## 6. Checklist for a newly ported component
 
+> Assigned a task? [`PORTING_TASKS.md`](PORTING_TASKS.md) carries this checklist
+> plus the testing protocol and the cautions. This section is the short form.
+
 When a DevCouncil subsystem lands in Rust/Go, it is done when:
 
 - [ ] It is a binary (or MCP tool) with the §1 contract, not a library MANVI links.
