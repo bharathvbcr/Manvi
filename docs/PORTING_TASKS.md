@@ -277,9 +277,77 @@ Until it exists, no other agent can use any of this.
 | **P2.1** | **Server skeleton.** JSON-RPC over stdio: `initialize`, `tools/list`, `tools/call`, error envelopes, bounded payloads, cancellation. Ship **one** handler end to end (suggest `status`) to prove the shape. MANVI's `manvi/mcp/protocol.go` is the closest reference for the wire format — it is the *client* side of the same protocol. | Go | P0.3 | L |
 | **P2.2** | **Handlers: task and lease** — `task`, `lease`, `checkout`, `scope`, `status`, `next_task`, `handoff` (7). Read through `dcstore`. | Go | P2.1, P1.3 | L |
 | **P2.3** | **Handlers: verification** — `verify`, `evidence`, `policy`, `cli_gate` (4). Read through `dcverify`. Blocked on P4.1 for anything where Python currently leads. | Go | P2.1, P4.1 | M |
-| **P2.4** | **Handlers: code intelligence** — `map`, `graph`, `trace`, `codeintel`, `ast_lsp` (5). Read through `devmap`, which is already Rust — these are thin. | Go | P2.1 | M |
+| **P2.4** | **Handlers: code intelligence** — `map`, `graph`, `trace`, `codeintel`, `ast_lsp` (5). Read through `devmap`, which is already Rust — these are thin. **Blocked on P2.7a**: without it these handlers expose a confident empty call graph for ~26 languages (**GAP-1**). | Go | P2.1, **P2.7a** | M |
 | **P2.5** | **Handlers: filesystem and exec** — `read`, `write`, `run`, `runs`, `git` (5). Gated writes and bounded execution; the write gate is the component-side one from `gating`. | Go | P2.1 | L |
 | **P2.6** | **Handlers: knowledge and adjuncts** — `knowledge`, `wiki`, `live`, `prompts`, `provenance`, `router_cache`, `debug`, `tool_specs` (8). Several depend on Wave 5 subsystems; port the handler when its subsystem lands. | Go | P2.1, Wave 5 | L |
+
+#### P2.7 — Close the call-graph blackout *(GAP-1, the largest known defect)*
+
+Split deliberately: **P2.7a is small, urgent and makes the defect honest; the
+rest is large and makes it go away.** Do not let the second block the first.
+
+**The defect, verified in source.** `extract_node`'s `match lang` in
+`devmap-extract/src/treesitter.rs:1578` has exactly **four** language arms —
+`python`, `javascript | typescript | tsx`, `rust`, `go`. Everything else falls to
+the generic `_` arm, which emits declarations and **no calls**. The C family is
+served separately by `extract_c_family_call` (the SC31 fix), which is why it
+works and is also the template for this task. Seven of the nine `calls.push`
+sites are inside those four arms; the other two are the C-family function and
+Rust's macro-body probe.
+
+Measured consequence: **Java, C#, Ruby, Swift and PHP each parse cleanly, emit
+their symbols, and produce zero `Calls` edges.** `impact`, `trace`, dead-code and
+the PDG then answer for those languages from an empty call graph, with nothing
+distinguishing "no callers" from "callers were never extracted."
+
+| ID | Task | Lang | Depends | Size |
+|---|---|---|---|---|
+| **P2.7a** | **Make the blackout visible.** Derive, from the language dispatch rather than a hand-maintained list, whether a language has call extraction. Where it does not, `impact`, `trace`, dead-code and the PDG must report **unavailable** — not an empty result. Dead code is the urgent surface: a symbol with no extracted calls is today indistinguishable from an unused one, and that is a wrong answer delivered confidently. | Rust | — | M |
+| **P2.7b** | **Tier 1 — the five with measured evidence:** Java, C#, Ruby, PHP, Swift. These are confirmed by SC34's per-language control and are the most likely to appear in a real repository. | Rust | P2.7a | L |
+| **P2.7c** | **Tier 2 — remaining general-purpose:** Kotlin, Scala, Dart, Lua, Luau, R, Erlang, Solidity, Pascal, COBOL. Solidity already has ownership handling from X30; extend rather than duplicate. | Rust | P2.7b | L |
+| **P2.7d** | **Tier 3 — decide whether a call graph is meaningful at all:** HCL, Nix, SQL, shell, Vue, Svelte, Astro, Liquid, CFML. For several of these "a call" may not be a coherent concept. **A reasoned "not applicable, reported unavailable" is a correct outcome here** — what is not acceptable is an empty result that reads as "no calls found". | Rust | P2.7a | M |
+
+**Method — follow SC19 and SC31, do not invent one.** Both closed a
+language-coverage question the same way, and it is the reason those closures are
+trustworthy:
+
+1. **Write the control first.** A file where one function calls another, in the
+   target language, plus an equivalent in a language that already works.
+2. **Measure before changing anything** — record the `Calls` count for both. The
+   target's is expected to be zero; if it is not, the defect is different from
+   what you assumed and the plan changes.
+3. **Discover the node kinds from the grammar**, not from memory. The existing
+   arms key on `"call"` (Python), `"call_expression"` (JS/TS, Rust, C family),
+   `"new_expression"`, `"macro_invocation"`, `"composite_literal"` (Go) and
+   `"jsx_opening_element"`. Other grammars name these differently — read the
+   grammar's node types rather than guessing, because a wrong kind string is a
+   silent no-op that looks exactly like the bug you are fixing.
+4. **Re-measure against the control.** The target must reach the comparison
+   language's edge count for the same shape, and the comparison language must be
+   unchanged.
+5. **Then measure on a real corpus** and report the edge-count delta.
+
+**Cautions specific to this task:**
+
+- **C1 applies at corpus scale.** Every wrong answer this produces is a confident
+  one. P2.7a exists so the rest can be done incrementally without the interim
+  state lying.
+- **C6 — do not add a second extraction path.** The C family got a function, not
+  a fifth `match lang` arm. Decide early whether each family extends
+  `extract_c_family_call`'s shape, joins an existing arm, or needs its own, and
+  say why — nine `calls.push` sites is already more than the design wants.
+- **A new grammar dependency needs explicit approval** under repository policy.
+  Tier 1–3 should need none; every language listed already has a grammar. VB.NET
+  does not, and is **out of scope** here (GAP-7).
+- **Watch for SC14 collisions.** Adding calls in languages with nested types and
+  anonymous callbacks will surface duplicate symbol identities (741 on the
+  12,821-file corpus). Expect it; do not paper over it with a dedupe that hides
+  which symbol an edge should have attached to.
+
+**Done when:** the per-language control passes for every language in the tier, a
+real-corpus edge-count delta is recorded, orphaned call edges remain **0** (the
+SC9/SC10 joinability invariant), and no language reports an empty call graph
+where it should report unavailable.
 
 ### Wave 3 — The council
 

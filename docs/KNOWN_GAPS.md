@@ -49,9 +49,18 @@ run reporting what a check that ran and passed reports.
 
 **Fix direction:** a call-extraction arm per language family, each measured
 against a control the way SC19 and SC31 were. **Until then, dead-code output for
-those languages should be marked unavailable rather than emitted.**
-→ Attach to **P2.4** (code-intelligence handlers must not expose a confident
-zero) and consider a standalone task.
+those languages must be marked unavailable rather than emitted.**
+
+→ **[P2.7](PORTING_TASKS.md#p27--close-the-call-graph-blackout-gap-1-the-largest-known-defect)**,
+split into P2.7a (make the blackout visible — small and urgent) and P2.7b–d
+(close it, tiered by evidence). **P2.4 is blocked on P2.7a**, because
+code-intelligence handlers must not expose a confident zero.
+
+Verified in source this session: `extract_node`'s `match lang`
+(`devmap-extract/src/treesitter.rs:1578`) has exactly four language arms —
+`python`, `javascript | typescript | tsx`, `rust`, `go` — and everything else
+falls to a generic arm emitting declarations only. The C family is served by a
+separate `extract_c_family_call`, which is the template for the fix.
 
 ### GAP-2 — `dcstore` covers 2 of DevCouncil's 16 tables
 
