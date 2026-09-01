@@ -86,6 +86,71 @@ type FileCheckParams struct {
 	// the harness itself makes into its own state directory. A host should
 	// leave it false; it is not a general escape hatch.
 	Internal bool `json:"internal,omitempty"`
+	// Scope is the task this write belongs to, as the host declares it.
+	//
+	// Optional, and absent means exactly what it always meant: no task model,
+	// so the ladder stops at task.absent and PostureHost demotes it. A host
+	// that has grown a task model sends one, and then the scope rungs —
+	// scope.unplanned, scope.read_only, scope.operation,
+	// task.forbidden_change — can finally fire against something real.
+	Scope *HostScope `json:"scope,omitempty"`
+}
+
+// HostScope is the task a host declares a write or command belongs to.
+//
+// It exists because the scope rules were unreachable from this plane. The gate
+// measures a write against a *dc.Task, and this plane had none to give it, so
+// every host write stopped at task.absent long before a scope rung could run.
+// A host with its own notion of a task — a checked-out DevCouncil task bound to
+// a worktree, say — can now hand that notion over and be judged against it.
+type HostScope struct {
+	// TaskID is the host's identifier for the work in progress. It replaces
+	// hostScopeID on the resulting decision, so an audit can trace a verdict
+	// back to the task it was measured against rather than to a placeholder.
+	TaskID string `json:"task_id"`
+	// PlannedFiles is the scope the plan declared, as repo-relative paths.
+	//
+	// An empty list is a real value and not a missing one: it means the task
+	// authorises no file at all, and every write is unplanned. That is the
+	// fail-closed reading, and it is the one a host gets if it sends a task id
+	// with no files.
+	PlannedFiles []string `json:"planned_files,omitempty"`
+	// ForbiddenChanges are paths the task must not touch whatever else it
+	// authorises.
+	ForbiddenChanges []string `json:"forbidden_changes,omitempty"`
+	// Worktree is the checkout the host is acting in. Carried for the record
+	// rather than for the ladder, which judges paths against Root.
+	Worktree string `json:"worktree,omitempty"`
+}
+
+// task renders the declared scope as the task the gate measures against.
+//
+// AllowedChange is set to the operation being judged, because this plane's
+// scope has no per-file operation model: a host says "these files are in
+// scope", not "this file may be modified but not deleted". Claiming a
+// narrower permission than the host expressed would refuse writes it meant to
+// authorise; claiming a wider one would authorise writes it did not.
+func (h *HostScope) task(op dc.Operation) *dc.Task {
+	if h == nil {
+		return nil
+	}
+	id := h.TaskID
+	if id == "" {
+		// A scope with no id is still a scope. Naming it after the placeholder
+		// keeps every decision's TaskID non-empty, which the grant ledger and
+		// the override seam both rely on.
+		id = hostScopeID
+	}
+	planned := make([]dc.PlannedFile, 0, len(h.PlannedFiles))
+	for _, f := range h.PlannedFiles {
+		planned = append(planned, dc.PlannedFile{Path: f, AllowedChange: dc.AllowedChange(op)})
+	}
+	return &dc.Task{
+		ID:               id,
+		Title:            "host-declared scope",
+		PlannedFiles:     planned,
+		ForbiddenChanges: h.ForbiddenChanges,
+	}
 }
 
 // CommandCheckParams is one shell-command evaluation.
@@ -112,6 +177,14 @@ type CommandCheckParams struct {
 	Root string `json:"root,omitempty"`
 	// AllowedCommands is the host's own allowlist, in fnmatch form.
 	AllowedCommands []string `json:"allowed_commands,omitempty"`
+	// Scope is the task this command belongs to, as the host declares it.
+	//
+	// Carried so that a command line's *redirection targets* are judged against
+	// the same scope its files would be. Without it, `echo x > out-of-scope.ts`
+	// would be measured against no task while a direct write to the same path
+	// was measured against one — the same write, two answers, depending only on
+	// which surface asked.
+	Scope *HostScope `json:"scope,omitempty"`
 	// EnforceAllowlist keeps "not in any allowlist" a denial under
 	// PostureHost, instead of demoting it.
 	//
@@ -166,7 +239,7 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 		return nil, badRequest("%v", err)
 	}
 
-	return s.evaluateHostWrite(p.Root, p.Path, op, p.Internal), nil
+	return s.evaluateHostWrite(p.Root, p.Path, op, p.Internal, p.Scope), nil
 }
 
 // evaluateHostWrite judges one path for a host with no task model.
@@ -175,7 +248,13 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 // redirection target reached through policy.check.command are the same write,
 // and a host that was told a path is refused must not be told the command that
 // writes it is fine.
-func (s *Server) evaluateHostWrite(root, path string, op dc.Operation, internal bool) policy.Decision {
+func (s *Server) evaluateHostWrite(
+	root, path string,
+	op dc.Operation,
+	internal bool,
+	scope *HostScope,
+) policy.Decision {
+	task := scope.task(op)
 	fileGate := policy.FileGate{
 		Root: root,
 		// Subsystems is nil: the neighbour rung needs a repo map the host has
@@ -183,14 +262,30 @@ func (s *Server) evaluateHostWrite(root, path string, op dc.Operation, internal 
 		// cannot run rather than pretending it did.
 		Subsystems:     nil,
 		AllowNeighbors: s.allowNeighbors,
-		// The same-directory fallback needs planned files to measure against
-		// and this surface has no task at all, so the ladder stops at
-		// task.absent long before it could run. Named rather than defaulted, so
-		// the reason it is off is on the page beside the rung it belongs to.
-		AllowSameDir: false,
+		// The same-directory fallback measures against planned files. With a
+		// declared scope there are some, so it can run; with none the ladder
+		// still stops at task.absent long before it would matter.
+		AllowSameDir: task != nil,
 		HardRules:    s.hardRules,
 	}
-	d := fileGate.EvaluateFileChange(path, nil, op, internal)
+	d := fileGate.EvaluateFileChange(path, task, op, internal)
+	if task != nil {
+		// The host declared a task model, so the demotion's own justification —
+		// "no task model in the embedding host" — is no longer true, and
+		// applying it anyway is the failure this guard exists to prevent.
+		//
+		// Before this, a GitPulse write outside planned_files came back
+		// action=allow carrying rule=scope.unplanned and that false reason. The
+		// rung had run, had refused, and the answer said yes. That is the
+		// honesty invariant inverted: not a check that could not run looking
+		// like one that passed, but a check that ran and *failed* looking like
+		// one that passed.
+		//
+		// demote() deliberately preserves Rule and Severity so that "a host
+		// that later grows a task model can find every place this posture was
+		// carrying it". This is that host, and this is that place.
+		return d
+	}
 	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host")
 }
 
@@ -248,7 +343,7 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		if p.Root == "" {
 			return policy.Decision{}, errCommandRootMissing
 		}
-		return s.evaluateHostWrite(p.Root, target, dc.OpWrite, false), nil
+		return s.evaluateHostWrite(p.Root, target, dc.OpWrite, false, p.Scope), nil
 	})
 	if err != nil {
 		return nil, badRequest("%v", err)
