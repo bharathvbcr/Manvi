@@ -351,7 +351,7 @@ printf '    covered: the build graph holds nothing outside the standard library 
 step "Go — lint (enforced set)"
 if have golangci-lint; then
   (cd manvi && golangci-lint run --config .golangci.yml ./...) || fail "golangci-lint (enforced set)"
-  printf '    covered: 20 linters at zero tolerance, plus this repository'"'"'s own ruleguard rules\n'
+  printf '    covered: 21 linters at zero tolerance, plus this repository'"'"'s own ruleguard rules\n'
 else
   notcovered "golangci-lint is not installed — the enforced lint set did not run"
 fi
@@ -391,7 +391,7 @@ print(sum(1 for i in (d.get('Issues') or []) if i['FromLinter']=='$linter'))")"
   if [[ -n "$improved" ]]; then
     printf '    \033[32mimproved\033[0m:%s — lower the numbers in manvi/.golangci-debt.counts\n' "$improved"
   fi
-  printf '    covered: 11 linters held at or below their recorded counts\n'
+  printf '    covered: 10 linters held at or below their recorded counts\n'
 else
   notcovered "golangci-lint is not installed — the lint debt ratchet did not run"
 fi

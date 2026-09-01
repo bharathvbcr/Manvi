@@ -76,6 +76,14 @@ func identityOf(fi fs.FileInfo) (componentIdentity, bool) {
 	if !ok {
 		return componentIdentity{}, false
 	}
+	// The conversions are portability, not noise, and they are why unconvert
+	// disagrees with itself across platforms: Stat_t's field widths are
+	// per-GOOS. Dev is int32 on darwin and uint64 on linux; Nlink below is
+	// uint16 and uint64 respectively. Written without them this does not
+	// compile on darwin; measured on linux alone a linter calls all three
+	// unnecessary. Keeping them is what makes one source file build across the
+	// unix family, which is the whole reason `//go:build unix` is a single tag.
+	//nolint:unconvert // Stat_t field widths differ by GOOS; see above.
 	return componentIdentity{uint64(sys.Dev), uint64(sys.Ino)}, true
 }
 
@@ -94,6 +102,7 @@ func linksOf(fi fs.FileInfo) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
+	//nolint:unconvert // Nlink is uint16 on darwin and uint64 on linux; see identityOf.
 	return uint64(sys.Nlink), true
 }
 

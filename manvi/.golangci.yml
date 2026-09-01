@@ -59,6 +59,7 @@ linters:
     - usestdlibvars              # a hand-written "GET" or "200" that the stdlib already names
     - mirror                     # the string/[]byte twin that avoids a conversion
     - zerologlint                # a log event built and never dispatched
+    - unconvert                  # a conversion the type already satisfies
 
   settings:
     gocritic:
@@ -71,10 +72,10 @@ linters:
           rules: gorules/rules.go
 
   # No preset exclusion lists. `presets: [comments, std-error-handling]` was
-  # tried and removed: it silently dropped the one unconvert finding in the
-  # tree (devcouncil/safefs.go:79) along with whatever else it covers, and a
-  # gate whose suppressions nobody has read reports "clean" for reasons nobody
-  # can name. Exclusions belong here, one at a time, each with the reason it
-  # is not a defect.
+  # tried and removed: it silently dropped the tree's one unconvert finding
+  # (devcouncil/safefs.go, since resolved) along with whatever else it covers,
+  # and a gate whose suppressions nobody has read reports "clean" for reasons
+  # nobody can name. Exclusions belong here, one at a time, each with the
+  # reason it is not a defect.
   exclusions:
     generated: lax

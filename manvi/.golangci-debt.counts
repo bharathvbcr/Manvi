@@ -40,6 +40,16 @@
 # ratchet caught the increase, which is what it is for; the provenance is
 # recorded here rather than the number being edited quietly.
 #
+# unconvert reached 0 and has moved to .golangci.yml, which is what this file
+# says should happen. Getting there was not a fix but two suppressions, and the
+# reason is worth recording because it is the only per-platform entry this file
+# ever had: Stat_t's field widths are per-GOOS, so devcouncil/safefs.go read as
+# one unnecessary conversion on darwin and three on linux. The count in this
+# file was measured on darwin alone, which meant CI on Linux would have failed
+# the ratchet on a tree nobody had changed. Suppressing the two lines with the
+# portability reason in place makes the number 0 on both, which is the only
+# count a two-platform gate can hold anyone to.
+#
 # A linter that reaches 0 moves to .golangci.yml and is deleted from here.
 bodyclose 11
 contextcheck 17
@@ -50,5 +60,4 @@ gosec 443
 nilerr 17
 noctx 29
 staticcheck 32
-unconvert 1
 wastedassign 10

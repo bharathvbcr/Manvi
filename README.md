@@ -440,7 +440,7 @@ Full specifications live in [`docs/`](docs/README.md):
 | Guide | Contents |
 |---|---|
 | [Technical Architecture](docs/ARCHITECTURE.md) | Dual-plane partition, stdio IPC protocol, session-log invariants, package map |
-| [Policy & Safety Engine](docs/POLICY_AND_SAFETY.md) | 5-tier ladder, outcome states, Write/Command gates, grants ledger |
+| [Policy & Safety Engine](docs/POLICY_AND_SAFETY.md) | 6-rung ladder, outcome states, Write/Command gates, grants ledger |
 | [Agent & Turn Lifecycle](docs/AGENT_AND_TURN_LIFECYCLE.md) | Turn loop, tool waterfalls, compaction, lease concurrency |
 | [Verification & Parity](docs/VERIFICATION_AND_PARITY.md) | Parity methodology, rigor gates, coverage semantics, `./verify.sh` |
 | [Local LLMs](docs/LOCAL_LLMS.md) | Discovery, KV prefix preservation, wire recovery, server configs |

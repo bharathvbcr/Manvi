@@ -43,7 +43,6 @@ linters:
     - noctx           # a request issued with no context at all
     - forcetypeassert # an unchecked type assertion, which panics rather than reports
     - wastedassign    # a value assigned and overwritten before any read
-    - unconvert       # a conversion the type already satisfies
 
   # No preset exclusion lists. `presets: [comments, std-error-handling]` was
   # tried and removed: it silently dropped the one unconvert finding in the

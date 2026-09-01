@@ -40,7 +40,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the complete architecture specifica
 
 ### 2. The Non-Cheating Safety Invariant & 5-State Policy Ladder
 
-Standard evaluation harnesses frequently report false positives when an agent modifies files outside its scope, skips broken test suites, or leverages shell aliases to bypass checks. MANVI enforces a 5-tier evaluation ladder:
+Standard evaluation harnesses frequently report false positives when an agent modifies files outside its scope, skips broken test suites, or leverages shell aliases to bypass checks. MANVI enforces a 6-rung evaluation ladder:
 
 ```
 Boundary Check ➔ Hard Rules (Secrets/.git) ➔ Soft Rules (Scope/AST) ➔ Grants Ledger ➔ Postures (dev/yolo) ➔ Operator Escalation

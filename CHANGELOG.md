@@ -21,6 +21,67 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI would have failed on Linux on its first run.** `.golangci-debt.counts`
+  was measured on one platform, and `unconvert` reads 1 finding on darwin
+  against 3 on linux — `Stat_t`'s field widths are per-GOOS, so the conversions
+  in `devcouncil/safefs.go` are load-bearing on darwin and redundant on linux.
+  The ratchet fails on any increase, so a green tree would have gone red on
+  `ubuntu-latest` with nothing changed. The conversions now carry the
+  portability reason in place, the count is 0 on both platforms, and
+  `unconvert` has moved to the enforced set — 21 linters at zero tolerance, 10
+  left in the debt file.
+- **The Windows CI job would also have failed on its first run**, and its
+  premise was wrong. This tree does not build for Windows: `manvi/artifacts`
+  fails on `syscall.O_NOFOLLOW` and `manvi/devcouncil` on `syscall.Stat_t`.
+  Both are load-bearing — `O_NOFOLLOW` is how the artifact store refuses to
+  follow a symlink out of itself, and `Stat_t` carries the inode pin and the
+  `st_nlink` hard-link check — so a Windows build needs real equivalents rather
+  than stubs. The job is gone and the reason is written down where a reader
+  will find it, rather than a green check standing in for a port that does not
+  exist.
+- **Four documents called the policy ladder "5-tier"; it has six rungs.** The
+  guard for this existed and matched only the literal phrase "N-tier policy
+  ladder", so a "5-tier ladder", a "5-tier policy gate", a "5-tier evaluation
+  ladder" and a "5-tier policy composition" all drifted past it while it
+  reported clean. It now matches the number and the noun wherever they appear,
+  and reads the HTML guides too — the drift that survived longest was in one of
+  them.
+
+### Added
+
+- **Tests for `llm/replay`**, which had none. Its playback half was exercised
+  second-hand by eight other packages; its recording half — `Load`,
+  `NewRecord`, `Save`, and the recording stream — had been executed by nothing
+  at all, in a package whose doc comment offers exactly that as the way a real
+  session becomes an offline regression test. It works; it had simply never
+  been run. The package goes from 0% self-coverage to 96.8%, with no function
+  left unexecuted, and the tree total moves to 82.0%.
+- **`SECURITY.md`**, pointing at this repository's private vulnerability
+  reporting. It says what counts (a way past a gate, a credential leaving the
+  machine, a check that reports success without running) and what does not (the
+  `dev` posture doing what `dev` documents, an operator's own allowlist entry).
+- **`.github/dependabot.yml`** for all three ecosystems — actions, gomod, and
+  cargo. `govulncheck` and `cargo audit` catch a *vulnerable* dependency on
+  every run; nothing was watching for a merely old one, and nothing looked at
+  the actions at all.
+
+### Changed
+
+- **Every GitHub action is pinned by commit SHA**, with its version in a
+  comment beside it. A tag is a mutable reference, and CI is the one place a
+  silent substitution would run with a token in scope. Dependabot moves the
+  pins; `verify.sh` decides whether the move is safe.
+- **`UnusedExports` runs.** The repository's own dead-code detector — written,
+  and documented with the defect it exists to catch — was called by nothing. It
+  now reports alongside the other contract scans. It stands at 147 findings, of
+  which twelve are its own documented blind spot (`internal/testsupport` and
+  `llm/adaptertest` exist to be called from tests, and test files are
+  deliberately not counted as callers). It reports rather than gates: the
+  remaining 135 need reading one at a time, and an allowlist filled in without
+  that reading would certify whatever was true the day somebody stopped looking.
+
 ### Added
 
 - **Continuous integration.** `.github/workflows/verify.yml` runs `./verify.sh`

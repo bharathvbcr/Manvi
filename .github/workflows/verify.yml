@@ -28,6 +28,16 @@ concurrency:
 permissions:
   contents: read
 
+# Actions are pinned by commit SHA, not by tag. A tag is mutable: `@v7` is a
+# reference the action's owner can move, so a workflow that trusts one runs
+# whatever that reference points at on the day it runs. This repository does not
+# accept that anywhere else — the Go plane pins go 1.26.6 rather than 1.26, and
+# the Rust dependency tree is audited on every run — and CI is the one place
+# where an unnoticed substitution would have a credential-bearing token in
+# scope. The version each SHA corresponds to is in the comment beside it so a
+# reader can tell what is pinned without resolving the hash; dependabot keeps
+# both halves current.
+
 jobs:
   gate:
     name: verify.sh (${{ matrix.os }})
@@ -39,11 +49,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The version comes from go.mod so this file cannot drift away from the
       # toolchain the module declares.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
           cache-dependency-path: manvi/go.sum
@@ -58,7 +68,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -67,13 +77,13 @@ jobs:
       # every run. Keyed on the toolchain so a rustup bump rebuilds it.
       - name: Cache cargo-audit
         id: cache-cargo-audit
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
 
       - name: Cache Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -143,47 +153,34 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: verify-log-${{ matrix.os }}
           path: verify.log
           retention-days: 14
 
-  # Windows compiles, and that is all this job claims.
+  # There is no Windows job, and the reason is a fact rather than a policy.
   #
-  # verify.sh is bash and reaches for mktemp, script(1), process groups and a
-  # POSIX shell throughout; it does not run here and pretending otherwise would
-  # produce a green check for a gate that never executed. What Windows *can*
-  # answer cheaply is the question the build-tag split exists for: `procgroup`
-  # and `mkfifo` each have a `_unix.go` and an `_other.go`, and the `_other`
-  # half is compiled by nothing in the matrix above. A build break in it would
-  # otherwise reach a user before it reached CI.
+  # This tree does not build for Windows. `GOOS=windows go build ./...` fails
+  # in manvi/artifacts on syscall.O_NOFOLLOW, and behind that failure
+  # manvi/devcouncil fails again on syscall.Stat_t, which Windows does not
+  # define. Three packages are affected — artifacts, devcouncil, and cmd/manvi
+  # through them; everything else, procgroup_other.go included, compiles
+  # already.
   #
-  # So: the platform-specific code compiles and vets. The Go suite is NOT run
-  # here — many of its tests fork shells and drive the Rust binaries over a
-  # process boundary, and neither this job nor anything else in this repository
-  # has established that they pass on Windows. That remains an open gap, named
-  # rather than papered over.
-  windows-build:
-    name: compile (windows-latest)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: manvi/go.mod
-          cache-dependency-path: manvi/go.sum
-      - name: Go — the _other build-tag half compiles and vets
-        working-directory: manvi
-        env:
-          CGO_ENABLED: '0'
-        run: |
-          go build ./...
-          go vet ./...
-      - name: Rust — the analysis plane compiles
-        working-directory: crates
-        run: cargo build --all-targets
+  # Both are load-bearing rather than incidental. O_NOFOLLOW is how the
+  # artifact store refuses to follow a symlink out of itself, and Stat_t is
+  # both the inode identity pin and the st_nlink hard-link check that stops
+  # `ln .env notes.txt` from carrying a write into a file the ladder never
+  # judged. A Windows build needs real equivalents — reparse-point handling and
+  # GetFileInformationByHandle — not a stub, because a platform where those
+  # checks silently do nothing is worse than a platform this does not run on.
+  #
+  # A job that ran `go build` here would fail on its first run. A job narrowed
+  # to the packages that do compile would report a green check for a port that
+  # does not exist. So there is no job, and docs/TRADE_OFFS.md says Unix-only
+  # in prose where a reader will find it.
 
   # The two opt-in gates. They take a flag each and cost real time, which is
   # why verify.sh keeps them out of the default run and why they are not on
@@ -198,8 +195,8 @@ jobs:
       matrix:
         mode: [race, fuzz]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
           cache-dependency-path: manvi/go.sum
@@ -207,7 +204,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy --no-self-update
           rustup default stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm

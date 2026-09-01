@@ -353,9 +353,29 @@ func TestPolicyLadderRungCountIsConsistent(t *testing.T) {
 	}
 
 	// And every other document that puts a number on the ladder.
-	tier := regexp.MustCompile(`(?i)\*?\*?(\d+)[- ](?:tier|rung)s? policy ladder`)
+	//
+	// The pattern is deliberately just the number and the noun. It used to
+	// require the exact phrase "N-tier policy ladder", and four documents
+	// drifted straight past it while this check reported clean: a "5-tier
+	// ladder" in the README's own index, a "5-tier policy gate" in
+	// TOOLS_REFERENCE, a "5-tier evaluation ladder" in COMPARISON, and a
+	// "5-tier policy composition" in the visual guide — every one of them
+	// naming a ladder the README draws with six rungs. A guard that matches
+	// one phrasing of a claim is a guard for that phrasing, not for the claim,
+	// and it reads from the outside exactly like coverage.
+	//
+	// The HTML guides are read too, for the same reason: the drift that
+	// survived longest was in one of them, and a check scoped to Markdown
+	// would have kept missing it.
+	tier := regexp.MustCompile(`(?i)(\d+)[- ](?:tier|rung)s?\b`)
 	found := 0
-	for _, path := range docFiles(t) {
+	for _, path := range ladderDocs(t) {
+		// The hardening ledger quotes the wrong number on purpose: it is the
+		// record of this exact defect. Excluded by name rather than by pattern
+		// so that exclusion stays visible.
+		if strings.HasSuffix(path, "HARDENING_LEDGER.md") {
+			continue
+		}
 		for _, mm := range tier.FindAllStringSubmatch(readDoc(t, path), -1) {
 			found++
 			got, _ := strconv.Atoi(mm[1])
@@ -368,6 +388,25 @@ func TestPolicyLadderRungCountIsConsistent(t *testing.T) {
 	if found == 0 {
 		t.Error("no document numbers the policy ladder any more; if that is deliberate, drop this half of the check")
 	}
+}
+
+// ladderDocs is docFiles plus the HTML guides, which state the same claims in
+// the same prose and sat outside every doc check. One of them was carrying a
+// ladder size the Markdown had already been corrected away from, which is what
+// a file nothing reads looks like from the inside.
+func ladderDocs(t *testing.T) []string {
+	t.Helper()
+	out := docFiles(t)
+	entries, err := os.ReadDir(filepath.Join(docRoot, "docs"))
+	if err != nil {
+		t.Fatalf("reading docs/: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".html") {
+			out = append(out, filepath.Join(docRoot, "docs", e.Name()))
+		}
+	}
+	return out
 }
 
 // TestOutcomeStateCountIsConsistent does the same for the five outcome states,
