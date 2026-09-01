@@ -9,6 +9,7 @@ assignable to someone who has not seen the codebase before.
 |---|---|
 | [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) | What a component is, the contract it satisfies, which language it belongs in |
 | [`DEVCOUNCIL_PORT_ROADMAP.md`](DEVCOUNCIL_PORT_ROADMAP.md) | What is done, what is left, open decisions |
+| [`KNOWN_GAPS.md`](KNOWN_GAPS.md) | Every known defect and gap — **including bugs in the Python you must not faithfully reproduce** |
 | This file | What to actually do, how to prove it works |
 
 ---
@@ -121,6 +122,19 @@ only because one person did both halves in one sitting.
 commits — DevCouncil first, then the MANVI mirror — and the mirror commit must
 say what it mirrors.
 
+### C7 — Porting a Python bug faithfully
+
+`rust-port/DIVERGENCES.md` records **28** places where the Rust port deliberately
+behaves differently from the Python, because the Python is wrong. A porter reading
+the Python as a specification will reproduce all of them.
+
+The sharpest cluster — G5, G7, X14, V12 and X6/X7 — is one defect wearing five
+coats: **the Python answers confidently where it does not know**, and X6/X7 goes
+further and fabricates symbols from source it could not parse.
+
+**What to do:** before porting any subsystem, check
+[`KNOWN_GAPS.md` §4](KNOWN_GAPS.md#4-python-baseline-defects-the-port-must-not-reproduce).
+
 ### C6 — Building a second engine
 
 `dc-grep` links ripgrep's own crates rather than shelling out to `rg` or
@@ -226,6 +240,8 @@ Every task. Copy this into the PR description and tick it.
 - [ ] It does not import, reference, or assume MANVI.
 - [ ] `./verify.sh` passes.
 - [ ] Mirrored to the other repository, if it touches shared component sources (**C5**).
+- [ ] [`KNOWN_GAPS.md`](KNOWN_GAPS.md) checked for gaps touching this subsystem, and §4 checked for Python defects not to reproduce (**C7**).
+- [ ] Any new gap found is added to `KNOWN_GAPS.md` with a VERIFIED/RECORDED label.
 - [ ] The ledger (`rust/STATUS.md` §7 or equivalent) records what was verified and what was not.
 
 ---

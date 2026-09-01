@@ -25,6 +25,10 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   newly ported one must meet.
 - [**DevCouncil Port Roadmap**](DEVCOUNCIL_PORT_ROADMAP.md)  
   What is ported, what is left, in what order, and the open decisions.
+- [**Known Gaps and Defects**](KNOWN_GAPS.md)  
+  Every known defect, gap and unproven claim in DevCouncil, labelled verified or
+  recorded — including the 28 Python baseline bugs a porter must not reproduce,
+  and the ledger entries that are stale in both directions.
 - [**Port Work Packages**](PORTING_TASKS.md)  
   **For anyone assigned a piece of the port.** Goals, ground rules, the cautions
   earned from real defects, the mandatory testing protocol, a definition of done,
