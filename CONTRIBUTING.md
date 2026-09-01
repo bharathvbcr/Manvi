@@ -134,6 +134,17 @@ incumbent, applied by hand after generation and named in the file's own header.
 Regenerating drops them; re-apply them, or the port starts matching a behaviour
 this harness decided against.
 
+**This fixture has an expiry date, and it will not announce it.** Its source of
+truth — `devcouncil.execution.policy_engine.TaskPolicyEngine` — is itself being
+ported to Rust/Go. When that lands, `scripts/gen-command-parity.py` stops
+working, and nothing here fails: no build step imports the generator, so
+`TestCommandParityWithPythonEngine` keeps passing against a snapshot of an
+implementation that no longer runs. `fnmatch-parity.tsv` is not exposed the same
+way — it is generated from CPython's own `fnmatch`, which nobody is porting.
+What to do before that happens is in
+[`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md) §6, under
+*Before retiring the Python you ported from*.
+
 Regenerate either fixture only when the reference behaviour itself is what
 changed, and say so in the commit — a regenerated fixture that quietly absorbs
 a divergence is the fixture no longer doing its job. The methodology is in
