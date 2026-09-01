@@ -90,6 +90,24 @@ type Task struct {
 	AllowedCommands           []string      `json:"allowed_commands"`
 	Difficulty                string        `json:"difficulty"`
 	Status                    string        `json:"status"`
+	// RequirementIDs are the requirements this task exists to satisfy, as the
+	// planner linked them.
+	//
+	// There is deliberately no agent-appended counterpart, unlike
+	// PlannedFiles. An executor may widen its own *file* scope, because which
+	// files a change touches is discovered while making it. Which requirement
+	// a task satisfies is not discovered that way — it is the planner's
+	// judgement about why the task exists — and a task that could append here
+	// could discharge a requirement by asserting it had.
+	RequirementIDs []string `json:"requirement_ids"`
+	// AcceptanceCriterionIDs are the criteria this task is accountable for
+	// proving.
+	//
+	// Distinct from the expected tests, which are *how* the proof is run: this
+	// is *what* must hold. A criterion no task owns is a behaviour nobody is
+	// accountable for building, which is the failure the backfill in
+	// DevCouncil's planner exists to prevent.
+	AcceptanceCriterionIDs []string `json:"acceptance_criterion_ids"`
 }
 
 // AllPlannedFiles is everything in the task's file scope: the plan it was

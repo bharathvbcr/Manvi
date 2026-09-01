@@ -6,46 +6,8 @@
 //! assembled by hand out of a stored column, and a health check that answered
 //! for a database it had just invented.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const DCSTORE: &str = env!("CARGO_BIN_EXE_dcstore");
-
-/// A directory of this test's own, named for the process and the case, so
-/// concurrent tests never share a database.
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("dc-store-boundary-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the test directory");
-    dir
-}
-
-struct Reply {
-    stdout: String,
-    code: i32,
-}
-
-fn dcstore(db: &Path, args: &[&str]) -> Reply {
-    let out = Command::new(DCSTORE)
-        .arg("--db")
-        .arg(db)
-        .args(args)
-        .output()
-        .expect("run dcstore");
-    Reply {
-        stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        code: out.status.code().unwrap_or(-1),
-    }
-}
-
-/// A store the other cases can talk to, created the way any writing command
-/// creates one.
-fn seeded(name: &str) -> PathBuf {
-    let db = temp_dir(name).join("state.sqlite");
-    let reply = dcstore(&db, &["ready"]);
-    assert_eq!(reply.code, 0, "seeding the store: {}", reply.stdout);
-    db
-}
+mod support;
+use support::{dcstore, seeded, temp_dir};
 
 /// A mistyped `--db` used to be answered by a database this call created:
 /// `{"ok":true,...,"active_leases":0}` from a private, empty file nobody else

@@ -490,6 +490,12 @@ fn task_json(t: &dc_store::Task) -> String {
         ("allowed_commands", &t.allowed_commands_json),
         ("expected_tests", &t.expected_tests_json),
         ("forbidden_changes", &t.forbidden_changes_json),
+        // Why the task exists, and what it must prove. Emitted even when empty
+        // so a consumer can tell a task accountable to no requirement from a
+        // store that does not report requirements at all — which is what this
+        // boundary answered before, for every task.
+        ("requirement_ids", &t.requirement_ids_json),
+        ("acceptance_criterion_ids", &t.acceptance_criterion_ids_json),
     ])
 }
 

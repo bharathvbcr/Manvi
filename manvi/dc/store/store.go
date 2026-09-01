@@ -240,6 +240,13 @@ type Task struct {
 	AgentAppendedRaw json.RawMessage `json:"agent_appended_planned_files"`
 	// AgentAppended is AgentAppendedRaw decoded, filled in by Client.Task.
 	AgentAppended []dc.PlannedFile `json:"-"`
+	// RequirementIDs and AcceptanceCriterionIDs are why the task exists and
+	// what it must prove. The store creates both columns because they are in
+	// DevCouncil's schema, and until recently selected neither, so every task
+	// crossing this boundary arrived with no requirements at all -- which a
+	// coverage gate cannot tell apart from a task that satisfies none.
+	RequirementIDs         []string `json:"requirement_ids"`
+	AcceptanceCriterionIDs []string `json:"acceptance_criterion_ids"`
 }
 
 // Domain converts to the type the policy gate evaluates against.
@@ -275,6 +282,8 @@ func (t *Task) Domain() *dc.Task {
 		AgentAppendedPlannedFiles: t.AgentAppended,
 		AllowedCommands:           t.AllowedCommands,
 		ForbiddenChanges:          t.ForbiddenChanges,
+		RequirementIDs:            t.RequirementIDs,
+		AcceptanceCriterionIDs:    t.AcceptanceCriterionIDs,
 	}
 }
 

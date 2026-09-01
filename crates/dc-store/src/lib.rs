@@ -571,7 +571,14 @@ impl Store {
     /// it would deny a write the task itself authorised — the split matters to
     /// whoever reviews the plan afterwards, not to the check.
     pub fn task(&self, task_id: &str) -> Result<Option<Task>> {
-        const COLUMNS: [&str; 7] = [
+        // The last two have no `agent_appended_*` sibling, and that asymmetry
+        // is deliberate rather than an omission. An executor may widen its own
+        // *file* scope by arguing a blocked write through the override seam,
+        // because which files a change touches is discovered while doing it.
+        // Which requirement a task satisfies is not discovered that way — it is
+        // the planner's judgement about why the task exists — and a task able
+        // to append to this list could discharge a requirement by claiming it.
+        const COLUMNS: [&str; 9] = [
             "planned_files_json",
             "agent_appended_planned_files_json",
             "allowed_commands_json",
@@ -579,6 +586,8 @@ impl Store {
             "expected_tests_json",
             "agent_appended_expected_tests_json",
             "forbidden_changes_json",
+            "requirement_ids_json",
+            "acceptance_criterion_ids_json",
         ];
         let row = self
             .conn
@@ -587,7 +596,8 @@ impl Store {
                  planned_files_json, agent_appended_planned_files_json, \
                  allowed_commands_json, agent_appended_allowed_commands_json, \
                  expected_tests_json, agent_appended_expected_tests_json, \
-                 forbidden_changes_json \
+                 forbidden_changes_json, \
+                 requirement_ids_json, acceptance_criterion_ids_json \
                  FROM tasks WHERE id = ?1",
                 params![task_id],
                 |r| {
@@ -635,6 +645,8 @@ impl Store {
             expected_tests_json: merge_json_arrays(&scope[4], &scope[5]),
             forbidden_changes_json: scope[6].clone(),
             agent_appended_planned_files_json: scope[1].clone(),
+            requirement_ids_json: scope[7].clone(),
+            acceptance_criterion_ids_json: scope[8].clone(),
         }))
     }
 
@@ -978,6 +990,20 @@ pub struct Task {
     /// [`Store::set_agent_appended_planned_files`], which compares stored text
     /// — so it is the untouched column, never a re-serialisation of it.
     pub agent_appended_planned_files_json: String,
+    /// The requirements this task exists to satisfy, as the planner linked
+    /// them.
+    ///
+    /// Carried because a requirement-coverage gate cannot be written without
+    /// it: a task whose requirements this store did not report is
+    /// indistinguishable from a task that satisfies none, and the two must
+    /// never read the same.
+    pub requirement_ids_json: String,
+    /// The acceptance criteria this task is accountable for proving.
+    ///
+    /// Distinct from `expected_tests_json`, which is *how* the proof is run.
+    /// This is *what* must hold, and a criterion no task owns is a behaviour
+    /// nobody is accountable for building.
+    pub acceptance_criterion_ids_json: String,
 }
 
 /// Concatenates two JSON arrays textually.
