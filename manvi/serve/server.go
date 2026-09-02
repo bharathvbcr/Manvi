@@ -36,6 +36,7 @@ type Server struct {
 	// would make the gate advisory.
 	hardRules      bool
 	allowNeighbors bool
+	allowSameDir   bool
 	posture        Posture
 
 	// out serializes writes. Dispatch is serial (see Serve), so there is one
@@ -59,6 +60,13 @@ type Options struct {
 	HardRules bool
 	// AllowNeighbors mirrors policy.scope.allow_neighbors.
 	AllowNeighbors bool
+	// AllowSameDir mirrors policy.scope.allow_same_dir.
+	//
+	// Carried for the same reason AllowNeighbors is: it is operator posture,
+	// not a per-request argument. It only ever matters when a host declares a
+	// scope, because the same-directory rung is the neighbour rung's fallback
+	// and neither runs without a task to measure against.
+	AllowSameDir bool
 	// Posture decides what a taskless denial means. Empty means PostureHost,
 	// since a process being driven over stdio by another program is by
 	// definition embedded.
@@ -74,6 +82,7 @@ func New(w io.Writer, opts Options) *Server {
 	return &Server{
 		hardRules:      opts.HardRules,
 		allowNeighbors: opts.AllowNeighbors,
+		allowSameDir:   opts.AllowSameDir,
 		posture:        posture,
 		out:            bufio.NewWriter(w),
 	}
@@ -86,6 +95,7 @@ var ops = []string{
 	OpPolicyCheckFile,
 	OpPolicyCheckCommand,
 	OpCapabilityProbe,
+	OpLocalScan,
 	OpChatPrepare,
 	OpChatSettle,
 	OpChatForget,
@@ -276,6 +286,8 @@ func (s *Server) handle(ctx context.Context, req Request) (any, *Error) {
 		return s.checkCommand(req.Params)
 	case OpCapabilityProbe:
 		return s.probe(ctx, req.Params)
+	case OpLocalScan:
+		return s.localScan(ctx, req.Params)
 	case OpChatPrepare:
 		return s.prepare(req.Params)
 	case OpChatSettle:

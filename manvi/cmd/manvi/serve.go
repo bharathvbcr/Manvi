@@ -82,6 +82,11 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		return err
 	}
 
+	sameDir, _, err := reg.Bool(flags.PolicyScopeSameDir)
+	if err != nil {
+		return err
+	}
+
 	// Announced on stderr, never stdout. A gate that was turned off must not be
 	// silent about it, and a host reading protocol on stdout must not have to
 	// skip a banner to find its first response.
@@ -100,6 +105,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	srv := serve.New(os.Stdout, serve.Options{
 		HardRules:      hardRules,
 		AllowNeighbors: neighbors,
+		AllowSameDir:   sameDir,
 		Posture:        posture,
 	})
 	return srv.Serve(ctx, os.Stdin)

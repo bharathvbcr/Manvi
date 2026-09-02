@@ -150,6 +150,8 @@ const (
 	// OpCapabilityProbe reports a model's discovered dimensions and their
 	// provenance.
 	OpCapabilityProbe = "capability.probe"
+	// OpLocalScan lists the model servers running on this machine.
+	OpLocalScan = "local.scan"
 	// OpChatPrepare plans what to shorten before a request goes out.
 	OpChatPrepare = "chat.prepare"
 	// OpChatSettle reads a finished reply: reasoning, tool calls the server

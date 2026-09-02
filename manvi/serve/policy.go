@@ -262,10 +262,12 @@ func (s *Server) evaluateHostWrite(
 		// cannot run rather than pretending it did.
 		Subsystems:     nil,
 		AllowNeighbors: s.allowNeighbors,
-		// The same-directory fallback measures against planned files. With a
-		// declared scope there are some, so it can run; with none the ladder
-		// still stops at task.absent long before it would matter.
-		AllowSameDir: task != nil,
+		// Mirrors policy.scope.allow_same_dir, exactly as the harness's own
+		// gate resolves it. Deriving it from whether a scope was declared
+		// would have hardcoded the rung ON for every host that sends one —
+		// widening what a task authorises, on a plane whose whole purpose is
+		// to report scope faithfully, without any operator asking for it.
+		AllowSameDir: s.allowSameDir,
 		HardRules:    s.hardRules,
 	}
 	d := fileGate.EvaluateFileChange(path, task, op, internal)
