@@ -69,7 +69,7 @@ func TestKeepAliveCommentsDoNotCountAsProgress(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	sse := NewSSEWithStall(pr, "[DONE]", 200*time.Millisecond)
+	sse := NewSSEWithStall(pr, "[DONE]", 200*time.Millisecond, nil)
 	defer func() { _ = sse.Close() }()
 
 	if _, err := sse.Next(); err != nil {
@@ -98,13 +98,24 @@ func TestKeepAliveCommentsDoNotCountAsProgress(t *testing.T) {
 // the whole time — the harness kills the request precisely when the model is
 // doing the most work.
 func TestALongLineArrivingContinuouslyIsNotAStall(t *testing.T) {
+	const gap = 50 * time.Millisecond
+	const limit = 200 * time.Millisecond
+	const chunks = 20
+
+	// The gaps are stated rather than slept, for the reason in manualClock: a
+	// sleep the scheduler overran and a watchdog that fired early are the same
+	// error here. The reader spends the whole line inside one Next, so the
+	// writer is what advances — and it can only ever be one advance ahead,
+	// because io.Pipe hands off synchronously and this writer cannot reach its
+	// next advance until the reader has taken the bytes before it.
+	clock := newManualClock()
 	pr, pw := io.Pipe()
 	go func() {
 		if _, err := pw.Write([]byte(`data: {"args":"`)); err != nil {
 			return
 		}
-		for i := 0; i < 20; i++ {
-			time.Sleep(50 * time.Millisecond)
+		for i := 0; i < chunks; i++ {
+			clock.Advance(gap)
 			if _, err := pw.Write([]byte(strings.Repeat("x", 512))); err != nil {
 				return
 			}
@@ -113,16 +124,20 @@ func TestALongLineArrivingContinuouslyIsNotAStall(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	// Every gap is 50ms, well inside the limit; the line takes a second to
-	// arrive, well outside it.
-	sse := NewSSEWithStall(pr, "[DONE]", 200*time.Millisecond)
+	// Every gap is well inside the limit; the line takes five limits to
+	// arrive, so a bound on how long the line took would abandon it.
+	sse := NewSSEWithStall(pr, "[DONE]", limit, clock)
 	defer func() { _ = sse.Close() }()
+	if n := clock.scheduled(); n != 1 {
+		t.Fatalf("the stream scheduled %d timers on this test's clock, want 1; the "+
+			"watchdog is not running on the clock this test drives", n)
+	}
 
 	event, err := sse.Next()
 	if err != nil {
 		t.Fatalf("a continuously arriving line was abandoned: %v", err)
 	}
-	if want := 20 * 512; len(event.Data) < want {
+	if want := chunks * 512; len(event.Data) < want {
 		t.Fatalf("data = %d bytes, want at least %d", len(event.Data), want)
 	}
 	if _, err := sse.Next(); err != io.EOF {
@@ -146,7 +161,7 @@ func TestAnEndlessLineIsBoundedRatherThanBuffered(t *testing.T) {
 		}
 	}()
 
-	sse := NewSSEWithStall(pr, "[DONE]", 0)
+	sse := NewSSEWithStall(pr, "[DONE]", 0, nil)
 	defer func() { _ = sse.Close() }()
 
 	done := make(chan error, 1)
@@ -197,7 +212,7 @@ func TestTheWatchdogClosesTheBodyAtMostOnce(t *testing.T) {
 		c := &countingCloser{}
 		// Both limits equal, so the phase the clock is in cannot be what makes
 		// this pass or fail.
-		w := newStallWatchdog(c, time.Millisecond, time.Millisecond)
+		w := newStallWatchdog(c, time.Millisecond, time.Millisecond, nil)
 
 		var wg sync.WaitGroup
 		for g := 0; g < 4; g++ {
@@ -267,8 +282,14 @@ func TestConcurrentCloseIsSafeAndReleasesTheBodyOnce(t *testing.T) {
 // Retryable().
 func TestACancelledRequestIsNotRetryable(t *testing.T) {
 	var calls int32
+	// entered closes when the server has actually been reached, which is the
+	// event this test needs and the wall clock cannot supply. See the
+	// cancelling goroutine below.
+	entered := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+		if atomic.AddInt32(&calls, 1) == 1 {
+			close(entered)
+		}
 		// Bounded so a failing assertion cannot wedge the test server's own
 		// shutdown, which waits for outstanding handlers.
 		select {
@@ -280,9 +301,28 @@ func TestACancelledRequestIsNotRetryable(t *testing.T) {
 
 	c := fastClient(t, srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancelled once the request has demonstrably arrived, rather than after a
+	// sleep long enough to assume it has.
+	//
+	// The sleep was 50ms, which is a guess about how fast this machine reaches
+	// a local handler, and under a full-suite run it is the wrong guess often
+	// enough to matter: the cancel landed first, the handler was never
+	// entered, and the case failed with "made 0 requests, want 1" — a red
+	// build reporting nothing about the taxonomy it exists to check. Waiting
+	// for the server makes the ordering a fact instead of a hope, and it can
+	// only be reached later under load, never skipped.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		select {
+		case <-entered:
+			cancel()
+		case <-done:
+			// The request never reached the server, so there is nothing to
+			// cancel; the assertions below are what report that.
+		}
 	}()
 
 	_, err := c.Post(ctx, "/v1/x", nil)
@@ -319,7 +359,7 @@ func TestTimeToFirstTokenIsNotBoundedByTheInterTokenLimit(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	sse := NewSSEWithStall(pr, "[DONE]", 100*time.Millisecond)
+	sse := NewSSEWithStall(pr, "[DONE]", 100*time.Millisecond, nil)
 	defer func() { _ = sse.Close() }()
 
 	event, err := sse.Next()
@@ -339,7 +379,7 @@ func TestTimeToFirstTokenIsNotBoundedByTheInterTokenLimit(t *testing.T) {
 // server is worse than saying nothing.
 func TestTheStallMessageDoesNotAssertWhatTheTransportCannotKnow(t *testing.T) {
 	body := newBlockingBody("data: {\"a\":1}\n\n")
-	sse := NewSSEWithStall(body, "[DONE]", 100*time.Millisecond)
+	sse := NewSSEWithStall(body, "[DONE]", 100*time.Millisecond, nil)
 	defer func() { _ = sse.Close() }()
 
 	if _, err := sse.Next(); err != nil {
@@ -399,7 +439,7 @@ func TestTheFirstReadErrorIsTheOneReported(t *testing.T) {
 	}
 	// The watchdog must be armed: it is what puts the classifying peek in front
 	// of the read.
-	sse := NewSSEWithStall(body, "[DONE]", time.Minute)
+	sse := NewSSEWithStall(body, "[DONE]", time.Minute, nil)
 	defer func() { _ = sse.Close() }()
 
 	_, err := sse.Next()

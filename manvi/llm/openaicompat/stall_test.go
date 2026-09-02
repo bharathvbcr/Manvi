@@ -53,12 +53,23 @@ func wedgeServer(t *testing.T, frames ...string) (*httptest.Server, <-chan struc
 
 func stallAdapter(t *testing.T, baseURL string, stall time.Duration) *Adapter {
 	t.Helper()
+	return stallAdapterOn(t, baseURL, stall, nil)
+}
+
+// stallAdapterOn is stallAdapter against a stated clock. A nil clock is real
+// time, which is what the cases that assert a stall *does* fire want: those
+// only ever wait longer under load, never less, so the wall clock cannot make
+// them wrong. The case that asserts a healthy stream survives is the one that
+// needs time it controls; see TestASlowButLiveStreamOutlivesTheStallTimeout.
+func stallAdapterOn(t *testing.T, baseURL string, stall time.Duration, clock transport.StallClock) *Adapter {
+	t.Helper()
 	return New(Options{
 		Name:         "local",
 		BaseURL:      baseURL,
 		StallTimeout: stall,
 		Validate:     func(llm.Request) error { return nil },
 		Header:       func() (http.Header, error) { return http.Header{}, nil },
+		stallClock:   clock,
 	})
 }
 
@@ -146,14 +157,31 @@ func TestASettledStallIsReportedByResponseToo(t *testing.T) {
 // TestASlowButLiveStreamOutlivesTheStallTimeout. The failure this guards is the
 // opposite one: a watchdog that kills a healthy generation is worse than none,
 // because it makes a slow model unusable and looks like a server fault.
+//
+// The gaps are advanced on a clock this test drives rather than slept through.
+// Sleeping for them made the assertion depend on the runner honouring a 40ms
+// sleep inside a 150ms limit, and under `go test ./...` it does not: this test
+// failed in six of eight full-suite runs and in none of five runs on its own.
+// An overrun sleep and a watchdog that fired early arrive here as the same
+// error, so the wall-clock version could not tell the defect it guards from a
+// busy machine — and a wider window only moves the load at which that recurs,
+// because the ambiguity is in what is being measured, not in how much of it.
+// With the gaps stated, the watchdog can only trip by moving its deadline
+// wrongly. See manualClock.
+//
+// The server no longer paces itself either, for the same reason: what the
+// watchdog measures is the time between the payload lines it reads, and that
+// is now this test's to state. How fast the frames cross the socket is not
+// part of the claim.
 func TestASlowButLiveStreamOutlivesTheStallTimeout(t *testing.T) {
 	const gap = 40 * time.Millisecond
 	const frames = 8
+	const limit = 150 * time.Millisecond
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		for i := 0; i < frames; i++ {
-			time.Sleep(gap)
 			_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"tok"}}]}`+"\n\n")
 			w.(http.Flusher).Flush()
 		}
@@ -165,16 +193,19 @@ func TestASlowButLiveStreamOutlivesTheStallTimeout(t *testing.T) {
 
 	// Total stream duration is well past the limit; every individual gap is
 	// under it. Only a bound on the gap survives this.
-	a := stallAdapter(t, srv.URL, 150*time.Millisecond)
-	// Timed from before the request: the response headers do not arrive until
-	// the first frame does, so starting the clock afterwards would exclude a
-	// gap and understate the stream's real duration.
-	start := time.Now()
+	clock := newManualClock()
+	start := clock.Now()
+	a := stallAdapterOn(t, srv.URL, limit, clock)
 	s, err := a.Stream(context.Background(), llm.Request{Model: "qwen"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer func() { _ = s.Close() }()
+	if n := clock.scheduled(); n != 1 {
+		t.Fatalf("the stream scheduled %d timers on this test's clock, want 1; the "+
+			"watchdog is not running on the clock this test drives, so the gaps "+
+			"below prove nothing about it", n)
+	}
 
 	seen := 0
 	for {
@@ -183,14 +214,23 @@ func TestASlowButLiveStreamOutlivesTheStallTimeout(t *testing.T) {
 			break
 		}
 		if err != nil {
-			t.Fatalf("a slow but live stream was abandoned after %d chunks: %v", seen, err)
+			t.Fatalf("a slow but live stream was abandoned after %d chunks at %s of "+
+				"stated stream time, with no gap longer than %s: %v",
+				seen, clock.Now().Sub(start), gap, err)
 		}
 		if c.Kind == llm.ChunkText {
 			seen++
 		}
+		// Advanced here, between reads, so every advance falls in a gap the
+		// watchdog is being asked to tolerate rather than inside one of its
+		// reads. A watchdog that bounded the whole stream instead of the gap
+		// would have its deadline crossed on this line, and Advance would run
+		// its callback and close the body.
+		clock.Advance(gap)
 	}
-	if elapsed := time.Since(start); elapsed < gap*frames {
-		t.Fatalf("the stream finished in %s, faster than the server could have sent it", elapsed)
+	if elapsed := clock.Now().Sub(start); elapsed <= limit {
+		t.Fatalf("the stream ran for %s against a %s limit; it has to outlast the "+
+			"limit in total or it is not testing what the name says", elapsed, limit)
 	}
 	if seen != frames {
 		t.Fatalf("text chunks = %d, want %d", seen, frames)

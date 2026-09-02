@@ -41,7 +41,7 @@ func (b *blockingBody) Close() error {
 
 func TestStreamThatStopsSendingIsAbandonedAndSaysWhy(t *testing.T) {
 	body := newBlockingBody("data: {\"a\":1}\n\n")
-	sse := NewSSEWithStall(body, "[DONE]", 150*time.Millisecond)
+	sse := NewSSEWithStall(body, "[DONE]", 150*time.Millisecond, nil)
 	defer func() { _ = sse.Close() }()
 
 	if _, err := sse.Next(); err != nil {
@@ -75,21 +75,37 @@ func TestStreamThatStopsSendingIsAbandonedAndSaysWhy(t *testing.T) {
 	}
 }
 
+// TestSlowButLiveStreamIsNotAbandoned. Bytes keep arriving, each gap under the
+// limit, total well over it. A bound on total duration would kill this; a bound
+// on the gap must not.
+//
+// The gaps are stated on a driven clock rather than slept through, so that a
+// sleep the scheduler overran cannot be mistaken here for a watchdog that fired
+// early — the two are the same error to a reader, and that ambiguity is what
+// makes the wall-clock version of this test fail under a full-suite run. See
+// manualClock.
 func TestSlowButLiveStreamIsNotAbandoned(t *testing.T) {
-	// Bytes keep arriving, each gap under the limit, total well over it. A
-	// bound on total duration would kill this; a bound on the gap must not.
+	const gap = 60 * time.Millisecond
+	const limit = 200 * time.Millisecond
+	const want = 6
+
 	pr, pw := io.Pipe()
 	go func() {
-		for i := 0; i < 6; i++ {
-			time.Sleep(60 * time.Millisecond)
+		for i := 0; i < want; i++ {
 			_, _ = pw.Write([]byte("data: {\"i\":1}\n\n"))
 		}
 		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
 		_ = pw.Close()
 	}()
 
-	sse := NewSSEWithStall(pr, "[DONE]", 200*time.Millisecond)
+	clock := newManualClock()
+	start := clock.Now()
+	sse := NewSSEWithStall(pr, "[DONE]", limit, clock)
 	defer func() { _ = sse.Close() }()
+	if n := clock.scheduled(); n != 1 {
+		t.Fatalf("the stream scheduled %d timers on this test's clock, want 1; the "+
+			"watchdog is not running on the clock this test drives", n)
+	}
 
 	frames := 0
 	for {
@@ -98,19 +114,29 @@ func TestSlowButLiveStreamIsNotAbandoned(t *testing.T) {
 			break
 		}
 		if err != nil {
-			t.Fatalf("a slow but live stream was abandoned after %d frames: %v", frames, err)
+			t.Fatalf("a slow but live stream was abandoned after %d frames at %s of "+
+				"stated stream time, with no gap longer than %s: %v",
+				frames, clock.Now().Sub(start), gap, err)
 		}
 		frames++
+		// Between reads, so each advance lands in a gap the watchdog is being
+		// asked to tolerate. A watchdog bounding the whole stream would have
+		// its deadline crossed here.
+		clock.Advance(gap)
 	}
-	if frames != 6 {
-		t.Fatalf("frames = %d, want 6", frames)
+	if frames != want {
+		t.Fatalf("frames = %d, want %d", frames, want)
+	}
+	if elapsed := clock.Now().Sub(start); elapsed <= limit {
+		t.Fatalf("the stream ran for %s against a %s limit; it has to outlast the limit "+
+			"in total or it is not testing what the name says", elapsed, limit)
 	}
 }
 
 func TestStallWatchdogIsOptional(t *testing.T) {
 	body := newBlockingBody("data: {\"a\":1}\n\n")
 	defer func() { _ = body.Close() }()
-	sse := NewSSEWithStall(body, "[DONE]", 0)
+	sse := NewSSEWithStall(body, "[DONE]", 0, nil)
 	if sse.watchdog != nil {
 		t.Fatal("a non-positive limit must not arm the watchdog")
 	}

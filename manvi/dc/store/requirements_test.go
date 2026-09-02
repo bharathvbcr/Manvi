@@ -34,7 +34,12 @@ func plantTaskWithLinks(t *testing.T, reqs, acs string) (*Client, string) {
 	stmt := "INSERT INTO tasks (id, title, description, status, " +
 		"requirement_ids_json, acceptance_criterion_ids_json) VALUES " +
 		"('TASK-1', 'planted', '', 'ready', '" + reqs + "', '" + acs + "');"
-	cmd := exec.Command(sqlite, db, stmt)
+	// Bound to the test's context so a sqlite3 that hangs is killed with the
+	// test rather than outliving it.
+	// #nosec G204 -- sqlite is resolved from PATH by exec.LookPath, db is this
+	// test's own t.TempDir, and stmt is assembled from literals and this
+	// package's own fixtures.
+	cmd := exec.CommandContext(t.Context(), sqlite, db, stmt)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("planting the task: %v\n%s", err, out)
 	}
@@ -92,6 +97,13 @@ func TestTheDomainTaskCarriesItsRequirements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the task: %v", err)
 	}
+	// A nil task with no error is Task's documented answer for an unknown id,
+	// so it means the planting above did not take. Reported rather than
+	// dereferenced: the assertions below would otherwise panic on a nil map
+	// field, and "invalid memory address" does not say which step failed.
+	if task == nil {
+		t.Fatal("the planted TASK-1 was not found; the row never landed")
+	}
 	domain := task.Domain()
 	if len(domain.RequirementIDs) != 1 || domain.RequirementIDs[0] != "REQ-7" {
 		t.Errorf("domain requirement ids = %v, want [REQ-7]", domain.RequirementIDs)
@@ -114,7 +126,9 @@ func TestAnUnlinkedTaskReportsNoRequirementsRatherThanFailing(t *testing.T) {
 	if err != nil {
 		testsupport.Unavailable(t, "sqlite3 is not on PATH, so no task row can be planted")
 	}
-	cmd := exec.Command(sqlite, db,
+	// #nosec G204 -- sqlite is resolved from PATH by exec.LookPath, db is this
+	// test's own t.TempDir, and the statement is a literal.
+	cmd := exec.CommandContext(t.Context(), sqlite, db,
 		"INSERT INTO tasks (id, title, description, status) VALUES ('TASK-1','planted','','ready');")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("planting the task: %v\n%s", err, out)
@@ -123,6 +137,12 @@ func TestAnUnlinkedTaskReportsNoRequirementsRatherThanFailing(t *testing.T) {
 	task, err := c.Task(context.Background(), "TASK-1")
 	if err != nil {
 		t.Fatalf("reading the task: %v", err)
+	}
+	// See above: nil with no error means the planted row is not there, which
+	// is a different failure from a task that reports no requirements — and
+	// this test exists to tell those two apart.
+	if task == nil {
+		t.Fatal("the planted TASK-1 was not found; the row never landed")
 	}
 	if len(task.RequirementIDs) != 0 {
 		t.Errorf("requirement ids = %v, want empty", task.RequirementIDs)

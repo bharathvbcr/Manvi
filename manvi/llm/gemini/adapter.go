@@ -401,7 +401,7 @@ type callAccumulator struct {
 // missing number, it is an unbounded request.
 func newStream(body io.ReadCloser, model string, maxTokensApplied int) *stream {
 	return &stream{
-		sse:       transport.NewSSEWithStall(body, DoneSentinel, transport.DefaultHostedStallTimeout),
+		sse:       transport.NewSSEWithStall(body, DoneSentinel, transport.DefaultHostedStallTimeout, nil),
 		model:     model,
 		textIndex: -1,
 		reasonIdx: -1,
