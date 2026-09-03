@@ -417,7 +417,10 @@ fi
 # may not grow.
 step "Go — nil analysis"
 if have nilaway; then
-  nilaway_max=79
+  # 79 until the store's two transports stopped each re-deriving the command
+  # from a variadic they had not checked was non-empty; naming it once in run()
+  # removed the finding and the panic under it. Ratchets only go down.
+  nilaway_max=78
   # Counted off a colour-stripped copy. The first version of this line matched
   # 'error: Potential nil panic detected' and reported 0 against a real 79,
   # because nilaway writes the verb in red and the ANSI reset sits between

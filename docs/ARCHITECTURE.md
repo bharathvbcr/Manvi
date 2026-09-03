@@ -75,7 +75,7 @@ flowchart TB
 
 ### Architectural Axioms
 
-1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries (`fork`/`exec`) exchanging single line-delimited JSON objects over `stdin`/`stdout`. Linking them via `cgo` would sacrifice `CGO_ENABLED=0`, instantaneous cross-compilation, static binary portability, and process isolation.
+1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries, exchanging JSON objects over `stdin`/`stdout`. Linking them via `cgo` would sacrifice `CGO_ENABLED=0`, instantaneous cross-compilation, static binary portability, and process isolation. What the axiom fixes is the *process*, not a fork per call: `dcstore` is additionally reachable as a `serve` session that answers many requests over one process, holding one SQLite connection across them, and gives up none of the four.
 2. **Mutual Exclusion in Storage, Not Application Code**: Multi-agent task concurrency is guaranteed by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`), not by an in-memory lock in Go.
 3. **Session Log Invariant**: The history provided to LLMs is *always* projected on demand from the append-only session log, never accumulated in volatile local memory.
 4. **Zero Third-Party Runtime Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines, custom damage-diffed terminal painting, and zero external packages.

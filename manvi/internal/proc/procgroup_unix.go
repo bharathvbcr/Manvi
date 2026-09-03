@@ -34,3 +34,36 @@ func ConfigureGroup(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+// ConfigureOwnGroup runs a child as its own process-group leader without arming
+// a cancel.
+//
+// This is ConfigureGroup's counterpart for a child that outlives a single call.
+// ConfigureGroup sets cmd.Cancel, which os/exec accepts only on a command built
+// with CommandContext and which is the right shape for a one-shot invocation
+// bounded by its caller's deadline. A persistent child has no such deadline to
+// be killed by — it is ended explicitly — so the group is set here and
+// addressed by KillGroup at that point.
+//
+// Two things follow from the group, and both are why this is not merely
+// Setpgid inline at the call site. The owner can reach descendants the child
+// spawned, which it otherwise could not: killing the direct child leaves a
+// daemon it started running with the inherited pipes. And a group kill aimed at
+// the child cannot reach this harness — sharing manvi's group made "kill the
+// child's group" and "kill manvi" the same act.
+func ConfigureOwnGroup(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+}
+
+// KillGroup SIGKILLs the group led by pid. Best-effort by design: the group may
+// already be gone, and reporting a failure to kill an already-dead process
+// helps nobody.
+func KillGroup(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+}

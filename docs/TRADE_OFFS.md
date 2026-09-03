@@ -55,7 +55,28 @@ Discovery locates binaries automatically:
 
 Loosening the two-toolchain requirement would mean reimplementing the lease store in Go. However, the invariant it protects is a partial unique index in the SQLite schema (`WHERE status = 'active'`). Having two implementations of that would create two competing owners of a single guarantee—the exact architectural defect the dual-plane split was created to prevent.
 
-The boundary stays a clean process boundary: stdio, one JSON object per call, zero cgo.
+The boundary stays a clean process boundary: stdio, JSON objects, zero cgo.
+
+### The Process Is Kept; The Fork Per Call Is Not
+
+A store call used to be a whole process. Measured from `manvi/dc/store` against the release binary on an idle machine, that was **~3.9ms per call, of which ~2.1ms was `fork`/`exec`** (the floor, measured against `/usr/bin/true`) and most of the rest was opening SQLite and verifying its schema — paid on the path *every* write-gate `Diagnose` and every `Acquire` goes through.
+
+The client now keeps a small pool of long-lived `dcstore serve` processes, each holding one SQLite connection across many requests: **~3.9ms → ~0.03ms p50 on an idle machine, about 100x.** Both paths inflate under load and the ratio narrows with it — repeated back-to-back trials on a busy machine measured 19x–104x — so the honest claim is one to two orders of magnitude, not a fixed number. A binary that predates `serve` refuses it from argv before reading any request, so the client falls back to one process per call — the command provably did not run, which is what makes retrying it safe.
+
+None of the properties above move. It is still a separate process, still stdio, still no cgo, still built by another toolchain.
+
+### Why Not FFI
+
+The obvious alternatives were evaluated against the invariants this page states, and each gives up at least one:
+
+| Route | What it costs here |
+|---|---|
+| `cgo` bindings (`uniffi-bindgen-go`, `rust2go`) | `CGO_ENABLED=1`, and a shared library on `LD_LIBRARY_PATH`. Forfeits the static binary and simple cross-compilation in one step. |
+| `purego` | Keeps cgo off, but [cannot statically embed](https://github.com/ebitengine/purego) — it needs a per-platform `.dylib`/`.so` shipped and `dlopen`ed at runtime. Also puts the store back in this process, so a Rust fault takes the harness with it. |
+| Assembly trampolines (`rustgo`) | [Archived since 2019](https://github.com/FiloSottile/ed25519-dalek-rustgo); a proof of concept against Go's pre-1.17 internal ABI. |
+| Wasm (`wazero`) | The only one that keeps cgo off, the static binary, cross-compilation *and* fault isolation — and the one that cannot host **this** component. SQLite under WASI has no POSIX file locking (the build falls back to dot-locks) and no WAL, and `Store::open` refuses a database it cannot put in WAL mode. The lease guarantee is the partial unique index across processes; wasm would trade it for exactly the process-local lock this design exists to avoid. |
+
+The cost being paid was never the process. It was the fork, and that is removable without touching any of it.
 
 ---
 

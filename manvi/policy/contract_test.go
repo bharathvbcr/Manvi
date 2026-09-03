@@ -284,7 +284,6 @@ func TestCleanAgreesWithTheClassification(t *testing.T) {
 		{Action: Deny, Rule: RuleSecretPath, Severity: Hard},
 	}
 	for _, d := range cases {
-		d := d
 		if got := classify(&d); (got == "clean") != d.Clean() {
 			t.Errorf("Clean()=%v but classification=%q for %+v", d.Clean(), got, d)
 		}
