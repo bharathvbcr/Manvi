@@ -2,7 +2,17 @@
 
 # MANVI
 
+<p align="left">
+  <a href="https://manvi.vbcr.dev/"><img src="https://img.shields.io/badge/website-manvi.vbcr.dev-3B82F6?style=flat&logo=safari&logoColor=white" alt="Website"></a>
+  <img src="https://img.shields.io/badge/parity_cases-1%2C031_certified-emerald" alt="Parity Cases">
+  <img src="https://img.shields.io/badge/architecture-pure_Go_%2B_Rust_zero--CGO-orange" alt="Architecture">
+</p>
+
 A lightweight, high-performance coding-agent harness in pure Go and Rust — designed for local models, customizable for specialized tools and use cases, and embeddable in other applications.
+
+<p>
+  <a href="https://manvi.vbcr.dev/"><strong>Explore the Live Interactive Architecture &amp; Benchmark Showcase (manvi.vbcr.dev) &rarr;</strong></a>
+</p>
 
 **MANVI is the unification layer; [DevCouncil](https://github.com/bharathvbcr/DevCouncil) is the components.** DevCouncil owns the analysis components — `devmap` (code graph), `dcstore` (tasks and leases), `dcverify` (diff, rigor, coverage) and `dcgrep` (search) — each a standalone binary with a JSON-on-stdio contract, and each being ported to Rust/Go as the port proceeds. MANVI is the harness that unifies them into a working agent and reaches every one of them across a process boundary, linking none. That is what lets MANVI drop into another application as a single static binary. See [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md).
 
