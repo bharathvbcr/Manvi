@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"manvi/internal/proc"
 )
 
 // ServerConfig configures an MCP server process.
@@ -231,7 +233,7 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 
 	// The child's environment is constructed, never inherited. See buildEnv.
 	cmd.Env = buildEnv(cfg, cmd.Dir)
-	setOwnProcessGroup(cmd)
+	proc.ConfigureOwnGroup(cmd)
 	cmd.WaitDelay = waitDelay
 
 	stdin, err := cmd.StdinPipe()
@@ -1047,7 +1049,7 @@ func (c *Client) Close() error {
 			// watcher — holding the pipes it inherited and outliving the
 			// session that started it. The group is the server's own, so this
 			// cannot reach anything else this harness is running.
-			killProcessGroup(c.cmd.Process.Pid)
+			proc.KillGroup(c.cmd.Process.Pid)
 			_ = c.cmd.Process.Kill()
 		}
 		// A kill without a reap leaves the wait-goroutine running and a

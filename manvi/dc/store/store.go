@@ -3,8 +3,15 @@
 // The execution plane is Go; the state store is Rust, because SQLite is. The
 // two are joined by a process rather than by cgo: linking them in-process would
 // forfeit CGO_ENABLED=0, simple cross-compilation, and the single static binary
-// that the Go side was chosen for in the first place. So this package execs the
-// `dcstore` binary and reads one JSON object from its stdout.
+// that the Go side was chosen for in the first place. So this package runs the
+// `dcstore` binary and reads JSON objects from its stdout.
+//
+// The process is kept; the fork per call is not. A store call used to be a
+// whole process — ~3.9ms measured from here on an idle machine, of which
+// ~2.1ms was fork and exec — on the path every write-gate check goes through. The client now holds a small
+// pool of long-lived store processes and sends each of them many requests, and
+// falls back to one process per call for a binary that predates that. See
+// serve.go, which also records why the boundary itself stays a process.
 //
 // The boundary is deliberately narrow. Everything that decides *whether* work
 // may proceed — mutual exclusion, expiry, ownership — lives on the Rust side
@@ -22,6 +29,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"manvi/dc"
@@ -38,6 +46,16 @@ type Client struct {
 	// hung one means something is wrong with the filesystem or the lock, and
 	// blocking a turn forever is the wrong answer to that.
 	Timeout time.Duration
+
+	// pool holds the persistent store processes this client talks to. It is
+	// lazy: a client that is never called starts nothing. See serve.go.
+	pool servePool
+
+	// oneShot records that this binary does not understand `serve`, so the
+	// discovery is made once rather than on every call. It is only ever set
+	// from false to true, and only after a refusal that provably ran no
+	// command.
+	oneShot atomic.Bool
 }
 
 // New builds a client with a default timeout.
@@ -583,6 +601,23 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// timeout is the bound one call runs under.
+func (c *Client) timeout() time.Duration {
+	if c.Timeout <= 0 {
+		return 10 * time.Second
+	}
+	return c.Timeout
+}
+
+// run performs one store command.
+//
+// It prefers a pooled persistent process (serve.go) and falls back to one
+// process per call. The fallback is not a silent one: it is entered only when
+// the binary refuses `serve` from argv, which it does before reading any
+// request, so the command provably did not run and making it again is safe.
+// Every other served failure is reported rather than retried, because a call
+// that may have been applied must not be applied twice — a second `acquire`
+// would look like contention with itself.
 func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	if c.Binary == "" {
 		return nil, errors.New("store: no dcstore binary configured")
@@ -590,14 +625,42 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	if c.DB == "" {
 		return nil, errors.New("store: no database path configured")
 	}
-
-	timeout := c.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
+	// Refused rather than indexed. Every caller in this package passes a
+	// command, so an empty argument vector is a caller bug — and reaching the
+	// store with one would either panic on args[0] or, worse, run whatever the
+	// store makes of no command at all. Naming the command once here is also
+	// what keeps the two transports from each re-deriving it.
+	if len(args) == 0 {
+		return nil, errors.New("store: a command is required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	command := args[0]
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
+	if !c.oneShot.Load() {
+		result, err := c.runServed(ctx, command, args)
+		switch {
+		case errors.Is(err, errServeUnsupported):
+			c.oneShot.Store(true)
+		case err != nil:
+			return nil, err
+		default:
+			// A served failure carries errStoreFatal in the place the one-shot
+			// path carries a non-zero exit, so decodeReply reaches the same
+			// verdict about the same bytes either way.
+			var fatal error
+			if result.fatal {
+				fatal = errStoreFatal
+			}
+			return decodeReply(command, result.body, result.overflow, result.stderr, fatal)
+		}
+	}
+	return c.runOneShot(ctx, command, args)
+}
+
+// runOneShot performs one store command as its own process.
+func (c *Client) runOneShot(ctx context.Context, command string, args []string) (*response, error) {
 	full := append([]string{"--db", c.DB}, args...)
 	cmd := exec.CommandContext(ctx, c.Binary, full...)
 	stdout := &cappedBuffer{limit: maxOutput}
@@ -630,9 +693,9 @@ func (c *Client) run(ctx context.Context, args ...string) (*response, error) {
 	runErr, timedOut := proc.RunBounded(ctx, cmd.Run)
 	if timedOut {
 		return nil, fmt.Errorf("store: %s did not return within %s (the process could not be started or reaped): %w",
-			args[0], timeout, ctx.Err())
+			command, c.timeout(), ctx.Err())
 	}
-	return decodeReply(args[0], stdout.buf.Bytes(), stdout.overflow, stderr.buf.Bytes(), runErr)
+	return decodeReply(command, stdout.buf.Bytes(), stdout.overflow, stderr.buf.Bytes(), runErr)
 }
 
 // decodeReply turns one invocation's raw streams into either a reply or a

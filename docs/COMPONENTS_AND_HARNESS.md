@@ -32,7 +32,7 @@ flowchart TB
     end
 
     subgraph Boundary["Process boundary — JSON over stdio"]
-        Exec["fork/exec, one JSON object per call"]
+        Exec["JSON over stdio<br/>one call per process, or a serve session"]
     end
 
     subgraph Components["DevCouncil — the building blocks (Rust/Go)"]
@@ -81,10 +81,11 @@ component's name.
 Every DevCouncil component, current or future, meets all of these. They are what
 make a component consumable by an agent that is not MANVI.
 
-1. **A process, not a library.** `fork`/`exec` with line-delimited JSON on stdio,
-   or an MCP server. Never a linked library — linking would forfeit
-   `CGO_ENABLED=0`, static binaries, cross-compilation and process isolation, and
-   would make the component's language the consumer's problem.
+1. **A process, not a library.** JSON on stdio — one call per process, or a
+   `serve` session answering many over one, as `dcstore` does — or an MCP
+   server. Never a linked library: linking would forfeit `CGO_ENABLED=0`,
+   static binaries, cross-compilation and process isolation, and would make the
+   component's language the consumer's problem.
 2. **Every outcome is JSON on stdout, including failures.** A caller never parses
    prose or infers from an exit code alone. The exit code is a coarse duplicate.
 3. **A contended or negative result is a normal answer, not an error.** `dcstore

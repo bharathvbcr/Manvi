@@ -132,12 +132,21 @@ func TestEverySubprocessBoundaryIsGroupIsolated(t *testing.T) {
 	// it would accept a call belonging to some other command. What actually
 	// matters is that no file execs more children than it isolates.
 	//
-	// Two packages configure the group through their own helper, each for a
-	// documented reason the shared one does not cover: the shell tool merges
-	// into a SysProcAttr it also uses for other fields, and the MCP client
-	// manages long-lived servers rather than one bounded call. Both are
-	// counted.
-	configures := []string{"proc.ConfigureGroup(cmd)", "ConfigureGroup(cmd)", "setOwnProcessGroup(cmd)"}
+	// Two shared helpers, and one package that still has its own. ConfigureGroup
+	// is for a child bounded by one caller's deadline and arms cmd.Cancel;
+	// ConfigureOwnGroup is for a child that outlives any single call — the MCP
+	// servers and the store's serve sessions — and so is ended explicitly
+	// rather than by a context. Both set Setpgid, which is what this test is
+	// actually asserting. The shell tool in devcouncil keeps setOwnProcessGroup
+	// because it merges into a SysProcAttr it also uses for other fields.
+	//
+	// A helper missing from this list reads exactly like a call site that never
+	// isolated anything, so adding one here is part of adding one at all.
+	configures := []string{
+		"proc.ConfigureGroup(cmd)", "ConfigureGroup(cmd)",
+		"proc.ConfigureOwnGroup(cmd)", "ConfigureOwnGroup(cmd)",
+		"setOwnProcessGroup(cmd)",
+	}
 
 	var offenders []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
