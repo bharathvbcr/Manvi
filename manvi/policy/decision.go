@@ -90,6 +90,41 @@ const (
 	// to hand the gate an unbounded amount of work on the way to a verdict
 	// that was going to be a refusal anyway.
 	RuleCommandTooLong RuleID = "command.too_long"
+	// RuleCommandDirectoryChange refuses a command that moves the shell's
+	// working directory.
+	//
+	// It belongs beside the constructs above because it is the same defect in a
+	// different place: the ladder's reading of the line stops describing what
+	// runs. Every relative path in a command — a redirection target most of
+	// all — is resolved by the gate against the working tree it judges for, and
+	// by the shell against wherever the shell happens to be standing. `cd` is
+	// what makes those two different. `cd ../outside && echo x > allowed.txt`
+	// was judged as a write to <root>/allowed.txt, which the task permitted,
+	// and performed as a write to the sibling directory's file, which nothing
+	// examined. An in-tree `cd sub` is the same defect with a smaller blast
+	// radius: the gate judges <root>/f and the shell writes <root>/sub/f, so
+	// scope is enforced against a file nobody touched.
+	//
+	// Refused rather than modelled. Tracking the directory through a chain
+	// would have to be exactly right about subshells, pipelines and every
+	// construct that scopes a change — and a model that is nearly right about
+	// where a write lands is worse than none, because it reports a precise
+	// verdict about the wrong file. The working directory is a property of the
+	// execution context, which the caller owns; it is not something an
+	// otherwise-approved string may change underneath the gate.
+	RuleCommandDirectoryChange RuleID = "command.directory_change"
+	// RuleSecretRead refuses reading a path that holds credentials.
+	//
+	// Separate from RuleSecretPath, which is the write refusal, because the two
+	// answer different questions and a log that spells them the same way cannot
+	// say which one happened. Reading is the question the harness was not
+	// asking at all: a write to .env was refused as path.secret while a read of
+	// the same file returned its contents, and the credential scrubber — an
+	// exact-value replacement over credentials this process was handed — has
+	// nothing to say about a database password it has never seen. Authorising
+	// the read and redacting known values are different controls; this is the
+	// first one.
+	RuleSecretRead RuleID = "path.secret_read"
 )
 
 // severities is the authoritative classification. A rule absent from this map
@@ -111,17 +146,19 @@ var severities = map[RuleID]Severity{
 	// negotiable. The three git-safety rules protect the verification gates
 	// themselves: a --no-verify commit or a force push can erase the evidence
 	// the whole system reasons about, and no scope decision authorises that.
-	RuleCommandEmpty:          Hard,
-	RuleCommandBypassFlag:     Hard,
-	RuleCommandForcePush:      Hard,
-	RuleCommandProtectedReset: Hard,
-	RuleCommandProtectedPush:  WarnSeverity,
-	RuleCommandNoLease:        Soft,
-	RuleCommandNotAllowed:     Soft,
-	RuleCommandSubstitution:   Hard,
-	RuleCommandHeredoc:        Hard,
-	RuleCommandReparse:        Hard,
-	RuleCommandTooLong:        Hard,
+	RuleCommandEmpty:           Hard,
+	RuleCommandBypassFlag:      Hard,
+	RuleCommandForcePush:       Hard,
+	RuleCommandProtectedReset:  Hard,
+	RuleCommandProtectedPush:   WarnSeverity,
+	RuleCommandNoLease:         Soft,
+	RuleCommandNotAllowed:      Soft,
+	RuleCommandSubstitution:    Hard,
+	RuleCommandHeredoc:         Hard,
+	RuleCommandReparse:         Hard,
+	RuleCommandTooLong:         Hard,
+	RuleCommandDirectoryChange: Hard,
+	RuleSecretRead:             Hard,
 }
 
 // Subject says what a rule's Target names: a path on disk, or a shell command.
@@ -163,17 +200,20 @@ var subjects = map[RuleID]Subject{
 	RuleOperation:       SubjectPath,
 	RuleProtectedWrite:  SubjectPath,
 
-	RuleCommandEmpty:          SubjectCommand,
-	RuleCommandNoLease:        SubjectCommand,
-	RuleCommandNotAllowed:     SubjectCommand,
-	RuleCommandBypassFlag:     SubjectCommand,
-	RuleCommandForcePush:      SubjectCommand,
-	RuleCommandProtectedReset: SubjectCommand,
-	RuleCommandProtectedPush:  SubjectCommand,
-	RuleCommandSubstitution:   SubjectCommand,
-	RuleCommandHeredoc:        SubjectCommand,
-	RuleCommandReparse:        SubjectCommand,
-	RuleCommandTooLong:        SubjectCommand,
+	RuleCommandEmpty:           SubjectCommand,
+	RuleCommandNoLease:         SubjectCommand,
+	RuleCommandNotAllowed:      SubjectCommand,
+	RuleCommandBypassFlag:      SubjectCommand,
+	RuleCommandForcePush:       SubjectCommand,
+	RuleCommandProtectedReset:  SubjectCommand,
+	RuleCommandProtectedPush:   SubjectCommand,
+	RuleCommandSubstitution:    SubjectCommand,
+	RuleCommandHeredoc:         SubjectCommand,
+	RuleCommandReparse:         SubjectCommand,
+	RuleCommandTooLong:         SubjectCommand,
+	RuleCommandDirectoryChange: SubjectCommand,
+
+	RuleSecretRead: SubjectPath,
 }
 
 // SubjectOf returns what a rule's Target names.

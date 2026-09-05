@@ -76,6 +76,18 @@ type LLMRequest struct {
 // An error now means the listener itself failed. It does not keep the turn
 // open — a check that could not run has not asked for anything — and it is
 // never silent: the turn closes with Outcome.Sensor degraded.
+// TurnStarting is published once, before the turn takes its first step and
+// therefore before any tool has run.
+//
+// It exists so a listener can record what the working tree looked like before
+// the agent touched it. Everything downstream that asks "what did this turn
+// change" needs that state, and there is exactly one moment at which it can be
+// read: a listener that waits for TurnStopping is reading the answer, not the
+// question.
+type TurnStarting struct {
+	Turn int
+}
+
 type TurnStopping struct {
 	Turn     int
 	Steps    int
@@ -97,6 +109,16 @@ type TurnStopping struct {
 	// checker that reads Wrote as the complete set would certify files it never
 	// looked at, so the incompleteness travels with the list.
 	WroteTruncated bool
+	// UnenumeratedEffects reports that a tool changed the working tree without
+	// naming what it changed — the shell, in practice.
+	//
+	// It is the difference between "nothing was written" and "something was
+	// written and no handler could say what", which Wrote alone cannot express.
+	// A turn that edits a.go natively and touches b.go through a command has a
+	// one-entry Wrote list, and a checker reading only that list examines a.go
+	// and certifies the turn. The end-of-turn check reads this to know its own
+	// coverage is partial.
+	UnenumeratedEffects bool
 	// Truncated reports that the response ending this turn hit the output cap.
 	// A cut-off answer is not a finished one, and a checkpoint that certified it
 	// would be certifying a sentence that stops mid-word.
@@ -684,6 +706,9 @@ type Outcome struct {
 	Wrote []string
 	// WroteTruncated is true when more paths were changed than Wrote lists.
 	WroteTruncated bool
+	// UnenumeratedEffects reports a mutation no handler named a path for. See
+	// TurnStopping.UnenumeratedEffects.
+	UnenumeratedEffects bool
 	// Sensor is what the end-of-turn check concluded. It is on the outcome so
 	// that no face can render a turn whose verification failed as a turn that
 	// finished: a natural stop with text and no tool calls is otherwise
@@ -709,6 +734,14 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		return Outcome{}, err
 	}
 	currentTurn := turnEvent.Turn
+	// Before the first step, so a listener recording the pre-turn tree records
+	// it before anything can have changed. Its failure ends the turn: a
+	// listener that could not establish a baseline would otherwise have its
+	// silence read as "nothing had changed yet", which is the same shape as the
+	// defect it exists to fix.
+	if err := bus.Serial(l.bus, ctx, &TurnStarting{Turn: currentTurn}); err != nil {
+		return Outcome{}, err
+	}
 	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.cfg.SystemPrompt {
 		if _, err := l.log.Append(session.SystemPrompt,
 			session.SystemPromptData{Text: l.cfg.SystemPrompt}); err != nil {
@@ -943,6 +976,15 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 				// repeat or stall refusal above never reached a handler.
 				if l.progress.mutated(call.Name, result) {
 					out.Mutated = true
+					// A call that changed something and named no path leaves
+					// effects nothing downstream can enumerate. Recorded here,
+					// beside Mutated, because this is the only place that knows
+					// both facts about the same call: by the time the paths are
+					// merged into out.Wrote, a shell command that wrote nothing
+					// is indistinguishable from a native write that reported.
+					if len(result.Wrote) == 0 {
+						out.UnenumeratedEffects = true
+					}
 				}
 				out.Wrote, out.WroteTruncated = trackWrites(out.Wrote, out.WroteTruncated, result.Wrote)
 			}
@@ -1095,8 +1137,9 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 			checkpoint := &TurnStopping{
 				Turn: currentTurn, Steps: out.Steps, Response: response,
 				Mutated: out.Mutated, Wrote: out.Wrote,
-				WroteTruncated: out.WroteTruncated,
-				Truncated:      out.FinalTruncated, Empty: out.FinalEmpty,
+				WroteTruncated:      out.WroteTruncated,
+				UnenumeratedEffects: out.UnenumeratedEffects,
+				Truncated:           out.FinalTruncated, Empty: out.FinalEmpty,
 				Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
 			}
 			if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {

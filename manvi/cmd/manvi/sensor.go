@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"manvi/agent"
 	"manvi/agents"
@@ -50,7 +51,8 @@ import (
 // would test the wrong thing slowly.
 type pathVerifier interface {
 	// VerifyPaths runs the end-of-turn check over the paths a turn changed.
-	VerifyPaths(ctx context.Context, paths []string, command string) devcouncil.PathReport
+	VerifyPaths(ctx context.Context, paths []string, command string, baseline devcouncil.Baseline) devcouncil.PathReport
+	CaptureBaseline(ctx context.Context) devcouncil.Baseline
 	// ExistingPaths splits a path list by what is still on disk, so a deleted
 	// file is a stated exclusion rather than a silent one.
 	ExistingPaths(paths []string) (present, missing []string)
@@ -68,6 +70,11 @@ type sensor struct {
 	// command is the operator's own verification command. See
 	// operatorVerifyCommand for why it may only come from operator scope.
 	command string
+	// baseline is the tree recorded when the turn began, consumed when the
+	// turn's check runs. Guarded because the two events reach this listener on
+	// the bus and nothing promises they arrive on one goroutine.
+	baselineMu sync.Mutex
+	baseline   devcouncil.Baseline
 	// criticDispatched bounds the escalation to one critic per turn. A second
 	// critic on the same turn would be asked the same question about the same
 	// tree, and would cost a full child turn to produce the answer already in
@@ -126,6 +133,9 @@ func operatorFetchHosts() []string {
 func attachSensor(b *bus.Bus, s *sensor) error {
 	if b == nil || s == nil {
 		return nil
+	}
+	if _, err := bus.OnSerial(b, s.begin); err != nil {
+		return err
 	}
 	_, err := bus.OnSerial(b, s.check)
 	return err
@@ -201,6 +211,38 @@ func (s *sensor) check(ctx context.Context, e *agent.TurnStopping) error {
 	return nil
 }
 
+// begin records the tree before the turn changes anything.
+//
+// It runs on the turn-start event rather than lazily at check time for the one
+// reason that matters: by check time the changes have happened, and a baseline
+// captured then is a photograph of the finish line.
+func (s *sensor) begin(ctx context.Context, e *agent.TurnStarting) error {
+	if s.native == nil {
+		return nil
+	}
+	b := s.native.CaptureBaseline(ctx)
+	s.baselineMu.Lock()
+	s.baseline = b
+	s.baselineMu.Unlock()
+	return nil
+}
+
+// takeBaseline consumes the recorded baseline, so a turn that somehow ran
+// without a start event gets an uncaptured one — and is told so — rather than
+// silently inheriting the previous turn's tree, which would attribute this
+// turn's changes to a state two turns old.
+func (s *sensor) takeBaseline() devcouncil.Baseline {
+	s.baselineMu.Lock()
+	defer s.baselineMu.Unlock()
+	b := s.baseline
+	s.baseline = devcouncil.Baseline{}
+	if !b.Captured() && b.Note == "" {
+		b.Note = "no pre-turn baseline was recorded, so this turn's changes are attributed " +
+			"against the last commit and may include work that was already in the tree"
+	}
+	return b
+}
+
 // run performs the check itself.
 func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.PathReport {
 	if s.native == nil {
@@ -216,20 +258,30 @@ func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.Path
 	// silent skip — and a silent skip is the failure mode this whole file
 	// exists to remove.
 	present, missing := s.native.ExistingPaths(e.Wrote)
-	report := s.native.VerifyPaths(ctx, present, s.command)
+	report := s.native.VerifyPaths(ctx, present, s.command, s.takeBaseline())
 	for _, m := range missing {
-		report.Skipped = append(report.Skipped, m+": no longer on disk")
+		// Omitted, not Skipped. A path that is gone was never handed to the
+		// scoped diff, so nothing examined it and nothing can say what the turn
+		// did to it — that is a gap in coverage, not a decision not to look.
+		report.Omitted = append(report.Omitted, m+": no longer on disk")
 	}
 
-	// A turn that mutated and named no path at all is the shell case: the model
-	// changed something through a command, and no handler could say what. The
-	// operator's own command still covers it; nothing else does, and that gap
-	// is stated rather than passed over.
-	if len(e.Wrote) == 0 && s.command == "" {
+	// A turn that changed something through a command is a turn whose effects no
+	// handler could enumerate. The operator's own command still covers it;
+	// nothing else does, and that gap is stated rather than passed over.
+	//
+	// The test is on UnenumeratedEffects rather than on an empty Wrote list,
+	// and the difference is the whole point. A turn that edits a.go natively
+	// and touches b.go through the shell has a one-entry list, so the empty
+	// test passed it: the gates read a.go, found nothing wrong, and certified a
+	// turn half of whose changes nothing had looked at. A non-empty list is
+	// evidence about the paths in it and about nothing else.
+	if e.UnenumeratedEffects && s.command == "" {
 		report.Verdict = devcouncil.VerdictDegraded
 		report.Degraded = append(report.Degraded,
-			"this turn changed something through a command, so no file list was available; "+
-				"set "+verifyCommandEnv+" to have the project's own check run here")
+			"this turn changed something through a command, so the changed files could not be "+
+				"listed and this check does not cover them; set "+verifyCommandEnv+
+				" to have the project's own check run here")
 	}
 	return report
 }

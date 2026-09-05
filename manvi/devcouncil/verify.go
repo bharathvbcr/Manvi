@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -517,19 +518,68 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 // otherwise says what was dropped. It is not an error: a caller with a
 // degradation channel of its own can report the shortfall and carry on with
 // the part it has. What no caller may do is treat a non-empty note as nothing.
+// gitCommand builds every git child this package runs.
+//
+// One construction site rather than one per caller, so the environment, the
+// process group and the wait delay cannot drift between the command that reads
+// a diff and the command that writes a tree — and so the properties below are
+// stated once instead of being re-derived by whoever adds the next runner.
+//
+// index, when non-empty, points git at a scratch index through GIT_INDEX_FILE,
+// which is what lets CaptureBaseline record the tree without touching the
+// repository's real one.
+//
+// core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead of
+// C-style octal escapes. It is set here rather than in either parser because
+// crates/dc-verify reads this same format: unquoting on one side only would
+// give the two readers different answers for the same file.
+//
+// WaitDelay is load-bearing. Without it, cancelling the context kills git but
+// the output copy keeps waiting on a pipe any grandchild — a hook, a credential
+// helper — still holds open, so a bounded context still produces an unbounded
+// wait.
+func gitCommand(ctx context.Context, root, index string, args []string) *exec.Cmd {
+	full := append([]string{"-c", "core.quotePath=false"}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	proc.ConfigureGroup(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Dir = root
+	if index != "" {
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
+	}
+	return cmd
+}
+
+// runGitEnv runs git against a scratch index, returning stdout and stderr.
+//
+// Separate from runGitCapped because the two have opposite needs: that one
+// captures a diff whose size is the model's to abuse and therefore caps it,
+// while these commands produce an object id or nothing and must not be
+// truncated. GIT_INDEX_FILE is what keeps the repository's real index out of
+// it — see CaptureBaseline.
+func runGitEnv(ctx context.Context, root, index string, args ...string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+
+	cmd := gitCommand(ctx, root, index, args)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &limitWriter{w: &stderr, limit: maxGitStderrBytes}
+
+	err, timedOut := proc.RunBounded(ctx, cmd.Run)
+	if timedOut {
+		return "", "", fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+	}
+	return stdout.String(), stderr.String(), err
+}
+
 func runGitCapped(ctx context.Context, root string, limit int, args ...string) (string, string, error) {
 	// core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead
 	// of C-style octal escapes. It is set here rather than in either parser
 	// because crates/dc-verify reads this same format: unquoting on one side
 	// only would give the two readers different answers for the same file.
-	full := append([]string{"-c", "core.quotePath=false"}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
-	proc.ConfigureGroup(cmd)
-	// Without this, cancelling the context kills git but the output copy keeps
-	// waiting on a pipe any grandchild — a hook, a credential helper — still
-	// holds open, so a bounded context still produces an unbounded wait.
-	cmd.WaitDelay = 5 * time.Second
-	cmd.Dir = root
+	cmd := gitCommand(ctx, root, "", args)
 
 	var stdout, stderr bytes.Buffer
 	outCap := &limitWriter{w: &stdout, limit: limit}

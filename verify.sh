@@ -524,11 +524,72 @@ else
   notcovered 'sqlite3 not on PATH — schema readability is unverified here'
 fi
 
+# Python interop, executed rather than inferred.
+#
+# This gate used to print "covered: Rust and Python drive one state.sqlite" on
+# the strength of two path tests — an executable and a directory — and ran no
+# transaction at all. The presence of an interpreter is not evidence that two
+# languages agree about a database, which is the whole claim. What follows
+# performs the claim: Rust acquires, Python reads that lease back and is refused
+# a conflicting one by the schema itself, Rust releases, Python sees it gone.
 step "Cross-language — Python interop"
+interopdb="$(mktemp -d)/state.sqlite"
+interop_acquire="$(crates/target/debug/dcstore --db "$interopdb" acquire \
+  --task INTEROP-1 --owner rust --ttl-seconds 60)" \
+  || fail "dcstore could not acquire the interop lease"
+interop_token="$(printf '%s' "$interop_acquire" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["lease"]["token"])')" \
+  || fail "the acquire reply carried no lease token: $interop_acquire"
+python3 - "$interopdb" <<'PY' || fail "Python and Rust disagree about one state.sqlite"
+import sqlite3, sys
+
+db = sys.argv[1]
+conn = sqlite3.connect(db)
+
+held = conn.execute(
+    "SELECT task_id FROM task_leases WHERE status = 'active'").fetchall()
+if held != [("INTEROP-1",)]:
+    print(f"Python read {held!r} as the active lease, not INTEROP-1", file=sys.stderr)
+    sys.exit(1)
+
+# The exclusion has to hold against a writer that is not the Rust store, or it
+# is a convention the store observes rather than a constraint the schema
+# enforces. A second active lease on the same task must be refused here.
+try:
+    conn.execute(
+        "INSERT INTO task_leases (id, task_id, owner, lease_token, status, created_at) "
+        "VALUES ('interop-impostor', 'INTEROP-1', 'python', 'tok', 'active', '2020-01-01T00:00:00Z')")
+except sqlite3.IntegrityError:
+    pass
+else:
+    print("a second active lease on INTEROP-1 was accepted; mutual exclusion "
+          "is not enforced by the schema", file=sys.stderr)
+    sys.exit(1)
+finally:
+    conn.rollback()
+conn.close()
+PY
+printf '    covered: Python reads the lease Rust wrote, and the schema refuses it a second one\n'
+crates/target/debug/dcstore --db "$interopdb" release --task INTEROP-1 --token "$interop_token" >/dev/null \
+  || fail "dcstore could not release the interop lease"
+python3 - "$interopdb" <<'PY' || fail "Python still sees an active lease after Rust released it"
+import sqlite3, sys
+
+conn = sqlite3.connect(sys.argv[1])
+held = conn.execute("SELECT task_id FROM task_leases WHERE status = 'active'").fetchall()
+conn.close()
+if held:
+    print(f"Python still sees {held!r} active after the release", file=sys.stderr)
+    sys.exit(1)
+PY
+printf '    covered: the release Rust performed is the release Python observes\n'
+
+# The incumbent's own engine is a separate claim and stays conditional, because
+# it needs DevCouncil's virtualenv. Its absence is reported, never assumed.
 if [[ -x ../DevCouncil/.venv/bin/python && -d ../DevCouncil/src ]]; then
-  printf '    covered: Rust and Python drive one state.sqlite\n'
+  printf '    present: DevCouncil'"'"'s virtualenv is here; its engine is exercised by the command parity fixture\n'
 else
-  notcovered '../DevCouncil/.venv not found — lease interop against the incumbent is unverified here'
+  notcovered '../DevCouncil/.venv not found — lease interop against the incumbent engine is unverified here'
 fi
 
 # The verifier's content gates are the ones whose absence used to be reported as

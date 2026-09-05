@@ -111,6 +111,29 @@ func (g *Gate) EvaluateWrite(path string, task *dc.Task, op dc.Operation) (polic
 	return g.settle(decision, mode, modeOrigin, flags.PolicyFileMode), nil
 }
 
+// EvaluateRead runs the decision path for reading one file.
+//
+// Composed like EvaluateWrite — ladder, then grant, then mode — so an operator
+// meets one model rather than two. What it does not share is the scope half:
+// see policy.FileGate.EvaluateRead for why reading is judged only against the
+// credential paths.
+func (g *Gate) EvaluateRead(path string, task *dc.Task) (policy.Decision, error) {
+	mode, modeOrigin, err := flags.EffectiveGateMode(g.Flags, flags.PolicyFileMode)
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	hardRules, _, err := flags.EffectiveHardRules(g.Flags)
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	fg := policy.FileGate{
+		Root:       g.Root,
+		Subsystems: g.Subsystems,
+		HardRules:  hardRules,
+	}
+	return g.settle(fg.EvaluateRead(path, task), mode, modeOrigin, flags.PolicyFileMode), nil
+}
+
 // EvaluateCommand runs the shell-command gate through the same three seams:
 // the policy ladder decides, a grant may clear a soft denial, and the mode flag
 // may demote one. Identical composition to EvaluateWrite, so an operator does

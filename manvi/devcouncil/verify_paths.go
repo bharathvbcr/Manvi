@@ -51,7 +51,21 @@ type PathReport struct {
 	// Carried rather than dropped: the difference between a short Examined list
 	// and a short list of changes is the difference between partial coverage
 	// and a quiet turn, and nothing downstream can reconstruct which it has.
+	//
+	// Only *intentional* exclusions belong here — the harness's own bookkeeping,
+	// which is not repository source and was never owed a check. A path that
+	// should have been examined and was not goes in Omitted, because the two
+	// mean opposite things about the verdict and this field used to hold both.
 	Skipped []string `json:"skipped,omitempty"`
+	// Omitted lists paths this check was owed and could not examine, each with
+	// its reason: dropped by the path cap, gone from disk, outside the tree.
+	//
+	// It is separate from Skipped because settle() has to tell them apart. With
+	// both in one list nothing consulted either, and a turn that changed 200
+	// files reported "passed" having read 128 of them — the credential planted
+	// in the 200th was in a file the gates never opened. A check that could not
+	// run must never answer like one that ran and passed.
+	Omitted []string `json:"omitted,omitempty"`
 	// Findings are what the check objected to, in the words of whatever
 	// produced them.
 	Findings []string `json:"findings,omitempty"`
@@ -88,12 +102,20 @@ const maxVerifyCommandOutputRunes = 4000
 // maxVerifiedPaths bounds how many paths one check examines.
 //
 // Argument lists are finite and diffs are not free, and past a point the
-// answer stops being actionable anyway. The cap reports itself in Skipped: a
-// truncated examination presented as a complete one is precisely how files come
-// to be recorded as checked without anything having read them.
+// answer stops being actionable anyway. The cap reports itself in Omitted, and
+// Omitted degrades the verdict: a truncated examination presented as a complete
+// one is precisely how files come to be recorded as checked without anything
+// having read them. It reported itself in Skipped once, which nothing read.
 const maxVerifiedPaths = 128
 
 // VerifyPaths runs the end-of-turn check against the paths a turn changed.
+//
+// baseline is the tree as it stood when the turn began, and it is what makes
+// the answer about *this turn*. Without one the diff is taken against the last
+// commit, which also carries whatever the operator had already changed; that
+// fallback is still taken, because a check that runs against a wider diff is
+// worth more than no check, but it is recorded as a degradation rather than
+// passed off as attribution.
 //
 // command, when non-empty, is a verification command supplied by the operator.
 // It is a parameter rather than a setting this package reads for itself, and
@@ -105,12 +127,13 @@ const maxVerifiedPaths = 128
 // authority, every turn, outside the gate the agent's own commands pass. The
 // caller must take it from operator scope — the process environment or the
 // command line — and nowhere else.
-func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command string) PathReport {
+func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command string, baseline Baseline) PathReport {
 	report := PathReport{Verdict: VerdictPassed, Source: "path-scoped gates"}
 
-	examined, skipped := r.partitionPaths(paths)
+	examined, skipped, omitted := r.partitionPaths(paths)
 	report.Examined = examined
 	report.Skipped = skipped
+	report.Omitted = omitted
 
 	// A command the operator supplied is the strongest signal available: it is
 	// the project's own definition of "this works". It runs whether or not any
@@ -132,7 +155,10 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 		return report.settle()
 	}
 
-	diff, notes, err := r.scopedDiff(ctx, examined)
+	if !baseline.Captured() && baseline.Note != "" {
+		report.Degraded = append(report.Degraded, baseline.Note)
+	}
+	diff, notes, err := r.scopedDiff(ctx, examined, baseline)
 	if err != nil {
 		report.Degraded = append(report.Degraded,
 			fmt.Sprintf("the scoped diff could not be produced (%v), so the content gates did not run", err))
@@ -180,12 +206,16 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 //
 // The ordering is the rule this file exists for, in three lines. A finding is a
 // failure, whatever else is true. A check that was owed and could not run is
-// never a pass. Only a report with neither passes.
+// never a pass — which is why Omitted is read here beside Degraded, and why it
+// exists as a field at all. That sentence was already written above this
+// function while the code below it consulted neither, so a capped examination
+// of 128 paths out of 200 settled as "passed". Only a report with none of the
+// three passes.
 func (p PathReport) settle() PathReport {
 	switch {
 	case len(p.Findings) > 0:
 		p.Verdict = VerdictFailed
-	case len(p.Degraded) > 0:
+	case len(p.Degraded) > 0, len(p.Omitted) > 0:
 		p.Verdict = VerdictDegraded
 	default:
 		p.Verdict = VerdictPassed
@@ -193,9 +223,15 @@ func (p PathReport) settle() PathReport {
 	return p
 }
 
-// partitionPaths splits a turn's changed paths into what this check can examine
-// and what it cannot, keeping the reason with each exclusion.
-func (r *Registry) partitionPaths(paths []string) (examined, skipped []string) {
+// partitionPaths splits a turn's changed paths three ways: what this check can
+// examine, what it deliberately excluded, and what it was owed and could not
+// reach. The reason travels with each exclusion.
+//
+// The third return is the one that matters to the verdict. It used to be folded
+// into the second, which made a path dropped by the cap indistinguishable from
+// the harness's own bookkeeping — and bookkeeping is genuinely not owed a
+// check, so the merged list could not be read as evidence of anything.
+func (r *Registry) partitionPaths(paths []string) (examined, skipped, omitted []string) {
 	seen := map[string]bool{}
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
@@ -205,7 +241,7 @@ func (r *Registry) partitionPaths(paths []string) (examined, skipped []string) {
 		seen[p] = true
 
 		if len(examined) >= maxVerifiedPaths {
-			skipped = append(skipped, fmt.Sprintf(
+			omitted = append(omitted, fmt.Sprintf(
 				"%s: more than %d paths changed; this check examined the first %d",
 				p, maxVerifiedPaths, maxVerifiedPaths))
 			continue
@@ -214,8 +250,9 @@ func (r *Registry) partitionPaths(paths []string) (examined, skipped []string) {
 		normalized, outside := policy.NormalizeRepoPath(r.deps.Root, p)
 		if outside {
 			// Reachable only with hard rules off. The gates read a repository
-			// diff, and a path outside the repository is not in one.
-			skipped = append(skipped, p+": outside the repository root")
+			// diff, and a path outside the repository is not in one — so this
+			// is a gap in coverage, not a decision not to look.
+			omitted = append(omitted, p+": outside the repository root")
 			continue
 		}
 		// The harness's own bookkeeping. Artifacts are plan documents, not
@@ -229,7 +266,7 @@ func (r *Registry) partitionPaths(paths []string) (examined, skipped []string) {
 		examined = append(examined, normalized)
 	}
 	sort.Strings(examined)
-	return examined, skipped
+	return examined, skipped, omitted
 }
 
 // isHarnessPath reports a path under this harness's own state directory.
@@ -247,9 +284,33 @@ func isHarnessPath(normalized string) bool {
 // `--` is load-bearing and not defensive habit: without it a path that happens
 // to match a branch or tag name is read by git as a revision, and the diff
 // comes back describing something else entirely.
-func (r *Registry) scopedDiff(ctx context.Context, paths []string) (string, []string, error) {
+func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Baseline) (string, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
+
+	// With a baseline, the comparison is tree against tree: the state the turn
+	// started from against the state it left. That is the agent's change and
+	// nothing else — the operator's earlier edits are on both sides and cancel,
+	// and a file the turn created is in the second tree, so the untracked
+	// special case below is not needed for this path either.
+	if baseline.Captured() {
+		if after, err := r.writeWorktreeTree(ctx); err == nil {
+			args := append([]string{"diff", baseline.Tree, after, "--"}, paths...)
+			out, note, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, args...)
+			if err == nil {
+				var notes []string
+				if note != "" {
+					out = trimPartialLine(out)
+					notes = append(notes, fmt.Sprintf(
+						"scoped_diff: %s; the gates read only the part above that cap, so the "+
+							"rest of the change was not covered", note))
+				}
+				return out, notes, nil
+			}
+		}
+		// Falling through is not silent: the note appended below says the
+		// diff that follows is against the last commit, not the baseline.
+	}
 
 	args := append([]string{"diff", "HEAD", "--"}, paths...)
 	out, note, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, args...)
@@ -263,6 +324,11 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string) (string, []st
 		}
 	}
 	var notes []string
+	if baseline.Captured() {
+		notes = append(notes, "scoped_diff: the post-turn tree could not be written, so this "+
+			"diff is taken against the last commit and may include work that was already in "+
+			"the tree when the turn began")
+	}
 	budget := maxGitCaptureBytes
 	if note != "" {
 		// Cut back to a whole line first: a diff header sliced in half names a
