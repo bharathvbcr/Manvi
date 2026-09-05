@@ -108,3 +108,41 @@ reference/
 
 # LaTeX build scratch for the paper (harness_architecture.tex/pdf are committed)
 bench/paper/.build/
+
+# ---- Private / agent-process files (added 2026-09-05 before first public push) ----
+# Agent handoffs, session notes and planning scratch are working documents,
+# not results. Preregistrations (PREREG_*.md, plan_w*.json) are results and
+# are NOT matched by these patterns.
+*_HANDOFF_*.md
+LAMBDA_HANDOFF*
+SESSION_NOTES*
+*.session.md
+*.local.md
+plans/
+.plans/
+.agent/
+.agents/
+.gemini/
+.devcouncil/state/
+.manvi/
+# Credentials and key material, whatever the tool
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.gpg
+.aws/
+.ssh/
+.netrc
+credentials.json
+service-account*.json
+secrets.*
+*.secret
+# Cloud / tool caches that carry account state
+.terraform/
+.pulumi/
+.wandb/
+wandb/
+.huggingface/
