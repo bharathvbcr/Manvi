@@ -51,18 +51,33 @@ var NoTaskAllowedCommands = []string{
 	"uv run dev next-task", "uv run dev next-task *",
 	"git status", "git diff", "git diff *",
 	"echo", "echo *", "true", ":",
-}
-
-// LeaseLifecycleAllowedCommands are always available to a lease holder,
-// independent of the task's own allowed_commands.
-var LeaseLifecycleAllowedCommands = []string{
-	"dev release *", "uv run dev release *",
-	"dev lease *", "uv run dev lease *",
-	"dev scope *", "uv run dev scope *",
+	// Orientation, and here rather than in LeaseLifecycleAllowedCommands
+	// because the no-lease denial below names them as the remedy. A message
+	// that points at `dev map` while the list holding it sits behind the lease
+	// check is a message that cannot be followed.
 	"dev map", "dev map *",
 	"uv run dev map", "uv run dev map *",
 	"dev doctor", "dev doctor *",
 	"uv run dev doctor", "uv run dev doctor *",
+}
+
+// LeaseLifecycleAllowedCommands are available to a lease holder, independent
+// of the task's own allowed_commands.
+//
+// "To a lease holder" is enforced by where this list is matched, not only by
+// this sentence: the rung sits *below* the no-lease refusal in
+// evaluateSingleCommand. It used to sit above it, so a session with no task at
+// all reached these entries — and the entries include test runners. `pytest -q`
+// was allowed with task == nil. That is not an orientation command: running a
+// project's tests executes the project's code, with whatever authority this
+// process holds, which is the authority a lease exists to allocate.
+//
+// Entries that genuinely need no lease belong in NoTaskAllowedCommands, where
+// the no-lease refusal can honestly point at them.
+var LeaseLifecycleAllowedCommands = []string{
+	"dev release *", "uv run dev release *",
+	"dev lease *", "uv run dev lease *",
+	"dev scope *", "uv run dev scope *",
 	"dev graph", "dev graph *",
 	"uv run dev graph", "uv run dev graph *",
 	"dev run-cmd *", "uv run dev run-cmd *",
@@ -231,24 +246,47 @@ func (g CommandGate) evaluateSingleCommand(command string, task *dc.Task, depth 
 		}
 	}
 
-	// A bare directory change cannot write, and agents chain it before
-	// allowlisted commands.
+	// A directory change is refused, not waved through. It used to be allowed
+	// on the ground that it "cannot write" — true of the cd itself, and beside
+	// the point, because it decides where every relative path *after* it
+	// writes. See RuleCommandDirectoryChange.
 	if cdSegmentRe.MatchString(normalized) {
-		return g.noteHardRules(allow("Working-directory change is not gated.", normalized, taskID))
+		return g.noteHardRules(deny(RuleCommandDirectoryChange,
+			"Changing the working directory is not allowed: every relative path in this command "+
+				"would then resolve somewhere other than where the gate judged it. Use paths "+
+				"relative to the repository root instead.", normalized, taskID))
 	}
 
-	if fnmatch.MatchAny(LeaseLifecycleAllowedCommands, normalized) {
-		return g.finish(allow("Lease lifecycle or repo maintenance command allowed.", normalized, taskID), normalized, taskID)
+	// git carries its own directory change, and it is the same refusal. `git -C
+	// ../elsewhere status` reads a different working tree; `--git-dir` and
+	// `--work-tree` split the two apart. A rung that refuses `cd` while these
+	// pass is a rung that refuses one spelling of the problem.
+	if opt, moved := gitDirectoryEscape(normalized); moved {
+		return g.noteHardRules(deny(RuleCommandDirectoryChange,
+			"`git "+opt+"` runs against a working tree other than the one this gate judges for, "+
+				"so nothing it does was examined. Run git from the repository root instead.",
+			normalized, taskID))
 	}
+
 	if fnmatch.MatchAny(NoTaskAllowedCommands, normalized) {
 		return g.finish(allow("Bootstrap or read-only command allowed.", normalized, taskID), normalized, taskID)
 	}
 
+	// Ordering is the rule, not a detail. Every rung below this point describes
+	// what a *lease holder* may do, so the refusal has to come first: with the
+	// lifecycle rung above it, a session holding no task reached an allowlist
+	// documented as "available to a lease holder" and ran the project's test
+	// suite from it. A list that is only lease-gated by its own name is not
+	// lease-gated.
 	if task == nil {
 		return g.noteHardRules(deny(RuleCommandNoLease,
 			"Shell commands require an active task lease. Bootstrap with `dev checkout <TASK>`, "+
 				"or use allowlisted orientation commands (`dev status`, `dev map …`, `dev doctor`).",
 			normalized, ""))
+	}
+
+	if fnmatch.MatchAny(LeaseLifecycleAllowedCommands, normalized) {
+		return g.finish(allow("Lease lifecycle or repo maintenance command allowed.", normalized, taskID), normalized, taskID)
 	}
 
 	// Allowlist entries are matched against both the raw and normalized forms,
@@ -462,8 +500,30 @@ func GitSafety(command string) Decision {
 // safe direction for this rung.
 func gitSafety(normalized, taskID string) (Decision, bool) {
 	variants := []string{normalized}
+	add := func(v string) {
+		for _, have := range variants {
+			if have == v {
+				return
+			}
+		}
+		variants = append(variants, v)
+	}
 	if dq := shellDequote(normalized); dq != normalized {
-		variants = append(variants, dq)
+		add(dq)
+	}
+	// Each variant is also read with git's global options removed. The rules
+	// below are written against `git <subcommand> …` and matched by adjacency,
+	// so anything git accepts between the two hides the subcommand from them:
+	// `git -C . push --force`, `git -c core.pager=cat push --force` and
+	// `git --no-pager push --force` all force-push and none of them matched.
+	// Added as extra readings rather than as a replacement, because every
+	// outcome this rung produces is a denial or a warning — one more reading
+	// can only catch more, never excuse something the plain text already
+	// convicted.
+	for _, v := range append([]string(nil), variants...) {
+		if stripped := stripGitGlobalOptions(v); stripped != v {
+			add(stripped)
+		}
 	}
 	for _, variant := range variants {
 		if d, fired := gitSafetyVariant(strings.ToLower(variant), taskID); fired {
@@ -471,6 +531,88 @@ func gitSafety(normalized, taskID string) (Decision, bool) {
 		}
 	}
 	return Decision{}, false
+}
+
+// gitDirectoryEscape reports whether a git invocation redirects itself at a
+// working tree other than the one the gate judges for, and names the option.
+//
+// These are exactly the global options stripGitGlobalOptions already knows how
+// to skip past; this rung is what keeps skipping them from being the same as
+// ignoring them.
+func gitDirectoryEscape(command string) (string, bool) {
+	fields := strings.Fields(command)
+	for i, f := range fields {
+		if !isGitWord(f) {
+			continue
+		}
+		for j := i + 1; j < len(fields) && strings.HasPrefix(fields[j], "-"); j++ {
+			opt := fields[j]
+			name := opt
+			if eq := strings.IndexByte(opt, '='); eq >= 0 {
+				name = opt[:eq]
+			} else if gitGlobalOptionsWithValue[opt] {
+				j++ // step over the value so it is not read as another option
+			}
+			switch name {
+			case "-C", "--git-dir", "--work-tree":
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// gitGlobalOptionsWithValue are git's global options that consume the word
+// after them when they are written without `=`. `git -C ../elsewhere push` is
+// three words before the subcommand, not one.
+var gitGlobalOptionsWithValue = map[string]bool{
+	"-C": true, "-c": true,
+	"--exec-path": true, "--git-dir": true, "--work-tree": true,
+	"--namespace": true, "--super-prefix": true, "--config-env": true,
+	"--attr-source": true,
+}
+
+// isGitWord reports whether a word invokes git, by the name or by a path
+// ending in it.
+func isGitWord(word string) bool {
+	if word == "git" || word == "git.exe" {
+		return true
+	}
+	i := strings.LastIndexAny(word, `/\`)
+	if i < 0 {
+		return false
+	}
+	base := word[i+1:]
+	return base == "git" || base == "git.exe"
+}
+
+// stripGitGlobalOptions rewrites every git invocation in the line so that the
+// word after `git` is its subcommand.
+//
+// It is deliberately textual and deliberately greedy: it drops any option-like
+// word between `git` and the first word that is not one, plus the value of the
+// options that take a separate one. Over-stripping costs a false positive on a
+// line that merely mentions git — the same trade the dequoted reading already
+// makes, and the same safe direction — while under-stripping costs a force
+// push that no rule saw.
+func stripGitGlobalOptions(command string) string {
+	fields := strings.Fields(command)
+	out := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		out = append(out, fields[i])
+		if !isGitWord(fields[i]) {
+			continue
+		}
+		for i+1 < len(fields) && strings.HasPrefix(fields[i+1], "-") {
+			opt := fields[i+1]
+			i++
+			// `--git-dir=x` carries its value; `--git-dir x` and `-C x` do not.
+			if !strings.Contains(opt, "=") && gitGlobalOptionsWithValue[opt] && i+1 < len(fields) {
+				i++
+			}
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func gitSafetyVariant(lowered, taskID string) (Decision, bool) {
@@ -505,10 +647,11 @@ func (g CommandGate) noteHardRules(d Decision) Decision {
 //
 // Substitutions inside single quotes are data; inside double quotes they are
 // live, which is why the quote state is tracked here rather than delegated to
-// a pre-pass. Arithmetic expansions `$(( … ))` are skipped whole: they expand
-// variables but cannot execute commands. An unterminated span is an error,
-// not an empty list — a scanner that lost track of where code ends must
-// refuse rather than guess.
+// a pre-pass. Arithmetic expansions `$(( … ))` are descended into rather than
+// skipped: a substitution nested inside one executes, so its contents are
+// scanned by this same function. An unterminated span is an error, not an
+// empty list — a scanner that lost track of where code ends must refuse
+// rather than guess.
 func liveSubstitutions(command string) ([]string, error) {
 	var spans []string
 	runes := []rune(command)
@@ -533,10 +676,18 @@ func liveSubstitutions(command string) ([]string, error) {
 			spans = append(spans, text)
 			i = next
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
-			next, ok := skipArithmetic(runes, i)
+			inner, next, ok := scanArithmetic(runes, i)
 			if !ok {
 				return nil, fmt.Errorf("unterminated arithmetic expansion")
 			}
+			// Descended into, not skipped: a substitution nested in here runs,
+			// and one this scanner does not report is one the ladder never
+			// judges. See scanArithmetic.
+			nested, err := liveSubstitutions(inner)
+			if err != nil {
+				return nil, err
+			}
+			spans = append(spans, nested...)
 			i = next
 		case r == '$' && i+1 < n && runes[i+1] == '(':
 			text, next, err := scanParenSpan(runes, i+1)
@@ -613,23 +764,59 @@ func scanBacktickSpan(runes []rune, open int) (string, int, error) {
 	return "", 0, fmt.Errorf("unterminated backtick substitution")
 }
 
-// skipArithmetic consumes a $(( … )) span and returns the index one past it.
-// The two-paren form is recognised up front; anything that does not close as
-// arithmetic is reported so the caller can refuse rather than misparse.
-func skipArithmetic(runes []rune, start int) (int, bool) {
+// scanArithmetic consumes a $(( … )) span. It returns the text between the
+// opening `$((` and the closing `))`, the index one past the span, and whether
+// the span closed at all; anything that does not close as arithmetic is
+// reported so the caller can refuse rather than misparse.
+//
+// The inner text is returned rather than discarded, and that is the whole
+// point of this function. Arithmetic is not the inert construct it looks like:
+// `echo $(( $(touch f)0 ))` runs touch. A command substitution nested inside an
+// arithmetic expansion executes exactly as it would outside one, and so does
+// one in an array subscript — `$(( a[$(cmd)] ))`. Both measured against sh and
+// bash rather than recalled. This scanner used to skip the whole span on the
+// stated ground that arithmetic "cannot execute commands", which meant the
+// ladder judged `echo` and never saw the touch: a command denied on its own
+// was allowed by wrapping it in two parentheses.
+//
+// What arithmetic cannot do is reach code through a variable. `x='$(cmd)';
+// echo $(( x ))` is a syntax error in sh and bash alike — operand expected —
+// so every execution path in here is lexically present in the text, and
+// descending into that text is sufficient. Refusing the construct outright,
+// which is the other available answer, would break `$(( i + 1 ))` for no gain.
+//
+// Quotes are tracked while counting parentheses, because `$(( $(echo "(") ))`
+// otherwise closes the span in the wrong place — and a span that ends in the
+// wrong place hands its caller the wrong contents, which is worse than not
+// looking at all.
+func scanArithmetic(runes []rune, start int) (string, int, bool) {
 	depth := 0
+	quote := rune(0)
 	for j := start; j < len(runes); j++ {
-		switch runes[j] {
-		case '(':
+		r := runes[j]
+		switch {
+		case quote == '\'' && r == '\'':
+			quote = 0
+		case quote == '"' && r == '"':
+			quote = 0
+		case quote != 0:
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '(':
 			depth++
-		case ')':
+		case r == ')':
 			depth--
 			if depth == 0 {
-				return j + 1, true
+				// start+3 steps over `$((`; j-1 is the first of the two
+				// closing parentheses. `$(())` has no inner text at all.
+				if j-1 <= start+3 {
+					return "", j + 1, true
+				}
+				return string(runes[start+3 : j-1]), j + 1, true
 			}
 		}
 	}
-	return 0, false
+	return "", 0, false
 }
 
 // hasHeredoc reports whether the command carries a heredoc introducer outside
@@ -656,7 +843,12 @@ func hasHeredoc(command string) bool {
 		}
 		switch {
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
-			next, ok := skipArithmetic(runes, i)
+			// Skipped rather than descended into here, and only here: this
+			// scanner asks whether a `<<` is a heredoc introducer or a shift
+			// operator. A heredoc inside a nested substitution is reached when
+			// the substitution rung extracts that text and evaluates it, which
+			// runs this function again against it.
+			_, next, ok := scanArithmetic(runes, i)
 			if !ok {
 				return false // malformed arithmetic; the substitution rung refuses it
 			}
@@ -1076,9 +1268,25 @@ func redirectTargets(command string, depth int) ([]string, bool, error) {
 			}
 			i = next
 		case r == '$' && i+2 < n && runes[i+1] == '(' && runes[i+2] == '(':
-			next, ok := skipArithmetic(runes, i)
+			inner, next, ok := scanArithmetic(runes, i)
 			if !ok {
 				return nil, false, fmt.Errorf("unterminated arithmetic expansion")
+			}
+			// The inner text is NOT scanned as a redirect context. Inside
+			// arithmetic `>` and `<` are comparison operators: `echo $((3 > 2))`
+			// writes no file, and reading that `>` as a redirection invents a
+			// write to a file named 2. What is real in here is a nested command
+			// substitution — an ordinary command, whose redirections write
+			// ordinary files — so those are extracted and descended into, and
+			// nothing else is.
+			nested, err := liveSubstitutions(inner)
+			if err != nil {
+				return nil, false, err
+			}
+			for _, span := range nested {
+				if err := descend(span); err != nil {
+					return nil, false, err
+				}
 			}
 			i = next
 		case r == '$' && i+1 < n && runes[i+1] == '(':

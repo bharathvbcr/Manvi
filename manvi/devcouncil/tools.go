@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -1306,11 +1307,28 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	if !contained {
 		return tools.Errorf("path %q is outside the repository", args.Path)
 	}
+	// Reads go through the gate, exactly as writes do. Containment answers
+	// "is this file in the repository", which is a different question from
+	// "may this agent see it": .env is inside the repository. Without this the
+	// write gate refused .env as path.secret while this handler returned its
+	// contents, and the credential scrubber downstream only replaces values
+	// this process was handed — it has never seen the repository's own.
+	// Deliberately not authorisingTask: a read does not require a lease, and
+	// the rung does not consult the task for anything but the ID it records.
+	// A session holding none still has its reads judged.
+	task, _ := r.currentTask(ctx)
+	decision, err := r.deps.Gate.EvaluateRead(args.Path, task)
+	if err != nil {
+		return unavailable("read policy decision", err)
+	}
+	if decision.Blocked() {
+		return r.refusal(decision)
+	}
 	data, err := readContained(ctx, r.deps.Root, rel, maxToolReadBytes)
 	if err != nil {
 		return tools.Errorf("reading %s: %v", args.Path, err)
 	}
-	return tools.Result{Text: string(data)}
+	return annotate(tools.Result{Text: string(data)}, decision)
 }
 
 func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result {
@@ -1927,6 +1945,25 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 		// as "no matches" to anything reading this.
 		matches = []dcgrep.Match{}
 	}
+	// A search is a read, and it reads every file under its path. Refusing the
+	// whole search because the tree contains a .env would make the tool useless;
+	// returning the lines out of one would make the read gate on read_file
+	// decorative, since `grep -r . ` reaches the same bytes. So the credential
+	// files are dropped from the result — and counted, because a filtered
+	// result presented as a complete one is the failure this file's other
+	// notes exist to prevent.
+	withheld := 0
+	withheldFiles := map[string]struct{}{}
+	kept := matches[:0]
+	for _, m := range matches {
+		if policy.ReadRefused(r.deps.Root, m.Path) {
+			withheld++
+			withheldFiles[m.Path] = struct{}{}
+			continue
+		}
+		kept = append(kept, m)
+	}
+	matches = kept
 	payload := map[string]any{
 		"pattern":              args.Pattern,
 		"count":                result.Count,
@@ -1937,6 +1974,20 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	if result.Truncated {
 		payload["truncated"] = true
 		payload["limit"] = result.Limit
+	}
+	if withheld > 0 {
+		payload["count"] = result.Count - withheld
+		names := make([]string, 0, len(withheldFiles))
+		for name := range withheldFiles {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		payload["withheld"] = map[string]any{
+			"matches": withheld,
+			"files":   names,
+			"note": fmt.Sprintf("%d match(es) in %d credential file(s) were withheld by the read "+
+				"gate, so this result does not cover them", withheld, len(names)),
+		}
 	}
 	// Reported only when there is something to report, but never inferred from
 	// silence: a search that skipped nothing carries no note, and one that

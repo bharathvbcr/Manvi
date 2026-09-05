@@ -44,7 +44,7 @@ func TestVerifyPathsWithoutTheVerifierIsDegradedNotPassed(t *testing.T) {
 	f := withoutVerifier(newFixture(t))
 	writeRepoFile(t, f.root, "a.go", "package a\n\nfunc A() {}\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "", Baseline{})
 	if got.Verdict != VerdictDegraded {
 		t.Fatalf("verdict = %q, want degraded — the gates did not run", got.Verdict)
 	}
@@ -64,7 +64,7 @@ func TestVerifyPathsExcludesHarnessStateAndSaysSo(t *testing.T) {
 	writeRepoFile(t, f.root, "a.go", "package a\n")
 
 	got := f.reg.VerifyPaths(context.Background(),
-		[]string{".devcouncil/artifacts/plan.md", "a.go"}, "")
+		[]string{".devcouncil/artifacts/plan.md", "a.go"}, "", Baseline{})
 	if len(got.Examined) != 1 || got.Examined[0] != "a.go" {
 		t.Fatalf("examined = %v, want only the repository source", got.Examined)
 	}
@@ -86,7 +86,7 @@ func TestVerifyPathsDoesNotExcludeNeighboursOfTheHarnessDirectory(t *testing.T) 
 	f := newFixture(t)
 	writeRepoFile(t, f.root, ".devcouncilish/a.go", "package a\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{".devcouncilish/a.go"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{".devcouncilish/a.go"}, "", Baseline{})
 	if len(got.Examined) != 1 {
 		t.Fatalf("examined = %v, want the neighbouring file to be checked", got.Examined)
 	}
@@ -103,12 +103,18 @@ func TestVerifyPathsCapsThePathListAudibly(t *testing.T) {
 		paths = append(paths, rel)
 	}
 
-	got := f.reg.VerifyPaths(context.Background(), paths, "")
+	got := f.reg.VerifyPaths(context.Background(), paths, "", Baseline{})
 	if len(got.Examined) != maxVerifiedPaths {
 		t.Fatalf("examined %d paths, want the cap of %d", len(got.Examined), maxVerifiedPaths)
 	}
-	if len(got.Skipped) != 10 {
-		t.Fatalf("skipped = %d, want the 10 paths over the cap named", len(got.Skipped))
+	if len(got.Omitted) != 10 {
+		t.Fatalf("omitted = %d, want the 10 paths over the cap named", len(got.Omitted))
+	}
+	// Named *and* counted against the verdict. Naming them in a field nothing
+	// reads is how 128 examined paths out of 200 came back "passed".
+	if got.Verdict != VerdictDegraded {
+		t.Fatalf("verdict = %q, want degraded: %d paths were never examined",
+			got.Verdict, len(got.Omitted))
 	}
 }
 
@@ -117,7 +123,7 @@ func TestVerifyPathsCapsThePathListAudibly(t *testing.T) {
 func TestVerifyPathsTreatsAnEmptyDiffAsDegraded(t *testing.T) {
 	f := newFixture(t)
 
-	got := f.reg.VerifyPaths(context.Background(), []string{"seed.txt"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{"seed.txt"}, "", Baseline{})
 	if got.Verdict != VerdictDegraded {
 		t.Fatalf("verdict = %q, want degraded for an unchanged file", got.Verdict)
 	}
@@ -130,7 +136,7 @@ func TestVerifyPathsIsNotConfusedByAPathThatLooksLikeARevision(t *testing.T) {
 	f := newFixture(t)
 	writeRepoFile(t, f.root, "HEAD", "not a revision\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{"HEAD"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{"HEAD"}, "", Baseline{})
 	// The verdict is degraded either way here (no verifier binary), so the
 	// assertion is that the call completed against the path rather than
 	// erroring out or reporting on the whole tree.
@@ -151,7 +157,7 @@ func TestVerifyPathsFailsOnANonZeroVerificationCommand(t *testing.T) {
 	writeRepoFile(t, f.root, "a.go", "package a\n")
 
 	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"},
-		"echo 'build failed: undefined x' >&2; exit 2")
+		"echo 'build failed: undefined x' >&2; exit 2", Baseline{})
 	if got.Verdict != VerdictFailed {
 		t.Fatalf("verdict = %q, want failed", got.Verdict)
 	}
@@ -168,7 +174,7 @@ func TestVerifyPathsDegradesWhenTheCommandCannotRun(t *testing.T) {
 	writeRepoFile(t, f.root, "a.go", "package a\n")
 
 	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"},
-		"this-command-does-not-exist-anywhere")
+		"this-command-does-not-exist-anywhere", Baseline{})
 	// `sh -c` reports a missing command as exit 127, which is a failure of the
 	// command rather than of starting the shell — so this is a failed verdict
 	// carrying the shell's own explanation, not a silent pass.
@@ -185,7 +191,7 @@ func TestVerifyPathsBoundsTheVerificationCommand(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // the same path a turn's cancellation takes
-	got := f.reg.VerifyPaths(ctx, []string{"a.go"}, "sleep 60")
+	got := f.reg.VerifyPaths(ctx, []string{"a.go"}, "sleep 60", Baseline{})
 	if got.Verdict == VerdictPassed {
 		t.Fatalf("a command that never completed produced a pass: %+v", got)
 	}
@@ -197,7 +203,7 @@ func TestVerifyPathsDegradesWhenEverythingWasFiltered(t *testing.T) {
 	f := newFixture(t)
 	writeRepoFile(t, f.root, ".devcouncil/artifacts/plan.md", "# plan\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{".devcouncil/artifacts/plan.md"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{".devcouncil/artifacts/plan.md"}, "", Baseline{})
 	if got.Verdict != VerdictDegraded {
 		t.Fatalf("verdict = %q, want degraded", got.Verdict)
 	}
@@ -253,7 +259,7 @@ func TestVerifyPathsSeesANewlyCreatedFile(t *testing.T) {
 	f := newFixture(t)
 	writeRepoFile(t, f.root, "brand_new.go", "package a\n\nfunc New() int { return 1 }\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{"brand_new.go"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{"brand_new.go"}, "", Baseline{})
 	for _, d := range got.Degraded {
 		if strings.Contains(d, "empty diff") {
 			t.Fatalf("a newly created file produced an empty diff: %+v", got)
@@ -269,7 +275,7 @@ func TestVerifyPathsIgnoresUnrelatedUntrackedFiles(t *testing.T) {
 	writeRepoFile(t, f.root, "mine.go", "package a\n\nfunc Mine() {}\n")
 	writeRepoFile(t, f.root, "operator_wip.go", "package a\n\nfunc WIP() {}\n")
 
-	got := f.reg.VerifyPaths(context.Background(), []string{"mine.go"}, "")
+	got := f.reg.VerifyPaths(context.Background(), []string{"mine.go"}, "", Baseline{})
 	if len(got.Examined) != 1 || got.Examined[0] != "mine.go" {
 		t.Fatalf("examined = %v, want only this turn's file", got.Examined)
 	}
@@ -289,7 +295,7 @@ func TestVerifyPathsNeverDowngradesAFailure(t *testing.T) {
 
 	// The command fails; the content gates cannot run. Both are true, and the
 	// verdict has to be the one that says the work is broken.
-	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "exit 1")
+	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "exit 1", Baseline{})
 	if got.Verdict != VerdictFailed {
 		t.Fatalf("verdict = %q, want failed — a degradation erased a real failure", got.Verdict)
 	}
@@ -314,7 +320,7 @@ func TestVerifyPathsRefusesTraversalAndAbsolutePaths(t *testing.T) {
 		"a/../../outside.go",
 		"..",
 	}
-	got := f.reg.VerifyPaths(context.Background(), hostile, "")
+	got := f.reg.VerifyPaths(context.Background(), hostile, "", Baseline{})
 	for _, e := range got.Examined {
 		for _, h := range hostile {
 			if e == h {
@@ -328,7 +334,7 @@ func TestVerifyPathsRefusesTraversalAndAbsolutePaths(t *testing.T) {
 	if got.Verdict == VerdictPassed {
 		t.Fatalf("a set of unusable paths produced a pass: %+v", got)
 	}
-	if len(got.Skipped) == 0 {
+	if len(got.Omitted) == 0 {
 		t.Fatal("paths were dropped without a word")
 	}
 }
@@ -347,7 +353,7 @@ func TestVerifyPathsHandlesHostileFilenames(t *testing.T) {
 	}
 	got := f.reg.VerifyPaths(context.Background(), []string{
 		"weird name with spaces.go", "unicode_日本語.go", "dash-leading.go", "--not-a-flag.go",
-	}, "")
+	}, "", Baseline{})
 	// The assertion is that the call completed and attributed each path to
 	// itself rather than erroring or reporting on the tree.
 	if len(got.Examined) != 4 {
@@ -369,7 +375,7 @@ func TestVerifyPathsDeduplicatesItsInput(t *testing.T) {
 	for range 50 {
 		paths = append(paths, "one.go")
 	}
-	got := f.reg.VerifyPaths(context.Background(), paths, "")
+	got := f.reg.VerifyPaths(context.Background(), paths, "", Baseline{})
 	if len(got.Examined) != 1 {
 		t.Fatalf("examined = %v, want one entry for one file", got.Examined)
 	}
@@ -379,7 +385,7 @@ func TestVerifyPathsDeduplicatesItsInput(t *testing.T) {
 // told everything is fine.
 func TestVerifyPathsOnNothingIsNotAPass(t *testing.T) {
 	f := newFixture(t)
-	got := f.reg.VerifyPaths(context.Background(), nil, "")
+	got := f.reg.VerifyPaths(context.Background(), nil, "", Baseline{})
 	if got.Verdict == VerdictPassed {
 		t.Fatalf("verifying nothing produced a pass: %+v", got)
 	}

@@ -12,6 +12,32 @@
 #   allowlist rungs, where nothing matches it: deny. This only ever tightens,
 #   like TestGitSafetyRunsEvenWhenTheAllowlistWouldPass. Re-apply these three
 #   rows after any future run of scripts/gen-command-parity.py.
+# DIVERGENCE from the incumbent, applied by hand after regeneration — 7 rows:
+#   ALLOW_NOTASK for `dev graph query foo`, `dev release TASK-001`,
+#   `dev scope update`, `dev run-cmd pytest`, `pytest tests/`,
+#   `python -m pytest tests/ -q` and `uv run pytest tests/`.
+#   The Python engine matches its lease-lifecycle allowlist BEFORE it checks
+#   whether a lease exists, so every entry on a list documented as "available
+#   to a lease holder" is in fact available to a session holding no task —
+#   test runners included. `pytest tests/` with task == nil was an allow.
+#   Running a project's tests executes the project's code with this process's
+#   authority, which is the authority a lease exists to allocate, so the Go
+#   gate matches that list below the no-lease refusal instead. The orientation
+#   commands the refusal message names — `dev map`, `dev doctor` — moved to
+#   NoTaskAllowedCommands so they still answer without one, which is why their
+#   rows above are unchanged. This only ever tightens. Re-apply these seven
+#   rows after any future run of scripts/gen-command-parity.py.
+# DIVERGENCE from the incumbent, applied by hand after regeneration — 8 rows:
+#   ALLOW_TASK and ALLOW_NOTASK for `cd repo`, `cd repo && dev map`,
+#   `pushd /tmp` and `popd`.
+#   The Python engine waves a directory change through on the ground that it
+#   cannot itself write. It cannot, and it decides where every relative path
+#   after it writes: `cd ../outside && echo x > allowed.txt` was judged as a
+#   write to <root>/allowed.txt and performed against the sibling directory.
+#   The Go gate refuses the construct instead — command.directory_change — and
+#   refuses git's spelling of it (`-C`, `--git-dir`, `--work-tree`) with it.
+#   This only ever tightens. Re-apply these eight rows after any future run of
+#   scripts/gen-command-parity.py.
 NORM		
 NORM	   	
 NORM	dev status	dev status
@@ -113,10 +139,10 @@ ALLOW_TASK	dev map > /tmp/out.json	allow
 ALLOW_TASK	dev map >> /tmp/out.json	allow
 ALLOW_TASK	dev map 2> /tmp/err	allow
 ALLOW_TASK	dev map 2>&1	allow
-ALLOW_TASK	cd repo	allow
-ALLOW_TASK	cd repo && dev map	allow
-ALLOW_TASK	pushd /tmp	allow
-ALLOW_TASK	popd	allow
+ALLOW_TASK	cd repo	deny
+ALLOW_TASK	cd repo && dev map	deny
+ALLOW_TASK	pushd /tmp	deny
+ALLOW_TASK	popd	deny
 ALLOW_TASK	cdx something	deny
 ALLOW_TASK	rm -rf /	deny
 ALLOW_TASK	npm install	allow
@@ -156,14 +182,14 @@ ALLOW_NOTASK	true	allow
 ALLOW_NOTASK	:	allow
 ALLOW_NOTASK	dev map	allow
 ALLOW_NOTASK	dev map query foo	allow
-ALLOW_NOTASK	dev graph query foo	allow
+ALLOW_NOTASK	dev graph query foo	deny
 ALLOW_NOTASK	dev doctor	allow
-ALLOW_NOTASK	dev release TASK-001	allow
-ALLOW_NOTASK	dev scope update	allow
-ALLOW_NOTASK	dev run-cmd pytest	allow
-ALLOW_NOTASK	pytest tests/	allow
-ALLOW_NOTASK	python -m pytest tests/ -q	allow
-ALLOW_NOTASK	uv run pytest tests/	allow
+ALLOW_NOTASK	dev release TASK-001	deny
+ALLOW_NOTASK	dev scope update	deny
+ALLOW_NOTASK	dev run-cmd pytest	deny
+ALLOW_NOTASK	pytest tests/	deny
+ALLOW_NOTASK	python -m pytest tests/ -q	deny
+ALLOW_NOTASK	uv run pytest tests/	deny
 ALLOW_NOTASK	uv run dev map	allow
 ALLOW_NOTASK	uv run --project . dev map	allow
 ALLOW_NOTASK	uv run --directory /repo dev status	allow
@@ -177,10 +203,10 @@ ALLOW_NOTASK	dev map > /tmp/out.json	allow
 ALLOW_NOTASK	dev map >> /tmp/out.json	allow
 ALLOW_NOTASK	dev map 2> /tmp/err	allow
 ALLOW_NOTASK	dev map 2>&1	allow
-ALLOW_NOTASK	cd repo	allow
-ALLOW_NOTASK	cd repo && dev map	allow
-ALLOW_NOTASK	pushd /tmp	allow
-ALLOW_NOTASK	popd	allow
+ALLOW_NOTASK	cd repo	deny
+ALLOW_NOTASK	cd repo && dev map	deny
+ALLOW_NOTASK	pushd /tmp	deny
+ALLOW_NOTASK	popd	deny
 ALLOW_NOTASK	cdx something	deny
 ALLOW_NOTASK	rm -rf /	deny
 ALLOW_NOTASK	npm install	deny

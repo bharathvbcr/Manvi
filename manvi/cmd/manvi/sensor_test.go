@@ -26,12 +26,24 @@ type fakeVerifier struct {
 	gotPaths []string
 	gotCmd   string
 	calls    int
+	// gotBaseline records the baseline the sensor handed over, so a test can
+	// assert that the tree recorded at turn start is the one the check used.
+	gotBaseline devcouncil.Baseline
+	// baseline is what CaptureBaseline hands back.
+	baseline devcouncil.Baseline
+	captures int
 }
 
-func (f *fakeVerifier) VerifyPaths(_ context.Context, paths []string, command string) devcouncil.PathReport {
+func (f *fakeVerifier) CaptureBaseline(_ context.Context) devcouncil.Baseline {
+	f.captures++
+	return f.baseline
+}
+
+func (f *fakeVerifier) VerifyPaths(_ context.Context, paths []string, command string, baseline devcouncil.Baseline) devcouncil.PathReport {
 	f.calls++
 	f.gotPaths = append([]string(nil), paths...)
 	f.gotCmd = command
+	f.gotBaseline = baseline
 	// A queue models a check whose answer changes between looks, which is the
 	// ordinary case the bounce exists for: it fails, the model fixes it, it
 	// passes. A single fixed report cannot express that.
@@ -129,7 +141,7 @@ func TestSensorDegradesWhenItCannotSeeWhatChanged(t *testing.T) {
 	v := &fakeVerifier{report: devcouncil.PathReport{Verdict: devcouncil.VerdictPassed}}
 	s, log := newSensor(t, v)
 
-	e := &agent.TurnStopping{Turn: 1, Mutated: true}
+	e := &agent.TurnStopping{Turn: 1, Mutated: true, UnenumeratedEffects: true}
 	if err := s.check(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}

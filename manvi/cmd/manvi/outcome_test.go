@@ -234,6 +234,9 @@ func TestEveryOutcomeFieldIsClassified(t *testing.T) {
 		"Mutated": "an input to the end-of-turn check rather than a result; what it decided is " +
 			"reported by the Sensor notice, and 'this turn changed something' on its own is not " +
 			"news to an operator who just watched it happen",
+		"UnenumeratedEffects": "an input to the end-of-turn check rather than a result, like " +
+			"Mutated; what it decided is reported by the Sensor notice, which degrades the " +
+			"verdict when the shell changed something no handler could name",
 		"Wrote": "carried into the verify/report session event, which is where a reader looks for " +
 			"what was checked; repeating the file list in the run summary would restate the " +
 			"transcript. Its one dangerous property — being incomplete — is reported by " +

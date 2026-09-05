@@ -207,14 +207,22 @@ func TestCompoundCommandChaining(t *testing.T) {
 		AllowedCommands: []string{"go test ./...", "git status"},
 	}
 
-	// Allowed chain: cd repo && go test ./...
-	if d := gate.EvaluateCommand("cd repo && go test ./...", task); d.Blocked() {
-		t.Fatalf("cd repo && go test ./... should be allowed, got %+v", d)
+	// Allowed chain: every clause matches something.
+	if d := gate.EvaluateCommand("git status && go test ./...", task); d.Blocked() {
+		t.Fatalf("git status && go test ./... should be allowed, got %+v", d)
 	}
 
-	// Denied chain: cd repo && rm -rf /
-	if d := gate.EvaluateCommand("cd repo && rm -rf /", task); !d.Blocked() {
-		t.Fatalf("cd repo && rm -rf / must be denied, got %+v", d)
+	// Denied chain: one unmatched clause denies the whole line.
+	if d := gate.EvaluateCommand("git status && rm -rf /", task); !d.Blocked() {
+		t.Fatalf("git status && rm -rf / must be denied, got %+v", d)
+	}
+
+	// A directory change denies the chain it leads, however ordinary the rest
+	// of it looks. This clause used to be the test's *allowed* case, on the
+	// reading that a cd cannot write; what it does is decide where the clauses
+	// after it write. See RuleCommandDirectoryChange.
+	if d := gate.EvaluateCommand("cd repo && go test ./...", task); !d.Blocked() || d.Rule != RuleCommandDirectoryChange {
+		t.Fatalf("cd repo && go test ./... must be denied as a directory change, got %+v", d)
 	}
 
 	// Git safety denial in chain: git status && git push -f origin main

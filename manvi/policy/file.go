@@ -291,6 +291,61 @@ func operationRefusal(planned *dc.PlannedFile, op dc.Operation, path string, tas
 // itself. Otherwise the widening ratchets: an agent argues one file into scope,
 // and that file's subsystem — or directory — becomes writable, which is a
 // larger permission than the one anybody granted it.
+// EvaluateRead decides whether this agent may see the bytes at path.
+//
+// It is deliberately not EvaluateFileChange with a read flag. A write is judged
+// against the task's declared scope, because writing outside a plan is what
+// scope exists to catch; reading is how an agent orients, and refusing every
+// read outside the plan would make the harness unusable while protecting
+// nothing. So this rung asks one narrower question — is this a path whose
+// contents are credentials — and leaves scope alone.
+//
+// Nothing here consults the task, and that is the point: no plan and no grant
+// makes a deploy key readable. It answers only when hard rules are on, exactly
+// like the write rung it sits beside, so a posture that turns enforcement off
+// turns this off too rather than pretending otherwise.
+func (g FileGate) EvaluateRead(path string, task *dc.Task) Decision {
+	normalized, outside := NormalizeRepoPath(g.Root, path)
+	taskID := ""
+	if task != nil {
+		taskID = task.ID
+	}
+	if !g.HardRules {
+		return g.noteHardRules(allow("Read is not gated when hard rules are off.", normalized, taskID))
+	}
+	if reason, bad := malformedPath(path); bad {
+		return deny(RuleMalformedPath, reason, "", taskID)
+	}
+	if reason, bad := malformedPath(normalized); bad {
+		return deny(RuleMalformedPath, reason, normalized, taskID)
+	}
+	if outside {
+		return deny(RuleOutsideRoot, "Path is outside the project root.", normalized, taskID)
+	}
+	// Case-folded for the same reason the write rung is: ".ENV" and ".env" are
+	// one file on APFS and NTFS.
+	if fnmatch.MatchAnyFold(SecretPathPatterns, normalized) {
+		return deny(RuleSecretRead,
+			"Secret and credential paths are not readable. Their contents would enter the model's "+
+				"context, which no later redaction can undo.", normalized, taskID)
+	}
+	return allow("Read is allowed.", normalized, taskID)
+}
+
+// ReadRefused reports whether a path would be refused to a reader, without
+// building a decision for it.
+//
+// It exists for the callers that filter a result set — a search returning lines
+// from many files — where the question is asked once per file and a full
+// decision per hit would be recorded noise rather than a record.
+func ReadRefused(root, path string) bool {
+	normalized, outside := NormalizeRepoPath(root, path)
+	if outside {
+		return true
+	}
+	return fnmatch.MatchAnyFold(SecretPathPatterns, normalized)
+}
+
 func (g FileGate) unplannedDecision(path string, task *dc.Task) Decision {
 	base := deny(RuleUnplannedScope,
 		"Task "+task.ID+" does not authorize changes to "+path+".", path, task.ID)
