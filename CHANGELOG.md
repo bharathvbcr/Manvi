@@ -51,6 +51,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **`local.scan` on the `manvi serve` protocol**, which lists the model servers
+  running on the machine and the models each one advertises. The discovery
+  itself already existed — it probes the well-known loopback endpoints
+  concurrently and identifies every runtime by asking it, never by assuming
+  whichever runtime conventionally holds the port that answered — but no host
+  could reach it, because `capability.probe` needs the model name up front and
+  that is the answer rather than the question. Every model carries
+  `capabilities_known` beside the capability flags, so "does not support tools"
+  and "nobody asked" stay two different answers instead of the same `false`.
+  Documented in [the host plane reference](docs/SERVE_HOST_PLANE.md), along
+  with `chat.forget`, which was on the wire and in the served set but had no
+  worked example.
 - **Tests for `llm/replay`**, which had none. Its playback half was exercised
   second-hand by eight other packages; its recording half — `Load`,
   `NewRecord`, `Save`, and the recording stream — had been executed by nothing

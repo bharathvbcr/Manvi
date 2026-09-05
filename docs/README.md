@@ -55,7 +55,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Running Against Local LLMs**](LOCAL_LLMS.md)  
   Zero-config 30ms discovery, KV prefix-cache preservation (**1.5s warm vs 120s cold prefill**), wire-level parser recovery (Hermes, Qwen3 XML), `<think>` tag sanitization, and recoverable truncation.
 - [**Embedded Stdio Host Plane (`manvi serve`)**](SERVE_HOST_PLANE.md)  
-  Zero-cgo line-delimited JSON protocol over stdio for embedding MANVI inside IDE extensions (VS Code, JetBrains), editors, and host desktop applications.
+  Zero-cgo line-delimited JSON protocol over stdio for embedding MANVI inside IDE extensions (VS Code, JetBrains), editors, and host desktop applications, including `local.scan` for model-server discovery.
 - [**Terminal UI & Event Subsystem**](TUI_AND_EVENT_SUBSYSTEM.md)  
   Modern full-screen Elm-loop TUI, multi-session tab strip, dynamic live theme switcher (`/theme`, `Ctrl+Y`), session modal (`Ctrl+S`), syntax highlighting, zero-allocation damage-diff painter, and keybindings.
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  
@@ -80,4 +80,3 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   What to install, how to read `./verify.sh`'s verdict, what the gate refuses, how the parity fixtures are regenerated, and the commit conventions.
 - [**Changelog**](../CHANGELOG.md)  
   What changed per release. Organised by version; the hardening ledger below is organised by defect.
-

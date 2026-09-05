@@ -29,6 +29,7 @@ manvi serve [--posture host|devcouncil]
 | `policy.check.file` | Evaluates a proposed file write or deletion against hard/soft policy rules without modifying the filesystem. |
 | `policy.check.command` | Evaluates a proposed shell command against the command gate and safety allowlists. |
 | `capability.probe` | Live-probes local endpoints to inspect tool calling, token budget, and context limits. |
+| `local.scan` | Discovers runnable local LLM servers and returns advertised models plus capability flags (`supports_tools`, `supports_vision`, `supports_reasoning`). |
 | `chat.prepare` | Computes token budgets, applies self-calibration, and plans one-way compaction. |
 | `chat.settle` | Parses completed model responses: reclassifies `<think>` tags, recovers tool calls, and handles truncations. |
 | `chat.forget` | Explicitly drops a conversation's compaction and calibration ledger. |
@@ -57,6 +58,7 @@ manvi serve [--posture host|devcouncil]
       "policy.check.file",
       "policy.check.command",
       "capability.probe",
+      "local.scan",
       "chat.prepare",
       "chat.settle",
       "chat.forget"
@@ -127,12 +129,59 @@ manvi serve [--posture host|devcouncil]
 
 ---
 
-### 4. `chat.prepare` (Context & Token Budget Preparation)
+### 4. `local.scan` (Local LLM Server Discovery)
 
 **Request:**
 ```json
 {
   "id": "req-4",
+  "op": "local.scan",
+  "params": {
+    "timeout_ms": 2000,
+    "capabilities": true
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "id": "req-4",
+  "ok": true,
+  "result": {
+    "servers": [
+      {
+        "base_url": "http://127.0.0.1:11434",
+        "runtime": "ollama",
+        "version": "0.7.2",
+        "models": [
+          {
+            "id": "qwen3:30b",
+            "context_window": 32768,
+            "context_window_source": "server",
+            "capabilities_known": true,
+            "supports_tools": false,
+            "supports_reasoning": true,
+            "supports_vision": false,
+            "supports_completion": true
+          }
+        ]
+      }
+    ],
+    "scanned": 12,
+    "capabilities": true
+  }
+}
+```
+
+---
+
+### 5. `chat.prepare` (Context & Token Budget Preparation)
+
+**Request:**
+```json
+{
+  "id": "req-5",
   "op": "chat.prepare",
   "params": {
     "session_id": "sess-abc",
@@ -152,7 +201,7 @@ manvi serve [--posture host|devcouncil]
 **Response:**
 ```json
 {
-  "id": "req-4",
+  "id": "req-5",
   "ok": true,
   "result": {
     "steps": [
@@ -171,12 +220,12 @@ manvi serve [--posture host|devcouncil]
 
 ---
 
-### 5. `chat.settle` (Completion Ingestion & Recovery)
+### 6. `chat.settle` (Completion Ingestion & Recovery)
 
 **Request:**
 ```json
 {
-  "id": "req-5",
+  "id": "req-6",
   "op": "chat.settle",
   "params": {
     "content": "<think>Inspect math.go first</think><tool_call>{\"name\":\"Read\",\"arguments\":{\"file_path\":\"math.go\"}}</tool_call>",
@@ -190,7 +239,7 @@ manvi serve [--posture host|devcouncil]
 **Response:**
 ```json
 {
-  "id": "req-5",
+  "id": "req-6",
   "ok": true,
   "result": {
     "text": "",
@@ -200,6 +249,32 @@ manvi serve [--posture host|devcouncil]
     ],
     "format": "hermes-json",
     "truncated": false
+  }
+}
+```
+
+---
+
+### 7. `chat.forget` (Session Ledger Reset)
+
+**Request:**
+```json
+{
+  "id": "req-7",
+  "op": "chat.forget",
+  "params": {
+    "session_id": "sess-abc"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "id": "req-7",
+  "ok": true,
+  "result": {
+    "forgotten": true
   }
 }
 ```
@@ -223,4 +298,5 @@ To embed MANVI in a VS Code extension, JetBrains plugin, or Python script:
 1. Spawn `manvi serve` as a subprocess with piped `stdin`, `stdout`, and `stderr`.
 2. Send a `hello` handshake to verify connectivity and negotiate capabilities.
 3. Stream file writes and command attempts through `policy.check.file` and `policy.check.command` before performing disk IO.
-4. Pass model completions through `chat.settle` to transparently recover function calls and sanitize chain-of-thought blocks.
+4. Optionally call `local.scan` to discover runnable local servers before probing capabilities.
+5. Pass model completions through `chat.settle` to transparently recover function calls and sanitize chain-of-thought blocks.

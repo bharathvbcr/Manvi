@@ -452,7 +452,7 @@ Full specifications live in [`docs/`](docs/README.md):
 | [Agent & Turn Lifecycle](docs/AGENT_AND_TURN_LIFECYCLE.md) | Turn loop, tool waterfalls, compaction, lease concurrency |
 | [Verification & Parity](docs/VERIFICATION_AND_PARITY.md) | Parity methodology, rigor gates, coverage semantics, `./verify.sh` |
 | [Local LLMs](docs/LOCAL_LLMS.md) | Discovery, KV prefix preservation, wire recovery, server configs |
-| [Stdio Host Plane](docs/SERVE_HOST_PLANE.md) | Zero-cgo NDJSON protocol, operations reference, IDE embedding |
+| [Stdio Host Plane](docs/SERVE_HOST_PLANE.md) | Zero-cgo NDJSON protocol, operations reference, IDE embedding, local model discovery |
 | [Terminal UI & Events](docs/TUI_AND_EVENT_SUBSYSTEM.md) | Elm loop, tabs, themes, damage diffing, ANSI reduction |
 | [CLI & Configuration](docs/CLI_AND_CONFIGURATION.md) | Commands, flag catalogue, mutability scopes, posture matrix |
 | [Native Tool Suite](docs/TOOLS_REFERENCE.md) | All 44 native tools in Go and Rust |
