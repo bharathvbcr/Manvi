@@ -103,6 +103,12 @@ jobs:
           if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
             cargo install cargo-audit --locked
           fi
+          # bench/stress_test.py refuses an uncontained Linux shell; macOS
+          # already has sandbox-exec on the runner image.
+          if [ "$(uname -s)" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap
+          fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       # Tee rather than pipe: the exit status being checked is verify.sh's own,
