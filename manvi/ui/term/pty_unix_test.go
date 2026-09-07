@@ -582,10 +582,11 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 			t.Fatal("the terminal was still raw while the process was stopped; " +
 				"the shell would have had no echo and no line editing")
 		}
-		if observed != original {
+				if observed != original {
 			t.Errorf("the suspended terminal was not the original:
  before %+v
  during %+v", original, observed)
+		}
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no observation was made")
