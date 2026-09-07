@@ -220,6 +220,12 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           go install go.uber.org/nilaway/cmd/nilaway@latest
           cargo install cargo-audit --locked
+          # bench/stress_test.py refuses an uncontained Linux shell; macOS
+          # already has sandbox-exec on the runner image.
+          if [ "$(uname -s)" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap
+          fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       # --race and --fuzz each re-run the default gate first, so this is the
       # whole file plus the extra mode. 90 minutes is above the serialised
