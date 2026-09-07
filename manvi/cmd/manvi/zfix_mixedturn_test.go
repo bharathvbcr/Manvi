@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"manvi/agent"
-	"manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
 
 // A turn that edits one file natively and changes another through the shell is

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"manvi/llm"
-	"manvi/prompt"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // Compaction shortens tool results to keep a turn inside the model's context

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/tools"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // answeringApprover records what it was asked and answers with a fixed choice.

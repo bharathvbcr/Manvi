@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func groupRegistry(t *testing.T) *Registry {

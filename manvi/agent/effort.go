@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // This file answers one question for the loop: is it worth thinking harder

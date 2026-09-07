@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // scopeFixture is a real store with one planned task and a live lease on it.

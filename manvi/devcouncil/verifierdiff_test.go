@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // FuzzVerifierAgreesWithGitAboutWhatADiffTouches is a differential oracle for

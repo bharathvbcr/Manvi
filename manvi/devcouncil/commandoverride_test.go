@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"manvi/flags"
-	"manvi/policy"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // The tests in this file all guard one invariant, from different sides: the

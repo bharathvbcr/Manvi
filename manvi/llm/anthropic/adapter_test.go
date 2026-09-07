@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // happyStream is a complete turn: thinking, text, and a tool call whose

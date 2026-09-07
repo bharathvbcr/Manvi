@@ -3,7 +3,7 @@ package devcouncil
 import (
 	"testing"
 
-	"manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 )
 
 // fixtureWithRoles builds the tool surface with a role catalogue attached, so

@@ -3,9 +3,9 @@ package xai
 import (
 	"net/http"
 
-	"manvi/credentials"
-	"manvi/llm"
-	"manvi/llm/openaicompat"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/openaicompat"
 )
 
 // DefaultMaxTokens bounds a request that did not set its own. Unlike the

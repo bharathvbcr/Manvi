@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // TestPrintedOverrideAdviceIsRunnable guards the operator half of the recovery

@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 
-	"manvi/agent"
-	"manvi/flags"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // outcomeNotice is one thing worth saying about a finished turn.

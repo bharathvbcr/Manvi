@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"manvi/artifacts"
-	"manvi/flags"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/artifacts"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 func (r *Registry) artifactTools() []tools.Tool {

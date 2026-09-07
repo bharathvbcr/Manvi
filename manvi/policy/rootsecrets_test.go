@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // A secret at the repository root must be refused exactly as its nested twin

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func TestPulseIsBoundedAndPeriodic(t *testing.T) {

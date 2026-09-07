@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // conversation records one complete turn: prompt, tool call, result, answer.

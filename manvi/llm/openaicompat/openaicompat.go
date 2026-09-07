@@ -36,8 +36,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"manvi/llm"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // ChatCompletionsPath is the OpenAI-compatible chat endpoint.

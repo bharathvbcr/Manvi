@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 func TestParseRunArgsPositional(t *testing.T) {

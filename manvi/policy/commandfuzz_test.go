@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // FuzzSplitCommandChainLosesNothing fuzzes the shell chain splitter.

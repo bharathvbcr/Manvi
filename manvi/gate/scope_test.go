@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/grants"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 func widenedTask() *dc.Task {

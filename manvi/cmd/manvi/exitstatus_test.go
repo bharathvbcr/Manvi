@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"manvi/agent"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // TestEveryDegradedOutcomeCarriesANonZeroStatus.

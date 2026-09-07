@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // The re-parse rung refuses a command word whose argument only becomes shell

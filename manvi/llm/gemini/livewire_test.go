@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // liveStream is transcribed from a recorded live interaction on 2026-08-19,

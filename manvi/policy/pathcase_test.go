@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // The rungs that are statements about *files* have to read a path the way the

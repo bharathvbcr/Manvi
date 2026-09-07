@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // showLocal answers "what can I run on this machine, and how do I run it".

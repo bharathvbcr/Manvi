@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 )
 
 // TestTheEffortCeilingIsCheckedAtAttach covers the other half of the reasoning

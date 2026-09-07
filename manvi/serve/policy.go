@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"manvi/dc"
-	"manvi/gate"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/gate"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // Posture decides what a policy denial means when there is no DevCouncil task.

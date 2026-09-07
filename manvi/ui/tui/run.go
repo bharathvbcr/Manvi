@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"manvi/credentials"
-	"manvi/ui"
-	"manvi/ui/input"
-	"manvi/ui/render"
-	"manvi/ui/term"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/input"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/term"
 )
 
 // Config wires the TUI to a harness.

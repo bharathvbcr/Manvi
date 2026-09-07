@@ -35,7 +35,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 // Client runs the devmap binary against a repository.

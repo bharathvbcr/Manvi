@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // FuzzWriteGateNeverAllowsASecret is the property the whole ladder exists for,

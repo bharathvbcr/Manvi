@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"manvi/dc/devmap"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The repo-navigation tools.

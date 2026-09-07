@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"sync"
 
-	"manvi/dc"
-	"manvi/flags"
-	"manvi/grants"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // Gate decides whether a file operation may proceed.

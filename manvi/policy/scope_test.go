@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // areas is a SubsystemMap a test states outright, so a test about the neighbour

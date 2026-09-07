@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Measured against Qwen3.8-27B's own tokenizer, the byte heuristic runs about

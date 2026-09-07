@@ -12,14 +12,14 @@ import (
 	"syscall"
 	"time"
 
-	"manvi/agent"
-	"manvi/core/bus"
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/session"
-	"manvi/tools"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // runHeadless drives one turn with no terminal attached.

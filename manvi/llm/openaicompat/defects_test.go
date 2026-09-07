@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // --- 1. repairJSONLiterals must be linear ----------------------------------

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // A neighbour allow reached through a near-total neighbour relation must not

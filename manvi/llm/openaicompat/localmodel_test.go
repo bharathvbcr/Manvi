@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The exact syntax mandated by the chat template shipped in

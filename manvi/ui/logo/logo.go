@@ -17,7 +17,7 @@
 package logo
 
 import (
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // The grid. '#' is the knockout — the M — and '.' is the tile's field. One

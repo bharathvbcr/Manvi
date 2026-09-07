@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/llm/local"
-	"manvi/prompt"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 func routerRegistry(t *testing.T, settings map[string]string) *flags.Registry {

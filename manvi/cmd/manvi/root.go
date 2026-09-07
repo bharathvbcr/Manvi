@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 var (

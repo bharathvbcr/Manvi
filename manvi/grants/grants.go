@@ -30,8 +30,8 @@ import (
 	"sync"
 	"time"
 
-	"manvi/internal/fnmatch"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // Authority is who issued a grant.

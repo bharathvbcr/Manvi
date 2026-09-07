@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // forbidden_changes is a prohibition on a file, written down as a name — and a

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // binary returns the real dcstore binary. The tests drive it over a real

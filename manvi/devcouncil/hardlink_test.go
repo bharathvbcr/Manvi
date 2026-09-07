@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // A hard link is the aliasing case identity pinning cannot see. The pin asks

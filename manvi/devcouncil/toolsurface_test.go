@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 )
 
 // A role's declared tool surface must reach the runner. Model and SystemPrompt

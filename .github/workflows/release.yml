@@ -1,0 +1,113 @@
+# Build and publish manvi binaries for darwin and linux (amd64, arm64).
+#
+# Triggered by version tags (v*). Each matrix cell produces a statically linked
+# binary (CGO_ENABLED=0) stamped with the tag via -ldflags, then the release job
+# attaches every artifact plus SHA-256 checksums. There is no Windows target —
+# see verify.yml for why this tree does not build for GOOS=windows.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to stamp (for a dry-run build without publishing)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: manvi (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: manvi/go.mod
+          cache-dependency-path: manvi/go.sum
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          # workflow_dispatch may stamp a chosen tag without pushing one.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.tag }}"
+          fi
+          out="manvi-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p dist
+          go -C manvi build \
+            -trimpath \
+            -ldflags "-s -w -X main.stampedVersion=${VERSION}" \
+            -o "../dist/${out}" \
+            ./cmd/manvi
+          echo "artifact=${out}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.artifact }}
+          path: dist/${{ env.artifact }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish release
+    needs: build
+    # Only real tag pushes publish. workflow_dispatch is a build-only dry run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          # One checksum file listing every binary. GitPulse verifies against
+          # this before trusting a download; a mismatch is a refusal.
+          shasum -a 256 manvi-* | tee SHA256SUMS
+          # Fail loudly if any matrix cell is missing rather than shipping a
+          # partial release.
+          expected=4
+          found=$(ls -1 manvi-* | wc -l | tr -d ' ')
+          test "$found" -eq "$expected" || {
+            echo "expected ${expected} binaries, found ${found}:" >&2
+            ls -la >&2
+            exit 1
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            dist/manvi-*
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true

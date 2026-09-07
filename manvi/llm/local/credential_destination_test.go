@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/credentials"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // remoteBaseURL is an address in TEST-NET-3 (RFC 5737), reserved for

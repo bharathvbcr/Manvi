@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // mcp.enabled was declared and read by nothing: MCP servers were discovered and

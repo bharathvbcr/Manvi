@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // This package had no test file. Its playback half was exercised second-hand by

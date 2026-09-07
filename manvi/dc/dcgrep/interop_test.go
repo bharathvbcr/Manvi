@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // These run against the binary the harness actually execs, not a fake.

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 // rigorClient runs the Rust verifier over a diff.

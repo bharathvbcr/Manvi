@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // gateFor builds a hard-rules-on gate rooted at a real temp directory.

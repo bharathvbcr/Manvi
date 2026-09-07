@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // stubHost records what the UI asked for without doing any of it.

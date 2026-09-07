@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // fuzzActions is the alphabet the stress below draws from: every key the UI

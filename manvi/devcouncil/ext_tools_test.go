@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/mcp"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 func TestArtifactTools(t *testing.T) {

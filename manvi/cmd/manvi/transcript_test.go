@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/credentials"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // brokenWriter is a transcript destination that refuses every line: a full

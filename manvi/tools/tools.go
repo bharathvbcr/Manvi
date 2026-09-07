@@ -35,8 +35,8 @@ import (
 	"strings"
 	"sync"
 
-	"manvi/core/bus"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Group constants for logical categorization of tools.

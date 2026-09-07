@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 )
 
 // The banner an operator met on a machine with nothing configured:

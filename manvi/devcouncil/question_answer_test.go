@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // decodeResult unmarshals a tool result's JSON payload, failing the test if it

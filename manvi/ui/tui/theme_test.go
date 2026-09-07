@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // styleSequence returns exactly what a terminal at this profile would be sent

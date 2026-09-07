@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func TestOpenAICompatStreamingText(t *testing.T) {

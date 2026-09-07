@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // InvariantError reports a model request that is not reconstructable from the

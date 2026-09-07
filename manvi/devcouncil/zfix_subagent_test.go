@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/agents"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The sub-agent control plane must never report an outcome it did not achieve.

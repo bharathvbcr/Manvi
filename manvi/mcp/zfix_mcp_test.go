@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
 // A hostile MCP server, built once for this package's tests and driven by argv

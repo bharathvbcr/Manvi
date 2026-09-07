@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/credentials"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // server is a scriptable stand-in for a local model server. Each test drives

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // "Extend existing seams rather than standing up duplicate implementations" has

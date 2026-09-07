@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // probe makes one real request against a provider.

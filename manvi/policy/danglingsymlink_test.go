@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // Containment is a claim about where the kernel will put the bytes, not about

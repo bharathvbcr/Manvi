@@ -24,9 +24,9 @@ import (
 	"os"
 	"strings"
 
-	"manvi/ui/brand"
-	"manvi/ui/logo"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/brand"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Theme is the semantic palette. Views name roles, never colours, so a

@@ -14,7 +14,7 @@ package gemini
 import (
 	"fmt"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Name is the adapter's stable identifier.

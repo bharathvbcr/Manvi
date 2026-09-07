@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // runFlags drives the real command dispatch, so what these tests assert is what

@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // overloadedThenFine is the shape the live endpoint actually produces under

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // The gate is asked about every command an agent runs, and the command is a

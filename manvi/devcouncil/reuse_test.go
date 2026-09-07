@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // The reuse check is advisory, so the way it fails is by being noisy or by

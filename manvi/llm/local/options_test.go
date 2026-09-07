@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/llm"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // Every field on Config is a statement an operator made about their own

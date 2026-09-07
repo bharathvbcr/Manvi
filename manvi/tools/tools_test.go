@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func registryWith(t *testing.T, handler Handler) (*Registry, *bus.Bus) {

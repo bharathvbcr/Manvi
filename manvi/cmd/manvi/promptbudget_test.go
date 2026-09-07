@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
-	"manvi/prompt"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // chdir moves into dir for the duration of the test. The instructions file is

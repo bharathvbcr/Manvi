@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"manvi/ui"
-	"manvi/ui/fx"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // padLabel renders a field label at this card's fixed label column, so the rows

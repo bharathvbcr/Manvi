@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // This file is the check for a turn that holds no task lease.

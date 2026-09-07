@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // These tests close the splitter bypass and give the suite the external oracle

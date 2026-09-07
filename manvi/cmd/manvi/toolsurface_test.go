@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agents"
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // scriptedProvider answers with a fixed script of responses and records every

@@ -1,4 +1,4 @@
-module manvi
+module github.com/bharathvbcr/Manvi/manvi
 
 go 1.26.6
 

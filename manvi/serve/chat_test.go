@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // driver keeps ONE server alive across a sequence of calls.

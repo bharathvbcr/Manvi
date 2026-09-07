@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"manvi/grants"
-	"manvi/policy"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // zfixtoolsApprover clears every escalation and records the question, so a test

@@ -52,7 +52,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 const (

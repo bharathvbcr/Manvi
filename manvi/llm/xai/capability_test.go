@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func req(model string) llm.Request {

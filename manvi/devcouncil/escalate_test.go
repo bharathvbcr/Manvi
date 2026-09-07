@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/policy"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // recordingApprover answers with a fixed decision and records what it was

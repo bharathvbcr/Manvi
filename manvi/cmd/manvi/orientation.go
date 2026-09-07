@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
-	"manvi/fetch"
-	"manvi/mcp"
-	"manvi/prompt"
-	"manvi/repomap"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/fetch"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
+	"github.com/bharathvbcr/Manvi/manvi/repomap"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // What the harness can actually do, resolved once and handed to the prompt.

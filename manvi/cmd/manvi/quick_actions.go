@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"manvi/credentials"
-	"manvi/internal/proc"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 const (

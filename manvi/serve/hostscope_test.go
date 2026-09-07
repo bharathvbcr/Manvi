@@ -3,8 +3,8 @@ package serve
 import (
 	"testing"
 
-	"manvi/dc"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // A host that declares a task scope must be judged against it — and a refusal

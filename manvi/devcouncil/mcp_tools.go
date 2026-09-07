@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"manvi/mcp"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 func (r *Registry) mcpTools() []tools.Tool {

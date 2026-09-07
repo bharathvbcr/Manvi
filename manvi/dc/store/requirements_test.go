@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // plantTaskWithLinks seeds a store and writes one task carrying both the

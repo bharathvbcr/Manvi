@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"manvi/credentials"
-	"manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // maxProbeTimeoutMS bounds capability.probe's deadline.

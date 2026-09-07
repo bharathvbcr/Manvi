@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func questionRequest(multi bool) ui.Request {

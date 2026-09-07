@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agent"
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/llm"
-	"manvi/llm/replay"
-	"manvi/session"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // Every other test in this package exercises the check in isolation. This one

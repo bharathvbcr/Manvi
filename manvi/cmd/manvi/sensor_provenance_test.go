@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/flags"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The verification command is the one string in this harness that is taken from

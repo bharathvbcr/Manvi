@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // happyStream interleaves two tool calls on purpose. Keying fragments by

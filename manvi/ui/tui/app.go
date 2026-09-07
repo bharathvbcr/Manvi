@@ -4,10 +4,10 @@ import (
 	"strings"
 	"time"
 
-	"manvi/ui"
-	"manvi/ui/fx"
-	"manvi/ui/logo"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Mode is which top-level surface is showing.

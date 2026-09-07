@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // --- defect 2: redirections hidden inside command substitutions --------------

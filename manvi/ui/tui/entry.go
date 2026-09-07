@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"manvi/flags"
-	"manvi/ui"
-	"manvi/ui/logo"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Entry is one item in a scrollback: an event, plus the view state that belongs

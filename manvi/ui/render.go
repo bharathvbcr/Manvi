@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"manvi/credentials"
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // CleanEvent returns e with every untrusted field passed through clean.

@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/flags"
-	"manvi/grants"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // TestDecisionsUnderALiveSettingsChange.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // commandCheckWith builds a policy.check.command request with every knob the

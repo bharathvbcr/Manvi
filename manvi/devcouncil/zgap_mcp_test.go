@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // --- E2: the two resource tools were ungated ---------------------------------

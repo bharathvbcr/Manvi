@@ -1,7 +1,7 @@
 package fx
 
 import (
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // SweepStyled paints a travelling highlight across a single row — the top

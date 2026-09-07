@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // TestARetryableFailureIsFoundWhateverTheLineEnding.

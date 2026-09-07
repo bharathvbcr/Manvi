@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"manvi/flags"
-	"manvi/tools"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // Question represents a structured multiple-choice or write-in prompt.

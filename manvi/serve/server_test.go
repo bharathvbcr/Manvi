@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // roundTrip drives the server over one in-memory stdio pair and returns the

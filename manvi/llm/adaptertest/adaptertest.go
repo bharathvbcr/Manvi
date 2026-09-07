@@ -18,8 +18,8 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/credentials"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Server is a scripted SSE endpoint.

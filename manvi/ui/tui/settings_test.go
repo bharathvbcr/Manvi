@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // TestSettingsPickerIsNavigable is the complaint this whole surface answers.

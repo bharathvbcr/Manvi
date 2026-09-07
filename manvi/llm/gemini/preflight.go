@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // preflightLimit bounds how much of a stream is read looking for an opening

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 func ledger(t *testing.T) *Ledger {

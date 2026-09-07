@@ -12,8 +12,8 @@ import (
 
 	"github.com/samber/mo"
 
-	"manvi/credentials"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // Finding a local server is a discovery problem, not a configuration one.

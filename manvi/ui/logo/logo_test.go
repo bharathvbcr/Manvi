@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func testColors() Colors {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // The mouse grammar, uniform across surfaces: a click moves the highlight, a

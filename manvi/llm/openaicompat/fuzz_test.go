@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // fuzzTools is the shape the recovery path reads types from. Two tools with

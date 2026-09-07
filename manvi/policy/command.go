@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"manvi/dc"
-	"manvi/internal/fnmatch"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
 )
 
 // Git-safety patterns, ported from DevCouncil. Compiled once: they are checked

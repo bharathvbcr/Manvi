@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/credentials"
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // fakeKey is the value these tests use wherever a credential is wanted. It is

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode"
 
-	"manvi/dc"
-	"manvi/internal/fnmatch"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
 )
 
 // Path pattern sets, ported verbatim from DevCouncil's policy engine. They are

@@ -6,8 +6,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"manvi/llm"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // buildTurn drives the real compaction path over many steps and returns, for

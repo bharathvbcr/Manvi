@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The log is the durable boundary and the projection boundary at once: what is

@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func itoa(n int) string { return strconv.Itoa(n) }

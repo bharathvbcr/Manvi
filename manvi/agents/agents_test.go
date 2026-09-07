@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // recorder is a releaser that records what it was asked to give back, and can

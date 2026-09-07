@@ -7,8 +7,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"manvi/llm"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // TestToolCallBookkeepingCountsAgainstTheDecodeCap.

@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"manvi/agent"
-	"manvi/llm"
-	"manvi/llm/openaicompat"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/openaicompat"
 )
 
 // The chat plane is advisory: it does not make the model call.

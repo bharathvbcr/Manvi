@@ -1,8 +1,8 @@
 package main
 
 import (
-	"manvi/credentials"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // newSessionLog builds a session log with the credential backstop already

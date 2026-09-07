@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // TestFlagsSetSweepsTheWholeCatalogue.

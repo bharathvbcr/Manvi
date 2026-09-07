@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"manvi/credentials"
-	"manvi/llm"
-	"manvi/llm/openaicompat"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/openaicompat"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // Adapter drives an OpenAI-compatible server on the operator's machine.

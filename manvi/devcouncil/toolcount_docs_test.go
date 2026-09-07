@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // TestDocumentedToolCountMatchesRegistry pins every documented native-tool

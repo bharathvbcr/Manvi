@@ -6,11 +6,11 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/llm"
-	"manvi/llm/replay"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // usageFixture is a two-step child: one tool call, then an answer. The token

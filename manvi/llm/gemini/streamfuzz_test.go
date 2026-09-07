@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // FuzzStreamNeverSettlesIntoAToolCallItCannotRoute fuzzes the streaming decoder

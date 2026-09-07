@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
 // zfixKey is the value these tests watch. It is not a credential and never was.

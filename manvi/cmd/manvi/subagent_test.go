@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"manvi/core/bus"
-	"manvi/llm"
-	"manvi/llm/replay"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"strings"
 	"sync"
 	"testing"
 
-	"manvi/devcouncil"
-	"manvi/flags"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // An unattached runner refuses. It must never invent a result.

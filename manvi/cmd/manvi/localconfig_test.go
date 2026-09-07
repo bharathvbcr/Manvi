@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/flags"
-	"manvi/llm/openaicompat"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/openaicompat"
 )
 
 // newTestRegistry builds a harness registry at its shipped defaults.

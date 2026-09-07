@@ -3,10 +3,10 @@ package gate
 import (
 	"testing"
 
-	"manvi/dc"
-	"manvi/flags"
-	"manvi/grants"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // A command line has two verdicts about two different subjects, and clearing

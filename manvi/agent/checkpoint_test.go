@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
-	"manvi/llm/replay"
-	"manvi/session"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The terminal checkpoint is the seam that decides whether a turn that *looks*

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"manvi/llm"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // Project turns one session-log event into the UI events that should be shown

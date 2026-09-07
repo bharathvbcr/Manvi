@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func bufferString(b *render.Buffer) string {

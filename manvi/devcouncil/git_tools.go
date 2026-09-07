@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"manvi/internal/fnmatch"
-	"manvi/internal/proc"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The git integration gives an agent structured access to version control

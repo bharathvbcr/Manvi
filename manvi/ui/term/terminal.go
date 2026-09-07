@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Terminal is an attached tty in a known state.

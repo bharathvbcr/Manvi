@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func TestDetectProfileRespectsTheOperatorBeforeCapability(t *testing.T) {

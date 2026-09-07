@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // TestTheOverlayWheelWorksWithoutASession. The scroll handler used to check

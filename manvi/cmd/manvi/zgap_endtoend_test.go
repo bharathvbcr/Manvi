@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // The gap this file closes: every other test in this tree drives the loop

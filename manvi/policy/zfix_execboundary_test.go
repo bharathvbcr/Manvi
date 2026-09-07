@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // The rungs in this file all answer one question: does the ladder's reading of

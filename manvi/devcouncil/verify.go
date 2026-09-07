@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"manvi/dc"
-	"manvi/flags"
-	"manvi/internal/proc"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // Gap is one verification finding.

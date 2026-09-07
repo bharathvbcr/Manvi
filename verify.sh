@@ -337,10 +337,14 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # refused. The first measurement was not wrong, it was measuring the wrong
 # condition.
 step "Go — dependency surface"
+# The module itself is now a dotted path (github.com/bharathvbcr/Manvi/manvi),
+# so the domain-path filter below would report every package in this tree as an
+# unexpected dependency. Exclude it; the allowlist is for *external* packages.
 allowed='^(github\.com/awnumar/(memguard|memcall)|github\.com/samber/mo|golang\.org/x/(crypto|sys))(/|$)'
 unexpected="$( (cd manvi && go list -deps ./... 2>/dev/null) \
   | grep -E '^[a-z0-9-]+\.[a-z]+/' \
   | grep -v '^crypto/internal' \
+  | grep -v '^github\.com/bharathvbcr/Manvi/manvi\(/\|$\)' \
   | grep -Ev "$allowed" || true )"
 [[ -z "$unexpected" ]] || fail "packages outside the allowed dependency surface reached the build graph:
 $unexpected
@@ -428,7 +432,7 @@ if have nilaway; then
   # stopped matching is the failure this repository exists to refuse, so the
   # run is also required to produce output at all.
   nilaway_out="$(mktemp)"
-  (cd manvi && nilaway -include-pkgs=manvi ./... 2>&1) | sed -E 's/\x1b\[[0-9;]*m//g' > "$nilaway_out" || true
+  (cd manvi && nilaway -include-pkgs=github.com/bharathvbcr/Manvi/manvi ./... 2>&1) | sed -E 's/\x1b\[[0-9;]*m//g' > "$nilaway_out" || true
   [[ -s "$nilaway_out" ]] || { rm -f "$nilaway_out"; fail "nilaway produced no output at all; the ceiling has nothing to compare"; }
   grep -qE 'Potential nil panic detected|^# ' "$nilaway_out" || {
     head -5 "$nilaway_out" >&2; rm -f "$nilaway_out"

@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // Action is something that has happened and that the dispatcher must fold into

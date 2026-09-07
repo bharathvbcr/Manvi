@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agent"
-	"manvi/devcouncil"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // fakeVerifier stands in for the repository-backed check so these tests can be

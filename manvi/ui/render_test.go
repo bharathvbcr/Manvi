@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
 func renderer(t *testing.T) (*Renderer, *bytes.Buffer) {

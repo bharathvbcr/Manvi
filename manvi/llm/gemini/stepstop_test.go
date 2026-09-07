@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/adaptertest"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 )
 
 // reusedIDStream is two complete, well-formed tool calls that share an id,

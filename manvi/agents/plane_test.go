@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // registryWith builds a flag registry carrying the given settings.

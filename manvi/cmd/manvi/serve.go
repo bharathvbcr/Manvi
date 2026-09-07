@@ -9,8 +9,8 @@ import (
 	"strings"
 	"syscall"
 
-	"manvi/flags"
-	"manvi/serve"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/serve"
 )
 
 const serveUsage = `manvi serve — expose the harness's planes to a host process over stdio

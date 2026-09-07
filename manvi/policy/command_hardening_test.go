@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // These tests pin the closed bypasses. Each one was a live hole: a command

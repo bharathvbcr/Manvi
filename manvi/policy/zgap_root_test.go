@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
 )
 
 // --- E4: an absolute .venv/bin/dev outside the repo was laundered ------------

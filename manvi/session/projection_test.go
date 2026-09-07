@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // TestIncrementalProjectionMatchesFullReplay pins the equivalence between the

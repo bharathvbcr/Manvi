@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"manvi/agent"
-	"manvi/agents"
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/flags"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // The end-of-turn check, and the escalation ladder above it.

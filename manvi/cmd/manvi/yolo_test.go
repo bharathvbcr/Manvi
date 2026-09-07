@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 func TestTakeYoloStripsTheOptionFromEitherSide(t *testing.T) {

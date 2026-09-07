@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 // The wire contract every Rust binary in the analysis plane is held to, in one

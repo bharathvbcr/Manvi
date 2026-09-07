@@ -3,8 +3,8 @@ package tui
 import (
 	"time"
 
-	"manvi/ui/fx"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Dashboard is the AppView-level surface: every session at once.

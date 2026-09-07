@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The fallback parser reads text a model produced, which means it reads

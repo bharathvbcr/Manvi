@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // TestVersionIsATopLevelCommand: a harness pointed at CI has to be able to say
@@ -66,7 +66,7 @@ func TestVersionIsATopLevelCommand(t *testing.T) {
 // may be printed as if it were an identity, and neither may be printed as an
 // empty field — a blank where a revision goes reads as a value.
 func TestBuildIdentityDegradesHonestlyWithoutAVCSStamp(t *testing.T) {
-	info := &debug.BuildInfo{Main: debug.Module{Path: "manvi", Version: "(devel)"}}
+	info := &debug.BuildInfo{Main: debug.Module{Path: "github.com/bharathvbcr/Manvi/manvi", Version: "(devel)"}}
 
 	id := readBuildIdentity(info, true, "")
 	if id.Version != "" {
@@ -92,7 +92,7 @@ func TestBuildIdentityDegradesHonestlyWithoutAVCSStamp(t *testing.T) {
 // produce: a release built from a VCS-stamped checkout.
 func TestBuildIdentityReportsAStampedBuild(t *testing.T) {
 	info := &debug.BuildInfo{
-		Main: debug.Module{Path: "manvi", Version: "(devel)"},
+		Main: debug.Module{Path: "github.com/bharathvbcr/Manvi/manvi", Version: "(devel)"},
 		Settings: []debug.BuildSetting{
 			{Key: "vcs.revision", Value: "3f9c1ab2d4e5f60718293a4b5c6d7e8f90a1b2c3"},
 			{Key: "vcs.time", Value: "2026-08-18T21:04:11Z"},

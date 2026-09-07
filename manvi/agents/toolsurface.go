@@ -1,6 +1,6 @@
 package agents
 
-import "manvi/tools"
+import "github.com/bharathvbcr/Manvi/manvi/tools"
 
 // ToolSurface is the tool set a role declares for the child it describes.
 //

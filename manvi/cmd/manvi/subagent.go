@@ -6,14 +6,14 @@ import (
 	"strings"
 	"sync"
 
-	"manvi/agent"
-	"manvi/agents"
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/llm"
-	"manvi/session"
-	"manvi/tools"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // subAgentRunner runs one delegated turn against a real model.

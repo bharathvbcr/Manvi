@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // zfixKey is the value these tests watch. It is not a credential and never was.

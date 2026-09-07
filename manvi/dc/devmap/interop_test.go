@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/repomap"
+	"github.com/bharathvbcr/Manvi/manvi/repomap"
 )
 
 // Every other test in this package drives a fake, which is right: what needs

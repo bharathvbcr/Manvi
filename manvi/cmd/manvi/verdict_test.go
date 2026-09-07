@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
 
 // The verdict reader is an advance rule, so every test here is an attempt to

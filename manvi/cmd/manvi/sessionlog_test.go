@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 // The credential backstop on a session log is armed at construction, and the

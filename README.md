@@ -384,25 +384,37 @@ Append-only compaction means warm requests reuse the cached KV prefix — **1.5s
 # Run the complete test & verification suite (gofmt+vet+test, fmt+clippy+test, parity+interop)
 ./verify.sh
 
-# Build both planes
+# Install from a release tag (no checkout; needs Go on PATH)
+go install github.com/bharathvbcr/Manvi/manvi/cmd/manvi@latest
+
+# Or install from this checkout (contributors)
+go -C manvi install ./cmd/manvi
+
+# Or build both planes without installing
 go -C manvi build -o /tmp/manvi ./cmd/manvi
 cargo build --manifest-path crates/Cargo.toml --bin dcstore --bin dcverify --bin dcgrep
 
 # Interactive full-screen TUI
-/tmp/manvi
+manvi
+# (or /tmp/manvi if you built without install)
 
 # Headless single turn (exit codes: 0 ok · 1 failure · 2 step ceiling · 3 output cap · 4 no answer · 5 unfinished)
-/tmp/manvi run -p "fix the failing test in src/calc.go"
-/tmp/manvi run -p "..." --json --max-steps 40 --timeout 10m
+manvi run -p "fix the failing test in src/calc.go"
+manvi run -p "..." --json --max-steps 40 --timeout 10m
 
 # Local models: discover endpoints, then run against them
-/tmp/manvi local
+manvi local
 export MANVI_LLM_PROVIDER_DEFAULT=local
-/tmp/manvi run -p "remove unused imports from helper.go"
+manvi run -p "remove unused imports from helper.go"
 
 # Expose gates + LLM prep over NDJSON stdio for IDE embedding
-/tmp/manvi serve
+manvi serve
 ```
+
+Hosts such as GitPulse resolve `manvi` from PATH, `~/go/bin`, Homebrew, and
+`GITPULSE_MANVI_BIN`. Point `GITPULSE_MANVI_ROOT` at this checkout when installing
+from the app UI. A configured `GITPULSE_MANVI_BIN` that does not exist is refused
+rather than searched past.
 
 ---
 

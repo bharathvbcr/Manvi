@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
-	"manvi/session"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 func toolResultMsg(id llm.CallID, text string) llm.Message {

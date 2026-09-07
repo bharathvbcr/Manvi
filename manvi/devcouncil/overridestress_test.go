@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/flags"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // FuzzOverrideSubject drives the router that decides which gate an override

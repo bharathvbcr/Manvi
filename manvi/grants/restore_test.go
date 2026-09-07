@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // A ledger file is not a trusted input. It outlives the run that wrote it, it

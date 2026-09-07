@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/dc/devmap"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/llm/gemini"
-	"manvi/llm/local"
-	"manvi/prompt"
-	"manvi/tools"
-	"manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 func TestSplitArgsCarriesQuotedValues(t *testing.T) {

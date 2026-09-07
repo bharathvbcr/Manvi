@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
 
 // A judging child answers in prose and in one machine-readable line. This file

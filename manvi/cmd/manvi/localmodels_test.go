@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // Every test here pins llm.local.base_url through the config layer, which makes

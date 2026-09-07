@@ -12,7 +12,7 @@ package xai
 import (
 	"fmt"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Name is the adapter's stable identifier, and therefore the provenance value

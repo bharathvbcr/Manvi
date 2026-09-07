@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"manvi/internal/proc"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The dev-CLI bridge is the one place this harness shells out to the Python

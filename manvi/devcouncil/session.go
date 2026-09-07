@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 )
 
 // Session is the state one agent carries while working a task: which task it

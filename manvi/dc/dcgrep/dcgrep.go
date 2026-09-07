@@ -34,7 +34,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 // BinaryEnv overrides binary discovery, so an operator who names a path means

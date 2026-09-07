@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Prompt is the composer: a text editor with history, word motion, and the

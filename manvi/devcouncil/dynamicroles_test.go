@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agents"
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // devcouncil_define_subagent lets a model invent role types at runtime: a name,

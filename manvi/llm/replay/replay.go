@@ -19,7 +19,7 @@ import (
 	"os"
 	"sync"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Turn is one recorded model response.

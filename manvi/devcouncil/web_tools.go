@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"manvi/fetch"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/fetch"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The documentation-lookup tool.

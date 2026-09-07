@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/flags"
-	"manvi/mcp"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // A stub MCP server that records the fact it was started and then answers

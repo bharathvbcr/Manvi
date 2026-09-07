@@ -21,6 +21,20 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Added
+
+- **Published module path `github.com/bharathvbcr/Manvi/manvi`.**
+  `go install manvi/cmd/manvi@latest` was impossible while the module was the
+  bare name `manvi` (`missing dot in first path element`). Remote install is
+  now `go install github.com/bharathvbcr/Manvi/manvi/cmd/manvi@latest`;
+  contributors keep `go -C manvi install ./cmd/manvi` from a checkout.
+- **GitHub Actions release workflow for darwin/linux amd64+arm64.**
+  Tag `v*` builds with `CGO_ENABLED=0` and stamps `-X main.stampedVersion`, then
+  attaches SHA-256 checksums. No Windows target (see `verify.yml`).
+- **Documented `go -C manvi install ./cmd/manvi` as the PATH install one-liner
+  for a local checkout.** Puts the CLI in `~/go/bin` (or `GOBIN`) so GUI hosts
+  that do not inherit a shell profile can still find it.
+
 ### Fixed
 
 - **CI would have failed on Linux on its first run.** `.golangci-debt.counts`

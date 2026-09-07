@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // The protocol between the Go execution plane and the Rust state plane is one

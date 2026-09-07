@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"manvi/ui/brand"
+	"github.com/bharathvbcr/Manvi/manvi/ui/brand"
 )
 
 // SVG returns the mark as a self-contained SVG, generated from the same grid

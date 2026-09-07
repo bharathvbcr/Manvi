@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // OverlayKind is which floating surface is open.

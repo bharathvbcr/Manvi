@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // A history that exceeds the threshold with nothing eligible to shorten must

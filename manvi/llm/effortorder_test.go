@@ -3,11 +3,11 @@ package llm_test
 import (
 	"testing"
 
-	"manvi/llm"
-	"manvi/llm/anthropic"
-	"manvi/llm/gemini"
-	"manvi/llm/local"
-	"manvi/llm/xai"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
 )
 
 // rank is the harness's effort vocabulary, least reasoning first.

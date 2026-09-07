@@ -3,7 +3,7 @@ package openaicompat
 import (
 	"strings"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The stream path owns tool-call recovery and reasoning separation, and both

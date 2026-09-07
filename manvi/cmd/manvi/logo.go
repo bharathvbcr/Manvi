@@ -7,11 +7,11 @@ import (
 	"os"
 	"strconv"
 
-	"manvi/ui"
-	"manvi/ui/logo"
-	"manvi/ui/render"
-	"manvi/ui/term"
-	"manvi/ui/tui"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/term"
+	"github.com/bharathvbcr/Manvi/manvi/ui/tui"
 )
 
 // showLogo prints the mark, or emits it as SVG.

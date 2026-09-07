@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func panicRegistry(t *testing.T, ran *atomic.Int64) *Registry {

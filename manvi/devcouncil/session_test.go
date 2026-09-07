@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/flags"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // callAs dispatches one tool call under a named session, the way a dispatched

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 // The searcher boundary is the store's and the repo map's third sibling, and it

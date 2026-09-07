@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"manvi/core/bus"
-	"manvi/dc/dcgrep"
-	"manvi/dc/store"
-	"manvi/flags"
-	"manvi/gate"
-	"manvi/internal/testsupport"
-	"manvi/policy"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/dc/dcgrep"
+	"github.com/bharathvbcr/Manvi/manvi/dc/store"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/gate"
+	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // fixture builds a real repository, a real store with a real task, and the

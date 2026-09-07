@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/flags"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 func TestAdversarialYAMLConfigs(t *testing.T) {

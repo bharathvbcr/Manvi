@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"manvi/credentials"
-	"manvi/flags"
-	"manvi/llm"
-	"manvi/llm/anthropic"
-	"manvi/llm/gemini"
-	"manvi/llm/local"
-	"manvi/llm/xai"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
 )
 
 // This file is the one place an adapter is constructed.

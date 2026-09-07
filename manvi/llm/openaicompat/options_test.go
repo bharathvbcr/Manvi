@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // These cover the declared Options that reach the wire or the decoder. Each one

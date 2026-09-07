@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The scrubber is the backstop for credentials that reach a tool result by a

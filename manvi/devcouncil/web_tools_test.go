@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/fetch"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/fetch"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 const fetchTool = "devcouncil_fetch_url"

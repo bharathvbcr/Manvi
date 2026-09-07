@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/mcp"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // A surface built without an MCP manager must refuse, not discover servers on

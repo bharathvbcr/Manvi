@@ -32,10 +32,10 @@ import (
 	"io"
 	"strings"
 
-	"manvi/core/bus"
-	"manvi/llm"
-	"manvi/session"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // PreStep is the waterfall that runs before a step is entered. A listener may

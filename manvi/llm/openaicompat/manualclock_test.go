@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // manualClock is the stall watchdog's clock, driven by the test rather than by

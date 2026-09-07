@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 // local.scan lists the model servers running on this machine.

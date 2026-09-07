@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"manvi/dc"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // graphFixture writes a small code graph with two coupled areas and one

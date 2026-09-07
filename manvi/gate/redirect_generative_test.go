@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/dc"
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // A generated differential. The hand-written corpus in redirect_test.go covers

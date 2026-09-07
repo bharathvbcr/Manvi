@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 func TestFindProjectRoot_GitRepo(t *testing.T) {

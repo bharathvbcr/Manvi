@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"manvi/llm"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // The stall watchdog is the harness's only answer to a real failure: the server

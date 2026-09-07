@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"manvi/flags"
-	"manvi/grants"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/grants"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // TestGrantPolicyIsStaleUntilReloaded is the divergence this seam closes.

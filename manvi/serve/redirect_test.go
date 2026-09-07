@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // commandCheckIn is commandCheck with a root, so the redirect rung can run.

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"manvi/flags"
-	"manvi/ui/fx"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/ui/fx"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // Status is the persistent state the bar reports.

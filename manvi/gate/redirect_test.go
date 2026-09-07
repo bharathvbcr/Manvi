@@ -7,9 +7,9 @@ import (
 	"sort"
 	"testing"
 
-	"manvi/dc"
-	"manvi/flags"
-	"manvi/policy"
+	"github.com/bharathvbcr/Manvi/manvi/dc"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/policy"
 )
 
 // This file holds the one check that compares what the command gate says with

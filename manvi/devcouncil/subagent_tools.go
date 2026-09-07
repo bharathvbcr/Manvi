@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"manvi/agents"
-	"manvi/flags"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The governing invariant of this file:

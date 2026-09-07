@@ -8,11 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/llm"
-	"manvi/llm/replay"
-	"manvi/session"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // The checkpoint decides whether work is finished, so the inputs it has to

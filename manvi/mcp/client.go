@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
 )
 
 // ServerConfig configures an MCP server process.

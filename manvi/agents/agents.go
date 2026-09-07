@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 // Errors callers branch on.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
 // render.go states that every path writing content goes through `safe`, which

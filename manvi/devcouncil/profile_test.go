@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // The two invariants exercised in this file exist because `llm.local.

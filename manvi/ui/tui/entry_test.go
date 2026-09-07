@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/ui"
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 func lineText(lines []render.Line) string {

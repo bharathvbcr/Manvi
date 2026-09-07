@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
 )
 
 func doctorText(t *testing.T, set map[string]string) string {

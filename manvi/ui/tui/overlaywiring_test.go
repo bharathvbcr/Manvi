@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
 )
 
 // The session picker was written whole — the overlay, its items, and the

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // TestOpenBlocksCountAgainstTheDecodeCap.

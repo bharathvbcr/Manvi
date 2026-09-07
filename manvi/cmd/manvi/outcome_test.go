@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/agent"
-	"manvi/flags"
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func noticeText(ns []outcomeNotice) string {

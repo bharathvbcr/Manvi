@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"strings"
 
-	"manvi/credentials"
-	"manvi/llm"
-	"manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
 // Adapter speaks the interactions API.

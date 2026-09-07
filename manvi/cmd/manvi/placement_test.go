@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/core/bus"
-	"manvi/devcouncil"
-	"manvi/llm"
-	"manvi/tools"
+	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // stubProvider is a provider that serves a fixed set of model names and records

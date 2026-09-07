@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"manvi/llm"
-	"manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
 func record(t *testing.T, typ session.Type, payload any) session.Event {

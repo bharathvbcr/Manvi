@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Type is a session event's kind.
