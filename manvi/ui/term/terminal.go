@@ -311,6 +311,10 @@ func (t *Terminal) Resumed() <-chan struct{} { return t.suspended }
 
 // Suspend performs a Ctrl+Z: restore the terminal, stop this process, and on
 // resume put everything back and ask for a repaint.
+// afterRestoreForTest runs after the tty is restored and before the process
+// stops. Tests use it to observe the suspended state; production leaves it nil.
+var afterRestoreForTest func()
+
 func (t *Terminal) Suspend() error {
 	stopSig, contSig := suspendSignals()
 	if stopSig == nil {
@@ -329,6 +333,9 @@ func (t *Terminal) Suspend() error {
 	_, _ = io.WriteString(t.out, "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l")
 	if err := setState(t.in.Fd(), saved); err != nil {
 		return err
+	}
+	if afterRestoreForTest != nil {
+		afterRestoreForTest()
 	}
 
 	cont := make(chan os.Signal, 1)

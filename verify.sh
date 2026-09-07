@@ -1139,12 +1139,12 @@ step "Provider wire contracts"
 # about this adapter. Resolution only answers when the server itself leaves
 # nothing to choose — exactly one model that reports it can both generate text
 # and call tools — and otherwise refuses and names the candidates.
-probe_bin="$(mktemp -t manvi-probe)"
+probe_bin="$(mktemp -t manvi-probe.XXXXXX)"
 (cd manvi && go build -o "$probe_bin" ./cmd/manvi) || fail "building manvi for the local probe"
 
 # stdout is the document, stderr is the reason it could not be produced. Kept
 # apart so a partial document can never be parsed as a whole one.
-resolve_err="$(mktemp -t manvi-resolve-err)"
+resolve_err="$(mktemp -t manvi-resolve-err.XXXXXX)"
 if resolved="$(MANVI_HARNESS_INIT_ENABLED=false "$probe_bin" local --resolve 2>"$resolve_err")"; then
   probe_model="$(printf '%s\n' "$resolved" | awk -F= '$1 == "model" { print substr($0, index($0, "=") + 1) }')"
   probe_base="$(printf '%s\n' "$resolved" | awk -F= '$1 == "base_url" { print substr($0, index($0, "=") + 1) }')"
