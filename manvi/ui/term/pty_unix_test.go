@@ -555,22 +555,19 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 	}
 	defer resume.Wait()
 
-	// The observation that matters is made by the helper's own timing: the
-	// terminal must already be restored by the time this process is stopped.
-	// It is checked immediately after resuming, because a suspend that left the
-	// tty raw would show up as raw settings persisting across the stop.
+	// Observe the restored tty *inside* Suspend, after setState and before
+	// SIGSTOP. A goroutine that sleeps cannot do this: once the process stops
+	// nothing in it runs, and after CONT the terminal is raw again — so a
+	// late observation falsely reports that Suspend left the tty raw.
 	checked := make(chan syscall.Termios, 1)
-	go func() {
-		// Runs before the stop takes effect only if Suspend restores first;
-		// after the stop it cannot run at all. Either way the value it reports
-		// is the state the shell would have seen.
-		time.Sleep(300 * time.Millisecond)
+	afterRestoreForTest = func() {
 		state, err := getState(slave.Fd())
 		if err == nil {
 			checked <- *state
 		}
 		close(checked)
-	}()
+	}
+	t.Cleanup(func() { afterRestoreForTest = nil })
 
 	if err := term.Suspend(); err != nil {
 		t.Fatalf("Suspend: %v", err)
@@ -586,7 +583,9 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 				"the shell would have had no echo and no line editing")
 		}
 		if observed != original {
-			t.Errorf("the suspended terminal was not the original:\n before %+v\n during %+v", original, observed)
+			t.Errorf("the suspended terminal was not the original:
+ before %+v
+ during %+v", original, observed)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no observation was made")
