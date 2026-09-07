@@ -582,9 +582,8 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 			t.Fatal("the terminal was still raw while the process was stopped; " +
 				"the shell would have had no echo and no line editing")
 		}
-				if observed != original {
+		if observed != original {
 			t.Errorf("the suspended terminal was not the original:\n before %+v\n during %+v", original, observed)
-		}
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no observation was made")
@@ -604,8 +603,6 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 	}
 }
 
-// TestAccessorsReportWhatWasDetected covers the small surface the app reads
-// every frame.
 func TestAccessorsReportWhatWasDetected(t *testing.T) {
 	_, slave := openPTY(t)
 	term := New(slave, slave)
