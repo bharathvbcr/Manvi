@@ -583,9 +583,7 @@ func TestSuspendHandsTheTerminalBackAndTakesItAgain(t *testing.T) {
 				"the shell would have had no echo and no line editing")
 		}
 				if observed != original {
-			t.Errorf("the suspended terminal was not the original:
- before %+v
- during %+v", original, observed)
+			t.Errorf("the suspended terminal was not the original:\n before %+v\n during %+v", original, observed)
 		}
 		}
 	case <-time.After(3 * time.Second):
