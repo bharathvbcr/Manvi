@@ -85,7 +85,7 @@ func validOperationName(name string) error {
 			return fmt.Errorf("invalid operation name %q: dot-delimited segments must not be empty", name)
 		}
 		for _, ch := range part {
-			if !(ch >= 'a' && ch <= 'z') && !(ch >= '0' && ch <= '9') && ch != '-' && ch != '_' {
+			if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' && ch != '_' {
 				return fmt.Errorf("invalid operation name %q: use lowercase letters, digits, dot, dash, or underscore", name)
 			}
 		}

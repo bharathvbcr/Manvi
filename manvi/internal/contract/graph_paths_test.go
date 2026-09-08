@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,8 @@ func TestGraphPathExtractorAcceptsCompactAndPrettyJSONAndOnlyFiles(t *testing.T)
 		if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := exec.Command("python3", script, path).CombinedOutput()
+		// #nosec G204 -- the interpreter is fixed and both arguments are test-owned paths.
+		out, err := exec.CommandContext(context.Background(), "python3", script, path).CombinedOutput()
 		if err != nil {
 			t.Fatalf("fixture %d: %v: %s", i, err, out)
 		}

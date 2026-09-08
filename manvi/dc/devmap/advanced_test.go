@@ -24,7 +24,10 @@ func TestAdvancedQueryPreservesProducerEnvelopeAndIndexContract(t *testing.T) {
 	if err := json.Unmarshal(result.Data, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	definitions := envelope["definitions"].(map[string]any)
+	definitions, ok := envelope["definitions"].(map[string]any)
+	if !ok {
+		t.Fatalf("definitions envelope has type %T", envelope["definitions"])
+	}
 	if definitions["total"] != float64(9) || definitions["truncated"] != true {
 		t.Fatalf("producer completeness fields were lost: %s", result.Data)
 	}
@@ -80,7 +83,11 @@ case "$*" in
 esac
 `
 	path := filepath.Join(dir, "devmap")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G302 -- this test fixture must be executable and is private to its temp directory.
+	if err := os.Chmod(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	c := New(path, dir)
