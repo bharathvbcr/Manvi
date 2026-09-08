@@ -23,8 +23,8 @@ response object per line out, correlated by the caller's "id". Diagnostics go
 to stderr, so stdout carries nothing but protocol.
 
 This is how a host that is not written in Go — an editor, an IDE, a desktop
-app — uses the local-LLM and policy planes without a cgo boundary or a second
-implementation of either.
+app — uses the local-LLM, policy, and deep code-intelligence planes without a
+cgo boundary or a second implementation of any of them.
 
 Postures:
   host        Hard rules enforced; a denial that only says "no task authorises
@@ -107,6 +107,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		AllowNeighbors: neighbors,
 		AllowSameDir:   sameDir,
 		Posture:        posture,
+		Modules: []serve.Module{
+			serve.DevmapModule{Client: mapClient(projectRoot())},
+		},
 	})
 	return srv.Serve(ctx, os.Stdin)
 }

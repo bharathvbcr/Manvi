@@ -784,7 +784,7 @@ else
     [[ -n "$indexed_path" ]] || continue
     indexed=$(( indexed + 1 ))
     [[ -e "$indexed_path" ]] || stale=$(( stale + 1 ))
-  done < <(grep -o '"path": "[^"]*"' "$graph" | sed 's/.*: "//; s/"$//' | sort -u)
+  done < <(python3 scripts/graph-file-paths.py "$graph")
   if (( indexed == 0 )); then
     notcovered "$(printf '%s names no files — rebuild it with `manvi map build`' "$graph")"
   elif (( stale > 0 )); then

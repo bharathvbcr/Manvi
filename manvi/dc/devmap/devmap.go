@@ -212,14 +212,23 @@ func formatDetail(detail string) string {
 
 // Status is what the index says about itself.
 type Status struct {
-	DBPath         string  `json:"db_path"`
-	GenerationID   int     `json:"generation_id"`
-	NodeCount      int     `json:"node_count"`
-	EdgeCount      int     `json:"edge_count"`
-	PendingCount   int     `json:"pending_count"`
-	Quarantined    int     `json:"quarantined_count"`
-	IsFresh        bool    `json:"is_fresh"`
-	DegradedReason *string `json:"degraded_reason"`
+	DBPath                string         `json:"db_path"`
+	GenerationID          int            `json:"generation_id"`
+	NodeCount             int            `json:"node_count"`
+	EdgeCount             int            `json:"edge_count"`
+	PendingCount          int            `json:"pending_count"`
+	Quarantined           int            `json:"quarantined_count"`
+	IsFresh               bool           `json:"is_fresh"`
+	DegradedReason        *string        `json:"degraded_reason"`
+	SchemaVersion         int            `json:"schema_version"`
+	ExpectedSchemaVersion int            `json:"expected_schema_version"`
+	Capabilities          map[string]any `json:"capabilities,omitempty"`
+	HostContractVersion   int            `json:"host_contract_version"`
+	BinaryVersion         string         `json:"binary_version"`
+	SchemaRelation        string         `json:"schema_relation"`
+	ReaderReady           bool           `json:"reader_ready"`
+	QueryReady            bool           `json:"query_ready"`
+	CoverageGaps          map[string]any `json:"coverage_gaps,omitempty"`
 }
 
 // Symbol is one search hit.

@@ -16,6 +16,14 @@ MANVI is the harness that unifies them into a working coding agent: it drives th
 
 **That makes MANVI embeddable.** Because the harness is a single static Go binary (`CGO_ENABLED=0`) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
 
+The host plane is assembled from immutable per-server modules. Built-in policy,
+local-model, and chat handlers use the same router as optional services; the
+stock command adds deep devmap status and bounded graph queries through the
+existing `manvi/dc/devmap` client. Hosts negotiate the final operation set in
+`hello.ops`, and Go embedders can add or explicitly replace one handler through
+`serve.Options.Modules` without editing the dispatch loop. The router is frozen
+before input is read, so the negotiated contract cannot drift mid-run.
+
 The internal split is then a second, orthogonal decision: two planes divided strictly on **IO-bound concurrency vs CPU-bound determinism**.
 
 ```mermaid
@@ -372,4 +380,3 @@ did not run rather than one that passed.
 - [Hardening Ledger & Defects](HARDENING_LEDGER.md)
 - [Architectural Trade-offs](TRADE_OFFS.md)
 - [Verification & Parity Specification](VERIFICATION_AND_PARITY.md)
-
