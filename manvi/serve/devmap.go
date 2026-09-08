@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 
 	mapclient "github.com/bharathvbcr/Manvi/manvi/dc/devmap"
 )
@@ -23,7 +22,7 @@ type DevmapModule struct {
 }
 
 func (m DevmapModule) Configure(r *Router) error {
-	if m.Client == nil || (reflect.ValueOf(m.Client).Kind() == reflect.Pointer && reflect.ValueOf(m.Client).IsNil()) {
+	if nilInterface(m.Client) {
 		return errors.New("devmap module has no client")
 	}
 	if err := r.Register(OpDevmapStatus, m.status); err != nil {

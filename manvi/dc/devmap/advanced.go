@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -159,9 +160,6 @@ func (c *Client) Advanced(ctx context.Context, q AdvancedQuery) (AdvancedResult,
 // the module boundary. A nil status or a payload lacking the producer's
 // completeness envelope is a dependency contract failure, never ok:true.
 func ValidateAdvancedResult(kind QueryKind, result AdvancedResult) error {
-	if result.Index == nil {
-		return fmt.Errorf("devmap %s adapter returned no index status", kind)
-	}
 	if err := validateAdvancedStatus(result.Index, kind); err != nil {
 		return fmt.Errorf("devmap %s adapter returned incompatible index status: %w", kind, err)
 	}
@@ -219,26 +217,22 @@ func validateCountedEnvelope(kind QueryKind, section string, envelope json.RawMe
 		Total      *int            `json:"total"`
 		Hidden     *int            `json:"hidden"`
 		Truncated  *bool           `json:"truncated"`
+		TokensUsed *int            `json:"tokens_used"`
 	}
-	if err := json.Unmarshal(envelope, &counts); err != nil || !rawJSONArray(counts.Items) || jsonValueMissing(counts.Resolution) ||
-		counts.Shown == nil || counts.Total == nil || counts.Hidden == nil || counts.Truncated == nil {
-		return fmt.Errorf("devmap %s %s lacks required completeness fields items, resolution, shown, total, hidden, or truncated", kind, section)
+	if err := json.Unmarshal(envelope, &counts); err != nil || !rawJSONArray(counts.Items) || !rawResolution(counts.Resolution) ||
+		counts.Shown == nil || counts.Total == nil || counts.Hidden == nil || counts.Truncated == nil || counts.TokensUsed == nil {
+		return fmt.Errorf("devmap %s %s lacks required completeness fields items, resolution, shown, total, hidden, truncated, or tokens_used", kind, section)
 	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(counts.Items, &items); err != nil {
 		return fmt.Errorf("devmap %s %s items are not an array", kind, section)
 	}
-	if *counts.Shown < 0 || *counts.Total < 0 || *counts.Hidden < 0 ||
-		*counts.Shown != len(items) || *counts.Total != *counts.Shown+*counts.Hidden {
-		return fmt.Errorf("devmap %s %s carries impossible completeness counts (items=%d shown=%d hidden=%d total=%d)",
-			kind, section, len(items), *counts.Shown, *counts.Hidden, *counts.Total)
+	if *counts.Shown < 0 || *counts.Total < 0 || *counts.Hidden < 0 || *counts.Shown > *counts.Total ||
+		*counts.TokensUsed < 0 || *counts.Shown != len(items) ||
+		*counts.Hidden != *counts.Total-*counts.Shown || *counts.Truncated != (*counts.Hidden > 0) {
+		return fmt.Errorf("devmap %s %s carries impossible completeness counts", kind, section)
 	}
 	return nil
-}
-
-func jsonValueMissing(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
 func rawJSONObject(raw json.RawMessage) bool {
@@ -251,19 +245,41 @@ func rawJSONArray(raw json.RawMessage) bool {
 	return len(trimmed) > 0 && trimmed[0] == '['
 }
 
-func validateAdvancedStatus(status *Status, kind QueryKind) error {
-	if status.SchemaVersion <= 0 || status.ExpectedSchemaVersion <= 0 {
-		return fmt.Errorf("devmap status did not report schema_version and expected_schema_version; compatibility is unverified")
+func rawResolution(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
 	}
-	if status.SchemaVersion != status.ExpectedSchemaVersion {
-		return fmt.Errorf("devmap schema %d is incompatible with expected schema %d", status.SchemaVersion, status.ExpectedSchemaVersion)
+	switch trimmed[0] {
+	case '"':
+		var value string
+		return json.Unmarshal(trimmed, &value) == nil && strings.TrimSpace(value) != ""
+	case '{':
+		var value map[string]json.RawMessage
+		return json.Unmarshal(trimmed, &value) == nil && len(value) > 0
+	default:
+		return false
+	}
+}
+
+func validateAdvancedStatus(status *Status, kind QueryKind) error {
+	if status == nil {
+		return fmt.Errorf("devmap status is missing")
 	}
 	if status.HostContractVersion != 1 {
 		return fmt.Errorf("devmap host contract %d is unsupported; this build requires 1", status.HostContractVersion)
 	}
-	if status.SchemaRelation != "current" || !status.ReaderReady || !status.QueryReady {
+	// The versioned host contract owns compatibility. Schema numbers and the
+	// relation string are diagnostics; treating exact equality as the contract
+	// would reject a future v1 producer that explicitly advertises a compatible
+	// additive reader.
+	if !status.ReaderReady || !status.QueryReady {
 		return fmt.Errorf("devmap query is not ready (schema_relation=%q reader_ready=%t query_ready=%t)",
 			status.SchemaRelation, status.ReaderReady, status.QueryReady)
+	}
+	if strings.TrimSpace(status.DBPath) == "" || status.GenerationID <= 0 {
+		return fmt.Errorf("devmap status lacks a concrete snapshot identity (db_path=%q generation_id=%d)",
+			status.DBPath, status.GenerationID)
 	}
 	available, ok := status.Capabilities[string(kind)].(bool)
 	if !ok || !available {

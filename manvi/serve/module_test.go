@@ -15,6 +15,16 @@ type testModule struct {
 
 type retainingModule struct{ router *Router }
 
+type nilDerefModule struct{ operation string }
+
+func (m *nilDerefModule) Configure(r *Router) error {
+	return r.Register(m.operation, func(context.Context, json.RawMessage) (any, *Error) { return nil, nil })
+}
+
+type panickingModule struct{}
+
+func (*panickingModule) Configure(*Router) error { panic("configure boom") }
+
 func (m *retainingModule) Configure(r *Router) error {
 	m.router = r
 	return r.Register("host.one", func(context.Context, json.RawMessage) (any, *Error) { return nil, nil })
@@ -97,5 +107,30 @@ func TestRouterIsFrozenAfterConfiguration(t *testing.T) {
 	}
 	if err := srv.Serve(context.Background(), strings.NewReader("")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTypedNilModuleFailsConfigurationWithoutPanicking(t *testing.T) {
+	var module *nilDerefModule
+	var out strings.Builder
+	srv := New(&out, Options{Modules: []Module{module}})
+	err := srv.Serve(context.Background(), strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "nil host-plane module") {
+		t.Fatalf("Serve error = %v, want typed-nil configuration refusal", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("invalid module configuration wrote protocol output: %q", out.String())
+	}
+}
+
+func TestModuleConfigurationPanicBecomesAConfigurationError(t *testing.T) {
+	var out strings.Builder
+	srv := New(&out, Options{Modules: []Module{&panickingModule{}}})
+	err := srv.Serve(context.Background(), strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "configure boom") {
+		t.Fatalf("Serve error = %v, want recovered module configuration panic", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("panicking module wrote protocol output: %q", out.String())
 	}
 }

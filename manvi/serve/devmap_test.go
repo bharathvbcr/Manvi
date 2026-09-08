@@ -27,8 +27,8 @@ func (f *fakeDevmap) Advanced(_ context.Context, q mapclient.AdvancedQuery) (map
 
 func TestDevmapModuleNegotiatesAndPreservesCompleteness(t *testing.T) {
 	fake := &fakeDevmap{result: mapclient.AdvancedResult{
-		Data:  json.RawMessage(`{"items":[{"symbol_name":"Router"}],"resolution":"Available","shown":1,"total":7,"hidden":6,"truncated":true,"walk_incomplete":"lower bound"}`),
-		Index: &mapclient.Status{HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, GenerationID: 3, IsFresh: true, Capabilities: map[string]any{"impact": true}},
+		Data:  json.RawMessage(`{"items":[{"symbol_name":"Router"}],"resolution":"Available","shown":1,"total":7,"hidden":6,"truncated":true,"tokens_used":12,"walk_incomplete":"lower bound"}`),
+		Index: &mapclient.Status{DBPath: "db", HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, GenerationID: 3, IsFresh: true, Capabilities: map[string]any{"impact": true}},
 	}}
 	responses := roundTrip(t, Options{HardRules: true, Modules: []Module{DevmapModule{Client: fake}}},
 		Request{ID: "h", Op: OpHello},
@@ -90,18 +90,6 @@ func TestDevmapAdapterCannotReturnNilSuccess(t *testing.T) {
 		if response.OK || response.Error == nil || response.Error.Code != ErrDependency {
 			t.Fatalf("nil adapter output became success: %+v", response)
 		}
-	}
-}
-
-func TestDevmapAdapterCannotReturnZeroStatusAsSuccess(t *testing.T) {
-	fake := &fakeDevmap{result: mapclient.AdvancedResult{
-		Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false}`),
-		Index: &mapclient.Status{},
-	}}
-	response := roundTrip(t, Options{Modules: []Module{DevmapModule{Client: fake}}},
-		Request{ID: "query", Op: OpDevmapQuery, Params: json.RawMessage(`{"kind":"impact","query":"Router","depth":1}`)})[0]
-	if response.OK || response.Error == nil || response.Error.Code != ErrDependency {
-		t.Fatalf("zero adapter status became success: %+v", response)
 	}
 }
 

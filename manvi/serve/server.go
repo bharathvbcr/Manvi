@@ -114,11 +114,11 @@ func New(w io.Writer, opts Options) *Server {
 		if s.configErr != nil {
 			break
 		}
-		if module == nil {
+		if nilInterface(module) {
 			s.configErr = fmt.Errorf("nil host-plane module")
 			break
 		}
-		s.configErr = module.Configure(router)
+		s.configErr = configureModule(module, router)
 	}
 	router.freeze()
 	s.router = router

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -17,6 +18,43 @@ type Handler func(context.Context, json.RawMessage) (any, *Error)
 // protocol through package-global registration.
 type Module interface {
 	Configure(*Router) error
+}
+
+// nilInterface reports typed nils held behind an interface. Module and service
+// interfaces cross application boundaries, where `value == nil` is not enough:
+// a nil pointer still has a dynamic type and would otherwise panic during
+// configuration or on the first request.
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// configureModule turns an extension panic into a configuration error. The
+// server has not read protocol input yet, so refusing Serve is both fail-closed
+// and fully correlated: no host request has been accepted or left unanswered.
+func configureModule(module Module, router *Router) (err error) {
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		if panicked := recover(); panicked != nil {
+			err = fmt.Errorf("host-plane module %T panicked during configuration: %v", module, panicked)
+			return
+		}
+		err = fmt.Errorf("host-plane module %T panicked during configuration", module)
+	}()
+	err = module.Configure(router)
+	completed = true
+	return err
 }
 
 // Router is the configuration seam for host-plane operations.
@@ -85,7 +123,7 @@ func validOperationName(name string) error {
 			return fmt.Errorf("invalid operation name %q: dot-delimited segments must not be empty", name)
 		}
 		for _, ch := range part {
-			if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' && ch != '_' {
+			if !(ch >= 'a' && ch <= 'z') && !(ch >= '0' && ch <= '9') && ch != '-' && ch != '_' {
 				return fmt.Errorf("invalid operation name %q: use lowercase letters, digits, dot, dash, or underscore", name)
 			}
 		}

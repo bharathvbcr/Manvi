@@ -11,9 +11,9 @@ import (
 )
 
 func TestAdvancedQueryPreservesProducerEnvelopeAndIndexContract(t *testing.T) {
-	status := `{"host_contract_version":1,"schema_version":19,"expected_schema_version":19,"schema_relation":"current","reader_ready":true,"query_ready":true,"generation_id":7,"node_count":10,"edge_count":20,"is_fresh":true,"capabilities":{"explore":true}}`
+	status := `{"host_contract_version":1,"schema_version":19,"expected_schema_version":19,"schema_relation":"current","reader_ready":true,"query_ready":true,"db_path":"db","generation_id":7,"node_count":10,"edge_count":20,"is_fresh":true,"capabilities":{"explore":true}}`
 	c := fake(t, map[string]string{
-		"explore": `{"definitions":{"items":[{"symbol_name":"Router"}],"resolution":"Available","shown":1,"total":9,"hidden":8,"truncated":true},"blast_radius":{"layers":{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false}},"budget":{},"query":"Router","limit":20}`,
+		"explore": `{"definitions":{"items":[{"symbol_name":"Router"}],"resolution":"Available","shown":1,"total":9,"hidden":8,"truncated":true,"tokens_used":12},"blast_radius":{"layers":{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}},"budget":{},"query":"Router","limit":20}`,
 		"status":  status,
 	})
 	result, err := c.Advanced(context.Background(), AdvancedQuery{Kind: QueryExplore, Query: "Router", Depth: 2, Budget: 1234})
@@ -24,10 +24,7 @@ func TestAdvancedQueryPreservesProducerEnvelopeAndIndexContract(t *testing.T) {
 	if err := json.Unmarshal(result.Data, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	definitions, ok := envelope["definitions"].(map[string]any)
-	if !ok {
-		t.Fatalf("definitions envelope has type %T", envelope["definitions"])
-	}
+	definitions := envelope["definitions"].(map[string]any)
 	if definitions["total"] != float64(9) || definitions["truncated"] != true {
 		t.Fatalf("producer completeness fields were lost: %s", result.Data)
 	}
@@ -79,7 +76,7 @@ case "$*" in
     if [ -f "` + count + `" ]; then n=2; fi
     echo '{"host_contract_version":1,"schema_version":19,"expected_schema_version":19,"schema_relation":"current","reader_ready":true,"query_ready":true,"db_path":"db","generation_id":'"$n"',"capabilities":{"impact":true}}'
     ;;
-  *impact*) touch "` + count + `"; echo '{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false}' ;;
+  *impact*) touch "` + count + `"; echo '{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}' ;;
 esac
 `
 	path := filepath.Join(dir, "devmap")
@@ -119,17 +116,105 @@ func TestAdvancedQueryRefusesObjectWithoutKindEnvelope(t *testing.T) {
 	}
 }
 
+func TestAdvancedStatusRequiresConcreteSnapshotIdentity(t *testing.T) {
+	base := Status{
+		DBPath: "db", GenerationID: 7,
+		HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19,
+		SchemaRelation: "current", ReaderReady: true, QueryReady: true,
+		Capabilities: map[string]any{"impact": true},
+	}
+	for name, mutate := range map[string]func(*Status){
+		"empty database path": func(s *Status) { s.DBPath = "" },
+		"blank database path": func(s *Status) { s.DBPath = " \t" },
+		"zero generation":     func(s *Status) { s.GenerationID = 0 },
+		"negative generation": func(s *Status) { s.GenerationID = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			status := base
+			mutate(&status)
+			if err := validateAdvancedStatus(&status, QueryImpact); err == nil {
+				t.Fatalf("invalid snapshot identity was accepted: %+v", status)
+			}
+		})
+	}
+}
+
+func TestAdvancedStatusUsesTheVersionedReadinessContract(t *testing.T) {
+	status := &Status{
+		DBPath: "db", GenerationID: 7,
+		HostContractVersion: 1, SchemaVersion: 18, ExpectedSchemaVersion: 19,
+		SchemaRelation: "compatible", ReaderReady: true, QueryReady: true,
+		Capabilities: map[string]any{"impact": true},
+	}
+	if err := validateAdvancedStatus(status, QueryImpact); err != nil {
+		t.Fatalf("versioned host contract declared this store readable and queryable: %v", err)
+	}
+}
+
+func TestAdvancedResultRefusesInvalidAdapterStatusAndCompleteness(t *testing.T) {
+	validStatus := &Status{
+		DBPath: "db", GenerationID: 7,
+		HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19,
+		SchemaRelation: "current", ReaderReady: true, QueryReady: true,
+		Capabilities: map[string]any{"impact": true},
+	}
+	validData := json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`)
+
+	incompatible := *validStatus
+	incompatible.HostContractVersion = 2
+	cases := map[string]AdvancedResult{
+		"incompatible adapter status": {
+			Data: validData, Index: &incompatible,
+		},
+		"impossible hidden count": {
+			Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":10,"hidden":0,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+		"shown differs from items": {
+			Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":1,"total":1,"hidden":0,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+		"missing token accounting": {
+			Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false}`),
+			Index: validStatus,
+		},
+		"truncation disagrees with hidden": {
+			Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":1,"hidden":1,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+		"null resolution": {
+			Data:  json.RawMessage(`{"items":[],"resolution":null,"shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+		"empty resolution string": {
+			Data:  json.RawMessage(`{"items":[],"resolution":"","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+		"empty resolution object": {
+			Data:  json.RawMessage(`{"items":[],"resolution":{},"shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`),
+			Index: validStatus,
+		},
+	}
+	for name, result := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateAdvancedResult(QueryImpact, result); err == nil {
+				t.Fatalf("invalid adapter result was accepted: %+v", result)
+			}
+		})
+	}
+}
+
 func TestAdvancedResultRefusesMissingNestedBlastRadiusCompleteness(t *testing.T) {
-	status := &Status{HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, Capabilities: map[string]any{"explore": true}}
-	data := json.RawMessage(`{"definitions":{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false},"blast_radius":{}}`)
+	status := &Status{DBPath: "db", GenerationID: 7, HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, Capabilities: map[string]any{"explore": true}}
+	data := json.RawMessage(`{"definitions":{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0},"blast_radius":{}}`)
 	if err := ValidateAdvancedResult(QueryExplore, AdvancedResult{Data: data, Index: status}); err == nil || !strings.Contains(err.Error(), "blast_radius.layers") {
 		t.Fatalf("missing nested completeness error = %v", err)
 	}
 }
 
 func TestAdvancedResultRefusesNullResolution(t *testing.T) {
-	status := &Status{HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, Capabilities: map[string]any{"impact": true}}
-	data := json.RawMessage(`{"items":[],"resolution":null,"shown":0,"total":0,"hidden":0,"truncated":false}`)
+	status := &Status{DBPath: "db", GenerationID: 7, HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, Capabilities: map[string]any{"impact": true}}
+	data := json.RawMessage(`{"items":[],"resolution":null,"shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`)
 	if err := ValidateAdvancedResult(QueryImpact, AdvancedResult{Data: data, Index: status}); err == nil || !strings.Contains(err.Error(), "resolution") {
 		t.Fatalf("null resolution error = %v", err)
 	}

@@ -56,16 +56,16 @@ manvi serve [--posture host|devcouncil]
     "protocol": 1,
     "posture": "host",
     "ops": [
-      "hello",
-      "policy.check.file",
-      "policy.check.command",
       "capability.probe",
-      "local.scan",
+      "chat.forget",
       "chat.prepare",
       "chat.settle",
-      "chat.forget",
       "devmap.query",
-      "devmap.status"
+      "devmap.status",
+      "hello",
+      "local.scan",
+      "policy.check.command",
+      "policy.check.file"
     ]
   }
 }
@@ -89,12 +89,16 @@ confidence, and rung bounds are validated before the process starts.
 before the query and refuses the result if the database path or generation
 changed between observations. This detects ordinary concurrent rebuilds; it
 does not claim a database transaction spans the three subprocess calls.
-Consumers must read
-`shown`, `total`, `hidden`, `truncated`, `resolution`, and `walk_incomplete`
-where present; a capped or incomplete walk is not complete coverage. Manvi
-refuses a query unless `host_contract_version` is `1`, the stored and expected
-schemas match, `schema_relation` is `current`, and both `reader_ready` and
-`query_ready` are true.
+Consumers must read `shown`, `total`, `hidden`, `truncated`, `tokens_used`,
+`resolution`, and `walk_incomplete` where present; a capped or incomplete walk
+is not complete coverage. Manvi verifies that `shown` equals the number of
+returned items, `shown + hidden == total`, and `truncated == (hidden > 0)`.
+It also refuses a query unless `host_contract_version` is `1`, both
+`reader_ready` and `query_ready` are true, the requested capability is
+advertised, and status supplies a non-empty database path and positive
+generation. Schema numbers and `schema_relation` remain diagnostics: the
+versioned readiness contract decides compatibility, so an additive compatible
+schema can remain usable without changing this host.
 
 | `kind` | Required fields | Optional bounded fields |
 |---|---|---|
