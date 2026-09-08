@@ -93,6 +93,18 @@ func TestDevmapAdapterCannotReturnNilSuccess(t *testing.T) {
 	}
 }
 
+func TestDevmapAdapterCannotReturnZeroStatusAsSuccess(t *testing.T) {
+	fake := &fakeDevmap{result: mapclient.AdvancedResult{
+		Data:  json.RawMessage(`{"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`),
+		Index: &mapclient.Status{},
+	}}
+	response := roundTrip(t, Options{Modules: []Module{DevmapModule{Client: fake}}},
+		Request{ID: "query", Op: OpDevmapQuery, Params: json.RawMessage(`{"kind":"impact","query":"Router","depth":1}`)})[0]
+	if response.OK || response.Error == nil || response.Error.Code != ErrDependency {
+		t.Fatalf("zero adapter status became success: %+v", response)
+	}
+}
+
 func TestInvalidDevmapQueryIsABadRequest(t *testing.T) {
 	fake := &fakeDevmap{}
 	response := roundTrip(t, Options{Modules: []Module{DevmapModule{Client: fake}}},

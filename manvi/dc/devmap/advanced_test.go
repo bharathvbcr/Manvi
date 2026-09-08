@@ -24,7 +24,10 @@ func TestAdvancedQueryPreservesProducerEnvelopeAndIndexContract(t *testing.T) {
 	if err := json.Unmarshal(result.Data, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	definitions := envelope["definitions"].(map[string]any)
+	definitions, ok := envelope["definitions"].(map[string]any)
+	if !ok {
+		t.Fatalf("definitions envelope has type %T", envelope["definitions"])
+	}
 	if definitions["total"] != float64(9) || definitions["truncated"] != true {
 		t.Fatalf("producer completeness fields were lost: %s", result.Data)
 	}
