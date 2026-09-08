@@ -33,6 +33,8 @@ manvi serve [--posture host|devcouncil]
 | `chat.prepare` | Computes token budgets, applies self-calibration, and plans one-way compaction. |
 | `chat.settle` | Parses completed model responses: reclassifies `<think>` tags, recovers tool calls, and handles truncations. |
 | `chat.forget` | Explicitly drops a conversation's compaction and calibration ledger. |
+| `devmap.status` | Reports devmap host-contract, schema, readiness, freshness, coverage gaps, and command capabilities. |
+| `devmap.query` | Runs a bounded `explore`, `impact`, `trace`, or `affected` query and preserves the producer's completeness envelope. |
 
 ---
 
@@ -54,18 +56,83 @@ manvi serve [--posture host|devcouncil]
     "protocol": 1,
     "posture": "host",
     "ops": [
-      "hello",
-      "policy.check.file",
-      "policy.check.command",
       "capability.probe",
-      "local.scan",
+      "chat.forget",
       "chat.prepare",
       "chat.settle",
-      "chat.forget"
+      "devmap.query",
+      "devmap.status",
+      "hello",
+      "local.scan",
+      "policy.check.command",
+      "policy.check.file"
     ]
   }
 }
 ```
+
+### Deep devmap queries
+
+The stock `manvi serve` command installs the devmap module with the repository
+root discovered by Manvi and the binary selected by `MANVI_MAP_BINARY` (or
+`devmap` on `PATH`). The process boundary enforces its own timeout and output
+cap because devmap has no timeout flag. Kernel `budget`, `depth`, target-count,
+confidence, and rung bounds are validated before the process starts.
+
+```json
+{"id":"map-1","op":"devmap.status","params":{}}
+{"id":"map-2","op":"devmap.query","params":{"kind":"impact","query":"Router","depth":3,"budget":2000,"min_rung":"high"}}
+```
+
+`devmap.query` returns `data`, the producer's JSON object unchanged, and
+`index`, the status observed immediately after it. Manvi also reads status
+before the query and refuses the result if the database path or generation
+changed between observations. This detects ordinary concurrent rebuilds; it
+does not claim a database transaction spans the three subprocess calls.
+Consumers must read `shown`, `total`, `hidden`, `truncated`, `tokens_used`,
+`resolution`, and `walk_incomplete` where present; a capped or incomplete walk
+is not complete coverage. Manvi verifies that `shown` equals the number of
+returned items, `shown + hidden == total`, and `truncated == (hidden > 0)`.
+It also refuses a query unless `host_contract_version` is `1`, both
+`reader_ready` and `query_ready` are true, the requested capability is
+advertised, and status supplies a non-empty database path and positive
+generation. Schema numbers and `schema_relation` remain diagnostics: the
+versioned readiness contract decides compatibility, so an additive compatible
+schema can remain usable without changing this host.
+
+| `kind` | Required fields | Optional bounded fields |
+|---|---|---|
+| `explore` | `query`, `depth` | `budget`, `min_confidence` |
+| `impact` | `query`, `depth` | `budget`, `min_rung` |
+| `trace` | `query` (from), `to`, `depth` | `budget`, `min_rung` |
+| `affected` | `targets` (1–128), `depth` | `budget`, `min_confidence` |
+
+### Embedding and customization
+
+Go hosts construct `serve.Server` directly and add one configuration line per
+module. A module registers handlers through `Configure(*serve.Router)`.
+Registration is per server, collision checked, and frozen before any protocol
+input is read. `Register` adds a new operation; `Replace` must name an existing
+one, which prevents a misspelling from creating a parallel path. The `hello`
+operation is reserved and cannot be replaced.
+
+```go
+srv := serve.New(stdout, serve.Options{
+    HardRules: true,
+    Modules: []serve.Module{
+        serve.DevmapModule{Client: devmap.New(binary, repositoryRoot)},
+        hostModule,
+    },
+})
+err := srv.Serve(ctx, stdin)
+```
+
+Replacing `policy.check.file` or `policy.check.command` changes the host's
+security boundary. Manvi never replaces them by default; an embedding host
+that does so owns the replacement's authorization behavior. `HardRules` must
+also be set explicitly when constructing `serve.Server` directly. The CLI
+derives it from Manvi's effective policy configuration and announces a
+weakened setting on stderr.
 
 ---
 

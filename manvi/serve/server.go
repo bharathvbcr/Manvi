@@ -49,13 +49,16 @@ type Server struct {
 	// chat holds per-conversation compaction ledgers and calibrators. It is
 	// the only state that survives between requests, and it is what makes
 	// compaction one-way rather than recomputed each step.
-	chat sessionTable
+	chat      sessionTable
+	router    *Router
+	configErr error
 }
 
 // Options configures a Server.
 type Options struct {
 	// HardRules enforces the rungs that protect the repository and its
-	// credentials. Defaults to true; false is honoured but reported, because a
+	// credentials. The command configures this from EffectiveHardRules; direct
+	// embedders must set it explicitly. False is honoured but reported, because a
 	// gate that was turned off must never look like a gate that passed.
 	HardRules bool
 	// AllowNeighbors mirrors policy.scope.allow_neighbors.
@@ -71,6 +74,10 @@ type Options struct {
 	// since a process being driven over stdio by another program is by
 	// definition embedded.
 	Posture Posture
+	// Modules extend or explicitly replace the operations on this server.
+	// Their order is configuration order and a failed configuration prevents
+	// Serve from reading or writing the protocol stream.
+	Modules []Module
 }
 
 // New builds a Server.
@@ -79,13 +86,43 @@ func New(w io.Writer, opts Options) *Server {
 	if posture == "" {
 		posture = PostureHost
 	}
-	return &Server{
+	s := &Server{
 		hardRules:      opts.HardRules,
 		allowNeighbors: opts.AllowNeighbors,
 		allowSameDir:   opts.AllowSameDir,
 		posture:        posture,
 		out:            bufio.NewWriter(w),
 	}
+	router := &Router{handlers: map[string]Handler{}}
+	builtins := map[string]Handler{
+		OpHello:              func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.hello(raw) },
+		OpPolicyCheckFile:    func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.checkFile(raw) },
+		OpPolicyCheckCommand: func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.checkCommand(raw) },
+		OpCapabilityProbe:    s.probe,
+		OpLocalScan:          s.localScan,
+		OpChatPrepare:        func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.prepare(raw) },
+		OpChatSettle:         func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.settle(raw) },
+		OpChatForget:         func(_ context.Context, raw json.RawMessage) (any, *Error) { return s.forget(raw) },
+	}
+	for _, name := range ops {
+		if err := router.Register(name, builtins[name]); err != nil {
+			s.configErr = err
+			break
+		}
+	}
+	for _, module := range opts.Modules {
+		if s.configErr != nil {
+			break
+		}
+		if nilInterface(module) {
+			s.configErr = fmt.Errorf("nil host-plane module")
+			break
+		}
+		s.configErr = configureModule(module, router)
+	}
+	router.freeze()
+	s.router = router
+	return s
 }
 
 // ops is the served set, reported by hello so a host can degrade rather than
@@ -114,6 +151,9 @@ var ops = []string{
 // exits when cancellation fires, which is exactly the case where it matters,
 // and dies with the process otherwise.
 func (s *Server) Serve(ctx context.Context, r io.Reader) error {
+	if s.configErr != nil {
+		return fmt.Errorf("configure host plane: %w", s.configErr)
+	}
 	reader := bufio.NewReaderSize(r, 64<<10)
 
 	type readResult struct {
@@ -277,26 +317,11 @@ func (s *Server) dispatch(ctx context.Context, req Request) {
 }
 
 func (s *Server) handle(ctx context.Context, req Request) (any, *Error) {
-	switch req.Op {
-	case OpHello:
-		return s.hello(req.Params)
-	case OpPolicyCheckFile:
-		return s.checkFile(req.Params)
-	case OpPolicyCheckCommand:
-		return s.checkCommand(req.Params)
-	case OpCapabilityProbe:
-		return s.probe(ctx, req.Params)
-	case OpLocalScan:
-		return s.localScan(ctx, req.Params)
-	case OpChatPrepare:
-		return s.prepare(req.Params)
-	case OpChatSettle:
-		return s.settle(req.Params)
-	case OpChatForget:
-		return s.forget(req.Params)
-	default:
-		return nil, badRequest("unknown op %q (this build serves: %v)", req.Op, ops)
+	handler, ok := s.router.handlers[req.Op]
+	if !ok {
+		return nil, badRequest("unknown op %q (this build serves: %v)", req.Op, s.router.operations())
 	}
+	return handler(ctx, req.Params)
 }
 
 func (s *Server) hello(raw json.RawMessage) (any, *Error) {
@@ -318,7 +343,7 @@ func (s *Server) hello(raw json.RawMessage) (any, *Error) {
 				p.Protocol, ProtocolVersion),
 		}
 	}
-	return HelloResult{Protocol: ProtocolVersion, Ops: ops, Posture: string(s.posture)}, nil
+	return HelloResult{Protocol: ProtocolVersion, Ops: s.router.operations(), Posture: string(s.posture)}, nil
 }
 
 // writeResponse writes one terminal line for a request.

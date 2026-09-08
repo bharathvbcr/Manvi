@@ -134,6 +134,9 @@ const (
 	ErrTooLarge = "E_TOO_LARGE"
 	// ErrInternal is a defect in the harness rather than in the request.
 	ErrInternal = "E_INTERNAL"
+	// ErrDependency means a configured local service was unavailable or its
+	// advertised contract was incompatible with this build.
+	ErrDependency = "E_DEPENDENCY"
 )
 
 // Operations.
@@ -158,7 +161,9 @@ const (
 	// did not parse, and truncation.
 	OpChatSettle = "chat.settle"
 	// OpChatForget drops a conversation's chat state.
-	OpChatForget = "chat.forget"
+	OpChatForget   = "chat.forget"
+	OpDevmapStatus = "devmap.status"
+	OpDevmapQuery  = "devmap.query"
 )
 
 // HelloParams is what the host declares about itself.
