@@ -24,6 +24,59 @@ existing `manvi/dc/devmap` client. Hosts negotiate the final operation set in
 `serve.Options.Modules` without editing the dispatch loop. The router is frozen
 before input is read, so the negotiated contract cannot drift mid-run.
 
+An explicit `--workbench-db` enables profile task and workspace storage through
+`serve.WorkbenchModule`. The Go client reuses the bounded persistent `dcstore`
+transport; the canonical SQLite transactions and queries live in Manvi's Rust
+crate. Profile `work_*` records are separate from repository execution tasks and
+leases. Native Rust hosts can call that same crate without a second query engine.
+Schema four retains version-bound enhancement proposals, field locks,
+transactional selected acceptance/undo and generation ownership, and adds
+transactional on-save scheduling with versioned automation settings.
+The optional `serve.EnhancementRunner` claims attempts before using the CLI's
+existing provider factory asynchronously. Cancellation requires actual worker
+acknowledgement; expired unresolved work is never an automatic retry. Storage
+CRUD does not start model calls. Hosts can read provider/model selection through
+`work.enhancements.configuration` without opening storage or resolving a provider.
+GitPulse exposes proposal review, edits preserving original model output, and
+selected acceptance/undo. Automatic preparation shares the existing proposal
+slot and quota; disabling automation cancels pending/running automatic work
+through the same lifecycle. A coalescing coordinator wakes after committed text
+saves, resumes prepared work after restart, and pauses uncertain claimed attempts.
+GitPulse exposes profile settings and worker status with one shared visible-board
+timer; a failed wake cannot invalidate a committed save. Managed Codex supervision
+is implemented by the separate provider protocol described below.
+Schema five adds durable terminal attempt records and one immutable canonical
+brief per attempt. A launch claim is consumable once, including across host
+restart; exact claim replay returns `claim_consumed`. Recorded process outcomes
+never accept tasks. GitPulse validates actual checkout/branch observations at
+preparation and claim time. Process launch, provider permissions and termination
+proof remain host integration work, not properties of these storage records.
+Schema six records private activity entries transactionally with run/enhancement
+outcomes. Schema seven adds opt-in notification preferences, scoped mutes, local
+quiet hours and delivery records. A unique claim records uncertainty before the
+host's OS side effect; a missing callback never authorizes another submission.
+Saved activation and acknowledgment remain separate from task/proposal acceptance.
+Manvi owns these store contracts; GitPulse owns OS authorization, delivery and
+activation callbacks. Store tests do not prove that an OS displayed a banner.
+Schema eight binds permission requests/questions to an immutable run, task,
+repository, payload digest and callback identity. Human decisions, one-use
+delivery claims and provider resolution are separate states of progress. The
+Go client hashes captured/retained payloads; the Rust store validates revisions,
+expiry and ownership. GitPulse exposes review controls while reserving capture,
+claim and resolution for the owning host.
+Schema nine distinguishes managed and terminal run claims. `codingagent` owns
+Codex's bounded stdio protocol, effective-setting verification and one-use callback
+responses. Schema ten makes `serve.ManagedRunner` claim and spawn first; GitPulse
+records native process identity before Manvi initializes an ephemeral thread,
+verifies its effective settings and sends one model turn. Known pre-spawn failures
+release their claim; uncertain starts retain it. Failed initialization preserves
+the process receipt and records provider failure without fabricating thread data.
+Provider completion, process reaping and task acceptance remain separate. The real
+read-only native/provider path is verified; real-account approval variants,
+managed Claude and process-tree/crash recovery remain open.
+See [Workbench](WORKBENCH.md) for supported operations, bounds and remaining
+product integration work.
+
 The internal split is then a second, orthogonal decision: two planes divided strictly on **IO-bound concurrency vs CPU-bound determinism**.
 
 ```mermaid
