@@ -12,6 +12,7 @@
 package replay
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,9 @@ import (
 
 // Turn is one recorded model response.
 type Turn struct {
+	// Request is optional for legacy fixtures. Strict fixtures require it and
+	// compare the complete serialized request before consuming this turn.
+	Request *llm.Request `json:"request,omitempty"`
 	// Chunks are streamed in order before the response settles.
 	Chunks []llm.Chunk `json:"chunks"`
 	// Message is the settled assistant message.
@@ -47,9 +51,10 @@ type Turn struct {
 
 // Fixture is a recorded session.
 type Fixture struct {
-	Provider     string           `json:"provider"`
-	Capabilities []llm.Capability `json:"capabilities"`
-	Turns        []Turn           `json:"turns"`
+	StrictRequests bool             `json:"strict_requests,omitempty"`
+	Provider       string           `json:"provider"`
+	Capabilities   []llm.Capability `json:"capabilities"`
+	Turns          []Turn           `json:"turns"`
 }
 
 // Provider replays a fixture.
@@ -60,6 +65,7 @@ type Provider struct {
 	// Requests records what the loop actually asked for, which is usually the
 	// thing under test.
 	requests []llm.Request
+	initErr  error
 }
 
 // New returns a replay provider over a fixture.
@@ -67,7 +73,8 @@ func New(fixture Fixture) *Provider {
 	if fixture.Provider == "" {
 		fixture.Provider = "replay"
 	}
-	return &Provider{fixture: fixture}
+	copied, err := clone(fixture)
+	return &Provider{fixture: copied, initErr: err}
 }
 
 // Load reads a fixture from disk.
@@ -95,7 +102,7 @@ func (p *Provider) Capability(model string) (llm.Capability, bool) {
 			if c.Provider == "" {
 				c.Provider = p.Name()
 			}
-			return c, true
+			return cloneStored(c), true
 		}
 	}
 	return llm.Capability{}, false
@@ -105,7 +112,7 @@ func (p *Provider) Capability(model string) (llm.Capability, bool) {
 func (p *Provider) Requests() []llm.Request {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]llm.Request(nil), p.requests...)
+	return cloneStored(p.requests)
 }
 
 // Remaining reports how many recorded turns are unplayed. A test that ends with
@@ -117,11 +124,19 @@ func (p *Provider) Remaining() int {
 }
 
 // Stream plays the next recorded turn.
-func (p *Provider) Stream(_ context.Context, req llm.Request) (llm.Stream, error) {
+func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	p.requests = append(p.requests, req)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p.initErr != nil {
+		return nil, fmt.Errorf("replay: invalid fixture: %w", p.initErr)
+	}
+	owned, err := clone(req)
+	if err != nil {
+		return nil, fmt.Errorf("replay: invalid request: %w", err)
+	}
 	if p.cursor >= len(p.fixture.Turns) {
 		// Running off the end of a fixture is an error, never an empty
 		// response: a silent empty turn would look like a model that chose to
@@ -130,6 +145,23 @@ func (p *Provider) Stream(_ context.Context, req llm.Request) (llm.Stream, error
 			len(p.fixture.Turns))
 	}
 	turn := p.fixture.Turns[p.cursor]
+	if p.fixture.StrictRequests {
+		if turn.Request == nil {
+			return nil, fmt.Errorf("replay: strict turn %d has no expected request", p.cursor)
+		}
+		want, err := json.Marshal(turn.Request)
+		if err != nil {
+			return nil, fmt.Errorf("replay: expected request: %w", err)
+		}
+		got, err := json.Marshal(owned)
+		if err != nil {
+			return nil, fmt.Errorf("replay: request: %w", err)
+		}
+		if !bytes.Equal(want, got) {
+			return nil, fmt.Errorf("replay: request does not match strict turn %d", p.cursor)
+		}
+	}
+	p.requests = append(p.requests, owned)
 	p.cursor++
 
 	if turn.Err != "" {
@@ -145,6 +177,7 @@ func (p *Provider) Stream(_ context.Context, req llm.Request) (llm.Stream, error
 	}
 
 	return &stream{
+		ctx:    ctx,
 		chunks: turn.Chunks,
 		response: llm.Response{
 			Message:          message,
@@ -158,6 +191,7 @@ func (p *Provider) Stream(_ context.Context, req llm.Request) (llm.Stream, error
 }
 
 type stream struct {
+	ctx      context.Context
 	chunks   []llm.Chunk
 	cursor   int
 	response llm.Response
@@ -166,6 +200,11 @@ type stream struct {
 }
 
 func (s *stream) Next() (llm.Chunk, error) {
+	if s.ctx != nil {
+		if err := s.ctx.Err(); err != nil {
+			return llm.Chunk{}, err
+		}
+	}
 	if s.closed {
 		return llm.Chunk{}, fmt.Errorf("replay: stream is closed")
 	}
@@ -179,10 +218,15 @@ func (s *stream) Next() (llm.Chunk, error) {
 }
 
 func (s *stream) Response() (llm.Response, error) {
+	if s.ctx != nil {
+		if err := s.ctx.Err(); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	if !s.done {
 		return llm.Response{}, fmt.Errorf("replay: Response called before the stream was drained")
 	}
-	return s.response, nil
+	return clone(s.response)
 }
 
 func (s *stream) Close() error {
@@ -217,21 +261,25 @@ func (r *Record) Capability(model string) (llm.Capability, bool) {
 }
 
 func (r *Record) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	owned, err := clone(req)
+	if err != nil {
+		return nil, err
+	}
 	inner, err := r.inner.Stream(ctx, req)
 	if err != nil {
 		r.mu.Lock()
-		r.fixture.Turns = append(r.fixture.Turns, Turn{Err: err.Error()})
+		r.fixture.Turns = append(r.fixture.Turns, Turn{Request: &owned, Err: err.Error()})
 		r.mu.Unlock()
 		return nil, err
 	}
-	return &recordingStream{parent: r, inner: inner}, nil
+	return &recordingStream{parent: r, inner: inner, turn: Turn{Request: &owned}}, nil
 }
 
 // Fixture returns what has been recorded so far.
 func (r *Record) Fixture() Fixture {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.fixture
+	return cloneStored(r.fixture)
 }
 
 // Save writes the fixture to disk.
@@ -240,13 +288,14 @@ func (r *Record) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+	return os.WriteFile(path, append(encoded, '\n'), 0o600)
 }
 
 type recordingStream struct {
-	parent *Record
-	inner  llm.Stream
-	turn   Turn
+	parent   *Record
+	inner    llm.Stream
+	turn     Turn
+	recorded bool
 }
 
 func (s *recordingStream) Next() (llm.Chunk, error) {
@@ -266,13 +315,42 @@ func (s *recordingStream) Response() (llm.Response, error) {
 	s.turn.StopReason = resp.StopReason
 	s.turn.Usage = resp.Usage
 	s.turn.MaxTokensApplied = resp.MaxTokensApplied
+	s.turn.Malformed = resp.Malformed
+	s.turn.Decoding = resp.Decoding
+	if s.recorded {
+		return resp, nil
+	}
+	owned, err := clone(s.turn)
+	if err != nil {
+		return llm.Response{}, err
+	}
 	s.parent.mu.Lock()
-	s.parent.fixture.Turns = append(s.parent.fixture.Turns, s.turn)
+	s.parent.fixture.Turns = append(s.parent.fixture.Turns, owned)
 	s.parent.mu.Unlock()
+	s.recorded = true
 	return resp, nil
 }
 
 func (s *recordingStream) Close() error { return s.inner.Close() }
+
+func clone[T any](value T) (T, error) {
+	var copied T
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return copied, err
+	}
+	err = json.Unmarshal(raw, &copied)
+	return copied, err
+}
+
+// Stored values crossed clone's validation boundary before retention.
+func cloneStored[T any](value T) T {
+	copied, err := clone(value)
+	if err != nil {
+		panic(fmt.Sprintf("replay: retained value lost serialization integrity: %v", err))
+	}
+	return copied
+}
 
 func appendUnique(list []llm.Capability, item llm.Capability) []llm.Capability {
 	for _, existing := range list {

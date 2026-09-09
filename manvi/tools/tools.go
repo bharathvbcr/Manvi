@@ -74,7 +74,9 @@ type Call struct {
 
 // Result is the single model-facing outcome of a call.
 type Result struct {
-	Text    string
+	Text string
+	// Content carries text and image results. Use either Content or legacy Text.
+	Content llm.Content
 	IsError bool
 	// Rule and Severity are set when policy decided the outcome, so the session
 	// log can record *why* without the loop having to understand policy.
@@ -677,6 +679,8 @@ func stagePanic(stage string, panicked any) Result {
 
 // Run executes one call through the full pipeline.
 func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
+	// Approval must examine a snapshot, not caller-owned mutable JSON bytes.
+	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
 	defer func() {
 		// A backstop for anything the per-stage recoveries below do not cover
 		// — the bus itself, or a panic raised while building a refusal. It
@@ -689,7 +693,34 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 		// post-execute rewrite, and the panic recovery immediately above. A
 		// credential in a panic message is still a credential.
 		result.Text = r.scrubText(result.Text)
+		if len(result.Content) > 0 {
+			if result.Text != "" {
+				result = Errorf("tool result cannot contain both Text and Content")
+				return
+			}
+			owned := make(llm.Content, 0, len(result.Content))
+			for _, block := range result.Content {
+				switch b := block.(type) {
+				case llm.TextBlock:
+					owned = append(owned, llm.TextBlock{Text: r.scrubText(b.Text)})
+				case llm.ImageBlock:
+					if len(b.Data) == 0 || (b.MediaType != "image/png" && b.MediaType != "image/jpeg" && b.MediaType != "image/webp" && b.MediaType != "image/gif") {
+						result = Errorf("tool result has an empty image or unsupported media type")
+						return
+					}
+					b.Data = append([]byte(nil), b.Data...)
+					owned = append(owned, b)
+				default:
+					result = Errorf("tool result content must be text or image")
+					return
+				}
+			}
+			result.Content = owned
+		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return Errorf("tool cancelled before admission: %v", err)
+	}
 
 	pre, err := r.preExecute(ctx, call)
 	if err != nil {
@@ -701,6 +732,9 @@ func (r *Registry) Run(ctx context.Context, call Call) (result Result) {
 	// A listener may have rewritten the call — a path normaliser, a scope
 	// clamp — so the rewritten form is what runs and what post-execute sees.
 	call = pre.Call
+	if err := ctx.Err(); err != nil {
+		return Errorf("tool cancelled before execution: %v", err)
+	}
 
 	if pre.Decided != nil {
 		// Short-circuited. The body never runs, and the loop is not told which
@@ -797,6 +831,9 @@ func (r *Registry) postExecute(ctx context.Context, call Call, in Result) (out R
 }
 
 func (r *Registry) dispatch(ctx context.Context, call Call) Result {
+	if err := ctx.Err(); err != nil {
+		return Errorf("tool cancelled before dispatch: %v", err)
+	}
 	r.mu.RLock()
 	tool, ok := r.tools[call.Name]
 	isActive := !r.dynamicMode || r.active[call.Name]

@@ -17,6 +17,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -208,9 +209,10 @@ type (
 	}
 	// ToolResultData is the single model-facing outcome of a tool call.
 	ToolResultData struct {
-		ToolCallID llm.CallID `json:"tool_call_id"`
-		Text       string     `json:"text"`
-		IsError    bool       `json:"is_error,omitempty"`
+		ToolCallID llm.CallID  `json:"tool_call_id"`
+		Text       string      `json:"text"`
+		Content    llm.Content `json:"content,omitempty"`
+		IsError    bool        `json:"is_error,omitempty"`
 	}
 	// DenialData records a blocked tool call.
 	DenialData struct {
@@ -311,7 +313,8 @@ type Log struct {
 	// DeriveMessages projects into the next request — so a credential removed
 	// here is removed from the file on disk *and* from what the provider is
 	// told next turn. Scrubbing at the writer would have left the second half.
-	scrub func(string) string
+	scrub          func(string) string
+	withholdChunks bool
 
 	// proj is the incremental projection cache. DeriveMessages used to copy
 	// and re-decode every event on every call — and it runs at least once per
@@ -370,7 +373,7 @@ func RestoreLog(events []Event) (*Log, error) {
 		l.turn = event.Turn
 		l.step = event.Step
 	}
-	l.events = append([]Event(nil), events...)
+	l.events = cloneEvents(events)
 	l.seq = last
 
 	// The projection is exercised now rather than at the first request. A log
@@ -386,8 +389,7 @@ func RestoreLog(events []Event) (*Log, error) {
 // Observe registers a callback invoked after every append.
 //
 // The callback runs outside the log's lock, and it must not call back into the
-// log: an observer that appended would deadlock on a re-entrant write, and one
-// that read would be reading a log that has not finished being written.
+// log recursively by appending. Each observer receives its own event bytes.
 func (l *Log) Observe(fn func(Event)) {
 	if fn == nil {
 		return
@@ -440,13 +442,16 @@ func (l *Log) extendProjection(t Type, payload any) {
 		if !l.proj.valid {
 			return
 		}
-		text := data.Text
+		content := data.Content
+		if len(content) == 0 {
+			content = llm.Content{llm.TextBlock{Text: data.Text}}
+		}
 		if short, ok := l.proj.compacted[data.ToolCallID]; ok {
-			text = short
+			content = llm.Content{llm.TextBlock{Text: short}}
 		}
 		l.proj.pending = append(l.proj.pending, llm.ToolResultBlock{
 			ToolCallID: data.ToolCallID,
-			Content:    []llm.ContentBlock{llm.TextBlock{Text: text}},
+			Content:    content,
 			IsError:    data.IsError,
 		})
 	default:
@@ -499,13 +504,19 @@ func (l *Log) rebuildProjection() error {
 			if err := json.Unmarshal(event.Data, &data); err != nil {
 				return fmt.Errorf("session: event %d: %w", event.Seq, err)
 			}
-			text := data.Text
+			if err := validateToolContent(data); err != nil {
+				return fmt.Errorf("session: event %d: %w", event.Seq, err)
+			}
+			content := data.Content
+			if len(content) == 0 {
+				content = llm.Content{llm.TextBlock{Text: data.Text}}
+			}
 			if short, ok := proj.compacted[data.ToolCallID]; ok {
-				text = short
+				content = llm.Content{llm.TextBlock{Text: short}}
 			}
 			proj.pending = append(proj.pending, llm.ToolResultBlock{
 				ToolCallID: data.ToolCallID,
-				Content:    []llm.ContentBlock{llm.TextBlock{Text: text}},
+				Content:    content,
 				IsError:    data.IsError,
 			})
 		}
@@ -525,10 +536,50 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	}
 
 	l.mu.Lock()
+	if t == AssistantChunk && l.withholdChunks {
+		// Even provider-assigned identifiers may contain sensitive fragments.
+		// Retain only the occurrence; complete messages carry useful content.
+		raw = json.RawMessage(`{"withheld":true}`)
+	}
 	if l.scrub != nil && len(raw) > 0 {
-		if cleaned := l.scrub(string(raw)); cleaned != string(raw) {
-			raw = json.RawMessage(cleaned)
+		cleaned, err := rewritePayload(raw, l.scrub, false, nil, 0)
+		if err != nil {
+			l.mu.Unlock()
+			return Event{}, fmt.Errorf("session: scrubbing %s: %w", t, err)
 		}
+		raw = cleaned
+	}
+	publicData := raw
+	if t == UserMessage || t == AssistantMessage {
+		public, err := (Event{Type: t, Data: raw}).Public()
+		if err != nil {
+			l.mu.Unlock()
+			return Event{}, err
+		}
+		publicData = public.Data
+	}
+	// The projection must consume the bytes that will be persisted, never the
+	// caller's mutable payload or its pre-redaction contents.
+	var projected any
+	switch t {
+	case UserMessage, AssistantMessage:
+		var data MessageData
+		if err := json.Unmarshal(raw, &data); err != nil {
+			l.mu.Unlock()
+			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
+		}
+		projected = data
+	case ToolResult:
+		var data ToolResultData
+		if err := json.Unmarshal(raw, &data); err != nil {
+			l.mu.Unlock()
+			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
+		}
+		if err := validateToolContent(data); err != nil {
+			l.mu.Unlock()
+			return Event{}, err
+		}
+		projected = data
 	}
 	switch t {
 	case TurnStart:
@@ -548,8 +599,8 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		Data: raw,
 	}
 	l.events = append(l.events, event)
-	l.extendProjection(t, payload)
-	observers := l.observers
+	l.extendProjection(t, projected)
+	observers := append([]func(Event){}, l.observers...)
 	l.mu.Unlock()
 
 	// Notified outside the lock, and only after the event is in the log. An
@@ -557,32 +608,98 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	// log — and with it the turn — down. The lock is not reacquired: there is
 	// no shared state left to touch, and a deferred unlock here would mean
 	// releasing a lock this function no longer holds.
+	publicEvent := event
+	publicEvent.Data = publicData
 	for _, fn := range observers {
-		fn(event)
+		fn(cloneEvent(publicEvent))
 	}
-	return event, nil
+	return cloneEvent(event), nil
 }
 
-// SetScrubber installs the credential backstop every appended payload passes
-// through.
-//
-// The value is replaced inside the marshalled JSON rather than inside the
-// payload struct, because the payloads are a dozen different shapes and a
-// per-shape list is a list to keep in step. Credentials are alphanumeric with
-// dashes and underscores — nothing JSON escapes — so they appear verbatim in
-// the encoded form, and the marker they are replaced with ("[redacted]")
-// contains no character JSON escapes either. The document stays valid.
+func validateToolContent(data ToolResultData) error {
+	if len(data.Content) > 0 && data.Text != "" {
+		return errors.New("session: tool result cannot contain both text and content")
+	}
+	for _, block := range data.Content {
+		switch block.(type) {
+		case llm.TextBlock, llm.ImageBlock:
+		default:
+			return errors.New("session: tool result content must be text or image")
+		}
+	}
+	return nil
+}
+
+// SetScrubber installs a backstop for decoded JSON string values, including
+// escaped text. The callback takes plain text and must return plain text.
+// Provider-private message.provenance.replay_state is preserved byte-for-byte;
+// redacting it corrupts signed continuation. PublicEvents and Observe omit it.
+// Applications must retain Events/Store privately and avoid sending sensitive
+// literals as model-generated signed tool arguments (use parameter references).
 func (l *Log) SetScrubber(scrub func(string) string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.scrub = scrub
 }
 
+// SetSensitiveScrubber enables complete-message scrubbing and withholds stream
+// fragments. A secret split across chunks cannot be recognized independently.
+// Install before appending events; completed messages retain sanitized content.
+// Private signed continuation follows the same rules as SetScrubber.
+func (l *Log) SetSensitiveScrubber(scrub func(string) string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.scrub = scrub
+	l.withholdChunks = true
+}
+
+// RestoreSensitiveLog sanitizes imported events before their first projection.
+// Signed continuation remains private and unchanged, as in SetSensitiveScrubber.
+func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error) {
+	if scrub == nil {
+		return nil, errors.New("session: sensitive restore requires scrubber")
+	}
+	clean := cloneEvents(events)
+	for i := range clean {
+		if clean[i].Type == AssistantChunk {
+			clean[i].Data = json.RawMessage(`{"withheld":true}`)
+			continue
+		}
+		if len(clean[i].Data) == 0 {
+			continue
+		}
+		raw, err := rewritePayload(clean[i].Data, scrub, false, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
+		}
+		clean[i].Data = raw
+	}
+	log, err := RestoreLog(clean)
+	if err != nil {
+		return nil, err
+	}
+	log.SetSensitiveScrubber(scrub)
+	return log, nil
+}
+
 // Events returns a copy of the log.
 func (l *Log) Events() []Event {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return append([]Event(nil), l.events...)
+	return cloneEvents(l.events)
+}
+
+func cloneEvent(event Event) Event {
+	event.Data = append(json.RawMessage(nil), event.Data...)
+	return event
+}
+
+func cloneEvents(events []Event) []Event {
+	copied := make([]Event, len(events))
+	for i, event := range events {
+		copied[i] = cloneEvent(event)
+	}
+	return copied
 }
 
 // Len is the number of recorded events.
@@ -639,9 +756,8 @@ func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	// Fast path: the warm projection is extended by every Append, so a
 	// steady-state step costs one slice copy instead of re-decoding the
-	// whole log. The returned outer slice is fresh; the content blocks it
-	// points at are shared with the cache and treated as read-only, which is
-	// the same contract every consumer of this projection already had.
+	// whole log. Readers receive owned blocks so a provider or UI adapter cannot
+	// alter the retained evidence through a slice or image byte buffer.
 	l.mu.RLock()
 	var out []llm.Message
 	if l.proj.valid {
@@ -653,7 +769,7 @@ func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	}
 	l.mu.RUnlock()
 	if out != nil {
-		return out, nil
+		return llm.CloneMessages(out)
 	}
 
 	// Cold path: full replay under the write lock, stored so the next derive
@@ -680,7 +796,7 @@ func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	if len(l.proj.pending) > 0 {
 		result = append(result, llm.Message{Role: llm.RoleUser, Content: l.proj.pending})
 	}
-	return result, nil
+	return llm.CloneMessages(result)
 }
 
 // SystemPrompt returns the most recently logged system prompt.

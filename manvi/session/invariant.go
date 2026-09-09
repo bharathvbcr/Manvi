@@ -1,6 +1,7 @@
 package session
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -131,17 +132,13 @@ func visibleBlocks(msg llm.Message) []string {
 		case llm.ReasoningBlock:
 			// see doc comment
 		case llm.ImageBlock:
-			out = append(out, fmt.Sprintf("image:%s:%d", b.MediaType, len(b.Data)))
+			out = append(out, fmt.Sprintf("image:%s:%x", b.MediaType, sha256.Sum256(b.Data)))
 		case llm.ToolCallBlock:
 			out = append(out, fmt.Sprintf("tool_call:%s:%s:%s", b.ID, b.Name, canonical(b.Arguments)))
 		case llm.ToolResultBlock:
-			text := ""
-			for _, inner := range b.Content {
-				if t, ok := inner.(llm.TextBlock); ok {
-					text += t.Text
-				}
-			}
-			out = append(out, fmt.Sprintf("tool_result:%s:%v:%s", b.ToolCallID, b.IsError, text))
+			content := visibleBlocks(llm.Message{Content: b.Content})
+			encoded, _ := json.Marshal(content) // a slice of strings is always encodable
+			out = append(out, fmt.Sprintf("tool_result:%s:%v:%s", b.ToolCallID, b.IsError, encoded))
 		default:
 			out = append(out, fmt.Sprintf("unknown:%s", block.Kind()))
 		}

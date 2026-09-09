@@ -96,13 +96,25 @@ func (c Capability) Validate(req Request) error {
 			c.Provider, c.Model, c.MaxOutputTokens, req.MaxTokens)
 	}
 	for _, msg := range req.Messages {
-		for _, block := range msg.Content {
-			if block.Kind() == KindImage && !c.SupportsImages {
-				return fmt.Errorf("model %s/%s does not accept images", c.Provider, c.Model)
-			}
+		if hasImage(msg.Content) && !c.SupportsImages {
+			return fmt.Errorf("model %s/%s does not accept images", c.Provider, c.Model)
 		}
 	}
 	return nil
+}
+
+func hasImage(content []ContentBlock) bool {
+	for _, block := range content {
+		switch b := block.(type) {
+		case ImageBlock:
+			return true
+		case ToolResultBlock:
+			if hasImage(b.Content) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ChunkKind classifies a streaming event.

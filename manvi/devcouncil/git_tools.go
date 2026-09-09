@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
 	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
 	"github.com/bharathvbcr/Manvi/manvi/policy"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -660,11 +660,11 @@ func secretPaths(paths []string) []string {
 func aliasedPaths(root string, paths []string) []string {
 	var aliased []string
 	for _, p := range paths {
-		fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+		fi, err := safefile.Lstat(filepath.Join(root, filepath.FromSlash(p)))
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		if links, ok := linksOf(fi); ok && links > 1 {
+		if !singleNameFile(filepath.Join(root, filepath.FromSlash(p)), fi) {
 			aliased = append(aliased, p)
 		}
 	}
@@ -681,8 +681,8 @@ func aliasedRefusal(op string, aliased []string) tools.Result {
 		"paths":     aliased,
 		"rule":      string(policy.RuleSecretPath),
 		"severity":  string(policy.Hard),
-		"reason": "these paths are hard links: their contents are reachable under at least one " +
-			"other name, which the secret-path check never examined, so committing them can put " +
+		"reason": "these paths are hard links or their link count could not be verified: their contents may be reachable under another " +
+			"name, which the secret-path check never examined, so committing them can put " +
 			"a credential into history under an innocent name. Break the link — copy the file and " +
 			"replace the original with the copy — and retry, or stage the other name instead so " +
 			"the check can see it.",

@@ -354,6 +354,8 @@ func toWireMessages(msg llm.Message, name string) ([]wireMessage, error) {
 			for _, inner := range b.Content {
 				if t, ok := inner.(llm.TextBlock); ok {
 					body.WriteString(t.Text)
+				} else {
+					return nil, fmt.Errorf("this adapter cannot send non-text tool result content (%T)", inner)
 				}
 			}
 			results = append(results, wireMessage{

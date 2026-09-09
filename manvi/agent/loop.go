@@ -862,6 +862,8 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// null response that survives the budget still ends the turn as empty.
 		if isNullResponse(response) && nullRetries < maxNullRetries {
 			nullRetries++
+			// An empty response still consumed a provider attempt and one step.
+			out.BudgetSpent++
 			if _, err := l.log.Append(session.NullResponseRetried, session.NullResponseData{
 				Step: step, Attempt: nullRetries, Of: maxNullRetries,
 			}); err != nil {
@@ -1058,7 +1060,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 			}
 
 			if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
-				ToolCallID: call.ID, Text: result.Text, IsError: result.IsError,
+				ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
 			}); err != nil {
 				return out, err
 			}

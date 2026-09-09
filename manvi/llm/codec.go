@@ -5,6 +5,39 @@ import (
 	"fmt"
 )
 
+// Content is a kind-tagged content sequence for nested model-facing payloads.
+// It uses the same codec as Message, including strict unknown-kind handling.
+type Content []ContentBlock
+
+func (c Content) MarshalJSON() ([]byte, error) {
+	blocks := make([]wireBlock, 0, len(c))
+	for _, b := range c {
+		w, err := toWire(b)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, w)
+	}
+	return json.Marshal(blocks)
+}
+
+func (c *Content) UnmarshalJSON(raw []byte) error {
+	var wire []wireBlock
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	blocks := make(Content, 0, len(wire))
+	for _, w := range wire {
+		b, err := fromWire(w)
+		if err != nil {
+			return err
+		}
+		blocks = append(blocks, b)
+	}
+	*c = blocks
+	return nil
+}
+
 // ContentBlock is an interface, so encoding/json cannot decode into it without
 // help. Every block is tagged with its kind on the wire and dispatched on the
 // way back.

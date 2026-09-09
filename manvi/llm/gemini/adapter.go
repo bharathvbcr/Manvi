@@ -82,8 +82,10 @@ type wireTool struct {
 }
 
 type wireInput struct {
-	Type    string        `json:"type"`
-	Content []wireContent `json:"content,omitempty"`
+	// Raw carries a complete provider-owned step without reinterpreting it.
+	Raw     json.RawMessage `json:"-"`
+	Type    string          `json:"type"`
+	Content []wireContent   `json:"content,omitempty"`
 
 	// function_call. The call's own identifier is `id` here.
 	Name      string          `json:"name,omitempty"`
@@ -109,8 +111,18 @@ type wireInput struct {
 }
 
 type wireContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+}
+
+func (w wireInput) MarshalJSON() ([]byte, error) {
+	if len(w.Raw) > 0 {
+		return w.Raw, nil
+	}
+	type plain wireInput
+	return json.Marshal(plain(w))
 }
 
 // Input item type discriminators.
@@ -136,7 +148,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		return nil, err
 	}
-	return newStream(stream, req.Model, req.MaxTokens), nil
+	s := newStream(stream, req.Model, req.MaxTokens)
+	s.ctx = ctx
+	return s, nil
 }
 
 func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
@@ -165,6 +179,9 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 	// were established.
 	shape := historyShape(req.Messages)
 	for i, msg := range req.Messages {
+		if msg.Provenance != nil && len(msg.Provenance.ReplayState) > 0 && (msg.Provenance.Provider != Name || msg.Provenance.Model != req.Model) {
+			return nil, fmt.Errorf("gemini: message %d carries replay state owned by a different provider or model; prepare history before dispatch", i)
+		}
 		items, err := toWireInputShaped(msg, shape)
 		if err != nil {
 			return nil, fmt.Errorf("gemini: message %d: %w", i, err)
@@ -231,6 +248,25 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 	if msg.Role == llm.RoleSystem {
 		return nil, errors.New("system content belongs in Request.System, not in Messages")
 	}
+	if msg.Role == llm.RoleAssistant && msg.Provenance != nil && len(msg.Provenance.ReplayState) > 0 {
+		var state replayState
+		if err := json.Unmarshal(msg.Provenance.ReplayState, &state); err != nil {
+			return nil, fmt.Errorf("invalid continuation: %w", err)
+		}
+		if state.Version != 0 {
+			if state.Version != 2 || len(state.Steps) == 0 {
+				return nil, errors.New("unsupported or empty continuation state")
+			}
+			if err := validateContinuation(msg, state.Steps); err != nil {
+				return nil, err
+			}
+			items := make([]wireInput, 0, len(state.Steps))
+			for _, raw := range state.Steps {
+				items = append(items, wireInput{Raw: raw})
+			}
+			return items, nil
+		}
+	}
 	itemType := InputUser
 	if msg.Role == llm.RoleAssistant {
 		itemType = InputModelOutput
@@ -277,20 +313,30 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 				ID: string(b.ID), Signature: signature,
 			})
 		case llm.ToolResultBlock:
-			var body strings.Builder
+			var content []wireContent
 			for _, inner := range b.Content {
-				if t, ok := inner.(llm.TextBlock); ok {
-					body.WriteString(t.Text)
+				c, err := inputContent(inner)
+				if err != nil {
+					return nil, err
 				}
+				content = append(content, c)
 			}
-			text := body.String()
 			if b.IsError {
 				// Carried in the text because no documented example puts an
 				// is_error field on this wire, and an unknown parameter here is
 				// not a degraded result — it is a refusal of the whole request.
-				text = "ERROR: " + text
+				content = append([]wireContent{{Type: DeltaText, Text: "ERROR: "}}, content...)
 			}
-			encoded, err := json.Marshal([]map[string]any{{"type": DeltaText, "text": text}})
+			// Merge neighboring text for legacy consumers; image order is retained.
+			var merged []wireContent
+			for _, c := range content {
+				if c.Type == DeltaText && len(merged) > 0 && merged[len(merged)-1].Type == DeltaText {
+					merged[len(merged)-1].Text += c.Text
+				} else {
+					merged = append(merged, c)
+				}
+			}
+			encoded, err := json.Marshal(merged)
 			if err != nil {
 				return nil, err
 			}
@@ -308,7 +354,11 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 				Type: TypeFunctionResult, CallID: string(b.ToolCallID), Name: name, Result: encoded,
 			})
 		case llm.ImageBlock:
-			return nil, errors.New("this adapter does not send images")
+			c, err := inputContent(b)
+			if err != nil {
+				return nil, err
+			}
+			primary.Content = append(primary.Content, c)
 		default:
 			return nil, fmt.Errorf("cannot send a %s block", block.Kind())
 		}
@@ -333,8 +383,10 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 }
 
 type stream struct {
-	sse   *transport.SSE
-	model string
+	ctx          context.Context
+	continuation continuation
+	sse          *transport.SSE
+	model        string
 	// maxTokensApplied is the output bound this request carried, carried back
 	// so a caller can tell a response that ran to its budget from one the
 	// server merely labelled a normal stop. See llm.Response.MaxTokensApplied.
@@ -401,6 +453,7 @@ type callAccumulator struct {
 // missing number, it is an unbounded request.
 func newStream(body io.ReadCloser, model string, maxTokensApplied int) *stream {
 	return &stream{
+		ctx:       context.Background(),
 		sse:       transport.NewSSEWithStall(body, DoneSentinel, transport.DefaultHostedStallTimeout, nil),
 		model:     model,
 		textIndex: -1,
@@ -467,6 +520,9 @@ type wireEvent struct {
 
 func (s *stream) Next() (llm.Chunk, error) {
 	for {
+		if err := s.ctx.Err(); err != nil {
+			return llm.Chunk{}, err
+		}
 		if s.failure != nil {
 			return llm.Chunk{}, s.failure
 		}
@@ -508,6 +564,10 @@ func (s *stream) Next() (llm.Chunk, error) {
 
 		chunk, emit, err := s.apply(kind, ev)
 		if err != nil {
+			s.failure = err
+			return llm.Chunk{}, err
+		}
+		if err := s.continuation.observe(kind, event.Data, ev, s.calls); err != nil {
 			s.failure = err
 			return llm.Chunk{}, err
 		}
@@ -557,7 +617,7 @@ const maxDecodedResponseBytes = transport.MaxDecodedResponseBytes
 // stream has opened, while calls only holds those a step index has been
 // registered against, and an uncounted accumulator is the whole defect.
 func (s *stream) decodedBytes() int {
-	total := s.text.Len() + s.reasoning.Len() + len(s.lastSignature)
+	total := s.text.Len() + s.reasoning.Len() + len(s.lastSignature) + s.continuation.bytes
 	for _, acc := range s.order {
 		if acc == nil {
 			continue
@@ -624,6 +684,8 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 		// appending to this one.
 		if ev.Step != nil && ev.Step.Type == TypeFunctionCall {
 			s.seal(ev.Step.ID, ev.Step.Name)
+		} else if acc := s.calls[ev.Index]; acc != nil {
+			acc.sealed = true
 		}
 		return llm.Chunk{}, false, nil
 
@@ -719,6 +781,9 @@ func (s *stream) applyDelta(ev wireEvent) (llm.Chunk, bool, error) {
 			// function exists to remove.
 			return llm.Chunk{}, false, fmt.Errorf(
 				"gemini: arguments arrived for step %d, which no step.start opened", ev.Index)
+		}
+		if acc.sealed {
+			return llm.Chunk{}, false, fmt.Errorf("gemini: arguments arrived after step %d stopped", ev.Index)
 		}
 		fragment, err := argumentFragment(d.Arguments)
 		if err != nil {
@@ -898,6 +963,9 @@ func (s *stream) seal(id, name string) {
 }
 
 func (s *stream) Response() (llm.Response, error) {
+	if err := s.ctx.Err(); err != nil {
+		return llm.Response{}, err
+	}
 	if s.failure != nil {
 		return llm.Response{}, s.failure
 	}
@@ -916,6 +984,15 @@ func (s *stream) Response() (llm.Response, error) {
 	// the same provider is on both ends.
 	if sigs := s.signatures(); len(sigs) > 0 {
 		encoded, err := json.Marshal(replayState{CallSignatures: sigs})
+		if err != nil {
+			return llm.Response{}, err
+		}
+		msg.Provenance.ReplayState = encoded
+	}
+	if steps, err := s.continuation.steps(); err != nil {
+		return llm.Response{}, err
+	} else if len(steps) > 0 {
+		encoded, err := json.Marshal(replayState{Version: 2, Steps: steps})
 		if err != nil {
 			return llm.Response{}, err
 		}
@@ -958,6 +1035,13 @@ func (s *stream) Response() (llm.Response, error) {
 		})
 	}
 
+	if steps, err := s.continuation.steps(); err != nil {
+		return llm.Response{}, err
+	} else if len(steps) > 0 {
+		if err := validateContinuation(msg, steps); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	stop := s.stopReason
 	if stop == "" {
 		stop = llm.StopOther
@@ -979,6 +1063,8 @@ func isJSONObject(raw json.RawMessage) bool {
 
 // replayState is what this adapter needs handed back to send its own history.
 type replayState struct {
+	Version int               `json:"version,omitempty"`
+	Steps   []json.RawMessage `json:"steps,omitempty"`
 	// CallSignatures maps a tool call's id to the thought signature that
 	// authorises replaying it.
 	CallSignatures map[string]string `json:"call_signatures,omitempty"`
@@ -1008,6 +1094,22 @@ func signatureFor(msg llm.Message, id llm.CallID) string {
 	if json.Unmarshal(msg.Provenance.ReplayState, &state) != nil {
 		return ""
 	}
+	var signature string
+	for _, raw := range state.Steps {
+		var step struct{ Type, ID, Signature string }
+		if json.Unmarshal(raw, &step) != nil {
+			return ""
+		}
+		if step.Type == StepThought {
+			signature = step.Signature
+		}
+		if step.Type == TypeFunctionCall && step.ID == string(id) {
+			if step.Signature != "" {
+				return step.Signature
+			}
+			return signature
+		}
+	}
 	return state.CallSignatures[string(id)]
 }
 
@@ -1032,3 +1134,7 @@ func mapStatus(status string) llm.StopReason {
 func (a *Adapter) ReplayableOn(fromModel, toModel string) bool {
 	return ReplayableOn(fromModel, toModel)
 }
+
+// AttemptGateSupported declares that every Interactions HTTP attempt uses the
+// shared transport admission gate, including retries and streaming preflight.
+func (*Adapter) AttemptGateSupported() bool { return true }
