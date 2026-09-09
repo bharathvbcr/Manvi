@@ -29,6 +29,15 @@ under **Unreleased** in the same commit as the code.
   `manvi serve --workbench-db`. Storage lives in `dc-store` (`work_*`
   tables); the Go host advertises the operations only when that flag is
   set. Documented in [WORKBENCH.md](docs/WORKBENCH.md).
+- **Computer-use foundations, typed multimodal tool results, and a native
+  desktop broker.** Tool results carry text or image blocks; Gemini accepts
+  image function results; session projection publishes scrubbed events
+  without rewriting private image bytes. `computer` drives a Rust
+  `manvi-desktop` broker over NDJSON stdio, with optional `llm/budget`
+  admission before each HTTP attempt. Documented in
+  [COMPUTER_USE_FOUNDATIONS.md](docs/COMPUTER_USE_FOUNDATIONS.md).
+- **Workflow capability compiler.** Pure compile/reduce in `manvi/workflow`,
+  interpreted by the computer-use runner rather than by the LLM loop.
 - **Published module path `github.com/bharathvbcr/Manvi/manvi`.**
   `go install manvi/cmd/manvi@latest` was impossible while the module was the
   bare name `manvi` (`missing dot in first path element`). Remote install is

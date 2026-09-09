@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -321,18 +322,12 @@ func (s *Store) containedPath(clean string) (string, error) {
 // check this code makes and then races against: an Lstat followed by an
 // ordinary open is two operations with a window between them, and the window is
 // the whole attack.
-func writeContained(full string, data []byte, perm os.FileMode) error {
-	fd, err := syscall.Open(full,
-		syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_CLOEXEC,
-		uint32(perm))
+func writeContained(full string, data []byte, perm os.FileMode) (result error) {
+	f, err := safefile.OpenNoFollow(nil, full, os.O_WRONLY|os.O_CREATE, perm)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
-			return fmt.Errorf("artifacts: refusing to write %s: it is a symbolic link", filepath.Base(full))
-		}
 		return fmt.Errorf("artifacts: opening %s: %w", filepath.Base(full), err)
 	}
-	f := os.NewFile(uintptr(fd), full)
-	defer f.Close()
+	defer func() { result = errors.Join(result, f.Close()) }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -340,6 +335,10 @@ func writeContained(full string, data []byte, perm os.FileMode) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("artifacts: refusing to write %s: not a regular file", filepath.Base(full))
+	}
+	// Validate the opened object before destroying its existing contents.
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("artifacts: truncating %s: %w", filepath.Base(full), err)
 	}
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("artifacts: writing %s: %w", filepath.Base(full), err)

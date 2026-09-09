@@ -81,6 +81,8 @@ type Error struct {
 	// which names the timer instead of the cause and sends an operator looking
 	// for a network problem that is not there.
 	permanent bool
+	// notSent is true only when failure occurred before HTTP.Do was called.
+	notSent bool
 }
 
 func (e *Error) Error() string {
@@ -331,7 +333,14 @@ func (c *Client) do(ctx context.Context, method, path string, payload []byte) (*
 			return nil, &Error{Provider: c.Provider, Attempts: attempt - 1, Err: err, cancelled: true}
 		}
 
+		finish, denied := c.admitAttempt(ctx, method, path, payload, attempt)
+		if denied != nil {
+			return nil, denied
+		}
 		resp, failure := c.attempt(ctx, method, path, payload)
+		if err := c.finishAttempt(finish, resp, failure, attempt); err != nil {
+			return nil, err
+		}
 		if failure == nil {
 			return resp, nil
 		}
@@ -361,6 +370,9 @@ func (c *Client) do(ctx context.Context, method, path string, payload []byte) (*
 }
 
 func (c *Client) attempt(ctx context.Context, method, path string, payload []byte) (*http.Response, *Error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{Provider: c.Provider, Err: err, cancelled: true, notSent: true}
+	}
 	// A nil payload must produce a request with no body at all, not one with an
 	// empty reader: some servers reject a GET carrying Content-Type on a
 	// zero-length body, and the failure reads as a routing error rather than
@@ -371,7 +383,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
 	if err != nil {
-		return nil, &Error{Provider: c.Provider, Err: err}
+		return nil, &Error{Provider: c.Provider, Err: err, permanent: true, notSent: true}
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -384,7 +396,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 			// retrying it just delays the same error. Marked permanent so the
 			// retry loop honours that rather than treating it as the Status-0
 			// dial failure it superficially resembles.
-			return nil, &Error{Provider: c.Provider, permanent: true,
+			return nil, &Error{Provider: c.Provider, permanent: true, notSent: true,
 				Err: fmt.Errorf("resolving credentials: %w", err)}
 		}
 		for key, values := range extra {
@@ -394,6 +406,9 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{Provider: c.Provider, Err: err, cancelled: true, notSent: true}
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// Distinguish the caller's cancellation from a network fault: the first
@@ -1175,19 +1190,35 @@ func (c *Client) PostStream(
 			return nil, &Error{Provider: c.Provider, Attempts: attempt - 1, Err: err, cancelled: true}
 		}
 
+		finish, denied := c.admitAttempt(ctx, http.MethodPost, path, payload, attempt)
+		if denied != nil {
+			return nil, denied
+		}
 		resp, failure := c.attempt(ctx, http.MethodPost, path, payload)
 		if failure == nil {
 			if accept == nil {
+				if err := c.finishAttempt(finish, resp, nil, attempt); err != nil {
+					return nil, err
+				}
 				return resp.Body, nil
 			}
 			accepted, rejected := accept(resp)
 			if rejected == nil {
+				if err := c.finishAttempt(finish, resp, nil, attempt); err != nil {
+					if accepted.Body != nil {
+						_ = accepted.Body.Close()
+					}
+					return nil, err
+				}
 				return accepted.Body, nil
 			}
 			// The body is spent either way: the callback has read into it, and
 			// a retry issues a fresh request rather than resuming this one.
 			resp.Body.Close()
 			failure = rejected
+		}
+		if err := c.finishAttempt(finish, resp, failure, attempt); err != nil {
+			return nil, err
 		}
 		failure.Attempts = attempt
 		last = failure

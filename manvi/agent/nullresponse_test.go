@@ -23,6 +23,15 @@ func nullTurn() replay.Turn {
 	}
 }
 
+func TestNullResponsesConsumeTheHardStepBudget(t *testing.T) {
+	loop, _ := loopOver(t, []replay.Turn{nullTurn(), nullTurn(), answerTurn("too late")})
+	loop.cfg.MaxSteps = 1
+	out := run(t, loop)
+	if out.Steps != 1 || out.BudgetSpent != 1 || !out.TruncatedBySteps {
+		t.Fatalf("null retry escaped hard budget: %+v", out)
+	}
+}
+
 func answerTurn(text string) replay.Turn {
 	return replay.Turn{
 		Message: llm.Message{Role: llm.RoleAssistant,

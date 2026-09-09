@@ -1,0 +1,21 @@
+{
+  "png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAIUlEQVR4nGIJqFjAgA0wYRWlUGLBnA5kCUbqWQ4IAAD//yLnBKbyyssZAAAAAElFTkSuQmCC",
+  "sha256": "801b65969652a77db3033c22f12d2bbc96d2bcc7d459f98bfe735683bc840dbd",
+  "width": 8,
+  "height": 8,
+  "frame_width": 64,
+  "frame_height": 64,
+  "window_width": 32,
+  "window_height": 32,
+  "scale": 2,
+  "search": {
+    "x": 0,
+    "y": 0,
+    "width": 64,
+    "height": 64
+  },
+  "click": {
+    "x": 4,
+    "y": 4
+  }
+}

@@ -59,10 +59,7 @@ func TestAnAppendedCredentialReachesNeitherDiskNorTheNextRequest(t *testing.T) {
 		t.Errorf("a credential survived into the events Store.Save writes:\n%s", encoded)
 	}
 
-	// Every event must still be valid JSON after the substitution — replacing
-	// bytes inside an encoded document is only safe because neither the
-	// credential nor the marker contains a character JSON escapes, and that is
-	// worth asserting rather than reasoning about once.
+	// Every event remains valid JSON after decoded string redaction.
 	for _, e := range l.Events() {
 		if len(e.Data) == 0 {
 			continue

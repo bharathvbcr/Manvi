@@ -58,6 +58,10 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   Zero-cgo line-delimited JSON protocol over stdio for embedding MANVI inside IDE extensions (VS Code, JetBrains), editors, and host desktop applications, including `local.scan` for model-server discovery.
 - [**Profile Workspaces, Tasks and Enhancement Proposals**](WORKBENCH.md)
   Persistent repository groups, three board scopes, revision conflicts, durable events, asynchronous provider generation and the opt-in local `work.*` host API.
+- [**Computer-Use Foundations**](COMPUTER_USE_FOUNDATIONS.md)  
+  Typed multimodal tool observations, session privacy for image bytes, HTTP
+  attempt admission, the workflow capability compiler, and the native
+  `manvi-desktop` broker protocol.
 - [**Terminal UI & Event Subsystem**](TUI_AND_EVENT_SUBSYSTEM.md)  
   Modern full-screen Elm-loop TUI, multi-session tab strip, dynamic live theme switcher (`/theme`, `Ctrl+Y`), session modal (`Ctrl+S`), syntax highlighting, zero-allocation damage-diff painter, and keybindings.
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  

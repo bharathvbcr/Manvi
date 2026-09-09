@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -241,6 +242,13 @@ func resultDigest(name string, result tools.Result) [32]byte {
 	flag := "ok\x00"
 	if result.IsError {
 		flag = "err\x00"
+	}
+	if len(result.Content) > 0 {
+		content, err := json.Marshal(result.Content)
+		if err != nil {
+			return sha256.Sum256([]byte(name + "\x00invalid-content\x00" + err.Error()))
+		}
+		return sha256.Sum256(append([]byte(name+"\x00"+flag), content...))
 	}
 	return sha256.Sum256([]byte(name + "\x00" + flag + result.Text))
 }

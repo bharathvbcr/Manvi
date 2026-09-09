@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
 )
 
 // This file closes the check-then-act gap between policy evaluation and
@@ -66,44 +68,34 @@ import (
 //     tree policy evaluated; they cannot escape, since the walk is confined
 //     beneath the root.
 
-// componentIdentity is the filesystem identity of one path component.
-type componentIdentity struct {
-	dev, ino uint64
-}
+// componentIdentity holds the identity captured at policy time. The platform
+// helper eagerly resolves Windows file IDs before the approval window begins.
+type componentIdentity = safefile.Identity
 
 func identityOf(fi fs.FileInfo) (componentIdentity, bool) {
-	sys, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return componentIdentity{}, false
-	}
-	// The conversions are portability, not noise, and they are why unconvert
-	// disagrees with itself across platforms: Stat_t's field widths are
-	// per-GOOS. Dev is int32 on darwin and uint64 on linux; Nlink below is
-	// uint16 and uint64 respectively. Written without them this does not
-	// compile on darwin; measured on linux alone a linter calls all three
-	// unnecessary. Keeping them is what makes one source file build across the
-	// unix family, which is the whole reason `//go:build unix` is a single tag.
-	//nolint:unconvert // Stat_t field widths differ by GOOS; see above.
-	return componentIdentity{uint64(sys.Dev), uint64(sys.Ino)}, true
+	return safefile.PinIdentity(fi)
 }
 
-// linksOf reports how many names reach the file described by fi.
-//
-// This is the question the identity pin cannot ask. Pinning answers "is this
-// the file policy judged", and answers it well — but what policy judged is a
-// *name*, and a hard link gives one inode two names. `ln .env notes.txt` leaves
-// the ladder judging "notes.txt", which matches no secret pattern, while the
-// bytes land in .env; the pin then actively guarantees they do, because the
-// inode it verifies is exactly the one the link shares. Nothing above can see
-// it: st_nlink is a property of the file and every rung up there is a statement
-// about the path.
-func linksOf(fi fs.FileInfo) (uint64, bool) {
-	sys, ok := fi.Sys().(*syscall.Stat_t)
+// singleNameFile checks git's preflight through the same non-destructive
+// handle boundary as pinned reads and writes. A raced path or unavailable
+// identity/link count must not be interpreted as an unaliased file.
+func singleNameFile(name string, expected fs.FileInfo) bool {
+	id, ok := identityOf(expected)
 	if !ok {
-		return 0, false
+		return false
 	}
-	//nolint:unconvert // Nlink is uint16 on darwin and uint64 on linux; see identityOf.
-	return uint64(sys.Nlink), true
+	f, err := safefile.OpenNoFollow(nil, name, os.O_RDONLY, 0)
+	if err != nil {
+		return false
+	}
+	opened, statErr := f.Stat()
+	links, linkErr := safefile.LinkCount(f)
+	closeErr := f.Close()
+	if statErr != nil || linkErr != nil || closeErr != nil || links != 1 {
+		return false
+	}
+	actual, ok := identityOf(opened)
+	return ok && id.Equal(actual)
 }
 
 // aliasRefusal reports that the file at the pinned location carries more than
@@ -189,7 +181,7 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 		rel:   clean,
 		parts: parts,
 	}
-	rootFi, err := os.Stat(rootResolved)
+	rootFi, err := safefile.Stat(rootResolved)
 	if err != nil {
 		return nil, fmt.Errorf("inspecting repository root: %w", err)
 	}
@@ -217,7 +209,7 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 		if !containedUnder(rootResolved, resolved) {
 			return nil, fmt.Errorf("directory component %q resolves outside the repository", part)
 		}
-		fi, err := os.Stat(resolved)
+		fi, err := safefile.Stat(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("inspecting %q: %w", resolved, err)
 		}
@@ -240,7 +232,7 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 		// The leaf's own directory exists; the leaf itself must never be a
 		// symlink. (Distinct names, not re-used err: a shadowed error once
 		// made every missing file look like an existing one.)
-		leafFi, leafErr := os.Lstat(physical)
+		leafFi, leafErr := safefile.Lstat(physical)
 		if leafErr != nil && !os.IsNotExist(leafErr) {
 			return nil, fmt.Errorf("inspecting %q: %w", physical, leafErr)
 		}
@@ -291,7 +283,7 @@ func (c *verifiedChain) Close() {
 // Stat: a symbolic link left behind under the old name must not resolve back
 // to the directory it replaced.
 func (c *verifiedChain) stillLinked(parts []string) error {
-	rootFi, err := os.Lstat(c.rootPath())
+	rootFi, err := safefile.Lstat(c.rootPath())
 	if err != nil {
 		return fmt.Errorf("refusing to %s %q: the repository root vanished mid-operation: %w", c.op, c.rel, err)
 	}
@@ -299,10 +291,10 @@ func (c *verifiedChain) stillLinked(parts []string) error {
 	if !ok {
 		return fmt.Errorf("platform cannot identify directories; refusing to %s %q", c.op, c.rel)
 	}
-	if rootID != c.ids[0] {
+	if !rootID.Equal(c.ids[0]) {
 		return fmt.Errorf(
 			"refusing to %s %q: the repository root changed identity mid-operation "+
-				"(was inode %d, found inode %d)", c.op, c.rel, c.ids[0].ino, rootID.ino)
+				"(filesystem identity differs)", c.op, c.rel)
 	}
 	for i := 1; i < len(c.dirs); i++ {
 		name := parts[i-1]
@@ -316,11 +308,11 @@ func (c *verifiedChain) stillLinked(parts []string) error {
 		if !ok {
 			return fmt.Errorf("platform cannot identify directories; refusing to %s %q", c.op, c.rel)
 		}
-		if id != c.ids[i] {
+		if !id.Equal(c.ids[i]) {
 			return fmt.Errorf(
 				"refusing to %s %q: directory component %q changed identity or became a symbolic "+
-					"link mid-operation (was inode %d, found inode %d)",
-				c.op, c.rel, name, c.ids[i].ino, id.ino)
+					"link mid-operation (filesystem identity differs)",
+				c.op, c.rel, name)
 		}
 	}
 	return nil
@@ -356,11 +348,11 @@ func (p *pinnedTarget) openVerifiedParent(op string, create bool) (*verifiedChai
 		chain.Close()
 		return nil, fmt.Errorf("platform cannot identify directories; refusing to %s %q", op, p.rel)
 	}
-	if rootID != p.dirIDs[0] {
+	if !rootID.Equal(p.dirIDs[0]) {
 		chain.Close()
 		return nil, fmt.Errorf(
 			"refusing to %s %q: the repository root changed identity between policy evaluation "+
-				"and open (was inode %d, found inode %d)", op, p.rel, p.dirIDs[0].ino, rootID.ino)
+				"and open (filesystem identity differs)", op, p.rel)
 	}
 	chain.ids = append(chain.ids, rootID)
 
@@ -442,7 +434,7 @@ func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create 
 	}
 	// The descriptor's own fstat — immune to any path game — must be the
 	// directory we verified a moment ago.
-	if id != expected {
+	if !id.Equal(expected) {
 		next.Close()
 		when := "between policy evaluation and open"
 		if !fromPin {
@@ -450,8 +442,8 @@ func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create 
 		}
 		return nil, zero, fmt.Errorf(
 			"refusing to %s %q: directory component %q changed identity %s "+
-				"(possible symlink swap; was inode %d, found inode %d)",
-			op, p.rel, name, when, expected.ino, id.ino)
+				"(possible symlink swap; filesystem identity differs)",
+			op, p.rel, name, when)
 	}
 	return next, id, nil
 }
@@ -476,7 +468,7 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 	// actually carries the guarantee). No O_TRUNC: truncation happens after
 	// the opened file has been proved to be the pinned one, so a refused
 	// write never destroys the bystander it refused to write to.
-	flags := os.O_WRONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
+	flags := os.O_WRONLY
 	if p.targetExisted {
 		// The file existed at pin time. It must still exist and still be that
 		// same file; re-creating it would paper over a deletion race.
@@ -492,7 +484,7 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 		flags |= os.O_CREATE | os.O_EXCL
 	}
 
-	f, err := chain.parent().OpenFile(leaf, flags, perm)
+	f, err := safefile.OpenNoFollow(chain.parent(), leaf, flags, perm)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return &symlinkRefusal{component: p.rel, during: "write"}
@@ -510,22 +502,18 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if p.targetExisted && openedID != p.targetIdent {
+	if p.targetExisted && !openedID.Equal(p.targetIdent) {
 		return fmt.Errorf(
 			"refusing to write %q: the file at that path changed identity between "+
-				"policy evaluation and open (was inode %d, opened inode %d)",
-			p.rel, p.targetIdent.ino, openedID.ino)
+				"policy evaluation and open (filesystem identity differs)",
+			p.rel)
 	}
 	// Asked of the descriptor rather than of the pin, because a link created
 	// during the approval window is exactly the case that matters, and fstat
-	// on the open file cannot be raced by a later rename. See linksOf.
-	fi, statErr := f.Stat()
-	if statErr != nil {
-		return fmt.Errorf("inspecting the opened file %q: %w", p.rel, statErr)
-	}
-	links, ok := linksOf(fi)
-	if !ok {
-		return fmt.Errorf("platform cannot count links; refusing to write %q", p.rel)
+	// on the open file cannot be raced by a later rename. The count comes from the same kernel handle.
+	links, linkErr := safefile.LinkCount(f)
+	if linkErr != nil {
+		return fmt.Errorf("counting links of the opened file %q: %w", p.rel, linkErr)
 	}
 	if links > 1 {
 		return &aliasRefusal{rel: p.rel, links: links, during: "write"}
@@ -576,10 +564,10 @@ func (p *pinnedTarget) checkOpened(f *os.File, chain *verifiedChain, leaf, op st
 	if !ok {
 		return zero, fmt.Errorf("platform cannot identify files; refusing to %s %q", op, p.rel)
 	}
-	if linkID != openedID {
+	if !linkID.Equal(openedID) {
 		return zero, fmt.Errorf(
 			"refusing to %s %q: the name resolved to a different file than the one opened "+
-				"(named inode %d, opened inode %d)", op, p.rel, linkID.ino, openedID.ino)
+				"(filesystem identity differs)", op, p.rel)
 	}
 	if err := chain.stillLinked(p.parts); err != nil {
 		return zero, err
@@ -602,11 +590,11 @@ func (p *pinnedTarget) verifyLeafIdentity(chain *verifiedChain, leaf string) err
 	if !ok {
 		return fmt.Errorf("platform cannot identify files; refusing to write %q", p.rel)
 	}
-	if id != p.targetIdent {
+	if !id.Equal(p.targetIdent) {
 		return fmt.Errorf(
 			"refusing to write %q: the file at that path changed identity between policy "+
-				"evaluation and open (was inode %d, found inode %d)",
-			p.rel, p.targetIdent.ino, id.ino)
+				"evaluation and open (filesystem identity differs)",
+			p.rel)
 	}
 	return nil
 }
@@ -626,8 +614,7 @@ func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 	defer chain.Close()
 
 	leaf := p.leafName()
-	f, err := chain.parent().OpenFile(leaf,
-		os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	f, err := safefile.OpenNoFollow(chain.parent(), leaf, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, &symlinkRefusal{component: p.rel, during: "read"}
@@ -645,21 +632,17 @@ func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 	// name is how the contents of a file the gate would have refused reach the
 	// model. Unlink is left alone deliberately: removing one of several names
 	// destroys no shared content, so refusing it would be over-refusal.
-	fi, statErr := f.Stat()
-	if statErr != nil {
-		return nil, fmt.Errorf("inspecting the opened file %q: %w", p.rel, statErr)
-	}
-	links, ok := linksOf(fi)
-	if !ok {
-		return nil, fmt.Errorf("platform cannot count links; refusing to read %q", p.rel)
+	links, linkErr := safefile.LinkCount(f)
+	if linkErr != nil {
+		return nil, fmt.Errorf("counting links of the opened file %q: %w", p.rel, linkErr)
 	}
 	if links > 1 {
 		return nil, &aliasRefusal{rel: p.rel, links: links, during: "read"}
 	}
-	if openedID != p.targetIdent {
+	if !openedID.Equal(p.targetIdent) {
 		return nil, fmt.Errorf(
 			"refusing to read %q: the file changed identity between evaluation and open "+
-				"(was inode %d, opened inode %d)", p.rel, p.targetIdent.ino, openedID.ino)
+				"(filesystem identity differs)", p.rel)
 	}
 	st, err := f.Stat()
 	if err != nil {
@@ -712,11 +695,11 @@ func RemovePinned(root, rel string) error {
 		if !ok {
 			return fmt.Errorf("platform cannot identify files; refusing to remove %q", rel)
 		}
-		if id != pinned.targetIdent {
+		if !id.Equal(pinned.targetIdent) {
 			return fmt.Errorf(
 				"refusing to remove %q: the file at that path changed identity between policy "+
-					"evaluation and removal (was inode %d, found inode %d)",
-				rel, pinned.targetIdent.ino, id.ino)
+					"evaluation and removal (filesystem identity differs)",
+				rel)
 		}
 	}
 	if err := chain.stillLinked(pinned.parts); err != nil {
