@@ -99,6 +99,9 @@ type response struct {
 	// when a compare-and-swap found a different one. It is raw so the retry
 	// compares the store's own bytes rather than a re-serialisation of them.
 	CurrentAppended json.RawMessage `json:"current_appended"`
+	// Workbench retains the bounded profile result after its separate envelope
+	// contract has been checked. Execution-lease commands never populate it.
+	Workbench json.RawMessage `json:"-"`
 }
 
 // Conflict reports that another agent holds the task. It is a distinct type
@@ -751,6 +754,14 @@ func decodeReply(command string, stdout []byte, overflowed bool, stderr []byte, 
 	}
 	if runErr != nil {
 		return nil, fmt.Errorf("store: %s failed: %w", command, runErr)
+	}
+	if command == "work" {
+		validated, err := decodeWorkbenchReply(stdout)
+		if err != nil {
+			return nil, err
+		}
+		out.Workbench = validated
+		return &out, nil
 	}
 
 	// A reply that says ok:false without naming a code is a failure the store

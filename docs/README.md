@@ -56,6 +56,8 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   Zero-config 30ms discovery, KV prefix-cache preservation (**1.5s warm vs 120s cold prefill**), wire-level parser recovery (Hermes, Qwen3 XML), `<think>` tag sanitization, and recoverable truncation.
 - [**Embedded Stdio Host Plane (`manvi serve`)**](SERVE_HOST_PLANE.md)  
   Zero-cgo line-delimited JSON protocol over stdio for embedding MANVI inside IDE extensions (VS Code, JetBrains), editors, and host desktop applications, including `local.scan` for model-server discovery.
+- [**Profile Workspaces, Tasks and Enhancement Proposals**](WORKBENCH.md)
+  Persistent repository groups, three board scopes, revision conflicts, durable events, asynchronous provider generation and the opt-in local `work.*` host API.
 - [**Terminal UI & Event Subsystem**](TUI_AND_EVENT_SUBSYSTEM.md)  
   Modern full-screen Elm-loop TUI, multi-session tab strip, dynamic live theme switcher (`/theme`, `Ctrl+Y`), session modal (`Ctrl+S`), syntax highlighting, zero-allocation damage-diff painter, and keybindings.
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  

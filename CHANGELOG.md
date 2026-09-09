@@ -23,6 +23,12 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- **Profile workbench storage and opt-in `work.*` host operations.**
+  Persistent workspaces, board items, enhancement proposals, automation
+  schedules, run records, and managed Codex activation over
+  `manvi serve --workbench-db`. Storage lives in `dc-store` (`work_*`
+  tables); the Go host advertises the operations only when that flag is
+  set. Documented in [WORKBENCH.md](docs/WORKBENCH.md).
 - **Published module path `github.com/bharathvbcr/Manvi/manvi`.**
   `go install manvi/cmd/manvi@latest` was impossible while the module was the
   bare name `manvi` (`missing dot in first path element`). Remote install is

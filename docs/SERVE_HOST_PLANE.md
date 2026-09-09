@@ -16,7 +16,7 @@
 
 ```bash
 # Launch the host plane server
-manvi serve [--posture host|devcouncil]
+manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite]
 ```
 
 ---
@@ -35,6 +35,7 @@ manvi serve [--posture host|devcouncil]
 | `chat.forget` | Explicitly drops a conversation's compaction and calibration ledger. |
 | `devmap.status` | Reports devmap host-contract, schema, readiness, freshness, coverage gaps, and command capabilities. |
 | `devmap.query` | Runs a bounded `explore`, `impact`, `trace`, or `affected` query and preserves the producer's completeness envelope. |
+| `work.*` (opt-in) | Persistent profile workspaces, repositories, task CRUD, scoped boards, editable enhancement proposals and acceptance/undo, durable automatic settings/queue/preparation, revisions and events; enabled by `--workbench-db`. The configured CLI host provides asynchronous `work.enhancements.generate`, coalesced `work.enhancements.wake`, cached coordinator status through `work.enhancements.worker`, and selection metadata through `work.enhancements.configuration`. Committed text saves wake automatic work; data/configuration reads do not start inference. Managed Codex uses host-only `work.runs.managed.prepare`, `activate` and `stop` operations; preparation returns protocol version 2 without initializing a thread, and activation records native process identity before the handshake and single task turn. See [Workbench](WORKBENCH.md). |
 
 ---
 
