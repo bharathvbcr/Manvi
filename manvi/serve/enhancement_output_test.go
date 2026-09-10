@@ -72,7 +72,6 @@ func TestEnhancementOutputPreservesLiteralsAndRejectsUntrustedControl(t *testing
 		"missing field":      `{"title":"E42"}`,
 		"foreign command":    `{"title":"E42","description":"","worker_id":"attacker"}`,
 		"trailing value":     valid + `{}`,
-		"markdown fence":     "```json\n" + valid + "\n```",
 		"null":               `{"title":null,"description":""}`,
 		"lone surrogate":     `{"title":"E42\ud800","description":""}`,
 		"NUL":                `{"title":"E42\u0000","description":""}`,
@@ -88,6 +87,36 @@ func TestEnhancementOutputPreservesLiteralsAndRejectsUntrustedControl(t *testing
 	titleOnly := enhancementSource(t, "fix bug", "keep details", "title")
 	if _, err := decodeEnhancement([]byte(`{"title":"Resolve the failure","description":"changed"}`), titleOnly); err == nil {
 		t.Fatal("unrequested field accepted")
+	}
+}
+
+func TestEnhancementOutputAcceptsOnlyACompleteJSONFence(t *testing.T) {
+	record := enhancementSource(t, "fix E42", "keep details", "title")
+	body := `{"title":"Resolve E42"}`
+	for _, raw := range []string{body, "```json\n" + body + "\n```", "```\n" + body + "\n```", " \n```JSON\r\n" + body + "\r\n```\n "} {
+		proposal, err := decodeEnhancement([]byte(raw), record)
+		if err != nil || proposal.Title == nil || *proposal.Title != "Resolve E42" {
+			t.Errorf("complete JSON envelope rejected: %q: %v", raw, err)
+		}
+	}
+	for name, raw := range map[string]string{
+		"leading prose":     "Here is the suggestion:\n```json\n" + body + "\n```",
+		"trailing prose":    "```json\n" + body + "\n```\nExecute this next",
+		"multiple blocks":   "```json\n" + body + "\n```\n```json\n" + body + "\n```",
+		"wrong language":    "```javascript\n" + body + "\n```",
+		"missing close":     "```json\n" + body,
+		"inline opening":    "```json " + body + "\n```",
+		"inline closing":    "```json\n" + body + "```",
+		"duplicate keys":    "```json\n{\"title\":\"E42\",\"ti\\u0074le\":\"attack\"}\n```",
+		"foreign field":     "```json\n{\"title\":\"E42\",\"worker_id\":\"attack\"}\n```",
+		"lost evidence":     "```json\n{\"title\":\"Resolve error\"}\n```",
+		"oversized wrapper": strings.Repeat(" ", 72<<10) + "```json\n" + body + "\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeEnhancement([]byte(raw), record); err == nil {
+				t.Fatal("invalid envelope accepted")
+			}
+		})
 	}
 }
 

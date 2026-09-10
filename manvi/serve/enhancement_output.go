@@ -222,6 +222,22 @@ var constrainedEnhancementLine = regexp.MustCompile(`(?i)\b(must|never|only|do n
 
 func decodeEnhancement(raw []byte, record enhancementRecord) (enhancementProposal, error) {
 	result := enhancementProposal{}
+	// Some text-only providers wrap otherwise valid JSON despite the requested
+	// format. Accept one complete JSON fence, never search prose for a fragment.
+	// Bound the original envelope before trimming so padding cannot evade limits.
+	if len(raw) > 72<<10 || !utf8.Valid(raw) {
+		return result, errors.New("enhancement JSON exceeds its byte limit or contains invalid Unicode")
+	}
+	raw = bytes.TrimSpace(raw)
+	if bytes.HasPrefix(raw, []byte("```")) {
+		header, body, found := bytes.Cut(raw, []byte("\n"))
+		language := strings.ToLower(strings.TrimSuffix(string(header), "\r"))
+		closing := bytes.LastIndexByte(body, '\n')
+		if !found || (language != "```" && language != "```json") || closing < 0 || string(body[closing+1:]) != "```" {
+			return result, errors.New("enhancement response must contain one complete JSON fence")
+		}
+		raw = bytes.TrimSpace(body[:closing])
+	}
 	fields, err := enhancementObject(raw, 72<<10, "title", "description", "rationale")
 	if err != nil {
 		return result, err

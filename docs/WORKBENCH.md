@@ -639,7 +639,10 @@ up to five seconds for actual return. Unacknowledged work remains unresolved in
 storage. Process crash or uncertain completion never triggers another model call.
 
 Output must be a complete text result with a confirmed output-token bound and a
-single JSON object. Duplicate/unknown keys, unrequested fields, tool calls,
+single JSON object, optionally wrapped in one complete Markdown code fence with
+either no language label or the `json` label. Leading/trailing prose, multiple
+fences and other language labels are refused; the original envelope is size
+checked before unwrapping. Duplicate/unknown keys, unrequested fields, tool calls,
 malformed Unicode, truncated results and excessive output are refused. Literal
 checks preserve quoted text, code, URLs, path references, issue references and
 error identifiers, plus lines with explicit constraint language. A small set of
