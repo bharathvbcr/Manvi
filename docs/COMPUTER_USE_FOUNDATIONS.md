@@ -160,9 +160,22 @@ come from the sanitized tree, including numeric outputs.
 
 `AttachFocused` explicitly requests initial native focus; existing `Attach`
 keeps its original behavior. `focus`/`refresh` require an idle paused run.
-`human_act` journals intent, receipt and sanitized post-capture. `RunOptions.Assisted`
+`human_act` requires a complete same-epoch paused observation and the exact
+selected semantic node and input payload. Before resetting the native HID
+baseline through focus, the runner captures that review in memory. It then
+focuses, observes again and compares the entire private frame, private semantic
+state, window geometry and selected target identity/geometry. Changed frames or
+targets require a new human review; capture-local IDs may change only when the
+same unique target can be established. The fresh sanitized revalidation must be
+journaled before approval or input. Native dispatch still checks for later
+interference. Manual review digests remain private and are never exported.
+This intentionally refuses even benign pixel changes during review; physical
+usability requires separate platform qualification.
+
+`human_act` journals intent, revalidation, receipt and sanitized post-capture. `RunOptions.Assisted`
 opts into one `assisted_action` per run: a read-only semantic Back/Dismiss button,
-resolved against the current private native observation. Its actor is
+subject to the same fresh-frame gate and resolved against the private native
+observation. Its actor is
 `model_recovery`; success leaves the run paused. The host still needs explicit
 resume and canonical workflow checkpoints. Read-only means no business/account
 change: reviewed form entry stays read-only under the broker's trusted target

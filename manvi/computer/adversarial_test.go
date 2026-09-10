@@ -197,7 +197,21 @@ func TestHumanReceiptJournalFailureIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = waitPhase(t, ctx, run, workflow.Paused)
-	if err := run.Send(ctx, Control{Kind: "human_act", Epoch: s.Epoch, Action: Action{ActionID: "human", ObservationID: "o", TargetID: "search", Kind: "press", Effect: "read"}}); err != nil {
+	if err := run.Send(ctx, Control{Kind: "refresh", Epoch: s.Epoch}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case record := <-records:
+			if record.Kind == "observation" && record.Stage == "refresh" {
+				goto refreshed
+			}
+		case <-ctx.Done():
+			t.Fatal("paused observation missing")
+		}
+	}
+refreshed:
+	if err := run.Send(ctx, Control{Kind: "human_act", Epoch: s.Epoch, Action: Action{ActionID: "human", ObservationID: run.Observation().ID, TargetID: "search", Kind: "press", Effect: "read"}}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := run.Wait(ctx)

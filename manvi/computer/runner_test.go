@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type testDesktop struct {
 	block       bool
 	entered     chan struct{}
 	paused      bool
+	captures    uint64
 }
 
 func (d *testDesktop) Observe(ctx context.Context, s Session) (Observation, error) {
@@ -27,6 +29,8 @@ func (d *testDesktop) Observe(ctx context.Context, s Session) (Observation, erro
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	o := ownedObservation(d.observation)
+	d.captures++
+	o.ID = fmt.Sprintf("test-observation-%d", d.captures)
 	o.Epoch = s.Epoch
 	return o, nil
 }
@@ -88,7 +92,7 @@ func runFixture(t *testing.T, change bool) (RunOptions, *testDesktop) {
 	t.Helper()
 	o := observationFixture(t)
 	balance := "$1,250.00"
-	o.Nodes = []Node{{ID: "search", Role: "button", Name: "Search", Enabled: true}, {ID: "balance", Role: "text_field", Name: "Balance", Value: &balance, Enabled: true}}
+	o.Nodes = []Node{{ID: "search", Role: "button", Name: "Search", Enabled: true, Actions: []string{"press"}}, {ID: "balance", Role: "text_field", Name: "Balance", Value: &balance, Enabled: true}}
 	effect := "read"
 	if change {
 		effect = "change"

@@ -27,7 +27,7 @@ func waitPhase(t *testing.T, ctx context.Context, r *Run, phase workflow.Phase) 
 func TestAssistedRecoveryIsOptInBoundedAndRecorded(t *testing.T) {
 	opts, d := runFixture(t, true)
 	opts.Assisted = true
-	d.observation.Nodes = append(d.observation.Nodes, Node{ID: "back", Name: "Back", Role: "button", Enabled: true})
+	d.observation.Nodes = append(d.observation.Nodes, Node{ID: "back", Name: "Back", Role: "button", Enabled: true, Actions: []string{"press"}})
 	records := make(chan Record, 64)
 	opts.OnRecord = func(r Record) error { records <- r; return nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

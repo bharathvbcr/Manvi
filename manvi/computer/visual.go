@@ -184,6 +184,13 @@ func approvalFingerprint(o Observation, s workflow.Selector) ([32]byte, error) {
 	if s.Visual == nil {
 		return semantic, nil
 	}
+	return frameFingerprint(o)
+}
+
+// frameFingerprint remains executor-private: even masked regions participate in
+// review revalidation, without exporting a digest of potentially guessable data.
+func frameFingerprint(o Observation) ([32]byte, error) {
+	semantic := semanticFingerprint(o)
 	rgba, err := frameRGBA(o)
 	if err != nil {
 		return [32]byte{}, err

@@ -198,6 +198,7 @@ type workResult struct {
 	actor               string
 	receipt             *Receipt
 	fingerprint         [32]byte
+	takeoverFingerprint [32]byte
 }
 
 func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.State) {
@@ -211,6 +212,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	var inputPending bool
 	var assistedUsed bool
 	var reviewed [32]byte
+	var reviewedTakeover [32]byte
 	var apply func(workflow.Event) ([]workflow.Command, error)
 	lastClock := time.Now()
 	interventionStart := time.Time{}
@@ -386,6 +388,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			}
 			if result.observation != nil {
 				reviewed = result.fingerprint
+				reviewedTakeover = result.takeoverFingerprint
 				safe := ownedObservation(*result.observation)
 				r.mu.Lock()
 				r.observation = &safe
@@ -590,13 +593,9 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 						}
 					}
 					raw, err := opts.Desktop.Observe(workCtx, capturedSession)
-					var safe Observation
-					if err == nil {
-						safe, err = Sanitize(raw, opts.Privacy)
-					}
 					result := workResult{epoch: capturedSession.Epoch, err: err, resume: resume, human: !resume, command: workflow.Command{Kind: "refresh"}, fingerprint: semanticFingerprint(raw)}
 					if err == nil {
-						result.observation = &safe
+						result.err = result.capture(raw, opts.Privacy)
 					}
 					select {
 					case results <- result:
@@ -612,7 +611,17 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					continue
 				}
 				actor := "human"
+				if control.Kind == "assisted_action" {
+					actor = "model_recovery"
+				}
 				var recoverySelector Selector
+				review, reviewErr := reviewHumanAction(control, r.Observation(), reviewedTakeover)
+				if reviewErr != nil {
+					if err := record(Record{Kind: "control_refused", Epoch: s.Epoch, Actor: actor, Reason: reviewErr.Error()}); err != nil {
+						executionErr = err
+					}
+					continue
+				}
 				if control.Kind == "assisted_action" {
 					var err error
 					recoverySelector, err = validateRecovery(control, r.Observation(), opts.Assisted, assistedUsed)
@@ -630,14 +639,20 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 				cancelWork = cancel
 				capturedSession := session
-				a := control.Action
+				a := review.action
 				if err := record(Record{Kind: "action_started", Stage: control.Kind, StepKind: a.Kind, ActionID: a.ActionID, Actor: actor, Epoch: s.Epoch}); err != nil {
 					executionErr = err
 					continue
 				}
 				go func() {
-					var err error
-					if actor == "model_recovery" {
+					fresh, freshErr := revalidateHumanAction(workCtx, opts, capturedSession, review)
+					err := freshErr
+					if err == nil {
+						a.ObservationID = fresh.observation.ID
+						a.TargetID = fresh.targetID
+						err = record(Record{Kind: "observation", Stage: "human_revalidation", StepKind: a.Kind, ActionID: a.ActionID, Actor: actor, Epoch: capturedSession.Epoch, Observation: fresh.observation})
+					}
+					if err == nil && actor == "model_recovery" {
 						node, resolveErr := opts.Desktop.Resolve(workCtx, capturedSession, a.ObservationID, recoverySelector)
 						err = resolveErr
 						if err == nil && (node.ID != a.TargetID || node.Role != recoverySelector.Role || node.Name != recoverySelector.Name || !node.Enabled) {
@@ -645,10 +660,16 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 						}
 					}
 
-					if a.Effect == "change" {
+					if err == nil {
+						err = workCtx.Err()
+					}
+					if err == nil && a.Effect == "change" {
 						a.ApprovalID, err = opts.Desktop.Approve(workCtx, capturedSession, a)
 					}
 					receipt := Receipt{ActionID: a.ActionID, Delivery: "not_sent"}
+					if err == nil {
+						err = workCtx.Err()
+					}
 					if err == nil {
 						receipt, err = opts.Desktop.HumanAct(workCtx, capturedSession, a)
 						if err != nil {
@@ -663,9 +684,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					if err == nil && receipt.Delivery == "sent" {
 						raw, observeErr := opts.Desktop.Observe(workCtx, capturedSession)
 						if observeErr == nil {
-							safe, safeErr := Sanitize(raw, opts.Privacy)
-							if safeErr == nil {
-								result.observation = &safe
+							if safeErr := result.capture(raw, opts.Privacy); safeErr == nil {
 								result.fingerprint = semanticFingerprint(raw)
 							} else {
 								observeErr = safeErr
@@ -743,12 +762,10 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = err
 				return r
 			}
-			safe, err := Sanitize(raw, opts.Privacy)
-			if err != nil {
+			if err := r.capture(raw, opts.Privacy); err != nil {
 				r.err = err
 				return r
 			}
-			r.observation = &safe
 			r.fingerprint, err = approvalFingerprint(raw, command.Selector)
 			if err != nil {
 				r.err = err
@@ -774,7 +791,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			} else {
 				a.TargetID = target.Node.ID
 			}
-			if err := opts.OnRecord(Record{Kind: "observation", Stage: "approval_revalidation", StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "automation", Epoch: session.Epoch, Observation: &safe}); err != nil {
+			if err := opts.OnRecord(Record{Kind: "observation", Stage: "approval_revalidation", StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "automation", Epoch: session.Epoch, Observation: r.observation}); err != nil {
 				r.err = err
 				return r
 			}
@@ -808,12 +825,11 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		r.err = err
 		return r
 	}
-	safe, err := Sanitize(raw, opts.Privacy)
-	if err != nil {
+	if err := r.capture(raw, opts.Privacy); err != nil {
 		r.err = err
 		return r
 	}
-	r.observation = &safe
+	safe := *r.observation
 	r.fingerprint, err = approvalFingerprint(raw, command.Selector)
 	if err != nil {
 		r.err = err
