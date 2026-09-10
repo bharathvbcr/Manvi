@@ -151,7 +151,7 @@ def arms_drift(protocol_by_model):
     for i in range(len(models)):
         for j in range(i + 1, len(models)):
             a, b = models[i], models[j]
-            keys = protocol_drift(protocol_by_model[a], protocol_by_model[b])
+            keys = arm_drift(protocol_by_model[a], protocol_by_model[b])
             if keys:
                 out.append((a, b, keys))
     return out

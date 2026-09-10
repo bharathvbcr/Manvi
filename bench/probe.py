@@ -127,25 +127,30 @@ def probe_api(model):
     return rc
 
 
-model = sys.argv[1] if len(sys.argv) > 1 else ""
-if not model:
-    raise SystemExit(__doc__)
-if model.startswith("cerebras:"):
-    raise SystemExit(probe_api(model))
+def main():
+    model = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not model:
+        raise SystemExit(__doc__)
+    if model.startswith("cerebras:"):
+        raise SystemExit(probe_api(model))
 
-print(f"=== {model} ===", flush=True)
-for label, kw in [("plain", {}), ("think", {"think": True}),
-                  ("tools+think", {"tools": TOOLS, "think": True})]:
-    msgs = [{"role": "user", "content":
-             "List the files in /etc using the shell tool." if "tools" in kw
-             else "What is 17*23? Answer with just the number."}]
-    try:
-        resp, dt = chat(model, msgs, **kw)
-        m = resp.get("message", {})
-        print(f"[{label}] {dt:.1f}s  msg_keys={sorted(m.keys())}")
-        print(f"   content={m.get('content','')[:120]!r}")
-        if m.get("thinking"): print(f"   thinking[{len(m['thinking'])}]={m['thinking'][:100]!r}")
-        if m.get("tool_calls"): print(f"   tool_calls={json.dumps(m['tool_calls'])[:250]}")
-        print(f"   eval_count={resp.get('eval_count')} prompt_eval={resp.get('prompt_eval_count')}")
-    except Exception as e:
-        print(f"[{label}] ERROR {type(e).__name__}: {e}")
+    print(f"=== {model} ===", flush=True)
+    for label, kw in [("plain", {}), ("think", {"think": True}),
+                      ("tools+think", {"tools": TOOLS, "think": True})]:
+        msgs = [{"role": "user", "content":
+                 "List the files in /etc using the shell tool." if "tools" in kw
+                 else "What is 17*23? Answer with just the number."}]
+        try:
+            resp, dt = chat(model, msgs, **kw)
+            m = resp.get("message", {})
+            print(f"[{label}] {dt:.1f}s  msg_keys={sorted(m.keys())}")
+            print(f"   content={m.get('content','')[:120]!r}")
+            if m.get("thinking"): print(f"   thinking[{len(m['thinking'])}]={m['thinking'][:100]!r}")
+            if m.get("tool_calls"): print(f"   tool_calls={json.dumps(m['tool_calls'])[:250]}")
+            print(f"   eval_count={resp.get('eval_count')} prompt_eval={resp.get('prompt_eval_count')}")
+        except Exception as e:
+            print(f"[{label}] ERROR {type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    main()

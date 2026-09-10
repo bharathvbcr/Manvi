@@ -182,7 +182,7 @@ func TestLocalRefusesATimeoutWithNoValue(t *testing.T) {
 func TestADeclaredEndpointIsNeverScannedPast(t *testing.T) {
 	const declared = "http://127.0.0.1:1/v1"
 	var notes bytes.Buffer
-	got := resolveLocalEndpoint(pinnedTo(t, declared), declared, nil, &notes)
+	got := resolveLocalEndpoint(pinnedTo(t, declared), declared, nil, &notes, "")
 	if got != declared {
 		t.Fatalf("resolved to %q, want the declared address unchanged", got)
 	}
@@ -220,7 +220,7 @@ func TestASingleUsableModelNeedsNoSetting(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil)
+	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestSeveralUsableModelsStillRefuses(t *testing.T) {
 		"gemma4:31b-mlx":  {"completion", "tools"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil)
+	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestARefusalDoesNotOfferModelsThatCannotRun(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil)
+	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestAnExplicitModelSettingBeatsDiscovery(t *testing.T) {
 		flags.LLMLocalBaseURL: srv.URL + "/v1",
 		flags.LLMLocalModel:   "chosen-by-hand",
 	})
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil)
+	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,5 +519,36 @@ func TestResolveStillAcceptsAServedNamedModel(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "model=b:7b") {
 		t.Errorf("the named model did not survive the check:\n%s", out.String())
+	}
+}
+
+// TestPreferredModelOverridesEnvWhenSettlingEndpoints is the enhancement-path
+// contract: a record model beats MANVI_MODEL when several servers answer.
+func TestPreferredModelOverridesEnvWhenSettlingEndpoints(t *testing.T) {
+	t.Setenv("MANVI_MODEL", "env-model")
+	right := fakeOllama(t, map[string][]string{"record-model": {"completion", "tools"}})
+	wrong := fakeOllama(t, map[string][]string{"env-model": {"completion", "tools"}})
+	reg := newTestRegistry(t)
+	preferred := preferredLocalModel(reg, "record-model")
+	if preferred != "record-model" {
+		t.Fatalf("preferredLocalModel = %q, want record-model over env", preferred)
+	}
+	if preferredLocalModel(reg, "") != "env-model" {
+		t.Fatalf("empty preferred should fall back to MANVI_MODEL")
+	}
+	res := local.ResolveEndpoint(context.Background(), local.ResolveOptions{
+		Declared:           local.DefaultBaseURL,
+		DeclaredByOperator: false,
+		Model:              preferred,
+		Endpoints: []local.Endpoint{
+			{BaseURL: wrong.URL + "/v1", Convention: "test"},
+			{BaseURL: right.URL + "/v1", Convention: "test"},
+		},
+	})
+	if res.BaseURL != right.URL+"/v1" {
+		t.Fatalf("BaseURL = %q, want the server that serves the record model", res.BaseURL)
+	}
+	if res.MatchedModel != "record-model" {
+		t.Fatalf("MatchedModel = %q", res.MatchedModel)
 	}
 }

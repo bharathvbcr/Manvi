@@ -545,6 +545,20 @@ class Sandbox:
     def finish(self, summary=None, **_):
         return summary or ""
 
+    def handlers(self):
+        """The five tools by name.
+
+        Dispatch used to `getattr` these, which meant `finish` existed, was
+        advertised in SCHEMAS, and had no inbound call the graph could see.
+        """
+        return {
+            "run_shell": self.run_shell,
+            "read_file": self.read_file,
+            "write_file": self.write_file,
+            "edit_file": self.edit_file,
+            "finish": self.finish,
+        }
+
 
 SCHEMAS = [
     {"type": "function", "function": {

@@ -513,7 +513,7 @@ fn a_claimed_attempt_has_one_owner_and_expiry_does_not_prove_it_stopped() {
         r#"{"id":"e","request_id":"wrong","expected_revision":2,"worker_id":"other","failure":"failed"}"#,
         "worker_mismatch",
     );
-    s.set_clock(|| 1_121);
+    s.set_clock(|| 1_181);
     refuse(
         &s,
         "enhancements.create",
@@ -562,7 +562,7 @@ fn cancellation_needs_worker_acknowledgment_and_recovery_preserves_uncertainty()
         r#"{"id":"e","request_id":"early","expected_revision":3,"worker_id":"owner","acknowledge_uncertain":true}"#,
         "busy",
     );
-    s.set_clock(|| 1_121);
+    s.set_clock(|| 1_181);
     refuse(
         &s,
         "enhancements.recover",
@@ -623,7 +623,7 @@ fn cancellation_expiry_and_incomplete_output_cannot_be_reported_ready() {
         "invalid_transition",
     );
     create(&s, "e2");
-    s.set_clock(|| 1_120);
+    s.set_clock(|| 1_180);
     refuse(
         &s,
         "enhancements.complete",

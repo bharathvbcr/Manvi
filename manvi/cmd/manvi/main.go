@@ -23,16 +23,13 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/agents"
-	"github.com/bharathvbcr/Manvi/manvi/artifacts"
 	"github.com/bharathvbcr/Manvi/manvi/bootstrap"
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/dc"
 	"github.com/bharathvbcr/Manvi/manvi/dc/dcgrep"
 	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
 	"github.com/bharathvbcr/Manvi/manvi/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
-	"github.com/bharathvbcr/Manvi/manvi/fetch"
 	"github.com/bharathvbcr/Manvi/manvi/flags"
 	"github.com/bharathvbcr/Manvi/manvi/gate"
 	"github.com/bharathvbcr/Manvi/manvi/grants"
@@ -1671,20 +1668,10 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	}
 	root := projectRoot()
 
-	artStore, _ := artifacts.NewStore(artifactsDir())
-	mcpMgr, err := buildMCP(reg, root)
+	core, err := bootHarnessCore(reg, root)
 	if err != nil {
 		return nil, nil, err
 	}
-	// The manager spawns server subprocesses lazily and keeps them for the
-	// life of the process. Registering the teardown here — the one place every
-	// tool surface passes through — is what makes servers die with their
-	// harness instead of outliving it; CloseAll existed and was tested, but
-	// nothing ever called it.
-	onProcessExit(func() { mcpMgr.CloseAll() })
-	// Operator scope only. See operatorFetchHosts: an allowlist the agent could
-	// write into the repository would not be one.
-	fetcher := fetch.New(operatorFetchHosts(), fetch.Limits{})
 	subRegistry := agents.NewRegistry()
 	subMgr := agents.NewInstanceManager()
 
@@ -1704,36 +1691,44 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		Grep:           grepClient(root),
 		// Operator scope only. See operatorFetchHosts: an allowlist the agent
 		// could write into the repository would not be one.
-		Fetch:            fetcher,
+		Fetch:            core.fetch,
 		Subsystems:       subsystems,
 		Approver:         approver,
 		QuestionAsker:    questionAsker(approver),
-		Artifacts:        artStore,
-		MCP:              mcpMgr,
+		Artifacts:        core.artifacts,
+		MCP:              core.mcp,
 		SubagentRegistry: subRegistry,
 		SubagentMgr:      subMgr,
 		SubAgent:         subRunner,
 	})
 	if err != nil {
+		_ = core.plugins.Close()
 		return nil, nil, err
 	}
-	pipeline := tools.NewRegistry(bus.New())
+	pipeline := core.tools
 	// Armed before any tool can run. Every result the model sees, and every
 	// result the session log writes to disk, goes through this.
 	toolScrubber := credentials.NewScrubber()
 	toolScrubber.WatchAll(credentials.NewResolver())
 	pipeline.SetScrubber(toolScrubber.Clean)
 	if err := native.Register(pipeline); err != nil {
+		_ = core.plugins.Close()
 		return nil, nil, err
 	}
 	caps := harnessCapability{
 		CodeMapConfigured: native.CodeMapConfigured(),
-		DocLookup:         docLookupAvailable(fetcher, mcpMgr),
+		DocLookup:         docLookupAvailable(core.fetch, core.mcp),
 	}
 	if subsystems != nil {
 		caps.Areas = subsystems.Areas()
 	}
-	rememberHarness(pipeline, subRunner, caps)
+	// The manager spawns server subprocesses lazily and keeps them for the
+	// life of the process. Close lives on the plugin kernel — the one place
+	// every tool surface passes through — so servers die with their harness
+	// instead of outliving it. CloseAll existed and was tested, but nothing
+	// ever called it until this teardown was registered.
+	onProcessExit(func() { _ = core.plugins.Close() })
+	rememberHarness(pipeline, subRunner, caps, core)
 	return native, pipeline, nil
 }
 
@@ -1837,14 +1832,23 @@ type harnessCapability struct {
 
 var harnessCaps = map[*tools.Registry]harnessCapability{}
 
-// rememberHarness records one tool surface's runner and capabilities together,
-// under one lock, because they are written at one point and read at one point
-// and splitting the guard would only invite them to diverge.
-func rememberHarness(pipeline *tools.Registry, runner *subAgentRunner, caps harnessCapability) {
+var harnessCores = map[*tools.Registry]*harnessCore{}
+
+// rememberHarness records one tool surface's runner, capabilities and plugin
+// kernel together, under one lock, because they are written at one point and
+// read at one point and splitting the guard would only invite them to diverge.
+func rememberHarness(pipeline *tools.Registry, runner *subAgentRunner, caps harnessCapability, core *harnessCore) {
 	harnessMu.Lock()
 	defer harnessMu.Unlock()
 	subRunners[pipeline] = runner
 	harnessCaps[pipeline] = caps
+	harnessCores[pipeline] = core
+}
+
+func harnessCoreFor(pipeline *tools.Registry) *harnessCore {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	return harnessCores[pipeline]
 }
 
 // harnessFor returns what was recorded for a tool surface. A surface nothing

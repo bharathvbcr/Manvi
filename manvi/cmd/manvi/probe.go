@@ -264,7 +264,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 // switch as well — which is exactly how the local adapter came to be listed
 // everywhere and constructible nowhere.
 func adapterFor(name string, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer) (llm.Provider, string, error) {
-	provider, err := buildProvider(name, reg, resolver, notes)
+	provider, err := buildProvider(name, reg, resolver, notes, "")
 	if err != nil {
 		return nil, "", err
 	}

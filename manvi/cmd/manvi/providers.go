@@ -35,7 +35,7 @@ import (
 // missing one is reported before a request is assembled, and so that the one
 // provider whose credential is optional does not need every caller to know
 // that it is.
-func buildProvider(name string, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer) (llm.Provider, error) {
+func buildProvider(name string, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer, preferredModel string) (llm.Provider, error) {
 	// The name is checked before the credential, because resolving first makes a
 	// typo report itself as a credentials fault. `manvi probe not-a-provider`
 	// answered `credentials: no requirement registered for provider
@@ -70,7 +70,7 @@ func buildProvider(name string, reg *flags.Registry, resolver *credentials.Resol
 		if err != nil {
 			return nil, err
 		}
-		cfg.BaseURL = resolveLocalEndpoint(reg, cfg.BaseURL, resolve, notes)
+		cfg.BaseURL = resolveLocalEndpoint(reg, cfg.BaseURL, resolve, notes, preferredModel)
 		return local.New(cfg, resolve), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q (%s)", name, strings.Join(providerNames(), ", "))
@@ -212,7 +212,7 @@ func localConfig(reg *flags.Registry) (local.Config, error) {
 // and one that was configured produce the same requests and warrant very
 // different confidence — the same reason a discovered context window reports
 // its provenance.
-func resolveLocalEndpoint(reg *flags.Registry, declared string, resolve func() (credentials.Secret, error), notes io.Writer) string {
+func resolveLocalEndpoint(reg *flags.Registry, declared string, resolve func() (credentials.Secret, error), notes io.Writer, preferredModel string) string {
 	_, origin, err := reg.String(flags.LLMLocalBaseURL)
 	if err != nil {
 		// Unreadable settings are not this function's failure to report; the
@@ -222,13 +222,22 @@ func resolveLocalEndpoint(reg *flags.Registry, declared string, resolve func() (
 	res := local.ResolveEndpoint(context.Background(), local.ResolveOptions{
 		Declared:           declared,
 		DeclaredByOperator: origin != flags.OriginDefault,
-		Model:              namedLocalModel(reg),
+		Model:              preferredLocalModel(reg, preferredModel),
 		Credential:         resolve,
 	})
 	if note := res.Note(); note != "" && notes != nil {
 		fmt.Fprintf(notes, "manvi: %s\n", note)
 	}
 	return res.BaseURL
+}
+
+// preferredLocalModel prefers an explicit request model (enhancement record)
+// over the operator's named setting. Empty preferred falls back to namedLocalModel.
+func preferredLocalModel(reg *flags.Registry, preferred string) string {
+	if m := strings.TrimSpace(preferred); m != "" {
+		return m
+	}
+	return namedLocalModel(reg)
 }
 
 // namedLocalModel is the model id the operator wrote down, or empty.

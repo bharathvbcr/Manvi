@@ -18,7 +18,7 @@ from mh.stats import (aligned_interaction, bootstrap_ci,
                       interaction, mean, multiplicity_report,
                       pass_counts_by_repeat, pearson_r, rates_of,
                       role_of, sidak_alpha, usable_rows)
-from mh.pool import (arm_drift, arms_drift, contrast_conflicts, contrast_drift,
+from mh.pool import (arms_drift, contrast_conflicts, contrast_drift,
                      merge_conflicts, pooled_drift, ragged_reps,
                      rep_denominators, reps_of, seed_conflicts, seed_reuse,
                      unseeded_cells)

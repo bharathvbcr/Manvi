@@ -20,6 +20,7 @@
 
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "url";
 import { execFileSync } from "child_process";
 import { JSDOM } from "jsdom";
 
@@ -127,7 +128,16 @@ async function main() {
   console.log(`OK ${total} mermaid blocks in ${files.length} files parsed with mermaid@${version}`);
 }
 
-main().catch((e) => {
-  console.error(`FAIL ${e?.stack || e}`);
-  process.exit(1);
-});
+function invokedAsMain() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  return import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+}
+
+if (invokedAsMain()) {
+  main().catch((e) => {
+    console.error(`FAIL ${e?.stack || e}`);
+    process.exit(1);
+  });
+}

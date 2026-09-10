@@ -143,8 +143,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	// PostStream rather than Post, because a 200 from this endpoint is not yet
 	// a success: an overloaded model and some transient backend faults are
 	// reported as an `event: error` frame inside an otherwise healthy stream.
-	// See preflight.
-	stream, err := a.client.PostStream(ctx, InteractionsPath+"?"+StreamQuery, body, preflight)
+	stream, err := a.client.PostStream(ctx, InteractionsPath+"?"+StreamQuery, body, func(resp *http.Response) (transport.StreamAccepted, *transport.Error) {
+		return preflight(resp)
+	})
 	if err != nil {
 		return nil, err
 	}

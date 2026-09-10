@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mh.pool import (CONFIG_FLAGS, PROTOCOL_KEYS, arms_drift, config_drift,
+from mh.pool import (CONFIG_FLAGS, PROTOCOL_KEYS, arm_drift, arms_drift, config_drift,
                      contrast_conflicts, contrast_drift, duplicate_episodes,
                      malformed_reps, merge_conflicts, pooled_drift,
                      protocol_drift, ragged_reps, rep_denominators, reps_of,
@@ -170,6 +170,10 @@ check("arms_drift skips an arm with no recorded protocol",
       arms_drift({"a": dict(_LOCAL), "b": None}) == [])
 check("arms_drift reports the differing keys, not just that some differ",
       "reasoning_effort" in arms_drift({"a": dict(_LOCAL), "b": dict(_HOSTED)})[0][2])
+check("arms_drift asks arm_drift for each pair, not protocol_drift directly",
+      arm_drift(_LOCAL, _HOSTED) == arms_drift({"a": dict(_LOCAL), "b": dict(_HOSTED)})[0][2])
+check("arm_drift is silent when a pair agrees",
+      arm_drift(_LOCAL, dict(_LOCAL)) == [])
 
 check("pooled_drift finds a late pair",
       pooled_drift([src("a", range(5)), src("b", range(5, 10)),

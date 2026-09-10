@@ -81,7 +81,7 @@ fi
 
 echo "== building manvi and the recording proxy =="
 go -C "$REPO_ROOT/manvi" build -o "$OUT/manvi" ./cmd/manvi || exit 1
-go -C "$REPO_ROOT/bench/live" build -o "$OUT/geminiproxy" . || exit 1
+go -C "$REPO_ROOT/manvi" build -o "$OUT/geminiproxy" ./cmd/geminiproxy || exit 1
 
 # --- the workspace the agent actually works in -------------------------------
 # A fresh tree by default. --yolo turns every gate off, including the repository

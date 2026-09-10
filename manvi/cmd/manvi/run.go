@@ -157,12 +157,12 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		return err
 	}
 	resolver := credentials.NewResolver()
-	provider, err := buildProvider(providerName, reg, resolver, notes)
+	provider, err := buildProvider(providerName, reg, resolver, notes, "")
 	if err != nil {
 		return err
 	}
-	registry := llm.NewRegistry()
-	if err := registry.Register(provider); err != nil {
+	registry, err := registerSessionLLM(pipeline, provider)
+	if err != nil {
 		return err
 	}
 

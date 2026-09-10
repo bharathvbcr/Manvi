@@ -17,6 +17,10 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
+// enhancementJobTimeout bounds one provider call. Keep it below the durable
+// create/claim lease in dc-store so settle can still complete after inference.
+const enhancementJobTimeout = 150 * time.Second
+
 // EnhancementProvider resolves the explicitly selected provider/model using the
 // host's configured adapters. It must never silently substitute another backend.
 type EnhancementProvider func(context.Context, string, string) (llm.Provider, error)
@@ -139,7 +143,7 @@ func (r *EnhancementRunner) Generate(ctx context.Context, raw json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
+	jobCtx, cancel := context.WithTimeout(context.Background(), enhancementJobTimeout)
 	job := &enhancementJob{id: request.ID, owner: owner, cancel: cancel, done: make(chan struct{}), taskID: record.TaskID, automatic: record.Automatic}
 	r.mu.Lock()
 	if r.closed || r.active != nil {
@@ -222,6 +226,26 @@ func (r *EnhancementRunner) run(ctx context.Context, job *enhancementJob, record
 	}
 }
 
+// enhancementSettleFailure maps provider stop reasons into durable failure text.
+// DeadlineExceeded is the job budget; Canceled is host/watch stop; cancel_requested
+// is an explicit user dismiss. Collapsing those into one string made timeouts look
+// like user cancels in probe and UI diagnostics.
+func enhancementSettleFailure(state string, inferenceErr error) error {
+	if state == "cancel_requested" {
+		return errors.New("generation cancelled by the user")
+	}
+	if inferenceErr == nil {
+		return nil
+	}
+	if errors.Is(inferenceErr, context.DeadlineExceeded) {
+		return errors.New("generation timed out")
+	}
+	if errors.Is(inferenceErr, context.Canceled) {
+		return errors.New("generation cancelled")
+	}
+	return inferenceErr
+}
+
 func (r *EnhancementRunner) errorText(err error) string {
 	message := strings.TrimSpace(strings.ToValidUTF8(strings.ReplaceAll(r.failureText(err), "\x00", ""), ""))
 	if message == "" {
@@ -252,9 +276,7 @@ func (r *EnhancementRunner) settle(job *enhancementJob, proposal enhancementProp
 			return err
 		}
 		completion := generationCompletion{generationClaim: generationClaim{generationRequest{job.id, id, record.Revision}, job.owner}}
-		if record.State == "cancel_requested" {
-			inferenceErr = errors.New("generation cancelled by the user")
-		}
+		inferenceErr = enhancementSettleFailure(record.State, inferenceErr)
 		if inferenceErr != nil {
 			message := r.errorText(inferenceErr)
 			completion.Failure = &message

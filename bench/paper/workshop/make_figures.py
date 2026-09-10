@@ -90,5 +90,6 @@ def interaction(path):
     print("wrote", path)
 
 
-ladder(os.path.join(HERE, "fig_ladder.tex"))
-interaction(os.path.join(HERE, "fig_interaction.tex"))
+if __name__ == "__main__":
+    ladder(os.path.join(HERE, "fig_ladder.tex"))
+    interaction(os.path.join(HERE, "fig_interaction.tex"))

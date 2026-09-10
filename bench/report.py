@@ -110,4 +110,5 @@ def main():
             print(f"| {label} | " + " | ".join(fn(s) for _, s in have) + " |")
 
 
-main()
+if __name__ == "__main__":
+    main()

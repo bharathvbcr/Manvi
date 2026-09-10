@@ -379,7 +379,7 @@ func resolveLocalSelection(out io.Writer, reg *flags.Registry, timeout time.Dura
 
 	// io.Discard for the notes: the endpoint note is prose, and this document
 	// carries the same fact in base_url_source.
-	provider, err := buildProvider(local.Name, reg, resolver, io.Discard)
+	provider, err := buildProvider(local.Name, reg, resolver, io.Discard, "")
 	if err != nil {
 		return err
 	}

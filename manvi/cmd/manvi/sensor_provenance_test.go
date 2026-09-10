@@ -76,7 +76,7 @@ func TestHarnessStateIsSafeUnderConcurrentSessions(t *testing.T) {
 			pipeline := tools.NewRegistry(bus.New())
 			rememberHarness(pipeline, &subAgentRunner{}, harnessCapability{
 				CodeMapConfigured: i%2 == 0,
-			})
+			}, nil)
 			runner, caps := harnessFor(pipeline)
 			if runner == nil {
 				t.Error("what was just recorded did not come back")

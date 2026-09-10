@@ -257,11 +257,11 @@ class Harness:
             raise ToolError(
                 f"{name} is not available in this harness. Use run_shell to "
                 "read or edit files.")
-        if name not in toolmod.TOOL_NAMES:
+        fn = self.sb.handlers().get(name)
+        if name not in toolmod.TOOL_NAMES or fn is None:
             raise ToolError(
                 f"there is no tool named {name!r}. The available tools are: "
                 f"{', '.join(toolmod.TOOL_NAMES)}.")
-        fn = getattr(self.sb, name)
         if not isinstance(args, dict):
             raise ToolError(f"arguments for {name} must be an object")
         return fn(**args)

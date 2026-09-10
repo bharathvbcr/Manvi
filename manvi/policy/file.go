@@ -812,14 +812,11 @@ func NormalizePlannedCandidate(path string) string {
 // glob. CLI and MCP surfaces in DevCouncil drifted on this once; one helper is
 // the fix, so the harness uses one too.
 func MatchesPlannedPath(path string, planned []dc.PlannedFile) bool {
-	normalized := NormalizePlannedCandidate(path)
-	for _, pf := range planned {
-		p := normalizeSlashes(pf.Path)
-		if normalized == p || fnmatch.Match(p, normalized) {
-			return true
-		}
+	patterns := make([]string, len(planned))
+	for i, pf := range planned {
+		patterns[i] = pf.Path
 	}
-	return false
+	return matchesAny(patterns, NormalizePlannedCandidate(path))
 }
 
 // plannedFileFor finds the entry that authorises a path, and reports the
@@ -843,8 +840,7 @@ func plannedFileFor(path string, task *dc.Task) (*dc.PlannedFile, string) {
 
 func matchPlannedFile(path string, planned []dc.PlannedFile) *dc.PlannedFile {
 	for i := range planned {
-		p := normalizeSlashes(planned[i].Path)
-		if path == p || fnmatch.Match(p, path) {
+		if pathMatches(planned[i].Path, path) {
 			return &planned[i]
 		}
 	}
@@ -905,10 +901,14 @@ func forbiddenAlias(root, path string, forbidden []string) (string, bool) {
 	return "", false
 }
 
+func pathMatches(pattern, path string) bool {
+	p := normalizeSlashes(pattern)
+	return path == p || fnmatch.Match(p, path)
+}
+
 func matchesAny(patterns []string, path string) bool {
 	for _, raw := range patterns {
-		p := normalizeSlashes(raw)
-		if path == p || fnmatch.Match(p, path) {
+		if pathMatches(raw, path) {
 			return true
 		}
 	}

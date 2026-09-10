@@ -162,6 +162,9 @@ func TestEnhancementDismissAndShutdownWaitForActualProviderReturn(t *testing.T) 
 			if !strings.Contains(string(got), `"state":"`+want+`"`) {
 				t.Fatalf("wrong acknowledged outcome: %s", got)
 			}
+			if mode == "shutdown" && !strings.Contains(string(got), "generation cancelled") {
+				t.Fatalf("shutdown cancel was not labeled cancelled: %s", got)
+			}
 		})
 	}
 }
@@ -221,5 +224,34 @@ func TestEnhancementProviderFailureIsRedactedAndKeepsTheTaskIntact(t *testing.T)
 	task := enhancementCall(t, client, "items.get", `{"id":"t"}`)
 	if !strings.Contains(string(task), `"title":"fix E42"`) || !strings.Contains(string(task), `"revision":1`) {
 		t.Fatalf("failed inference modified task: %s", task)
+	}
+}
+
+func TestEnhancementSettleFailureDistinguishesTimeoutFromCancel(t *testing.T) {
+	if enhancementJobTimeout != 150*time.Second {
+		t.Fatalf("job timeout drifted: %s", enhancementJobTimeout)
+	}
+	cases := []struct {
+		state string
+		err   error
+		want  string
+	}{
+		{"cancel_requested", context.DeadlineExceeded, "generation cancelled by the user"},
+		{"running", context.DeadlineExceeded, "generation timed out"},
+		{"running", context.Canceled, "generation cancelled"},
+		{"running", errors.New("upstream boom"), "upstream boom"},
+		{"running", nil, ""},
+	}
+	for _, tc := range cases {
+		got := enhancementSettleFailure(tc.state, tc.err)
+		if tc.want == "" {
+			if got != nil {
+				t.Fatalf("state=%s err=%v: got %v, want nil", tc.state, tc.err, got)
+			}
+			continue
+		}
+		if got == nil || got.Error() != tc.want {
+			t.Fatalf("state=%s err=%v: got %v, want %q", tc.state, tc.err, got, tc.want)
+		}
 	}
 }

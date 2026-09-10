@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
 
 type enhancementTestProvider struct {
@@ -72,7 +73,8 @@ func TestEnhancementOutputPreservesLiteralsAndRejectsUntrustedControl(t *testing
 		"missing field":      `{"title":"E42"}`,
 		"foreign command":    `{"title":"E42","description":"","worker_id":"attacker"}`,
 		"trailing value":     valid + `{}`,
-		"markdown fence":     "```json\n" + valid + "\n```",
+		"fence plus prose":   "```json\n" + valid + "\n```\nThanks!",
+		"double object":      valid + "\n" + `{"title":"other"}`,
 		"null":               `{"title":null,"description":""}`,
 		"lone surrogate":     `{"title":"E42\ud800","description":""}`,
 		"NUL":                `{"title":"E42\u0000","description":""}`,
@@ -91,8 +93,83 @@ func TestEnhancementOutputPreservesLiteralsAndRejectsUntrustedControl(t *testing
 	}
 }
 
+func TestEnhancementOutputAcceptsRealisticWrapping(t *testing.T) {
+	record := enhancementSource(t, "fix E42", "Open src/main.go for #21.\nMust preserve 日本語.", "title", "description")
+	valid := `{"title":"Resolve E42","description":"Investigate src/main.go for #21.\nMust preserve 日本語.","rationale":"Clarified."}`
+	for name, raw := range map[string]string{
+		"bare fence":      "```\n" + valid + "\n```",
+		"json fence":      "```json\n" + valid + "\n```",
+		"JSON fence":      "```JSON\n" + valid + "\n```",
+		"preamble":        "Here is the JSON:\n" + valid,
+		"preamble fence":  "Here is the JSON:\n```json\n" + valid + "\n```",
+		"BOM":             "\ufeff" + valid,
+		"CRLF fence":      "```json\r\n" + strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n```\r\n",
+		"leading spaces":  "  \n" + valid + "\n  ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			proposal, err := decodeEnhancement([]byte(raw), record)
+			if err != nil || proposal.Title == nil || *proposal.Title != "Resolve E42" {
+				t.Fatalf("wrapping rejected: %+v %v", proposal, err)
+			}
+		})
+	}
+	t.Run("think leaked prose", func(t *testing.T) {
+		raw := "<think>plan the rewrite</think>\n" + valid
+		if _, err := decodeEnhancement([]byte(raw), record); err == nil {
+			t.Fatal("think-leaked prose accepted without a valid unwrap")
+		}
+	})
+}
+
+func TestEnhancementSentenceConstraintsAndTitleLiterals(t *testing.T) {
+	notes := "Search takes 171 ms at p95. Do not claim a result before measurement. Investigate the unknown cause and/or retry path on 10/12."
+	rules, err := preservationForText(notes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules.ConstraintLines) != 1 || rules.ConstraintLines[0] != "Do not claim a result before measurement." {
+		t.Fatalf("expected one constrained sentence, got %#v", rules.ConstraintLines)
+	}
+	for _, accidental := range []string{"and/or", "10/12"} {
+		if slicesContains(rules.Literals, accidental) {
+			t.Fatalf("accidental path literal %q retained: %#v", accidental, rules.Literals)
+		}
+	}
+	titleRules, err := preservationForText("Fix https://example.com/x in pkg/api/handler.go for #9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered := literalsForField("title", titleRules.Literals)
+	for _, drop := range []string{"https://example.com/x", "pkg/api/handler.go"} {
+		if slicesContains(filtered, drop) {
+			t.Fatalf("title still requires %q: %#v", drop, filtered)
+		}
+	}
+	if !slicesContains(filtered, "#9") {
+		t.Fatalf("title dropped identifier literal: %#v", filtered)
+	}
+	record := enhancementSource(t, "Fix https://example.com/x for #9", notes, "title", "description")
+	raw := `{"title":"Clarify #9 login redirect","description":"Search takes 171 ms at p95. Do not claim a result before measurement. Investigate the unknown cause and/or retry path on 10/12."}`
+	if _, err := decodeEnhancement([]byte(raw), record); err != nil {
+		t.Fatalf("title may drop URL/path: %v", err)
+	}
+	raw = `{"title":"Clarify login redirect","description":"Search takes 171 ms at p95. Investigate without claiming a result. Investigate the unknown cause and/or retry path on 10/12."}`
+	if _, err := decodeEnhancement([]byte(raw), record); err == nil {
+		t.Fatal("altered constraint sentence accepted")
+	}
+}
+
+func slicesContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEnhancementInferenceRejectsIncompleteAndUnboundedStreams(t *testing.T) {
-	for _, name := range []string{"valid", "unknown model", "wrong provider", "small context", "oversize source", "provider failure", "nil stream", "tool call", "byte flood", "event flood", "truncated", "missing bound", "excessive bound", "close failure", "malformed JSON"} {
+	for _, name := range []string{"valid", "unknown model", "wrong provider", "small context", "oversize source", "provider failure", "not served", "nil stream", "tool call", "byte flood", "event flood", "truncated", "missing bound", "excessive bound", "close failure", "malformed JSON"} {
 		t.Run(name, func(t *testing.T) {
 			record := enhancementSource(t, "fix E42", "keep details", "title")
 			stream := &enhancementTestStream{response: llm.Response{StopReason: llm.StopEndTurn, MaxTokensApplied: 8192,
@@ -104,8 +181,14 @@ func TestEnhancementInferenceRejectsIncompleteAndUnboundedStreams(t *testing.T) 
 				if len(req.Tools) != 0 || req.Model != "test-model" || req.MaxTokens != 8192 || !strings.Contains(req.System, "untrusted data") {
 					t.Errorf("invalid inference boundary: %+v", req)
 				}
+				if req.Temperature == nil || *req.Temperature != 0 {
+					t.Errorf("temperature = %v, want 0", req.Temperature)
+				}
 				if name == "provider failure" {
 					return nil, errors.New("unavailable")
+				}
+				if name == "not served" {
+					return nil, &local.ErrNotServed{BaseURL: "http://127.0.0.1:11434/v1", Model: record.Model, Served: []string{"other"}}
 				}
 				if name == "nil stream" {
 					return nil, nil
@@ -149,12 +232,18 @@ func TestEnhancementInferenceRejectsIncompleteAndUnboundedStreams(t *testing.T) 
 			} else if err == nil {
 				t.Fatal("invalid inference was accepted")
 			}
+			if name == "truncated" && (err == nil || !strings.Contains(err.Error(), "output token limit")) {
+				t.Fatalf("truncated failure was not actionable: %v", err)
+			}
+			if name == "not served" && (err == nil || !strings.Contains(err.Error(), "not served") || !strings.Contains(err.Error(), "Local model servers")) {
+				t.Fatalf("not-served failure was not actionable: %v", err)
+			}
 			if name == "unknown model" || name == "wrong provider" || name == "small context" || name == "oversize source" {
 				if calls != 0 {
 					t.Fatal("model was called after preflight failed")
 				}
 			}
-			if calls > 0 && name != "provider failure" && name != "nil stream" && !stream.closed {
+			if calls > 0 && name != "provider failure" && name != "not served" && name != "nil stream" && !stream.closed {
 				t.Fatal("stream was not closed")
 			}
 		})
@@ -190,13 +279,16 @@ func TestEnhancementPromptCarriesTheExactFieldPreservationRules(t *testing.T) {
 			t.Fatal("task prompt is not a JSON text block")
 		}
 		titleRules, descriptionRules := prompt.Preservation["title"], prompt.Preservation["description"]
-		if len(titleRules.Literals) != 1 || titleRules.Literals[0] != "E42" || len(descriptionRules.Lines) != 1 || descriptionRules.Lines[0] != strings.Split(description, "\n")[0] {
+		if len(titleRules.Literals) != 1 || titleRules.Literals[0] != "E42" || len(descriptionRules.Lines) != 1 || descriptionRules.Lines[0] != "Do not claim a result before measurement." {
 			t.Fatalf("prompt omitted the validator's exact protected text: %+v", prompt.Preservation)
 		}
-		if !strings.Contains(request.System, "entire field") || !strings.Contains(request.System, "untrusted data") {
-			t.Fatal("prompt does not explain whole-field preservation and untrusted content")
+		if !strings.Contains(request.System, "sentence granularity") || !strings.Contains(request.System, "untrusted data") {
+			t.Fatal("prompt does not explain sentence-level preservation and untrusted content")
 		}
-		result, err := json.Marshal(map[string]string{"title": "Resolve E42", "description": description})
+		result, err := json.Marshal(map[string]string{
+			"title":       "Resolve E42",
+			"description": "Search takes 171 ms at p95. Do not claim a result before measurement.\nInvestigate the unknown cause.",
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +296,7 @@ func TestEnhancementPromptCarriesTheExactFieldPreservationRules(t *testing.T) {
 	}
 	runner := &EnhancementRunner{provider: func(context.Context, string, string) (llm.Provider, error) { return provider, nil }}
 	proposal, err := runner.infer(t.Context(), record)
-	if err != nil || proposal.Description == nil || *proposal.Description != description {
+	if err != nil || proposal.Description == nil || !strings.Contains(*proposal.Description, "Do not claim a result before measurement.") {
 		t.Fatalf("preservation failed: %+v %v", proposal, err)
 	}
 }
@@ -224,7 +316,7 @@ func TestEnhancementPreservationBoundsRunBeforeProviderResolution(t *testing.T) 
 }
 
 func FuzzEnhancementOutputCannotSmuggleUnrequestedFields(f *testing.F) {
-	for _, seed := range []string{`{"title":"Resolve E42"}`, `{"title":"E42","title":"bad"}`, `{"title":"E42\ud800"}`, `null`} {
+	for _, seed := range []string{`{"title":"Resolve E42"}`, `{"title":"E42","title":"bad"}`, `{"title":"E42\ud800"}`, `null`, "```json\n{\"title\":\"Resolve E42\"}\n```", "Here is the JSON:\n{\"title\":\"Resolve E42\"}"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
@@ -232,6 +324,28 @@ func FuzzEnhancementOutputCannotSmuggleUnrequestedFields(f *testing.F) {
 		proposal, err := decodeEnhancement([]byte(raw), record)
 		if err == nil && (proposal.Title == nil || proposal.Description != nil || !strings.Contains(*proposal.Title, "E42") || utf8.RuneCountInString(*proposal.Title) > 300) {
 			t.Fatal("unvalidated output accepted")
+		}
+	})
+}
+
+func FuzzEnhancementUnwrapKeepsSingleObjectContract(f *testing.F) {
+	valid := `{"title":"Resolve E42"}`
+	for _, seed := range []string{valid, "```json\n" + valid + "\n```", "Here is the JSON:\n" + valid, valid + "{}", "<think>x</think>\n" + valid} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, wrap string) {
+		unwrapped, err := unwrapEnhancementJSON([]byte(wrap))
+		if err != nil {
+			return
+		}
+		fields, err := enhancementObject(unwrapped, 72<<10, "title", "description", "rationale")
+		if err != nil {
+			return
+		}
+		for key := range fields {
+			if key != "title" && key != "description" && key != "rationale" {
+				t.Fatalf("unwrap admitted unsupported field %q", key)
+			}
 		}
 	})
 }

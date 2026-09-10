@@ -1,4 +1,4 @@
-# Three ecosystems, because this repository has three and each fails silently
+# Four ecosystems, because this repository has four and each fails silently
 # in a different way when nobody is watching it.
 #
 # verify.sh already runs govulncheck over the Go plane and cargo audit over the
@@ -38,6 +38,16 @@ updates:
   # engine with 31, which is most of what cargo audit is auditing.
   - package-ecosystem: cargo
     directory: /crates
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ""
+    labels: []
+
+  # Dev-time documentation gate only (jsdom + mermaid). Nothing here ships
+  # in the manvi binary; verify.sh still runs the parser against every fence.
+  - package-ecosystem: npm
+    directory: /
     schedule:
       interval: weekly
     commit-message:

@@ -1187,7 +1187,7 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 		return err
 	}
 	resolver, _ := h.creds()
-	provider, err := buildProvider(name, h.reg, resolver, io.Discard)
+	provider, err := buildProvider(name, h.reg, resolver, io.Discard, "")
 	if err != nil {
 		return err
 	}
@@ -1196,8 +1196,8 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	// could not have been watching the key this session is about to use.
 	h.creds()
 
-	registry := llm.NewRegistry()
-	if err := registry.Register(provider); err != nil {
+	registry, err := registerSessionLLM(s.pipeline, provider)
+	if err != nil {
 		return err
 	}
 
