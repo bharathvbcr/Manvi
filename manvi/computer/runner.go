@@ -36,16 +36,18 @@ type Control struct {
 	Action        Action `json:"action"`
 }
 type Record struct {
-	Kind        string          `json:"kind"`
-	Stage       string          `json:"stage,omitempty"`
-	StepKind    string          `json:"step_kind,omitempty"`
-	ActionID    string          `json:"action_id"`
-	Actor       string          `json:"actor"`
-	Epoch       uint64          `json:"epoch"`
-	Observation *Observation    `json:"observation,omitempty"`
-	Receipt     *Receipt        `json:"receipt,omitempty"`
-	Event       *workflow.Event `json:"event,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
+	Kind          string          `json:"kind"`
+	Stage         string          `json:"stage,omitempty"`
+	StepKind      string          `json:"step_kind,omitempty"`
+	ActionID      string          `json:"action_id"`
+	Actor         string          `json:"actor"`
+	Epoch         uint64          `json:"epoch"`
+	StrategyIndex int             `json:"strategy_index,omitempty"`
+	RecoveryID    string          `json:"recovery_id,omitempty"`
+	Observation   *Observation    `json:"observation,omitempty"`
+	Receipt       *Receipt        `json:"receipt,omitempty"`
+	Event         *workflow.Event `json:"event,omitempty"`
+	Reason        string          `json:"reason,omitempty"`
 }
 type RunOptions struct {
 	// Assisted permits one read-only Back/Dismiss recovery while paused.
@@ -53,6 +55,11 @@ type RunOptions struct {
 	Program  *workflow.Program
 	Inputs   map[string]workflow.Value
 	Desktop  Desktop
+	// Session is the attached native identity. When Desktop is a *Client and
+	// Session.ID is empty, StartRun waits for AttachFocusedReady using
+	// Session.RunID and Session.Window.PID rather than failing NewState with a
+	// generic identity error. Generated capability Invoke still receives a
+	// session the host already attached.
 	Session  Session
 	Privacy  PrivacyPolicy
 	OnRecord func(Record) error
@@ -61,16 +68,20 @@ type RunResult struct {
 	Initial workflow.State   `json:"initial"`
 	State   workflow.State   `json:"state"`
 	Events  []workflow.Event `json:"events"`
+	Result  workflow.Result  `json:"result"`
 	Error   string           `json:"error,omitempty"`
 }
 type Run struct {
-	control     chan Control
-	done        chan struct{}
-	mu          sync.RWMutex
-	state       workflow.State
-	observation *Observation
-	result      RunResult
-	err         error
+	control       chan Control
+	done          chan struct{}
+	mu            sync.RWMutex
+	state         workflow.State
+	observation   *Observation
+	result        RunResult
+	err           error
+	controller    string
+	interventions []InterventionRequest
+	intervSeq     uint64
 }
 
 func StartRun(ctx context.Context, opts RunOptions) (*Run, error) {
@@ -78,6 +89,9 @@ func StartRun(ctx context.Context, opts RunOptions) (*Run, error) {
 		return nil, errors.New("program and desktop required")
 	}
 	if err := opts.Program.ValidateInputs(opts.Inputs); err != nil {
+		return nil, err
+	}
+	if err := attachNativeSession(ctx, &opts); err != nil {
 		return nil, err
 	}
 	initial, err := workflow.NewState(opts.Program, opts.Session.RunID, opts.Session.ID, opts.Session.Epoch)
@@ -98,9 +112,86 @@ func StartRun(ctx context.Context, opts RunOptions) (*Run, error) {
 	}
 	opts.Privacy.PID = opts.Session.Window.PID
 	opts.Privacy.WindowID = opts.Session.Window.ID
-	r := &Run{control: make(chan Control, 16), done: make(chan struct{}), state: initial}
+	r := &Run{control: make(chan Control, 16), done: make(chan struct{}), state: initial, controller: ControllerAutomation}
 	go r.execute(ctx, opts, initial)
 	return r, nil
+}
+
+// attachNativeSession is the host path that used to skip readiness: a *Client
+// with no session identity waits for the focused window instead of starting
+// the interpreter against an empty identity. Non-client desktops (test
+// doubles, generated Invoke with a pre-attached Session) are unchanged.
+func attachNativeSession(ctx context.Context, opts *RunOptions) error {
+	if opts.Session.ID != "" {
+		return nil
+	}
+	client, ok := opts.Desktop.(*Client)
+	if !ok {
+		return nil
+	}
+	if opts.Session.RunID == "" || opts.Session.Window.PID == 0 {
+		return errors.New("unattached native run requires run identity and target PID")
+	}
+	session, _, err := client.AttachFocusedReady(ctx, opts.Session.RunID, opts.Session.Window.PID, nil)
+	if err != nil {
+		return err
+	}
+	opts.Session = session
+	return nil
+}
+func (r *Run) Controller() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.controller
+}
+func (r *Run) Interventions() []InterventionRequest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]InterventionRequest, len(r.interventions))
+	copy(out, r.interventions)
+	return out
+}
+func (r *Run) setController(controller string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.controller = controller
+	if n := len(r.interventions); n > 0 && r.interventions[n-1].Status == InterventionRequested {
+		r.interventions[n-1].Controller = controller
+	}
+}
+func (r *Run) noteIntervention(req InterventionRequest) InterventionRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.intervSeq++
+	req.Sequence = r.intervSeq
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("%s:intervention:%d", req.Run, r.intervSeq)
+	}
+	if req.Controller == "" {
+		req.Controller = r.controller
+	}
+	if req.Status == "" {
+		req.Status = InterventionRequested
+	}
+	r.interventions = append(r.interventions, req)
+	return req
+}
+func (r *Run) finishIntervention(status string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finishInterventionLocked(status)
+}
+func (r *Run) finishInterventionLocked(status string) {
+	for i := len(r.interventions) - 1; i >= 0; i-- {
+		if r.interventions[i].Status == InterventionRequested {
+			r.interventions[i].Status = status
+			if status == InterventionReturned {
+				r.controller = ControllerAutomation
+				r.interventions[i].Controller = ControllerAutomation
+			}
+			return
+		}
+	}
 }
 func (r *Run) Send(ctx context.Context, control Control) error {
 	control.Action = ownedAction(control.Action)
@@ -258,9 +349,12 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		}
 		r.mu.Lock()
 		r.state = ownedState(s)
-		r.result = RunResult{Initial: initial, State: ownedState(s), Events: events}
+		r.result = RunResult{Initial: initial, State: ownedState(s), Events: events, Result: workflow.ResultFromState(opts.Program, s)}
 		if executionErr != nil {
 			r.result.Error = opts.Privacy.Scrub(executionErr.Error())
+		}
+		if s.Phase == workflow.Cancelled || s.Phase == workflow.Failed || s.Phase == workflow.Unknown {
+			r.finishInterventionLocked(InterventionAbandoned)
 		}
 		r.err = executionErr
 		r.mu.Unlock()
@@ -306,6 +400,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			if interventionStart.IsZero() {
 				interventionStart = time.Now()
 			}
+			r.emitStuckIntervention(opts.Program, s)
 		} else {
 			interventionStart = time.Time{}
 		}
@@ -321,7 +416,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			return
 		}
 		if command.Kind == "act" || (command.Kind == "observe" && (command.Step.Kind == "extract" || command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait")) {
-			if err := record(Record{Kind: "action_started", Stage: command.Kind, StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "automation", Epoch: s.Epoch}); err != nil {
+			actor := "automation"
+			if command.RecoveryID != "" {
+				actor = "recovery"
+			}
+			if err := record(Record{Kind: "action_started", Stage: command.Kind, StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: actor, Epoch: s.Epoch, RecoveryID: command.RecoveryID}); err != nil {
 				executionErr = err
 				return
 			}
@@ -401,7 +500,8 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					}
 				}
 				if !result.observationRecorded {
-					if err := record(Record{Kind: "observation", Stage: result.command.Kind, StepKind: result.command.Step.Kind, ActionID: result.command.ActionID, Actor: actor, Epoch: s.Epoch, Observation: &safe}); err != nil {
+					rec := Record{Kind: "observation", Stage: result.command.Kind, StepKind: result.command.Step.Kind, ActionID: result.command.ActionID, Actor: actor, Epoch: s.Epoch, Observation: &safe, RecoveryID: result.command.RecoveryID, StrategyIndex: result.event.Observation.StrategyIndex}
+					if err := record(rec); err != nil {
 						executionErr = err
 						continue
 					}
@@ -530,8 +630,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				for _, cmd := range commands {
 					launch(cmd)
 				}
-			case "pause":
+			case "pause", "takeover":
 				if s.Phase == workflow.Paused && !inputPending {
+					if control.Kind == "takeover" {
+						r.setController(ControllerHuman)
+					}
 					continue
 				}
 				fenceCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -547,13 +650,19 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				}
 				pending = false
 				session = updated
-				e := interruption("pause", "human takeover")
+				reason := "human takeover"
+				if control.Kind == "pause" {
+					reason = "human takeover"
+				}
+				e := interruption("pause", reason)
 				e.NextEpoch = updated.Epoch
 				_, err = apply(e)
 				if err != nil {
 					executionErr = err
+				} else {
+					r.setController(ControllerHuman)
 				}
-			case "resume", "refresh", "focus":
+			case "resume", "handback", "refresh", "focus":
 				if control.Kind == "focus" {
 					if _, ok := opts.Desktop.(Focuser); !ok {
 						if err := record(Record{Kind: "control_refused", Epoch: s.Epoch, Reason: "desktop does not support focus"}); err != nil {
@@ -568,7 +677,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					}
 					continue
 				}
-				if control.Kind == "resume" {
+				if control.Kind == "resume" || control.Kind == "handback" {
 					if err := s.ValidateResume(opts.Program); err != nil {
 						if logErr := record(Record{Kind: "control_refused", Epoch: s.Epoch, Reason: err.Error()}); logErr != nil {
 							executionErr = logErr
@@ -580,7 +689,8 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 				cancelWork = cancel
 				capturedSession := session
-				resume := control.Kind == "resume"
+				resume := control.Kind == "resume" || control.Kind == "handback"
+				handback := control.Kind == "handback" || control.Kind == "resume"
 				go func() {
 					if f, ok := opts.Desktop.(Focuser); ok {
 						_, err := f.Focus(workCtx, capturedSession)
@@ -596,6 +706,9 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					result := workResult{epoch: capturedSession.Epoch, err: err, resume: resume, human: !resume, command: workflow.Command{Kind: "refresh"}, fingerprint: semanticFingerprint(raw)}
 					if err == nil {
 						result.err = result.capture(raw, opts.Privacy)
+					}
+					if handback && err == nil {
+						r.finishIntervention(InterventionReturned)
 					}
 					select {
 					case results <- result:
@@ -715,6 +828,57 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	}
 }
 
+func (r *Run) emitStuckIntervention(p *workflow.Program, s workflow.State) {
+	r.mu.RLock()
+	for _, existing := range r.interventions {
+		if existing.Status == InterventionRequested {
+			r.mu.RUnlock()
+			return
+		}
+	}
+	r.mu.RUnlock()
+	step := ""
+	capID := ""
+	if p != nil {
+		capID = p.Capability().ID
+		if s.StepIndex >= 0 && s.StepIndex < len(p.Capability().Steps) {
+			step = p.Capability().Steps[s.StepIndex].ID
+		}
+	}
+	frame := s.Observation.ID
+	req := InterventionRequest{
+		Run:           s.RunID,
+		Capability:    capID,
+		Step:          step,
+		ReasonCode:    StuckReasonCode(s.Phase, s.Reason),
+		ObservationID: s.Observation.ID,
+		FrameID:       frame,
+		Controller:    ControllerAutomation,
+		Status:        InterventionRequested,
+		Reason:        s.Reason,
+	}
+	r.noteIntervention(req)
+}
+
+// resolveLadder walks Target strategies in order, one Desktop.Resolve per rung,
+// and stops at the first unique match. Ambiguous or missing rungs are skipped.
+func resolveLadder(ctx context.Context, d Desktop, s Session, observationID string, target workflow.Selector) (ResolvedTarget, int, error) {
+	ladder := target.Ladder()
+	var lastErr error
+	for i, rung := range ladder {
+		resolved, err := resolveTarget(ctx, d, s, observationID, selectorFrom(rung))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return resolved, i, nil
+	}
+	if lastErr == nil {
+		lastErr = &BrokerError{Code: "target_missing", Delivery: "not_sent", Message: "locator ladder exhausted"}
+	}
+	return ResolvedTarget{}, 0, lastErr
+}
+
 func perform(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, reviewed [32]byte) workResult {
 	r := workResult{epoch: session.Epoch, command: command}
 	if command.DelayMillis > 0 {
@@ -729,6 +893,51 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 	}
 	if command.Kind == "act" {
 		a := Action{ActionID: command.ActionID, ObservationID: command.ObservationID, TargetID: command.TargetID, Kind: command.Step.Kind, Effect: command.Step.Effect}
+		if command.RecoveryID != "" || a.TargetID == "" || a.ObservationID == "" {
+			raw, err := opts.Desktop.Observe(ctx, session)
+			if err != nil {
+				r.err = err
+				return r
+			}
+			if err := r.capture(raw, opts.Privacy); err != nil {
+				r.err = err
+				return r
+			}
+			if err := validateVisualPrivacy(raw, opts.Privacy, command.Selector.Primary().Visual); err != nil {
+				r.err = err
+				return r
+			}
+			target, index, err := resolveLadder(ctx, opts.Desktop, session, raw.ID, command.Selector)
+			if err != nil {
+				r.err = err
+				return r
+			}
+			safe := *r.observation
+			o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason, Matches: 1, StrategyIndex: index, Target: command.Step.Target}
+			if target.Visual != nil {
+				visual, err := publicVisualMatch(safe, *target.Visual)
+				if err != nil {
+					r.err = err
+					return r
+				}
+				o.Visual = &visual
+				o.TargetID = target.Visual.TargetID
+				o.Actionable = true
+				a.TargetID = target.Visual.TargetID
+			} else {
+				node := *target.Node
+				o.TargetID = node.ID
+				o.Actionable = node.Enabled
+				a.TargetID = node.ID
+			}
+			a.ObservationID = raw.ID
+			r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
+			if err := opts.OnRecord(Record{Kind: "observation", Stage: "recovery_resolve", StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "recovery", Epoch: session.Epoch, Observation: &safe, RecoveryID: command.RecoveryID, StrategyIndex: index}); err != nil {
+				r.err = err
+				return r
+			}
+			r.observationRecorded = true
+		}
 		if a.Kind == "set_value" || a.Kind == "type_text" || a.Kind == "scroll" {
 			v, err := workflow.Resolve(command.Step.Input, opts.Inputs, outputs)
 			if err != nil {
@@ -766,7 +975,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = err
 				return r
 			}
-			r.fingerprint, err = approvalFingerprint(raw, command.Selector)
+			r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
 			if err != nil {
 				r.err = err
 				return r
@@ -775,7 +984,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = &approvalChanged{}
 				return r
 			}
-			selector := selectorFrom(command.Selector)
+			selector := selectorFrom(command.Selector.Primary())
 			if err := validateVisualPrivacy(raw, opts.Privacy, selector.Visual); err != nil {
 				r.err = err
 				return r
@@ -791,7 +1000,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			} else {
 				a.TargetID = target.Node.ID
 			}
-			if err := opts.OnRecord(Record{Kind: "observation", Stage: "approval_revalidation", StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "automation", Epoch: session.Epoch, Observation: r.observation}); err != nil {
+			if err := opts.OnRecord(Record{Kind: "observation", Stage: "approval_revalidation", StepKind: command.Step.Kind, ActionID: command.ActionID, Actor: "automation", Epoch: session.Epoch, Observation: r.observation, RecoveryID: command.RecoveryID}); err != nil {
 				r.err = err
 				return r
 			}
@@ -830,32 +1039,31 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		return r
 	}
 	safe := *r.observation
-	r.fingerprint, err = approvalFingerprint(raw, command.Selector)
+	r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
 	if err != nil {
 		r.err = err
 		return r
 	}
-	o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason}
+	o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason, Target: command.Step.Target}
 	if command.Kind != "observe_after" {
-		selector := selectorFrom(command.Selector)
-		if err := validateVisualPrivacy(raw, opts.Privacy, selector.Visual); err != nil {
+		if err := validateVisualPrivacy(raw, opts.Privacy, command.Selector.Primary().Visual); err != nil {
 			r.err = err
 			return r
 		}
-		target, err := resolveTarget(ctx, opts.Desktop, session, raw.ID, selector)
+		target, index, err := resolveLadder(ctx, opts.Desktop, session, raw.ID, command.Selector)
 		if err != nil {
-			var brokerErr *BrokerError
-			if errors.As(err, &brokerErr) && (brokerErr.Code == "target_missing" || brokerErr.Code == "target_ambiguous") {
-				if brokerErr.Code == "target_ambiguous" {
-					o.Matches = 2
-				}
-				o.Reason = brokerErr.Error()
-			} else {
+			reason, matches, handled := ExplainResolve(err, command.Selector.Primary(), raw)
+			if !handled {
 				r.err = err
 				return r
 			}
+			o.Matches = matches
+			o.Reason = reason
+			// Exists-predicate recoveries can match an unresolved step target.
+			o.Value = workflow.Value{Type: "string"}
 		} else {
 			o.Matches = 1
+			o.StrategyIndex = index
 			if target.Visual != nil {
 				visual, err := publicVisualMatch(safe, *target.Visual)
 				if err != nil {

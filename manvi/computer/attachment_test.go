@@ -196,3 +196,44 @@ func TestAttachmentReadinessHonorsAlreadyCancelledAndShorterDeadline(t *testing.
 		t.Fatalf("ignored earlier caller deadline: %+v %v", admission, err)
 	}
 }
+
+func TestStartRunWaitsForAFocusedNativeWindowWhenTheSessionIsUnattached(t *testing.T) {
+	c, p := attachmentClient(pendingResult{response: response{OK: true, Result: json.RawMessage(`{"session_id":"attached","epoch":1,"window":{"pid":42}}`)}})
+	opts, _ := runFixture(t, false)
+	opts.Desktop = c
+	opts.Session = Session{RunID: "run", Window: Window{PID: 42}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	run, err := StartRun(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run.Snapshot().SessionID; got != "attached" {
+		t.Fatalf("StartRun began without waiting for native attachment: session=%q", got)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.requests) < 1 || p.requests[0].Op != "attach" {
+		t.Fatalf("missing attach: %+v", p.requests)
+	}
+}
+
+func TestStartRunNamesTheMissingPIDWhenAClientHasNoSession(t *testing.T) {
+	c, _ := attachmentClient()
+	opts, _ := runFixture(t, false)
+	opts.Desktop = c
+	opts.Session = Session{RunID: "run"}
+	_, err := StartRun(context.Background(), opts)
+	if err == nil || err.Error() != "unattached native run requires run identity and target PID" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestStartRunDoesNotInventANativeAttachmentForANonClientDesktop(t *testing.T) {
+	opts, _ := runFixture(t, false)
+	opts.Session = Session{RunID: "run", Window: Window{PID: 42}}
+	_, err := StartRun(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected NewState to refuse an unattached non-client run")
+	}
+}

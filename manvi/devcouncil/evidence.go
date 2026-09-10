@@ -56,19 +56,51 @@ type EvidenceEpochTransition struct {
 	ToEpoch   uint64 `json:"to_epoch"`
 	Reason    string `json:"reason"`
 }
+type EvidenceOutcome struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+}
+type EvidenceIntervention struct {
+	ID         string `json:"id"`
+	Sequence   uint64 `json:"sequence"`
+	ReasonCode string `json:"reason_code"`
+	Status     string `json:"status"`
+}
+type EvidenceHumanAction struct {
+	ID             string `json:"id"`
+	Sequence       uint64 `json:"sequence"`
+	Kind           string `json:"kind"`
+	InterventionID string `json:"intervention_id"`
+}
+type EvidenceRecoveryApplied struct {
+	ID       string `json:"id"`
+	Sequence uint64 `json:"sequence"`
+	StepID   string `json:"step_id"`
+}
+type EvidenceLocatorHit struct {
+	Target        string `json:"target"`
+	StrategyIndex uint64 `json:"strategy_index"`
+	Sequence      uint64 `json:"sequence"`
+}
 type EvidenceBundle struct {
-	SchemaVersion    int                       `json:"schema_version"`
-	RunID            string                    `json:"run_id"`
-	SessionID        string                    `json:"session_id"`
-	Epoch            uint64                    `json:"epoch"`
-	ContractSHA256   string                    `json:"contract_sha256"`
-	CapabilitySHA256 string                    `json:"capability_sha256"`
-	JournalComplete  bool                      `json:"journal_complete"`
-	Degraded         []string                  `json:"degraded"`
-	Actions          []EvidenceAction          `json:"actions"`
-	Observations     []EvidenceObservation     `json:"observations"`
-	Artifacts        []EvidenceArtifact        `json:"artifacts"`
-	EpochTransitions []EvidenceEpochTransition `json:"epoch_transitions"`
+	SchemaVersion    int                         `json:"schema_version"`
+	RunID            string                      `json:"run_id"`
+	SessionID        string                      `json:"session_id"`
+	Epoch            uint64                      `json:"epoch"`
+	ContractSHA256   string                      `json:"contract_sha256"`
+	CapabilitySHA256 string                      `json:"capability_sha256"`
+	PolicySHA256     string                      `json:"policy_sha256,omitempty"`
+	Outcome          *EvidenceOutcome            `json:"outcome,omitempty"`
+	JournalComplete  bool                        `json:"journal_complete"`
+	Degraded         []string                    `json:"degraded"`
+	Actions          []EvidenceAction            `json:"actions"`
+	Observations     []EvidenceObservation       `json:"observations"`
+	Artifacts        []EvidenceArtifact          `json:"artifacts"`
+	EpochTransitions []EvidenceEpochTransition   `json:"epoch_transitions"`
+	Interventions    []EvidenceIntervention      `json:"interventions"`
+	HumanActions     []EvidenceHumanAction       `json:"human_actions"`
+	Recoveries       []EvidenceRecoveryApplied   `json:"recoveries"`
+	LocatorHits      []EvidenceLocatorHit        `json:"locator_hits"`
 }
 type EvidenceIssue struct {
 	Code    string `json:"code"`

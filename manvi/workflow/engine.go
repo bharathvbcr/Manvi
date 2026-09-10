@@ -15,20 +15,95 @@ const (
 	PostAction       Phase = "post_action"
 	Paused           Phase = "paused"
 	Completed        Phase = "completed"
+	Concluded        Phase = "concluded"
 	Failed           Phase = "failed"
 	Cancelled        Phase = "cancelled"
 	Unknown          Phase = "outcome_unknown"
 )
 
+// FailureCode is a typed failure taxonomy. Event.FailureCode stays a plain
+// string so existing computer callers keep compiling without conversion.
+type FailureCode string
+
+const (
+	FailureExternalInteraction FailureCode = "external_interaction"
+	FailureWindowChanged       FailureCode = "window_changed"
+	FailureStateChanged        FailureCode = "state_changed"
+	FailureAmbiguousTarget     FailureCode = "ambiguous_target"
+	FailureIncompleteObserve   FailureCode = "incomplete_observation"
+	FailureNotActionable       FailureCode = "not_actionable"
+	FailureCheckpoint          FailureCode = "checkpoint_failed"
+	FailureActionLimit         FailureCode = "action_limit"
+	FailureDeadline            FailureCode = "deadline_exceeded"
+	FailureHumanDenied         FailureCode = "human_denied"
+)
+
+type ResultKind string
+
+const (
+	ResultSuccess              ResultKind = "success"
+	ResultBusinessOutcome      ResultKind = "business_outcome"
+	ResultRecoverableExhausted ResultKind = "recoverable_exhausted"
+	ResultHardFailure          ResultKind = "hard_failure"
+	ResultCancelled            ResultKind = "cancelled"
+	ResultOutcomeUnknown       ResultKind = "outcome_unknown"
+)
+
+type ResultFailure struct {
+	Step     string      `json:"step,omitempty"`
+	Expected string      `json:"expected,omitempty"`
+	Observed string      `json:"observed,omitempty"`
+	Code     FailureCode `json:"code,omitempty"`
+}
+
+type Result struct {
+	Kind    ResultKind         `json:"kind"`
+	Outcome string             `json:"outcome,omitempty"`
+	Outputs map[string]Value   `json:"outputs,omitempty"`
+	Failure *ResultFailure     `json:"failure,omitempty"`
+}
+
+// ResultFromState maps reducer phase/outcome onto the Phase-1 result contract.
+func ResultFromState(p *Program, s State) Result {
+	out := Result{Outcome: s.Outcome, Outputs: map[string]Value{}}
+	for k, v := range s.Outputs {
+		out.Outputs[k] = v
+	}
+	switch s.Phase {
+	case Completed:
+		out.Kind = ResultSuccess
+	case Concluded:
+		out.Kind = ResultBusinessOutcome
+	case Failed:
+		out.Kind = ResultHardFailure
+		out.Failure = &ResultFailure{Observed: s.Reason, Code: FailureCheckpoint}
+		if p != nil && s.StepIndex >= 0 && s.StepIndex < len(p.spec.Steps) {
+			out.Failure.Step = p.spec.Steps[s.StepIndex].ID
+		}
+	case Cancelled:
+		out.Kind = ResultCancelled
+	case Unknown:
+		out.Kind = ResultOutcomeUnknown
+	case Paused:
+		out.Kind = ResultRecoverableExhausted
+		out.Failure = &ResultFailure{Observed: s.Reason, Code: FailureAmbiguousTarget}
+	default:
+		out.Kind = ResultOutcomeUnknown
+	}
+	return out
+}
+
 type Observation struct {
-	Visual     *VisualMatch `json:"visual,omitempty"`
-	ID         string       `json:"id"`
-	TargetID   string       `json:"target_id"`
-	Matches    int          `json:"matches"`
-	Complete   bool         `json:"complete"`
-	Actionable bool         `json:"actionable"`
-	Value      Value        `json:"value"`
-	Reason     string       `json:"reason,omitempty"`
+	Visual        *VisualMatch `json:"visual,omitempty"`
+	ID            string       `json:"id"`
+	TargetID      string       `json:"target_id"`
+	Matches       int          `json:"matches"`
+	Complete      bool         `json:"complete"`
+	Actionable    bool         `json:"actionable"`
+	Value         Value        `json:"value"`
+	Reason        string       `json:"reason,omitempty"`
+	StrategyIndex int          `json:"strategy_index,omitempty"`
+	Target        string       `json:"target,omitempty"`
 }
 
 func (o Observation) Clone() Observation {
@@ -69,10 +144,14 @@ type State struct {
 	Attempts    int   `json:"attempts"`
 	// ActionAttempt advances only after explicit recoverable not_sent input.
 	// It stays monotonic across pauses so a native deduplication ID is never reused.
-	ActionAttempt int              `json:"action_attempt,omitempty"`
-	Observation   Observation      `json:"observation"`
-	Outputs       map[string]Value `json:"outputs"`
-	Reason        string           `json:"reason,omitempty"`
+	ActionAttempt   int            `json:"action_attempt,omitempty"`
+	Observation     Observation    `json:"observation"`
+	Outputs         map[string]Value `json:"outputs"`
+	Outcome         string         `json:"outcome,omitempty"`
+	RecoveryCounts  map[string]int `json:"recovery_counts,omitempty"`
+	LastRecovery    string         `json:"last_recovery,omitempty"`
+	ActiveRecovery  string         `json:"active_recovery,omitempty"`
+	Reason          string         `json:"reason,omitempty"`
 }
 
 type Command struct {
@@ -85,16 +164,17 @@ type Command struct {
 	ObservationID string   `json:"observation_id,omitempty"`
 	TargetID      string   `json:"target_id,omitempty"`
 	Epoch         uint64   `json:"epoch"`
+	RecoveryID    string   `json:"recovery_id,omitempty"`
 }
 
 func NewState(p *Program, runID, sessionID string, epoch uint64) (State, error) {
 	if p == nil || runID == "" || sessionID == "" || epoch == 0 {
 		return State{}, errors.New("program, run, session and positive epoch required")
 	}
-	return State{RunID: runID, SessionID: sessionID, Epoch: epoch, CapabilitySHA256: p.Digest(), Phase: Ready, Outputs: map[string]Value{}}, nil
+	return State{RunID: runID, SessionID: sessionID, Epoch: epoch, CapabilitySHA256: p.Digest(), Phase: Ready, Outputs: map[string]Value{}, RecoveryCounts: map[string]int{}}, nil
 }
 func (s State) Terminal() bool {
-	return s.Phase == Completed || s.Phase == Failed || s.Phase == Cancelled || s.Phase == Unknown
+	return s.Phase == Completed || s.Phase == Concluded || s.Phase == Failed || s.Phase == Cancelled || s.Phase == Unknown
 }
 
 // ValidateResume checks policy before the host changes the native session epoch.
@@ -127,6 +207,13 @@ func copyState(s State) State {
 		m[k] = v
 	}
 	s.Outputs = m
+	if s.RecoveryCounts != nil {
+		counts := make(map[string]int, len(s.RecoveryCounts))
+		for k, v := range s.RecoveryCounts {
+			counts[k] = v
+		}
+		s.RecoveryCounts = counts
+	}
 	return s
 }
 
@@ -206,7 +293,11 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 	}
 	step := p.spec.Steps[s.StepIndex]
 	command := func(kind string) Command {
-		return Command{Kind: kind, Refocus: kind == "observe" && s.ActionAttempt > 0, ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), ObservationID: s.Observation.ID, TargetID: s.Observation.TargetID, Epoch: s.Epoch}
+		sel := Selector{}
+		if step.Target != "" {
+			sel = p.spec.Targets[step.Target].Clone()
+		}
+		return Command{Kind: kind, Refocus: kind == "observe" && s.ActionAttempt > 0, ActionID: s.ActionID(p), Step: step, Selector: sel, ObservationID: s.Observation.ID, TargetID: s.Observation.TargetID, Epoch: s.Epoch}
 	}
 	switch event.Kind {
 	case "start":
@@ -216,8 +307,11 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if err := p.ValidateInputs(inputs); err != nil {
 			return previous, nil, err
 		}
-		s.Phase = Observing
 		s.Actions = 1
+		if step.Kind == "conclude" {
+			return finishConclude(p, s, step)
+		}
+		s.Phase = Observing
 		return s, []Command{command("observe")}, nil
 	case "resume":
 		if err := s.ValidateResume(p); err != nil {
@@ -252,16 +346,29 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return previous, nil, errors.New("observation action binding missing")
 		}
 		if !event.Observation.Complete {
+			if s.Phase != PostAction {
+				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
+					return next, cmds, err
+				}
+			}
 			return retryObservation(p, s, command("observe"), "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
 			return advance(p, s, step.Next)
 		}
 		if event.Observation.Matches != 1 || event.Observation.TargetID == "" {
+			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
+				return next, cmds, err
+			}
 			return retryObservation(p, s, command("observe"), fmt.Sprintf("target resolves to %d elements", event.Observation.Matches))
 		}
+		ladder := p.spec.Targets[step.Target].Ladder()
+		if event.Observation.StrategyIndex < 0 || event.Observation.StrategyIndex >= len(ladder) {
+			return previous, nil, errors.New("strategy_index out of range")
+		}
 		s.Observation = event.Observation
-		if anchor := p.spec.Targets[step.Target].Visual; anchor != nil {
+		rung := ladder[event.Observation.StrategyIndex]
+		if anchor := rung.Visual; anchor != nil {
 			v := event.Observation.Visual
 			if v == nil || v.TargetID != event.Observation.TargetID || v.AnchorSHA256 != anchor.SHA256 || len(v.FrameSHA256) != 64 || !v.Matched.Inside(anchor.FrameWidth, anchor.FrameHeight) || v.Matched.Width != anchor.Width || v.Matched.Height != anchor.Height {
 				return previous, nil, errors.New("visual observation lacks its native match binding")
@@ -307,6 +414,9 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return advance(p, s, step.Next)
 		default:
 			if !event.Observation.Actionable {
+				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
+					return next, cmds, err
+				}
 				s.Phase = Paused
 				s.Reason = "target is not actionable: " + event.Observation.Reason
 				return s, nil, nil
@@ -337,11 +447,18 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		switch event.Delivery {
 		case "sent":
+			if s.ActiveRecovery != "" {
+				s.ActiveRecovery = ""
+				s.Observation = Observation{}
+				s.Attempts = 0
+				s.Phase = Observing
+				return s, []Command{command("observe")}, nil
+			}
 			s.Phase = PostAction
 			cmd := command("observe_after")
 			return s, []Command{cmd}, nil
 		case "not_sent":
-			if event.FailureCode == "external_interaction" {
+			if event.FailureCode == string(FailureExternalInteraction) {
 				s.ActionAttempt++
 				s.Actions++
 				if s.Actions > p.spec.Limits.MaxActions {
@@ -351,13 +468,15 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				s.ResumePhase = Observing
 				s.Observation = Observation{}
 				s.Attempts = 0
+				s.ActiveRecovery = ""
 				s.Reason = "external interaction requires human reconciliation: " + event.Reason
 				return s, nil, nil
 			}
-			if event.FailureCode == "window_changed" || event.FailureCode == "state_changed" {
+			if event.FailureCode == string(FailureWindowChanged) || event.FailureCode == string(FailureStateChanged) {
 				s.ActionAttempt++
 				s.Observation = Observation{}
 				s.Attempts = 0
+				s.ActiveRecovery = ""
 				s.Reason = "pre-dispatch application change: " + event.Reason
 				if s.ActionAttempt >= p.spec.Limits.ObservationAttempts {
 					s.Phase = Paused
@@ -423,6 +542,77 @@ func fail(s State, reason string) (State, []Command, error) {
 	s.Reason = reason
 	return s, nil, nil
 }
+
+func consultRecovery(p *Program, s State, step Step, obs Observation, inputs map[string]Value) (State, []Command, bool, error) {
+	if obs.Target == "" || s.ActiveRecovery != "" {
+		return s, nil, false, nil
+	}
+	if s.RecoveryCounts == nil {
+		s.RecoveryCounts = map[string]int{}
+	}
+	for _, r := range p.spec.Recoveries {
+		if r.When.Target != obs.Target {
+			continue
+		}
+		if s.RecoveryCounts[r.ID] >= r.Max {
+			continue
+		}
+		var expected Value
+		if r.When.Predicate.Op != "exists" {
+			var err error
+			expected, err = Resolve(r.When.Predicate.Expected, inputs, s.Outputs)
+			if err != nil {
+				continue
+			}
+		}
+		if !Compare(obs.Value, r.When.Predicate.Op, expected) {
+			continue
+		}
+		s.RecoveryCounts[r.ID]++
+		s.LastRecovery = r.ID
+		s.ActiveRecovery = r.ID
+		s.Observation = obs
+		s.Reason = "recovery applied: " + r.ID
+		s.Actions++
+		if s.Actions > p.spec.Limits.MaxActions {
+			next, _, err := fail(s, "action limit exceeded")
+			return next, nil, true, err
+		}
+		s.Phase = Acting
+		cmd := Command{
+			Kind:       "act",
+			ActionID:   s.ActionID(p),
+			Step:       Step{ID: step.ID, Kind: r.Action.Kind, Target: r.Action.Target, Effect: "read"},
+			Selector:   p.spec.Targets[r.Action.Target].Clone(),
+			Epoch:      s.Epoch,
+			RecoveryID: r.ID,
+		}
+		return s, []Command{cmd}, true, nil
+	}
+	return s, nil, false, nil
+}
+
+func finishConclude(p *Program, s State, step Step) (State, []Command, error) {
+	s.Outcome = step.Outcome
+	s.Observation = Observation{}
+	s.Attempts = 0
+	s.ActionAttempt = 0
+	s.Reason = ""
+	kind := "success"
+	for _, o := range p.spec.Outcomes {
+		if o.ID == step.Outcome {
+			kind = o.Kind
+			break
+		}
+	}
+	if kind == "business" {
+		s.Phase = Concluded
+	} else {
+		s.Phase = Completed
+	}
+	return s, nil, nil
+}
+
 func retryObservation(p *Program, s State, cmd Command, reason string) (State, []Command, error) {
 	s.Attempts++
 	s.Reason = reason
@@ -459,8 +649,11 @@ func advance(p *Program, s State, next string) (State, []Command, error) {
 	if s.Actions > p.spec.Limits.MaxActions {
 		return fail(s, "action limit exceeded")
 	}
-	s.Phase = Observing
 	step := p.spec.Steps[i]
+	if step.Kind == "conclude" {
+		return finishConclude(p, s, step)
+	}
+	s.Phase = Observing
 	return s, []Command{{Kind: "observe", ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), Epoch: s.Epoch}}, nil
 }
 

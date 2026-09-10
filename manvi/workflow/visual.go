@@ -101,5 +101,12 @@ func (s Selector) Clone() Selector {
 		v := *s.Visual
 		s.Visual = &v
 	}
+	if len(s.Strategies) > 0 {
+		strategies := make([]Selector, len(s.Strategies))
+		for i, rung := range s.Strategies {
+			strategies[i] = rung.Clone()
+		}
+		s.Strategies = strategies
+	}
 	return s
 }

@@ -1,6 +1,7 @@
 package computer
 
 import (
+	"errors"
 	"sort"
 
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
@@ -103,4 +104,64 @@ func Diagnose(selector workflow.Selector, o Observation) MatchDiagnostics {
 		d.Confidence = "unique_semantic_match"
 	}
 	return d
+}
+
+// TargetDrift is a read-only ladder walk result for one capability target.
+type TargetDrift struct {
+	Target        string `json:"target"`
+	StrategyIndex int    `json:"strategy_index"`
+	Matches       int    `json:"matches"`
+	Ambiguous     bool   `json:"ambiguous"`
+	Found         bool   `json:"found"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+// DryResolveLadder walks target.Ladder() against a single observation using
+// Diagnose (no Act). The first rung with a unique exact match wins; ambiguity
+// on a rung stops the walk and is reported without falling through.
+func DryResolveLadder(targetName string, target workflow.Selector, o Observation) TargetDrift {
+	out := TargetDrift{Target: targetName, StrategyIndex: -1, Reason: "missing"}
+	ladder := target.Ladder()
+	for i, rung := range ladder {
+		d := Diagnose(rung, o)
+		switch {
+		case d.ExactMatches == 1:
+			return TargetDrift{Target: targetName, StrategyIndex: i, Matches: 1, Found: true}
+		case d.ExactMatches > 1:
+			return TargetDrift{Target: targetName, StrategyIndex: i, Matches: d.ExactMatches, Ambiguous: true, Reason: "ambiguous"}
+		}
+	}
+	if len(ladder) == 0 {
+		out.Reason = "empty_ladder"
+	}
+	return out
+}
+
+// DryResolveTargets reports rung index/ambiguity for every capability target.
+func DryResolveTargets(targets map[string]workflow.Selector, o Observation) []TargetDrift {
+	names := make([]string, 0, len(targets))
+	for name := range targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]TargetDrift, 0, len(names))
+	for _, name := range names {
+		out = append(out, DryResolveLadder(name, targets[name], o))
+	}
+	return out
+}
+
+// ExplainResolve turns a native matcher failure into an observation the
+// engine can wait on, instead of a hard error. Diagnose is the evidence;
+// Resolve remains the authority.
+func ExplainResolve(err error, selector workflow.Selector, o Observation) (reason string, matches int, handled bool) {
+	var brokerErr *BrokerError
+	if !errors.As(err, &brokerErr) || (brokerErr.Code != "target_missing" && brokerErr.Code != "target_ambiguous") {
+		return "", 0, false
+	}
+	if brokerErr.Code == "target_ambiguous" {
+		matches = 2
+	}
+	d := Diagnose(selector, o)
+	return brokerErr.Error() + "; match=" + d.Confidence, matches, true
 }

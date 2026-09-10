@@ -100,5 +100,49 @@ func validateFlow(p *Program, params map[string]Parameter) error {
 		}
 		definitions[i] = available
 	}
+	if len(p.spec.Outputs) == 0 && len(p.spec.Outcomes) == 0 {
+		return nil
+	}
+	decls := map[string]OutputDecl{}
+	for _, d := range p.spec.Outputs {
+		decls[d.Name] = d
+	}
+	outcomes := map[string]OutcomeDef{}
+	for _, o := range p.spec.Outcomes {
+		outcomes[o.ID] = o
+	}
+	successPaths := 0
+	for i, s := range steps {
+		if s.Kind != "conclude" {
+			continue
+		}
+		outcome, ok := outcomes[s.Outcome]
+		if !ok {
+			return fmt.Errorf("conclude step %s references missing outcome", s.ID)
+		}
+		available := definitions[i]
+		required := outcome.Outputs
+		if outcome.Kind == "success" {
+			successPaths++
+			if len(decls) > 0 {
+				required = make([]string, 0, len(decls))
+				for _, d := range p.spec.Outputs {
+					required = append(required, d.Name)
+				}
+			}
+		}
+		for _, name := range required {
+			typ, ok := available[name]
+			if !ok {
+				return fmt.Errorf("conclude %s missing output %q on its path", s.ID, name)
+			}
+			if decl, ok := decls[name]; ok && decl.Type != typ {
+				return fmt.Errorf("conclude %s output %q has type %s, declared %s", s.ID, name, typ, decl.Type)
+			}
+		}
+	}
+	if len(decls) > 0 && successPaths == 0 {
+		return errors.New("declared outputs require a success conclude path")
+	}
 	return nil
 }
