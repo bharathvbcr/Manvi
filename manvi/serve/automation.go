@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 )
 
 // AutomaticStatus reports this host's coordinator, not proof that another host

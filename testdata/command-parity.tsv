@@ -1,4 +1,4 @@
-# section	command	result  — generated from DevCouncil's TaskPolicyEngine; regenerate with scripts/gen-command-parity.py
+# section	command	result  — frozen snapshot of Go command policy (Python TaskPolicyEngine deleted; do not regenerate from Python)
 # task allowed_commands: pytest * | go test * | make build | .venv/bin/dev *
 # global allowed_commands: npm install
 # DIVERGENCE from the incumbent, applied by hand after regeneration — 3 rows:
@@ -10,8 +10,8 @@
 #   what this fixture's rootless gate has — attributes no absolute path to the
 #   tree. So the command stays un-normalised and falls to the ordinary
 #   allowlist rungs, where nothing matches it: deny. This only ever tightens,
-#   like TestGitSafetyRunsEvenWhenTheAllowlistWouldPass. Re-apply these three
-#   rows after any future run of scripts/gen-command-parity.py.
+#   like TestGitSafetyRunsEvenWhenTheAllowlistWouldPass. These rows are part of
+#   the frozen snapshot; do not restore the old Python answers.
 # DIVERGENCE from the incumbent, applied by hand after regeneration — 7 rows:
 #   ALLOW_NOTASK for `dev graph query foo`, `dev release TASK-001`,
 #   `dev scope update`, `dev run-cmd pytest`, `pytest tests/`,
@@ -25,8 +25,8 @@
 #   gate matches that list below the no-lease refusal instead. The orientation
 #   commands the refusal message names — `dev map`, `dev doctor` — moved to
 #   NoTaskAllowedCommands so they still answer without one, which is why their
-#   rows above are unchanged. This only ever tightens. Re-apply these seven
-#   rows after any future run of scripts/gen-command-parity.py.
+#   rows above are unchanged. This only ever tightens. These rows are part of
+#   the frozen snapshot; do not restore the old Python answers.
 # DIVERGENCE from the incumbent, applied by hand after regeneration — 8 rows:
 #   ALLOW_TASK and ALLOW_NOTASK for `cd repo`, `cd repo && dev map`,
 #   `pushd /tmp` and `popd`.
@@ -36,8 +36,8 @@
 #   write to <root>/allowed.txt and performed against the sibling directory.
 #   The Go gate refuses the construct instead — command.directory_change — and
 #   refuses git's spelling of it (`-C`, `--git-dir`, `--work-tree`) with it.
-#   This only ever tightens. Re-apply these eight rows after any future run of
-#   scripts/gen-command-parity.py.
+#   This only ever tightens. These rows are part of the frozen snapshot; do not
+#   restore the old Python answers.
 NORM		
 NORM	   	
 NORM	dev status	dev status

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // registryWith builds a flag registry carrying the given settings.

@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
 )
 
 // ManagedSession is one provider connection, never an external terminal.
@@ -25,6 +25,7 @@ type ManagedSession interface {
 	Respond(context.Context, codingagent.Request, codingagent.Response) error
 	Close() (codingagent.Exit, error)
 }
+
 // ManagedFactory returns a spawned, uninitialized session on success. On error
 // it owns startup cleanup; the runner never dereferences an error result or
 // interprets an ordinary error as proof that the provider did not start.

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )

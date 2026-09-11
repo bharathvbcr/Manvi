@@ -43,7 +43,7 @@ type Section struct {
 //
 // Two entries are deliberately not carried over:
 //
-//   - DevCouncil ignores AGENTS.md and CLAUDE.md because `dev map` regenerates
+//   - DevCouncil ignores AGENTS.md and CLAUDE.md because `devmap` regenerates
 //     them. This harness generates neither, so ignoring them here would hide a
 //     hand-written file rather than a derived one.
 //   - DevCouncil's agent list carries ".conducor/" beside ".conductor/". It is

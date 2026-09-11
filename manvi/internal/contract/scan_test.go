@@ -6,11 +6,12 @@ import (
 )
 
 func TestScanReport(t *testing.T) {
-	m, err := Load("../..")
+	catalog, extras := harnessAndFlags(t)
+	m, err := LoadRoots(append([]string{"../.."}, extras...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range m.FlagsWithoutReaders("flags/catalog.go", nil) {
+	for _, f := range m.FlagsWithoutReaders(catalog, nil) {
 		fmt.Println("FLAG   ", f.Name, f.Where)
 	}
 	for _, f := range m.FieldsWithoutReaders("Definition", "agents/definition.go", nil) {

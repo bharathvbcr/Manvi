@@ -64,8 +64,43 @@ type Module struct {
 // a flag that changes nothing about a run; counting that test as a reader would
 // make the check pass for exactly the code it exists to catch.
 func Load(root string) (*Module, error) {
-	m := &Module{root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	return LoadRoots(root)
+}
+
+// LoadRoots parses every non-test Go file under each root into one Module.
+//
+// The first root is the module the findings are attributed to. Extra roots are
+// for declarations that moved out of this tree — after Phase 7 the flag
+// catalogue lives in DevCouncil's go_orchestrator/flags package, while the
+// readers that make those flags load-bearing still live here. Parsing both is
+// what keeps FlagsWithoutReaders examining a real catalogue rather than
+// reporting "not found" as a green sweep.
+func LoadRoots(roots ...string) (*Module, error) {
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("contract: LoadRoots requires at least one root")
+	}
+	primary, err := filepath.Abs(roots[0])
+	if err != nil {
+		return nil, err
+	}
+	m := &Module{root: primary, fset: token.NewFileSet(), files: map[string]*ast.File{}}
+	for _, root := range roots {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.parseTree(abs); err != nil {
+			return nil, err
+		}
+	}
+	if len(m.files) == 0 {
+		return nil, fmt.Errorf("contract: no Go files found under %v", roots)
+	}
+	return m, nil
+}
+
+func (m *Module) parseTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -79,20 +114,17 @@ func Load(root string) (*Module, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, perr := parser.ParseFile(m.fset, path, nil, parser.ParseComments)
-		if perr != nil {
-			return fmt.Errorf("parsing %s: %w", path, perr)
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
 		}
-		m.files[path] = f
+		f, perr := parser.ParseFile(m.fset, abs, nil, parser.ParseComments)
+		if perr != nil {
+			return fmt.Errorf("parsing %s: %w", abs, perr)
+		}
+		m.files[abs] = f
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if len(m.files) == 0 {
-		return nil, fmt.Errorf("contract: no Go files found under %s", root)
-	}
-	return m, nil
 }
 
 func (m *Module) pos(n ast.Node) string {
@@ -137,7 +169,7 @@ func (m *Module) selectorUses(name string, except map[string]bool) int {
 // `manvi flags` as though it were in force, and is indistinguishable from a
 // working setting until someone tries to rely on it.
 func (m *Module) FlagsWithoutReaders(catalogFile string, allow map[string]string) []Finding {
-	catalogPath := filepath.Join(m.root, catalogFile)
+	catalogPath := m.resolvePath(catalogFile)
 	file, ok := m.files[catalogPath]
 	if !ok {
 		return []Finding{{
@@ -199,8 +231,26 @@ func (m *Module) FlagsWithoutReaders(catalogFile string, allow map[string]string
 // This is the agents.Definition case. A role that says enable_mcp_tools:false
 // and still receives the MCP tools has not been misconfigured — it has been
 // lied to, and the operator who wrote the line has no way to discover it.
+// resolvePath turns a catalogue or declaration path into the absolute key used
+// in m.files. Absolute paths (the Phase 7 flags catalogue living in another
+// module) pass through; relative ones are joined to the primary root.
+func (m *Module) resolvePath(path string) string {
+	if filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return path
+		}
+		return abs
+	}
+	abs, err := filepath.Abs(filepath.Join(m.root, path))
+	if err != nil {
+		return filepath.Join(m.root, path)
+	}
+	return abs
+}
+
 func (m *Module) FieldsWithoutReaders(structName, declFile string, allow map[string]string) []Finding {
-	declPath := filepath.Join(m.root, declFile)
+	declPath := m.resolvePath(declFile)
 	file, ok := m.files[declPath]
 	if !ok {
 		return []Finding{{

@@ -57,6 +57,8 @@ node_modules/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.gocache/
+.gopath/
 .DS_Store
 Thumbs.db
 

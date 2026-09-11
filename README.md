@@ -16,7 +16,9 @@ A lightweight, high-performance coding-agent harness in pure Go and Rust — des
 
 **MANVI is the unification layer; [DevCouncil](https://github.com/bharathvbcr/DevCouncil) is the components.** DevCouncil owns the analysis components — `devmap` (code graph), `dcstore` (tasks and leases), `dcverify` (diff, rigor, coverage) and `dcgrep` (search) — each a standalone binary with a JSON-on-stdio contract, and each being ported to Rust/Go as the port proceeds. MANVI is the harness that unifies them into a working agent and reaches every one of them across a process boundary, linking none. That is what lets MANVI drop into another application as a single static binary. See [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md).
 
-**Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 44 native tools (including a native git integration, an MCP 2.0 client, and a bridge to the external `devcouncil` CLI), and the Go↔Rust process boundary — all verified against **1,031 parity cases** generated from the Python incumbent. Everything is certified by `./verify.sh`.
+**Ownership after DevCouncil Phase 7 (2026-09-10):** Python campaign / live-watch / dashboard / GEPA / FAISS semantic / LLM routing were **retired** in DevCouncil, not reimplemented there. Manvi keeps LLM providers, agent profiles, TUI/`watch`, and multi-agent runs. DevCouncil Go continues to expose lease/verify/diff MCP; Manvi imports `backend/go_orchestrator` unchanged. Recorded decisions: DevCouncil `docs/PHASE7_LONG_TAIL.md`.
+
+**Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 44 native tools (including a native git integration, an MCP 2.0 client, and DevCouncil Go/MCP tools), and the Go↔Rust process boundary — all verified against **1,031 parity cases** (CPython `fnmatch` plus a frozen command-policy snapshot). Everything is certified by `./verify.sh`.
 
 <br clear="left">
 
@@ -287,7 +289,7 @@ flowchart TB
 
 ## Verification & Parity
 
-Porting policy logic across languages fails subtly, not loudly — a glob rule that silently stops crossing `/` separators passes every conventional test. So MANVI generates shared corpora by running the *incumbent* engines, then requires byte-identical behavior from both implementations.
+Porting policy logic across languages fails subtly, not loudly — a glob rule that silently stops crossing `/` separators passes every conventional test. So MANVI pins glob matching to a CPython-generated corpus, and pins command policy to a frozen snapshot of the Go gate (the Python `devcouncil` package that used to generate that fixture is deleted).
 
 ```mermaid
 flowchart LR
@@ -296,8 +298,7 @@ flowchart LR
     TSV1 --> GoF["Go fnmatch"]
     TSV1 --> RustG["Rust dc-glob"]
 
-    PyEngine["DevCouncil TaskPolicyEngine"] --> G2["gen-command-parity.py"]
-    G2 --> TSV2["command-parity.tsv<br/>256 cases"]
+    Frozen["Frozen Go command-policy snapshot"] --> TSV2["command-parity.tsv<br/>256 cases"]
     TSV2 --> GoP["Go policy engine"]
 ```
 

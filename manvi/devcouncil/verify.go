@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/dc"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 )
 
 // Gap is one verification finding.

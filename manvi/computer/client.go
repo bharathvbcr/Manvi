@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 	"io"
 	"os"

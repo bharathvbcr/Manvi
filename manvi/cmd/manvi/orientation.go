@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/fetch"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
-	"github.com/bharathvbcr/Manvi/manvi/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 

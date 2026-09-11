@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 

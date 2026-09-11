@@ -10,33 +10,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
-// The dev-CLI bridge is the one place this harness shells out to the Python
-// incumbent, and it is read-only on purpose. Everything the harness owns
-// natively — the lease, the gate, the verifier — is reached through the
-// native tools; what only the incumbent has is its project-level view:
-// requirement coverage, cost accounting, the live review cards, the evidence
-// gate over the whole working tree. This tool surfaces that view without
-// making the Python process an authority over anything: it can inform a
-// decision, never enforce one.
+// The inspect bridge used to shell out to DevCouncil's Python `dev` CLI for
+// project-level views (status / gaps / check). That package is deleted. The
+// Go `devcouncil` binary still exists, but it does not implement those
+// subcommands (`mcp`, `integrate`, `skills`, `verify`, `map`). Looking them
+// up on PATH would exec the wrong program with the old argv and look like a
+// working inspect.
 //
-// If no CLI is installed the tool says so and names the environment variable
-// that fixes it. It does not fall back to reading .devcouncil/state.sqlite
-// itself: two readers of one database with different assumptions about its
-// schema are how "compatible" drifts apart.
+// Native tools own those views now. This handler runs an external binary only
+// when MANVI_DEVCOUNCIL_BINARY is set — an explicit pin, never a PATH guess.
+// Missing or unpinned is unavailable, never an empty success.
 
 const (
 	// devInspectEnvBinary overrides binary discovery, so a test or an
 	// operator can pin the integration to a known copy of the CLI.
 	devInspectEnvBinary = "MANVI_DEVCOUNCIL_BINARY"
 
-	// devInspectTimeout bounds every invocation. `check --verify` runs the
-	// incumbent's deterministic gates and can legitimately take minutes;
-	// status and gaps answer in seconds. One generous bound covers all three,
-	// and the bound is what stops a wedged Python startup from hanging a turn.
+	// devInspectTimeout bounds every invocation when an override binary is
+	// pinned. status and gaps answer in seconds; check can take longer. The
+	// bound stops a wedged child from hanging a turn.
 	devInspectTimeout = 5 * time.Minute
 )
 
@@ -44,11 +40,10 @@ func (r *Registry) devTools() []tools.Tool {
 	return []tools.Tool{
 		{
 			Schema: schema("devcouncil_dev_inspect",
-				"Query the DevCouncil project CLI (the external `dev`/`devcouncil` command) for "+
-					"project-level state the native tools do not carry: section=status for phase, "+
-					"coverage summary and task counts; section=gaps for verification gaps (optionally "+
-					"scoped with task_id); section=check for the working-tree audit, run in its "+
-					"deterministic mode. Read-only; needs no lease.",
+				"Query a pinned DevCouncil inspect binary for project-level status/gaps/check JSON. "+
+					"The Python `dev` CLI is deleted; Go `devcouncil` does not implement those sections. "+
+					"Requires MANVI_DEVCOUNCIL_BINARY. Prefer native tools: devcouncil_get_gaps, "+
+					"devcouncil_verify_task, manvi map. Read-only; needs no lease.",
 				`{"type":"object","properties":{"section":{"type":"string","enum":["status","gaps","check"],"description":"which project view to query (default: status)"},"task_id":{"type":"string","description":"with section=gaps, scope the gaps to one task"}}}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
@@ -58,23 +53,23 @@ func (r *Registry) devTools() []tools.Tool {
 	}
 }
 
-// resolveDevCLI finds the incumbent's command-line entry point: an explicit
-// override first, then the canonical name, then the short alias the allowlists
-// already normalize to the same family.
+// resolveDevCLI returns the inspect binary only when the operator pinned one.
+// PATH `dev` / `devcouncil` are not consulted: `dev` is a common unrelated
+// name, and Go `devcouncil` does not accept status/gaps/check.
 func resolveDevCLI() (string, error) {
-	if path := strings.TrimSpace(os.Getenv(devInspectEnvBinary)); path != "" {
-		if _, err := exec.LookPath(path); err != nil {
-			return "", fmt.Errorf("%s=%q is not executable: %w", devInspectEnvBinary, path, err)
-		}
-		return path, nil
+	path := strings.TrimSpace(os.Getenv(devInspectEnvBinary))
+	if path == "" {
+		return "", fmt.Errorf(
+			"the Python DevCouncil CLI that answered status/gaps/check is deleted; "+
+				"Go `devcouncil` does not implement those subcommands. "+
+				"Use native tools (devcouncil_get_gaps, devcouncil_verify_task, manvi map) "+
+				"or set %s to a binary you own",
+			devInspectEnvBinary)
 	}
-	for _, name := range []string{"devcouncil", "dev"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
-		}
+	if _, err := exec.LookPath(path); err != nil {
+		return "", fmt.Errorf("%s=%q is not executable: %w", devInspectEnvBinary, path, err)
 	}
-	return "", fmt.Errorf("no %q or %q on PATH; install the DevCouncil CLI or set %s",
-		"devcouncil", "dev", devInspectEnvBinary)
+	return path, nil
 }
 
 func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result {
@@ -118,10 +113,9 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	cmdCtx, cancel := context.WithTimeout(ctx, devInspectTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, argv[0], argv[1:]...)
-	// The incumbent is a Python CLI that runs its own subprocesses, on a
-	// five-minute bound. Killing only the interpreter leaves those children
-	// holding the inherited stdout pipe, and os/exec then waits on an EOF that
-	// never comes — the deadline expires and the turn stays wedged anyway.
+	// A pinned inspect binary may spawn children. Killing only the direct
+	// process leaves those children holding the inherited stdout pipe, and
+	// os/exec then waits on an EOF that never comes.
 	proc.ConfigureGroup(cmd)
 	cmd.Dir = r.deps.Root
 	cmd.WaitDelay = 5 * time.Second

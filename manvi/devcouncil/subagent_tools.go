@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 

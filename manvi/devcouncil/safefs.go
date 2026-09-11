@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 )
 
 // This file closes the check-then-act gap between policy evaluation and

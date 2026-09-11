@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
-	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
-	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/fnmatch"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 

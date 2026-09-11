@@ -1,5 +1,9 @@
 # DevCouncil — Known Gaps and Defects
 
+> **Status (2026-09):** DevCouncil's Python package (`src/devcouncil/`) has been
+> deleted. Gaps that assume that tree is the live engine are historical. Do not
+> install or `import devcouncil` as a Python package.
+
 Everything known to be wrong, missing, or unproven, gathered so it is addressed
 **during** the port rather than faithfully reproduced by it.
 
@@ -198,7 +202,7 @@ important thing not to carry across.
 
 | ID | Gap | Status | Task |
 |---|---|---|---|
-| GAP-16 | **Nothing in `src/devcouncil/` calls the ported components.** The Rust plane is additive; every Python gate, lease repository and search path runs as before. | VERIFIED | All of Wave 2 |
+| GAP-16 | **Nothing in `src/devcouncil/` calls the ported components.** | SUPERSEDED (2026-09) — that Python tree is deleted; live engines are `devmap` and Go/Rust components | All of Wave 2 |
 | GAP-17 | **No differential measurement** of Rust vs Python gates over real diffs. §4 of `rust/STATUS.md` records that Python leads on stub detection; **nothing else is measured** — the secrets scanner and orphan-diff comparisons are explicitly unverified. | VERIFIED | **P4.1** |
 | GAP-18 | **Linux and Windows coverage is new and thin.** Everything before 2026-09-01 was verified on darwin/arm64 only. CI now runs ubuntu/macos/windows for the components, but `dc-store` on Windows compiles SQLite from source and was not confirmed locally. | VERIFIED | P0.2 |
 | GAP-19 | **`MANVI_*` naming leaks into DevCouncil components.** `testsupport.AllowSkipEnv` is `MANVI_TEST_ALLOW_SKIP`; the build lock is `.manvi-testbin.lock`. Harmless but wrong once these are DevCouncil's. Renaming breaks any CI config referencing them, so it is a deliberate decision, not a drive-by. | VERIFIED | P0.3 |

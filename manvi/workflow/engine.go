@@ -57,10 +57,10 @@ type ResultFailure struct {
 }
 
 type Result struct {
-	Kind    ResultKind         `json:"kind"`
-	Outcome string             `json:"outcome,omitempty"`
-	Outputs map[string]Value   `json:"outputs,omitempty"`
-	Failure *ResultFailure     `json:"failure,omitempty"`
+	Kind    ResultKind       `json:"kind"`
+	Outcome string           `json:"outcome,omitempty"`
+	Outputs map[string]Value `json:"outputs,omitempty"`
+	Failure *ResultFailure   `json:"failure,omitempty"`
 }
 
 // ResultFromState maps reducer phase/outcome onto the Phase-1 result contract.
@@ -144,14 +144,14 @@ type State struct {
 	Attempts    int   `json:"attempts"`
 	// ActionAttempt advances only after explicit recoverable not_sent input.
 	// It stays monotonic across pauses so a native deduplication ID is never reused.
-	ActionAttempt   int            `json:"action_attempt,omitempty"`
-	Observation     Observation    `json:"observation"`
-	Outputs         map[string]Value `json:"outputs"`
-	Outcome         string         `json:"outcome,omitempty"`
-	RecoveryCounts  map[string]int `json:"recovery_counts,omitempty"`
-	LastRecovery    string         `json:"last_recovery,omitempty"`
-	ActiveRecovery  string         `json:"active_recovery,omitempty"`
-	Reason          string         `json:"reason,omitempty"`
+	ActionAttempt  int              `json:"action_attempt,omitempty"`
+	Observation    Observation      `json:"observation"`
+	Outputs        map[string]Value `json:"outputs"`
+	Outcome        string           `json:"outcome,omitempty"`
+	RecoveryCounts map[string]int   `json:"recovery_counts,omitempty"`
+	LastRecovery   string           `json:"last_recovery,omitempty"`
+	ActiveRecovery string           `json:"active_recovery,omitempty"`
+	Reason         string           `json:"reason,omitempty"`
 }
 
 type Command struct {

@@ -1,5 +1,11 @@
 # DevCouncil Port — Work Packages
 
+> **Status (2026-09):** DevCouncil's Python package (`src/devcouncil/`) has been
+> deleted. Paths and commands below that name `src/devcouncil/`, `dev map query`,
+> `dev graph query`, or `uv run pytest tests/unit/test_codeintel` are historical.
+> The live engines are the `devmap` CLI and DevCouncil/Manvi Go+Rust components.
+> Do not install or `import devcouncil` as a Python package.
+
 For engineers picking up a piece of the port. Every task here is meant to be
 assignable to someone who has not seen the codebase before.
 

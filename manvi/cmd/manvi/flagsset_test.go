@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // runFlags drives the real command dispatch, so what these tests assert is what

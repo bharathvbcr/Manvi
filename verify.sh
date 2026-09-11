@@ -491,14 +491,12 @@ glob_cases="$(grep -cv '^#' testdata/fnmatch-parity.tsv || true)"
 printf '    %s glob cases shared by Go and Rust\n' "$glob_cases"
 
 cmd_cases="$(grep -cv '^#' testdata/command-parity.tsv || true)"
-(( cmd_cases >= 200 )) || fail "command fixture has only ${cmd_cases} cases; regenerate with scripts/gen-command-parity.py"
-printf '    %s command cases against the Python engine\n' "$cmd_cases"
+(( cmd_cases >= 200 )) || fail "command fixture has only ${cmd_cases} cases; testdata/command-parity.tsv is a frozen snapshot (Python generator retired)"
+printf '    %s command cases in the frozen command-policy snapshot\n' "$cmd_cases"
 
-# Python interop needs DevCouncil's virtualenv, which is not present on a CI
-# runner. The portable half of the claim — that the schema Rust writes is the
-# schema a plain sqlite3 reads — is checked unconditionally below; only the
-# half that needs the incumbent's own code is conditional, and its absence is
-# reported rather than passed over.
+# The portable half of the claim — that the schema Rust writes is the schema a
+# plain sqlite3 (and a stock python3 sqlite3) reads — is checked below. The
+# deleted Python `devcouncil` package is not a second writer and is not probed.
 step "Cross-language — store schema"
 tmpdb="$(mktemp -d)/state.sqlite"
 (cd crates && cargo build -q -p dc-store --bin dcstore) || fail "building dcstore"
@@ -588,13 +586,9 @@ if held:
 PY
 printf '    covered: the release Rust performed is the release Python observes\n'
 
-# The incumbent's own engine is a separate claim and stays conditional, because
-# it needs DevCouncil's virtualenv. Its absence is reported, never assumed.
-if [[ -x ../DevCouncil/.venv/bin/python && -d ../DevCouncil/src ]]; then
-  printf '    present: DevCouncil'"'"'s virtualenv is here; its engine is exercised by the command parity fixture\n'
-else
-  notcovered '../DevCouncil/.venv not found — lease interop against the incumbent engine is unverified here'
-fi
+# The Python `devcouncil` package is deleted. Do not treat a sibling
+# DevCouncil/.venv as a live policy engine.
+printf '    covered: Python stdlib sqlite3 agrees with dcstore; the deleted Python engine is not probed\n'
 
 # The verifier's content gates are the ones whose absence used to be reported as
 # a degradation. Assert they actually fire, from the shell, against the built

@@ -201,10 +201,10 @@ func TestSuccessConcludeCompletesWithOutputs(t *testing.T) {
 func TestRecoveryMaxBoundPreventsLoops(t *testing.T) {
 	c := schemaBase(t)
 	c.Recoveries = []Recovery{{
-		ID:  "dismiss_overlay",
-		When: RecoveryWhen{Target: "search", Predicate: Predicate{Op: "equals", Expected: Ref{Source: "literal", Literal: Value{Type: "string", Text: "blocked"}}}},
+		ID:     "dismiss_overlay",
+		When:   RecoveryWhen{Target: "search", Predicate: Predicate{Op: "equals", Expected: Ref{Source: "literal", Literal: Value{Type: "string", Text: "blocked"}}}},
 		Action: RecoveryAction{Kind: "press", Target: "dismiss"},
-		Max: 1,
+		Max:    1,
 	}}
 	c.Steps = []Step{
 		{ID: "search", Kind: "press", Target: "search", Effect: "read"},

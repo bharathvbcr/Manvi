@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 tools**, as reported by `manvi tools`: 40 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one bridge to the external DevCouncil CLI, and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 tools**, as reported by `manvi tools`: 40 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -15,7 +15,7 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
 | **Code Graph & Navigation** | 3 | Query AST symbol definitions, detect dead code, and analyze blast radii. |
 | **Git Integration** | 6 | Structured version-control reads (status, log, branches, show) plus gate-arbitrated staging and committing. |
-| **External CLI Bridge** | 1 | Read-only queries against the incumbent `dev`/`devcouncil` CLI's project-level views. |
+| **External CLI Bridge** | 1 | Optional pin (`MANVI_DEVCOUNCIL_BINARY`) for a status/gaps/check inspect binary. The Python `dev` CLI is deleted; Go `devcouncil` does not implement those sections. Prefer native tools. |
 | **Tool Discovery & Activation** | 2 | Search the registry by capability and pull tools or whole groups into the model's active context. |
 | **Sub-Agent Management** | 4 | Define, invoke, message, and terminate specialized sub-agents by conversation ID. |
 | **Artifacts** | 3 | Create, list, and revise persistent structured artifacts under `.devcouncil/artifacts/`. |
@@ -120,7 +120,7 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
-| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Queries the incumbent `dev`/`devcouncil` CLI over JSON (`MANVI_DEVCOUNCIL_BINARY` overrides discovery). `check` always runs the deterministic evidence gate (`--verify`), never the LLM audit; non-JSON output is returned labelled as degraded, never parsed as structure. |
+| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Runs a **pinned** inspect binary (`MANVI_DEVCOUNCIL_BINARY` required). PATH `dev`/`devcouncil` are not consulted: the Python CLI is deleted and Go `devcouncil` does not implement `status`/`gaps`/`check`. Prefer native `devcouncil_get_gaps`, `devcouncil_verify_task`, and `manvi map`. When a pin is set, `check` still passes `--verify`; non-JSON output is labelled degraded, never parsed as structure. |
 
 ---
 

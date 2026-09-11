@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
-	"github.com/bharathvbcr/Manvi/manvi/dc/dcgrep"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/gate"
-	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // roundTrip drives the server over one in-memory stdio pair and returns the

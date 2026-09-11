@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	mapclient "github.com/bharathvbcr/Manvi/manvi/dc/devmap"
+	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 )
 
 type fakeDevmap struct {

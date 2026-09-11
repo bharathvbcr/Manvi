@@ -75,10 +75,16 @@ func workspaceBuildDirs() []string {
 		// levels above the binary.
 		for i := 0; i < 8; i++ {
 			for _, profile := range []string{"release", "debug"} {
-				candidate := filepath.Join(dir, "crates", "target", profile)
-				if !seen[candidate] {
-					seen[candidate] = true
-					out = append(out, candidate)
+				for _, rel := range []string{
+					filepath.Join("crates", "target", profile),
+					filepath.Join("rust-port", "target", profile),
+					filepath.Join("DevCouncil", "rust-port", "target", profile),
+				} {
+					candidate := filepath.Join(dir, rel)
+					if !seen[candidate] {
+						seen[candidate] = true
+						out = append(out, candidate)
+					}
 				}
 			}
 			parent := filepath.Dir(dir)

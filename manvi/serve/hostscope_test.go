@@ -3,8 +3,8 @@ package serve
 import (
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/dc"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // A host that declares a task scope must be judged against it — and a refusal

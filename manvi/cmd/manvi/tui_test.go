@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
-	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"

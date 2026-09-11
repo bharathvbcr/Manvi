@@ -8,10 +8,11 @@ import (
 	"testing"
 )
 
-// The bridge is tested against a fake CLI, not the real one: what this tool
-// owns is discovery, argument assembly, JSON passthrough and exit-code
-// honesty. Whether `devcouncil status --json` tells the truth about a project
-// is the incumbent's test suite's problem.
+// The bridge is tested against a fake CLI, not a live DevCouncil binary: what
+// this tool owns is pin discovery, argument assembly, JSON passthrough and
+// exit-code honesty. PATH `dev`/`devcouncil` must not be invoked: those names
+// are not the deleted Python CLI, and Go `devcouncil` does not implement
+// status/gaps/check.
 
 // writeFakeCLI installs a script that records its arguments and prints a
 // canned payload, returning the path to hand to MANVI_DEVCOUNCIL_BINARY.
@@ -128,6 +129,37 @@ func TestDevInspectNamesTheFixWhenTheCLIMissing(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, devInspectEnvBinary) && !strings.Contains(res.Text, "could not be determined") {
 		t.Errorf("refusal names neither the env var nor its nature: %s", res.Text)
+	}
+}
+
+// TestDevInspectDoesNotCallPATHDevOrDevcouncil pins the consumer-side guard:
+// a decoy on PATH that would succeed if called must never run. The Python
+// argv is not a live API; native tools replace it.
+func TestDevInspectDoesNotCallPATHDevOrDevcouncil(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv(devInspectEnvBinary, "")
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := "#!/bin/sh\necho ran > " + marker + "\necho '{}'\n"
+	for _, name := range []string{"devcouncil", "dev"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	res := f.call("devcouncil_dev_inspect", map[string]any{"section": "status"})
+	if !res.IsError {
+		t.Fatalf("unpinned inspect reported success: %s", res.Text)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("PATH decoy was invoked; status/gaps/check must not be guessed from PATH")
+	}
+	for _, want := range []string{devInspectEnvBinary, "devcouncil_get_gaps", "devcouncil_verify_task"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("unavailable text %q is missing %q", res.Text, want)
+		}
 	}
 }
 

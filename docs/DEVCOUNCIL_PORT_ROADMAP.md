@@ -1,5 +1,9 @@
 # DevCouncil Port Roadmap
 
+> **Status (2026-09):** DevCouncil's Python package (`src/devcouncil/`) has been
+> deleted. Inventory paths under that tree are historical. Do not install or
+> `import devcouncil` as a Python package. Live map/query is `devmap`.
+
 **Goal:** port every DevCouncil capability to Rust/Go **inside DevCouncil**, so
 that DevCouncil becomes a set of building blocks — binaries with a JSON-on-stdio
 contract, plus an MCP server — usable by any coding agent. MANVI is the harness

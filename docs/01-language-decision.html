@@ -551,7 +551,7 @@
             <text x="700" y="134" text-anchor="middle" fill="var(--ink)" font-size="12">Search agent</text>
             <text x="700" y="148" text-anchor="middle" fill="var(--go)" font-size="10">haiku-4-5</text>
           </g>
-          <text x="790" y="142" fill="var(--ink-3)" font-size="10.5">dev map · grep · read</text>
+          <text x="790" y="142" fill="var(--ink-3)" font-size="10.5">devmap · grep · read</text>
 
           <!-- edges search -> orchestrator -->
           <g stroke="var(--rule)" stroke-width="1.4" fill="none" color="var(--ink-3)" marker-end="url(#ar)">
@@ -617,7 +617,7 @@
     <p>Anthropic's Managed Agents supports <strong>one level of delegation only</strong>: a roster member must not itself carry a <code>multiagent</code> roster, and that's enforced at agent-save time, not silently flattened. Your builders-spawn-sub-builders design is depth 2. If you want it, you self-host the harness — which is what you were asking about anyway. Just know that "use Managed Agents instead" is not a shortcut that gets you this topology.</p>
   </div>
 
-  <p>The other reason to self-host: <code>dev map</code> and your repo live on your machine. Managed Agents runs tools in an Anthropic-hosted container by default. You'd need a <em>self-hosted sandbox</em> environment plus a polling worker — and the worker helpers exist in Python, TypeScript, and Go only. Another Go point; Rust has no path here at all.</p>
+  <p>The other reason to self-host: <code>devmap</code> and your repo live on your machine. Managed Agents runs tools in an Anthropic-hosted container by default. You'd need a <em>self-hosted sandbox</em> environment plus a polling worker — and the worker helpers exist in Python, TypeScript, and Go only. Another Go point; Rust has no path here at all.</p>
 </section>
 
 <section>
@@ -633,7 +633,7 @@
       </thead>
       <tbody>
         <tr><td class="row-head">Tasks</td><td><code>dev plan</code> · <code>next-task</code> · <code>checkout</code> · <code>run</code> · <code>show</code></td><td>Full task lifecycle with leases, so two builders can't grab the same task.</td></tr>
-        <tr><td class="row-head">Goals</td><td><code>dev map --goal &lt;text&gt;</code> · <code>dev plan</code></td><td>Goal text drives candidate-file ranking in the repo map.</td></tr>
+        <tr><td class="row-head">Goals</td><td><code>devmap --goal &lt;text&gt;</code> · <code>dev plan</code></td><td>Goal text drives candidate-file ranking in the repo map.</td></tr>
         <tr><td class="row-head">System prompts</td><td><code>dev prompt</code></td><td>Generates a scope-constrained prompt for a specific task.</td></tr>
         <tr><td class="row-head">Gap detection</td><td><code>dev gaps</code> · <code>dev check</code></td><td>Lists blocking and advisory verification gaps; audits changes for scope, risks, missing edge cases, secrets.</td></tr>
         <tr><td class="row-head">Hypothesis → repair</td><td><code>dev repair</code></td><td>Converts blocking gaps into repair tasks using LLM inference. This <em>is</em> your hypothesis generator.</td></tr>
@@ -668,25 +668,28 @@
 <pre><code><span class="cmt">// Prescriptive descriptions — say WHEN to call, not just what it does.
 // Current models under-reach for tools described only by function.</span>
 
-map_query   → dev map query &lt;symbol|path&gt; --json
+map_explore  → devmap explore &lt;symbol|path&gt; --json
               "Call this first when you need a symbol's definition, callers,
                callees, and importers. Faster and more complete than grep."
 
-map_trace   → dev map trace &lt;a&gt; &lt;b&gt; --json
+map_search   → devmap search &lt;name&gt; --json
+              "Call this to find a name. Not <code>dev map query</code> — that Python CLI is deleted."
+
+map_trace    → devmap trace &lt;a&gt; &lt;b&gt; --json
               "Call this when you need to know whether and how one symbol
                reaches another — before claiming code is connected."
 
-map_dead    → dev map dead --json --confidence extracted
+map_dead     → devmap dead --json --confidence extracted
               "Call this before deleting anything. 'extracted' is verified;
                'inferred' is a guess and must not be treated as proof."
 
-graph_ctx   → dev graph-context &lt;files...&gt;
-              "Call this when reviewing a change set, to pull the
-               code-review-graph context for the touched files."</code></pre>
+graph_ctx    → devmap impact &lt;files...&gt; --json
+              "Call this when reviewing a change set, to pull blast-radius
+               context for the touched files."</code></pre>
 
   <div class="flag">
     <span class="lbl">Fail loud, not quiet</span>
-    <p><code>dev map dead</code> <strong>exits 3 when the index was built from a different commit than HEAD</strong> — deliberately, so stale results can't pass as evidence. Your harness must surface that exit code as a tool error with <code>is_error: true</code>, not swallow it and return an empty list. A check that could not run must never look like a check that ran and passed. Same rule for <code>graph_degraded</code> and empty <code>entry_roots</code> in the repo map: report the degradation to the agent rather than letting it reason over a silently broken graph.</p>
+    <p><code>devmap dead</code> <strong>exits 3 when the index was built from a different commit than HEAD</strong> — deliberately, so stale results can't pass as evidence. Your harness must surface that exit code as a tool error with <code>is_error: true</code>, not swallow it and return an empty list. A check that could not run must never look like a check that ran and passed. Same rule for <code>graph_degraded</code> and empty <code>entry_roots</code> in the repo map: report the degradation to the agent rather than letting it reason over a silently broken graph.</p>
   </div>
 
   <p>Give the search agents <code>map_query</code>, <code>map_trace</code>, <code>grep</code>, <code>glob</code>, and <code>read</code> — read-only, nothing that mutates. Builders get those plus <code>dev write</code> / <code>dev apply-patch</code>, so every mutation passes through the existing policy gate rather than a raw file write.</p>

@@ -182,9 +182,9 @@ Refusing the command words that read files would deny ordinary development work
 while leaving the capability one rename away. This boundary is stated here so it
 is a known limit rather than an assumed guarantee.
 
-### Parity with Python Incumbent
+### Command-policy fixture
 
-Command policy normalization matches DevCouncil's Python `TaskPolicyEngine` across 256 test vectors in `testdata/command-parity.tsv`:
+Command policy normalization is pinned across 256 test vectors in `testdata/command-parity.tsv` (a frozen snapshot of the Go gate; the Python `devcouncil` package is deleted):
 - Unwraps `uv run`, `poetry run`, `bundle exec`, `npx`.
 - Decodes shell chaining (`&&`, `||`, `;`, `|`).
 - Detects refspec force pushes (e.g. `git push origin +main:main`).

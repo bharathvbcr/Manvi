@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
-	"github.com/bharathvbcr/Manvi/manvi/repomap"
 )
 
 // The prompt used to be identical for a frontier model and a 4-bit 27B. The

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/bharathvbcr/Manvi/manvi/internal/proc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"io"
 	"os/exec"
 	"strconv"
@@ -83,24 +83,24 @@ type EvidenceLocatorHit struct {
 	Sequence      uint64 `json:"sequence"`
 }
 type EvidenceBundle struct {
-	SchemaVersion    int                         `json:"schema_version"`
-	RunID            string                      `json:"run_id"`
-	SessionID        string                      `json:"session_id"`
-	Epoch            uint64                      `json:"epoch"`
-	ContractSHA256   string                      `json:"contract_sha256"`
-	CapabilitySHA256 string                      `json:"capability_sha256"`
-	PolicySHA256     string                      `json:"policy_sha256,omitempty"`
-	Outcome          *EvidenceOutcome            `json:"outcome,omitempty"`
-	JournalComplete  bool                        `json:"journal_complete"`
-	Degraded         []string                    `json:"degraded"`
-	Actions          []EvidenceAction            `json:"actions"`
-	Observations     []EvidenceObservation       `json:"observations"`
-	Artifacts        []EvidenceArtifact          `json:"artifacts"`
-	EpochTransitions []EvidenceEpochTransition   `json:"epoch_transitions"`
-	Interventions    []EvidenceIntervention      `json:"interventions"`
-	HumanActions     []EvidenceHumanAction       `json:"human_actions"`
-	Recoveries       []EvidenceRecoveryApplied   `json:"recoveries"`
-	LocatorHits      []EvidenceLocatorHit        `json:"locator_hits"`
+	SchemaVersion    int                       `json:"schema_version"`
+	RunID            string                    `json:"run_id"`
+	SessionID        string                    `json:"session_id"`
+	Epoch            uint64                    `json:"epoch"`
+	ContractSHA256   string                    `json:"contract_sha256"`
+	CapabilitySHA256 string                    `json:"capability_sha256"`
+	PolicySHA256     string                    `json:"policy_sha256,omitempty"`
+	Outcome          *EvidenceOutcome          `json:"outcome,omitempty"`
+	JournalComplete  bool                      `json:"journal_complete"`
+	Degraded         []string                  `json:"degraded"`
+	Actions          []EvidenceAction          `json:"actions"`
+	Observations     []EvidenceObservation     `json:"observations"`
+	Artifacts        []EvidenceArtifact        `json:"artifacts"`
+	EpochTransitions []EvidenceEpochTransition `json:"epoch_transitions"`
+	Interventions    []EvidenceIntervention    `json:"interventions"`
+	HumanActions     []EvidenceHumanAction     `json:"human_actions"`
+	Recoveries       []EvidenceRecoveryApplied `json:"recoveries"`
+	LocatorHits      []EvidenceLocatorHit      `json:"locator_hits"`
 }
 type EvidenceIssue struct {
 	Code    string `json:"code"`

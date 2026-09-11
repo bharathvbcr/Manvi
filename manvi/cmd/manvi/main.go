@@ -22,21 +22,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/grants"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/bootstrap"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
-	"github.com/bharathvbcr/Manvi/manvi/dc"
-	"github.com/bharathvbcr/Manvi/manvi/dc/dcgrep"
-	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/gate"
-	"github.com/bharathvbcr/Manvi/manvi/grants"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
-	"github.com/bharathvbcr/Manvi/manvi/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
@@ -2035,12 +2035,12 @@ func reportDevMap(out io.Writer, ctx context.Context, mc *devmap.Client) {
 	status, err := mc.Status(ctx)
 	switch {
 	case err != nil:
-		fmt.Fprintf(out, "  dev map         index UNAVAILABLE: %v\n", err)
+		fmt.Fprintf(out, "  devmap          index UNAVAILABLE: %v\n", err)
 		fmt.Fprintln(out, "                  navigation tools will report unavailable; the scope rung falls back to same-directory")
 	case status.NodeCount <= 0:
-		fmt.Fprintln(out, "  dev map         index holds no symbols — run `manvi map build`")
+		fmt.Fprintln(out, "  devmap          index holds no symbols — run `manvi map build`")
 	default:
-		fmt.Fprintf(out, "  dev map         index generation %d (%d symbols, %d edges)%s\n",
+		fmt.Fprintf(out, "  devmap          index generation %d (%d symbols, %d edges)%s\n",
 			status.GenerationID, status.NodeCount, status.EdgeCount, staleSuffix(status))
 	}
 

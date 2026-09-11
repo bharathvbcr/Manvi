@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // The git tools shell out to git, so — like gitdiff_test.go — they are tested

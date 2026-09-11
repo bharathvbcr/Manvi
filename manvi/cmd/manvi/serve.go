@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/serve"
 )

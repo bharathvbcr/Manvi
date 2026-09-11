@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // commandCheckWith builds a policy.check.command request with every knob the

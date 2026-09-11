@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // --- E2: the two resource tools were ungated ---------------------------------

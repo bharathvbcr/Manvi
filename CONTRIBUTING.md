@@ -121,33 +121,18 @@ generators write to **stdout**; the committed TSV is the redirect target.
 ```bash
 # 775 cases, from CPython's own fnmatch — needs nothing but python3.
 python3 scripts/gen-fnmatch-parity.py > testdata/fnmatch-parity.tsv
-
-# 256 cases, from the incumbent DevCouncil TaskPolicyEngine — needs that
-# checkout importable, which is why this one is not reproducible from this
-# repository alone.
-DEVCOUNCIL_SRC=../DevCouncil/src python3 scripts/gen-command-parity.py \
-    > testdata/command-parity.tsv
 ```
 
-`testdata/command-parity.tsv` carries three rows that diverge from the
-incumbent, applied by hand after generation and named in the file's own header.
-Regenerating drops them; re-apply them, or the port starts matching a behaviour
-this harness decided against.
+`testdata/command-parity.tsv` is a **frozen snapshot**. It used to be generated
+by importing DevCouncil's Python `TaskPolicyEngine`; that package is deleted.
+`scripts/gen-command-parity.py` refuses to import it and exits 2. Do not set
+`DEVCOUNCIL_SRC` or `uv run` a Python `devcouncil` module. The live command
+gate is DevCouncil's Go policy, which Manvi links. Edit the TSV only when that
+Go policy itself changes, and keep the named divergences in the file header.
 
-**This fixture has an expiry date, and it will not announce it.** Its source of
-truth — `devcouncil.execution.policy_engine.TaskPolicyEngine` — is itself being
-ported to Rust/Go. When that lands, `scripts/gen-command-parity.py` stops
-working, and nothing here fails: no build step imports the generator, so
-`TestCommandParityWithPythonEngine` keeps passing against a snapshot of an
-implementation that no longer runs. `fnmatch-parity.tsv` is not exposed the same
-way — it is generated from CPython's own `fnmatch`, which nobody is porting.
-What to do before that happens is in
-[`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md) §6, under
-*Before retiring the Python you ported from*.
-
-Regenerate either fixture only when the reference behaviour itself is what
-changed, and say so in the commit — a regenerated fixture that quietly absorbs
-a divergence is the fixture no longer doing its job. The methodology is in
+`fnmatch-parity.tsv` is still generated from CPython's own `fnmatch`, which
+nobody is porting. Regenerate it only when that reference behaviour itself
+changed, and say so in the commit. The methodology is in
 [VERIFICATION_AND_PARITY.md](docs/VERIFICATION_AND_PARITY.md).
 
 ---

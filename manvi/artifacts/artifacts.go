@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bharathvbcr/Manvi/manvi/internal/safefile"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 	"path/filepath"
 	"sort"
 	"strings"

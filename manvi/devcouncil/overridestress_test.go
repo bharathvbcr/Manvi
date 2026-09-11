@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // FuzzOverrideSubject drives the router that decides which gate an override

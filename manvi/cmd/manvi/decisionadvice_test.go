@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // TestPrintedOverrideAdviceIsRunnable guards the operator half of the recovery

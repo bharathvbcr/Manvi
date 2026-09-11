@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
-	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
 )
 
 type managedTestSession struct {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 func TestFindProjectRoot_GitRepo(t *testing.T) {

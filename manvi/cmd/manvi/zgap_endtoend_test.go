@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/internal/testsupport"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 )
 
 // The gap this file closes: every other test in this tree drives the loop

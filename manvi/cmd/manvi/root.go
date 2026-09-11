@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 var (

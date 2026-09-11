@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+# Canonical sources live in DevCouncil rust-port/crates. These members are
+# symlinks for local `cargo build` / verify.sh; release consumers pin or vendor
+# from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
 members = ["dc-glob", "dc-grep", "dc-store", "dc-verify"]
 
 [workspace.package]

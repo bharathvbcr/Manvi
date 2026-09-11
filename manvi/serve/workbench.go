@@ -6,7 +6,7 @@ import (
 	"errors"
 	"log"
 
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 )
 
 // WorkbenchModule exposes profile data to the local owning host. It is enabled

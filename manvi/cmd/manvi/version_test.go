@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // TestVersionIsATopLevelCommand: a harness pointed at CI has to be able to say

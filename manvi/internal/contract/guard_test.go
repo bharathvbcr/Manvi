@@ -1,6 +1,9 @@
 package contract
 
 import (
+	"bytes"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -9,6 +12,11 @@ import (
 // moduleRoot is this package's view of the harness. internal/contract sits two
 // levels down, so the module is two levels up.
 const moduleRoot = "../.."
+
+// flagsModulePath is where the catalogue lives after Phase 7 moved the flags
+// package into DevCouncil's go_orchestrator. Readers remain in this module; the
+// declaration does not.
+const flagsModulePath = "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 
 // Allowlists excuse a declaration that is genuinely not meant to be read yet.
 //
@@ -30,19 +38,69 @@ var (
 	}
 )
 
+// flagsCatalog resolves the absolute path of the live flags catalogue.
+//
+// go list respects this module's replace directive, so worktrees and the main
+// checkout both land on the real package rather than a counted-parents guess
+// that is right in one layout and silent in the other.
+func flagsCatalog(t *testing.T) (catalogFile, flagsRoot string) {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-f", "{{.Dir}}", flagsModulePath)
+	cmd.Dir = moduleRoot
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr []byte
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = ee.Stderr
+		}
+		t.Fatalf("resolving %s via go list: %v\n%s%s", flagsModulePath, err, out, stderr)
+	}
+	flagsRoot = string(bytes.TrimSpace(out))
+	catalogFile = filepath.Join(flagsRoot, "catalog.go")
+	return catalogFile, flagsRoot
+}
+
 // findings gathers every check, so one failure message shows the whole picture
 // rather than whichever check happened to run first.
 func findings(t *testing.T) []Finding {
 	t.Helper()
-	m, err := Load(moduleRoot)
+	catalog, extras := harnessAndFlags(t)
+	m, err := LoadRoots(append([]string{moduleRoot}, extras...)...)
 	if err != nil {
 		t.Fatalf("loading the module: %v", err)
 	}
 	var all []Finding
-	all = append(all, m.FlagsWithoutReaders("flags/catalog.go", allowedFlags)...)
+	all = append(all, m.FlagsWithoutReaders(catalog, allowedFlags)...)
 	all = append(all, m.FieldsWithoutReaders("Definition", "agents/definition.go", allowedRoleFields)...)
 	all = append(all, m.ArgFieldsWithoutReaders(allowedToolArgs)...)
 	return all
+}
+
+// harnessAndFlags resolves the catalogue path and every go_orchestrator package
+// that still holds production readers for those flags after Phase 7 moved the
+// catalogue out of this module. Manvi remains the primary tree; the extras are
+// only the declaration site and its cross-module readers.
+func harnessAndFlags(t *testing.T) (catalogFile string, extraRoots []string) {
+	t.Helper()
+	catalog, flagsRoot := flagsCatalog(t)
+	extraRoots = []string{flagsRoot}
+	for _, pkg := range []string{
+		"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate",
+		"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/cmd/devcouncil",
+	} {
+		cmd := exec.Command("go", "list", "-f", "{{.Dir}}", pkg)
+		cmd.Dir = moduleRoot
+		out, err := cmd.Output()
+		if err != nil {
+			var stderr []byte
+			if ee, ok := err.(*exec.ExitError); ok {
+				stderr = ee.Stderr
+			}
+			t.Fatalf("resolving %s via go list: %v\n%s%s", pkg, err, out, stderr)
+		}
+		extraRoots = append(extraRoots, string(bytes.TrimSpace(out)))
+	}
+	return catalog, extraRoots
 }
 
 // TestNoDeclaredCapabilityIsInert is the guard.
@@ -72,7 +130,8 @@ func TestNoDeclaredCapabilityIsInert(t *testing.T) {
 
 // TestTheAllowlistsHoldNothingStale keeps the excuses honest.
 func TestTheAllowlistsHoldNothingStale(t *testing.T) {
-	m, err := Load(moduleRoot)
+	catalog, extras := harnessAndFlags(t)
+	m, err := LoadRoots(append([]string{moduleRoot}, extras...)...)
 	if err != nil {
 		t.Fatalf("loading the module: %v", err)
 	}
@@ -80,7 +139,7 @@ func TestTheAllowlistsHoldNothingStale(t *testing.T) {
 	// Re-run each check with NO allowlist; anything excused must still appear,
 	// or the excuse is describing a problem that no longer exists.
 	live := map[string]bool{}
-	for _, f := range m.FlagsWithoutReaders("flags/catalog.go", nil) {
+	for _, f := range m.FlagsWithoutReaders(catalog, nil) {
 		live[f.Name] = true
 	}
 	for _, f := range m.FieldsWithoutReaders("Definition", "agents/definition.go", nil) {
@@ -108,7 +167,8 @@ func TestTheAllowlistsHoldNothingStale(t *testing.T) {
 // exists to prevent. So the guard states out loud what it expects to have
 // looked at.
 func TestTheGuardIsActuallyExaminingSomething(t *testing.T) {
-	m, err := Load(moduleRoot)
+	catalog, extras := harnessAndFlags(t)
+	m, err := LoadRoots(append([]string{moduleRoot}, extras...)...)
 	if err != nil {
 		t.Fatalf("loading the module: %v", err)
 	}
@@ -118,7 +178,7 @@ func TestTheGuardIsActuallyExaminingSomething(t *testing.T) {
 
 	// The catalogue must be present and must define flags, or the flag check
 	// silently examines nothing.
-	defined := m.FlagsWithoutReaders("flags/catalog.go", nil)
+	defined := m.FlagsWithoutReaders(catalog, nil)
 	if len(defined) == 1 && strings.Contains(defined[0].Why, "was not found") {
 		t.Fatal("the flag catalogue was not found; the flag check examined nothing")
 	}

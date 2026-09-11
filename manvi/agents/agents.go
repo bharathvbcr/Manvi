@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // Errors callers branch on.

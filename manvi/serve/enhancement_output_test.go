@@ -97,14 +97,14 @@ func TestEnhancementOutputAcceptsRealisticWrapping(t *testing.T) {
 	record := enhancementSource(t, "fix E42", "Open src/main.go for #21.\nMust preserve 日本語.", "title", "description")
 	valid := `{"title":"Resolve E42","description":"Investigate src/main.go for #21.\nMust preserve 日本語.","rationale":"Clarified."}`
 	for name, raw := range map[string]string{
-		"bare fence":      "```\n" + valid + "\n```",
-		"json fence":      "```json\n" + valid + "\n```",
-		"JSON fence":      "```JSON\n" + valid + "\n```",
-		"preamble":        "Here is the JSON:\n" + valid,
-		"preamble fence":  "Here is the JSON:\n```json\n" + valid + "\n```",
-		"BOM":             "\ufeff" + valid,
-		"CRLF fence":      "```json\r\n" + strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n```\r\n",
-		"leading spaces":  "  \n" + valid + "\n  ",
+		"bare fence":     "```\n" + valid + "\n```",
+		"json fence":     "```json\n" + valid + "\n```",
+		"JSON fence":     "```JSON\n" + valid + "\n```",
+		"preamble":       "Here is the JSON:\n" + valid,
+		"preamble fence": "Here is the JSON:\n```json\n" + valid + "\n```",
+		"BOM":            "\ufeff" + valid,
+		"CRLF fence":     "```json\r\n" + strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n```\r\n",
+		"leading spaces": "  \n" + valid + "\n  ",
 	} {
 		t.Run(name, func(t *testing.T) {
 			proposal, err := decodeEnhancement([]byte(raw), record)

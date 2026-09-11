@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // recorder is a releaser that records what it was asked to give back, and can

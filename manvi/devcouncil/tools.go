@@ -1,9 +1,9 @@
 // Package devcouncil is the native tool surface.
 //
 // These are DevCouncil's tools reimplemented in Go against the Rust state
-// store, rather than shelled out to the Python CLI. That is the point of the
-// port: an agent calling `devcouncil_checkout_task` reaches this code, and the
-// lease it gets back is the same row `dev tasks` reads.
+// store. The Python `dev` CLI is deleted. An agent calling
+// `devcouncil_checkout_task` reaches this code, and the lease it gets back is
+// the same row `dcstore` and the native task tools read.
 //
 // Two properties hold across every tool here, and they are what make the
 // surface safe to hand to an autonomous builder:
@@ -32,21 +32,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/fnmatch"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/grants"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/artifacts"
-	"github.com/bharathvbcr/Manvi/manvi/dc"
-	"github.com/bharathvbcr/Manvi/manvi/dc/dcgrep"
-	"github.com/bharathvbcr/Manvi/manvi/dc/devmap"
-	"github.com/bharathvbcr/Manvi/manvi/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/fetch"
-	"github.com/bharathvbcr/Manvi/manvi/flags"
-	"github.com/bharathvbcr/Manvi/manvi/gate"
-	"github.com/bharathvbcr/Manvi/manvi/grants"
-	"github.com/bharathvbcr/Manvi/manvi/internal/fnmatch"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
-	"github.com/bharathvbcr/Manvi/manvi/policy"
-	"github.com/bharathvbcr/Manvi/manvi/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )

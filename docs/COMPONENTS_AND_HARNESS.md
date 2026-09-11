@@ -145,7 +145,7 @@ executable and links none of them. Resolution is explicit-beats-PATH-beats-local
 | `dcstore` | `MANVI_STORE_BINARY` | `manvi/dc/store` |
 | `dcverify` | `MANVI_VERIFY_BINARY` | — (invoked from `devcouncil/verify.go`) |
 | `dcgrep` | `MANVI_GREP_BINARY` | `manvi/dc/dcgrep` |
-| DevCouncil CLI | `MANVI_DEVCOUNCIL_BINARY` | `manvi/devcouncil/devbridge.go` |
+| Optional inspect pin | `MANVI_DEVCOUNCIL_BINARY` | `manvi/devcouncil/devbridge.go` (never PATH `dev`) |
 
 The Go clients transport answers; they do not compute them and must never cache
 one. Everything deciding whether work may proceed — mutual exclusion, expiry,
@@ -156,19 +156,19 @@ enforces it. A cached lease is a lease that has already expired somewhere else.
 neighbour rule reports `repo_map.unavailable` and `verify.sh` records repository
 navigation as a gate that *did not run*, rather than one that passed.
 
-### The dev bridge is the seam, and it is read-only
+### The inspect bridge is pinned, and it is read-only
 
-`devcouncil/devbridge.go` is the one place the harness shells out to DevCouncil's
-CLI, for the project-level view only DevCouncil has: requirement coverage, cost
-accounting, live review cards, the evidence gate over the whole tree. It is
-read-only on purpose — the component "can inform a decision, never enforce one" —
-and it deliberately does **not** fall back to reading `state.sqlite` itself,
-because two readers of one database with different assumptions about its schema
-is how "compatible" drifts apart.
+`devcouncil/devbridge.go` used to shell out to DevCouncil's Python `dev` CLI
+for project-level status/gaps/check. That package is deleted. The Go
+`devcouncil` binary still exists, but those subcommands are not on it (`mcp`,
+`integrate`, `skills`, `verify`, `map`). Native tools own the live views:
+`devcouncil_get_gaps`, `devcouncil_verify_task`, `manvi map`.
 
-As DevCouncil's port completes, this bridge's target becomes a native binary
-rather than a Python process. The read-only restriction is then a choice to
-re-examine rather than a constraint imposed by the incumbent.
+The handler therefore requires `MANVI_DEVCOUNCIL_BINARY`. An unpinned call is
+unavailable and names the native replacements — it does **not** LookPath
+`dev` or `devcouncil`, because `dev` is a common unrelated name and the Go
+binary would be invoked with argv it rejects. It still does not fall back to
+reading `state.sqlite` itself.
 
 ---
 
@@ -207,7 +207,7 @@ three components resolved from three different rungs of the ladder:
                   "verified" — without the partial unique index on task_id, two
                   builders racing for one task both win
                   lease checks cannot run; writes that need one will be refused
-  dev map         index holds no symbols — run `manvi map build`
+  devmap          index holds no symbols — run `manvi map build`
                   no …/code_graph.json — the scope rung will record repo_map.unavailable
 ```
 
@@ -380,19 +380,21 @@ the standard for every shared schema:
 
 - **A generated fixture both sides read.** `dc-glob` and `manvi/internal/fnmatch`
   share a 775-case CPython-generated `fnmatch` table; if they drift, one fails.
-- **A test that interrogates the other implementation directly.**
-  `dc/requirement_interop_test.go` reads the `verification_method`, `priority` and
-  `source` members out of DevCouncil's Python `Literal`s and fails if Go refuses
-  one. It caught a real hazard: pydantic's `required: bool = True` omitted on the
-  wire, against Go's zero value of `false`.
+- **A test that interrogates the other implementation directly.** Historically
+  `dc/requirement_interop_test.go` read `Literal` members out of DevCouncil's
+  Python types. That package is deleted; do not restore a Python import. Shared
+  schemas now need a fixture or a Go/Rust interop test against the live
+  component, not `src/devcouncil/`.
 
 Adding a schema to two languages without one of these is how the contract rots.
 
 ### What this means for the schedule
 
 **The Rust surface is nearly complete; the remaining port is overwhelmingly Go.**
+(The Python-line counts below are a 2026-09-01 snapshot of the deleted
+`src/devcouncil/` tree, kept as schedule history, not a live inventory.)
 
-Measured (`wc -l` over `src/devcouncil/`): **96,174** lines of Python total.
+Measured then (`wc -l` over `src/devcouncil/`): **96,174** lines of Python total.
 **26,473** of it — `indexing` + `codeintel` — is already done as `devmap`, and it
 was the single hardest, most memory-sensitive part. **64,828** remain.
 
@@ -512,62 +514,21 @@ Point 6 has teeth: verify it by removing the binary from `PATH` and confirming
 the test reports `SKIP` rather than `PASS`. A live test that passes without the
 producer is not testing the producer.
 
-### Before retiring the Python you ported from
+### Command-policy fixture after Python deletion
 
-A separate phase, and the one with a trap in it. Some of MANVI's Go is a *port*
-of DevCouncil Python rather than a client of a component, and where it is, a
-**parity fixture** holds the two in step. That fixture is generated by importing
-the Python — so porting the Python to Rust/Go breaks the generator, and breaks
-it silently.
+Some of MANVI's Go is a *port* of DevCouncil Python rather than a client of a
+component. The Python `devcouncil` package has been deleted. The fixtures:
 
-One such coupling exists today:
-
-| Fixture | Cases | Generated from | At risk |
+| Fixture | Cases | Generated from | Status |
 |---|---|---|---|
-| `testdata/command-parity.tsv` | 256 | `scripts/gen-command-parity.py`, which imports `devcouncil.execution.policy_engine.TaskPolicyEngine`, `normalize_allowlist_command`, and `devcouncil.domain.task.Task` | **Yes** — when `execution/policy_engine.py` is ported |
-| `testdata/fnmatch-parity.tsv` | 775 | `scripts/gen-fnmatch-parity.py`, which imports **CPython's** `fnmatch` | No — CPython is not being ported |
+| `testdata/command-parity.tsv` | 256 | Was `scripts/gen-command-parity.py` importing `devcouncil.execution.policy_engine` | **Frozen.** The generator refuses to import Python and exits 2. Named divergences stay in the TSV header. The live gate is DevCouncil Go policy. |
+| `testdata/fnmatch-parity.tsv` | 775 | `scripts/gen-fnmatch-parity.py`, which imports **CPython's** `fnmatch` | Unchanged — CPython is not being ported |
 
-The asymmetry is the point: only the fixture whose source of truth is *being
-replaced* is exposed. Do not apply this to the other one.
-
-**Why it fails quietly.** Nothing imports the generator at build or test time.
-`TestCommandParityWithPythonEngine` reads the committed `.tsv`, so it keeps
-passing against a file that is now a snapshot of an implementation nobody runs
-any more. The gate stays green while the thing it was comparing against no
-longer exists, which is the exact shape this repository refuses everywhere else
-— a check that cannot run must not report what a check that ran and passed
-reports.
-
-**A complication that rules out the easy answer.** The fixture is not purely
-generated: its header records **three rows applied by hand after generation**,
-where this harness deliberately decided against the incumbent's behaviour (the
-Python engine normalises any absolute `…/.venv/bin/dev` to a bare `dev`). Any
-regeneration drops them, and nothing re-applies them automatically — so
-"regenerate against the new implementation" silently reverts three considered
-decisions unless someone remembers.
-
-**So, before the Python `policy_engine.py` is deleted**, one of:
-
-1. **Repoint the generator** at the new Rust/Go implementation and regenerate —
-   *then re-apply the three divergence rows*, which the file's own header names.
-   Cheapest, and it keeps the fixture meaning "these two agree", but it leaves
-   the deliberate differences encoded as comments in a data file, which is how
-   they get lost the second time.
-2. **Freeze the baseline and open a divergence ledger.** The fixture becomes a
-   record of what the *incumbent* decided, and every deliberate difference is
-   written down as a ledger entry rather than a comment. `rust-port/` already
-   did exactly this — see its `DIVERGENCES.md` and `tools/parity/parity_harness.py`
-   — so the pattern is in the repository rather than something to invent. The
-   three hand-applied rows are already a divergence ledger in everything but
-   name, which is the argument for making it one.
-
-What is **not** acceptable is deleting the Python and leaving the fixture. It
-would then assert agreement with nothing, and the first divergence in the
-command gate — a command the incumbent denied that the port allows — would
-arrive with no test able to notice.
-
-Whoever takes the policy subsystem owns this decision; it is not the harness's
-to make, because the harness only consumes the outcome.
+Do not set `DEVCOUNCIL_SRC`, `uv run` a `devcouncil` module, or regenerate the
+command TSV from a deleted tree. `TestCommandParityWithPythonEngine` lives in
+DevCouncil (`backend/go_orchestrator/policy/command_test.go`) and reads the
+committed TSV as the Go gate's expected answers, including the documented
+divergences. That is a snapshot of policy, not a claim that Python still runs.
 
 ---
 

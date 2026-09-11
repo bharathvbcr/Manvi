@@ -77,6 +77,7 @@ type Ref struct {
 	Key     string `json:"key,omitempty"`
 	Literal Value  `json:"literal,omitempty"`
 }
+
 // Target is an alias for Selector so map[string]Target and map[string]Selector
 // remain interchangeable for existing fixtures.
 type Target = Selector

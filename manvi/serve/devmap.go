@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	mapclient "github.com/bharathvbcr/Manvi/manvi/dc/devmap"
+	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 )
 
 // DevmapClient is the narrow code-intelligence service a host module needs.

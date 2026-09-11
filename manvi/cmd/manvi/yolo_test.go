@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bharathvbcr/Manvi/manvi/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 func TestTakeYoloStripsTheOptionFromEitherSide(t *testing.T) {
@@ -285,7 +285,7 @@ func TestDoctorDoesNotAttributeTheIndexsCountsToTheArtifact(t *testing.T) {
 			t.Fatalf("doctor attributes a count to %s that is not its own: %q", graph, line)
 		}
 	}
-	if !strings.Contains(text, "dev map") {
-		t.Fatalf("doctor says nothing at all about the dev map:\n%s", out.String())
+	if !strings.Contains(text, "devmap") {
+		t.Fatalf("doctor says nothing at all about the devmap index:\n%s", out.String())
 	}
 }
