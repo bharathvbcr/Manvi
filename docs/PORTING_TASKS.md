@@ -130,7 +130,7 @@ say what it mirrors.
 
 ### C7 — Porting a Python bug faithfully
 
-`rust-port/DIVERGENCES.md` records **28** places where the Rust port deliberately
+`DevCouncil/docs/devmap/DIVERGENCES.md` records **28** places where the Rust port deliberately
 behaves differently from the Python, because the Python is wrong. A porter reading
 the Python as a specification will reproduce all of them.
 
@@ -424,7 +424,7 @@ Blocking the tasks that name them. **None are yours to make alone** — raise th
 |---|---|
 | DevCouncil Python (the source being ported) | `DevCouncil/src/devcouncil/` |
 | DevCouncil Rust components | `DevCouncil/rust/` (`dc-glob`, `dc-grep`, `dc-store`, `dc-verify`) |
-| DevCouncil code intelligence | `DevCouncil/rust-port/` (`devmap`, 49,675 lines) |
+| DevCouncil code intelligence | `DevCouncil/rust/` (`devmap`, 49,675 lines) |
 | DevCouncil Go (today: mirrored clients) | `DevCouncil/backend/go_orchestrator/` |
 | MANVI harness | `Manvi/manvi/` |
 | MANVI's mirror of the components | `Manvi/crates/` |

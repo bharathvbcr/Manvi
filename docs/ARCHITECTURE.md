@@ -154,7 +154,7 @@ flowchart TB
 | **Diff & Scope Parsing** | DevCouncil component | `dcverify` (DevCouncil `rust/dc-verify`) | CPU-bound text processing, unified diff parsing, regex matching |
 | **Test Coverage Intersection** | DevCouncil component | `dcverify` (DevCouncil `rust/dc-verify`) | Fast line-level coverage bitsets (Go `-coverprofile`, LCOV) |
 | **Task & Lease Persistence** | DevCouncil component | `dcstore` (DevCouncil `rust/dc-store`) | `rusqlite` SQLite binding, ACID transactions, exclusion index |
-| **Code Graph & Adjacency** | DevCouncil component | `devmap` (DevCouncil `rust-port/`) | Tree-sitter extraction, resolution, dead-code and impact analysis |
+| **Code Graph & Adjacency** | DevCouncil component | `devmap` (DevCouncil `rust/`) | Tree-sitter extraction, resolution, dead-code and impact analysis |
 | **Repository Search** | DevCouncil component | `dcgrep` (DevCouncil `rust/dc-grep`) | ripgrep's own `grep-regex`, `grep-searcher` and `ignore` crates; ignore-rule resolution and line-oriented matching |
 | **Glob Pattern Matching** | Both sides | `dc-glob` (linked into `dcverify`), `manvi/internal/fnmatch` | The one rule both planes must agree on, so it is implemented twice and pinned by a shared 775-case CPython `fnmatch` parity fixture. `dc-glob` is a *library*, never a process — it has no binary and is not on the boundary diagram. |
 

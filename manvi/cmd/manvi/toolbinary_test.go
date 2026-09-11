@@ -26,35 +26,42 @@ func TestAMissingBinaryIsReturnedByBareName(t *testing.T) {
 }
 
 // TestASiblingBuildIsFoundWhenPATHHasNothing is the failure this exists for: the
-// binary was built, it was sitting in crates/target, and every store-backed tool
-// still reported it missing because nobody had copied it onto PATH.
+// binary was built, it was sitting in a workspace target directory, and every
+// store-backed tool still reported it missing because nobody had copied it onto PATH.
 func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
-	root := t.TempDir()
-	release := filepath.Join(root, "crates", "target", "release")
-	if err := os.MkdirAll(release, 0o755); err != nil {
-		t.Fatal(err)
+	layouts := []string{
+		filepath.Join("crates", "target", "release"),
+		filepath.Join("rust", "target", "release"),
+		filepath.Join("DevCouncil", "rust", "target", "release"),
 	}
-	built := filepath.Join(release, "dcstore-testonly")
-	if err := os.WriteFile(built, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	for _, rel := range layouts {
+		t.Run(rel, func(t *testing.T) {
+			root := t.TempDir()
+			release := filepath.Join(root, rel)
+			if err := os.MkdirAll(release, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			built := filepath.Join(release, "dcstore-testonly")
+			if err := os.WriteFile(built, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	// Stand inside the workspace, which is the case the fallback serves.
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(cwd) })
+			if err := os.Chdir(root); err != nil {
+				t.Fatal(err)
+			}
 
-	got := toolBinary("MANVI_TEST_UNSET", "dcstore-testonly")
-	// EvalSymlinks because a temp dir on macOS is under a symlinked /var.
-	wantResolved, _ := filepath.EvalSymlinks(built)
-	gotResolved, _ := filepath.EvalSymlinks(got)
-	if gotResolved != wantResolved {
-		t.Fatalf("toolBinary = %q, want the sibling build at %q", got, built)
+			got := toolBinary("MANVI_TEST_UNSET", "dcstore-testonly")
+			wantResolved, _ := filepath.EvalSymlinks(built)
+			gotResolved, _ := filepath.EvalSymlinks(got)
+			if gotResolved != wantResolved {
+				t.Fatalf("toolBinary = %q, want the sibling build at %q", got, built)
+			}
+		})
 	}
 }
 

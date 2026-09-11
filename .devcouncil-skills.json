@@ -1,15 +1,20 @@
 {
   "files": {
-    ".agents/skills/devmap-debugging/SKILL.md": "4ffff47d1c9daad15a2c51d41d4d3408dea23c67068d4be47c7ae63e2bdc928d",
-    ".agents/skills/devmap-exploring/SKILL.md": "18c1b25147b035bb519e418e3d898ebc267692092a32db31c31b9ee76c803522",
-    ".agents/skills/devmap-impact/SKILL.md": "acce87ac52c6bc11f3b71e28aef59a8df57f87282717be26740ee2fde5dbc853",
-    ".agents/skills/devmap-refactoring/SKILL.md": "bc12b37c9f24328b281e8f4a9dfe13f3f3199d325a0cf132afc67e161de373bc",
-    ".agents/skills/devmap/SKILL.md": "05c29e56cd5c72208eb601b91f0fec8f7c0d9090f9ff127b0b8f2df1b1706c74",
-    ".cursor/skills/devmap-debugging/SKILL.md": "4ffff47d1c9daad15a2c51d41d4d3408dea23c67068d4be47c7ae63e2bdc928d",
-    ".cursor/skills/devmap-exploring/SKILL.md": "18c1b25147b035bb519e418e3d898ebc267692092a32db31c31b9ee76c803522",
-    ".cursor/skills/devmap-impact/SKILL.md": "acce87ac52c6bc11f3b71e28aef59a8df57f87282717be26740ee2fde5dbc853",
-    ".cursor/skills/devmap-refactoring/SKILL.md": "bc12b37c9f24328b281e8f4a9dfe13f3f3199d325a0cf132afc67e161de373bc",
-    ".cursor/skills/devmap/SKILL.md": "05c29e56cd5c72208eb601b91f0fec8f7c0d9090f9ff127b0b8f2df1b1706c74"
+    ".agents/skills/devmap-debugging/SKILL.md": "1176d84a92e92a6b49bf87ed2b6c0c97c9bf44b0d14a10bf227b0a42ed9b3965",
+    ".agents/skills/devmap-exploring/SKILL.md": "05fefbdf7a138de41c6e2a4128e237ff4d93b4374f4c7aecdf72ad342a6d033c",
+    ".agents/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
+    ".agents/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
+    ".agents/skills/devmap/SKILL.md": "344cbd0cf98c45e0d37ea46bc66030be327b1a997b3555bf1502cc280e41b928",
+    ".claude/skills/devmap-debugging/SKILL.md": "1176d84a92e92a6b49bf87ed2b6c0c97c9bf44b0d14a10bf227b0a42ed9b3965",
+    ".claude/skills/devmap-exploring/SKILL.md": "05fefbdf7a138de41c6e2a4128e237ff4d93b4374f4c7aecdf72ad342a6d033c",
+    ".claude/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
+    ".claude/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
+    ".claude/skills/devmap/SKILL.md": "344cbd0cf98c45e0d37ea46bc66030be327b1a997b3555bf1502cc280e41b928",
+    ".cursor/skills/devmap-debugging/SKILL.md": "1176d84a92e92a6b49bf87ed2b6c0c97c9bf44b0d14a10bf227b0a42ed9b3965",
+    ".cursor/skills/devmap-exploring/SKILL.md": "05fefbdf7a138de41c6e2a4128e237ff4d93b4374f4c7aecdf72ad342a6d033c",
+    ".cursor/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
+    ".cursor/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
+    ".cursor/skills/devmap/SKILL.md": "344cbd0cf98c45e0d37ea46bc66030be327b1a997b3555bf1502cc280e41b928"
   },
   "schema": 1
 }

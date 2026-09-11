@@ -1,24 +1,28 @@
 [workspace]
 resolver = "3"
-# Canonical sources live in DevCouncil rust-port/crates. These members are
+# Canonical sources live in DevCouncil rust/. These members are
 # symlinks for local `cargo build` / verify.sh; release consumers pin or vendor
 # from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
-members = ["dc-glob", "dc-grep", "dc-store", "dc-verify"]
+members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-# No shared external dependencies, deliberately. Every crate a member pulls in
-# is a dependency-audit surface paid for weekly; the analysis plane earns one
-# when a task needs it, not before, and it is declared by the single member
-# that needs it rather than hoisted here where it would look like a house
-# standard. Two members have earned theirs: dc-store takes rusqlite (bundled,
-# so the store does not depend on the host's libsqlite3), and dc-grep takes
-# ripgrep's engine (grep-regex, grep-searcher, ignore) because reimplementing
-# ignore-rule resolution and a line-oriented searcher is exactly the second
-# engine this workspace exists to avoid keeping in step with the first.
+# Canonical sources live in DevCouncil rust/, where `dc-store` inherits
+# rusqlite from that workspace. This workspace must declare the same pin so
+# `cargo build --manifest-path crates/Cargo.toml` can resolve `workspace = true`.
+[workspace.dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# Every other crate a member pulls in is a dependency-audit surface paid for
+# weekly; the analysis plane earns one when a task needs it, not before, and
+# it is declared by the single member that needs it rather than hoisted here
+# where it would look like a house standard. dc-grep takes ripgrep's engine
+# (grep-regex, grep-searcher, ignore) because reimplementing ignore-rule
+# resolution and a line-oriented searcher is exactly the second engine this
+# workspace exists to avoid keeping in step with the first.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

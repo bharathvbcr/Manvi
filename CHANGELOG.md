@@ -23,7 +23,7 @@ under **Unreleased** in the same commit as the code.
 
 ---
 
-## [0.0.5] — 2026-09-10
+## [0.0.5] — 2026-09-11
 
 ### Added
 
@@ -53,6 +53,12 @@ under **Unreleased** in the same commit as the code.
 - **Documented `go -C manvi install ./cmd/manvi` as the PATH install one-liner
   for a local checkout.** Puts the CLI in `~/go/bin` (or `GOBIN`) so GUI hosts
   that do not inherit a shell profile can still find it.
+- **Retarget analysis-crate symlinks at DevCouncil `rust/`.** `dc-glob`,
+  `dc-grep`, `dc-store`, `dc-verify`, and `dc-evidence` follow the flattened
+  workspace instead of `rust-port/crates`.
+- **Harden enhancement JSON extraction.** Constraint sentences stay verbatim,
+  fenced or prefixed model output is still one object, and a stress suite
+  covers oversized and adversarial replies.
 
 ### Fixed
 

@@ -187,7 +187,7 @@ One rule, identical for every component, implemented in
 
 ```bash
 # Point the harness at a specific build of a component.
-MANVI_MAP_BINARY=/path/to/DevCouncil/rust-port/target/release/devmap manvi doctor
+MANVI_MAP_BINARY=/path/to/DevCouncil/rust/target/release/devmap manvi doctor
 ```
 
 The environment variables are `MANVI_MAP_BINARY`, `MANVI_STORE_BINARY`,
@@ -240,7 +240,7 @@ ran and passed reports.
 
 | Component | Home | Answers |
 |---|---|---|
-| `devmap` | `rust-port/` (49,675 lines) | What does this code mean — AST graph, callers, impact, dead code |
+| `devmap` | `rust/` (49,675 lines) | What does this code mean — AST graph, callers, impact, dead code |
 | `dcstore` | `rust/dc-store` | Which task, held by whom, until when |
 | `dcverify` | `rust/dc-verify` | Does this diff match its scope, and was it exercised |
 | `dcgrep` | `rust/dc-grep` | What is in this repository (ripgrep's engine, linked) |
@@ -319,7 +319,7 @@ store to Rust, on dependency grounds rather than speed.
 
 | Component | Language | Verdict |
 |---|---|---|
-| `devmap` | **Rust** | **Vital, and measured.** 12,821 files → 116,418 symbols and 853,421 edges in 70 s at 3.00 GiB peak, with memory linear in edges at ~410 B/edge (`rust-port/STATUS.md`, SC29). Rules 1, 2 and 3 all fire: it parses arbitrary source through 32 tree-sitter grammars, holds the whole graph, and the grammars are Rust. This is the clearest Rust case in the system. |
+| `devmap` | **Rust** | **Vital, and measured.** 12,821 files → 116,418 symbols and 853,421 edges in 70 s at 3.00 GiB peak, with memory linear in edges at ~410 B/edge (`DevCouncil/docs/devmap/STATUS.md`, SC29). Rules 1, 2 and 3 all fire: it parses arbitrary source through 32 tree-sitter grammars, holds the whole graph, and the grammars are Rust. This is the clearest Rust case in the system. |
 | `dcgrep` | **Rust** | **Effectively forced** by rule 3. The value *is* ripgrep's `grep-regex` / `grep-searcher` / `ignore` crates. A Go rewrite would be a second search engine to keep in step. |
 | `dcverify` | **Rust** | **Right, by rule 1** — it parses diffs and coverage profiles, both untrusted, both adversarial. Note the subsystem it comes from does not port wholly; see the split below. |
 | `dcstore` | **Rust** | **Right, for the dependency reason rather than the speed one.** It is IO-bound, so rules 1–3 do not fire on their own. What decides it is `CGO_ENABLED=0`: `rusqlite` bundled compiles SQLite into the binary and keeps the store independent of the host's `libsqlite3`. Being honest about *why* matters — quoting speed here would set a bad precedent for the next component. |

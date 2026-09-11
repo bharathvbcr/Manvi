@@ -77,8 +77,8 @@ func workspaceBuildDirs() []string {
 			for _, profile := range []string{"release", "debug"} {
 				for _, rel := range []string{
 					filepath.Join("crates", "target", profile),
-					filepath.Join("rust-port", "target", profile),
-					filepath.Join("DevCouncil", "rust-port", "target", profile),
+					filepath.Join("rust", "target", profile),
+					filepath.Join("DevCouncil", "rust", "target", profile),
 				} {
 					candidate := filepath.Join(dir, rel)
 					if !seen[candidate] {

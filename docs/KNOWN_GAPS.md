@@ -12,8 +12,8 @@ work package, its ID is named.
 
 ## How to read this
 
-Gathered 2026-09-01 from `rust-port/STATUS.md`, `rust-port/INTEGRITY.md`,
-`rust-port/DIVERGENCES.md`, `rust-port/CONSUMERS.md`, `IMPROVEMENTS.md`, the CI
+Gathered 2026-09-01 from `DevCouncil/docs/devmap/STATUS.md`, `DevCouncil/docs/devmap/INTEGRITY.md`,
+`DevCouncil/docs/devmap/DIVERGENCES.md`, `DevCouncil/docs/devmap/CONSUMERS.md`, `IMPROVEMENTS.md`, the CI
 workflows, and direct inspection of the source.
 
 Every entry is labelled:
@@ -37,7 +37,7 @@ Highest confidence. Each was checked in this session.
 
 ### GAP-1 — ~26 of 35 languages have no call graph *(the big one)*
 
-**VERIFIED** (`rust-port/STATUS.md` SC34, measured 2026-08-17 with a
+**VERIFIED** (`DevCouncil/docs/devmap/STATUS.md` SC34, measured 2026-08-17 with a
 per-language control). `treesitter.rs` has **9 `calls.push` sites, all inside
 language-specific arms**. Every other language falls through to a generic arm
 that emits declarations only. **Java, C#, Ruby, Swift and PHP each produce
@@ -111,7 +111,7 @@ mirrored from MANVI. Most remaining work is Go and has nowhere to land.
 
 ## 2. Recorded open — leads to verify before acting
 
-From `rust-port/STATUS.md`'s "Not complete" line (2026-08-17) and
+From `DevCouncil/docs/devmap/STATUS.md`'s "Not complete" line (2026-08-17) and
 `CONSUMERS.md`. **RECORDED**, not re-checked here.
 
 | ID | Gap | Notes | Task |
@@ -130,7 +130,7 @@ From `rust-port/STATUS.md`'s "Not complete" line (2026-08-17) and
 
 ## 3. Recorded open but actually closed — do not spend time here
 
-**STALE.** `rust-port/INTEGRITY.md`'s snapshot notice says these still need work.
+**STALE.** `DevCouncil/docs/devmap/INTEGRITY.md`'s snapshot notice says these still need work.
 The code says otherwise. Verified this session; the notice should be corrected.
 
 | Ledger claim | Reality |
@@ -152,7 +152,7 @@ Do not re-file these.
 
 ## 4. Python baseline defects the port must **not** reproduce
 
-**RECORDED** from `rust-port/DIVERGENCES.md`, which exists precisely because the
+**RECORDED** from `DevCouncil/docs/devmap/DIVERGENCES.md`, which exists precisely because the
 Rust port deliberately behaves *differently* from the Python. A porter reading
 the Python as a specification will faithfully reproduce these bugs.
 

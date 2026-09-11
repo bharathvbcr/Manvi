@@ -26,7 +26,7 @@ reusable by any agent that is not MANVI. DevCouncil's capabilities are ported
 **in place**. MANVI gains no subsystem it does not already own.
 
 **No new Python, and no Python clients.** Still true, for a reason the correction
-does not touch. DevCouncil already ran that experiment: `rust-port/CONSUMERS.md`
+does not touch. DevCouncil already ran that experiment: `DevCouncil/docs/devmap/CONSUMERS.md`
 records seven "Rust-primary with a Python fallback" consumers plus a 718-line
 client whose Rust path **never executed once** — it pointed at the Python schema,
 the Rust store failed closed on it, and every call silently took the fallback for
@@ -166,7 +166,7 @@ same-named subsystem, because they serve different consumers.
 
 | Component | Replaces | Status |
 |---|---|---|
-| `devmap` | `indexing` 18,068 + `codeintel` 8,405 = **26,473** | **Done, as Rust** — `rust-port/`, 49,675 lines. The single largest subsystem, and it needs consuming rather than porting. **Verified**: MANVI's three `TestTheLive*` tests build a fixture repository and drive the real binary, against DevCouncil's current `rust-port` build. |
+| `devmap` | `indexing` 18,068 + `codeintel` 8,405 = **26,473** | **Done, as Rust** — `rust/`, 49,675 lines. The single largest subsystem, and it needs consuming rather than porting. **Verified**: MANVI's three `TestTheLive*` tests build a fixture repository and drive the real binary, against DevCouncil's current `rust/` build. |
 | `dcstore` — leases | part of `storage` | **Done and proven interoperable.** `dc-store` and DevCouncil's `TaskLeaseRepository` agree on schema, token and expiry against one `state.sqlite`, with the interop test failing rather than skipping when it cannot run. |
 | `dcstore` — task requirements | part of `domain` | **Done 2026-09-01.** `requirement_ids` / `acceptance_criterion_ids` cross the boundary; `dc.Requirement` and `dc.AcceptanceCriterion` are checked against DevCouncil's own pydantic models, including under `exclude_defaults=True`. |
 | `dcverify` | part of `verification` | **Partial.** Diff parsing, scope classification, coverage intersection and rigor gates exist. See §3 — Python still leads on stub detection. |
