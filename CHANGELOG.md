@@ -21,6 +21,10 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+---
+
+## [0.0.5] — 2026-09-10
+
 ### Added
 
 - **Profile workbench storage and opt-in `work.*` host operations.**
@@ -230,6 +234,7 @@ process boundary, the native tool suite, the full-screen TUI, multi-provider
 support (Anthropic, Gemini, xAI, and local servers), the benchmark rig, and
 `verify.sh` as the single gate over all of it.
 
-[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/bharathvbcr/Manvi/compare/v0.0.2...v0.0.5
 [0.0.2]: https://github.com/bharathvbcr/Manvi/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/bharathvbcr/Manvi/releases/tag/v0.0.1
