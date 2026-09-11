@@ -2,27 +2,34 @@
 
 Two repositories, two jobs, one boundary between them.
 
-**DevCouncil is the component layer.** Every capability it has is being ported to
-Rust/Go, and each lands as a component with a process contract: a binary that
-answers one JSON object on stdout, or an MCP server exposing tools. When the port
-is complete DevCouncil is a set of building blocks usable by *any* coding agent —
-Claude Code, Cursor, Codex, or MANVI — not an application anyone runs end to end.
+**DevCouncil is the component and module layer.** Each capability ships as a
+module with a process contract (a binary that answers one JSON object on stdout,
+or an MCP server) and, for some hosts, as a selectable crate. DevCouncil is a set
+of building blocks usable by *any* coding agent — Claude Code, Cursor, Codex, or
+MANVI — and by host apps that want only some of the blocks. It is not an
+application anyone must run end to end.
 
-**MANVI is the dynamic layer.** It is the harness that unifies those components
-into a working agent: the turn loop, the LLM provider seam, the policy ladder,
-the session log, the TUI, and `manvi serve` for embedding into other
-applications. It supplies what a component cannot — judgement, conversation,
-model calls, and the decision about *when* to invoke which block.
+**MANVI wraps those components.** It is the harness that turns them into a
+working agent: the turn loop, the LLM provider seam, the policy ladder, the
+session log, the TUI, and `manvi serve` for embedding into other applications. It
+supplies what a component cannot — judgement, conversation, model calls, and the
+decision about *when* to invoke which block.
+
+**GitPulse uses both for their respective jobs.** It wraps MANVI for policy,
+workbench, and agent hosting, and it vendors selected DevCouncil crates (`devmap-*`)
+plus the `devmap` CLI for code intelligence. An app can update one module, or take
+only the subset it needs.
 
 ```mermaid
 flowchart TB
     subgraph Apps["Host applications"]
+        GitPulse["GitPulse (selects modules)"]
         IDE["IDEs / editors"]
         Other["Other apps embedding the harness"]
         Term["Terminal (manvi tui / run)"]
     end
 
-    subgraph Harness["MANVI — the dynamic layer (Go)"]
+    subgraph Harness["MANVI — wraps the components (Go)"]
         Loop["Agent turn loop"]
         LLM["LLM provider seam"]
         Gate["Policy ladder, grants, postures"]
@@ -35,7 +42,7 @@ flowchart TB
         Exec["JSON over stdio<br/>one call per process, or a serve session"]
     end
 
-    subgraph Components["DevCouncil — the building blocks (Rust/Go)"]
+    subgraph Components["DevCouncil — components and modules (Rust/Go)"]
         DevMap["devmap — AST code graph"]
         Store["dcstore — tasks, leases"]
         Verify["dcverify — diff, scope, rigor, coverage"]
@@ -62,13 +69,13 @@ that needed MANVI to run would stop being a building block.
 
 ## 1. The division
 
-| | DevCouncil | MANVI |
-|---|---|---|
-| **Is** | A set of components, each answering one question well | The harness that unifies them into a working agent |
-| **Ships** | Standalone binaries, one contract each | One static Go binary, plus `manvi serve` |
-| **Owns** | Code intelligence, task/lease state, verification, search — and the planning council as it lands | Turn loop, provider seam, policy ladder, grants, session log, TUI, tool suite |
-| **Consumed by** | MANVI, and anything else that speaks JSON on stdio | IDEs, editors, host applications, CI |
-| **Depends on** | Nothing in MANVI | Every component, at the process boundary only |
+| | DevCouncil | MANVI | GitPulse |
+|---|---|---|---|
+| **Is** | A set of components and modules, each answering one question well | The harness that wraps them into a working agent | A host that selects Manvi and DevCouncil modules for their jobs |
+| **Ships** | Standalone binaries and crates, one contract each | One static Go binary, plus `manvi serve` | Desktop app that vendors selected crates and runs `manvi serve` |
+| **Owns** | Code intelligence, task/lease state, verification, search — and the planning council as it lands | Turn loop, provider seam, policy ladder, grants, session log, TUI, tool suite | Git UI, ledger, worktrees, and the surfaces that present Manvi/DevCouncil results |
+| **Consumed by** | MANVI, GitPulse, and anything else that speaks JSON on stdio or links a crate | IDEs, editors, host applications, CI | Operators of the desktop app |
+| **Depends on** | Nothing in MANVI | Every component it wraps, at the process boundary only | Selected modules only — not the whole suite |
 
 That one-way dependency is what keeps the components reusable: a component that
 had to be told about the harness would be a harness feature wearing a
@@ -81,11 +88,13 @@ component's name.
 Every DevCouncil component, current or future, meets all of these. They are what
 make a component consumable by an agent that is not MANVI.
 
-1. **A process, not a library.** JSON on stdio — one call per process, or a
-   `serve` session answering many over one, as `dcstore` does — or an MCP
-   server. Never a linked library: linking would forfeit `CGO_ENABLED=0`,
-   static binaries, cross-compilation and process isolation, and would make the
-   component's language the consumer's problem.
+1. **A process for the harness, a module for a host.** MANVI reaches every
+   component as JSON on stdio — one call per process, or a `serve` session
+   answering many over one, as `dcstore` does — or as an MCP server. It never
+   links a component: linking would forfeit `CGO_ENABLED=0`, static binaries,
+   cross-compilation and process isolation. Other hosts may *also* link a
+   selected crate (GitPulse vendors `devmap-query` in-process). Both seams are
+   valid; neither requires taking every module.
 2. **Every outcome is JSON on stdout, including failures.** A caller never parses
    prose or infers from an exit code alone. The exit code is a coarse duplicate.
 3. **A contended or negative result is a normal answer, not an error.** `dcstore
@@ -444,20 +453,21 @@ assumption in this repository's own docs.
 
 **DevCouncil is not being retired.** An earlier draft of the roadmap described
 moving DevCouncil's capabilities *into* MANVI and deleting the Python. That is
-wrong. DevCouncil's capabilities are ported to Rust/Go **inside DevCouncil**,
-where they stay as components. MANVI gains no subsystem it does not already own.
+wrong. DevCouncil's capabilities stay **inside DevCouncil** as components. MANVI
+wraps them; it gains no subsystem it does not already own.
 
 **The `dc-*` crates are DevCouncil's, not MANVI's.** They were authored here and
 ported there, but authorship is history, not ownership. They are edited in
 DevCouncil now; MANVI's `crates/` copy is a development convenience. Note that
-only the *sources* are duplicated — nothing links, so the deployed arrangement is
-already correct: one set of component binaries, one harness consuming them.
+only the *sources* are duplicated — nothing in MANVI links, so the deployed
+arrangement is already correct: one set of component binaries, one harness wrapping
+them. GitPulse vendors selected crates from DevCouncil rather than from this
+mirror.
 
 **MANVI's `mcp/` being a client is correct, not a gap.** An earlier assessment
 called it a structural problem that MANVI has no MCP *server*. Under this
 architecture that is exactly right: DevCouncil is the server, MANVI is a client,
-and the same server serves every other coding agent too. The gap is not in MANVI
-— it is that DevCouncil's MCP surface is still Python.
+and the same server serves every other coding agent too.
 
 ---
 
@@ -468,7 +478,9 @@ and the same server serves every other coding agent too. The gap is not in MANVI
 
 When a DevCouncil subsystem lands in Rust/Go, it is done when:
 
-- [ ] It is a binary (or MCP tool) with the §2 contract, not a library MANVI links.
+- [ ] It is a binary (or MCP tool) with the §2 contract. MANVI does not link it.
+      A different host may still vendor the crate; that is a second seam, not a
+      reason for the harness to link.
 - [ ] `health` names it and its schema version; a caller can assert identity.
 - [ ] Every failure path emits JSON on stdout; nothing panics to stderr with an
       empty stdout.

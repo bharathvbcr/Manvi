@@ -2,8 +2,8 @@
 
 The workbench stores persistent repository groups and Kanban items in one profile
 SQLite database. Its schema, validation, queries and transactions live in
-[`dc-store`](../crates/dc-store/src/workbench/mod.rs). Repository execution tasks
-and writer leases remain a separate model. A host must supply a different database
+[`dc-store`](../crates/dc-store/src/workbench/mod.rs), a DevCouncil component that
+Manvi wraps. Repository execution tasks and writer leases remain a separate model. A host must supply a different database
 file for its profile; opening that file also creates the store's legacy tables,
 but workbench operations only access `work_*` tables.
 

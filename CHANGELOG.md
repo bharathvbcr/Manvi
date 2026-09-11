@@ -21,6 +21,12 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Changed
+
+- Document DevCouncil as independently selectable components and modules, Manvi
+  as the wrap around them, and GitPulse as a host that takes both for their
+  respective jobs.
+
 ---
 
 ## [0.0.5] — 2026-09-11

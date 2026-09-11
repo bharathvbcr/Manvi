@@ -14,7 +14,7 @@ A lightweight, high-performance coding-agent harness in pure Go and Rust — des
   <a href="https://manvi.vbcr.dev/"><strong>Explore the Live Interactive Architecture &amp; Benchmark Showcase (manvi.vbcr.dev) &rarr;</strong></a>
 </p>
 
-**MANVI is the unification layer; [DevCouncil](https://github.com/bharathvbcr/DevCouncil) is the components.** DevCouncil owns the analysis components — `devmap` (code graph), `dcstore` (tasks and leases), `dcverify` (diff, rigor, coverage) and `dcgrep` (search) — each a standalone binary with a JSON-on-stdio contract, and each being ported to Rust/Go as the port proceeds. MANVI is the harness that unifies them into a working agent and reaches every one of them across a process boundary, linking none. That is what lets MANVI drop into another application as a single static binary. See [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md).
+**MANVI wraps [DevCouncil](https://github.com/bharathvbcr/DevCouncil) components.** DevCouncil is the component and module layer — `devmap` (code graph), `dcstore` (tasks and leases), `dcverify` (diff, rigor, coverage) and `dcgrep` (search) — each a standalone binary with a JSON-on-stdio contract, independently installable and updatable. MANVI is the harness that wraps them into a working agent and reaches every one of them across a process boundary, linking none. Host apps such as [GitPulse](https://github.com/bharathvbcr/GitPulse) use MANVI for policy, workbench, and agent hosting, and selected DevCouncil modules for code intelligence — they do not have to take the whole suite. That is what lets MANVI drop into another application as a single static binary. See [`docs/COMPONENTS_AND_HARNESS.md`](docs/COMPONENTS_AND_HARNESS.md).
 
 **Ownership after DevCouncil Phase 7 (2026-09-10):** Python campaign / live-watch / dashboard / GEPA / FAISS semantic / LLM routing were **retired** in DevCouncil, not reimplemented there. Manvi keeps LLM providers, agent profiles, TUI/`watch`, and multi-agent runs. DevCouncil Go continues to expose lease/verify/diff MCP; Manvi imports `backend/go_orchestrator` unchanged. Recorded decisions: DevCouncil `docs/PHASE7_LONG_TAIL.md`.
 
@@ -39,7 +39,7 @@ MANVI was created as a new lightweight coding harness designed for local models,
 
 MANVI is built on a handful of deliberate design decisions that shape everything else:
 
-1. **Components, unified by a harness.** The analysis work — unified diff parsing, coverage intersection, AST indexing, SQLite persistence — belongs to DevCouncil's components and runs in their own processes. MANVI owns the harness: event loops, streaming, cancellation, policy, the session log and the terminal, in pure Go (`CGO_ENABLED=0`). They never link, so a component can be replaced, upgraded or reused elsewhere without touching the harness.
+1. **Components, wrapped by a harness.** The analysis work — unified diff parsing, coverage intersection, AST indexing, SQLite persistence — belongs to DevCouncil's components and runs in their own processes. MANVI wraps them: event loops, streaming, cancellation, policy, the session log and the terminal, in pure Go (`CGO_ENABLED=0`). They never link, so a component can be replaced, upgraded or reused elsewhere without touching the harness, and a host such as GitPulse can take only the modules it needs.
 2. **Process boundary, not CGO.** The harness reaches every component as a child process exchanging JSON over stdio — never by linking it. This preserves static binaries, instant cross-compilation, and fault isolation — a crash in a component cannot take down the harness — and it is what makes MANVI embeddable: an application takes the harness without inheriting any component's dependency tree. The *process* is the boundary, not the fork: the store is held open as a session and answers many requests over one process, which takes a lease check from ~3.9ms to ~0.03ms on an idle machine — one to two orders of magnitude — without giving up any of the above. See [`docs/TRADE_OFFS.md`](docs/TRADE_OFFS.md).
 3. **Non-cheating invariants.** A check that did not run never reports as passed. A grant that cleared a rule never reports as a clean pass. Blocks are overridable when appropriate, but never invisible.
 4. **Mutual exclusion in storage, not application code.** Multi-agent task concurrency is enforced by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`) — not by an in-memory lock that dies with the process.
@@ -76,7 +76,7 @@ flowchart TB
         P4["fork/exec dcgrep"]
     end
 
-    subgraph Components["DevCouncil Components — resolved from PATH, linked by nothing"]
+    subgraph Components["DevCouncil Components — independently selectable modules"]
         DCStore["dcstore<br/>Tasks & Lease Mutex"]
         DCVerify["dcverify<br/>Diff Parsing · Rigor Gates · Coverage"]
         DCGrep["dcgrep<br/>Ignore-aware search · ripgrep engine"]

@@ -6,13 +6,11 @@ This document provides a comprehensive architectural reference for **MANVI** (*o
 
 ## 1. High-Level Architectural Vision
 
-**MANVI is the unification layer. DevCouncil is the components.**
+**MANVI wraps DevCouncil components. DevCouncil is the components and modules.**
 
-DevCouncil owns the components. Four are already Rust and ship as standalone binaries with a JSON-on-stdio contract: the code-intelligence graph (`devmap`), the task and lease store (`dcstore`), the deterministic verifier (`dcverify`), and the repository searcher (`dcgrep`). Each is useful on its own and to any coding agent that speaks the contract, not only this one.
+DevCouncil owns the components. Four are already Rust and ship as standalone binaries with a JSON-on-stdio contract: the code-intelligence graph (`devmap`), the task and lease store (`dcstore`), the deterministic verifier (`dcverify`), and the repository searcher (`dcgrep`). Each is useful on its own and to any coding agent or host that speaks the contract, not only this one. A host can update one module, or take only a subset.
 
-**DevCouncil is mid-port.** Its remaining subsystems — the planning council, the deeper verification gates, campaign, knowledge and reporting — are still Python and are being ported to Rust/Go behind the same contract. As each lands, it becomes another binary on the boundary, and MANVI consumes it exactly the way it consumes the four above. Nothing in the harness changes shape when a component crosses over; that is the point of putting the contract at the process boundary. [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md) is the current component inventory and the checklist a newly ported component has to satisfy.
-
-MANVI is the harness that unifies them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run.
+MANVI is the harness that wraps them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run. GitPulse uses that wrap for policy, workbench, and agent hosting, and selected DevCouncil crates for code intelligence.
 
 **That makes MANVI embeddable.** Because the harness is a single static Go binary (`CGO_ENABLED=0`) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
 
