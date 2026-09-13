@@ -113,6 +113,33 @@ type BrokerError struct {
 
 func (e *BrokerError) Error() string { return e.Code + ": " + e.Message }
 
+// transientObservationCodes are capture failures that say the surface was still
+// settling, not that the flow is wrong: nothing was dispatched and observing
+// again is a legitimate response. They are listed once here because both the
+// execution loop and one-shot diagnostics have to agree on what is worth
+// retrying — a diagnostic that gives up where replay would retry reports a
+// problem that does not exist.
+var transientObservationCodes = map[string]struct{}{
+	"observation_inconsistent": {},
+	"window_changed":           {},
+	"state_changed":            {},
+	"window_ambiguous":         {},
+	"window_occluded":          {},
+}
+
+// TransientObservation reports whether err is an undelivered capture failure
+// that a bounded re-observation may resolve.
+func TransientObservation(err error) (*BrokerError, bool) {
+	var e *BrokerError
+	if !errors.As(err, &e) || e.Delivery != "not_sent" {
+		return nil, false
+	}
+	if _, ok := transientObservationCodes[e.Code]; !ok {
+		return nil, false
+	}
+	return e, true
+}
+
 type request struct {
 	ID        string          `json:"id"`
 	Op        string          `json:"op"`

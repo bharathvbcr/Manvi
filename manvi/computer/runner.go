@@ -561,10 +561,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				}
 				result.event = workflow.Event{Kind: "error", Reason: result.err.Error()}
 				var captureError *BrokerError
-				if (result.command.Kind == "observe" || result.command.Kind == "observe_after") && errors.As(result.err, &captureError) && captureError.Delivery == "not_sent" && (captureError.Code == "observation_inconsistent" || captureError.Code == "window_changed" || captureError.Code == "state_changed" || captureError.Code == "window_ambiguous" || captureError.Code == "window_occluded") {
-					result.event = workflow.Event{Kind: "observe_failed", ActionID: result.command.ActionID, FailureCode: captureError.Code, Reason: captureError.Error()}
+				observing := result.command.Kind == "observe" || result.command.Kind == "observe_after"
+				if transient, ok := TransientObservation(result.err); observing && ok {
+					result.event = workflow.Event{Kind: "observe_failed", ActionID: result.command.ActionID, FailureCode: transient.Code, Reason: transient.Error()}
 				}
-				if (result.command.Kind == "observe" || result.command.Kind == "observe_after") && errors.As(result.err, &captureError) && captureError.Delivery == "not_sent" && captureError.Code == "external_interaction" {
+				if observing && errors.As(result.err, &captureError) && captureError.Delivery == "not_sent" && captureError.Code == "external_interaction" {
 					result.event = workflow.Event{Kind: "external_interaction", ActionID: result.command.ActionID, FailureCode: captureError.Code, Reason: captureError.Error()}
 				}
 				if s.Phase == workflow.Acting {
