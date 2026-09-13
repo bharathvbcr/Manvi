@@ -40,11 +40,38 @@ fn motion_only(kind: CGEventType) -> bool {
     matches!(kind, CGEventType::MouseMoved | CGEventType::TabletPointer)
 }
 
-fn refused() -> DesktopError {
-    DesktopError::new(
-        "external_interaction",
-        "Hardware input changed since admission; automation requires reconciliation",
-    )
+/// category names the kind of input a counter represents. It is coarse on
+/// purpose: an operator needs to know whether a person was typing or clicking
+/// to tell real interference from a misfiring guard, and that is answerable
+/// without publishing counts, keycodes, buttons or pointer coordinates.
+fn category(kind: CGEventType) -> &'static str {
+    match kind {
+        CGEventType::KeyDown | CGEventType::KeyUp | CGEventType::FlagsChanged => "keyboard",
+        CGEventType::ScrollWheel => "scroll",
+        CGEventType::LeftMouseDragged
+        | CGEventType::RightMouseDragged
+        | CGEventType::OtherMouseDragged => "drag",
+        CGEventType::MouseMoved | CGEventType::TabletPointer => "pointer_motion",
+        _ => "pointer_button",
+    }
+}
+
+fn refused(kinds: &[&'static str]) -> DesktopError {
+    let mut seen: Vec<&str> = Vec::new();
+    for k in kinds {
+        if !seen.contains(k) {
+            seen.push(k);
+        }
+    }
+    seen.sort_unstable();
+    let mut message =
+        String::from("Hardware input changed since admission; automation requires reconciliation");
+    if !seen.is_empty() {
+        message.push_str(" (");
+        message.push_str(&seen.join(", "));
+        message.push(')');
+    }
+    DesktopError::new("external_interaction", message)
 }
 
 pub(crate) fn snapshot() -> InputStamp {
@@ -63,8 +90,14 @@ pub(crate) fn compare(expected: &InputStamp, actual: &InputStamp) -> Result<()> 
         (expected, actual);
     // Equality rather than ordering handles an individual u32 wrap. A full
     // 2^32 events between checks is outside the bounded observation lifetime.
-    if before != after {
-        return Err(refused());
+    let changed: Vec<&'static str> = EVENTS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| before[*i] != after[*i])
+        .map(|(_, kind)| category(*kind))
+        .collect();
+    if !changed.is_empty() {
+        return Err(refused(&changed));
     }
     Ok(())
 }
@@ -77,6 +110,7 @@ pub(crate) fn classify(expected: &InputStamp, actual: &InputStamp) -> Result<Int
     let (InputStamp::MacosHid { counters: before }, InputStamp::MacosHid { counters: after }) =
         (expected, actual);
     let mut motion = false;
+    let mut refusing: Vec<&'static str> = Vec::new();
     for (index, kind) in EVENTS.iter().enumerate() {
         if before[index] == after[index] {
             continue;
@@ -85,7 +119,10 @@ pub(crate) fn classify(expected: &InputStamp, actual: &InputStamp) -> Result<Int
             motion = true;
             continue;
         }
-        return Err(refused());
+        refusing.push(category(*kind));
+    }
+    if !refusing.is_empty() {
+        return Err(refused(&refusing));
     }
     Ok(if motion {
         Interference::PointerMotion
@@ -189,6 +226,52 @@ mod tests {
         }
         assert!(motion_only(CGEventType::MouseMoved));
         assert!(motion_only(CGEventType::TabletPointer));
+    }
+
+    /// A refusal has to say what kind of input it saw, or an operator cannot
+    /// tell a person using the machine from a misfiring guard. It must still
+    /// not disclose counts, keycodes, buttons or coordinates.
+    #[test]
+    fn refusals_name_the_input_category_without_disclosing_values() {
+        let baseline = stamp([7; 15]);
+        let expected = [
+            (CGEventType::KeyDown, "keyboard"),
+            (CGEventType::KeyUp, "keyboard"),
+            (CGEventType::FlagsChanged, "keyboard"),
+            (CGEventType::ScrollWheel, "scroll"),
+            (CGEventType::LeftMouseDragged, "drag"),
+            (CGEventType::RightMouseDragged, "drag"),
+            (CGEventType::OtherMouseDragged, "drag"),
+            (CGEventType::LeftMouseDown, "pointer_button"),
+            (CGEventType::RightMouseUp, "pointer_button"),
+            (CGEventType::OtherMouseDown, "pointer_button"),
+        ];
+        for (kind, want) in expected {
+            let index = EVENTS.iter().position(|e| *e == kind).unwrap();
+            let mut changed = [7; 15];
+            changed[index] = 9;
+            let failure = classify(&baseline, &stamp(changed)).unwrap_err();
+            assert!(
+                failure.message.contains(want),
+                "{kind:?} should be reported as {want}: {}",
+                failure.message
+            );
+            assert!(!failure.message.contains('7'), "{}", failure.message);
+            assert!(!failure.message.contains('9'), "{}", failure.message);
+        }
+
+        // Several categories at once are listed, deduplicated and ordered.
+        let mut changed = [7; 15];
+        for kind in [
+            CGEventType::KeyDown,
+            CGEventType::KeyUp,
+            CGEventType::ScrollWheel,
+        ] {
+            changed[EVENTS.iter().position(|e| *e == kind).unwrap()] = 9;
+        }
+        let message = classify(&baseline, &stamp(changed)).unwrap_err().message;
+        assert!(message.contains("keyboard, scroll"), "{message}");
+        assert_eq!(message.matches("keyboard").count(), 1, "{message}");
     }
 
     #[test]
