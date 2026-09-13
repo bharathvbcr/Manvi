@@ -63,7 +63,12 @@ type Observation struct {
 	Nodes            []Node     `json:"nodes"`
 	Screenshot       Screenshot `json:"screenshot"`
 	Complete         bool       `json:"complete"`
-	TruncatedReason  string     `json:"truncated_reason,omitempty"`
+	// PointerMotion records that a person moved the pointer between admission
+	// and this observation. Hardware input that could change application state
+	// is refused instead of recorded, so this never means an action was let
+	// through unchecked. Always false on platforms without an admission guard.
+	PointerMotion   bool   `json:"pointer_motion,omitempty"`
+	TruncatedReason string `json:"truncated_reason,omitempty"`
 }
 type Selector struct {
 	Visual       *workflow.VisualAnchor `json:"visual,omitempty"`
@@ -95,6 +100,10 @@ type Receipt struct {
 	Delivery           string `json:"delivery"`
 	DispatchedAtMillis uint64 `json:"dispatched_at_ms"`
 	Verified           bool   `json:"verified"`
+	// PointerMotion mirrors Observation.PointerMotion for the dispatch itself.
+	// Coordinate-addressed input refuses all motion, so only element-addressed
+	// AX actions can ever report it.
+	PointerMotion bool `json:"pointer_motion,omitempty"`
 }
 type BrokerError struct {
 	Code     string `json:"code"`

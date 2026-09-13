@@ -741,6 +741,9 @@ fn visual_act(
         delivery: Delivery::Sent,
         dispatched_at_ms,
         verified: false,
+        // Coordinate-addressed clicks refuse every counter change, motion
+        // included, so a receipt from this path never reports motion.
+        pointer_motion: false,
     })
 }
 
@@ -752,7 +755,12 @@ fn act(
     expected_nodes: &[Node],
     expected_input: &InputStamp,
 ) -> Result<Receipt> {
-    input_guard::check(expected_input)?;
+    // Element-addressed AX actions do not depend on where the pointer is, so
+    // bare motion is recorded and the target revalidated below instead of
+    // aborting. Anything that could commit a change is still refused here, and
+    // the coordinate-addressed kinds re-check strictly at their own dispatch.
+    let mut pointer_motion =
+        input_guard::check_semantic(expected_input)? == input_guard::Interference::PointerMotion;
     action.validate()?;
     let fresh = current_window(window)?;
     let (root, nodes, complete, foreground) = tree(&fresh)?;
@@ -796,7 +804,7 @@ fn act(
     let dispatch = now_ms();
     match action.kind {
         ActionKind::Press => {
-            input_guard::check(expected_input)?;
+            pointer_motion |= input_guard::check_semantic(expected_input)? == input_guard::Interference::PointerMotion;
             let status = unsafe { element.perform_action(&CFString::from_str("AXPress")) };
             if status != AXError::Success {
                 return Err(DesktopError::new(
@@ -817,7 +825,7 @@ fn act(
                     .ok_or_else(|| err("invalid_action", "Text required"))?,
             );
             let status = unsafe {
-                input_guard::check(expected_input)?;
+                pointer_motion |= input_guard::check_semantic(expected_input)? == input_guard::Interference::PointerMotion;
                 element.set_attribute_value(&CFString::from_str("AXValue"), text.as_ref())
             };
             if status != AXError::Success {
@@ -932,6 +940,7 @@ fn act(
         delivery: Delivery::Sent,
         dispatched_at_ms: dispatch,
         verified: false,
+        pointer_motion,
     })
 }
 
@@ -982,8 +991,11 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
 
         "observe" => {
             let input_stamp = input_guard::snapshot();
+            // Accessibility semantics do not depend on pointer position, so bare
+            // motion is recorded on the observation rather than refused.
+            let mut pointer_motion = false;
             if let Some(expected) = request.expected_input.as_ref() {
-                input_guard::compare(expected, &input_stamp)?;
+                pointer_motion = input_guard::classify(expected, &input_stamp)? == input_guard::Interference::PointerMotion;
             }
             let expected = request
                 .window
@@ -1081,7 +1093,7 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
                 ));
             }
             window.foreground = stable_foreground;
-            input_guard::check(&input_stamp)?;
+            pointer_motion |= input_guard::check_semantic(&input_stamp)? == input_guard::Interference::PointerMotion;
             let observation = Observation {
                 observation_id: String::new(),
                 epoch: 0,
@@ -1091,6 +1103,7 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
                 nodes,
                 screenshot,
                 complete,
+                pointer_motion,
                 input_stamp: Some(input_stamp),
                 truncated_reason: if complete {
                     None

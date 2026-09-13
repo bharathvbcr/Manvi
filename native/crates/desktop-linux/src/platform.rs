@@ -939,6 +939,8 @@ async fn act(
         delivery: Delivery::Sent,
         dispatched_at_ms,
         verified: false,
+        // No hardware admission guard on this platform; nothing is observed.
+        pointer_motion: false,
     })
 }
 async fn keyboard_text(
@@ -1172,6 +1174,8 @@ fn act_visual(
         delivery: Delivery::Sent,
         dispatched_at_ms,
         verified: false,
+        // No hardware admission guard on this platform; nothing is observed.
+        pointer_motion: false,
     })
 }
 async fn execute_async(request: WorkerRequest) -> Result<Value> {
@@ -1238,6 +1242,8 @@ async fn execute_async(request: WorkerRequest) -> Result<Value> {
             }
             serde_json::to_value(Observation {
                 input_stamp: None,
+                // No hardware admission guard on this platform.
+                pointer_motion: false,
                 observation_id: String::new(),
                 epoch: 0,
                 captured_at_ms: now_ms(),

@@ -1148,6 +1148,7 @@ mod tests {
                 height: 100,
             },
             complete: true,
+            pointer_motion: false,
             input_stamp: None,
             truncated_reason: None,
         };

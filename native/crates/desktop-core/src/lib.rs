@@ -17,6 +17,11 @@ pub const MAX_DEPTH: usize = 40;
 pub const MAX_TEXT_BYTES: usize = 8_192;
 pub const MAX_IMAGE_PIXELS: usize = 8_000_000;
 
+/// Serde helper: omit a recorded flag from the wire when nothing was recorded.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -193,6 +198,12 @@ pub struct Observation {
     /// Private helper/broker admission state; removed from public observations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_stamp: Option<InputStamp>,
+    /// Bare pointer motion by a person was seen between admission and this
+    /// point. Recorded so evidence shows someone was present at the machine;
+    /// input that can change application state is refused rather than recorded
+    /// here. Always false where no hardware admission guard exists.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pointer_motion: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<String>,
 }
@@ -412,6 +423,12 @@ pub struct Receipt {
     pub delivery: Delivery,
     pub dispatched_at_ms: u64,
     pub verified: bool,
+    /// Bare pointer motion by a person was seen between admission and this
+    /// point. Recorded so evidence shows someone was present at the machine;
+    /// input that can change application state is refused rather than recorded
+    /// here. Always false where no hardware admission guard exists.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pointer_motion: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -644,6 +644,8 @@ fn visual_act(
         delivery: Delivery::Sent,
         dispatched_at_ms,
         verified: false,
+        // No hardware admission guard on this platform; nothing is observed.
+        pointer_motion: false,
     })
 }
 
@@ -769,6 +771,8 @@ fn act(
         delivery: Delivery::Sent,
         dispatched_at_ms,
         verified: false,
+        // No hardware admission guard on this platform; nothing is observed.
+        pointer_motion: false,
     })
 }
 
@@ -859,6 +863,8 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
                 screenshot,
                 complete,
                 input_stamp: None,
+                // No hardware admission guard on this platform.
+                pointer_motion: false,
                 truncated_reason: if complete {
                     None
                 } else {
