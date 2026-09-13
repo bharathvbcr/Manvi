@@ -77,17 +77,27 @@ func New(fixture Fixture) *Provider {
 	return &Provider{fixture: copied, initErr: err}
 }
 
+// Decode builds a provider from fixture bytes. Callers that embed a fixture in
+// their binary use this so a shipped executable does not depend on a source
+// tree still being present at the path it was compiled from.
+func Decode(raw []byte, source string) (*Provider, error) {
+	if source == "" {
+		source = "fixture"
+	}
+	var fixture Fixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		return nil, fmt.Errorf("replay: %s: %w", source, err)
+	}
+	return New(fixture), nil
+}
+
 // Load reads a fixture from disk.
 func Load(path string) (*Provider, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("replay: %w", err)
 	}
-	var fixture Fixture
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		return nil, fmt.Errorf("replay: %s: %w", path, err)
-	}
-	return New(fixture), nil
+	return Decode(raw, path)
 }
 
 // Name identifies the adapter.
