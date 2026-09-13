@@ -65,9 +65,14 @@ type Result struct {
 
 // ResultFromState maps reducer phase/outcome onto the Phase-1 result contract.
 func ResultFromState(p *Program, s State) Result {
-	out := Result{Outcome: s.Outcome, Outputs: map[string]Value{}}
-	for k, v := range s.Outputs {
-		out.Outputs[k] = v
+	out := Result{Outcome: s.Outcome}
+	// Outputs is omitempty; allocate only when non-empty so the encoded form
+	// and the decoded value agree (see NewState).
+	if len(s.Outputs) > 0 {
+		out.Outputs = make(map[string]Value, len(s.Outputs))
+		for k, v := range s.Outputs {
+			out.Outputs[k] = v
+		}
 	}
 	switch s.Phase {
 	case Completed:
@@ -171,7 +176,11 @@ func NewState(p *Program, runID, sessionID string, epoch uint64) (State, error) 
 	if p == nil || runID == "" || sessionID == "" || epoch == 0 {
 		return State{}, errors.New("program, run, session and positive epoch required")
 	}
-	return State{RunID: runID, SessionID: sessionID, Epoch: epoch, CapabilitySHA256: p.Digest(), Phase: Ready, Outputs: map[string]Value{}, RecoveryCounts: map[string]int{}}, nil
+	// RecoveryCounts stays nil: it is tagged omitempty, so an eagerly allocated
+	// empty map would be dropped on encode and decode back as nil, breaking
+	// round-trip equality for recorded traces. consultRecovery allocates it
+	// before the first write. Outputs has no omitempty and so stays allocated.
+	return State{RunID: runID, SessionID: sessionID, Epoch: epoch, CapabilitySHA256: p.Digest(), Phase: Ready, Outputs: map[string]Value{}}, nil
 }
 func (s State) Terminal() bool {
 	return s.Phase == Completed || s.Phase == Concluded || s.Phase == Failed || s.Phase == Cancelled || s.Phase == Unknown
