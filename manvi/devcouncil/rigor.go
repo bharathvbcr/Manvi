@@ -186,11 +186,14 @@ const rigorSchemaVersion = 1
 // of the surface already routes on, so an agent does not learn a second
 // vocabulary for the same kind of answer.
 //
-// enforceCoverage is verify.diff_coverage.enforce, and it governs exactly one
-// thing: whether a coverage finding stops the task. What is *reported* does not
-// change with it, because what was measured is a fact about the run and not a
-// policy choice — only the consequence is the operator's to set.
-func gapsFrom(taskID string, result *rigorResult, enforceCoverage bool) ([]Gap, []NextAction) {
+// A coverage finding is reported and never blocks. This took an
+// enforceCoverage argument, carrying verify.diff_coverage.enforce, until
+// DevCouncil retired that key (f7f427b) as one nothing read: the only caller
+// resolved it to its default on every run, so the parameter had exactly one
+// reachable value and promising the other was the whole defect. What is
+// *reported* never depended on it — what was measured is a fact about the run
+// rather than a policy choice — so only the consequence is fixed here.
+func gapsFrom(taskID string, result *rigorResult) ([]Gap, []NextAction) {
 	var gaps []Gap
 	var actions []NextAction
 
@@ -198,10 +201,7 @@ func gapsFrom(taskID string, result *rigorResult, enforceCoverage bool) ([]Gap, 
 	// not to block, or the reverse. An agent reads one field and a human reads
 	// the other, and the two disagreeing is a report that tells them different
 	// things about whether the work is finished.
-	coverageSeverity := "medium"
-	if enforceCoverage {
-		coverageSeverity = "high"
-	}
+	const coverageSeverity = "medium"
 
 	for i, f := range result.Findings {
 		blocking := f.Severity == "blocking"
@@ -242,27 +242,24 @@ func gapsFrom(taskID string, result *rigorResult, enforceCoverage bool) ([]Gap, 
 			ID:       fmt.Sprintf("GAP-%s-COVERAGE-UNMEASURED-%s", taskID, strings.ReplaceAll(path, "/", "-")),
 			Type:     "diff_coverage",
 			Severity: coverageSeverity,
-			// Not blocking by default. Unmeasured is a statement about the
-			// harness's inputs — no coverage data was supplied — rather than
-			// about the change, and blocking on it would stop every task until
-			// coverage collection is wired up. It is reported, always, so the
+			// Not blocking. Unmeasured is a statement about the harness's
+			// inputs — no coverage data was supplied — rather than about the
+			// change, and blocking on it would stop every task until coverage
+			// collection is wired up. It is reported, always, so the
 			// distinction between "covered" and "never measured" survives.
 			//
-			// Under verify.diff_coverage.enforce it blocks along with the
-			// measured gaps below, and it has to. "Nobody measured this" is not
-			// evidence the added lines ran; if it stayed advisory while real
-			// gaps blocked, the way to satisfy an enforced coverage gate would
-			// be to stop supplying coverage — a gate satisfied by removing its
-			// own input, which is the same failure as a gate that never ran
-			// reporting a pass.
-			Blocking: enforceCoverage,
+			// If a blocking coverage gate is ever wanted, it belongs in
+			// dcverify with the gate itself, reached by finding the binary,
+			// and not behind a host-side flag that leaves the gate running
+			// exactly as before.
+			Blocking: false,
 			File:     path,
 			Detail: fmt.Sprintf("%s changed but no coverage data was supplied; "+
 				"this is not evidence the added lines ran", path),
 		}
 		gaps = append(gaps, gap)
 		actions = append(actions, NextAction{
-			GapID: gap.ID, Category: "diff_coverage", File: path, Blocking: enforceCoverage,
+			GapID: gap.ID, Category: "diff_coverage", File: path, Blocking: false,
 			Action: fmt.Sprintf("Characterize baseline behavior: Run the tests with coverage and confirm the added lines in %s execute across edge conditions.", path),
 		})
 	}
@@ -272,14 +269,14 @@ func gapsFrom(taskID string, result *rigorResult, enforceCoverage bool) ([]Gap, 
 			ID:       fmt.Sprintf("GAP-%s-COVERAGE-%s", taskID, strings.ReplaceAll(g.Path, "/", "-")),
 			Type:     "diff_coverage",
 			Severity: coverageSeverity,
-			Blocking: enforceCoverage,
+			Blocking: false,
 			File:     g.Path,
 			Detail: fmt.Sprintf("%d of %d added lines in %s were not executed by any test (lines %v)",
 				len(g.UncoveredLines), g.AddedLines, g.Path, g.UncoveredLines),
 		}
 		gaps = append(gaps, gap)
 		actions = append(actions, NextAction{
-			GapID: gap.ID, Category: "diff_coverage", File: g.Path, Blocking: enforceCoverage,
+			GapID: gap.ID, Category: "diff_coverage", File: g.Path, Blocking: false,
 			Action: fmt.Sprintf("Stress-test and harden: Add adversarial tests exercising uncovered lines %v of %s.", g.UncoveredLines, g.Path),
 		})
 	}

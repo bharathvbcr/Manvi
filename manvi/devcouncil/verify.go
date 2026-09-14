@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 )
@@ -252,60 +251,24 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 				"pass one with --coverage or MANVI_COVERAGE to get a real answer")
 	}
 
-	// verify.rigor.enabled, applied.
+	// Every gate dcverify ran is reported, and no setting here changes that.
 	//
-	// This is the one setting in the harness that can make a verification
-	// quieter without making the code better, so it is also the one that most
-	// needs to say what it did. The gate's findings are dropped *and named*: an
-	// operator who switches this off gets a run that checked less, not a run
-	// that claims more than it checked, and a `passed: true` produced this way
-	// is separable from one where every gate ran. Dropping the findings without
-	// the degradation entry would reproduce the exact defect this setting was
-	// inert for — a control that changes the answer and leaves no trace.
-	if !r.settingOn(flags.VerifyRigorEnabled, true) {
-		result.Findings = withoutGate(result.Findings, rigorStubGate)
-		degraded = append(degraded, rigorStubGate+": suppressed by "+flags.VerifyRigorEnabled+
-			"=false — this gate did not run, so nothing in this report is evidence "+
-			"the added lines are free of placeholders or unimplemented bodies")
-	}
-
-	// verify.diff_coverage.enforce decides only whether a coverage finding
-	// blocks. Both severities are computed from the same read so a gap and its
-	// next action cannot end up disagreeing about whether the task is finished.
-	gaps, actions := gapsFrom(taskID, result, r.settingOn(flags.VerifyDiffCoverageEnforce, false))
+	// verify.rigor.enabled and verify.diff_coverage.enforce were read on this
+	// path until DevCouncil retired both (f7f427b, "retire the two
+	// verification switches that nothing read"). The gates they named run in
+	// dcverify, which this function reaches by finding the binary; neither key
+	// ever decided whether a gate ran. A team that set enforce: true got no
+	// change in behaviour and a clean report — a check that could not run
+	// answering exactly as a check that ran and passed.
+	//
+	// So the reads are deleted rather than re-homed on a Manvi-owned key. Both
+	// resolved to their defaults on every run that did not set them, and those
+	// defaults are now the whole behaviour: stub_detection findings are always
+	// kept, and an unmeasured or uncovered diff is always reported and never
+	// blocks. Re-adding either switch would re-advertise control over
+	// something it does not control, which is the defect the retirement closed.
+	gaps, actions := gapsFrom(taskID, result)
 	return gaps, actions, degraded
-}
-
-// rigorStubGate is the dcverify gate verify.rigor.enabled governs.
-//
-// One gate, not the three that arrive over this boundary, and the narrowness is
-// the decision. The setting's own description — stub, effort and coarse
-// acceptance-proof detection on added diff lines — names crates/dc-verify's
-// detect_stubs and nothing else. The other two are not its to switch off:
-//
-//   - secret_scan is the credential check. Wiring this setting as "skip the
-//     verifier" would have taken that down with it, so an operator quieting a
-//     noisy TODO gate would have stopped credential detection without being
-//     told and without anything in the report connecting the two.
-//   - diff_coverage answers a different question and has a setting of its own.
-//
-// If dcverify ever grows a second placeholder gate, it belongs in this list
-// rather than in a second flag.
-const rigorStubGate = "stub_detection"
-
-// withoutGate drops every finding a named gate produced.
-//
-// It returns a new slice rather than filtering in place: the result it is
-// handed is decoded from the verifier's reply, and a caller later reading the
-// original for anything else should not find it silently shortened.
-func withoutGate(findings []Finding, gate string) []Finding {
-	kept := make([]Finding, 0, len(findings))
-	for _, f := range findings {
-		if f.Gate != gate {
-			kept = append(kept, f)
-		}
-	}
-	return kept
 }
 
 // gitTimeout bounds the whole diff, and each git invocation inside it.

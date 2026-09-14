@@ -6,14 +6,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
-// The two verification settings are the highest-stakes knobs in this package,
-// because both of them move the line between "this run was checked" and "this
-// run was not". The tests below are written around one property: turning a
-// check off must never be indistinguishable from the check running and passing.
+// This file used to be about two settings. verify.rigor.enabled and
+// verify.diff_coverage.enforce were read on the verify path, and the tests
+// here asserted that each one moved the line between "this run was checked"
+// and "this run was not" — one turning a stubbed diff green, the other
+// promoting an unmeasured diff to blocking.
+//
+// DevCouncil retired both (f7f427b, "retire the two verification switches that
+// nothing read"): the gates they named run in dcverify, which runRigor reaches
+// by finding the binary, so neither key ever decided whether a gate ran.
+// Reading them on this side is what made the belief look founded, and the
+// reads are gone with them.
+//
+// What is asserted below is the behaviour that is left, stated as the
+// invariants the switches used to be able to break. They are worth more than
+// the switch tests were: each one now says "there is no way to get the other
+// answer", which is exactly what an operator was previously promised and did
+// not have.
 //
 // stubbedSource is a diff the stub gate blocks. The `unimplemented!()` marker
 // is one of crates/dc-verify's empty-body shapes, which it matches anywhere on
@@ -56,187 +67,148 @@ func reportDegraded(report map[string]any) string {
 	return fmt.Sprint(raw...)
 }
 
-// TestRigorDisabledTurnsAFailingRunGreenAndSaysSo is the whole argument for
-// this flag being wired the way it is.
+// TestTheStubGateAlwaysRunsAndRefuses replaces the test that asserted
+// verify.rigor.enabled could turn this run green.
 //
-// The same diff is verified twice. With verify.rigor.enabled on it is refused;
-// with it off it passes. That inversion is the setting doing its job — and it
-// is also precisely why the report must name the gate that did not run. An
-// operator who reads `passed: true` from the second run and cannot tell it from
-// the first has been handed a check that was never performed, dressed as one
-// that succeeded.
-func TestRigorDisabledTurnsAFailingRunGreenAndSaysSo(t *testing.T) {
-	on := newFixture(t)
-	onReport := verifyAfterWriting(t, on, stubbedSource)
-	if onReport["passed"] != false {
-		t.Fatalf("the stub gate did not refuse a stubbed diff; the control proves nothing: %v", onReport)
+// The stub gate is reached by finding the dcverify binary and by nothing else,
+// so a stubbed diff is refused on every run that reaches it. There is no
+// longer a supported way to get `passed: true` out of this diff, which is the
+// property the old setting undermined: it dropped the gate's findings on the
+// host side, after dcverify had already produced them, and reported a run that
+// checked less as one that checked and was satisfied.
+func TestTheStubGateAlwaysRunsAndRefuses(t *testing.T) {
+	f := newFixture(t)
+	report := verifyAfterWriting(t, f, stubbedSource)
+
+	if report["passed"] != false {
+		t.Fatalf("a stubbed diff passed verification: %v", report)
 	}
-	if len(reportGaps(t, onReport)["stub_detection"]) == 0 {
-		t.Fatalf("no stub_detection gap in the control run: %v", onReport)
+	gaps := reportGaps(t, report)["stub_detection"]
+	if len(gaps) == 0 {
+		t.Fatalf("no stub_detection gap for a diff containing an empty body: %v", report)
 	}
 
-	off := newFixtureWith(t, map[string]string{
-		flags.HarnessPosture:     flags.PostureStrict,
-		flags.VerifyRigorEnabled: "false",
-	})
-	offReport := verifyAfterWriting(t, off, stubbedSource)
-	if got := reportGaps(t, offReport)["stub_detection"]; len(got) > 0 {
-		t.Fatalf("%s=false still produced stub_detection findings: %v", flags.VerifyRigorEnabled, got)
-	}
-
-	degraded := reportDegraded(offReport)
-	if !strings.Contains(degraded, flags.VerifyRigorEnabled) {
-		t.Errorf("the degradation does not name the setting responsible: %q", degraded)
-	}
-	if !strings.Contains(degraded, "stub_detection") {
-		t.Errorf("the degradation does not name the gate that did not run: %q", degraded)
-	}
-
-	// And the tool result carries it too, not only the JSON body. The session
-	// log is assembled from Result, so a degradation that lives only in the
-	// payload is one the run report cannot see.
-	res := off.call("devcouncil_verify_task", map[string]any{})
-	if len(res.Degraded) == 0 {
-		t.Fatal("the verify result carried no Degraded entries; the run report cannot tell this from a clean pass")
-	}
-	if !res.Qualified() {
-		t.Fatal("a verification with a gate switched off reported itself as an ordinary pass")
+	// Nothing on this path suppresses a gate any more. The degradations that
+	// remain legitimate are about inputs and reachability — an absent coverage
+	// profile, a verifier that could not be run — so a degradation claiming a
+	// gate was switched off would mean the host had started dropping findings
+	// again.
+	degraded := reportDegraded(report)
+	for _, marker := range []string{"suppressed by", "verify.rigor.enabled"} {
+		if strings.Contains(degraded, marker) {
+			t.Errorf("a gate was reported as suppressed, which no setting can now do: %q", degraded)
+		}
 	}
 }
 
-// TestRigorDisabledLeavesSecretScanningOn is the security boundary on that
+// TestACredentialAlwaysBlocks is the security boundary that outlived the
 // setting.
 //
-// verify.rigor.enabled is described as stub, effort and acceptance-proof
-// detection. It reaches the same dcverify process as the credential scanner,
-// and wiring it as "skip the verifier" would have silently turned that scanner
-// off too — an operator quieting a noisy TODO check would have stopped
-// credential detection without being told.
-func TestRigorDisabledLeavesSecretScanningOn(t *testing.T) {
-	f := newFixtureWith(t, map[string]string{
-		flags.HarnessPosture:     flags.PostureStrict,
-		flags.VerifyRigorEnabled: "false",
-	})
+// The old test reached it through verify.rigor.enabled=false, checking that
+// quieting the stub gate did not take the credential scanner down with it.
+// With no switch to set, the invariant is simpler and stronger: a credential in
+// an added line blocks, and no configuration reachable from here changes that.
+func TestACredentialAlwaysBlocks(t *testing.T) {
+	f := newFixture(t)
 	report := verifyAfterWriting(t, f, "package calc\n\n"+
 		"const key = \"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n")
 
 	secrets := reportGaps(t, report)["secret_scan"]
 	if len(secrets) == 0 {
-		t.Fatalf("%s=false took the credential scanner down with it: %v",
-			flags.VerifyRigorEnabled, report)
+		t.Fatalf("the credential scanner produced no finding: %v", report)
 	}
 	if secrets[0]["blocking"] != true {
-		t.Errorf("a credential finding must still block: %v", secrets[0])
+		t.Errorf("a credential finding must block: %v", secrets[0])
 	}
 	if report["passed"] == true {
 		t.Fatalf("a diff containing a credential passed verification: %v", report)
 	}
 }
 
-// TestDiffCoverageEnforcePromotesUnmeasuredToBlocking covers the case an
-// operator is most likely to reach the setting for, and the one where getting
-// the direction wrong is worst.
+// TestAnUnmeasuredDiffIsReportedAndNeverBlocks replaces the enforce test.
 //
-// With no coverage file every changed file is unmeasured. Under enforce that
-// has to block: if it did not, the way to satisfy an enforced coverage gate
-// would be to stop supplying coverage, which is the "a check that could not run
-// looks like one that passed" failure with extra steps.
-func TestDiffCoverageEnforcePromotesUnmeasuredToBlocking(t *testing.T) {
+// Unmeasured is a statement about the harness's inputs — no coverage data was
+// supplied — rather than about the change, so it is always reported and never
+// stops the task. The reporting half is the half that matters and the half the
+// retired setting never touched: the distinction between "covered" and "never
+// measured" survives either way, so an operator reading this gap is not being
+// told the added lines ran.
+func TestAnUnmeasuredDiffIsReportedAndNeverBlocks(t *testing.T) {
 	const source = "package calc\n\nfunc Add(a, b int) int { return a + b }\n"
 
-	lenient := newFixture(t)
-	lenient.reg.deps.CoverageFile = ""
-	lenientReport := verifyAfterWriting(t, lenient, source)
-	lenientGaps := reportGaps(t, lenientReport)["diff_coverage"]
-	if len(lenientGaps) == 0 {
-		t.Fatalf("no diff_coverage gap without a profile; the control proves nothing: %v", lenientReport)
-	}
-	if lenientGaps[0]["blocking"] != false {
-		t.Fatalf("diff coverage blocked with enforce off: %v", lenientGaps[0])
-	}
-	if lenientReport["passed"] != true {
-		t.Fatalf("the unenforced run did not pass, so the comparison below is not about enforce: %v", lenientReport)
-	}
+	f := newFixture(t)
+	f.reg.deps.CoverageFile = ""
+	report := verifyAfterWriting(t, f, source)
 
-	strict := newFixtureWith(t, map[string]string{
-		flags.HarnessPosture:            flags.PostureStrict,
-		flags.VerifyDiffCoverageEnforce: "true",
-	})
-	strict.reg.deps.CoverageFile = ""
-	strictReport := verifyAfterWriting(t, strict, source)
-	strictGaps := reportGaps(t, strictReport)["diff_coverage"]
-	if len(strictGaps) == 0 {
-		t.Fatalf("no diff_coverage gap under enforce: %v", strictReport)
+	gaps := reportGaps(t, report)["diff_coverage"]
+	if len(gaps) == 0 {
+		t.Fatalf("no diff_coverage gap without a coverage profile: %v", report)
 	}
-	if strictGaps[0]["blocking"] != true {
-		t.Fatalf("%s=true left an unmeasured diff non-blocking: %v",
-			flags.VerifyDiffCoverageEnforce, strictGaps[0])
+	if gaps[0]["blocking"] != false {
+		t.Fatalf("an unmeasured diff blocked: %v", gaps[0])
 	}
-	if strictReport["passed"] != false {
-		t.Fatalf("an unmeasured diff passed under %s=true: %v",
-			flags.VerifyDiffCoverageEnforce, strictReport)
+	if report["passed"] != true {
+		t.Fatalf("an otherwise clean but unmeasured diff did not pass: %v", report)
 	}
 
 	// The next action must agree with the gap. An agent routes on the action's
 	// own Blocking field, and the two disagreeing is a report that tells the
 	// model the task is finished while the gate says it is not.
-	actions, _ := strictReport["next_actions"].([]any)
-	var sawBlocking bool
-	for _, item := range actions {
-		action, _ := item.(map[string]any)
-		if action["category"] == "diff_coverage" && action["blocking"] == true {
-			sawBlocking = true
-		}
-	}
-	if !sawBlocking {
-		t.Fatalf("the diff_coverage next action is not marked blocking under enforce: %v", actions)
+	assertCoverageActionsAgree(t, report, false)
+
+	// The absence of a profile is named, so "no gap" and "nothing measured"
+	// cannot be read as the same answer.
+	if degraded := reportDegraded(report); !strings.Contains(degraded, "no coverage file was supplied") {
+		t.Errorf("a run with no coverage profile did not say so: %q", degraded)
 	}
 }
 
-// TestDiffCoverageEnforceBlocksUnexercisedAddedLines is the same setting
+// TestUnexercisedAddedLinesAreReportedAndNeverBlock is the same invariant
 // against real measurements rather than their absence: the profile below
 // measures the file and records that nothing in it ran.
-func TestDiffCoverageEnforceBlocksUnexercisedAddedLines(t *testing.T) {
+func TestUnexercisedAddedLinesAreReportedAndNeverBlock(t *testing.T) {
 	const source = "package calc\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n"
 
 	// A Go coverprofile whose only block for this file has an execution count
 	// of zero: measured, and not executed. That is a statement about the code,
 	// unlike the unmeasured case above, which is a statement about the inputs.
-	withProfile := func(t *testing.T, settings map[string]string) map[string]any {
-		t.Helper()
-		f := newFixtureWith(t, settings)
-		profile := filepath.Join(t.TempDir(), "cover.out")
-		if err := os.WriteFile(profile,
-			[]byte("mode: set\nmanvi/src/calc.go:1.1,10.2 4 0\n"), 0o644); err != nil {
-			t.Fatal(err)
+	f := newFixture(t)
+	profile := filepath.Join(t.TempDir(), "cover.out")
+	if err := os.WriteFile(profile,
+		[]byte("mode: set\nmanvi/src/calc.go:1.1,10.2 4 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.reg.deps.CoverageFile = profile
+	report := verifyAfterWriting(t, f, source)
+
+	gaps := reportGaps(t, report)["diff_coverage"]
+	if len(gaps) == 0 {
+		t.Fatalf("an entirely unexercised file produced no coverage gap: %v", report)
+	}
+	if gaps[0]["blocking"] != false {
+		t.Fatalf("uncovered added lines blocked: %v", gaps[0])
+	}
+	assertCoverageActionsAgree(t, report, false)
+}
+
+// assertCoverageActionsAgree checks every diff_coverage next action carries the
+// same blocking answer as the gap it belongs to.
+func assertCoverageActionsAgree(t *testing.T, report map[string]any, want bool) {
+	t.Helper()
+	actions, _ := report["next_actions"].([]any)
+	var seen int
+	for _, item := range actions {
+		action, _ := item.(map[string]any)
+		if action["category"] != "diff_coverage" {
+			continue
 		}
-		f.reg.deps.CoverageFile = profile
-		return verifyAfterWriting(t, f, source)
+		seen++
+		if action["blocking"] != want {
+			t.Errorf("a diff_coverage next action reports blocking=%v, want %v: %v",
+				action["blocking"], want, action)
+		}
 	}
-
-	lenient := withProfile(t, map[string]string{flags.HarnessPosture: flags.PostureStrict})
-	lenientGaps := reportGaps(t, lenient)["diff_coverage"]
-	if len(lenientGaps) == 0 {
-		t.Fatalf("an entirely unexercised file produced no coverage gap: %v", lenient)
-	}
-	if lenientGaps[0]["blocking"] != false {
-		t.Fatalf("coverage blocked with enforce off: %v", lenientGaps[0])
-	}
-
-	strict := withProfile(t, map[string]string{
-		flags.HarnessPosture:            flags.PostureStrict,
-		flags.VerifyDiffCoverageEnforce: "true",
-	})
-	strictGaps := reportGaps(t, strict)["diff_coverage"]
-	if len(strictGaps) == 0 {
-		t.Fatalf("an entirely unexercised file produced no coverage gap under enforce: %v", strict)
-	}
-	if strictGaps[0]["blocking"] != true {
-		t.Fatalf("%s=true left uncovered added lines non-blocking: %v",
-			flags.VerifyDiffCoverageEnforce, strictGaps[0])
-	}
-	if strict["passed"] != false {
-		t.Fatalf("a diff no test executed passed under %s=true: %v",
-			flags.VerifyDiffCoverageEnforce, strict)
+	if seen == 0 {
+		t.Errorf("no diff_coverage next action accompanied the coverage gap: %v", actions)
 	}
 }

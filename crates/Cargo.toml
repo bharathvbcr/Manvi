@@ -3,7 +3,7 @@ resolver = "3"
 # Canonical sources live in DevCouncil rust/. These members are
 # symlinks for local `cargo build` / verify.sh; release consumers pin or vendor
 # from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
-members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence"]
+members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,10 +11,20 @@ edition = "2024"
 license = "MIT"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits
-# rusqlite from that workspace. This workspace must declare the same pin so
+# rusqlite, `dc-evidence` inherits sha2 and `dc-proc` inherits libc from that
+# workspace. This workspace must declare the same pins so
 # `cargo build --manifest-path crates/Cargo.toml` can resolve `workspace = true`.
+#
+# A symlinked member inherits from *this* file, not from DevCouncil's, so a new
+# `foo.workspace = true` upstream fails the whole workspace to load — not just
+# that member — until its pin is mirrored below. The failure names the
+# inherited key, so read the `Caused by` chain rather than the member it
+# blamed. These three are every workspace-inherited dependency the six members
+# currently declare.
 [workspace.dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha2 = "0.10.9"
+libc = "0.2"
 
 # Every other crate a member pulls in is a dependency-audit surface paid for
 # weekly; the analysis plane earns one when a task needs it, not before, and

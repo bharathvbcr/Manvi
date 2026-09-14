@@ -17,8 +17,11 @@ func TestAdversarialYAMLConfigs(t *testing.T) {
 		name      string
 		yaml      string
 		wantModel string
-		wantRigor bool
+		wantInit  bool
 		wantErr   bool
+		// wantErrNames is the setting the refusal must name, for the cases
+		// where the file was refused because the key is gone rather than wrong.
+		wantErrNames string
 	}{
 		{
 			name: "deeply_nested_with_mixed_arrays_and_dicts",
@@ -51,22 +54,49 @@ llm:
     model: 'deepseek-coder'
     base_url: 'http://127.0.0.1:11434/v1#local'
 `,
+			// verification.rigor.enabled above is DevCouncil's own spelling, and
+			// it is here to stay passed over. That namespace is shared core
+			// config read outside the harness, so an unknown key in it is not a
+			// typo to refuse — unlike the harness namespace, which the next
+			// case covers.
 			wantModel: "deepseek-coder",
-			wantRigor: true,
 			wantErr:   false,
 		},
 		{
 			name: "boolean_representations",
 			yaml: `
-verify:
-  rigor:
-    enabled: 'on'
 harness:
   init:
     enabled: 'yes'
 `,
-			wantRigor: true,
-			wantErr:   false,
+			wantInit: true,
+			wantErr:  false,
+		},
+		{
+			// verify.rigor.enabled and verify.diff_coverage.enforce were
+			// harness flags until DevCouncil retired both (f7f427b). They are
+			// refused by name rather than passed over, and that is the point:
+			// these two were documented as the way to opt into blocking, so a
+			// file that still sets one bought a belief the run no longer
+			// honours. Silence there is how the belief survived.
+			name: "retired_rigor_switch_is_refused_by_name",
+			yaml: `
+verify:
+  rigor:
+    enabled: true
+`,
+			wantErr:      true,
+			wantErrNames: "verify.rigor.enabled",
+		},
+		{
+			name: "retired_diff_coverage_switch_is_refused_by_name",
+			yaml: `
+verify:
+  diff_coverage:
+    enforce: true
+`,
+			wantErr:      true,
+			wantErrNames: "verify.diff_coverage.enforce",
 		},
 		{
 			name: "typo_in_harness_namespace_fails",
@@ -101,6 +131,12 @@ llm:
 				if err == nil {
 					t.Fatalf("expected error for %s, got nil", tc.name)
 				}
+				// A refusal that does not name the key reads as a typo the
+				// operator should hunt for, which is the wrong instruction
+				// when the setting was deliberately removed.
+				if tc.wantErrNames != "" && !strings.Contains(err.Error(), tc.wantErrNames) {
+					t.Errorf("the refusal does not name %q: %v", tc.wantErrNames, err)
+				}
 				return
 			}
 			if err != nil {
@@ -113,10 +149,10 @@ llm:
 					t.Errorf("model = %q, want %q", m, tc.wantModel)
 				}
 			}
-			if tc.wantRigor {
-				r, _, err := reg.Bool(flags.VerifyRigorEnabled)
-				if err != nil || !r {
-					t.Errorf("verify.rigor.enabled = %v, want true", r)
+			if tc.wantInit {
+				on, _, err := reg.Bool(flags.HarnessInitEnabled)
+				if err != nil || !on {
+					t.Errorf("%s = %v (err %v), want true", flags.HarnessInitEnabled, on, err)
 				}
 			}
 		})

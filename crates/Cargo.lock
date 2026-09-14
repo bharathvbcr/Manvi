@@ -176,6 +176,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-proc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "dc-store"
 version = "0.1.0"
 dependencies = [
@@ -188,6 +195,7 @@ version = "0.1.0"
 dependencies = [
  "dc-evidence",
  "dc-glob",
+ "dc-proc",
  "serde_json",
 ]
 
