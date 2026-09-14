@@ -21,15 +21,90 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [0.0.5] — 2026-09-14
+
+Re-cut from the 2026-09-11 build. The entries below landed after that stamp and
+ship under the same version; everything from the original 0.0.5 follows them
+unchanged.
+
+### Removed
+
+- **`verify.rigor.enabled` and `verify.diff_coverage.enforce` are gone.**
+  DevCouncil retired both as switches nothing read, and `manvi/devcouncil` was
+  the last thing still reading them — so the package stopped compiling against
+  a current sibling checkout. The gates they named run in `dcverify`, reached
+  by finding the binary; neither key ever decided whether a gate ran, so
+  setting `enforce: true` bought a belief the run did not honour. Their
+  defaults are now the whole behaviour: `stub_detection` findings are always
+  kept, and an unmeasured or uncovered diff is always reported and never
+  blocks. **A config file or `MANVI_*` variable still setting either key is
+  refused by name at startup** — remove them. DevCouncil's own `verification.*`
+  spellings in `.devcouncil/config.yaml` are unaffected.
+
 ### Changed
 
+- **The macOS input guard is partitioned by what the input can commit.** It
+  demanded exact equality across all fifteen `HIDSystemState` counters,
+  `MouseMoved` included, so anyone touching the mouse aborted an otherwise
+  valid run — a 40-run campaign suspended 17 times while all 40 independent
+  saved-state checks passed. Buttons, keys, modifiers, scroll and drags can
+  change application state and stay a hard refusal; `MouseMoved` and
+  `TabletPointer` cannot press, type, scroll or drag, so element-addressed work
+  (`observe`, `AXPress`, `AXValue`) reports them instead of aborting, and still
+  revalidates the window, the scoped accessibility fingerprint and the target
+  before dispatch. Coordinate-addressed input — `TypeText`, `Click`, `Scroll`,
+  every visual click — still refuses motion, because there the pointer position
+  is part of the action. *Security impact: this narrows the guard, it does not
+  remove it.* Nothing that can change application state is newly admitted, no
+  pre-dispatch revalidation is bypassed, and tolerated motion is recorded as
+  `pointer_motion` on the observation and receipt so evidence still shows a
+  person was present. The field is omitted when nothing was observed, so quiet
+  runs serialize exactly as before.
 - Document DevCouncil as independently selectable components and modules, Manvi
   as the wrap around them, and GitPulse as a host that takes both for their
   respective jobs.
 
----
+### Added
 
-## [0.0.5] — 2026-09-11
+- **An external-interaction refusal names the input category.** A refusal said
+  only that hardware input changed, so an operator could not tell a person
+  using the machine from a misfiring guard — a 40-run campaign suspended 22
+  times with no way to attribute one of them. Refusals now name the coarse
+  category that moved (`keyboard`, `scroll`, `drag`, `pointer_button`),
+  deduplicated and ordered. Deliberately coarse: no counts, keycodes, buttons
+  or pointer coordinates reach the message, and a test asserts it.
+- **`replay.Decode` takes fixture bytes and a source label**, so a consumer can
+  ship a fixture inside its binary. `replay.Load` reads the file and delegates;
+  no behaviour change for existing callers. Jarvis's `--provider fixture`
+  rehearsal derived its transcript path from `runtime.Caller`, which under
+  `-trimpath` resolves to a module-relative name that is not on disk — it
+  worked under `go test` and failed in the shipped binary.
+- **`TransientObservation` names the re-observable capture failures once** —
+  `observation_inconsistent`, `window_changed`, `state_changed`,
+  `window_ambiguous`, `window_occluded` — so the execution loop and callers
+  outside it agree on what a bounded re-observation may resolve. Jarvis's drift
+  diagnostic did not retry at all and failed where replay succeeds.
+
+### Fixed
+
+- **Offline deterministic replay rejected its own valid journals.** `NewState`
+  allocated `RecoveryCounts` as an empty non-nil map while the field is tagged
+  `omitempty`, so encoding dropped it and decoding yielded nil, and a recorded
+  trace never compared equal to a recomputed canonical admission.
+  `ResultFromState` had the same shape on `Result.Outputs`. Allocating only
+  when non-empty restores round-trip equality and leaves the wire format
+  byte-identical, so existing evidence bundles and their hashes stay valid. A
+  reflective guard now fails any map or slice field tagged `omitempty` but
+  allocated empty, so the shape cannot return on a future field.
+- **The `crates/` workspace failed to load, not just one member.** A symlinked
+  member inherits `workspace = true` from `crates/Cargo.toml` rather than from
+  DevCouncil's, so upstream's `sha2` (dc-evidence) and `libc` (dc-proc) had to
+  be mirrored there, and `dc-verify`'s path dependency on the new `dc-proc`
+  needed a sixth symlink.
 
 ### Added
 
