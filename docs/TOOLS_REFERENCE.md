@@ -120,7 +120,7 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
-| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Runs a **pinned** inspect binary (`MANVI_DEVCOUNCIL_BINARY` required). PATH `dev`/`devcouncil` are not consulted: the Python CLI is deleted and Go `devcouncil` does not implement `status`/`gaps`/`check`. Prefer native `devcouncil_get_gaps`, `devcouncil_verify_task`, and `manvi map`. When a pin is set, `check` still passes `--verify`; non-JSON output is labelled degraded, never parsed as structure. |
+| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Runs a **pinned** inspect binary (`MANVI_DEVCOUNCIL_BINARY` required). PATH `dev`/`devcouncil` are not consulted: the Python CLI is deleted and Go `devcouncil` does not implement `status`/`gaps`/`check`. Prefer native `devcouncil_verify_task` and `manvi map` — both callable from the core profile, unlike `devcouncil_get_gaps`. When a pin is set, `check` still passes `--verify`; non-JSON output is labelled degraded, never parsed as structure. |
 
 ---
 
