@@ -171,7 +171,10 @@ navigation as a gate that *did not run*, rather than one that passed.
 for project-level status/gaps/check. That package is deleted. The Go
 `devcouncil` binary still exists, but those subcommands are not on it (`mcp`,
 `integrate`, `skills`, `verify`, `map`). Native tools own the live views:
-`devcouncil_get_gaps`, `devcouncil_verify_task`, `manvi map`.
+`devcouncil_verify_task`, `manvi map`. Both the tool description and the
+unavailable error route through those two names only, because every name they
+carry has to be callable from the *core* profile — `devcouncil_get_gaps` is
+Extended, and `devcouncil_verify_task` already returns the blocking gaps.
 
 The handler therefore requires `MANVI_DEVCOUNCIL_BINARY`. An unpinned call is
 unavailable and names the native replacements — it does **not** LookPath

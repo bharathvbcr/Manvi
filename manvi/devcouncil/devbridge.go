@@ -34,6 +34,20 @@ const (
 	// pinned. status and gaps answer in seconds; check can take longer. The
 	// bound stops a wedged child from hanging a turn.
 	devInspectTimeout = 5 * time.Minute
+
+	// devInspectNativeRoutes names what replaced the deleted CLI's sections.
+	// The tool description and the unavailable error both route an agent with
+	// this list, and they held two copies of it that drifted together: both
+	// named devcouncil_get_gaps, which is Extended and so absent from the core
+	// profile. A model reading either string may be running with
+	// llm.local.core_tools_only, and naming a tool that profile does not offer
+	// sends it to an "unknown tool" at the moment it is already stuck.
+	//
+	// devcouncil_verify_task is core and already returns the blocking gaps
+	// alongside the verdict, so dropping get_gaps costs the reader nothing.
+	// One literal, so the next edit cannot desynchronise the two sites and
+	// TestNoToolNamesAToolTheCoreProfileDoesNotOffer has one place to police.
+	devInspectNativeRoutes = "devcouncil_verify_task, manvi map"
 )
 
 func (r *Registry) devTools() []tools.Tool {
@@ -42,8 +56,8 @@ func (r *Registry) devTools() []tools.Tool {
 			Schema: schema("devcouncil_dev_inspect",
 				"Query a pinned DevCouncil inspect binary for project-level status/gaps/check JSON. "+
 					"The Python `dev` CLI is deleted; Go `devcouncil` does not implement those sections. "+
-					"Requires MANVI_DEVCOUNCIL_BINARY. Prefer native tools: devcouncil_get_gaps, "+
-					"devcouncil_verify_task, manvi map. Read-only; needs no lease.",
+					"Requires MANVI_DEVCOUNCIL_BINARY. Prefer native tools: "+devInspectNativeRoutes+
+					". Read-only; needs no lease.",
 				`{"type":"object","properties":{"section":{"type":"string","enum":["status","gaps","check"],"description":"which project view to query (default: status)"},"task_id":{"type":"string","description":"with section=gaps, scope the gaps to one task"}}}`),
 			ReadOnly: true,
 			Group:    tools.GroupCore,
@@ -62,7 +76,7 @@ func resolveDevCLI() (string, error) {
 		return "", fmt.Errorf(
 			"the Python DevCouncil CLI that answered status/gaps/check is deleted; "+
 				"Go `devcouncil` does not implement those subcommands. "+
-				"Use native tools (devcouncil_get_gaps, devcouncil_verify_task, manvi map) "+
+				"Use native tools ("+devInspectNativeRoutes+") "+
 				"or set %s to a binary you own",
 			devInspectEnvBinary)
 	}

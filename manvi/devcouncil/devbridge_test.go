@@ -156,7 +156,12 @@ func TestDevInspectDoesNotCallPATHDevOrDevcouncil(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("PATH decoy was invoked; status/gaps/check must not be guessed from PATH")
 	}
-	for _, want := range []string{devInspectEnvBinary, "devcouncil_get_gaps", "devcouncil_verify_task"} {
+	// The routes are named individually rather than by asserting on
+	// devInspectNativeRoutes, which would pass just as happily if that const
+	// were emptied. What the refusal owes the reader is a tool it can actually
+	// call, so name one: devcouncil_verify_task is core, and returns the gaps
+	// the deleted CLI's `gaps` section used to answer.
+	for _, want := range []string{devInspectEnvBinary, "devcouncil_verify_task", "manvi map"} {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("unavailable text %q is missing %q", res.Text, want)
 		}
