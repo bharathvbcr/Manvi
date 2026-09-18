@@ -105,6 +105,12 @@ unchanged.
   DevCouncil's, so upstream's `sha2` (dc-evidence) and `libc` (dc-proc) had to
   be mirrored there, and `dc-verify`'s path dependency on the new `dc-proc`
   needed a sixth symlink.
+- **`devcouncil_dev_inspect` routed to an Extended tool from the Core profile.**
+  The tool description and unavailable error recommended `devcouncil_get_gaps`,
+  which the core profile does not offer — stranding an agent running under
+  `llm.local.core_tools_only` with an unknown-tool error. Replaced with
+  `devcouncil_verify_task, manvi map`, which are both in Core, resolving
+  `TestNoToolNamesAToolTheCoreProfileDoesNotOffer`.
 
 ### Added
 
