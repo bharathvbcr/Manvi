@@ -315,6 +315,57 @@ func TestManagedMissingExecutableEndsTheAttemptAndReleasesItsRepository(t *testi
 	prepare("retry")
 }
 
+// The provider gate is what stops one provider's saved attempt being handed to
+// another provider's protocol reader. It is derived from the adapters that
+// exist, so adding an adapter opens the gate and nothing else does.
+func TestManagedRunnerAdmitsEveryProviderWithAnAdapterAndNoOthers(t *testing.T) {
+	for _, provider := range []string{"codex", "claude", "grok", "agy", "shell"} {
+		t.Run(provider, func(t *testing.T) {
+			client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+			defer client.Close()
+			root := t.TempDir()
+			common := filepath.Join(root, ".git")
+			enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
+			enhancementCall(t, client, "items.put", `{"id":"t","request_id":"t","expected_revision":0,"title":"Inspect fixture","repository_ids":["r"],"primary_repository_id":"r"}`)
+			prepared := enhancementCallErr(client, "runs.prepare", fmt.Sprintf(`{"id":"run","request_id":"prep","expected_revision":0,"kind":"managed","task_id":"t","source_revision":1,"repository_id":"r","repository_revision":1,"provider":%q,"permission_mode":"ask","cwd":%q,"git_dir":%q,"git_common_dir":%q,"head_oid":null}`, provider, root, common, common))
+			if prepared != nil {
+				// The store refuses this provider for a managed run before the
+				// runner is reached, which is itself a closed gate.
+				if codingagent.IsManagedProvider(provider) {
+					t.Fatalf("a provider with an adapter could not be prepared: %v", prepared)
+				}
+				return
+			}
+			var routed atomic.Value
+			session := &managedTestSession{}
+			runner, err := NewManagedRunner(client, func(_ context.Context, options codingagent.Options) (ManagedSession, error) {
+				routed.Store(options.Provider)
+				return session, nil
+			}, func(err error) string { return err.Error() })
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runner.Close()
+			_, err = runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`))
+			admitted := err == nil
+			if admitted != codingagent.IsManagedProvider(provider) {
+				t.Fatalf("provider %q admitted=%v but IsManagedProvider=%v (%v)", provider, admitted, codingagent.IsManagedProvider(provider), err)
+			}
+			if !admitted {
+				if got := routed.Load(); got != nil {
+					t.Fatalf("a provider without an adapter still reached the factory as %v", got)
+				}
+				return
+			}
+			// The factory must be told which provider to start; without it,
+			// every run would be handed to whichever adapter is written first.
+			if got, _ := routed.Load().(string); got != provider {
+				t.Fatalf("factory was asked for %q on a %q run", got, provider)
+			}
+		})
+	}
+}
+
 func TestManagedUncertainFactoryFailureRetainsItsClaimWithoutCallingANilSession(t *testing.T) {
 	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	defer client.Close()

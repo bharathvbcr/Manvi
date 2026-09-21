@@ -343,7 +343,12 @@ func (s *Server) hello(raw json.RawMessage) (any, *Error) {
 				p.Protocol, ProtocolVersion),
 		}
 	}
-	return HelloResult{Protocol: ProtocolVersion, Ops: s.router.operations(), Posture: string(s.posture)}, nil
+	return HelloResult{
+		Protocol:         ProtocolVersion,
+		Ops:              s.router.operations(),
+		Posture:          string(s.posture),
+		ManagedProviders: s.router.managed(),
+	}, nil
 }
 
 // writeResponse writes one terminal line for a request.

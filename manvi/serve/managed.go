@@ -181,8 +181,8 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	defer close(job.ready)
 	run, _, err := r.run(ctx, job.id)
-	if err == nil && (run.State != "prepared" || run.Kind != "managed" || run.Provider != "codex" || run.Revision != job.preparation.ExpectedRevision || len(run.Brief.Markdown) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
-		err = errors.New("this managed adapter requires a fresh Codex attempt and a complete brief within 128 KiB")
+	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(run.Brief.Markdown) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
+		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
 	}
 	claimed := false
 	if err == nil {
@@ -200,7 +200,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	}
 	var provider ManagedSession
 	if err == nil {
-		provider, err = r.factory(ctx, codingagent.Options{Cwd: run.Cwd, Mode: run.Mode, AcknowledgeBypass: run.Bypass})
+		provider, err = r.factory(ctx, codingagent.Options{Provider: run.Provider, Cwd: run.Cwd, Mode: run.Mode, AcknowledgeBypass: run.Bypass})
 	}
 	// A failing factory owns its startup cleanup. Its error may contain a typed
 	// nil session; never dereference an error result or infer that no process ran.
@@ -338,6 +338,15 @@ func (r *ManagedRunner) abandon(job *managedJob, cause error) {
 	r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")
 	close(job.done)
 }
+
+// The effective configuration is written once and never revised.
+//
+// The store enforces this — a second, different value is refused as
+// "the provider identity and effective configuration are immutable for this
+// attempt" — and that is the right rule: it is the record of what the run was
+// approved under, and a record that can change under the reader is not one. An
+// adapter therefore has to be able to describe itself *before* its first turn,
+// rather than filling the record in as the stream reveals things.
 func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, thread string, turn *string) error {
 	run, _, err := r.run(ctx, job.id)
 	if err != nil {

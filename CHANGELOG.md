@@ -70,6 +70,9 @@ unchanged.
 
 ### Added
 
+- **Claude Code managed adapter.** Added managed session adapter for Claude Code (`codingagent.StartClaude`) driven over stdio `stream-json` transport with `--permission-prompt-tool stdio` approval proxying.
+- **Runtime managed provider publishing.** `manvi serve` now dynamically advertises supported `ManagedProviders` in its `HelloResult` handshake payload, enabling clients to verify agent capabilities before claiming runs.
+- **Gusset diagnostic check.** Added `manvi gusset-check` CLI subcommand and `gussetcheck` package verifying DevCouncil's linked Gusset diagnostic engine and pool sizing before execution.
 - **An external-interaction refusal names the input category.** A refusal said
   only that hardware input changed, so an operator could not tell a person
   using the machine from a misfiring guard — a 40-run campaign suspended 22

@@ -363,10 +363,10 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		// prompt described. Saying so here means the report names the child
 		// rather than leaving the caller to infer it from a blank field.
 		return devcouncil.SubAgentResult{
-				Steps: outcome.Steps, Usage: spent,
-				Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
-			}, fmt.Errorf(
-				"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
+			Steps: outcome.Steps, Usage: spent,
+			Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+		}, fmt.Errorf(
+			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
 	}
 	// Everything worth saying about the turn, from the one function that
 	// answers that question, rather than a third hand-rolled copy.

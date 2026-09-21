@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	github.com/bharathvbcr/DevCouncil/backend/go_orchestrator v0.0.0
+	github.com/bharathvbcr/gusset v0.0.0
 	github.com/awnumar/memguard v0.23.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/samber/mo v1.17.0
@@ -16,3 +17,5 @@ require (
 )
 
 replace github.com/bharathvbcr/DevCouncil/backend/go_orchestrator => ../../DevCouncil/backend/go_orchestrator
+
+replace github.com/bharathvbcr/gusset => ../../gusset

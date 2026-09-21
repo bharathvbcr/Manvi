@@ -61,6 +61,10 @@ func configureModule(module Module, router *Router) (err error) {
 type Router struct {
 	handlers map[string]Handler
 	frozen   bool
+	// managedProviders is the adapter set a configured managed lane owns, kept
+	// here because the router is what `hello` already reads to describe this
+	// build. Nil means no managed lane was configured; see HelloResult.
+	managedProviders []string
 }
 
 // Register adds an operation and refuses accidental collisions.
@@ -112,6 +116,15 @@ func (r *Router) operations() []string {
 	}
 	sort.Strings(operations)
 	return operations
+}
+
+// managed copies the configured adapter set for `hello`. A nil result means no
+// managed lane was configured, which the host must not read as "no adapters".
+func (r *Router) managed() []string {
+	if r.managedProviders == nil {
+		return nil
+	}
+	return append([]string(nil), r.managedProviders...)
 }
 
 func validOperationName(name string) error {

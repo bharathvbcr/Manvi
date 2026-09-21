@@ -46,6 +46,7 @@ const usage = `manvi — the DevCouncil execution harness
 Usage:
   manvi                             Full-screen face: transcript, composer, approvals, dashboard
   manvi doctor                      Check configuration, store reachability, and weakened gates
+  manvi gusset-check                Prove the linked Rust engine is dc-glob on Gusset
   manvi flags [--all]               Show settings, their values, and where each value came from
   manvi flags set KEY VALUE         Move a setting on human authority, for this process
   manvi lease list                  Show who holds what
@@ -369,6 +370,8 @@ func run(out, notes io.Writer, args []string) error {
 	switch args[0] {
 	case "doctor":
 		return doctor(out, reg)
+	case "gusset-check":
+		return gussetCheck(out)
 	case "flags":
 		_, err := flagsCommand(out, reg, args[1:], surfaceShell)
 		return err

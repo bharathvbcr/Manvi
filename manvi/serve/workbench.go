@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 )
 
 // WorkbenchModule exposes profile data to the local owning host. It is enabled
@@ -64,6 +65,11 @@ func (m WorkbenchModule) Configure(r *Router) error {
 		}
 	}
 	if m.Managed != nil {
+		// Published at `hello` so a host can refuse a provider this build has
+		// no adapter for *before* it stores an attempt and takes the
+		// repository's capacity. Read from the adapter set itself rather than
+		// restated here: a transcribed list is the drift this exists to stop.
+		r.managedProviders = append([]string(nil), codingagent.ManagedProviders...)
 		if err := r.Register("work.runs.managed.prepare", func(ctx context.Context, raw json.RawMessage) (any, *Error) {
 			result, err := m.Managed.Prepare(ctx, raw)
 			if err != nil {

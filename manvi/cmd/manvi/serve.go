@@ -159,12 +159,27 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			return err
 		}
 		managed, err = serve.NewManagedRunner(client, func(ctx context.Context, options codingagent.Options) (serve.ManagedSession, error) {
-			options.Program = toolBinary("MANVI_CODEX_BINARY", "codex")
-			session, err := codingagent.StartCodex(ctx, options)
-			if err != nil {
-				return nil, err
+			// Routed on the stored run's provider. Returning a typed-nil
+			// session on error would let the runner dereference it, so each
+			// branch returns an untyped nil explicitly.
+			switch options.Provider {
+			case "codex":
+				options.Program = toolBinary("MANVI_CODEX_BINARY", "codex")
+				session, err := codingagent.StartCodex(ctx, options)
+				if err != nil {
+					return nil, err
+				}
+				return session, nil
+			case "claude":
+				options.Program = toolBinary("MANVI_CLAUDE_BINARY", "claude")
+				session, err := codingagent.StartClaude(ctx, options)
+				if err != nil {
+					return nil, err
+				}
+				return session, nil
+			default:
+				return nil, fmt.Errorf("no managed adapter for provider %q", options.Provider)
 			}
-			return session, nil
 		}, func(err error) string { return scrubber.Clean(err.Error()) })
 		if err != nil {
 			return err

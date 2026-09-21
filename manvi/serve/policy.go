@@ -8,6 +8,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 )
 
 // Posture decides what a policy denial means when there is no DevCouncil task.
@@ -233,6 +234,9 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 	if p.Path == "" {
 		return nil, badRequest("policy.check.file requires a path")
 	}
+	if err := requireGusset(); err != nil {
+		return nil, err
+	}
 
 	op, err := parseOperation(p.Op)
 	if err != nil {
@@ -291,11 +295,27 @@ func (s *Server) evaluateHostWrite(
 	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host")
 }
 
+// requireGusset refuses a policy answer when the in-process dc-glob engine is
+// not alive. GitPulse maps that error to an unchecked verdict, and an
+// unchecked verdict from an installed harness is not permission to act.
+func requireGusset() *Error {
+	if err := gussetcheck.Ready(); err != nil {
+		return &Error{
+			Code:    ErrInternal,
+			Message: fmt.Sprintf("gusset engine refused the policy check: %v", err),
+		}
+	}
+	return nil
+}
+
 // checkCommand evaluates one command.
 func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	var p CommandCheckParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, badRequest("policy.check.command params: %v", err)
+	}
+	if err := requireGusset(); err != nil {
+		return nil, err
 	}
 
 	// Root is optional on the wire; empty keeps the fail-closed behaviour in

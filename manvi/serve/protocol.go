@@ -182,4 +182,19 @@ type HelloResult struct {
 	Ops []string `json:"ops"`
 	// Posture names how taskless policy decisions are resolved. See Posture.
 	Posture string `json:"posture"`
+	// ManagedProviders names the coding agents this build has a managed
+	// adapter for. Ops alone cannot answer that: `work.runs.managed.prepare`
+	// is registered whenever a ManagedRunner exists, so a codex-only build and
+	// a codex+claude build advertise exactly the same operation and are
+	// indistinguishable on the wire. A host that could not tell them apart
+	// offers the lane, takes the repository's run slot, and only then dies on
+	// a refusal phrased for whichever providers that build happened to know.
+	//
+	// Absent is not empty. A build that predates this field omits the key, and
+	// a host must read that as "this harness did not say" — never as "it has
+	// no adapters" — because a check that could not run must not report what a
+	// check that ran would have. The key is present whenever a managed lane
+	// exists at all, and `ManagedProviders` is never an empty slice, so absent
+	// and "said none" do not collide in practice.
+	ManagedProviders []string `json:"managed_providers,omitempty"`
 }

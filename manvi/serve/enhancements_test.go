@@ -36,6 +36,15 @@ func enhancementCall(t *testing.T, client *store.Client, method, input string) j
 	return result
 }
 
+// enhancementCallErr is enhancementCall for a call that is allowed to fail:
+// it returns the store's refusal instead of ending the test on it.
+func enhancementCallErr(client *store.Client, method, input string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := client.Workbench(ctx, method, json.RawMessage(input))
+	return err
+}
+
 func enhancementWait(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {

@@ -21,9 +21,30 @@ const MaxFrameBytes = 256 * 1024
 // Options contains host-selected settings. Program is an absolute executable
 // path or a name resolved through the host PATH. Bypass is explicit for this connection and is never inferred from defaults.
 type Options struct {
+	// Provider names the managed adapter this run asked for. It is carried in
+	// Options rather than as a second factory argument so that a host which
+	// forgets to route on it fails to compile against the adapters, instead of
+	// handing one provider's stream to another's reader.
+	Provider           string
 	Program, Cwd, Mode string
 	AcknowledgeBypass  bool
 }
+
+// ManagedProviders are the providers with a managed adapter in this package.
+// The workbench gates on this list; a provider absent from it has a terminal
+// lane and no managed one.
+var ManagedProviders = []string{"codex", "claude"}
+
+// IsManagedProvider reports whether a stored run's provider has an adapter.
+func IsManagedProvider(provider string) bool {
+	for _, known := range ManagedProviders {
+		if known == provider {
+			return true
+		}
+	}
+	return false
+}
+
 type Sandbox struct {
 	Type                string   `json:"type"`
 	NetworkAccess       bool     `json:"networkAccess"`
@@ -96,13 +117,22 @@ type Codex struct {
 	requestCount int
 }
 
+// codexArgs is the app-server launch line.
+//
+// No `--listen stdio://`. Codex carried that flag when this adapter was
+// written; codex-cli 0.153.4 no longer accepts it, and rather than failing it
+// exits 0 having written nothing — so the session ended immediately and the
+// run reported only "managed provider connection ended", naming no cause.
+// stdio is the default, and asking for it by name is what broke.
+func codexArgs() []string { return []string{"app-server"} }
+
 // StartCodex starts only the stdio process. The owner records its OS process
 // identity before Initialize negotiates the provider thread or StartTurn sends work.
 func StartCodex(ctx context.Context, options Options) (*Codex, error) {
-	return startCodex(ctx, options, []string{"app-server", "--listen", "stdio://"})
+	return startCodex(ctx, options, codexArgs())
 }
 func OpenCodex(ctx context.Context, options Options) (*Codex, error) {
-	return openCodex(ctx, options, []string{"app-server", "--listen", "stdio://"})
+	return openCodex(ctx, options, codexArgs())
 }
 func openCodex(ctx context.Context, options Options, args []string) (*Codex, error) {
 	s, err := startCodex(ctx, options, args)
@@ -132,7 +162,7 @@ func startCodex(ctx context.Context, options Options, args []string) (*Codex, er
 	if _, _, _, err := policy(options); err != nil {
 		return nil, beforeStart(err)
 	}
-	wire, err := startConnection(ctx, program, args, cwd)
+	wire, err := startConnection(ctx, program, args, cwd, validateCodexFrame)
 	if err != nil {
 		return nil, err
 	}

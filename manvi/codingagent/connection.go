@@ -19,15 +19,27 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 )
 
+// packet is the union of the two managed protocols' envelopes. Codex speaks
+// JSON-RPC (id/method/params/result/error); Claude Code's stream-json speaks a
+// tagged union (type/subtype), where the body varies too much per type to
+// usefully predeclare, so its adapter decodes raw.
+//
+// One struct rather than two because the transport below — spawn, environment
+// scrubbing, line framing, backpressure, close-and-reap — is genuinely one
+// behavior, and only frame validation and decoding differ. Each adapter reads
+// the fields its protocol defines and ignores the rest.
 type packet struct {
-	ID     json.RawMessage `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  json.RawMessage `json:"error,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+	Type    string          `json:"type,omitempty"`
+	Subtype string          `json:"subtype,omitempty"`
 }
 type wireRead struct {
 	value packet
+	raw   []byte
 	err   error
 }
 
@@ -49,6 +61,7 @@ type connection struct {
 	done      chan struct{}
 	waitErr   error
 	closeOnce sync.Once
+	validate  func([]byte) error
 }
 type limitedDiscard struct {
 	remaining int
@@ -64,7 +77,10 @@ func (w *limitedDiscard) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func startConnection(parent context.Context, program string, args []string, cwd string) (*connection, error) {
+// startConnection spawns the provider and frames its stdout. `validate` is the
+// protocol's own frame rule and is never optional: a transport that accepted
+// any well-formed JSON would let one provider's frames be read as another's.
+func startConnection(parent context.Context, program string, args []string, cwd string, validate func([]byte) error) (*connection, error) {
 	if err := parent.Err(); err != nil {
 		return nil, beforeStart(err)
 	}
@@ -104,7 +120,7 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 		output.Close()
 		return nil, beforeStart(fmt.Errorf("start managed provider: %w", err))
 	}
-	c := &connection{ctx: ctx, cancel: cancel, cmd: cmd, stdin: stdin, stdout: stdout, pid: cmd.Process.Pid, frames: make(chan wireRead, 64), done: make(chan struct{})}
+	c := &connection{ctx: ctx, cancel: cancel, cmd: cmd, stdin: stdin, stdout: stdout, pid: cmd.Process.Pid, frames: make(chan wireRead, 64), done: make(chan struct{}), validate: validate}
 	go c.read()
 	go func() { c.waitErr = cmd.Wait(); output.Close(); close(c.done) }()
 	return c, nil
@@ -119,15 +135,21 @@ func (c *connection) read() {
 		line := scanner.Bytes()
 		total += len(line)
 		var p packet
-		err := validatePacket(line)
+		err := c.validate(line)
 		if total > 32*1024*1024 {
 			err = errors.New("managed provider output exceeded 32 MiB")
 		}
 		if err == nil {
 			err = json.Unmarshal(line, &p)
 		}
+		// The scanner reuses its buffer, so a frame handed to another goroutine
+		// must own its bytes.
+		var raw []byte
+		if err == nil {
+			raw = append(raw, line...)
+		}
 		select {
-		case c.frames <- wireRead{p, err}:
+		case c.frames <- wireRead{p, raw, err}:
 		case <-c.ctx.Done():
 			return
 		}
@@ -145,37 +167,52 @@ func (c *connection) read() {
 	case <-c.ctx.Done():
 	}
 }
-func validatePacket(raw []byte) error {
+
+// validateFrameShape is what both protocols require of a line: bounded, valid
+// UTF-8, one JSON object, no duplicate keys, nothing trailing. It deliberately
+// says nothing about which fields must be present — that is the protocol's own
+// rule and belongs to its validator.
+func validateFrameShape(raw []byte, protocol string) (map[string]bool, error) {
 	if len(raw) > MaxFrameBytes || !utf8.Valid(raw) {
-		return errors.New("invalid or oversized Codex protocol frame")
+		return nil, fmt.Errorf("invalid or oversized %s protocol frame", protocol)
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	token, err := d.Token()
 	if err != nil || token != json.Delim('{') {
-		return errors.New("Codex protocol frame must be an object")
+		return nil, fmt.Errorf("%s protocol frame must be an object", protocol)
 	}
 	seen := make(map[string]bool)
 	for d.More() {
 		token, err = d.Token()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		key, ok := token.(string)
 		if !ok || seen[key] {
-			return errors.New("Codex protocol has a duplicate field")
+			return nil, fmt.Errorf("%s protocol has a duplicate field", protocol)
 		}
 		seen[key] = true
 		var value json.RawMessage
 		if err = d.Decode(&value); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if _, err = d.Token(); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err = d.Token(); err != io.EOF {
-		return errors.New("Codex protocol frame has trailing content")
+		return nil, fmt.Errorf("%s protocol frame has trailing content", protocol)
+	}
+	return seen, nil
+}
+
+// validateCodexFrame is the JSON-RPC rule: every frame is exactly one of an
+// event (method) or a response (id plus exactly one of result/error).
+func validateCodexFrame(raw []byte) error {
+	seen, err := validateFrameShape(raw, "Codex")
+	if err != nil {
+		return err
 	}
 	if !seen["method"] && (!seen["id"] || seen["result"] == seen["error"]) {
 		return errors.New("Codex frame is neither an event nor a response")
@@ -185,16 +222,40 @@ func validatePacket(raw []byte) error {
 	}
 	return nil
 }
+
+// validateClaudeFrame is the stream-json rule: every frame is a tagged union
+// member, so `type` is the whole contract at this layer. A frame carrying
+// JSON-RPC's fields instead is refused here rather than being half-decoded by
+// an adapter that would find every field empty.
+func validateClaudeFrame(raw []byte) error {
+	seen, err := validateFrameShape(raw, "Claude")
+	if err != nil {
+		return err
+	}
+	if !seen["type"] {
+		return errors.New("Claude frame has no type")
+	}
+	if seen["method"] || seen["params"] {
+		return errors.New("Claude frame carries another protocol's envelope")
+	}
+	return nil
+}
 func (c *connection) nextID() json.RawMessage {
 	c.sequence++
 	return []byte(strconv.FormatUint(c.sequence, 10))
 }
 func (c *connection) send(ctx context.Context, p packet) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	data, err := json.Marshal(p)
 	if err != nil {
+		return err
+	}
+	return c.sendRaw(ctx, data)
+}
+
+// sendRaw writes one already-encoded frame, for a protocol whose outbound
+// bodies are not the JSON-RPC envelope.
+func (c *connection) sendRaw(ctx context.Context, data []byte) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if len(data) > MaxFrameBytes {
@@ -203,7 +264,7 @@ func (c *connection) send(ctx context.Context, p packet) error {
 	done := make(chan error, 1)
 	go func() { _, err := c.stdin.Write(append(data, '\n')); done <- err }()
 	select {
-	case err = <-done:
+	case err := <-done:
 		if err != nil {
 			c.cancel()
 		}
@@ -216,17 +277,24 @@ func (c *connection) send(ctx context.Context, p packet) error {
 	}
 }
 func (c *connection) receive(ctx context.Context) (packet, error) {
+	p, _, err := c.receiveFrame(ctx)
+	return p, err
+}
+
+// receiveFrame also returns the frame's own bytes, for a protocol whose bodies
+// vary per type and are decoded by the adapter rather than by the envelope.
+func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 	// A timeout observing a live session does not restart or terminate it.
 	select {
 	case next, ok := <-c.frames:
 		if !ok {
-			return packet{}, io.EOF
+			return packet{}, nil, io.EOF
 		}
-		return next.value, next.err
+		return next.value, next.raw, next.err
 	case <-ctx.Done():
-		return packet{}, ctx.Err()
+		return packet{}, nil, ctx.Err()
 	case <-c.ctx.Done():
-		return packet{}, c.ctx.Err()
+		return packet{}, nil, c.ctx.Err()
 	}
 }
 func (c *connection) close() (Exit, error) {
