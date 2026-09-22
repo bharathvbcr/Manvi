@@ -24,6 +24,7 @@ func slaveName(master *os.File) (string, error) {
 		return "", fmt.Errorf("unlocking the pty: %w", err)
 	}
 	var buf [128]byte
+	// #nosec G103 -- ioctl's third argument is an unsafe pointer; there is no typed form.
 	if err := ioctlPtr(master.Fd(), tiocptygname, unsafe.Pointer(&buf[0])); err != nil {
 		return "", fmt.Errorf("reading the pty name: %w", err)
 	}

@@ -63,7 +63,12 @@ contextcheck 28
 errcheck 419
 errorlint 54
 forcetypeassert 69
-gosec 393
+# gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
+# calls were marked #nosec G103. Before that, pty_linux_test.go had two
+# findings and pty_darwin_test.go had one, so a count measured on darwin
+# failed the Ubuntu job by one. Do not lower this number from a darwin-only
+# recount that still includes those lines.
+gosec 392
 nilerr 12
 noctx 24
 staticcheck 40

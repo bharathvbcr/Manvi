@@ -101,6 +101,12 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **A server's stderr explanation could lose the race with stdout EOF.**
+  GitHub's macOS runner reported a bare connection close and empty
+  diagnostics for a server that had written its failure. The stdout reader
+  now waits for the stderr reader to finish before failing the pending call.
+  The pty ioctl `unsafe.Pointer` calls are marked `#nosec G103`, so the
+  gosec count is 392 on both darwin and linux.
 - **A missing managed-adapter callback dereferenced a nil pending entry.**
   nilaway counted four new panics in the Claude and Codex responders, which
   put the tree over its ceiling of 78. A missing entry now returns the same

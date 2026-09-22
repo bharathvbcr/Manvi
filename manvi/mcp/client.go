@@ -72,6 +72,7 @@ type Client struct {
 	initTried    bool
 	closed       atomic.Bool
 	doneCh       chan struct{}
+	stderrDone   chan struct{}
 	serverErrors []string
 	errMu        sync.Mutex
 }
@@ -98,6 +99,13 @@ const (
 	// waitDelay bounds how long descendants may keep holding the stdio pipes
 	// once the direct child is gone.
 	waitDelay = 3 * time.Second
+	// stderrDrainBound is how long the stdout reader waits for the stderr
+	// reader to finish after stdout ends. A server that explains its death
+	// and exits writes that line and closes both pipes together, and the
+	// stdout EOF can be observed first. Failing the pending call at that
+	// moment reports a bare close and an empty Diagnostics, which is what
+	// GitHub's macOS runner did to TestWhatTheServerSaysAboutItsFailureReachesTheCaller.
+	stderrDrainBound = 2 * time.Second
 )
 
 // Caps on everything a server sends back.
@@ -260,13 +268,14 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 	}
 
 	c := &Client{
-		cfg:     cfg,
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  stdout,
-		stderr:  stderr,
-		pending: make(map[int64]chan *Response),
-		doneCh:  make(chan struct{}),
+		cfg:        cfg,
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     stdout,
+		stderr:     stderr,
+		pending:    make(map[int64]chan *Response),
+		doneCh:     make(chan struct{}),
+		stderrDone: make(chan struct{}),
 	}
 
 	go c.readLoop()
@@ -288,6 +297,7 @@ func NewClient(cfg ServerConfig) (*Client, error) {
 // never report the same result as a check that ran and passed, so the skip is
 // recorded and draining continues.
 func (c *Client) stderrLoop() {
+	defer close(c.stderrDone)
 	reader := bufio.NewReaderSize(c.stderr, 64*1024)
 	for {
 		line, err := readLimitedLine(reader, maxStderrLine)
@@ -324,6 +334,17 @@ func (c *Client) recordError(msg string) {
 // interpreter, a rejected token, a stack trace — explained it to a slice that
 // was discarded when the client was closed. The operator saw "server exited
 // unexpectedly" and nothing else.
+// awaitStderr waits until the stderr reader has returned, or until
+// stderrDrainBound. A reader that already finished returns immediately.
+func (c *Client) awaitStderr() {
+	timer := time.NewTimer(stderrDrainBound)
+	defer timer.Stop()
+	select {
+	case <-c.stderrDone:
+	case <-timer.C:
+	}
+}
+
 func (c *Client) Diagnostics() []string {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -474,6 +495,11 @@ func (c *Client) readLoop() {
 		}
 		c.dispatch(line)
 	}
+
+	// stdout has ended. The server's explanation of that ending is often
+	// still in the stderr pipe. Failing the pending calls before it is read
+	// reports a bare close for a death the server already explained.
+	c.awaitStderr()
 
 	// Flush all remaining pending requests on EOF
 	c.pendingMu.Lock()
