@@ -159,6 +159,21 @@ notcovered() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# devcouncil_gusset_init is exported by DevCouncil's gusset-engine umbrella,
+# not by the gusset repository archive. The race detector and the host build
+# both link -lgusset. Gusset's own #cgo lines search a different target tree;
+# CGO_LDFLAGS has to name this directory first or that search wins and the
+# link fails closed.
+ensure_gusset_engine() {
+  engine_lib="../DevCouncil/rust/gusset-engine/target/release/libgusset.a"
+  if [[ ! -f "$engine_lib" ]]; then
+    cargo build --release --manifest-path ../DevCouncil/rust/gusset-engine/Cargo.toml \
+      || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
+  fi
+  [[ -f "$engine_lib" ]] || fail "DevCouncil gusset-engine archive missing at $engine_lib"
+  engine_dir="$(cd "$(dirname "$engine_lib")" && pwd)"
+}
+
 step "Release — notes, assets and workflow"
 if have node; then
   node --test scripts/check-release.test.mjs || fail "release checks"
@@ -217,7 +232,11 @@ fi
 # longer wait for the same answer.
 if (( RACE )); then
   step "Go — race detector"
-  (cd manvi && CGO_ENABLED=1 go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
+  # -race forces cgo on, which compiles gussetcheck's linked engine. The
+  # umbrella has to exist before that link; the host step below builds the
+  # same archive, and this call is a no-op once either side has done it.
+  ensure_gusset_engine
+  (cd manvi && CGO_ENABLED=1 CGO_LDFLAGS="-L${engine_dir}" go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
@@ -506,13 +525,7 @@ fi
 # Linking the gusset repository archive instead fails closed: undefined
 # reference to devcouncil_gusset_init.
 step "Rust — DevCouncil host"
-engine_lib="../DevCouncil/rust/gusset-engine/target/release/libgusset.a"
-if [[ ! -f "$engine_lib" ]]; then
-  cargo build --release --manifest-path ../DevCouncil/rust/gusset-engine/Cargo.toml \
-    || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
-fi
-[[ -f "$engine_lib" ]] || fail "DevCouncil gusset-engine archive missing at $engine_lib"
-engine_dir="$(cd "$(dirname "$engine_lib")" && pwd)"
+ensure_gusset_engine
 host_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
 # -L the umbrella first. Gusset's own cgo paths are a fallback for its tests;

@@ -262,9 +262,11 @@ jobs:
           fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       # --race and --fuzz each re-run the default gate first, so this is the
-      # whole file plus the extra mode. 90 minutes is above the serialised
-      # race run's measured 4.4 minutes by a wide margin and exists to bound a
-      # wedge, not to accommodate one.
+      # whole file plus the extra mode. --race turns cgo on. verify.sh builds
+      # DevCouncil's gusset-engine umbrella and passes it on CGO_LDFLAGS
+      # before that link; without the archive the detector dies on -lgusset.
+      # 90 minutes is above the serialised race run's measured 4.4 minutes by
+      # a wide margin and exists to bound a wedge, not to accommodate one.
       - name: verify.sh --${{ matrix.mode }}
         timeout-minutes: 90
         run: ./verify.sh --${{ matrix.mode }}
