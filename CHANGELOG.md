@@ -94,6 +94,9 @@ unchanged.
 
 ### Fixed
 
+- **The command-gate differential still ran `go test ./gate` in this
+  module.** That package moved to DevCouncil with the rest of the ladder, so
+  the count was zero. The gate now runs those tests in the sibling checkout.
 - **`dc-verify`'s json contract looked for the host binary inside this
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.

@@ -1079,8 +1079,14 @@ fi
 # whether these executed or were renamed out of existence, and a differential
 # check that silently stopped running would leave the class it covers looking
 # closed.
+#
+# The package left this module with the rest of the policy ladder. It lives in
+# the DevCouncil checkout the replace directive builds against. Counting a
+# missing ./gate here reported zero cases and stopped the gate.
 step "Command gate — verdicts match what the shell actually writes"
-diff_ran="$( (cd manvi && go test -count=1 -v ./gate/ \
+gate_mod="../DevCouncil/backend/go_orchestrator"
+[[ -d "$gate_mod/gate" ]] || fail "the command-gate tests are not at $gate_mod/gate"
+diff_ran="$( (cd "$gate_mod" && go test -count=1 -v ./gate/ \
   -run 'TestCommandVerdictIsNeverLooserThanTheWritesItPerforms|TestHiddenWritesAreRefusedOutrightUnderEveryPosture' 2>/dev/null) \
   | grep -c '^    --- PASS' || true )"
 (( diff_ran >= 60 )) || fail "the command/filesystem differential ran only ${diff_ran} cases; the corpus is not being exercised"
@@ -1096,7 +1102,7 @@ printf '    covered: %s command lines executed under sh and reconciled against t
 # line, so a run where nothing was allowed passes while proving nothing. The
 # test fails on its own if that happens; this step surfaces the numbers.
 step "Command gate — generated command lines hold the same invariant"
-gen_out="$( (cd manvi && MANVI_GATE_SOAK="${MANVI_GATE_SOAK:-400}" go test -count=1 -v ./gate/ \
+gen_out="$( (cd "$gate_mod" && MANVI_GATE_SOAK="${MANVI_GATE_SOAK:-400}" go test -count=1 -v ./gate/ \
   -run 'TestGeneratedCommandsNeverOutrunTheirOwnWriteVerdict' 2>&1) )"
 grep -q '^--- PASS' <<<"$gen_out" || { printf '%s\n' "$gen_out" >&2; fail "the generated differential did not pass"; }
 printf '    %s\n' "$(grep -o '[0-9]* generated command lines: .*' <<<"$gen_out" | head -1)"
