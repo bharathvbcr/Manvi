@@ -14,7 +14,10 @@ func TestAttemptAdmissionBoundsRetriesAndAccountsEachSend(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		t.Run(map[bool]string{false: "post", true: "stream"}[streaming], func(t *testing.T) {
 			var sends atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sends.Add(1); w.WriteHeader(503) }))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sends.Add(1)
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
 			defer srv.Close()
 			var outcomes []AttemptResult
 			admissions := 0
@@ -86,7 +89,10 @@ func TestPreflightRetriesCannotBypassAttemptGate(t *testing.T) {
 
 func TestAccountingFailureStopsRetries(t *testing.T) {
 	var sends atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sends.Add(1); w.WriteHeader(503) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
 	defer srv.Close()
 	accountingErr := errors.New("ledger write failed")
 	ctx := WithAttemptGate(context.Background(), func(context.Context, AttemptInfo) (func(AttemptResult) error, error) {

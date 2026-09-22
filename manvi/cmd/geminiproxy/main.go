@@ -34,6 +34,11 @@ import (
 // untested one.
 const defaultUpstream = "https://generativelanguage.googleapis.com"
 
+// maxProxyRequestBytes is the most this loopback recorder will accept from a
+// peer. Past it the request is refused whole: forwarding a truncated body
+// would record a request the upstream never saw.
+const maxProxyRequestBytes = 32 << 20
+
 func main() {
 	addr := envOr("PROXY_ADDR", "127.0.0.1:8899")
 	capturePath := envOr("PROXY_CAPTURE", "gemini-wire.log")
@@ -73,8 +78,16 @@ func (p *proxy) note(format string, args ...any) {
 }
 
 func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyRequestBytes+1))
 	r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if int64(len(body)) > maxProxyRequestBytes {
+		http.Error(w, "request body exceeds proxy limit", http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	p.mu.Lock()
 	p.n++
@@ -96,7 +109,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out, err := http.NewRequestWithContext(r.Context(), r.Method,
 		p.upstream+r.URL.Path+"?"+r.URL.RawQuery, bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for k, vs := range r.Header {
@@ -111,7 +124,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := p.client.Do(out)
 	if err != nil {
 		p.note("===== RESPONSE %d TRANSPORT ERROR: %v =====\n", n, err)
-		http.Error(w, err.Error(), 502)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()

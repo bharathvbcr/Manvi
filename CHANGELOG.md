@@ -101,6 +101,10 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **The recording proxy read a peer body with no limit, and several tests
+  used numeric HTTP statuses.** Both fail the current golangci-lint, which
+  is what CI installs. The proxy now refuses a request past 32 MiB instead
+  of forwarding a truncated one, and the statuses are the `net/http` names.
 - **The dependency allowlist still described the tree from before the
   DevCouncil import.** `go list -deps` names
   `github.com/bharathvbcr/DevCouncil/backend/go_orchestrator`, which is the

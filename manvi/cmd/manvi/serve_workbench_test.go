@@ -75,7 +75,7 @@ func TestServeGeneratesThroughConfiguredLocalHTTPProvider(t *testing.T) {
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&request); err != nil {
 			t.Error(err)
-			http.Error(w, "invalid fixture request", 400)
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
 			return
 		}
 		if request.Model != "workbench-model" || request.MaxTokens != 8192 || len(request.Tools) != 0 || len(request.Messages) != 2 || !strings.Contains(request.Messages[1].Content, "fix E42") {
