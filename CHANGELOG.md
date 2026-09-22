@@ -94,6 +94,12 @@ unchanged.
 
 ### Fixed
 
+- **The dependency allowlist still described the tree from before the
+  DevCouncil import.** `go list -deps` names
+  `github.com/bharathvbcr/DevCouncil/backend/go_orchestrator`, which is the
+  component module this harness imports through the `replace` in
+  `manvi/go.mod`. The allowlist now names that module. `gusset` stays off
+  it: that import is cgo, and this gate certifies `CGO_ENABLED=0`.
 - **`gussetcheck` imported a cgo engine into the `CGO_ENABLED=0` build.**
   `verify.sh` and the release matrix both compile that way, so `go vet` and
   the tag build die on `gusset/internal/ffi` before any test runs. The cgo
