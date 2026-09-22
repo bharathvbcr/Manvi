@@ -496,6 +496,22 @@ fi
 # a moved file — would leave this step green while checking nothing. That is the
 # same failure the Go cross-boundary count below exists to catch, and the Rust
 # half of the gate had no equivalent: it asserted only an exit code.
+# dc-verify's json contract runs the DevCouncil host. The crate is reached
+# through crates/dc-verify, a symlink, so CARGO_MANIFEST_DIR's grandparent is
+# this repository and the test looks for a binary that was never built here.
+# DEVCOUNCIL_BIN is the override it already accepts. The archive is gusset's
+# release staticlib; a runner that just fetched the pin does not have one.
+step "Rust — DevCouncil host"
+gusset_lib="../gusset/target/release/libgusset.a"
+if [[ ! -f "$gusset_lib" ]]; then
+  cargo build --release --manifest-path ../gusset/Cargo.toml || fail "gusset staticlib, which the DevCouncil host links"
+fi
+host_mod="../DevCouncil/backend/go_orchestrator"
+[[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
+(cd "$host_mod" && CGO_ENABLED=1 go build -o bin/devcouncil ./cmd/devcouncil) \
+  || fail "DevCouncil host binary for the Rust json contract"
+export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
+
 step "Rust — test"
 rust_out="$( (cd crates && cargo test) 2>&1 )" || { printf '%s\n' "$rust_out" >&2; fail "cargo test"; }
 rust_ran="$(grep -oE '^test result: ok\. [0-9]+ passed' <<<"$rust_out" | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')"
