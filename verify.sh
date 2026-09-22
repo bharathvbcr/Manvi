@@ -283,7 +283,12 @@ else
 fi
 
 step "Go — cross-boundary coverage"
-for pkg in ./dc/store ./devcouncil; do
+# ./dc/store left this module when the client moved into DevCouncil. The
+# harness-side callers that still drive the real dcstore binary are
+# ./devcouncil and ./serve. A missing directory counted as zero tests and
+# failed the gate after the migration, which is a path that no longer
+# exists rather than a boundary that was not exercised.
+for pkg in ./devcouncil ./serve; do
   ran="$( (cd manvi && go test -count=1 -v "$pkg" 2>/dev/null) | grep -c '^--- PASS' || true )"
   (( ran >= 5 )) || fail "$pkg ran only ${ran} tests; the process boundary is not being exercised"
   printf '    %s: %s tests against the real binaries\n' "$pkg" "$ran"
