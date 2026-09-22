@@ -5,5 +5,5 @@
 # where the replace lines and the crates/* symlinks both resolve.
 # The release builds these commits. A newer sibling checkout is a different
 # product than the tag.
-DevCouncil	https://github.com/bharathvbcr/DevCouncil.git	42e07a2c05ba9c2dd83be16e4f6b6a30c8e4e5ff
+DevCouncil	https://github.com/bharathvbcr/DevCouncil.git	97741aec2a7150e7288733542200e4d26e939daa
 gusset	https://github.com/bharathvbcr/gusset.git	7a56c3c98d026b4e445f687140c90d70755e8590
