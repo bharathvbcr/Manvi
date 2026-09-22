@@ -94,6 +94,18 @@ unchanged.
 
 ### Fixed
 
+- **A tag push would have failed the release, and a green one would have
+  shipped the wrong notes.** `go build` on the runner resolves
+  `manvi/go.mod`'s replace directives to sibling checkouts that are not in
+  the repository, so the matrix dies at the first import — the same failure
+  the nightly verify job has been reporting as `go vet`. The build and
+  verify workflows now fetch the commits in `scripts/module-pins.txt`
+  before Go runs, and refuse a checkout that is some other commit. The
+  publish step reads `docs/releases/<tag>.md` with `--notes-file` and edits
+  an existing release instead of creating it twice. Notes are not placed in
+  an environment variable (GitHub caps those at 48 KB). A missing, empty,
+  oversized, still-zipped, or partial asset set fails before `gh release
+  create`.
 - **Offline deterministic replay rejected its own valid journals.** `NewState`
   allocated `RecoveryCounts` as an empty non-nil map while the field is tagged
   `omitempty`, so encoding dropped it and decoding yielded nil, and a recorded

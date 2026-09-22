@@ -42,6 +42,11 @@ jobs:
   gate:
     name: verify.sh (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # fetch-modules.sh checks the pins out first. This fails the job when
+      # the checkout is any other commit, which is a different product than
+      # the one verify.sh just built.
+      MANVI_REQUIRE_MODULE_PINS: "1"
     strategy:
       # Both halves of the matrix report. A failure on one platform is a fact
       # about the code, not a reason to stop learning about the other.
@@ -50,6 +55,13 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # manvi/go.mod replaces DevCouncil and gusset with sibling directories
+      # that are not in this checkout. go vet fails closed on that absence;
+      # fetching the pins is what makes the absence visible as a missing
+      # commit rather than a missing directory.
+      - name: Module replacements
+        run: bash scripts/fetch-modules.sh
 
       # The version comes from go.mod so this file cannot drift away from the
       # toolchain the module declares.
@@ -197,12 +209,16 @@ jobs:
     name: verify.sh --${{ matrix.mode }}
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    env:
+      MANVI_REQUIRE_MODULE_PINS: "1"
     strategy:
       fail-fast: false
       matrix:
         mode: [race, fuzz]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Module replacements
+        run: bash scripts/fetch-modules.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod

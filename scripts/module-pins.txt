@@ -1,0 +1,9 @@
+# Pinned module replacements for manvi/go.mod.
+#
+# Columns are tab-separated: name, clone URL, full commit.
+# scripts/fetch-modules.sh checks each one out at <repo>/../<name>, which is
+# where the replace lines and the crates/* symlinks both resolve.
+# The release builds these commits. A newer sibling checkout is a different
+# product than the tag.
+DevCouncil	https://github.com/bharathvbcr/DevCouncil.git	42e07a2c05ba9c2dd83be16e4f6b6a30c8e4e5ff
+gusset	https://github.com/bharathvbcr/gusset.git	7a56c3c98d026b4e445f687140c90d70755e8590

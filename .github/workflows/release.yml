@@ -1,9 +1,15 @@
 # Build and publish manvi binaries for darwin and linux (amd64, arm64).
 #
 # Triggered by version tags (v*). Each matrix cell produces a statically linked
-# binary (CGO_ENABLED=0) stamped with the tag via -ldflags, then the release job
-# attaches every artifact plus SHA-256 checksums. There is no Windows target —
-# see verify.yml for why this tree does not build for GOOS=windows.
+# binary (CGO_ENABLED=0) stamped with the tag via -ldflags, then the publish
+# job attaches every artifact plus SHA-256 checksums and the curated notes in
+# docs/releases/<tag>.md. There is no Windows target — see verify.yml for why
+# this tree does not build for GOOS=windows.
+#
+# The Go module replaces DevCouncil and gusset with sibling checkouts. Those
+# directories are not in this repository, so the build fetches the commits in
+# scripts/module-pins.txt before compiling. Notes are published with
+# --notes-file. They are not placed in an environment variable.
 name: release
 
 on:
@@ -18,11 +24,12 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled publish can leave a release with a partial asset set.
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -43,6 +50,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Module replacements
+        run: bash scripts/fetch-modules.sh
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: manvi/go.mod
@@ -53,20 +63,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          VERSION: ${{ github.ref_name }}
-        run: |
-          # workflow_dispatch may stamp a chosen tag without pushing one.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.tag }}"
-          fi
-          out="manvi-${VERSION}-${GOOS}-${GOARCH}"
-          mkdir -p dist
-          go -C manvi build \
-            -trimpath \
-            -ldflags "-s -w -X main.stampedVersion=${VERSION}" \
-            -o "../dist/${out}" \
-            ./cmd/manvi
-          echo "artifact=${out}" >> "$GITHUB_ENV"
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: bash scripts/release-build.sh
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -81,33 +81,19 @@ jobs:
     # Only real tag pushes publish. workflow_dispatch is a build-only dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
 
-      - name: Checksums
-        working-directory: dist
-        run: |
-          # One checksum file listing every binary. GitPulse verifies against
-          # this before trusting a download; a mismatch is a refusal.
-          shasum -a 256 manvi-* | tee SHA256SUMS
-          # Fail loudly if any matrix cell is missing rather than shipping a
-          # partial release.
-          expected=4
-          found=$(ls -1 manvi-* | wc -l | tr -d ' ')
-          test "$found" -eq "$expected" || {
-            echo "expected ${expected} binaries, found ${found}:" >&2
-            ls -la >&2
-            exit 1
-          }
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          files: |
-            dist/manvi-*
-            dist/SHA256SUMS
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: bash scripts/release-publish.sh

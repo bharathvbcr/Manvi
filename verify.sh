@@ -159,6 +159,20 @@ notcovered() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+step "Release — notes, assets and workflow"
+if have node; then
+  node --test scripts/check-release.test.mjs || fail "release checks"
+  # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
+  # is an unbound variable that fails the gate before it checks anything.
+  if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then
+    node scripts/check-release.mjs --require-pins || fail "release checks"
+  else
+    node scripts/check-release.mjs || fail "release checks"
+  fi
+else
+  notcovered "node not on PATH — release notes and workflow were not checked"
+fi
+
 step "Go — format"
 if (( FIX )); then
   gofmt -w manvi
