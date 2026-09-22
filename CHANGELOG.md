@@ -101,6 +101,11 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **Ubuntu verify could not sandbox the bench stress suite.** AppArmor
+  blocks unprivileged user namespaces, so `bwrap` failed with
+  `setting up uid map: Permission denied` and every contained check
+  failed. The Linux job now allows that namespace before the suite runs.
+  The suite still refuses an uncontained shell.
 - **The verify job linked the wrong `libgusset.a`.** `devcouncil_gusset_init`
   is exported by DevCouncil's `rust/gusset-engine` umbrella, not by the
   gusset repository archive. CI built the latter and the host link failed

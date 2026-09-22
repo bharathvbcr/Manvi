@@ -121,6 +121,14 @@ jobs:
           if [ "$(uname -s)" = Linux ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
+            # Ubuntu's AppArmor refuses unprivileged user namespaces, so
+            # bwrap cannot write its uid map and every sandboxed bench check
+            # fails with "setting up uid map: Permission denied". The stress
+            # suite refuses to run the shell uncontained, so the kernel has
+            # to allow the namespace the suite already requires.
+            if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
@@ -243,6 +251,14 @@ jobs:
           if [ "$(uname -s)" = Linux ]; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
+            # Ubuntu's AppArmor refuses unprivileged user namespaces, so
+            # bwrap cannot write its uid map and every sandboxed bench check
+            # fails with "setting up uid map: Permission denied". The stress
+            # suite refuses to run the shell uncontained, so the kernel has
+            # to allow the namespace the suite already requires.
+            if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
           fi
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       # --race and --fuzz each re-run the default gate first, so this is the
