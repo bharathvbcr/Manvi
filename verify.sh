@@ -335,17 +335,18 @@ cover_worst="$(awk 'NF == 3 {
 printf '    covered: %s%% of statements across the tree (floor %s%%); weakest package %s\n' \
   "$cover_total" "$GO_COVER_FLOOR" "${cover_worst:-unknown}"
 
-# The Go plane carries three direct dependencies and no more. That used to be
-# zero, and "zero" needed no gate because an empty go.mod said it. It is not
-# zero any longer, so the property has to be measured: this is an allowlist, and
-# a package outside it is a build failure rather than a thing somebody notices
-# in a diff.
+# The Go plane's third-party dependencies are an allowlist. A package outside
+# it is a build failure rather than a thing somebody notices in a diff.
 #
 # memguard seals credentials at rest and brings memcall, x/crypto and x/sys.
 # samber/mo gives absence one spelling at the local provider's credential seam.
 # The ruleguard DSL is lint-only — excluded from every build by its tag, which
 # is why it must NOT appear below: if it ever does, the tag has stopped working
 # and a lint dependency has entered a shipped binary.
+# DevCouncil's go_orchestrator is the component module this harness imports.
+# It arrives through the replace in manvi/go.mod, not through a proxy. gusset
+# is cgo and is not part of the CGO_ENABLED=0 build this gate certifies; if
+# it shows up here, a cgo file was compiled into the shipped configuration.
 #
 # valyala/fastjson was measured for this list and refused. On the streaming path
 # it saves ~900ns per chunk against a ~16ms gap between tokens. On the code
@@ -359,7 +360,7 @@ step "Go — dependency surface"
 # The module itself is now a dotted path (github.com/bharathvbcr/Manvi/manvi),
 # so the domain-path filter below would report every package in this tree as an
 # unexpected dependency. Exclude it; the allowlist is for *external* packages.
-allowed='^(github\.com/awnumar/(memguard|memcall)|github\.com/samber/mo|golang\.org/x/(crypto|sys))(/|$)'
+allowed='^(github\.com/awnumar/(memguard|memcall)|github\.com/samber/mo|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator)(/|$)'
 unexpected="$( (cd manvi && go list -deps ./... 2>/dev/null) \
   | grep -E '^[a-z0-9-]+\.[a-z]+/' \
   | grep -v '^crypto/internal' \
@@ -368,7 +369,7 @@ unexpected="$( (cd manvi && go list -deps ./... 2>/dev/null) \
 [[ -z "$unexpected" ]] || fail "packages outside the allowed dependency surface reached the build graph:
 $unexpected
   add them to the allowlist in verify.sh, with the reason, or take them back out of the module"
-direct="$( (cd manvi && go list -deps ./... 2>/dev/null) | grep -cE '^(github\.com/awnumar|github\.com/samber)' || true )"
+direct="$( (cd manvi && go list -deps ./... 2>/dev/null) | grep -cE '^(github\.com/awnumar|github\.com/samber|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator|golang\.org/x/(crypto|sys))' || true )"
 printf '    covered: the build graph holds nothing outside the standard library and %s allowed packages\n' "$direct"
 
 step "Go — lint (enforced set)"
