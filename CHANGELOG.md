@@ -101,6 +101,11 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **The verify job linked the wrong `libgusset.a`.** `devcouncil_gusset_init`
+  is exported by DevCouncil's `rust/gusset-engine` umbrella, not by the
+  gusset repository archive. CI built the latter and the host link failed
+  on both runners. The gate now builds the umbrella and passes its
+  directory to the linker first.
 - **A server's stderr explanation could lose the race with stdout EOF.**
   GitHub's macOS runner reported a bare connection close and empty
   diagnostics for a server that had written its failure. The stdout reader

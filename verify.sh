@@ -499,18 +499,28 @@ fi
 # dc-verify's json contract runs the DevCouncil host. The crate is reached
 # through crates/dc-verify, a symlink, so CARGO_MANIFEST_DIR's grandparent is
 # this repository and the test looks for a binary that was never built here.
-# DEVCOUNCIL_BIN is the override it already accepts. The archive is gusset's
-# release staticlib; a runner that just fetched the pin does not have one.
+# DEVCOUNCIL_BIN is the override it already accepts. The host links
+# devcouncil_gusset_init, which is exported by DevCouncil's umbrella
+# staticlib (rust/gusset-engine), not by the gusset repository's own
+# archive. A runner that just fetched the pin has not built the umbrella.
+# Linking the gusset repository archive instead fails closed: undefined
+# reference to devcouncil_gusset_init.
 step "Rust — DevCouncil host"
-gusset_lib="../gusset/target/release/libgusset.a"
-if [[ ! -f "$gusset_lib" ]]; then
-  cargo build --release --manifest-path ../gusset/Cargo.toml || fail "gusset staticlib, which the DevCouncil host links"
+engine_lib="../DevCouncil/rust/gusset-engine/target/release/libgusset.a"
+if [[ ! -f "$engine_lib" ]]; then
+  cargo build --release --manifest-path ../DevCouncil/rust/gusset-engine/Cargo.toml \
+    || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
 fi
+[[ -f "$engine_lib" ]] || fail "DevCouncil gusset-engine archive missing at $engine_lib"
+engine_dir="$(cd "$(dirname "$engine_lib")" && pwd)"
 host_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
-(cd "$host_mod" && CGO_ENABLED=1 go build -o bin/devcouncil ./cmd/devcouncil) \
+# -L the umbrella first. Gusset's own cgo paths are a fallback for its tests;
+# if they win, devcouncil_gusset_init is missing and the link fails.
+(cd "$host_mod" && CGO_ENABLED=1 CGO_LDFLAGS="-L${engine_dir}" go build -o bin/devcouncil ./cmd/devcouncil) \
   || fail "DevCouncil host binary for the Rust json contract"
 export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
+[[ -x "$DEVCOUNCIL_BIN" ]] || fail "DevCouncil host binary was not produced at $DEVCOUNCIL_BIN"
 
 step "Rust — test"
 rust_out="$( (cd crates && cargo test) 2>&1 )" || { printf '%s\n' "$rust_out" >&2; fail "cargo test"; }
