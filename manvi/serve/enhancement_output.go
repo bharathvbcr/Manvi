@@ -310,38 +310,59 @@ func unwrapEnhancementJSON(raw []byte) ([]byte, error) {
 func stripEnhancementThink(s string) (string, error) {
 	for n := 0; n < 8; n++ {
 		s = strings.TrimSpace(s)
-		lower := strings.ToLower(s)
 		var open, close string
 		switch {
-		case strings.HasPrefix(lower, "<think>"):
+		case hasASCIIPrefixFold(s, "<think>"):
 			open, close = "<think>", "</think>"
-		case strings.HasPrefix(lower, "<thinking>"):
+		case hasASCIIPrefixFold(s, "<thinking>"):
 			open, close = "<thinking>", "</thinking>"
-		case strings.HasPrefix(lower, "</think>"):
+		case hasASCIIPrefixFold(s, "</think>"):
 			s = s[len("</think>"):]
 			continue
-		case strings.HasPrefix(lower, "</thinking>"):
+		case hasASCIIPrefixFold(s, "</thinking>"):
 			s = s[len("</thinking>"):]
 			continue
 		default:
-			if strings.HasPrefix(lower, "<think") || strings.HasPrefix(lower, "<thinking") {
+			if hasASCIIPrefixFold(s, "<think") || hasASCIIPrefixFold(s, "<thinking") {
 				return "", errors.New("enhancement response think block is incomplete")
 			}
 			return s, nil
 		}
 		rest := s[len(open):]
-		idx := strings.Index(strings.ToLower(rest), close)
+		idx := indexASCIIFold(rest, close)
 		if idx < 0 {
 			return "", errors.New("enhancement response think block is incomplete")
 		}
 		s = rest[idx+len(close):]
 	}
 	s = strings.TrimSpace(s)
-	lower := strings.ToLower(s)
-	if strings.HasPrefix(lower, "<think") || strings.HasPrefix(lower, "<thinking") || strings.HasPrefix(lower, "</think") {
+	if hasASCIIPrefixFold(s, "<think") || hasASCIIPrefixFold(s, "<thinking") || hasASCIIPrefixFold(s, "</think") {
 		return "", errors.New("enhancement response think block is nested too deeply")
 	}
 	return s, nil
+}
+
+// The think tags are ASCII. strings.ToLower can change the byte length of
+// the text around them (U+023A is two bytes and lowercases to three), so an
+// index into the lowercased copy is not an index into the original.
+func hasASCIIPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	return strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+func indexASCIIFold(s, needle string) int {
+	if needle == "" || len(s) < len(needle) {
+		return -1
+	}
+	limit := len(s) - len(needle)
+	for i := 0; i <= limit; i++ {
+		if strings.EqualFold(s[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 func stripEnhancementFence(s string) (string, error) {

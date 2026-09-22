@@ -106,6 +106,9 @@ func TestEnhancementOutputAcceptsRealisticWrapping(t *testing.T) {
 		"CRLF fence":      "```json\r\n" + strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n```\r\n",
 		"leading spaces":  "  \n" + valid + "\n  ",
 		"think then JSON": "<think>plan the rewrite</think>\n" + valid,
+		// U+023A lowercases to more bytes than it occupies. An index taken
+		// from strings.ToLower does not address this string and panics.
+		"think casefold":  "<think>\u023a</think>\n" + valid,
 		"THINK tags":      "<THINK>\nplan\n</THINK>\n" + valid,
 		"thinking tags":   "<thinking>plan</thinking>\n```json\n" + valid + "\n```",
 		"leftover close":  "</think>\n" + valid,
@@ -399,7 +402,7 @@ func FuzzEnhancementOutputCannotSmuggleUnrequestedFields(f *testing.F) {
 
 func FuzzEnhancementUnwrapKeepsSingleObjectContract(f *testing.F) {
 	valid := `{"title":"Resolve E42"}`
-	for _, seed := range []string{valid, "```json\n" + valid + "\n```", "Here is the JSON:\n" + valid, valid + "{}", "<think>x</think>\n" + valid, "<thinking>x</thinking>\n```json\n" + valid + "\n```", "Sure.\nHere is the JSON:\n" + valid} {
+	for _, seed := range []string{valid, "```json\n" + valid + "\n```", "Here is the JSON:\n" + valid, valid + "{}", "<think>x</think>\n" + valid, "<think>\u023a</think>\n" + valid, "<thinking>x</thinking>\n```json\n" + valid + "\n```", "Sure.\nHere is the JSON:\n" + valid} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, wrap string) {
