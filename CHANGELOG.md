@@ -101,6 +101,9 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **The lint-debt counts were from an earlier golangci-lint.** 2.13.2,
+  which CI installs as `@latest`, recounts the same tree. The ratchet
+  numbers are the new measurement.
 - **The recording proxy read a peer body with no limit, and several tests
   used numeric HTTP statuses.** Both fail the current golangci-lint, which
   is what CI installs. The proxy now refuses a request past 32 MiB instead
