@@ -94,6 +94,15 @@ unchanged.
 
 ### Fixed
 
+- **`gussetcheck` imported a cgo engine into the `CGO_ENABLED=0` build.**
+  `verify.sh` and the release matrix both compile that way, so `go vet` and
+  the tag build die on `gusset/internal/ffi` before any test runs. The cgo
+  call now lives behind a build tag. A cgo-off binary reports that the
+  engine is not linked, and policy checks in that build keep their verdict.
+  A cgo build still refuses a policy answer when the handle is poisoned.
+  Security impact: the shipped binary does not gain a path around the
+  ladder. It also does not link an engine it cannot link, so it does not
+  turn every policy answer into `E_INTERNAL`.
 - **A tag push would have failed the release, and a green one would have
   shipped the wrong notes.** `go build` on the runner resolves
   `manvi/go.mod`'s replace directives to sibling checkouts that are not in

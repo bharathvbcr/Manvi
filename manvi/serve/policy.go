@@ -298,14 +298,20 @@ func (s *Server) evaluateHostWrite(
 // requireGusset refuses a policy answer when the in-process dc-glob engine is
 // not alive. GitPulse maps that error to an unchecked verdict, and an
 // unchecked verdict from an installed harness is not permission to act.
+//
+// ErrNotLinked is a different fact. The release binary is CGO_ENABLED=0 and
+// has no handle. Refusing every policy answer in that build would turn the
+// shipped harness into a blanket denial. A poisoned handle, which only a
+// cgo build can have, still refuses.
 func requireGusset() *Error {
-	if err := gussetcheck.Ready(); err != nil {
-		return &Error{
-			Code:    ErrInternal,
-			Message: fmt.Sprintf("gusset engine refused the policy check: %v", err),
-		}
+	err := gussetcheck.Ready()
+	if err == nil || errors.Is(err, gussetcheck.ErrNotLinked) {
+		return nil
 	}
-	return nil
+	return &Error{
+		Code:    ErrInternal,
+		Message: fmt.Sprintf("gusset engine refused the policy check: %v", err),
+	}
 }
 
 // checkCommand evaluates one command.
