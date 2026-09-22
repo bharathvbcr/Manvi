@@ -649,6 +649,9 @@ func (s *Codex) Respond(ctx context.Context, request Request, response Response)
 		return err
 	}
 	p := s.pending[request.ID]
+	if p == nil {
+		return errors.New("Codex callback is stale, changed or already consumed")
+	}
 	p.sent = true // Consume before writing; even a failed/partial write must not retry.
 	return s.wire.send(ctx, packet{ID: p.wireID, Result: raw})
 }

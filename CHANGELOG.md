@@ -101,6 +101,10 @@ unchanged.
   repository.** The crate is reached through a symlink, so the test's
   grandparent is Manvi, and the binary lives in the DevCouncil checkout.
   The gate builds that host and points `DEVCOUNCIL_BIN` at it.
+- **A missing managed-adapter callback dereferenced a nil pending entry.**
+  nilaway counted four new panics in the Claude and Codex responders, which
+  put the tree over its ceiling of 78. A missing entry now returns the same
+  stale-callback error the preflight already uses.
 - **The lint-debt counts were from an earlier golangci-lint.** 2.13.2,
   which CI installs as `@latest`, recounts the same tree. The ratchet
   numbers are the new measurement.

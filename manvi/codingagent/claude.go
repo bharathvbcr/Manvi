@@ -724,6 +724,9 @@ func (s *Claude) Respond(ctx context.Context, request Request, response Response
 		return err
 	}
 	p := s.pending[request.ID]
+	if p == nil {
+		return errors.New("Claude callback is stale, changed or already consumed")
+	}
 	p.sent = true // Consume before writing; even a failed/partial write must not retry.
 	return s.send(ctx, map[string]any{
 		"type": "control_response",
