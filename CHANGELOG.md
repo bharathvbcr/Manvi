@@ -94,6 +94,10 @@ unchanged.
 
 ### Fixed
 
+- **`dc-verify`'s json contract looked for the host binary inside this
+  repository.** The crate is reached through a symlink, so the test's
+  grandparent is Manvi, and the binary lives in the DevCouncil checkout.
+  The gate builds that host and points `DEVCOUNCIL_BIN` at it.
 - **The dependency allowlist still described the tree from before the
   DevCouncil import.** `go list -deps` names
   `github.com/bharathvbcr/DevCouncil/backend/go_orchestrator`, which is the
