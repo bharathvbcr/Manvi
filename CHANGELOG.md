@@ -29,8 +29,10 @@ under **Unreleased** in the same commit as the code.
   back as `ErrPanic` then `ErrPoisoned` while the shared handle keeps matching.
   Rust prints the induced panic to stderr; that line is the proof running. The
   policy plane's `Ready` still runs the panic-free `Run`.
-- `manvi serve` closes the engine handle on exit, so a stuck engine surfaces as
-  a shutdown error instead of a silent hang at process exit.
+- `manvi serve` releases the engine handle on exit through
+  `gussetcheck.Shutdown(2s)`: jobs are cancelled and the join is bounded, so a
+  stuck engine is reported as a shutdown error and left to process exit rather
+  than hanging it.
 - `verify.sh` gains an always-on `Go — gusset engine (cgo)` step. The default
   gate is cgo-off, so the only leg that linked the engine was the opt-in race
   run. The DevCouncil host and this step build through DevCouncil's

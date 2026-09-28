@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -201,10 +202,10 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	if runner != nil {
 		err = errors.Join(err, runner.Close())
 	}
-	// The policy plane's engine handle, if this build links one. Joining its
-	// workers here rather than leaving them to process exit is what lets a
-	// stuck engine show up as a shutdown error instead of a silent hang.
-	return errors.Join(err, gussetcheck.Close())
+	// The policy plane's engine handle, if this build links one. Bounded: a
+	// stuck engine is reported as a shutdown error and left to process exit,
+	// never joined without a limit.
+	return errors.Join(err, gussetcheck.Shutdown(2*time.Second))
 }
 
 func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementConfiguration, error) {

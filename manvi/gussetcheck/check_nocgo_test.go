@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestRunReportsEngineNotLinked(t *testing.T) {
@@ -24,6 +25,9 @@ func TestSelfTestAndCloseWithoutTheEngine(t *testing.T) {
 	}
 	if err := Close(); err != nil {
 		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if err := Shutdown(time.Second); err != nil {
+		t.Fatalf("Shutdown() = %v, want nil", err)
 	}
 }
 

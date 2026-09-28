@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gussetfn"
 	"github.com/bharathvbcr/gusset"
@@ -15,11 +16,18 @@ func selfTest(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if gusset.MaxPoolSize < 4 {
+		return fmt.Errorf("gusset: MaxPoolSize %d is below the bridge pool of 4", gusset.MaxPoolSize)
+	}
 	return classify(gussetfn.SelfTest(ctx))
 }
 
 func closeEngine() error {
 	return gussetfn.Close()
+}
+
+func shutdownEngine(drain time.Duration) error {
+	return gussetfn.Shutdown(drain)
 }
 
 func classify(err error) error {

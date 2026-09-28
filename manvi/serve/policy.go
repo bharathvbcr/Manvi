@@ -296,7 +296,9 @@ func (s *Server) evaluateHostWrite(
 }
 
 // requireGusset refuses a policy answer when the in-process dc-glob engine is
-// not alive. GitPulse maps that error to an unchecked verdict, and an
+// not alive. It is a health gate only: the decision itself is made by Go's
+// fnmatch, because a bool has no honest value for a transport failure (see
+// DevCouncil's gussetfn package doc). GitPulse maps that error to an unchecked verdict, and an
 // unchecked verdict from an installed harness is not permission to act.
 //
 // ErrNotLinked is a different fact. The release binary is CGO_ENABLED=0 and
