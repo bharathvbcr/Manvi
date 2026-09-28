@@ -35,6 +35,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/bootstrap"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -1439,6 +1440,11 @@ func buildGate(reg *flags.Registry) (*gate.Gate, *repomap.Map, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// The engine decides every pattern question in a build that links it;
+	// fnmatch in one that does not. Not gated on a health check: a failing
+	// engine is a hard denial per decision (path.engine_unavailable), which
+	// names the cause, and the handle reopens itself after a poison.
+	g.Matcher = gussetcheck.Matcher()
 	if err := loadGrants(g); err != nil {
 		return nil, nil, err
 	}

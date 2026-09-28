@@ -23,6 +23,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **Policy decisions are made by the Gusset engine in a cgo build.** Every
+  pattern question the write, read and command ladders ask — secret paths,
+  restricted and protected paths, planned-file globs, command allowlists —
+  now crosses into DevCouncil's dc-glob engine in `manvi serve`, in the
+  attended session's gate, and in `manvi check`. Before, the engine was a
+  health check and Go's fnmatch decided. Answers are held equal to fnmatch's
+  by the CPython fixture, a fuzz differential through the boundary, and
+  DevCouncil's policy suite re-run with the engine as every gate's default.
+  A matcher that cannot answer mid-decision is a hard denial under the new
+  `path.engine_unavailable` / `command.engine_unavailable` rules (added to
+  `contracts/verdict.schema.json`), never a guessed bool. A `CGO_ENABLED=0`
+  build has no engine and keeps fnmatch.
+- `devcouncil_git_stage` and `devcouncil_git_commit` ask the gate's matcher
+  for the secret-path check, so they read the list exactly as the write
+  ladder does; a matcher error refuses the stage or commit and says the check
+  did not run.
 - `manvi gusset-check` now runs `gussetcheck.SelfTest`: CPython fnmatch
   parity through the boundary, the batched match-any path, and a deliberate
   Rust panic inside the linked archive on a throwaway handle, which must come

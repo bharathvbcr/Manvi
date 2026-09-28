@@ -149,12 +149,12 @@ func TestGitCommitRefusesAHardLinkStagedElsewhere(t *testing.T) {
 // refused it — and on APFS those are one file.
 func TestSecretPathsFoldCase(t *testing.T) {
 	for _, p := range []string{".ENV", ".Env", "server.KEY", "ID_RSA", "a.PEM", "Secrets/k", ".NPMRC"} {
-		if leaked := secretPaths([]string{p}); len(leaked) != 1 {
+		if leaked, _ := secretPaths(nil, []string{p}); len(leaked) != 1 {
 			t.Errorf("secretPaths(%q) = %v, want it reported: the write ladder denies this path", p, leaked)
 		}
 	}
 	// And the list still means what it says: an ordinary file is not a secret.
-	if leaked := secretPaths([]string{"src/env.go", "notes.md"}); len(leaked) != 0 {
+	if leaked, _ := secretPaths(nil, []string{"src/env.go", "notes.md"}); len(leaked) != 0 {
 		t.Errorf("secretPaths over-reported: %v", leaked)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 func selfTest(ctx context.Context) error {
@@ -24,3 +26,7 @@ func check(ctx context.Context) error {
 	}
 	return ErrNotLinked
 }
+
+// Matcher is nil without the engine: a gate given nil matches with fnmatch,
+// the answer the engine is held equal to.
+func Matcher() policy.Matcher { return nil }

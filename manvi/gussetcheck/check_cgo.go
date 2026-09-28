@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gussetfn"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/gusset"
 )
 
@@ -51,3 +52,8 @@ func check(ctx context.Context) error {
 	}
 	return classify(gussetfn.Check(ctx))
 }
+
+// Matcher is the engine as a policy.Matcher: every gate this build hands it
+// to asks dc-glob across the boundary, and an engine failure is a hard
+// denial under path.engine_unavailable or command.engine_unavailable.
+func Matcher() policy.Matcher { return gussetfn.Matcher{} }

@@ -235,8 +235,9 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 	if p.Path == "" {
 		return nil, badRequest("policy.check.file requires a path")
 	}
-	if err := requireGusset(); err != nil {
-		return nil, err
+	m, gerr := requireGusset()
+	if gerr != nil {
+		return nil, gerr
 	}
 
 	op, err := parseOperation(p.Op)
@@ -244,7 +245,7 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 		return nil, badRequest("%v", err)
 	}
 
-	return s.evaluateHostWrite(p.Root, p.Path, op, p.Internal, p.Scope), nil
+	return s.evaluateHostWrite(m, p.Root, p.Path, op, p.Internal, p.Scope), nil
 }
 
 // evaluateHostWrite judges one path for a host with no task model.
@@ -254,6 +255,7 @@ func (s *Server) checkFile(raw json.RawMessage) (any, *Error) {
 // and a host that was told a path is refused must not be told the command that
 // writes it is fine.
 func (s *Server) evaluateHostWrite(
+	m policy.Matcher,
 	root, path string,
 	op dc.Operation,
 	internal bool,
@@ -274,6 +276,7 @@ func (s *Server) evaluateHostWrite(
 		// to report scope faithfully, without any operator asking for it.
 		AllowSameDir: s.allowSameDir,
 		HardRules:    s.hardRules,
+		Matcher:      m,
 	}
 	d := fileGate.EvaluateFileChange(path, task, op, internal)
 	if task != nil {
@@ -297,33 +300,45 @@ func (s *Server) evaluateHostWrite(
 }
 
 // requireGusset refuses a policy answer until the in-process dc-glob engine has
-// passed its check. It is a health gate only, and it proves the engine passed
-// once — gussetcheck.Ready keeps a pass for the process and retries a
-// transient failure; it does not re-probe a healthy engine per request. The
-// decision itself is made by Go's fnmatch, because a bool has no honest value
-// for a transport failure (see DevCouncil's gussetfn package doc). GitPulse
-// maps that error to an unchecked verdict, and an unchecked verdict from an
+// passed its check, and returns the matcher that answer is made with.
+//
+// The engine makes the decision: every pattern question the ladder asks goes
+// across the boundary, and its answers are held equal to fnmatch's by the
+// CPython fixture, a fuzz differential and DevCouncil's engine-backed policy
+// suite. A matcher error mid-decision is a hard denial under
+// path.engine_unavailable or command.engine_unavailable, never a guessed
+// bool. The check is a health gate that proves the engine passed once —
+// gussetcheck.Ready keeps a pass for the process and retries a transient
+// failure; it does not re-probe a healthy engine per request. GitPulse maps
+// the refusal to an unchecked verdict, and an unchecked verdict from an
 // installed harness is not permission to act.
 //
 // The refusal on the wire is a fixed message; the engine's own error, which
 // can carry its text and OS errors, goes to stderr with the other
 // diagnostics, as recovered keeps internals off the wire.
 //
-// ErrNotLinked is a different fact. The release binary is CGO_ENABLED=0 and
-// has no handle. Refusing every policy answer in that build would turn the
-// shipped harness into a blanket denial. A poisoned handle, which only a
+// ErrNotLinked is a different fact: a CGO_ENABLED=0 build has no engine, and
+// refusing every answer there would turn that harness into a blanket denial.
+// It answers with fnmatch (a nil matcher). A poisoned handle, which only a
 // cgo build can have, still refuses.
-func requireGusset() *Error {
+func requireGusset() (policy.Matcher, *Error) {
 	err := gussetReady()
-	if err == nil || errors.Is(err, gussetcheck.ErrNotLinked) {
-		return nil
+	if errors.Is(err, gussetcheck.ErrNotLinked) {
+		return nil, nil
+	}
+	if err == nil {
+		return engineMatcher(), nil
 	}
 	fmt.Fprintf(os.Stderr, "manvi serve: gusset engine check failed: %v\n", err)
-	return &Error{
+	return nil, &Error{
 		Code:    ErrInternal,
 		Message: "the in-process gusset engine failed its check, so this policy answer is refused; see the serve process's stderr",
 	}
 }
+
+// engineMatcher is gussetcheck.Matcher; a seam so tests can watch the gates
+// ask it in any build.
+var engineMatcher = gussetcheck.Matcher
 
 // gussetReady is gussetcheck.Ready; a seam so the refusal path is testable in
 // any build.
@@ -335,13 +350,14 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, badRequest("policy.check.command params: %v", err)
 	}
-	if err := requireGusset(); err != nil {
-		return nil, err
+	m, gerr := requireGusset()
+	if gerr != nil {
+		return nil, gerr
 	}
 
 	// Root is optional on the wire; empty keeps the fail-closed behaviour in
 	// which no absolute path is treated as this tree's own dev CLI.
-	cmdGate := policy.CommandGate{HardRules: s.hardRules, Root: p.Root}
+	cmdGate := policy.CommandGate{HardRules: s.hardRules, Root: p.Root, Matcher: m}
 
 	// The host's declared scope, carried as the task the ladder expects. With
 	// no task at all the ladder stops at RuleCommandNoLease and never reaches
@@ -386,7 +402,7 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		if p.Root == "" {
 			return policy.Decision{}, errCommandRootMissing
 		}
-		return s.evaluateHostWrite(p.Root, target, dc.OpWrite, false, p.Scope), nil
+		return s.evaluateHostWrite(m, p.Root, target, dc.OpWrite, false, p.Scope), nil
 	})
 	if err != nil {
 		return nil, badRequest("%v", err)
