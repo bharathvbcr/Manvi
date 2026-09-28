@@ -307,10 +307,23 @@ func unwrapEnhancementJSON(raw []byte) ([]byte, error) {
 	return []byte(s), nil
 }
 
+// asciiLower folds A-Z only, so every byte offset in the result is an offset
+// in s. strings.ToLower does not preserve length (U+212A KELVIN SIGN, three
+// bytes, becomes 'k'), and the think tags matched here are ASCII.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 func stripEnhancementThink(s string) (string, error) {
 	for n := 0; n < 8; n++ {
 		s = strings.TrimSpace(s)
-		lower := strings.ToLower(s)
+		lower := asciiLower(s)
 		var open, close string
 		switch {
 		case strings.HasPrefix(lower, "<think>"):
@@ -330,14 +343,14 @@ func stripEnhancementThink(s string) (string, error) {
 			return s, nil
 		}
 		rest := s[len(open):]
-		idx := strings.Index(strings.ToLower(rest), close)
+		idx := strings.Index(asciiLower(rest), close)
 		if idx < 0 {
 			return "", errors.New("enhancement response think block is incomplete")
 		}
 		s = rest[idx+len(close):]
 	}
 	s = strings.TrimSpace(s)
-	lower := strings.ToLower(s)
+	lower := asciiLower(s)
 	if strings.HasPrefix(lower, "<think") || strings.HasPrefix(lower, "<thinking") || strings.HasPrefix(lower, "</think") {
 		return "", errors.New("enhancement response think block is nested too deeply")
 	}

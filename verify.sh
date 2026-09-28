@@ -217,7 +217,15 @@ fi
 # longer wait for the same answer.
 if (( RACE )); then
   step "Go — race detector"
-  (cd manvi && CGO_ENABLED=1 go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
+  # cgo on links gussetcheck against the umbrella archive, so the race leg
+  # needs the same captured cgo environment as the engine step below. It ran
+  # with bare CGO_ENABLED=1 and failed every scheduled run: cannot find
+  # -lgusset, for cmd/manvi, gussetcheck and serve.
+  race_engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
+  [[ -x "$race_engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $race_engine_env"
+  race_exports="$("$race_engine_env" --export)" \
+    || fail "DevCouncil gusset-engine staticlib for the race leg"
+  (eval "$race_exports" && cd manvi && go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
