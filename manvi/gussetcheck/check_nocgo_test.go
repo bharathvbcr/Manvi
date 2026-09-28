@@ -18,6 +18,15 @@ func TestRunReportsEngineNotLinked(t *testing.T) {
 	}
 }
 
+func TestSelfTestAndCloseWithoutTheEngine(t *testing.T) {
+	if err := SelfTest(context.Background()); !errors.Is(err, ErrNotLinked) {
+		t.Fatalf("SelfTest() = %v, want ErrNotLinked", err)
+	}
+	if err := Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+}
+
 func TestRunPreservesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

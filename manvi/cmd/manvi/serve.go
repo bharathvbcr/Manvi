@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/serve"
 )
@@ -200,7 +201,10 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	if runner != nil {
 		err = errors.Join(err, runner.Close())
 	}
-	return err
+	// The policy plane's engine handle, if this build links one. Joining its
+	// workers here rather than leaving them to process exit is what lets a
+	// stuck engine show up as a shutdown error instead of a silent hang.
+	return errors.Join(err, gussetcheck.Close())
 }
 
 func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementConfiguration, error) {

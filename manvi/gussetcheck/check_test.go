@@ -18,6 +18,18 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestSelfTestProvesTheFirewall(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := SelfTest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The shared handle still answers after the induced panic.
+	if err := Run(ctx); err != nil {
+		t.Fatalf("Run after SelfTest: %v", err)
+	}
+}
+
 func TestMatchAny(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

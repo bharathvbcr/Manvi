@@ -506,21 +506,31 @@ fi
 # Linking the gusset repository archive instead fails closed: undefined
 # reference to devcouncil_gusset_init.
 step "Rust — DevCouncil host"
-engine_lib="../DevCouncil/rust/gusset-engine/target/release/libgusset.a"
-if [[ ! -f "$engine_lib" ]]; then
-  cargo build --release --manifest-path ../DevCouncil/rust/gusset-engine/Cargo.toml \
-    || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
-fi
-[[ -f "$engine_lib" ]] || fail "DevCouncil gusset-engine archive missing at $engine_lib"
-engine_dir="$(cd "$(dirname "$engine_lib")" && pwd)"
+# cgo-env.sh always runs the incremental build (building only when the
+# archive was missing linked whatever an older checkout left) and keys Go's
+# caches on the archive's hash, without which a rebuilt archive is not
+# relinked and a cached "ok" is replayed against the old one.
+engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
+[[ -x "$engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $engine_env; the DevCouncil pin predates it"
+engine_exports="$("$engine_env" --export)" \
+  || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
 host_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
-# -L the umbrella first. Gusset's own cgo paths are a fallback for its tests;
-# if they win, devcouncil_gusset_init is missing and the link fails.
-(cd "$host_mod" && CGO_ENABLED=1 CGO_LDFLAGS="-L${engine_dir}" go build -o bin/devcouncil ./cmd/devcouncil) \
+# In a subshell: the exports turn cgo on, and everything after this step is
+# the CGO_ENABLED=0 configuration this gate certifies.
+(eval "$engine_exports" && cd "$host_mod" && go build -o bin/devcouncil ./cmd/devcouncil) \
   || fail "DevCouncil host binary for the Rust json contract"
+
 export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 [[ -x "$DEVCOUNCIL_BIN" ]] || fail "DevCouncil host binary was not produced at $DEVCOUNCIL_BIN"
+
+# The default gate is cgo-off, so the only leg that reached gussetcheck with
+# the engine linked was the opt-in race run. This is the shipped policy
+# plane's engine check, the panic-firewall self-test against the archive this
+# repository links, and the serve package's policy path, all with cgo on.
+step "Go — gusset engine (cgo)"
+(eval "$engine_exports" && cd manvi && go test -count=1 ./gussetcheck ./serve \
+  && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 
 step "Rust — test"
 rust_out="$( (cd crates && cargo test) 2>&1 )" || { printf '%s\n' "$rust_out" >&2; fail "cargo test"; }

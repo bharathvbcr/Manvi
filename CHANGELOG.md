@@ -21,7 +21,24 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- `manvi gusset-check` now runs `gussetcheck.SelfTest`: CPython fnmatch
+  parity through the boundary, the batched match-any path, and a deliberate
+  Rust panic inside the linked archive on a throwaway handle, which must come
+  back as `ErrPanic` then `ErrPoisoned` while the shared handle keeps matching.
+  Rust prints the induced panic to stderr; that line is the proof running. The
+  policy plane's `Ready` still runs the panic-free `Run`.
+- `manvi serve` closes the engine handle on exit, so a stuck engine surfaces as
+  a shutdown error instead of a silent hang at process exit.
+- `verify.sh` gains an always-on `Go — gusset engine (cgo)` step. The default
+  gate is cgo-off, so the only leg that linked the engine was the opt-in race
+  run. The DevCouncil host and this step build through DevCouncil's
+  `rust/gusset-engine/cgo-env.sh`, which rebuilds the archive every time and
+  keys Go's caches on its hash; before, a rebuilt archive could be skipped by
+  the Go build cache and a cached test result replayed against the old one.
+- The DevCouncil and gusset pins in `scripts/module-pins.txt` move to the
+  revisions this was verified against.
 
 ---
 

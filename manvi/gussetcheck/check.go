@@ -31,6 +31,20 @@ var (
 	readyErr  error
 )
 
+// SelfTest is Run plus a deliberate panic inside the engine archive on a
+// throwaway handle, proving the panic firewall (I2) against the archive this
+// binary links. Rust prints the induced panic to stderr. For `manvi
+// gusset-check`, never for a server: Ready runs Run, which panics nothing.
+func SelfTest(ctx context.Context) error {
+	return selfTest(ctx)
+}
+
+// Close releases the engine's shared handle at process shutdown. A cgo-off
+// build has nothing to release.
+func Close() error {
+	return closeEngine()
+}
+
 // Ready runs the engine check once per process. A failure stays failed:
 // a poisoned handle does not start answering policy checks on the next call.
 // ErrNotLinked also stays, which is the whole answer for a cgo-off build.
