@@ -162,8 +162,14 @@ check("write coerces non-str", "wrote" in sb.write_file(path="n.txt", content=12
 
 # ------------------------------------------------------------- envboot
 print("F1 environment bootstrap")
-snap = gather_env_snapshot(root)
-check("snapshot produced", snap.startswith("[Environment Snapshot]"))
+# The content checks get a generous bound; the timeout itself is checked
+# below with timeout=0. At the production 15 s, a login shell running ten
+# `--version` probes on a loaded macOS runner came back empty ("fails
+# silently" by contract) and failed all three content checks at once.
+_snap_started = time.monotonic()
+snap = gather_env_snapshot(root, timeout=120)
+_snap_took = f"took {time.monotonic() - _snap_started:.1f}s"
+check("snapshot produced", snap.startswith("[Environment Snapshot]"), _snap_took)
 check("snapshot has cwd", "cwd:" in snap)
 check("snapshot has languages", "python3" in snap)
 check("snapshot bounded", len(snap) < 6000, f"len={len(snap)}")
