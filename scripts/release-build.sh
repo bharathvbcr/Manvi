@@ -57,6 +57,13 @@ else
     darwin/amd64) triple=x86_64-apple-darwin ;;
     darwin/arm64) triple=aarch64-apple-darwin ;;
   esac
+  if [[ "$goos" == darwin ]]; then
+    # One floor for the Rust archive and the clang link. Unset, each picks
+    # its own default and clang's is the runner's SDK (macOS 15), so the
+    # binary could refuse to start on an older macOS the Go toolchain still
+    # supports. 12.0 is Go 1.26's own minimum.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+  fi
   cgo_env="$root/../DevCouncil/rust/gusset-engine/cgo-env.sh"
   if [[ ! -x "$cgo_env" ]]; then
     echo "missing $cgo_env; run scripts/fetch-modules.sh first" >&2
@@ -93,6 +100,17 @@ if [[ "${MANVI_RELEASE_ENGINE:-1}" != "0" ]]; then
     echo "dist/${out} is not statically linked:" >&2
     file "dist/${out}" >&2
     exit 1
+  fi
+  if [[ "$goos" == darwin ]]; then
+    minos="$(otool -l "dist/${out}" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+    echo "dist/${out}: minimum macOS ${minos:-unknown} (wanted ${MACOSX_DEPLOYMENT_TARGET})"
+    # Newer than the target is the failure: the binary would refuse to start
+    # on a macOS the release says it supports. Lower is fine.
+    lowest="$(printf '%s\n%s\n' "${minos:-99}" "$MACOSX_DEPLOYMENT_TARGET" | sort -V | head -1)"
+    if [[ -z "$minos" || "$lowest" != "$minos" ]]; then
+      echo "dist/${out} requires macOS ${minos:-unknown}, newer than ${MACOSX_DEPLOYMENT_TARGET}" >&2
+      exit 1
+    fi
   fi
   # Exit 2 is "engine not linked", 1 a failed check; either refuses the
   # artifact. darwin/amd64 runs under Rosetta on an arm64 runner.

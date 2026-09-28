@@ -1443,7 +1443,11 @@ func buildGate(reg *flags.Registry) (*gate.Gate, *repomap.Map, error) {
 	// The engine decides every pattern question in a build that links it;
 	// fnmatch in one that does not. Not gated on a health check: a failing
 	// engine is a hard denial per decision (path.engine_unavailable), which
-	// names the cause, and the handle reopens itself after a poison.
+	// names the cause, and the handle reopens itself after a poison. The
+	// check below only says so at startup, rather than at the first refusal.
+	if err := gussetcheck.Ready(); err != nil && !errors.Is(err, gussetcheck.ErrNotLinked) {
+		fmt.Fprintf(os.Stderr, "manvi: the gusset policy engine failed its check (%v); policy decisions will be refused under path.engine_unavailable / command.engine_unavailable until it recovers\n", err)
+	}
 	g.Matcher = gussetcheck.Matcher()
 	if err := loadGrants(g); err != nil {
 		return nil, nil, err

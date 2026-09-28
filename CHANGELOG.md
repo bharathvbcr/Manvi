@@ -23,6 +23,11 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- A policy question the engine does not answer within 250 ms is answered by
+  fnmatch (DevCouncil 63aa5e5) instead of denied as `engine_unavailable`: a
+  busy engine is not a broken one. `manvi` names a failed engine check on
+  stderr at startup. macOS release binaries are linked for macOS 12.0 and
+  refused if they record a newer minimum.
 - **Release binaries link the Gusset engine.** They were `CGO_ENABLED=0`, so
   the engine that now makes policy decisions was absent from everything
   shipped. Each target builds on a native runner (`macos-15` for both darwin
