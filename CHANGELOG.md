@@ -23,6 +23,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **Release binaries link the Gusset engine.** They were `CGO_ENABLED=0`, so
+  the engine that now makes policy decisions was absent from everything
+  shipped. Each target builds on a native runner (`macos-15` for both darwin
+  architectures, `ubuntu-latest`, `ubuntu-24.04-arm`); Linux binaries are fully
+  static against musl through DevCouncil's `cgo-env.sh --target`, and every
+  binary must pass its own `gusset-check` before upload. The asset names are
+  unchanged. `MANVI_RELEASE_ENGINE=0 scripts/release-build.sh` still builds
+  the cgo-off binary for a local dry run. Docs amended: the "`CGO_ENABLED=0`
+  for every shipped build" rule is now "one linked archive, the Gusset
+  umbrella".
 - **Policy decisions are made by the Gusset engine in a cgo build.** Every
   pattern question the write, read and command ladders ask — secret paths,
   restricted and protected paths, planned-file globs, command allowlists —

@@ -530,7 +530,9 @@ export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 # plane's engine check, the panic-firewall self-test against the archive this
 # repository links, and the serve package's policy path, all with cgo on.
 step "Go — gusset engine (cgo)"
-(eval "$engine_exports" && cd manvi && go test -count=1 ./gussetcheck ./serve \
+# Release binaries are this configuration, so cmd/manvi (buildGate hands its
+# gate the engine matcher) runs here too.
+(eval "$engine_exports" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
   && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 
 step "Rust — test"

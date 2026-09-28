@@ -4,9 +4,10 @@
 // process, R14). Manvi does not link a second one. A panic from the
 // diagnostic engine is reported as a failure, not treated as a match.
 //
-// The release binary is built with CGO_ENABLED=0, so it does not link
-// the archive. That build returns ErrNotLinked. A cgo build calls the
-// engine and keeps a poisoned handle failed; a transient failure is retried.
+// Release binaries link the archive (scripts/release-build.sh), and every
+// policy gate they build asks the engine through Matcher. A CGO_ENABLED=0
+// build has no engine: it returns ErrNotLinked and its gates use fnmatch.
+// A cgo build keeps a poisoned handle failed; a transient failure is retried.
 package gussetcheck
 
 import (

@@ -32,8 +32,9 @@ A full source build requires:
 
 ### The Zero-Cgo Guarantee
 
-**"No cgo" is a property of the shipped Go binary, not of the build.** 
-- `CGO_ENABLED=0` is what keeps the Go execution plane a single static artifact with trivial cross-compilation.
+**"No cgo" was a property of the shipped Go binary; since 2026-09-28 it has one exception.**
+- The shipped binary links the Gusset umbrella archive, whose engine makes every policy pattern decision. Linux releases are still a single static artifact (musl); cross-compilation is traded for a native build per target, each of which runs `gusset-check` before upload.
+- `CGO_ENABLED=0` still builds, is still gated in `verify.sh`, and decides with Go's fnmatch.
 - The process boundary is what preserves this property: Rust pays the C compilation cost once, at build time, on its side of the process boundary.
 
 ### Runtime Asymmetry

@@ -49,9 +49,16 @@ else it does.
    consumers over. Do not wrap a component in a Python shim with a fallback —
    [DevCouncil already did that](DEVCOUNCIL_PORT_ROADMAP.md) and the Rust path
    never executed once, for months, because the fallback hid it.
-2. **A component is a process, never a library MANVI links.**
-3. **`CGO_ENABLED=0` for every shipped Go build.** cgo is enabled only for the
-   race detector.
+2. **A component is a process, never a library MANVI links** — with one
+   exception, below.
+3. **One in-process archive, and only one.** Shipped binaries link the Gusset
+   umbrella (DevCouncil `rust/gusset-engine`), whose dc-glob engine makes
+   every policy pattern decision; Linux builds are fully static against musl.
+   Nothing else is linked: every other component stays a process. The Go
+   module still builds and is gated `CGO_ENABLED=0` (verify.sh's default
+   leg), which is the build that decides with Go's fnmatch. Amended
+   2026-09-28, when policy decisions moved onto the engine; before that the
+   rule was `CGO_ENABLED=0` for every shipped build.
 4. **No new dependency without asking.** The Go module has **zero** third-party
    dependencies. The Rust workspace has three, each justified in its manifest.
 5. **A check that could not run never reports what a check that ran and passed

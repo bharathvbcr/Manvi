@@ -46,7 +46,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Agent & Turn Lifecycle Specification**](AGENT_AND_TURN_LIFECYCLE.md)  
   Turn execution loop, tool waterfalls (`pre-execute`, `post-execute`), append-only context compaction, SQLite task leases, and clean cancellation.
 - [**Architectural Trade-offs**](TRADE_OFFS.md)  
-  Explicit rationale for strict posture write discipline vs command allowlists, two toolchains (Go + Rust) with static `CGO_ENABLED=0` guarantees, and why the provider set is four adapters rather than every OpenAI-compatible endpoint.
+  Explicit rationale for strict posture write discipline vs command allowlists, two toolchains (Go + Rust) with one linked archive (the Gusset policy engine), and why the provider set is four adapters rather than every OpenAI-compatible endpoint.
 
 ---
 

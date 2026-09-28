@@ -1,10 +1,13 @@
 # Build and publish manvi binaries for darwin and linux (amd64, arm64).
 #
-# Triggered by version tags (v*). Each matrix cell produces a statically linked
-# binary (CGO_ENABLED=0) stamped with the tag via -ldflags, then the publish
-# job attaches every artifact plus SHA-256 checksums and the curated notes in
+# Triggered by version tags (v*). Each matrix cell builds on a runner of its
+# own OS and links the Gusset engine, which makes every policy decision:
+# Linux fully static against musl, darwin against libSystem. Each binary must
+# pass its own `gusset-check` (boundary parity and the I2 panic firewall)
+# before it is uploaded; see scripts/release-build.sh. The publish job then
+# attaches every artifact plus SHA-256 checksums and the curated notes in
 # docs/releases/<tag>.md. There is no Windows target — see verify.yml for why
-# this tree does not build for GOOS=windows.
+# this tree does not build for GOOS=windows, and gusset is unix-only.
 #
 # The Go module replaces DevCouncil and gusset with sibling checkouts. Those
 # directories are not in this repository, so the build fetches the commits in
@@ -34,19 +37,31 @@ concurrency:
 jobs:
   build:
     name: manvi (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        # Native runners: the Rust archive and the cgo link are per target,
+        # and each binary runs its own gusset-check before upload. darwin/amd64
+        # is built on the arm64 image with clang -arch x86_64 and checked
+        # under Rosetta.
         include:
           - goos: darwin
             goarch: amd64
+            runner: macos-15
+            rust_target: x86_64-apple-darwin
           - goos: darwin
             goarch: arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
           - goos: linux
             goarch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -58,11 +73,30 @@ jobs:
           go-version-file: manvi/go.mod
           cache-dependency-path: manvi/go.sum
 
+      # No third-party action for Rust, as in verify.yml. rustup is on the
+      # ubuntu and macOS images; installed here if an image lacks it.
+      - name: Rust toolchain
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$RUST_TARGET"
+          rustc --version
+
+      - name: musl-gcc
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
