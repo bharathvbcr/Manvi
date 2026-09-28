@@ -159,6 +159,15 @@ jobs:
           fi
           echo "No analysis tool was missing."
 
+      # The step above catches one kind of gate that did not run. This catches
+      # every other: each NOT COVERED line and each skipped test must be listed
+      # for this runner, with its reason, in scripts/verify-expected-gaps.json.
+      # A gate that starts skipping for a new reason fails here instead of
+      # passing as green.
+      - name: Every expected gap is named
+        if: always()
+        run: node scripts/check-verify-gaps.mjs verify.log ${{ matrix.os }}
+
       # The colour codes are stripped first, and the pattern deliberately does
       # not start at "PASS". verify.sh writes that verdict as
       # `\033[33mPASS\033[0m with gates that did not run:` — there is an ANSI
