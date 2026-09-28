@@ -23,6 +23,9 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Pins move to gusset 92c2056 (DevCouncil 3b58dd7): handles dropped to the
+  GC backstop close at most four at a time, so a burst of them no longer
+  leaves one OS thread per handle in the process.
 - A policy question the engine does not answer within 250 ms is answered by
   fnmatch (DevCouncil 63aa5e5) instead of denied as `engine_unavailable`: a
   busy engine is not a broken one. `manvi` names a failed engine check on
