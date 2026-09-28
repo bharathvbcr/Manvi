@@ -273,13 +273,14 @@ rm -f "$skip_json"
 skip_observed="$(head -1 <<<"$skip_report")"
 skip_names="$(tail -n +2 <<<"$skip_report" | sed '/^$/d')"
 if [[ -z "$skip_observed" ]] || (( skip_observed == 0 )); then
-  printf '\033[33m    NOT COVERED\033[0m: the instrumented run produced no test results, so whether anything skipped is unknown\n'
+  notcovered 'the instrumented run produced no test results, so whether anything skipped is unknown'
 elif [[ -z "$skip_names" ]]; then
   printf '    covered: %s test results seen, none skipped; every case the suite declares was executed\n' "$skip_observed"
 else
-  printf '\033[33m    NOT COVERED\033[0m: %s of %s test(s) skipped, so their assertions did not run:\n' \
-    "$(wc -l <<<"$skip_names" | tr -d ' ')" "$skip_observed"
-  sed 's/^/                  /' <<<"$skip_names"
+  # Through notcovered, with the names in the message, so the verdict lists
+  # them; printed mid-log only, they scrolled past a PASS.
+  notcovered "$(printf '%s of %s test(s) skipped, so their assertions did not run: %s' \
+    "$(wc -l <<<"$skip_names" | tr -d ' ')" "$skip_observed" "$(paste -sd ',' - <<<"$skip_names" | sed 's/,/, /g')")"
 fi
 
 step "Go — cross-boundary coverage"
@@ -879,10 +880,10 @@ else
     elif [[ "$index_gen" != "$graph_gen" ]]; then
       notcovered "$(printf '%s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`' "$graph" "$graph_gen" "$index_gen")"
     elif [[ -z "$graph_head" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one\n' "$graph"
+      notcovered "$(printf '%s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one' "$graph")"
     elif [[ -n "$head_sha" && "$graph_head" != "$head_sha" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s was built from commit %s and the tree is at %s — every query answers about the older one; run `manvi map build`\n' \
-        "$graph" "${graph_head:0:12}" "${head_sha:0:12}"
+      notcovered "$(printf '%s was built from commit %s and the tree is at %s — every query answers about the older one; run `manvi map build`' \
+        "$graph" "${graph_head:0:12}" "${head_sha:0:12}")"
     else
       printf '    covered: `%s status` opened the index; all %d paths in %s resolve, both stand at generation %s, and it was built from this commit (%s)\n' \
         "$mapbin" "$indexed" "$graph" "$index_gen" "${graph_head:0:12}"
@@ -1080,9 +1081,8 @@ if (( FUZZ )); then
   printf '    covered: %s of %s declared targets executed on %s workers, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
     "$fuzz_ran" "$fuzz_declared" "$fuzz_workers" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
   if [[ -n "$fuzz_starved" ]]; then
-    printf '\033[33m    NOT COVERED\033[0m: these targets could not reach %s inputs inside %ss, so the sweep\n' \
-      "$FUZZMIN" "$fuzz_cap"
-    printf '                  sampled them rather than explored them:%s\n' "$fuzz_starved"
+    notcovered "$(printf 'these targets could not reach %s inputs inside %ss, so the sweep sampled them rather than explored them:%s' \
+      "$FUZZMIN" "$fuzz_cap" "$fuzz_starved")"
   fi
 fi
 

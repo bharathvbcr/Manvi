@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gussetfn"
@@ -28,6 +29,10 @@ func closeEngine() error {
 
 func shutdownEngine(drain time.Duration) error {
 	return gussetfn.Shutdown(drain)
+}
+
+func drainLogs(w io.Writer) (int, error) {
+	return gussetfn.DrainLogs(w)
 }
 
 func classify(err error) error {

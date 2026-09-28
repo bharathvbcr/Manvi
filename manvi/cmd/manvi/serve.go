@@ -205,7 +205,10 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	// The policy plane's engine handle, if this build links one. Bounded: a
 	// stuck engine is reported as a shutdown error and left to process exit,
 	// never joined without a limit.
-	return errors.Join(err, gussetcheck.Shutdown(2*time.Second))
+	err = errors.Join(err, gussetcheck.Shutdown(2*time.Second))
+	// After Shutdown, so the drain sees anything the drain logged.
+	_, _ = gussetcheck.DrainLogs(os.Stderr)
+	return err
 }
 
 func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementConfiguration, error) {

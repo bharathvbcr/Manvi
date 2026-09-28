@@ -41,6 +41,20 @@ under **Unreleased** in the same commit as the code.
   the Go build cache and a cached test result replayed against the old one.
 - The DevCouncil and gusset pins in `scripts/module-pins.txt` move to the
   revisions this was verified against.
+- `gussetcheck.Ready` no longer caches a transient failure for the life of
+  the process. It was a `sync.Once`: a first check that ran out of its 5 s
+  budget, or met an OS resource error opening the handle, refused every later
+  policy check until restart. A pass is kept; a verdict (not linked, poisoned
+  or panicking engine, parity mismatch) is latched; a transient failure is
+  retried after 30 s.
+- A policy answer refused by the engine gate now carries a fixed message; the
+  engine's own error goes to stderr, as other internal failures already did.
+- `manvi serve` and `manvi gusset-check` drain the engine's Rust log ring to
+  stderr; nothing read it before, so worker respawns and caught panics were
+  evicted unseen.
+- `verify.sh`: five `NOT COVERED` lines (skipped tests, an unreadable or stale
+  map, starved fuzz targets) printed mid-log but never reached the verdict
+  list; they now go through `notcovered` like the rest.
 
 ---
 

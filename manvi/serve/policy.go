@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
@@ -295,26 +296,38 @@ func (s *Server) evaluateHostWrite(
 	return s.posture.demote(d, "serve.posture=host: no task model in the embedding host")
 }
 
-// requireGusset refuses a policy answer when the in-process dc-glob engine is
-// not alive. It is a health gate only: the decision itself is made by Go's
-// fnmatch, because a bool has no honest value for a transport failure (see
-// DevCouncil's gussetfn package doc). GitPulse maps that error to an unchecked verdict, and an
-// unchecked verdict from an installed harness is not permission to act.
+// requireGusset refuses a policy answer until the in-process dc-glob engine has
+// passed its check. It is a health gate only, and it proves the engine passed
+// once — gussetcheck.Ready keeps a pass for the process and retries a
+// transient failure; it does not re-probe a healthy engine per request. The
+// decision itself is made by Go's fnmatch, because a bool has no honest value
+// for a transport failure (see DevCouncil's gussetfn package doc). GitPulse
+// maps that error to an unchecked verdict, and an unchecked verdict from an
+// installed harness is not permission to act.
+//
+// The refusal on the wire is a fixed message; the engine's own error, which
+// can carry its text and OS errors, goes to stderr with the other
+// diagnostics, as recovered keeps internals off the wire.
 //
 // ErrNotLinked is a different fact. The release binary is CGO_ENABLED=0 and
 // has no handle. Refusing every policy answer in that build would turn the
 // shipped harness into a blanket denial. A poisoned handle, which only a
 // cgo build can have, still refuses.
 func requireGusset() *Error {
-	err := gussetcheck.Ready()
+	err := gussetReady()
 	if err == nil || errors.Is(err, gussetcheck.ErrNotLinked) {
 		return nil
 	}
+	fmt.Fprintf(os.Stderr, "manvi serve: gusset engine check failed: %v\n", err)
 	return &Error{
 		Code:    ErrInternal,
-		Message: fmt.Sprintf("gusset engine refused the policy check: %v", err),
+		Message: "the in-process gusset engine failed its check, so this policy answer is refused; see the serve process's stderr",
 	}
 }
+
+// gussetReady is gussetcheck.Ready; a seam so the refusal path is testable in
+// any build.
+var gussetReady = gussetcheck.Ready
 
 // checkCommand evaluates one command.
 func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
