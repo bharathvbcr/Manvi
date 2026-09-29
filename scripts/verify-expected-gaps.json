@@ -1,0 +1,62 @@
+{
+  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every expected gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed.",
+  "gaps": [
+    {
+      "text": "devmap not found — repo navigation is unverified here",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "devmap is DevCouncil's binary; this repository does not build it."
+    },
+    {
+      "text": "local — this gate makes no request. The harness reports:",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "No local model server listens on a hosted runner."
+    },
+    {
+      "text": "anthropic, gemini and xai are verified against scripted servers only.",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "CI holds no provider credentials; live endpoints are `manvi probe` with one."
+    }
+  ],
+  "skips": [
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "Needs an installed Codex binary (MANVI_TEST_CODEX_BINARY)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "Opt-in model turn against an installed provider."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestEvidenceRustCompatibility",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "Needs DEVC_COUNCIL_EVIDENCE_ROOT pointing at a DevCouncil Rust build."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/case",
+      "os": ["ubuntu-latest"],
+      "why": "Case-insensitive volumes only; Linux ext4 distinguishes the spellings."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/nfc_nfd",
+      "os": ["ubuntu-latest"],
+      "why": "Normalising volumes only; Linux ext4 distinguishes NFC from NFD."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantOfACreatedDirectoryCannotEscape",
+      "os": ["ubuntu-latest"],
+      "why": "Case-insensitive volumes only."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "This action's frame does not draw the field, so there is no frame to assert on."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "This action's frame does not draw the field, so there is no frame to assert on."
+    }
+  ]
+}

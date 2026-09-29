@@ -21,7 +21,74 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Pins move to gusset 92c2056 (DevCouncil 3b58dd7): handles dropped to the
+  GC backstop close at most four at a time, so a burst of them no longer
+  leaves one OS thread per handle in the process.
+- A policy question the engine does not answer within 250 ms is answered by
+  fnmatch (DevCouncil 63aa5e5) instead of denied as `engine_unavailable`: a
+  busy engine is not a broken one. `manvi` names a failed engine check on
+  stderr at startup. macOS release binaries are linked for macOS 12.0 and
+  refused if they record a newer minimum.
+- **Release binaries link the Gusset engine.** They were `CGO_ENABLED=0`, so
+  the engine that now makes policy decisions was absent from everything
+  shipped. Each target builds on a native runner (`macos-15` for both darwin
+  architectures, `ubuntu-latest`, `ubuntu-24.04-arm`); Linux binaries are fully
+  static against musl through DevCouncil's `cgo-env.sh --target`, and every
+  binary must pass its own `gusset-check` before upload. The asset names are
+  unchanged. `MANVI_RELEASE_ENGINE=0 scripts/release-build.sh` still builds
+  the cgo-off binary for a local dry run. Docs amended: the "`CGO_ENABLED=0`
+  for every shipped build" rule is now "one linked archive, the Gusset
+  umbrella".
+- **Policy decisions are made by the Gusset engine in a cgo build.** Every
+  pattern question the write, read and command ladders ask — secret paths,
+  restricted and protected paths, planned-file globs, command allowlists —
+  now crosses into DevCouncil's dc-glob engine in `manvi serve`, in the
+  attended session's gate, and in `manvi check`. Before, the engine was a
+  health check and Go's fnmatch decided. Answers are held equal to fnmatch's
+  by the CPython fixture, a fuzz differential through the boundary, and
+  DevCouncil's policy suite re-run with the engine as every gate's default.
+  A matcher that cannot answer mid-decision is a hard denial under the new
+  `path.engine_unavailable` / `command.engine_unavailable` rules (added to
+  `contracts/verdict.schema.json`), never a guessed bool. A `CGO_ENABLED=0`
+  build has no engine and keeps fnmatch.
+- `devcouncil_git_stage` and `devcouncil_git_commit` ask the gate's matcher
+  for the secret-path check, so they read the list exactly as the write
+  ladder does; a matcher error refuses the stage or commit and says the check
+  did not run.
+- `manvi gusset-check` now runs `gussetcheck.SelfTest`: CPython fnmatch
+  parity through the boundary, the batched match-any path, and a deliberate
+  Rust panic inside the linked archive on a throwaway handle, which must come
+  back as `ErrPanic` then `ErrPoisoned` while the shared handle keeps matching.
+  Rust prints the induced panic to stderr; that line is the proof running. The
+  policy plane's `Ready` still runs the panic-free `Run`.
+- `manvi serve` releases the engine handle on exit through
+  `gussetcheck.Shutdown(2s)`: jobs are cancelled and the join is bounded, so a
+  stuck engine is reported as a shutdown error and left to process exit rather
+  than hanging it.
+- `verify.sh` gains an always-on `Go — gusset engine (cgo)` step. The default
+  gate is cgo-off, so the only leg that linked the engine was the opt-in race
+  run. The DevCouncil host and this step build through DevCouncil's
+  `rust/gusset-engine/cgo-env.sh`, which rebuilds the archive every time and
+  keys Go's caches on its hash; before, a rebuilt archive could be skipped by
+  the Go build cache and a cached test result replayed against the old one.
+- The DevCouncil and gusset pins in `scripts/module-pins.txt` move to the
+  revisions this was verified against.
+- `gussetcheck.Ready` no longer caches a transient failure for the life of
+  the process. It was a `sync.Once`: a first check that ran out of its 5 s
+  budget, or met an OS resource error opening the handle, refused every later
+  policy check until restart. A pass is kept; a verdict (not linked, poisoned
+  or panicking engine, parity mismatch) is latched; a transient failure is
+  retried after 30 s.
+- A policy answer refused by the engine gate now carries a fixed message; the
+  engine's own error goes to stderr, as other internal failures already did.
+- `manvi serve` and `manvi gusset-check` drain the engine's Rust log ring to
+  stderr; nothing read it before, so worker respawns and caught panics were
+  evicted unseen.
+- `verify.sh`: five `NOT COVERED` lines (skipped tests, an unreadable or stale
+  map, starved fuzz targets) printed mid-log but never reached the verdict
+  list; they now go through `notcovered` like the rest.
 
 ---
 

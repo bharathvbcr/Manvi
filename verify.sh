@@ -159,24 +159,9 @@ notcovered() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# devcouncil_gusset_init is exported by DevCouncil's gusset-engine umbrella,
-# not by the gusset repository archive. The race detector and the host build
-# both link -lgusset. Gusset's own #cgo lines search a different target tree;
-# CGO_LDFLAGS has to name this directory first or that search wins and the
-# link fails closed.
-ensure_gusset_engine() {
-  engine_lib="../DevCouncil/rust/gusset-engine/target/release/libgusset.a"
-  if [[ ! -f "$engine_lib" ]]; then
-    cargo build --release --manifest-path ../DevCouncil/rust/gusset-engine/Cargo.toml \
-      || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
-  fi
-  [[ -f "$engine_lib" ]] || fail "DevCouncil gusset-engine archive missing at $engine_lib"
-  engine_dir="$(cd "$(dirname "$engine_lib")" && pwd)"
-}
-
 step "Release — notes, assets and workflow"
 if have node; then
-  node --test scripts/check-release.test.mjs || fail "release checks"
+  node --test scripts/check-release.test.mjs scripts/check-verify-gaps.test.mjs || fail "release checks"
   # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
   # is an unbound variable that fails the gate before it checks anything.
   if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then
@@ -232,11 +217,15 @@ fi
 # longer wait for the same answer.
 if (( RACE )); then
   step "Go — race detector"
-  # -race forces cgo on, which compiles gussetcheck's linked engine. The
-  # umbrella has to exist before that link; the host step below builds the
-  # same archive, and this call is a no-op once either side has done it.
-  ensure_gusset_engine
-  (cd manvi && CGO_ENABLED=1 CGO_LDFLAGS="-L${engine_dir}" go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
+  # cgo on links gussetcheck against the umbrella archive, so the race leg
+  # needs the same captured cgo environment as the engine step below. It ran
+  # with bare CGO_ENABLED=1 and failed every scheduled run: cannot find
+  # -lgusset, for cmd/manvi, gussetcheck and serve.
+  race_engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
+  [[ -x "$race_engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $race_engine_env"
+  race_exports="$("$race_engine_env" --export)" \
+    || fail "DevCouncil gusset-engine staticlib for the race leg"
+  (eval "$race_exports" && cd manvi && go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
@@ -292,13 +281,14 @@ rm -f "$skip_json"
 skip_observed="$(head -1 <<<"$skip_report")"
 skip_names="$(tail -n +2 <<<"$skip_report" | sed '/^$/d')"
 if [[ -z "$skip_observed" ]] || (( skip_observed == 0 )); then
-  printf '\033[33m    NOT COVERED\033[0m: the instrumented run produced no test results, so whether anything skipped is unknown\n'
+  notcovered 'the instrumented run produced no test results, so whether anything skipped is unknown'
 elif [[ -z "$skip_names" ]]; then
   printf '    covered: %s test results seen, none skipped; every case the suite declares was executed\n' "$skip_observed"
 else
-  printf '\033[33m    NOT COVERED\033[0m: %s of %s test(s) skipped, so their assertions did not run:\n' \
-    "$(wc -l <<<"$skip_names" | tr -d ' ')" "$skip_observed"
-  sed 's/^/                  /' <<<"$skip_names"
+  # Through notcovered, with the names in the message, so the verdict lists
+  # them; printed mid-log only, they scrolled past a PASS.
+  notcovered "$(printf '%s of %s test(s) skipped, so their assertions did not run: %s' \
+    "$(wc -l <<<"$skip_names" | tr -d ' ')" "$skip_observed" "$(paste -sd ',' - <<<"$skip_names" | sed 's/,/, /g')")"
 fi
 
 step "Go — cross-boundary coverage"
@@ -525,15 +515,33 @@ fi
 # Linking the gusset repository archive instead fails closed: undefined
 # reference to devcouncil_gusset_init.
 step "Rust — DevCouncil host"
-ensure_gusset_engine
+# cgo-env.sh always runs the incremental build (building only when the
+# archive was missing linked whatever an older checkout left) and keys Go's
+# caches on the archive's hash, without which a rebuilt archive is not
+# relinked and a cached "ok" is replayed against the old one.
+engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
+[[ -x "$engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $engine_env; the DevCouncil pin predates it"
+engine_exports="$("$engine_env" --export)" \
+  || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
 host_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
-# -L the umbrella first. Gusset's own cgo paths are a fallback for its tests;
-# if they win, devcouncil_gusset_init is missing and the link fails.
-(cd "$host_mod" && CGO_ENABLED=1 CGO_LDFLAGS="-L${engine_dir}" go build -o bin/devcouncil ./cmd/devcouncil) \
+# In a subshell: the exports turn cgo on, and everything after this step is
+# the CGO_ENABLED=0 configuration this gate certifies.
+(eval "$engine_exports" && cd "$host_mod" && go build -o bin/devcouncil ./cmd/devcouncil) \
   || fail "DevCouncil host binary for the Rust json contract"
+
 export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 [[ -x "$DEVCOUNCIL_BIN" ]] || fail "DevCouncil host binary was not produced at $DEVCOUNCIL_BIN"
+
+# The default gate is cgo-off, so the only leg that reached gussetcheck with
+# the engine linked was the opt-in race run. This is the shipped policy
+# plane's engine check, the panic-firewall self-test against the archive this
+# repository links, and the serve package's policy path, all with cgo on.
+step "Go — gusset engine (cgo)"
+# Release binaries are this configuration, so cmd/manvi (buildGate hands its
+# gate the engine matcher) runs here too.
+(eval "$engine_exports" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
+  && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 
 step "Rust — test"
 rust_out="$( (cd crates && cargo test) 2>&1 )" || { printf '%s\n' "$rust_out" >&2; fail "cargo test"; }
@@ -882,10 +890,10 @@ else
     elif [[ "$index_gen" != "$graph_gen" ]]; then
       notcovered "$(printf '%s was written from generation %s and the index holds %s — the scope rung and the navigation tools would answer about different trees; run `manvi map build`' "$graph" "$graph_gen" "$index_gen")"
     elif [[ -z "$graph_head" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one\n' "$graph"
+      notcovered "$(printf '%s carries no generated_head, so which commit it describes is unknown and it cannot be checked against this one' "$graph")"
     elif [[ -n "$head_sha" && "$graph_head" != "$head_sha" ]]; then
-      printf '\033[33m    NOT COVERED\033[0m: %s was built from commit %s and the tree is at %s — every query answers about the older one; run `manvi map build`\n' \
-        "$graph" "${graph_head:0:12}" "${head_sha:0:12}"
+      notcovered "$(printf '%s was built from commit %s and the tree is at %s — every query answers about the older one; run `manvi map build`' \
+        "$graph" "${graph_head:0:12}" "${head_sha:0:12}")"
     else
       printf '    covered: `%s status` opened the index; all %d paths in %s resolve, both stand at generation %s, and it was built from this commit (%s)\n' \
         "$mapbin" "$indexed" "$graph" "$index_gen" "${graph_head:0:12}"
@@ -1083,9 +1091,8 @@ if (( FUZZ )); then
   printf '    covered: %s of %s declared targets executed on %s workers, %s inputs total (%ss each, then as long again as reaching %s inputs needs, to a ceiling of %ss)\n' \
     "$fuzz_ran" "$fuzz_declared" "$fuzz_workers" "$fuzz_execs" "$fuzz_base" "$FUZZMIN" "$fuzz_cap"
   if [[ -n "$fuzz_starved" ]]; then
-    printf '\033[33m    NOT COVERED\033[0m: these targets could not reach %s inputs inside %ss, so the sweep\n' \
-      "$FUZZMIN" "$fuzz_cap"
-    printf '                  sampled them rather than explored them:%s\n' "$fuzz_starved"
+    notcovered "$(printf 'these targets could not reach %s inputs inside %ss, so the sweep sampled them rather than explored them:%s' \
+      "$FUZZMIN" "$fuzz_cap" "$fuzz_starved")"
   fi
 fi
 

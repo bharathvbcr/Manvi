@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
+	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/serve"
 )
@@ -200,6 +202,12 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	if runner != nil {
 		err = errors.Join(err, runner.Close())
 	}
+	// The policy plane's engine handle, if this build links one. Bounded: a
+	// stuck engine is reported as a shutdown error and left to process exit,
+	// never joined without a limit.
+	err = errors.Join(err, gussetcheck.Shutdown(2*time.Second))
+	// After Shutdown, so the drain sees anything the drain logged.
+	_, _ = gussetcheck.DrainLogs(os.Stderr)
 	return err
 }
 

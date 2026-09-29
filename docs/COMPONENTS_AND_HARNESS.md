@@ -91,8 +91,9 @@ make a component consumable by an agent that is not MANVI.
 1. **A process for the harness, a module for a host.** MANVI reaches every
    component as JSON on stdio — one call per process, or a `serve` session
    answering many over one, as `dcstore` does — or as an MCP server. It never
-   links a component: linking would forfeit `CGO_ENABLED=0`, static binaries,
-   cross-compilation and process isolation. Other hosts may *also* link a
+   links a component: linking would forfeit static binaries, cross-compilation
+   and process isolation. The one exception is the Gusset umbrella archive,
+   which carries the policy matcher and is linked (statically on Linux). Other hosts may *also* link a
    selected crate (GitPulse vendors `devmap-query` in-process). Both seams are
    valid; neither requires taking every module.
 2. **Every outcome is JSON on stdout, including failures.** A caller never parses
@@ -320,9 +321,12 @@ Ask in order. The first *yes* decides it.
 grammars takes minutes; the Go module builds in seconds. A component that changes
 weekly and does no heavy lifting belongs in Go even when Rust would work.
 
-**Hard constraint on the Go side: `CGO_ENABLED=0`.** Verified in `verify.sh` —
-cgo is enabled only for the race detector, never for a shipped build. It is what
-buys the static binary and instant cross-compilation. A Go component needing
+**Constraint on the Go side: one archive.** Shipped builds link exactly one
+Rust staticlib, the Gusset umbrella, because policy matching runs on its dc-glob
+engine (amended 2026-09-28; it used to be `CGO_ENABLED=0` for every shipped
+build). Linux releases stay a single static binary by linking against musl;
+cross-compilation is gone, so each target builds on its own runner. The Go
+module itself is still gated `CGO_ENABLED=0` in `verify.sh`. A Go component needing
 SQLite would therefore need a pure-Go driver, which is a large third-party
 dependency in a module that today has **zero**. That pushes anything touching the
 store to Rust, on dependency grounds rather than speed.

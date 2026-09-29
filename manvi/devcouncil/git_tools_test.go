@@ -369,3 +369,29 @@ func TestRenderCommandLineMatchesShellQuoting(t *testing.T) {
 		}
 	}
 }
+
+type downMatcher struct{}
+
+func (downMatcher) MatchAny([]string, string) (bool, error) {
+	return false, fmt.Errorf("engine is down")
+}
+
+func (downMatcher) MatchAnyFold([]string, string) (bool, error) {
+	return false, fmt.Errorf("engine is down")
+}
+
+// The secret check asks the gate's matcher, as the ladder does, and a
+// matcher that cannot answer refuses the stage rather than reporting the
+// path clean.
+func TestGitStageRefusesWhenTheSecretCheckCannotAnswer(t *testing.T) {
+	f := newFixture(t)
+	modifySeed(t, f)
+	f.reg.Gate().Matcher = downMatcher{}
+	res := f.call("devcouncil_git_stage", map[string]any{"paths": []string{"seed.txt"}})
+	if !res.IsError || !strings.Contains(res.Text, "secret-path check could not be determined") {
+		t.Fatalf("stage with a failing matcher = %v %q, want the check reported as not run", res.IsError, res.Text)
+	}
+	if leaked, err := secretPaths(downMatcher{}, []string{"seed.txt"}); err == nil || leaked != nil {
+		t.Fatalf("secretPaths = %v, %v; want an error", leaked, err)
+	}
+}

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/fnmatch"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
@@ -456,7 +455,11 @@ func (r *Registry) gitStage(ctx context.Context, call tools.Call) tools.Result {
 		}
 		rel = append(rel, normalized)
 	}
-	if leaked := secretPaths(rel); len(leaked) > 0 {
+	leaked, err := secretPaths(r.matcher(), rel)
+	if err != nil {
+		return unavailable("secret-path check", err)
+	}
+	if len(leaked) > 0 {
 		return secretRefusal("stage", leaked)
 	}
 	if aliased := aliasedPaths(r.deps.Root, rel); len(aliased) > 0 {
@@ -498,7 +501,11 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 			stagedPaths = append(stagedPaths, p)
 		}
 	}
-	if leaked := secretPaths(stagedPaths); len(leaked) > 0 {
+	leaked, err := secretPaths(r.matcher(), stagedPaths)
+	if err != nil {
+		return unavailable("secret-path check", err)
+	}
+	if len(leaked) > 0 {
 		return secretRefusal("commit", leaked)
 	}
 	if aliased := aliasedPaths(r.deps.Root, stagedPaths); len(aliased) > 0 {
@@ -628,14 +635,33 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 // through this door; a divergence between two readings of one list is a defect
 // on its own, and the door it does not open today is an implementation detail
 // of git.
-func secretPaths(paths []string) []string {
+//
+// Asked through the gate's matcher, so where the ladder asks the engine this
+// asks it too. A matcher that cannot answer is an error, and the callers
+// refuse: an unanswered secret question has no safe "clean".
+func secretPaths(m policy.Matcher, paths []string) ([]string, error) {
+	if m == nil {
+		m = policy.GoMatcher
+	}
 	var leaked []string
 	for _, p := range paths {
-		if fnmatch.MatchAnyFold(policy.SecretPathPatterns, p) {
+		hit, err := m.MatchAnyFold(policy.SecretPathPatterns, p)
+		if err != nil {
+			return nil, err
+		}
+		if hit {
 			leaked = append(leaked, p)
 		}
 	}
-	return leaked
+	return leaked, nil
+}
+
+// matcher is the gate's pattern matcher, or nil (fnmatch) without a gate.
+func (r *Registry) matcher() policy.Matcher {
+	if r.deps.Gate == nil {
+		return nil
+	}
+	return r.deps.Gate.Matcher
 }
 
 // aliasedPaths reports which of paths carry more than one name in the
