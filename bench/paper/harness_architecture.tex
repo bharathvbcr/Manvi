@@ -276,11 +276,11 @@ enough to inflate reported pass rates beyond genuine capability
 SWE-bench passes to solution leakage and weak test suites {[}12{]}. We
 therefore built the grader to be unreachable --- hidden tests outside
 the sandbox, visible tests content-hashed, the checker unshadowable
-(§3.2) --- and §5.11 reports a case where a model does exactly what this
-literature predicts. The second is that repeated runs of the same prompt
-do not agree even with decoding parameters fixed {[}15{]}, which makes a
-single-run pass rate an anecdote. We pin a seed per repeat and report
-intervals throughout.
+(§3.2) --- and Appendix D reports a case where a model does exactly what
+this literature predicts. The second is that repeated runs of the same
+prompt do not agree even with decoding parameters fixed {[}15{]}, which
+makes a single-run pass rate an anecdote. We pin a seed per repeat and
+report intervals throughout.
 
 This paper makes five contributions. First, we specify a coding harness
 whose seven components are independently switchable, each tied to a
@@ -300,8 +300,8 @@ found by audit in an earlier grid we ran on a previous version of the
 instrument, the evidence that no episode exploited them, and the one
 case where the corrected instrument reverses the sign of a published
 effect. Fifth, we report the compute envelope the grid occupied, from
-78,027 device samples, as an argument that the conventional utilization
-number is not the cost that matters for a serial agent loop.
+78,027 device samples (Appendix C), as an argument that the conventional
+utilization number is not the cost that matters for a serial agent loop.
 
 The result the registered grid supports is no longer modest. The full
 harness beats the all-off baseline on both models, and both intervals
@@ -338,10 +338,11 @@ describes the tasks, the instrument's own validation, models, hardware,
 statistics, the registered design, and the deviations from it. Section 5
 reports v2 pass rates, per-task outcomes, stop reasons, the confirmatory
 tests, the exploratory ladder and what its intervals are worth, the
-interaction nulls, cost proxies, and the v1 instrument-failure record.
-Section 6 interprets them. Section 7 states limitations and Section 8
-concludes. Appendix A records serving flags and both protocols; Appendix
-B records the verification status of every citation.
+interaction nulls, and the v1 instrument-failure record. Section 6
+interprets them. Section 7 states limitations and Section 8 concludes.
+Appendix A records serving flags and both protocols; Appendix B records
+the verification status of every citation; Appendices C and D report
+cost proxies and the verify-gate mechanism.
 
 \subsection{2. Related work}\label{related-work}
 
@@ -595,8 +596,10 @@ episode. Tool bugs are also recoverable: an unexpected exception becomes
 a tool result, not a crashed run.
 
 Output from the shell and from files is passed through a head-and-tail
-cap of 30,000 bytes, inherited from the Terminus-KIRA cap as used in the
-Meta-Harness coding setup {[}1{]}, {[}5{]}. The middle is never dropped
+cap of 30,000 bytes. Lee et al.~report that their discovered
+Terminal-Bench harness inherits a ``30KB output cap'' from Terminus-KIRA
+{[}1, App. B.3{]}, whose own description gives it as a cap on terminal
+output ``to prevent context bloat'' {[}5{]}. The middle is never dropped
 silently. The truncation notice states how many bytes were elided and
 that both the head and the tail are shown ---
 \texttt{...\ {[}N\ bytes\ elided\ by\ the\ harness;\ K\ head\ +\ K\ tail\ bytes\ shown{]}\ ...}
@@ -897,7 +900,7 @@ headline grid, because several cells saturated and could not move: Qwen
 3.8 27B scored 11/11 on it, which is why the hard tier was written. A
 model at ceiling cannot show a harness effect, since every ablation can
 only move downward. One task from the easier suite, \texttt{navigate},
-is used only in §5.11 as a single-flag case. The repository holds
+is used only in Appendix D as a single-flag case. The repository holds
 nineteen tasks in total across both tiers.
 
 \subsubsection{4.2 Instrument validation}\label{instrument-validation}
@@ -938,7 +941,7 @@ and the suite output governs.
 
 \subsubsection{4.3 Models and serving}\label{models-and-serving}
 
-Two models were served with Ollama 0.32.14 on one NVIDIA GH200 (aarch64,
+Two models were served with Ollama 0.33.0 on one NVIDIA GH200 (aarch64,
 97,871 MiB HBM, CUDA 13). Qwen 3.8 27B (\texttt{qwen3.8:27b}, Q4, on the
 order of 17 GB weights) is the mid model. Ornith-1.5 35B-A3B
 (\texttt{hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8\_0}, on the order of
@@ -964,7 +967,7 @@ pooling keys, and \texttt{n\_starved\ =\ 0} and
 Pass/fail is not a function of tokens per second, but wall-clock is. We
 therefore do not compare \texttt{wall\_s} across configurations or
 models. Cost is reported as steps and peak prompt tokens, which are
-properties of the transcript, and as the device envelope in §5.10.
+properties of the transcript, and as the device envelope in Appendix C.
 
 \textbf{A third arm was attempted and is excluded by declaration.} We
 tried to add \texttt{gemini-3.7-flash} as a third rung. It is excluded,
@@ -1055,11 +1058,11 @@ the \emph{original} arm was included, so that the reader can check the
 exclusion was not outcome-shopping. The excluded arm predates v2 and
 appears in no v2 cell.
 
-The verify-gate case in §5.11 was not run on the GH200. It used Qwen 3.8
-27B MLX (\texttt{qwen3.8:27b-mlx}) and Ornith Q8 on the Apple host where
-those episodes were logged, with \texttt{max\_steps=40}. It is a
-different serving stack, a different task, and the pre-fix instrument;
-it is reported as a mechanism and is pooled into no table.
+The verify-gate case in Appendix D was not run on the GH200. It used
+Qwen 3.8 27B MLX (\texttt{qwen3.8:27b-mlx}) and Ornith Q8 on the Apple
+host where those episodes were logged, with \texttt{max\_steps=40}. It
+is a different serving stack, a different task, and the pre-fix
+instrument; it is reported as a mechanism and is pooled into no table.
 
 \subsubsection{4.4 Registered design}\label{registered-design}
 
@@ -1203,11 +1206,11 @@ pass rates, Table 4 the per-task matrix for the confirmatory contrast,
 Table 5 stop reasons and cost, Table 6 the two confirmatory hypotheses
 at the corrected level, Table 7 the exploratory ladder, Table 8 the
 interaction. Tables 9 and 10 report the third arm, Table 11 a post-hoc
-mechanism for the checklist result, Table 12 the device envelope, and
-Table 13 an off-grid single-flag contrast; the last two are not part of
-the registered grids. Figures 3--6 plot the cell means, the per-seed
-paired deltas, and the interaction intervals under both pairing schemes;
-all four are rendered by \texttt{figures.py} from
+mechanism for the checklist result, Tables 12 and 13, in Appendices C
+and D, report the device envelope and an off-grid single-flag contrast;
+neither is part of the registered grids. Figures 3--6 plot the cell
+means, the per-seed paired deltas, and the interaction intervals under
+both pairing schemes; all four are rendered by \texttt{figures.py} from
 \texttt{stats-all3.json}, the three-arm report whose local-arm cells are
 identical to \texttt{stats-v2.json}'s, so a figure cannot disagree with
 a table.
@@ -1550,8 +1553,8 @@ One result is large enough to survive the deficiency on its own terms:
 \textbf{Qwen \texttt{no-verifygate}, \(\Delta = +0.225\), interval
 {[}+0.150, +0.300{]}}, whose lower bound sits three times the interval
 half-width away from zero. It is also the one ladder result with an
-independent mechanism behind it (§5.10) and a matching sign on the third
-arm (§5.7). Everything else in Table 7 should be read as ``not
+independent mechanism behind it (Appendix D) and a matching sign on the
+third arm (§5.7). Everything else in Table 7 should be read as ``not
 detectable at this \(n\).''
 
 \textbf{This is a statement about the local ladder, not about H3.} The
@@ -1845,9 +1848,9 @@ re-runs the hidden tests and refuses the finish whatever the model
 claims. \texttt{verifygate} is on in both cells here. The checklist is
 therefore prompt-side insurance against a failure mode an external check
 already makes impossible, and its only measurable effect is spending
-turns. §5.11 records the same thing from the other direction: in that
-contrast the checklist was on in \textbf{both} arms and did not prevent
-a contract-breaking finish.
+turns. Appendix D records the same thing from the other direction: in
+that contrast the checklist was on in \textbf{both} arms and did not
+prevent a contract-breaking finish.
 
 The other two arms are consistent with this and explain why their point
 estimates differ:
@@ -1913,7 +1916,8 @@ five hard tasks did not enforce their stated contracts &
 \texttt{concurrency\_race}, \texttt{nfa\_match}, \texttt{globmatch} each
 accepted a demonstrably wrong solution \\
 \texttt{summary.json} was rebuilt from one invocation's task subset &
-miscounted one \texttt{navigate} tag in an earlier analysis (§5.11) \\
+miscounted one \texttt{navigate} tag in an earlier analysis (Appendix
+D) \\
 \end{longtable}
 }
 
@@ -1940,188 +1944,10 @@ we can say is that a published, interval-excluding-zero effect did not
 survive the instrument being fixed, and that this is the most useful
 thing v1 contributes to the literature.
 
-\subsubsection{5.10 Cost proxies that are not
-wall-clock}\label{cost-proxies-that-are-not-wall-clock}
-
-We make no wall-clock claim in either direction. On the easier suite we
-once saw a ratio that looked like a speedup and did not survive a rerun
-of the same eight tasks: the baseline's own total moved by a factor of
-0.58 between two runs that differed in nothing but sampling. Those
-totals are not imported into this paper.
-
-\textbf{Steps.} What the v1 transcripts support is a step-count contrast
-on \texttt{globmatch} for Qwen 3.8 27B MLX at \texttt{max\_steps=40}:
-full harness 14, 16, 17 steps versus baseline 35, 37, 40 --- the
-baseline's own maximum being the ceiling itself. All six episodes
-passed, so this is a cost difference at equal outcome, not a quality
-difference. The harness costs an env-bootstrap command, a checklist
-round trip, and verifier runs. It pays for itself where the baseline
-would otherwise fail or run until the ceiling. It does not pay in
-seconds on a shared GPU.
-
-\textbf{Device envelope.} A sidecar sampled \texttt{nvidia-smi} every 2
-s for the duration of the grid, independently of the runner, producing
-78,027 samples over 43.8 hours. Table 12 is that log. Its point is a
-systems one: on a serial, batch-1 agent loop, \texttt{utilization.gpu}
-reads a median 89\% while the device draws a median 302 W of a 900 W cap
-and the memory controller sits at 23\%. Utilization near 90\% here means
-the SM is occupied by a decode that cannot fill it, not that the GH200
-is saturated. The SM clock was pinned at its 1,980 MHz maximum in 78,025
-of 78,027 samples, so nothing in the grid was thermally or power
-throttled --- there was simply no work of the shape that would use the
-envelope. Anyone budgeting GPU-hours for an agent grid from a
-utilization percentage will overestimate what the device is doing and
-underestimate how much of it a batched design could reclaim.
-
-\textbf{Table 12.} GH200 envelope during the v1 grid. 78,027 samples at
-\textasciitilde2.0 s cadence over 43.8 h. Source:
-\texttt{results/compute.jsonl}. The envelope is a property of the
-serving stack and the serial loop, not of the defects in §5.9, so it is
-retained.
-
-{\def\LTcaptype{none} % do not increment counter
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}@{}}
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Quantity
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-p05
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-median
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-p95
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-max
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Reference
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-Power draw (W) & 116.5 & 302.2 & 499.0 & 518.8 & 900 W cap \\
-\texttt{utilization.gpu} (\%) & 0 & 89 & 99 & 100 & --- \\
-Memory controller (\%) & 0 & 23 & 26 & 35 & --- \\
-HBM used (MiB) & 20,736 & 58,070 & 58,576 & 96,204 & 97,871 MiB total \\
-SM clock (MHz) & 1,980 & 1,980 & 1,980 & 1,980 & 1,980 MHz max \\
-Temperature (°C) & 35 & 45 & 54 & 58 & --- \\
-\end{longtable}
-}
-
-The peak draw over 43.8 hours was 518.8 W, 58\% of the cap. HBM
-occupancy has a clear two-model signature: the p05 of 20.7 GiB is the
-Qwen-resident regime and the median of 56.7 GiB is the regime with the
-larger Q8 model loaded, with a 94 GiB maximum during the share-gpu
-window when both were resident.
-
-\subsubsection{\texorpdfstring{5.11 Verify gate on \texttt{navigate}
-(corrected)}{5.11 Verify gate on navigate (corrected)}}\label{verify-gate-on-navigate-corrected}
-
-The hard grid does not isolate a flag against a legible failure mode. A
-prior single-flag experiment on the easier \texttt{navigate} task does,
-and it shows the mechanism the whole non-cheating apparatus (§3.2)
-exists for.
-
-\textbf{The task.} The visible test checks that
-\texttt{python3\ test\_report.py} prints a grand total of
-\texttt{4703.25} and lists categories alphabetically. The hidden tests
-also check that \texttt{loader.load()} returns amounts already converted
-from integer cents to dollars, which is that module's documented
-contract. The intended fix is to stop converting twice:
-\texttt{pipeline.build\_report()} already calls
-\texttt{normalise\_rows}, so \texttt{loader.load()} should return cents.
-
-\textbf{The failure.} Qwen, without the gate, often does the opposite.
-In the logged failure \texttt{navigate.rep1} under
-\texttt{no-verifygate} it writes \texttt{loader.py} so that
-\texttt{load()} returns the raw cent arrays. The visible test then
-passes, because the pipeline still converts once, and the model calls
-\texttt{finish} satisfied. The hidden verifier records
-\texttt{FAIL\ loader\ returns\ dollars\ got\ {[}1175,\ 4250,\ 89900,\ 125000,\ 250000{]}\ want\ {[}11.75,\ 42.5,\ 899.0,\ 1250.0,\ 2500.0{]}}.
-This is precisely the benchmark-validity failure the recent literature
-documents at scale {[}12{]}, {[}13{]}, {[}14{]}: the visible grade is
-reachable without the intended fix, which is what makes a raw score an
-unreliable measure of ability. Only a check the model does not control
-catches it. Note that the prompt-side \texttt{checklist} was \textbf{on}
-in both arms of this contrast --- it asks the model directly whether it
-weakened any test and whether the fix addresses the cause --- and it did
-not prevent the false finish. That is a small data point against
-prompt-level mitigation alone {[}14{]} and in favour of a structural
-gate.
-
-\textbf{The counts.} Restricting to configurations that differ from
-\texttt{full} in the \texttt{verifygate} flag alone, at
-\texttt{max\_steps=40}, on \texttt{navigate}:
-
-\textbf{Table 13.} Verify-gate contrast on \texttt{navigate}. Two-sided
-Fisher exact. Directories are
-\texttt{results/\textless{}model\textgreater{}\_\_\{full,no-verifygate\}\_\_\textless{}tag\textgreater{}}.
-The tag named \texttt{v2} in the pooled row is an early
-\texttt{navigate} tag and is \textbf{not} the registered v2 grid; the
-collision is an artefact of tag naming and the two share no episodes.
-
-{\def\LTcaptype{none} % do not increment counter
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
-  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}@{}}
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Model
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Scope
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-Gate on
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-Gate off
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
-Fisher exact \(p\)
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-Qwen 3.8 27B MLX & matched tags (\texttt{rep2}, \texttt{rep3}) & 9/9 &
-5/9 & 0.082 \\
-Qwen 3.8 27B MLX & pooled (\texttt{rep}, \texttt{rep2}, \texttt{rep3},
-\texttt{v2}) & 10/10 & 7/13 & \textbf{0.019} \\
-Ornith-1.5 35B-A3B Q8 & matched tag (\texttt{orep}) & 6/6 & 5/6 &
-1.00 \\
-Ornith-1.5 35B-A3B Q8 & pooled (\texttt{orep}, \texttt{v1}) & 7/7 & 5/6
-& 0.46 \\
-\end{longtable}
-}
-
-The conservative reading is the matched-tag row, where only the two tags
-in which \textbf{both} arms ran \texttt{navigate} are counted: 9/9
-versus 5/9, \(p = 0.082\), which does \textbf{not} reach
-\(\alpha = 0.05\). Pooling the additional single-episode tags reaches
-\(p = 0.019\), but pooling across tags is a weaker design than the
-matched one, and we do not present the pooled figure as the result. We
-report both and let the reader see that the conclusion depends on which
-set is counted. On Ornith the contrast is not significant under either
-scope.
-
-\textbf{The mechanism is cleaner than the counts.} Of the seven no-gate
-\texttt{navigate} failures across both models, \textbf{all seven}
-stopped with \texttt{stop\_reason\ =\ finished}. Not one was a crash, a
-timeout, or an exhausted context. Every single failure was the model
-asserting that the work was done on work that did not pass --- six of
-thirteen episodes for Qwen, one of six for Ornith. The gate is
-insurance, and its value tracks how often the model makes that specific
-error, not the parameter count. These episodes are not part of the 1,440
-and predate the v2 instrument; they are reported as a mechanism, not as
-an effect size. They are the mechanistic reason \texttt{verifygate}
-exists, and they are the reason the harness re-runs the verifier after
-the loop regardless of what the model claimed.
+Two results that are not part of either registered grid are reported in
+the appendices: cost proxies and the device envelope (Appendix C), and a
+single-flag verify-gate contrast on the easier \texttt{navigate} task
+that shows the mechanism the gate exists for (Appendix D).
 
 \subsection{6. Discussion}\label{discussion}
 
@@ -2171,8 +1997,8 @@ bound.
 
 Two further caveats point the same way. A component whose value is
 insurance against a rare, expensive event --- which is what
-\texttt{verifygate} is (§5.11) --- is what a pass-rate ablation is worst
-at valuing. And \texttt{envboot} and \texttt{groundfs} are the two
+\texttt{verifygate} is (Appendix D) --- is what a pass-rate ablation is
+worst at valuing. And \texttt{envboot} and \texttt{groundfs} are the two
 components most plausibly redundant \emph{with the task prompts
 themselves} on a suite where the working directory is already the
 repository; a harness deployed against an unfamiliar tree is not the
@@ -2297,7 +2123,7 @@ capability-by-harness interaction remains undetectable.
   \texttt{ast\_transformer} is at the floor for Ornith in three of nine
   cells and contributes almost nothing to that arm.
 \item
-  \textbf{The verify-gate case is off-grid.} §5.11 uses a different
+  \textbf{The verify-gate case is off-grid.} Appendix D uses a different
   task, a different serving stack (Apple MLX), a 40-step ceiling, and
   the pre-fix instrument. It is a mechanism demonstration, not a grid
   result, and its matched-tag contrast does not reach \(\alpha = 0.05\).
@@ -2413,7 +2239,7 @@ that tag, v2 carries its own tag rather than extending \texttt{hard}.
 Protocol-1 archives are \texttt{results/*-protocol1}. The device
 envelope in Table 9 is \texttt{results/compute.jsonl} (78,027 samples),
 collected during the v1 grid. The \texttt{navigate} transcripts used in
-§5.11 are the
+Appendix D are the
 \texttt{qwen3.8\_27b-mlx\_\_\{full,no-verifygate\}\_\_\{rep,rep2,rep3,v2,abl\}}
 and Ornith \texttt{\_\_\{full,no-verifygate\}\_\_\{orep,v1\}}
 directories --- note that the \texttt{v2} there is an early
@@ -2498,9 +2324,9 @@ Narasimhan, and O. Press, ``SWE-agent: Agent-Computer Interfaces Enable
 Automated Software Engineering,'' in \emph{Proc. NeurIPS}, 2024.
 arXiv:2405.15793. doi:10.48550/arXiv.2405.15793.
 
-{[}5{]} KRAFTON AI and Ludo Robotics, ``Terminus-KIRA: boosting frontier
-model performance on Terminal-Bench with a minimal harness,'' 2026, as
-cited by Lee et al.~{[}1{]}.
+{[}5{]} KRAFTON AI and Ludo Robotics, ``Terminus-KIRA: Boosting Frontier
+Model Performance on Terminal-Bench with Minimal Harness,'' 2026.
+Software repository, https://github.com/krafton-ai/kira.
 
 {[}6{]} T. J. DiCiccio and B. Efron, ``Bootstrap confidence intervals,''
 \emph{Statistical Science}, vol.~11, no. 3, pp.~189--228, 1996.
@@ -2586,10 +2412,10 @@ no. 2, art. 55, 2023. doi:10.1007/s10664-022-10277-5.
 \subsection{Appendix A. Serving and
 protocol}\label{appendix-a.-serving-and-protocol}
 
-Hard-grid models in Tables 3--8 were \texttt{qwen3.8:27b} and
+Models in Tables 3--8 were \texttt{qwen3.8:27b} and
 \texttt{hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8\_0} under Ollama
-0.32.14 on the GH200 (aarch64, CUDA 13, 97,871 MiB HBM, 900 W power cap,
-1,980 MHz max SM clock).
+0.33.0, stamped on every v2 episode, on the GH200 (aarch64, CUDA 13,
+97,871 MiB HBM, 900 W power cap, 1,980 MHz max SM clock).
 
 Runner defaults were \texttt{-\/-num-ctx\ 32768},
 \texttt{-\/-num-predict\ 4096}, \texttt{-\/-temperature\ 0.6},
@@ -2617,10 +2443,12 @@ full/baseline re-run were sole tenant
 (\texttt{OLLAMA\_MAX\_LOADED\_MODELS=2}, \texttt{KEEP\_ALIVE=-1},
 \texttt{FLASH\_ATTENTION=1}, \texttt{NUM\_PARALLEL=1}).
 
-The verify-gate case (§5.7) used \texttt{qwen3.8:27b-mlx} and Ornith Q8
-on Apple silicon with \texttt{max\_steps=40} and is not mixed into
-Tables 3--8. Figures can be regenerated with
-\texttt{python3\ figures.py\ results/stats-hard.json}.
+The verify-gate case (Appendix D) used \texttt{qwen3.8:27b-mlx} and
+Ornith Q8 on Apple silicon with \texttt{max\_steps=40} and is not mixed
+into Tables 3--8. Figures are regenerated by
+\texttt{paper/build\_pdf.sh}, which renders Figures 3--6 from
+\texttt{paper/stats-all3.json} and Figure 1 from
+\texttt{paper/stats-v2.json}.
 
 \subsection{Appendix B. Citation verification
 status}\label{appendix-b.-citation-verification-status}
@@ -2628,8 +2456,8 @@ status}\label{appendix-b.-citation-verification-status}
 Every citation was checked against its arXiv abstract page, OpenAlex, or
 Crossref. Status is recorded so that a reader can see which identifiers
 were confirmed at source and which were carried over from secondary
-citation. \textbf{All twenty-four references resolve except {[}5{]}},
-which has no independent identifier.
+citation. \textbf{All twenty-four references resolve.} {[}5{]} is a
+software repository rather than a paper, and is cited by its URL.
 
 References {[}20{]}--{[}24{]} were found through a literature-search
 tool but \textbf{verified outside it}: each arXiv entry against its
@@ -2667,9 +2495,11 @@ describes 1.5. We cite 2.0, as Lee et al.~do. \\
 2024, DOI \texttt{10.48550/arxiv.2407.16741}. \\
 {[}4{]} SWE-agent & arXiv:2405.15793 & Verified --- title, 7 authors,
 2024, DOI \texttt{10.48550/arxiv.2405.15793}. \\
-{[}5{]} Terminus-KIRA & --- (no independent identifier) & \textbf{Not
-resolved.} Cited as it appears in {[}1{]}; a secondary citation, not one
-we checked at source. The 30 kB cap in §3.1 rests on it. \\
+{[}5{]} Terminus-KIRA & github.com/krafton-ai/kira & \textbf{Verified at
+source.} Title, authors (KRAFTON AI and Ludo Robotics) and year match
+the repository's own citation block, and its description states the ``30
+KB cap on terminal output''. The cap in §3.1 is also stated in {[}1{]},
+Appendix B.3, which cites this repository. \\
 {[}6{]} DiCiccio \& Efron & doi:10.1214/ss/1032280214 & Verified ---
 \emph{Statistical Science}, 1996. \\
 {[}20{]} Externalization review & arXiv:2604.08224 & Verified --- title
@@ -2723,7 +2553,189 @@ provider include a small number with mismatched abstracts (records whose
 metadata and abstract text belong to different papers). Every reference
 above was accepted only on agreement of title, author list, and year;
 entries that could not be corroborated on all three were discarded
-rather than cited. Reference {[}5{]} remains the one load-bearing
-citation with no independent identifier.
+rather than cited.
+
+\subsection{Appendix C. Cost proxies and the device
+envelope}\label{appendix-c.-cost-proxies-and-the-device-envelope}
+
+We make no wall-clock claim in either direction. On the easier suite we
+once saw a ratio that looked like a speedup and did not survive a rerun
+of the same eight tasks: the baseline's own total moved by a factor of
+0.58 between two runs that differed in nothing but sampling. Those
+totals are not imported into this paper.
+
+\textbf{Steps.} What the v1 transcripts support is a step-count contrast
+on \texttt{globmatch} for Qwen 3.8 27B MLX at \texttt{max\_steps=40}:
+full harness 14, 16, 17 steps versus baseline 35, 37, 40 --- the
+baseline's own maximum being the ceiling itself. All six episodes
+passed, so this is a cost difference at equal outcome, not a quality
+difference. The harness costs an env-bootstrap command, a checklist
+round trip, and verifier runs. It pays for itself where the baseline
+would otherwise fail or run until the ceiling. It does not pay in
+seconds on a shared GPU.
+
+\textbf{Device envelope.} A sidecar sampled \texttt{nvidia-smi} every 2
+s for the duration of the grid, independently of the runner, producing
+78,027 samples over 43.8 hours. Table 12 is that log. Its point is a
+systems one: on a serial, batch-1 agent loop, \texttt{utilization.gpu}
+reads a median 89\% while the device draws a median 302 W of a 900 W cap
+and the memory controller sits at 23\%. Utilization near 90\% here means
+the SM is occupied by a decode that cannot fill it, not that the GH200
+is saturated. The SM clock was pinned at its 1,980 MHz maximum in 78,025
+of 78,027 samples, so nothing in the grid was thermally or power
+throttled --- there was simply no work of the shape that would use the
+envelope. Anyone budgeting GPU-hours for an agent grid from a
+utilization percentage will overestimate what the device is doing and
+underestimate how much of it a batched design could reclaim.
+
+\textbf{Table 12.} GH200 envelope during the v1 grid. 78,027 samples at
+\textasciitilde2.0 s cadence over 43.8 h. Source:
+\texttt{results/compute.jsonl}. The envelope is a property of the
+serving stack and the serial loop, not of the defects in §5.9, so it is
+retained.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Quantity
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+p05
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+median
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+p95
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+max
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Reference
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Power draw (W) & 116.5 & 302.2 & 499.0 & 518.8 & 900 W cap \\
+\texttt{utilization.gpu} (\%) & 0 & 89 & 99 & 100 & --- \\
+Memory controller (\%) & 0 & 23 & 26 & 35 & --- \\
+HBM used (MiB) & 20,736 & 58,070 & 58,576 & 96,204 & 97,871 MiB total \\
+SM clock (MHz) & 1,980 & 1,980 & 1,980 & 1,980 & 1,980 MHz max \\
+Temperature (°C) & 35 & 45 & 54 & 58 & --- \\
+\end{longtable}
+}
+
+The peak draw over 43.8 hours was 518.8 W, 58\% of the cap. HBM
+occupancy has a clear two-model signature: the p05 of 20.7 GiB is the
+Qwen-resident regime and the median of 56.7 GiB is the regime with the
+larger Q8 model loaded, with a 94 GiB maximum during the share-gpu
+window when both were resident.
+
+\subsection{\texorpdfstring{Appendix D. The verify-gate mechanism on
+\texttt{navigate}}{Appendix D. The verify-gate mechanism on navigate}}\label{appendix-d.-the-verify-gate-mechanism-on-navigate}
+
+The hard grid does not isolate a flag against a legible failure mode. A
+prior single-flag experiment on the easier \texttt{navigate} task does,
+and it shows the mechanism the whole non-cheating apparatus (§3.2)
+exists for.
+
+\textbf{The task.} The visible test checks that
+\texttt{python3\ test\_report.py} prints a grand total of
+\texttt{4703.25} and lists categories alphabetically. The hidden tests
+also check that \texttt{loader.load()} returns amounts already converted
+from integer cents to dollars, which is that module's documented
+contract. The intended fix is to stop converting twice:
+\texttt{pipeline.build\_report()} already calls
+\texttt{normalise\_rows}, so \texttt{loader.load()} should return cents.
+
+\textbf{The failure.} Qwen, without the gate, often does the opposite.
+In the logged failure \texttt{navigate.rep1} under
+\texttt{no-verifygate} it writes \texttt{loader.py} so that
+\texttt{load()} returns the raw cent arrays. The visible test then
+passes, because the pipeline still converts once, and the model calls
+\texttt{finish} satisfied. The hidden verifier records
+\texttt{FAIL\ loader\ returns\ dollars\ got\ {[}1175,\ 4250,\ 89900,\ 125000,\ 250000{]}\ want\ {[}11.75,\ 42.5,\ 899.0,\ 1250.0,\ 2500.0{]}}.
+This is precisely the benchmark-validity failure the recent literature
+documents at scale {[}12{]}, {[}13{]}, {[}14{]}: the visible grade is
+reachable without the intended fix, which is what makes a raw score an
+unreliable measure of ability. Only a check the model does not control
+catches it. Note that the prompt-side \texttt{checklist} was \textbf{on}
+in both arms of this contrast --- it asks the model directly whether it
+weakened any test and whether the fix addresses the cause --- and it did
+not prevent the false finish. That is a small data point against
+prompt-level mitigation alone {[}14{]} and in favour of a structural
+gate.
+
+\textbf{The counts.} Restricting to configurations that differ from
+\texttt{full} in the \texttt{verifygate} flag alone, at
+\texttt{max\_steps=40}, on \texttt{navigate}:
+
+\textbf{Table 13.} Verify-gate contrast on \texttt{navigate}. Two-sided
+Fisher exact. Directories are
+\texttt{results/\textless{}model\textgreater{}\_\_\{full,no-verifygate\}\_\_\textless{}tag\textgreater{}}.
+The tag named \texttt{v2} in the pooled row is an early
+\texttt{navigate} tag and is \textbf{not} the registered v2 grid; the
+collision is an artefact of tag naming and the two share no episodes.
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
+  >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Model
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Scope
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Gate on
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Gate off
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Fisher exact \(p\)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Qwen 3.8 27B MLX & matched tags (\texttt{rep2}, \texttt{rep3}) & 9/9 &
+5/9 & 0.082 \\
+Qwen 3.8 27B MLX & pooled (\texttt{rep}, \texttt{rep2}, \texttt{rep3},
+\texttt{v2}) & 10/10 & 7/13 & \textbf{0.019} \\
+Ornith-1.5 35B-A3B Q8 & matched tag (\texttt{orep}) & 6/6 & 5/6 &
+1.00 \\
+Ornith-1.5 35B-A3B Q8 & pooled (\texttt{orep}, \texttt{v1}) & 7/7 & 5/6
+& 0.46 \\
+\end{longtable}
+}
+
+The conservative reading is the matched-tag row, where only the two tags
+in which \textbf{both} arms ran \texttt{navigate} are counted: 9/9
+versus 5/9, \(p = 0.082\), which does \textbf{not} reach
+\(\alpha = 0.05\). Pooling the additional single-episode tags reaches
+\(p = 0.019\), but pooling across tags is a weaker design than the
+matched one, and we do not present the pooled figure as the result. We
+report both and let the reader see that the conclusion depends on which
+set is counted. On Ornith the contrast is not significant under either
+scope.
+
+\textbf{The mechanism is cleaner than the counts.} Of the seven no-gate
+\texttt{navigate} failures across both models, \textbf{all seven}
+stopped with \texttt{stop\_reason\ =\ finished}. Not one was a crash, a
+timeout, or an exhausted context. Every single failure was the model
+asserting that the work was done on work that did not pass --- six of
+thirteen episodes for Qwen, one of six for Ornith. The gate is
+insurance, and its value tracks how often the model makes that specific
+error, not the parameter count. These episodes are not part of the 1,440
+and predate the v2 instrument; they are reported as a mechanism, not as
+an effect size. They are the mechanistic reason \texttt{verifygate}
+exists, and they are the reason the harness re-runs the verifier after
+the loop regardless of what the model claimed.
 
 \end{document}
