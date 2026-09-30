@@ -408,7 +408,17 @@ measure it: on our suite the single largest component effect, native
 file tools at \(\Delta = +0.144\), appears on one of three models and is
 close to free on the other two (§5.7). A claim used as a design premise
 and a claim supported by a paired ablation are different objects, and
-the second is what this paper contributes.
+the second is what this paper contributes. A third line evolves the
+harness with the model frozen. Agentic Harness Engineering exposes each
+component as a separately editable file, and its ablations attribute the
+gain to tools, middleware and long-term memory rather than to the system
+prompt \citep{lin2026ahe}; population-based search takes its fitness
+from each benchmark's own verifier \citep{zhang2026darwinx}; and
+open-ended self-modification of coding agents rediscovers components of
+the kind our flags switch, such as better editing tools and long-context
+management \citep{zhang2025dgm}. These attribute value to components
+from inside a search trajectory. None is a paired one-factor ablation
+with the model and seeds held fixed.
 
 The finding that matters for this paper is not the search algorithm. It
 is the empirical fact that, for a fixed base model, published harnesses
@@ -439,9 +449,14 @@ resulting proliferation \citep{liu2024survey}.
 
 Our position is methodological rather than partisan. All four are claims
 about which component pays, and none was measured by holding the rest of
-the system fixed and flipping one flag. That is the measurement we build
-the instrument to make. Meta-Harness asks which harness an outer agent
-can \emph{discover}; we ask which declared components, implemented once,
+the system fixed and flipping one flag. The closest controlled design
+crosses whole agent architectures with backbone models in a full
+factorial, and finds that architecture moves results by up to 12 points
+within one model while the backbone dominates overall
+\citep{bandel2026general}. Its unit is the architecture, not a component
+inside one loop. That is the measurement we build the instrument to
+make. Meta-Harness asks which harness an outer agent can
+\emph{discover}; we ask which declared components, implemented once,
 \emph{move pass rate} when switched. The two questions compose: a
 switchable inner loop is the right substrate for an outer search,
 because a proposer that rewrites a monolith cannot tell which edit paid.
@@ -470,8 +485,12 @@ matters for measurement: it is not a self-repair prompt but an
 \emph{external} precondition on termination. The tests it runs are ones
 the agent cannot read, edit, or shadow (§3.2), and their failure output
 --- not the model's own reflection --- is what re-enters the context.
-The \texttt{checklist} flag is the prompt-side analogue, and keeping the
-two as separate flags is deliberate: it lets us ask whether the prompt
+Iterative in-context feedback of this kind has been shown to elicit
+specification gaming from frontier models without any training
+\citep{mckeereid2024honesty}, which is why a gate that returns failures
+has to be paired with a grader the agent cannot edit (§3.2). The
+\texttt{checklist} flag is the prompt-side analogue, and keeping the two
+as separate flags is deliberate: it lets us ask whether the prompt
 intervention and the external check are substitutes. Table 7 says they
 are not: removing the gate costs Qwen \(+0.225\) while removing the
 checklist costs \(+0.025\).
@@ -487,11 +506,17 @@ case: agents ``can achieve high evaluation scores by exploiting
 shortcuts instead of solving the intended task, producing deceptive
 performance,'' which makes scores unreliable as measures of ability, and
 they propose randomized tests and capped evaluation as countermeasures.
-\citet{kouremetis2026cheats} document the same behaviour in the wild on
-cybersecurity benchmarks, where cheating inflates reported pass rates
-beyond genuine capability, and study prompt-level mitigations against
-it. Terminal-Bench's own design response is to score final container
-state rather than the trace \citep{merrill2026terminalbench}.
+The limiting case is an agent that edits the grader itself: models
+trained on a curriculum of gameable environments occasionally generalise
+zero-shot to rewriting their own reward function
+\citep{denison2024subterfuge}. That result concerns trained models, not
+the off-the-shelf ones evaluated here, but it is why §3.2 makes the
+grader structurally unreachable rather than asking the model not to
+touch it. \citet{kouremetis2026cheats} document the same behaviour in
+the wild on cybersecurity benchmarks, where cheating inflates reported
+pass rates beyond genuine capability, and study prompt-level mitigations
+against it. Terminal-Bench's own design response is to score final
+container state rather than the trace \citep{merrill2026terminalbench}.
 
 Ours is narrower and stricter, and it is structural rather than
 prompt-level: hidden tests the agent never sees, visible tests hashed
@@ -536,23 +561,30 @@ percentile bootstrap confidence intervals throughout following the
 standard treatment \citep{diciccio1996bootstrap}, a \texttt{protocol}
 object serialized into every result file so a cell's stop conditions
 travel with its numbers, and \textbf{preregistration} of the design, the
-hypothesis directions, and the analysis before the first episode.
+hypothesis directions, and the analysis before the first episode. This
+follows the argument that language-model evaluations are experiments and
+should be analysed and planned as such, including when the quantity of
+interest is a difference between two systems
+\citep{miller2024errorbars}.
 
 The last is uncommon in this literature and is borrowed from an adjacent
 one. \citet{ernst2023registered} argue for registered reports in
 software engineering precisely because reviewing a protocol before
 results exist removes the degrees of freedom that outcome-dependent
-analysis introduces. We do not submit a registered report, but we do fix
-the directions, the estimator, and the multiplicity correction in a
-document written before any v2 episode ran
-(\texttt{paper/preregistration.md}), and we record every departure from
-it with what had been observed when the departure was decided
-(\texttt{paper/DEVIATIONS.md}). Two of this paper's results depend on
-that discipline being real rather than nominal: H2 clears an uncorrected
-95\% bar and fails the registered one (§5.4), and our own largest
-deviation is recorded as \textbf{not} blind (§4.4). An analysis choice
-made after seeing data is reported as exploratory regardless of how it
-was arrived at, which is why §5.8 is labelled post-hoc.
+analysis introduces. How large those degrees of freedom can be has been
+measured directly: when 164 teams tested the same hypotheses on the same
+data, the dispersion of their answers was sizable and was underestimated
+by the teams themselves \citep{menkveld2024nonstandard}. We do not
+submit a registered report, but we do fix the directions, the estimator,
+and the multiplicity correction in a document written before any v2
+episode ran (\texttt{paper/preregistration.md}), and we record every
+departure from it with what had been observed when the departure was
+decided (\texttt{paper/DEVIATIONS.md}). Two of this paper's results
+depend on that discipline being real rather than nominal: H2 clears an
+uncorrected 95\% bar and fails the registered one (§5.4), and our own
+largest deviation is recorded as \textbf{not} blind (§4.4). An analysis
+choice made after seeing data is reported as exploratory regardless of
+how it was arrived at, which is why §5.8 is labelled post-hoc.
 
 \subsubsection{2.7 Scope}\label{scope}
 
@@ -2151,6 +2183,16 @@ of anything we measured. This is the clearest evidence in the study for
 the paper's central methodological claim: a harness ablation reported on
 one model is a statement about that model, and component-level advice
 that does not name the model is not supported by evidence of this kind.
+Model-specific sensitivity has also been reported one level up, where
+open-weight backbones collapse on particular agent architectures that
+frontier closed models handle \citep{bandel2026general}. All three of
+our arms have publicly released weights, and the \texttt{nativetools}
+sensitivity appears on only one of them, so on this evidence it is a
+property of the individual model rather than of the open/closed
+distinction. Nor does this contradict reports that an evolved harness
+transfers across model families as a bundle \citep{lin2026ahe}: our
+full-versus-baseline effect has the same sign and a similar size on all
+three arms. What does not transfer here is the per-component effect.
 
 \textbf{Parameter count was the wrong proxy, again.} Ornith has more
 parameters than Qwen and is the weaker agent under every one of nine
@@ -2194,12 +2236,16 @@ across an instrument change.
 \(\Delta\), is that these caveats are \emph{fields} rather than prose.
 Stop reason, finish rate, protocol block, containment backend, unserved
 count, and the coverage audit are all recorded per episode or computed
-per report. The baseline is the same loop. The confirmatory family is
-registered and corrected; the exploratory family carries its own
-family-wise number; a cell collected under a different protocol cannot
-silently pool with one collected under these. Filtering Ornith's
-\texttt{ModelError} rows would be a different experiment and would have
-to be declared before looking at pass rate.
+per report. A pilot audit of agent-benchmark papers found that none of
+eight disclosed inference cost and none fully disclosed a
+content-addressed image of the evaluation environment
+\citep{moghadasi2026disclose}; serializing the protocol into every
+result file is our answer to that gap. The baseline is the same loop.
+The confirmatory family is registered and corrected; the exploratory
+family carries its own family-wise number; a cell collected under a
+different protocol cannot silently pool with one collected under these.
+Filtering Ornith's \texttt{ModelError} rows would be a different
+experiment and would have to be declared before looking at pass rate.
 
 \textbf{The honest headline:} on eight hidden-test tasks, nine
 configurations, two local models and 1,440 registered episodes, turning
@@ -2498,9 +2544,16 @@ Five references
 \citep{zhou2026externalization, lou2026autoharness, zhang2026selfharness, shen2024smallllms, ernst2023registered}
 were found through a literature-search tool but \textbf{verified outside
 it}: each arXiv entry against its abstract page, and
-\citet{ernst2023registered} against its Crossref record. This matters
-for the same reason §5.9 does --- a retrieval tool that returns a
-plausible record is not a tool that has confirmed one.
+\citet{ernst2023registered} against its Crossref record. Nine more
+\citep{lin2026ahe, zhang2026darwinx, zhang2025dgm, bandel2026general, denison2024subterfuge, mckeereid2024honesty, miller2024errorbars, menkveld2024nonstandard, moghadasi2026disclose}
+were found and verified the same way; where the search record and the
+source of record disagreed on an author's name, the source of record is
+used and the row says so. The same check found published versions of
+\citet{liu2024survey} and \citet{shen2024smallllms}, which are now cited
+in that form. The search that produced them was limited by provider
+quotas, so it is not an exhaustive review. This matters for the same
+reason §5.9 does --- a retrieval tool that returns a plausible record is
+not a tool that has confirmed one.
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -2544,7 +2597,10 @@ C. Finn), year 2026, DOI \texttt{10.48550/arxiv.2603.28052}. Abstract
 confirms the harness definition quoted in §1. \\
 \citet{li2024ldb} & doi:10.18653/v1/2024.findings-acl.49 & Verified ---
 Findings of ACL 2024. \\
-\citet{liu2024survey} & arXiv:2409.02977 & Verified --- 2024. \\
+\citet{liu2024survey} & doi:10.1145/3796507 & Verified via Crossref ---
+\emph{ACM Transactions on Software Engineering and Methodology}, 2026,
+same title and seven authors as arXiv:2409.02977, which it
+supersedes. \\
 \citet{liu2024lost} & doi:10.1162/tacl\_a\_00638 & Verified --- TACL
 2024; preprint arXiv:2307.03172 also resolved. \\
 \citet{lodkaew2026deceive} & arXiv:2606.07379 & Verified --- 2026.
@@ -2562,10 +2618,12 @@ authors in \texttt{references.bib} is taken from the arXiv record. \\
 \citet{nicholson2026drift} & arXiv:2601.19934 & Verified --- 2026.
 Abstract confirms repeated-run drift under fixed decoding parameters, as
 cited in §4.5. \\
-\citet{shen2024smallllms} & arXiv:2401.07324 & Verified --- title and
-all eight authors, submitted 14 January 2024. Abstract confirms the
-claim attributed in §2.2 that performance limitations in tool use are
-pronounced for smaller models. \\
+\citet{shen2024smallllms} & doi:10.18653/v1/2024.emnlp-main.929 &
+Verified via Crossref --- \emph{Proceedings of EMNLP 2024},
+pp.~16658--16680, title and all eight authors, the published form of
+arXiv:2401.07324. Abstract confirms the claim attributed in §2.2 that
+performance limitations in tool use are pronounced for smaller
+models. \\
 \citet{siegel2024corebench} & arXiv:2409.11363 & Verified --- 2024. \\
 \citet{wang2024openhands} & arXiv:2407.16741 & Verified --- title, 24
 authors, 2024, DOI \texttt{10.48550/arxiv.2407.16741}. \\
@@ -2586,6 +2644,46 @@ confirmed verbatim against the abstract. \\
 and first six authors confirmed at the arXiv abstract page, submitted 9
 April 2026; the full list of 21 authors in \texttt{references.bib} is
 taken from the arXiv record. \\
+\citet{lin2026ahe} & arXiv:2604.25850 & Verified --- title, all eleven
+authors, submitted 28 April 2026 (v4 18 May 2026). The search provider's
+record gives the first author's given name as ``Jiaxu''; the arXiv page
+gives ``Jiahang'', which is used. Abstract confirms the ablation
+attribution to tools, middleware and memory cited in §2.1. \\
+\citet{zhang2026darwinx} & arXiv:2608.07545 & Verified --- title, all
+twelve authors, submitted 31 July 2026. Abstract confirms the
+frozen-model population search and verifier-derived fitness cited in
+§2.1. \\
+\citet{zhang2025dgm} & arXiv:2505.22954 & Verified --- title, all five
+authors, submitted 29 May 2025 (v3 12 March 2026). A Crossref record
+(10.70777/si.v2i3.15063, Carlson Research LLC) carries the same title
+and authors; it is not cited because its peer-review status could not be
+established. Abstract confirms the discovered components listed in
+§2.1. \\
+\citet{bandel2026general} & arXiv:2602.22953 & Verified --- title, all
+fifteen authors, submitted 26 February 2026 (v2 11 May 2026); arXiv
+comments state an ICLR 2026 workshop presentation. Abstract confirms the
+architecture x backbone factorial, the 12 pp within-model swing and the
+open-weight ``generality sinks'' cited in §2.2 and §6. \\
+\citet{denison2024subterfuge} & arXiv:2406.10162 & Verified --- title,
+all fourteen authors, submitted 14 June 2024. Abstract confirms the
+zero-shot reward-function rewriting cited in §2.4. \\
+\citet{mckeereid2024honesty} & arXiv:2410.06491 & Verified --- title,
+all five authors, submitted 9 October 2024. The search provider's record
+gives the fourth author as ``Jon Needham''; the arXiv page gives ``Joe
+Needham'', which is used. Abstract confirms specification gaming from
+in-context iterative reflection, as cited in §2.3. \\
+\citet{miller2024errorbars} & arXiv:2411.00640 & Verified --- title,
+sole author E. Miller, submitted 1 November 2024. Abstract confirms the
+evaluations-as-experiments framing cited in §2.6. \\
+\citet{menkveld2024nonstandard} & doi:10.1111/jofi.13337 & Verified via
+Crossref --- \emph{The Journal of Finance}, vol.~79, no. 3,
+pp.~2339-2390, 2024; first author A. J. Menkveld, 343 authors on the
+Crossref record (cited as first six \emph{et al.}). Abstract confirms
+the 164-team same-data design cited in §2.6. \\
+\citet{moghadasi2026disclose} & arXiv:2605.21404 & Verified --- title,
+both authors, submitted 20 May 2026; arXiv comments state a submission
+to IEEE Big Data 2026, not a publication. Abstract confirms the cost and
+harness-specification disclosure gaps cited in §6. \\
 \end{longtable}
 }
 

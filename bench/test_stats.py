@@ -582,9 +582,18 @@ paper_probe("the non-citation brackets survived the conversion",
 paper_probe("references.bib is pure ASCII (TeX escapes for diacritics)",
             lambda: _read("references.bib").isascii(),
             lambda: sorted({c for c in _read("references.bib") if not c.isascii()}))
-paper_probe("references.bib holds the 24 references, each key once",
-            lambda: len(_pb.bib_keys(_read("references.bib"))) == 24,
-            lambda: _pb.bib_keys(_read("references.bib")))
+# The count is not fixed (the bibliography grows); what must hold is one entry
+# per key, and exactly one Appendix B verification row per entry.
+paper_probe("references.bib defines each key once",
+            lambda: len(_pb.bib_keys(_read("references.bib")))
+            == len(set(_pb.bib_keys(_read("references.bib")))),
+            lambda: sorted(k for k in _pb.bib_keys(_read("references.bib"))
+                           if _pb.bib_keys(_read("references.bib")).count(k) > 1))
+paper_probe("every references.bib entry has exactly one Appendix B verification row",
+            lambda: all(len(re.findall(rf"^\| @{re.escape(k)} \|", _MS, re.M)) == 1
+                        for k in _pb.bib_keys(_read("references.bib"))),
+            lambda: [k for k in _pb.bib_keys(_read("references.bib"))
+                     if len(re.findall(rf"^\| @{re.escape(k)} \|", _MS, re.M)) != 1])
 paper_probe("every cited key is defined in references.bib",
             lambda: _pb.cited_keys(_MS) - set(_pb.bib_keys(_read("references.bib"))) == set(),
             lambda: _pb.cited_keys(_MS) - set(_pb.bib_keys(_read("references.bib"))))
