@@ -1,5 +1,10 @@
 # Workshop submission
 
+> **Superseded, not being submitted.** This paper and the reasoning below were built on the v1
+> grid (`stats-hard.json`), which the registered v2 grid overturned. Full vs baseline is
+> supported on both arms, and the `no-outcap` result reversed sign. See
+> [`../SUBMISSION.md`](../SUBMISSION.md) §1.1. The long paper is going to TMLR (Route A).
+
 `harness_ablation.tex` — 5 pages + references, anonymised, compiles standalone.
 
     pdflatex harness_ablation.tex && pdflatex harness_ablation.tex

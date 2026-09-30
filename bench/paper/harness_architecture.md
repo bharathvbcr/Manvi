@@ -624,7 +624,7 @@ References [20]–[24] were found through a literature-search tool but **verifie
 | [2] Terminal-Bench | arXiv:2601.11868 | **Verified.** Title, first author M. A. Merrill, year 2026, DOI `10.48550/arxiv.2601.11868`. Abstract confirms Terminal-Bench **2.0**; a separate record (`10.60882/cispa.32056182`) describes 1.5. We cite 2.0, as Lee et al. do. |
 | [3] OpenHands | arXiv:2407.16741 | Verified — title, 24 authors, 2024, DOI `10.48550/arxiv.2407.16741`. |
 | [4] SWE-agent | arXiv:2405.15793 | Verified — title, 7 authors, 2024, DOI `10.48550/arxiv.2405.15793`. |
-| [5] Terminus-KIRA | github.com/krafton-ai/kira | **Verified at source.** Title, authors (KRAFTON AI and Ludo Robotics) and year match the repository's own citation block, and its description states the "30 KB cap on terminal output". The cap in §3.1 is also stated in [1], Appendix B.3, which cites this repository. |
+| [5] Terminus-KIRA | github.com/krafton-ai/kira | **Verified at source.** Title, authors (KRAFTON AI and Ludo Robotics) and year match the repository's own citation block, and its description states the "30 KB cap on terminal output". The cap in §3.1 is also stated in [1], Appendix B.3, which cites the KIRA repository. |
 | [6] DiCiccio & Efron | doi:10.1214/ss/1032280214 | Verified — *Statistical Science*, 1996. |
 | [20] Externalization review | arXiv:2604.08224 | Verified — title and first six authors confirmed at the arXiv abstract page, submitted 9 April 2026. |
 | [21] AutoHarness | arXiv:2603.03329 | Verified — title and all six authors (X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W. Lehrach, K. P. Murphy), submitted 10 February 2026. |

@@ -23,6 +23,11 @@ import re
 import sys
 
 MODES = ("article", "tmlr-review", "tmlr-preprint")
+
+
+class BuildError(Exception):
+    """A body this script cannot prepare safely. An Exception, not SystemExit,
+    so a caller testing the checks sees a failure rather than an exit."""
 HASH = "82e453a"
 WITHHELD = "a single fixed commit (identifier withheld for review)"
 
@@ -35,14 +40,14 @@ def attach_captions(text):
     text, n_tab = TABLE.subn(lambda m: f"Table: {m.group(1)}\n\n", text)
     left = re.findall(r"^\*\*(?:Figure|Table) \d+\.\*\*", text, re.M)
     if left:
-        raise SystemExit(f"captions not attached to a float: {left}")
+        raise BuildError(f"captions not attached to a float: {left}")
     return text, n_fig, n_tab
 
 
 def lift_abstract(text):
     m = re.search(r"^## Abstract\n\n(.*?)\n(?=## )", text, re.S | re.M)
     if not m:
-        raise SystemExit("no '## Abstract' section to lift into the TMLR abstract")
+        raise BuildError("no '## Abstract' section to lift into the TMLR abstract")
     block = "".join("  " + line + "\n" for line in m.group(1).strip().splitlines())
     return "---\nabstract: |\n" + block + "---\n\n" + text[:m.start()] + text[m.end():]
 
@@ -50,31 +55,48 @@ def lift_abstract(text):
 def withhold_hash(text):
     text = text.replace(f"commit `{HASH}`", WITHHELD)
     if HASH in text:
-        raise SystemExit(f"{HASH} survives outside 'commit `{HASH}`'; anonymisation incomplete")
+        raise BuildError(f"{HASH} survives outside 'commit `{HASH}`'; anonymisation incomplete")
+    return text
+
+
+def anonymise(text):
+    """What the review copy must not carry besides the hash.
+
+    TMLR's template: acknowledgments are added "only ... once your submission
+    is accepted and deanonymized", so the section is dropped. The code is
+    pointed at through the supplementary material, not "this repository".
+    """
+    text = withhold_hash(text)
+    m = re.search(r"^## Acknowledgments\n.*?(?=^## )", text, re.S | re.M)
+    if not m:
+        raise BuildError("no '## Acknowledgments' section to withhold")
+    text = text[:m.start()] + text[m.end():]
+    old = "live in the `bench/` directory of this repository"
+    if text.count(old) != 1:
+        raise BuildError(f"expected one '{old}' to redirect to the supplementary material")
+    text = text.replace(old, "are in the supplementary material, under `bench/`")
+    if "this repository" in text:
+        raise BuildError("'this repository' survives in the review copy")
     return text
 
 
 def prepare(text, mode):
     if mode not in MODES:
-        raise SystemExit(f"unknown mode {mode}")
+        raise BuildError(f"unknown mode {mode}")
     text, _, _ = attach_captions(text)
     if mode.startswith("tmlr"):
         text = lift_abstract(text)
-        # At full width the graphical abstract misses page 1 by ~0.5 in;
-        # tmlr.sty's \flushbottom then stretches the abstract to fill the
-        # page. The style's layout is not ours to change, so the figure shrinks.
-        text, n = re.subn(r"^(!\[\*\*Figure 1\.\*\*[^\n]*\]\([^)]+\))$", r"\1{width=75%}",
-                          text, count=1, flags=re.M)
-        if n != 1:
-            raise SystemExit("graphical abstract (Figure 1) not found")
     if mode == "tmlr-review":
-        text = withhold_hash(text)
+        text = anonymise(text)
     return text
 
 
 if __name__ == "__main__":
     path, mode = sys.argv[1], sys.argv[2]
     with open(path) as f:
-        out = prepare(f.read(), mode)
+        try:
+            out = prepare(f.read(), mode)
+        except BuildError as e:
+            raise SystemExit(f"prepare_body: {e}")
     with open(path, "w") as f:
         f.write(out)

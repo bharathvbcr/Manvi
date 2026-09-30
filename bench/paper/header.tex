@@ -16,8 +16,10 @@
 \AtBeginEnvironment{longtable}{\small}
 \AtBeginEnvironment{tabular}{\small}
 
-% Keep figures near their captions.
-\floatplacement{figure}{H}
+% Figures float. Pinning them in place (H) was how captions used to stay beside
+% them; captions are now inside the float (prepare_body.py), and H left the page
+% before a figure that did not fit stretched to fill it under \flushbottom.
+\floatplacement{figure}{htbp}
 
 % Code spans appear constantly (flag names, file paths). Make them tight.
 \let\oldtexttt\texttt

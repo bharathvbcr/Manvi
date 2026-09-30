@@ -127,8 +127,10 @@
 \AtBeginEnvironment{longtable}{\small}
 \AtBeginEnvironment{tabular}{\small}
 
-% Keep figures near their captions.
-\floatplacement{figure}{H}
+% Figures float. Pinning them in place (H) was how captions used to stay beside
+% them; captions are now inside the float (prepare_body.py), and H left the page
+% before a figure that did not fit stretched to fill it under \flushbottom.
+\floatplacement{figure}{htbp}
 
 % Code spans appear constantly (flag names, file paths). Make them tight.
 \let\oldtexttt\texttt
@@ -2616,7 +2618,7 @@ describes 1.5. We cite 2.0, as Lee et al.~do. \\
 source.} Title, authors (KRAFTON AI and Ludo Robotics) and year match
 the repository's own citation block, and its description states the ``30
 KB cap on terminal output''. The cap in §3.1 is also stated in {[}1{]},
-Appendix B.3, which cites this repository. \\
+Appendix B.3, which cites the KIRA repository. \\
 {[}6{]} DiCiccio \& Efron & doi:10.1214/ss/1032280214 & Verified ---
 \emph{Statistical Science}, 1996. \\
 {[}20{]} Externalization review & arXiv:2604.08224 & Verified --- title

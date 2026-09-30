@@ -534,7 +534,7 @@ probe("every Figure/Table caption is folded into its float",
       lambda: (_pb.attach_captions(_MS)[1:], _n_fig, _n_tab))
 probe("a caption with no float next to it fails the build",
       lambda: _raises(lambda: _pb.attach_captions("text\n\n**Figure 9.** orphan\n"),
-                      SystemExit))
+                      _pb.BuildError))
 probe("the review body carries no commit hash",
       lambda: "82e453a" not in _pb.prepare(_MS, "tmlr-review"))
 probe("the preprint body keeps it",
@@ -542,8 +542,13 @@ probe("the preprint body keeps it",
 probe("the TMLR abstract is lifted out of the body",
       lambda: _pb.prepare(_MS, "tmlr-review").startswith("---\nabstract: |\n")
       and "## Abstract" not in _pb.prepare(_MS, "tmlr-review"))
+probe("the review body has no acknowledgments (TMLR: add after acceptance)",
+      lambda: "## Acknowledgments" not in _pb.prepare(_MS, "tmlr-review")
+      and "## Acknowledgments" in _pb.prepare(_MS, "tmlr-preprint"))
+probe("the review body does not point at 'this repository'",
+      lambda: "this repository" not in _pb.prepare(_MS, "tmlr-review"))
 probe("an unanticipated hash occurrence fails the review build",
-      lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), SystemExit))
+      lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), _pb.BuildError))
 
 
 def _legend_ys(svg):
