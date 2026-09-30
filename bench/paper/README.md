@@ -54,8 +54,12 @@ those buckets pass at ~100% and ~67% respectively, which accounts for the whole
 delta. It buys nothing because `verifygate` already prevents the failure it
 targets.
 
-**Known gap.** Figures 3–5 have **not** been regenerated against `stats-v2.json`
-and still render the superseded v1 grid. No table in revision 3 cites them.
+**Figures.** Regenerated from the v2 reports in 5d9293a. Figures 3–4 and the graphical
+abstract carry their source stamp (`stats-all3.json` / `stats-v2.json`). The interaction
+figures (5–6) do not, because `figures.py`'s `interaction_svg` takes no `source` argument.
+
+**Submission.** See [`SUBMISSION.md`](SUBMISSION.md) for what's left, venues and deadlines.
+The workshop paper in `workshop/` is still built on the superseded v1 grid.
 
 ## Revision 2 (superseded)
 
