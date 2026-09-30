@@ -62,10 +62,17 @@ eq("test ok", apply_patch({"a": 1},
 # copy
 eq("copy", apply_patch({"a": [1], "b": 0},
     [{"op": "copy", "from": "/a", "path": "/b"}]), {"a": [1], "b": [1]})
-doc = {"a": [1]}
-out = apply_patch(doc, [{"op": "copy", "from": "/a", "path": "/b"}])
-out["b"].append(2)
-eq("copy is deep", doc["a"], [1])
+# copy is deep: a `copy` must duplicate the subtree, not alias it, so appending
+# to the copy in a *later op of the same patch* must not also grow the source.
+# (Verifier-split note: the grader now runs the candidate out of process and
+# returns results by value, which erases any aliasing between a returned
+# structure's members; checking the deep-copy property inside a single call --
+# where a shallow copy still shows up as the source subtree growing -- preserves
+# what the previous `out["b"].append(2); doc unchanged` phrasing tested.)
+eq("copy is deep", apply_patch({"a": [1]}, [
+    {"op": "copy", "from": "/a", "path": "/b"},
+    {"op": "add", "path": "/b/-", "value": 2},
+]), {"a": [1], "b": [1, 2]})
 
 # move
 eq("move", apply_patch({"a": 1, "b": 2},

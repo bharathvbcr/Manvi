@@ -277,6 +277,12 @@ class Harness:
         self.res.verify_runs += 1
         ok, output = self.task.verify(self.sb.root)
         self.res.verify_output = output
+        # Structured record for the researcher's log: containment backend, the
+        # static "tactics" flags, and the worker's own output. None of it is
+        # shown to the model (model_facing redacts to labels).
+        record = getattr(self.task, "last_record", None)
+        if record:
+            self.res.events.append({"t": "verify_record", **record})
         return ok, output, model_facing(ok, output)
 
     # -- main loop ------------------------------------------------------------
@@ -511,6 +517,22 @@ class Harness:
             else:
                 self.res.stop_reason = f"error:{type(e).__name__}"
                 self.res.errors.append(f"{type(e).__name__}: {e}")
+
+        # The wall clock is a hard fail line, checked here and not only before a
+        # model call: a turn whose tool dispatch crosses the wall and then
+        # finishes must not score. Tool timeouts are bounded per call in
+        # tools.SHELL_TIMEOUT_S (not local to this file); the episode wall is the
+        # backstop that a same-turn finish-plus-gate cannot slip past.
+        wall = self.cfg.wall_s or 0
+        if wall > 0 and (time.time() - t0) >= wall \
+                and self.res.stop_reason != "wall_timeout":
+            self.res.stop_reason = "wall_timeout"
+            self.res.errors.append(
+                f"episode crossed the {wall:.0f}s wall clock during tool "
+                f"dispatch or the final gate and was failed")
+            self.res.events.append(
+                {"t": "wall_timeout", "elapsed_s": round(time.time() - t0, 1),
+                 "wall_s": wall, "where": "post_loop"})
 
         # Final verification always runs, whatever the model claimed. A run that
         # stopped on max_steps may still have fixed the code; a run that called

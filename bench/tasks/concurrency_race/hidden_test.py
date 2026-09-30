@@ -7,9 +7,24 @@ checks use values whose natural sort order is not their insertion order, and a
 gate around `put` so the global put order is recoverable, because a queue that
 returns items in some *other* well-defined order satisfies every other check in
 this file.
+
+The `queue` ban is enforced two ways: a static scan of every sandbox source in
+the checker (which reads the sandbox but runs nothing in it), and a runtime ban
+in the WORKER (`_mh.forbid_imports`), where the candidate runs. Verifier-split
+note: `BoundedQueue`/`QueueClosed` are imported by name into the worker, whose
+interpreter is source-only and freshly started, so exec'ing the candidate from
+the scanned source is now structural rather than hand-rolled; the threads below
+run in the checker and drive the one real queue in the worker over the pipe, so
+a candidate that exits, hangs, or forges only kills the worker and fails the
+verification.
 """
-import sys
+import ast
 import os
+import sys
+import threading
+import time
+
+import _mh
 
 FORBIDDEN = ("queue", "importlib", "imp", "runpy")
 MAX_FILES = 200
@@ -21,50 +36,17 @@ def die(msg):
     raise SystemExit(1)
 
 
-# --- the stdlib `queue` ban, enforced rather than merely stated -------------
 if not getattr(os, "__file__", ""):
     die("the `os` module has no __file__; the interpreter is not intact")
 
-_UNTRUSTED = set()
-for _p in (os.environ.get("PYTHONPATH") or "").split(os.pathsep):
-    if _p:
-        _UNTRUSTED.add(os.path.abspath(_p))
-SANDBOX = os.path.abspath(os.getcwd())
-_UNTRUSTED.add(SANDBOX)
-
-
-def _under_untrusted(path):
-    if not path:
-        return False
-    d = os.path.abspath(os.path.dirname(path))
-    return any(d == u or d.startswith(u + os.sep) for u in _UNTRUSTED)
-
+SANDBOX = _mh.SANDBOX
 
 for _name in ("sitecustomize.py", "usercustomize.py"):
     if os.path.exists(os.path.join(SANDBOX, _name)):
         die(f"{_name} in the sandbox: the fix belongs in bqueue.py, "
             f"not in interpreter startup")
 
-_saved_path = list(sys.path)
-sys.path = [p for p in sys.path if os.path.abspath(p or ".") not in _UNTRUSTED]
-for _mod_name, _mod in list(sys.modules.items()):
-    if _under_untrusted(getattr(_mod, "__file__", None)):
-        del sys.modules[_mod_name]
-
-import ast          # noqa: E402
-import threading    # noqa: E402
-import time         # noqa: E402
-
-for _m in (ast, threading, time):
-    if _under_untrusted(getattr(_m, "__file__", None)):
-        die(f"stdlib module {_m.__name__!r} is shadowed by a sandbox file "
-            f"({_m.__file__}); the checks cannot be trusted")
-
-sys.path = _saved_path
-sys.dont_write_bytecode = True
-sys.pycache_prefix = os.path.join(
-    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
-
+# --- static scan of every Python source in the sandbox --------------------
 sources = []
 for root, dirs, files in os.walk(SANDBOX):
     dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
@@ -106,46 +88,9 @@ for path in sources:
 if offenders:
     die("TASK.md forbids the stdlib queue module: " + "; ".join(sorted(set(offenders))))
 
-for _mod_name in list(sys.modules):
-    if _mod_name.partition(".")[0] in FORBIDDEN:
-        del sys.modules[_mod_name]
-
-
-class _Blocked:
-    """Refuse every import of a forbidden module, however it is spelled."""
-
-    @staticmethod
-    def find_spec(name, path=None, target=None):
-        if name.partition(".")[0] in FORBIDDEN:
-            raise ImportError(f"TASK.md forbids importing {name!r}")
-        return None
-
-    @staticmethod
-    def find_module(name, path=None):       # pragma: no cover - py<3.12 only
-        _Blocked.find_spec(name, path)
-        return None
-
-
-sys.meta_path.insert(0, _Blocked)
-
-# Execute the candidate from the source text that was just scanned, so a
-# bytecode cache beside it cannot stand in for the file that was inspected.
-_path = os.path.join(SANDBOX, "bqueue.py")
-if not os.path.isfile(_path):
-    die("bqueue.py is missing from the sandbox")
-_module = type(sys)("bqueue")
-_module.__file__ = _path
-sys.modules["bqueue"] = _module
-try:
-    exec(compile(open(_path, encoding="utf-8").read(), _path, "exec"),
-         _module.__dict__)
-except BaseException as e:          # noqa: BLE001 - report, never propagate
-    die(f"importing bqueue.py raised {type(e).__name__}: {e}")
-try:
-    BoundedQueue = _module.BoundedQueue
-    QueueClosed = _module.QueueClosed
-except AttributeError as e:
-    die(f"bqueue.py does not export the public names: {e}")
+# --- arm the runtime ban in the worker, then import the candidate ----------
+_mh.forbid_imports(FORBIDDEN)
+from bqueue import BoundedQueue, QueueClosed  # noqa: E402  -- into the worker, under the ban
 
 bad = 0
 
@@ -246,12 +191,17 @@ else:
     eq("got count", len(got), N_ITEMS)
     eq("got set", sorted(got), list(range(N_ITEMS)))
     # With many consumers the order in which `got` is appended is not the order
-    # in which items left the queue, so only the per-producer order is provable
-    # here: values from each residue class must appear in increasing order.
-    # The global FIFO contract is checked in the next block instead.
+    # in which items left the queue: a consumer is preempted between `q.get()`
+    # and recording the item under `got_lock`, so a later item from the same
+    # producer can be recorded first. That was true in-process and the
+    # checker/worker split (where `q.get` is a pipe round-trip) widens the
+    # window enough to make it routine, so this block asserts only that every
+    # producer's items arrive exactly once -- no loss, no duplication. The
+    # strict per-`get` FIFO order is proved rigorously by the single-consumer
+    # "global fifo" block below, where there is no such window.
     for r in range(N_PROD):
-        seq = [x for x in got if x % N_PROD == r]
-        eq(f"per-producer order r={r}", seq, list(range(r, N_ITEMS, N_PROD)))
+        seq = sorted(x for x in got if x % N_PROD == r)
+        eq(f"per-producer items r={r}", seq, list(range(r, N_ITEMS, N_PROD)))
 
 
 # --- global FIFO: the n-th successful get returns the n-th successful put.
@@ -431,5 +381,4 @@ except ValueError:
     pass
 
 
-sys.meta_path.remove(_Blocked)
 sys.exit(1 if bad else 0)

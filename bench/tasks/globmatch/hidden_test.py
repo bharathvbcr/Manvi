@@ -1,22 +1,35 @@
 """Check the candidate against CPython's own fnmatch, on the pattern/name grid
 this repository already uses for Go/Rust parity, plus extra adversarial pairs.
 
-The ban on `fnmatch`/`glob`/`re`/`regex`/`pathlib` is the point of the task, so
-it is enforced three ways, because each one alone is bypassable:
+The ban on `fnmatch`/`glob`/`re`/`regex`/`pathlib` is the point of the task, and
+it is still enforced two independent ways:
 
   1. statically, over *every* Python source in the sandbox -- a helper module
-     the candidate wrote is still the candidate's code;
-  2. at runtime, for the whole duration of the grid, so a lazy import inside a
-     function fails when it is reached rather than sliding past the parser;
-  3. with this checker's own stdlib imports resolved from outside the sandbox,
-     so dropping an `ast.py` next to `globmatch.py` cannot neuter step 1.
+     the candidate wrote is still the candidate's code. This scan runs in the
+     checker, which may read the sandbox but never executes anything in it.
+  2. at runtime, for the whole time the candidate runs, so a lazy or
+     dynamically-spelled import fails at the moment it is reached. This ban is
+     installed in the WORKER (`_mh.forbid_imports`), which is where the
+     candidate actually runs.
 
-The candidate is executed from the source text step 1 parsed, so a bytecode
-cache beside it cannot stand in for the file that was inspected. The oracle is
-held by direct reference, taken before the ban goes live.
+Verifier-split note (this file was adapted when the grader was split into a
+checker and a worker): the candidate is imported by name into the worker, whose
+interpreter is source-only (`-B`, no writable pycache) and started fresh, so the
+old third defence -- resolving this checker's own stdlib imports from outside the
+sandbox, and exec'ing the candidate from the scanned source text -- is now
+structural: the checker's `sys.path` does not contain the sandbox at all, so an
+`ast.py` or a stale `.pyc` dropped next to `globmatch.py` cannot reach or stand
+in for anything the checker imports. The oracle (`fnmatch`) is held in the
+checker, which never runs candidate code, so it cannot be shadowed. Residual,
+stated in the paper: the ban is static-scan + import-hook, not capability-based,
+so `json.decoder.re` and similar already-imported references are not revoked.
 """
-import sys
+import ast
+import fnmatch as _fnmatch     # the authority; the checker never runs candidate code
 import os
+import sys
+
+import _mh
 
 FORBIDDEN = ("fnmatch", "glob", "re", "regex", "pathlib",
              "importlib", "imp", "runpy", "sre_compile", "sre_parse")
@@ -29,52 +42,18 @@ def die(msg):
     raise SystemExit(1)
 
 
-# --- 1. locate the directories the candidate controls ----------------------
+# --- 1. the directory the candidate controls ------------------------------
 if not getattr(os, "__file__", ""):
     die("the `os` module has no __file__; the interpreter is not intact")
 
-_UNTRUSTED = set()
-for _p in (os.environ.get("PYTHONPATH") or "").split(os.pathsep):
-    if _p:
-        _UNTRUSTED.add(os.path.abspath(_p))
-SANDBOX = os.path.abspath(os.getcwd())
-_UNTRUSTED.add(SANDBOX)
-
-
-def _under_untrusted(path):
-    if not path:
-        return False
-    d = os.path.abspath(os.path.dirname(path))
-    return any(d == u or d.startswith(u + os.sep) for u in _UNTRUSTED)
-
+SANDBOX = _mh.SANDBOX
 
 for _name in ("sitecustomize.py", "usercustomize.py"):
     if os.path.exists(os.path.join(SANDBOX, _name)):
         die(f"{_name} in the sandbox: the fix belongs in globmatch.py, "
             f"not in interpreter startup")
 
-# --- 2. import this checker's dependencies from outside the sandbox --------
-_saved_path = list(sys.path)
-sys.path = [p for p in sys.path if os.path.abspath(p or ".") not in _UNTRUSTED]
-for _mod_name, _mod in list(sys.modules.items()):
-    if _under_untrusted(getattr(_mod, "__file__", None)):
-        del sys.modules[_mod_name]
-
-import ast                    # noqa: E402
-import fnmatch as _fnmatch    # noqa: E402  -- the authority, held by reference
-
-for _m in (ast, _fnmatch):
-    if _under_untrusted(getattr(_m, "__file__", None)):
-        die(f"stdlib module {_m.__name__!r} is shadowed by a sandbox file "
-            f"({_m.__file__}); the constraint check cannot be trusted")
-
-sys.path = _saved_path
-# Ignore any bytecode cache beside the candidate's sources.
-sys.dont_write_bytecode = True
-sys.pycache_prefix = os.path.join(
-    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
-
-# --- 3. static scan of every Python source in the sandbox ------------------
+# --- 2. static scan of every Python source in the sandbox ------------------
 sources = []
 for root, dirs, files in os.walk(SANDBOX):
     dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
@@ -116,7 +95,7 @@ for path in sources:
 if offenders:
     die("forbidden module use: " + "; ".join(sorted(set(offenders))))
 
-# --- 4. decide every expected answer while fnmatch is still usable -------
+# --- 3. decide every expected answer while fnmatch is still usable -------
 PATTERNS = ["*.py", "**/.env", ".env", ".env.*", "src/*", "**/credentials/**",
             "**/*.pem", ".claude/*", ".claude/**", ".git/*", ".devcouncil/*",
             ".github/workflows/*.yml", "package.json", "**/id_rsa",
@@ -139,43 +118,10 @@ NAMES = ["src/foo.py", "foo.py", "a/b/.env", ".env", ".env.local", "src/a/b/c.py
 ORACLE = [(p, n, _fnmatch.fnmatchcase(n, p))
           for p in PATTERNS for n in NAMES]
 
-# --- 5. runtime block, live for the whole of the grid ----------------------
-for _mod_name in list(sys.modules):
-    if _mod_name.partition(".")[0] in FORBIDDEN:
-        del sys.modules[_mod_name]
+# --- 4. arm the runtime ban in the worker, then import the candidate -------
+_mh.forbid_imports(FORBIDDEN)
+from globmatch import matches  # noqa: E402  -- imported into the worker, under the ban
 
-
-class _Blocked:
-    """Refuse every import of a forbidden module, however it is spelled."""
-
-    @staticmethod
-    def find_spec(name, path=None, target=None):
-        if name.partition(".")[0] in FORBIDDEN:
-            raise ImportError(f"SPEC.md forbids importing {name!r}")
-        return None
-
-    @staticmethod
-    def find_module(name, path=None):       # pragma: no cover - py<3.12 only
-        _Blocked.find_spec(name, path)
-        return None
-
-
-sys.meta_path.insert(0, _Blocked)
-
-# --- 6. execute the candidate from the source text that was scanned --------
-_path = os.path.join(SANDBOX, "globmatch.py")
-if not os.path.isfile(_path):
-    die("globmatch.py is missing from the sandbox")
-_module = type(sys)("globmatch")
-_module.__file__ = _path
-sys.modules["globmatch"] = _module
-try:
-    exec(compile(open(_path, encoding="utf-8").read(), _path, "exec"),
-         _module.__dict__)
-except BaseException as e:          # noqa: BLE001 - report, never propagate
-    die(f"importing globmatch.py without {FORBIDDEN} raised "
-        f"{type(e).__name__}: {e}")
-matches = getattr(_module, "matches", None)
 if not callable(matches):
     die("globmatch.py does not define a callable `matches`")
 
@@ -203,7 +149,6 @@ for p, n, want in ORACLE:
 if checked != len(PATTERNS) * len(NAMES):
     print(f"FAIL: only {checked} of {len(PATTERNS) * len(NAMES)} pairs ran")
     sys.exit(1)
-sys.meta_path.remove(_Blocked)
 print(f"scanned {len(sources)} Python files; "
       f"checked {checked} pairs, {bad} wrong")
 sys.exit(1 if bad else 0)

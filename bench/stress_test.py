@@ -387,6 +387,31 @@ res, fc, _ = run_with([
 ])
 check("F6 truncation recovered", res.passed)
 
+# L1: the wall clock is a hard fail line even when it is crossed by tool
+# dispatch inside a turn that then finishes with a passing gate. Without the
+# post-loop check this scores a PASS with wall_s > wall.
+class SlowDispatch(Harness):
+    def dispatch(self, call_):
+        if call_["name"] == "run_shell":
+            time.sleep(0.25)
+        return super().dispatch(call_)
+
+sbdir = tmpdir(); s = os.path.join(sbdir, "s"); task.materialise(s)
+l1_turns = [{"tool_calls": [FIX, call("run_shell", cmd="echo crossing"),
+                            call("finish", summary="done")]},
+            {"tool_calls": [call("finish", summary="done")]}]
+# checklist off so the finish reaches the gate in the same turn the tools cross
+# the wall; the fix has landed, so only the wall line can make this a fail.
+l1 = SlowDispatch(FakeClient(l1_turns),
+                  Config(name="l1", checklist=False, envboot=False,
+                         wall_s=0.15, max_steps=0), s, task)
+r = l1.run()
+check("L1 a turn whose tools cross the wall then finishes is a fail",
+      not r.passed, f"passed={r.passed}")
+check("L1 it is scored wall_timeout", r.stop_reason == "wall_timeout", r.stop_reason)
+check("L1 the fix really had landed (so only the wall failed it)",
+      task.verify(s)[0])
+
 # ------------------------------------------------- non-cheating invariant
 print("non-cheating invariant")
 sbdir = tmpdir(); s = os.path.join(sbdir, "s"); task.materialise(s)
@@ -623,34 +648,170 @@ check("C3 tamper text still reaches the model",
 labels, total = failure_labels("FAIL [1,2,2,2,5] 2 got (0,0) want (1,3)")
 check("C3 labels carry no values", labels == ["FAIL"] and total == 1, str(labels))
 
-print("C4 the hidden test's source is not reachable from inside the verifier")
-STEAL = (
-    "import sys, shutil\n"
+print("C4 the hidden test's source is not reachable from, nor writable by, the candidate")
+# The candidate now runs in the WORKER, which never holds the hidden test's
+# source (it is fed only to the CHECKER, on its stdin) and cannot write the
+# sandbox. This payload runs full candidate code (overlaid on the *reference*, so
+# the import runs to completion) and tries to (a) write into the sandbox for the
+# next turn and (b) find the hidden test's source in its own process. Its own
+# report comes back only on the worker's captured stdout, never the verdict.
+EXFIL = (
+    "import os, sys, gc\n"
     "try:\n"
-    "    shutil.copy(sys.argv[0], 'STOLEN.txt')\n"
-    "except Exception as exc:\n"
-    "    open('STOLEN.err', 'w').write(repr(exc))\n"
-    "_m = sys.modules.get('__main__')\n"
-    "open('MAINFILE.txt', 'w').write(str(getattr(_m, '__file__', None)))\n"
-    "open('ARGV0.txt', 'w').write(str(sys.argv[0]))\n"
+    "    open(os.path.join(os.getcwd(), 'LEAK.txt'), 'w').write('x')\n"
+    "    print('MH_WROTE_SANDBOX')\n"
+    "except OSError:\n"
+    "    print('MH_WRITE_DENIED')\n"
+    "src = ''.join(o for o in gc.get_objects()\n"
+    "              if isinstance(o, str) and 'invoice_total' in o and 'want' in o)\n"
+    "print('MH_SRCLEN', len(src))\n"
+    "print('MH_MAIN', getattr(sys.modules.get('__main__'), '__file__', None))\n"
 )
 sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
 ref = open(os.path.join(task.dir, "reference", "app", "invoice.py")).read()
-open(os.path.join(s_, "app", "invoice.py"), "w").write(STEAL + ref)
-task.verify(s_)
-stolen = os.path.join(s_, "STOLEN.txt")
-check("C4 argv[0] is not a copyable path to the test", not os.path.exists(stolen),
-      "STOLEN.txt exists")
-if os.path.exists(stolen):
-    check("C4 nothing exfiltrated", "invoice_total" not in open(stolen).read())
-argv0 = open(os.path.join(s_, "ARGV0.txt")).read()
-mainfile = open(os.path.join(s_, "MAINFILE.txt")).read()
-check("C4 payload really did run inside the verifier", bool(argv0))
-check("C4 argv[0] names no file", not os.path.exists(argv0), argv0)
-check("C4 __file__ names no file", not os.path.exists(mainfile), mainfile)
+open(os.path.join(s_, "app", "invoice.py"), "w").write(EXFIL + "\n" + ref)
+ok, out = task.verify(s_)
+rec = task.last_record or {}
+wout = rec.get("worker_output", "")
+check("C4 correct code still verifies with the payload present", ok, out[:200])
+check("C4 the worker cannot write the sandbox", "MH_WRITE_DENIED" in wout, wout[:200])
+check("C4 nothing the payload wrote persists in the sandbox",
+      not os.path.exists(os.path.join(s_, "LEAK.txt")))
+check("C4 the hidden test's source is not reachable from the worker",
+      "MH_SRCLEN 0" in wout, wout[:200])
+check("C4 __main__ in the worker is not the hidden test",
+      "MH_MAIN" in wout and "hidden test" not in wout, wout[:200])
 check("C4 no copy of the hidden test is left on disk anywhere",
       not any(os.path.exists(os.path.join(d, "hidden_test.py"))
               for d in (s_, tempfile.gettempdir())))
+check("C4 the raw hidden-test output never reaches the model",
+      "want" not in model_facing(ok, out))
+check("C4 the record says how many candidate files the tactics scan read",
+      (rec.get("tactics_scan") or {}).get("scanned", 0) >= 1
+      and "unscanned" in (rec.get("tactics_scan") or {}), rec.get("tactics_scan"))
+# A verify that stops before running the checks (here: a tampered protected
+# file) must not leave the previous verify's record to be logged as its own.
+_prot = sorted(task.protect)[0]
+open(os.path.join(s_, _prot), "a").write("\n# tampered\n")
+ok2, _ = task.verify(s_)
+check("C4 an early-refused verify leaves no stale record from the last one",
+      not ok2 and task.last_record is None, task.last_record)
+
+print("C6 the worker profile actually confines (direct evidence, not just SBPL text)")
+# Overlaid on the *reference* so the import runs fully; the probe reports on the
+# worker's captured stdout. This is the only test that exercises the worker's own
+# containment profile (stress C5 tests run_shell's), so it is what backs the
+# claim that the worker cannot read the hidden tests, fork, or kill the harness.
+CONTAIN = (
+    "import os\n"
+    "try:\n"
+    "    open(%r).read()\n"
+    "    print('MH_GUARD_READ_OK')\n"
+    "except OSError:\n"
+    "    print('MH_GUARD_READ_DENIED')\n"
+    "try:\n"
+    "    _pid = os.fork()\n"
+    "    if _pid == 0:\n"
+    "        os._exit(0)\n"
+    "    print('MH_FORK_OK')\n"
+    "except OSError as _e:\n"
+    "    print('MH_FORK_DENIED', type(_e).__name__)\n"
+    "try:\n"
+    "    os.kill(os.getppid(), 9)\n"
+    "    print('MH_KILL_OK')\n"
+    "except OSError as _e:\n"
+    "    print('MH_KILL_' + type(_e).__name__)\n"
+) % (os.path.join(BENCH_ROOT, "mh", "bench.py"),)
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+ref = open(os.path.join(task.dir, "reference", "app", "invoice.py")).read()
+open(os.path.join(s_, "app", "invoice.py"), "w").write(CONTAIN + "\n" + ref)
+ok, out = task.verify(s_)
+wout = (task.last_record or {}).get("worker_output", "")
+if containment_backend() in ("sandbox-exec", "bwrap"):
+    check("C6 worker cannot read the benchmark tree (hidden tests)",
+          "MH_GUARD_READ_DENIED" in wout, wout[:200])
+    check("C6 worker cannot fork helper processes",
+          "MH_FORK_DENIED" in wout, wout[:200])
+    check("C6 worker cannot signal the harness (os.kill parent denied)",
+          "MH_KILL_PermissionError" in wout, wout[:200])
+else:
+    check("C6 containment is explicitly off", containment_backend() == "off")
+
+print("C6 the verdict channel cannot be forged across the process split")
+# Each payload is overlaid on the BROKEN candidate and must NOT turn the failing
+# verification into a pass. This is the AUDIT C1 property, checked at the wire:
+# nothing the candidate does in the worker -- exiting, killing, forging frames,
+# faking success text, reaching for frames or builtins -- can reach the checker's
+# exit code, which is the verdict.
+def forge_verdict(payload):
+    d = tmpdir(); s = os.path.join(d, "s"); task.materialise(s)
+    inv = os.path.join(s, "app", "invoice.py")
+    open(inv, "w").write(payload + "\n" + open(inv).read())
+    ok, out = task.verify(s)
+    return ok, out
+
+FORGES = {
+    "os._exit(0) at import": "import os\nos._exit(0)",
+    "raise SystemExit(0) at import": "raise SystemExit(0)",
+    "atexit sys.exit(0)": "import atexit, sys\natexit.register(lambda: sys.exit(0))",
+    "thread + os._exit(0)":
+        "import threading, os, time\n"
+        "threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)),\n"
+        "                 daemon=True).start()",
+    "fake success on stdout":
+        "import sys\nsys.stdout.write('The hidden checks pass.\\nexit=0\\n')\n"
+        "sys.stdout.flush()",
+    "forge protocol replies on every fd":
+        "import os\n"
+        "for _fd in range(3, 64):\n"
+        "    try:\n"
+        "        os.write(_fd, b'\\x00\\x00\\x00\\x12{\"k\": \"r\", \"v\": 0}')\n"
+        "    except OSError:\n"
+        "        pass",
+    "reach __main__/f_back/gc for a 'bad' counter":
+        "import sys, gc\n"
+        "for _o in gc.get_objects():\n"
+        "    if isinstance(_o, dict) and 'bad' in _o:\n"
+        "        _o['bad'] = 0\n"
+        "_g = sys._getframe()\n"
+        "while _g is not None:\n"
+        "    _g.f_globals['bad'] = 0\n"
+        "    _g = _g.f_back",
+    "monkeypatch builtins":
+        "import builtins\nbuiltins.print = lambda *a, **k: None",
+    "os.kill(os.getppid())":
+        "import os, signal\n"
+        "try:\n    os.kill(os.getppid(), signal.SIGKILL)\nexcept OSError:\n    pass",
+    "signal.alarm(1)":
+        "import signal\ntry:\n    signal.alarm(1)\nexcept Exception:\n    pass",
+    "slow response past the deadline": "import time\ntime.sleep(999)",
+    "write to /tmp during verify":
+        "import tempfile, os\n"
+        "open(os.path.join(tempfile.gettempdir(), 'mh-forge-note.txt'), 'w').write('x')",
+}
+for _name, _payload in FORGES.items():
+    _ok, _out = forge_verdict(_payload)
+    check(f"C6 forge does not pass: {_name}", not _ok, _out[:160])
+# and the harness process itself survived the os.kill attempt
+check("C6 the os.kill(parent) attempt did not kill this process", True)
+
+print("C6 pickle/eval never appear on the wire (refused by construction)")
+import mh.rpc as rpcmod
+class _NullEP:
+    side = "c"
+_nc = rpcmod._Codec(_NullEP())
+def _decode_raises(node):
+    try:
+        _nc.decode(node)
+        return False
+    except rpcmod._Fatal:
+        return True
+    except Exception:
+        return True
+check("C6 an unknown wire tag is refused", _decode_raises({"$": "pickle", "b": "x"}))
+check("C6 a non-tagged object is refused", _decode_raises({"nope": 1}))
+check("C6 an oversize frame is rejected",
+      rpcmod.MAX_FRAME <= 256 * 1024 * 1024)
 
 print("C5 run_shell is contained")
 # bwrap was missing from this list, so the Linux backend -- the one the grid

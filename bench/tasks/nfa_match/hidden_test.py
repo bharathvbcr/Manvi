@@ -2,23 +2,31 @@
 
 The task's defining constraint is "implement the matcher yourself": no `re`,
 `regex`, `fnmatch` or `pathlib`, and no dynamic-import machinery used to reach
-them.  Enforcing that needs three things, because any one of them alone is
-bypassable:
+them. It is enforced two independent ways:
 
   1. a *static* scan of every Python source file in the sandbox, not just
-     `nfa.py` -- a helper module is still the candidate's own code;
-  2. a *runtime* block, so a lazy or dynamically-spelled import fails at the
-     moment it is attempted rather than sliding past the parser;
-  3. stdlib modules that this checker itself depends on (`ast` above all)
-     imported from a path the candidate cannot write to, so that dropping an
-     `ast.py` into the sandbox cannot neuter check 1.
+     `nfa.py` -- a helper module is still the candidate's own code. The scan
+     runs in the checker, which may read the sandbox but runs nothing in it.
+  2. a *runtime* ban installed in the WORKER (`_mh.forbid_imports`), where the
+     candidate runs, so a lazy or dynamically-spelled import fails when reached.
 
-The candidate module is executed from its *source text*, which is the same text
-check 1 parsed, so a stale or forged bytecode cache beside it cannot stand in
-for the file that was inspected.
+Verifier-split note (adapted when the grader became a checker + a worker): the
+candidate is imported by name into the worker, whose interpreter is source-only
+(`-B`) and freshly started, so the old defences -- resolving the checker's own
+stdlib imports from outside the sandbox and exec'ing the candidate from the
+scanned source -- are now structural. The checker's `sys.path` does not contain
+the sandbox, so a dropped `ast.py`/`re.py` or a stale `.pyc` cannot reach or
+stand in for the checker's imports, and the `re` oracle lives in the checker,
+which never runs candidate code. Residual (paper): already-imported references
+such as `json.decoder.re` are not revoked; the ban is static + import-hook.
 """
-import sys
+import ast
 import os
+import random
+import re as _re          # the oracle; held in the checker, which runs no candidate code
+import sys
+
+import _mh
 
 FORBIDDEN = ("re", "regex", "fnmatch", "pathlib",
              "importlib", "imp", "runpy", "sre_compile", "sre_parse")
@@ -31,54 +39,18 @@ def die(msg):
     raise SystemExit(1)
 
 
-# --- 1. locate the directories the candidate controls ----------------------
+# --- 1. the directory the candidate controls ------------------------------
 if not getattr(os, "__file__", ""):
     die("the `os` module has no __file__; the interpreter is not intact")
 
-_UNTRUSTED = set()
-for _p in (os.environ.get("PYTHONPATH") or "").split(os.pathsep):
-    if _p:
-        _UNTRUSTED.add(os.path.abspath(_p))
-SANDBOX = os.path.abspath(os.getcwd())
-_UNTRUSTED.add(SANDBOX)
-
-
-def _under_untrusted(path):
-    if not path:
-        return False
-    d = os.path.abspath(os.path.dirname(path))
-    return any(d == u or d.startswith(u + os.sep) for u in _UNTRUSTED)
-
+SANDBOX = _mh.SANDBOX
 
 for _name in ("sitecustomize.py", "usercustomize.py"):
     if os.path.exists(os.path.join(SANDBOX, _name)):
         die(f"{_name} in the sandbox: the fix belongs in nfa.py, "
             f"not in interpreter startup")
 
-# --- 2. import this checker's own dependencies from outside the sandbox -----
-_saved_path = list(sys.path)
-sys.path = [p for p in sys.path if os.path.abspath(p or ".") not in _UNTRUSTED]
-for _mod_name, _mod in list(sys.modules.items()):
-    if _under_untrusted(getattr(_mod, "__file__", None)):
-        del sys.modules[_mod_name]
-
-import ast          # noqa: E402
-import random       # noqa: E402
-import re as _re    # noqa: E402  -- the oracle, held by reference from here on
-
-for _m in (ast, random, _re):
-    if _under_untrusted(getattr(_m, "__file__", None)):
-        die(f"stdlib module {_m.__name__!r} is shadowed by a sandbox file "
-            f"({_m.__file__}); the constraint check cannot be trusted")
-
-sys.path = _saved_path
-# Ignore any bytecode cache sitting next to the candidate's sources: point the
-# cache lookup at a directory that does not exist and is never written.
-sys.dont_write_bytecode = True
-sys.pycache_prefix = os.path.join(
-    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
-
-# --- 3. static scan of every Python source in the sandbox ------------------
+# --- 2. static scan of every Python source in the sandbox ------------------
 sources = []
 for root, dirs, files in os.walk(SANDBOX):
     dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
@@ -122,7 +94,7 @@ if offenders:
 
 print(f"scanned {len(sources)}/{len(sources)} Python files in the sandbox")
 
-# --- 4. precompute the oracle while `re` is still importable ---------------
+# --- 3. precompute the oracle while `re` is still importable ---------------
 random.seed(9)
 atoms = list("abc.")
 
@@ -158,42 +130,10 @@ for _trial in range(250):
     except _re.error:
         continue
 
-# --- 5. runtime block, live for the whole of the candidate's execution ------
-for _mod_name in list(sys.modules):
-    if _mod_name.partition(".")[0] in FORBIDDEN:
-        del sys.modules[_mod_name]
+# --- 4. arm the runtime ban in the worker, then import the candidate -------
+_mh.forbid_imports(FORBIDDEN)
+from nfa import fullmatch  # noqa: E402  -- imported into the worker, under the ban
 
-
-class _Blocked:
-    """Refuse every import of a forbidden module, however it is spelled."""
-
-    @staticmethod
-    def find_spec(name, path=None, target=None):
-        if name.partition(".")[0] in FORBIDDEN:
-            raise ImportError(f"SPEC.md forbids importing {name!r}")
-        return None
-
-    @staticmethod
-    def find_module(name, path=None):       # pragma: no cover - py<3.12 only
-        _Blocked.find_spec(name, path)
-        return None
-
-
-sys.meta_path.insert(0, _Blocked)
-
-# --- 6. execute the candidate from the source text that was scanned --------
-_nfa_path = os.path.join(SANDBOX, "nfa.py")
-if not os.path.isfile(_nfa_path):
-    die("nfa.py is missing from the sandbox")
-_module = type(sys)("nfa")
-_module.__file__ = _nfa_path
-sys.modules["nfa"] = _module
-try:
-    exec(compile(open(_nfa_path, encoding="utf-8").read(), _nfa_path, "exec"),
-         _module.__dict__)
-except BaseException as e:          # noqa: BLE001 - report, never propagate
-    die(f"importing nfa.py raised {type(e).__name__}: {e}")
-fullmatch = getattr(_module, "fullmatch", None)
 if not callable(fullmatch):
     die("nfa.py does not define a callable `fullmatch`")
 
@@ -283,5 +223,4 @@ else:
         print("FAIL: only", len(ORACLE), "oracle cases were generated")
         bad += 1
 
-sys.meta_path.remove(_Blocked)
 sys.exit(1 if bad else 0)

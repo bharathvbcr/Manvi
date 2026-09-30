@@ -1,16 +1,22 @@
+"""Hidden checks for ast_transformer.
+
+Verifier-split note: `rewrite` returns Python *source* that this test must run to
+observe its behaviour. Running candidate-generated source in the checker would
+hand the candidate the verdict (an `import os; os._exit(0)` in the output would
+end the checker with a chosen code), so the rewritten source is exec'd in the
+WORKER via `_mh.exec_source`, and the async entry point is driven there with
+`_mh.arun`. The Tracer/CM/Boom instances stay in the checker, so their logs and
+the `bad` counter are unforgeable: the candidate-generated `run` calls back to
+them over the pipe. An `os._exit`/`sys.exit` in the rewrite output now only kills
+the worker, which the checker scores as a failure.
+"""
 import ast
-import asyncio
 import os
 import sys
 
-# Ignore any bytecode cache sitting beside the candidate's sources: a .pyc
-# whose header matches the .py is honoured by the import system, so it could
-# stand in for the source this check is meant to exercise.
-sys.dont_write_bytecode = True
-sys.pycache_prefix = os.path.join(
-    os.path.abspath(os.sep), "nonexistent-mh-pycache", str(os.getpid()))
+import _mh
 
-from rewrite import rewrite  # noqa: E402
+from rewrite import rewrite  # noqa: E402  -- imported into the worker
 
 bad = 0
 
@@ -30,10 +36,7 @@ def no_sugar(tree):
 
 
 def banned_imports():
-    path = os.path.join(os.environ.get("PYTHONPATH", "."), "rewrite.py")
-    # sandbox cwd is the sandbox; PYTHONPATH is the sandbox
-    if not os.path.isfile(path):
-        path = "rewrite.py"
+    path = os.path.join(_mh.SANDBOX, "rewrite.py")
     src = open(path).read()
     tree = ast.parse(src)
     bad_mods = []
@@ -91,16 +94,24 @@ class CM:
         return self.suppress
 
 
-def run_src(src, extra=None):
+def run_src(src):
+    """Rewrite in the worker, verify no sugar remains, exec in the worker.
+
+    Returns (ns, out): `ns` is a handle to the worker namespace the rewritten
+    module exec'd into (so `ns["run"]` is the candidate-generated coroutine
+    function, called with `_mh.arun`); `out` is the rewritten source.
+    """
     out = rewrite(src)
     tree = ast.parse(out)
     if not no_sugar(tree):
         raise AssertionError("AsyncFor/AsyncWith remain in:\n" + out)
-    ns = {}
-    if extra:
-        ns.update(extra)
-    exec(compile(tree, "<rewritten>", "exec"), ns)
+    ns = _mh.exec_source(out)
     return ns, out
+
+
+def run(fn, *args):
+    """Run an async candidate entry point (in the worker) to completion."""
+    return _mh.arun(fn, *args)
 
 
 eq("no re/regex", banned_imports(), [])
@@ -115,7 +126,7 @@ async def run(t):
     return out
 '''
 ns, _ = run_src(src)
-got = asyncio.run(ns["run"](Tracer([1, 2], log)))
+got = run(ns["run"], Tracer([1, 2], log))
 eq("simple values", got, [1, 2])
 eq("simple log", log, ["t.aiter", "t.anext", "t.anext", "t.anext", "t.aclose"])
 
@@ -133,7 +144,7 @@ async def run(t):
     return seen, hit_else
 '''
 ns, _ = run_src(src)
-got = asyncio.run(ns["run"](Tracer([1, 2, 3], log)))
+got = run(ns["run"], Tracer([1, 2, 3], log))
 eq("break values", got, ([1], False))
 eq("break aclose", "t.aclose" in log, True)
 
@@ -149,7 +160,7 @@ async def run(t):
     return hit_else
 '''
 ns, _ = run_src(src)
-eq("else on exhaust", asyncio.run(ns["run"](Tracer([1], log))), True)
+eq("else on exhaust", run(ns["run"], Tracer([1], log)), True)
 eq("else aclose", "t.aclose" in log, True)
 
 # 4. continue
@@ -164,7 +175,7 @@ async def run(t):
     return out
 '''
 ns, _ = run_src(src)
-eq("continue", asyncio.run(ns["run"](Tracer([1, 2, 3], log))), [1, 3])
+eq("continue", run(ns["run"], Tracer([1, 2, 3], log)), [1, 3])
 
 # 5. unpack target
 log = []
@@ -176,7 +187,7 @@ async def run(t):
     return out
 '''
 ns, _ = run_src(src)
-eq("unpack", asyncio.run(ns["run"](Tracer([(1, 2), (3, 4)], log))), [3, 7])
+eq("unpack", run(ns["run"], Tracer([(1, 2), (3, 4)], log)), [3, 7])
 
 # 6. aiter failure does not aclose
 class Boom:
@@ -191,7 +202,7 @@ async def run(t):
 '''
 ns, _ = run_src(src)
 try:
-    asyncio.run(ns["run"](Boom()))
+    run(ns["run"], Boom())
     eq("aiter boom", "no-raise", "RuntimeError")
 except RuntimeError:
     pass
@@ -204,7 +215,7 @@ async def run(m):
         return v
 '''
 ns, _ = run_src(src)
-eq("with value", asyncio.run(ns["run"](CM(log, "m", value=9))), 9)
+eq("with value", run(ns["run"], CM(log, "m", value=9)), 9)
 eq("with log", log, ["m.enter", ("m.exit", None)])
 
 # 8. async with no as-binding
@@ -215,7 +226,7 @@ async def run(m):
         return 4
 '''
 ns, _ = run_src(src)
-eq("with no as", asyncio.run(ns["run"](CM(log, "m"))), 4)
+eq("with no as", run(ns["run"], CM(log, "m")), 4)
 eq("with no as exit", log[-1], ("m.exit", None))
 
 # 9. exception, no suppress -> re-raise, aexit saw the type
@@ -227,7 +238,7 @@ async def run(m):
 '''
 ns, _ = run_src(src)
 try:
-    asyncio.run(ns["run"](CM(log, "m", suppress=False)))
+    run(ns["run"], CM(log, "m", suppress=False))
     eq("with raise", "no-raise", "ValueError")
 except ValueError:
     pass
@@ -242,7 +253,7 @@ async def run(m):
     return "ok"
 '''
 ns, _ = run_src(src)
-eq("suppress", asyncio.run(ns["run"](CM(log, "m", suppress=True))), "ok")
+eq("suppress", run(ns["run"], CM(log, "m", suppress=True)), "ok")
 
 # 11. nested with: enter A, enter B, body, exit B, exit A
 log = []
@@ -252,7 +263,7 @@ async def run(a, b):
         return x + y
 '''
 ns, _ = run_src(src)
-eq("nested values", asyncio.run(ns["run"](CM(log, "A", value=1), CM(log, "B", value=2))), 3)
+eq("nested values", run(ns["run"], CM(log, "A", value=1), CM(log, "B", value=2)), 3)
 eq("nested order", [e if isinstance(e, str) else e[0] for e in log],
    ["A.enter", "B.enter", "B.exit", "A.exit"])
 
@@ -266,7 +277,7 @@ async def run(a, b):
 '''
 ns, _ = run_src(src)
 try:
-    asyncio.run(ns["run"](CM(log, "A"), CM(log, "B")))
+    run(ns["run"], CM(log, "A"), CM(log, "B"))
 except KeyError:
     pass
 eq("nested raise exits", [e if isinstance(e, str) else e[0] for e in log],
@@ -282,7 +293,7 @@ async def run(t, _it0, _ex0):
     return out
 '''
 ns, _ = run_src(src)
-eq("name collision", asyncio.run(ns["run"](Tracer([1], log), 10, 100)), [111])
+eq("name collision", run(ns["run"], Tracer([1], log), 10, 100), [111])
 eq("collision aclose", "t.aclose" in log, True)
 
 # 14. for inside with
@@ -296,7 +307,7 @@ async def run(m, t):
     return out
 '''
 ns, _ = run_src(src)
-eq("for in with", asyncio.run(ns["run"](CM(log, "m"), Tracer([5], log))), [5])
+eq("for in with", run(ns["run"], CM(log, "m"), Tracer([5], log)), [5])
 eq("for in with aclose", "t.aclose" in log, True)
 
 sys.exit(1 if bad else 0)
