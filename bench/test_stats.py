@@ -739,6 +739,283 @@ probe("an uncleaned document would not have",
       lambda: _raises(lambda: json.dumps({"a": float("nan")}, allow_nan=False),
                       ValueError))
 
+# ---------------------------------------------------------------------------
+# Audit findings H1, M1, M3, M6, L2, L3, L6 (bench/paper/AUDIT.md). Every block
+# below failed against the code as it stood when the audit was written.
+import contextlib as _ctx
+import io as _io
+
+_FLAGS = {f: True for f in ("envboot", "nativetools", "outcap", "checklist",
+                            "verifygate", "loopbreak", "groundfs")}
+_PROTO = {"max_steps": 0, "max_wall": 1800, "num_ctx": 32768}
+
+
+def _row(task, rep, passed, stop="finished", errors=None, steps=5, tokens=100):
+    return {"task": task, "rep": rep, "seed": rep, "passed": passed,
+            "stop_reason": stop, "errors": errors or [], "steps": steps,
+            "output_tokens": tokens}
+
+
+def _cell_run(model, cfg, rows):
+    return {"dir": f"{model}__{cfg}__t", "model": model,
+            "config": dict(_FLAGS, name=cfg), "protocol": dict(_PROTO),
+            "rows": rows}
+
+
+def _grid(model, cfg, reps, tasks, passed):
+    """One cell: every (rep, task) scored, `passed(task, rep)` decides."""
+    return _cell_run(model, cfg, [_row(t, r, bool(passed(t, r)))
+                                  for r in range(reps) for t in tasks])
+
+
+def _report(runs, trials=40):
+    """stats_report, quietly. The printed tables are not under test here."""
+    with _ctx.redirect_stdout(_io.StringIO()):
+        return _cmp.stats_report(runs, coverage_trials=trials)
+
+
+_T4 = ["a", "b", "c", "d"]
+
+print("H1 §7 infrastructure-failure dual report")
+is_infra_failure = _need("is_infra_failure")
+probe("a non-timeout serving error is an infrastructure failure",
+      lambda: is_infra_failure(_row("a", 0, False, "error:ModelError",
+                                    ["ModelError: HTTP 500"])))
+probe("an account refusal is one too",
+      lambda: is_infra_failure(_row("a", 0, False, "error:AccountRefused")))
+probe("a timeout named in the error text is not (it stays, per §6/§7)",
+      lambda: not is_infra_failure(_row("a", 0, False, "error:ModelError",
+                                        ["ModelError: timed out"])))
+probe("a starved first-turn timeout is not (it is already excluded)",
+      lambda: not is_infra_failure(_row("a", 0, False, "error:ModelError",
+                                        ["TimeoutError: timed out"],
+                                        steps=1, tokens=0)))
+probe("an ordinary stop is not",
+      lambda: not is_infra_failure(_row("a", 0, False, "context_exhausted")))
+
+_H1_FULL = [_row(t, r, t in ("a", "b")) for r in range(3) for t in _T4]
+_H1_FULL[3] = _row("d", 0, False, "error:ModelError", ["ModelError: HTTP 500"])
+# An errored episode can still pass: the final verifier always runs.
+_H1_FULL[6] = _row("c", 1, True, "error:ModelError", ["ModelError: bad body"])
+_H1_FULL[7] = _row("d", 1, False, "error:ModelError", ["ModelError: timed out"])
+_H1_BASE = [_row(t, r, t == "a") for r in range(3) for t in _T4]
+try:
+    _H1R = _report([_cell_run("m", "full", _H1_FULL),
+                    _cell_run("m", "baseline", _H1_BASE)])
+except Exception as _e:                                     # noqa: BLE001
+    _H1R = {"_error": repr(_e)}
+_sens = lambda: _H1R["sensitivity"]["cells"]["m|full"]      # noqa: E731
+probe("the report carries a sensitivity section", lambda: "sensitivity" in _H1R,
+      lambda: sorted(_H1R))
+probe("the infrastructure-failure rate is per cell and counts only non-timeout errors",
+      lambda: _sens()["n_infra"] == 2 and abs(_sens()["infra_failure_rate"] - 2 / 12) < 1e-12,
+      lambda: _sens())
+probe("errored rows that passed are counted, not assumed failed",
+      lambda: _sens()["n_infra_passed"] == 1, lambda: _sens())
+probe("the sensitivity rate is passes/(n - infra) and differs from the primary",
+      lambda: abs(_sens()["mean"] - 6 / 10) < 1e-12
+      and abs(_H1R["cells"]["m|full"]["mean"] - 7 / 12) < 1e-12,
+      lambda: (_sens(), _H1R["cells"]["m|full"]["mean"]))
+probe("the sensitivity rate has its own interval",
+      lambda: _sens()["lo"] <= _sens()["mean"] <= _sens()["hi"])
+probe("a cell with no infrastructure failure is unchanged by the sensitivity pass",
+      lambda: _H1R["sensitivity"]["cells"]["m|baseline"]["mean"]
+      == _H1R["cells"]["m|baseline"]["mean"]
+      and _H1R["sensitivity"]["cells"]["m|baseline"]["n_infra"] == 0)
+probe("the full-vs-baseline delta is re-derived under the sensitivity rule",
+      lambda: "m|baseline" in _H1R["sensitivity"]["deltas"],
+      lambda: _H1R["sensitivity"].get("deltas"))
+probe("and the confirmatory decision is re-taken at the same corrected level",
+      lambda: _H1R["sensitivity"]["confirmatory"]["H1|m|baseline"]["level"]
+      == _H1R["confirmatory"]["H1|m|baseline"]["level"])
+probe("the primary analysis is untouched by the sensitivity pass",
+      lambda: _H1R["cells"]["m|full"]["n_usable"] == 12)
+
+print("M1 the confirmatory family size is pinned")
+_M1 = ([_grid(m, "full", 5, _T4, lambda t, r: t != "d" or r % 2)
+        for m in ("qwen3.8:27b", "hf.co/x/Ornith")]
+       + [_grid(m, "baseline", 5, _T4, lambda t, r: t in ("a", "b"))
+          for m in ("qwen3.8:27b", "hf.co/x/Ornith")]
+       + [_grid(m, "no-outcap", 5, _T4, lambda t, r: t != "c")
+          for m in ("qwen3.8:27b", "hf.co/x/Ornith")])
+try:
+    _M1R = _report(_M1)
+except Exception as _e:                                     # noqa: BLE001
+    _M1R = {"_error": repr(_e)}
+# Preregistration §5 registered k=3 (H1 x 2 models + ONE H2 test). The code,
+# the paper and stats-v2.json test H2 on every model: k=4 at 98.7%. That is a
+# recorded deviation (more conservative, no verdict moves); this pins the
+# published behaviour so it cannot drift silently in either direction.
+probe("the registered model pair yields a 4-test family",
+      lambda: {v["n_tests"] for v in _M1R["confirmatory"].values()} == {4}
+      and len(_M1R["confirmatory"]) == 4,
+      lambda: {k: v["n_tests"] for k, v in _M1R.get("confirmatory", {}).items()})
+probe("decided at the 98.7% Šidák level the paper states",
+      lambda: all(abs(v["level"] - 98.72585449014338) < 1e-9
+                  for v in _M1R["confirmatory"].values()))
+
+print("L2 a confirmatory claim needs lo > 0 and a real interval")
+_L2 = [_grid("m", "full", 5, _T4, lambda t, r: t in ("a", "b")),
+       _grid("m", "baseline", 5, _T4, lambda t, r: t == "a"),
+       _grid("m", "no-outcap", 5, _T4, lambda t, r: t in ("a", "b"))]
+try:
+    _L2R = _report(_L2)
+except Exception as _e:                                     # noqa: BLE001
+    _L2R = {"_error": repr(_e)}
+probe("a zero-width [0, 0] H2 interval is not 'supported'",
+      lambda: _L2R["confirmatory"]["H2|m|no-outcap"]["supported"] is False,
+      lambda: _L2R.get("confirmatory", {}).get("H2|m|no-outcap"))
+probe("nor is a zero-width interval above zero for H1",
+      lambda: _L2R["confirmatory"]["H1|m|baseline"]["supported"] is False
+      and _L2R["confirmatory"]["H1|m|baseline"]["lo"] > 0,
+      lambda: _L2R.get("confirmatory", {}).get("H1|m|baseline"))
+probe("and the verdict says why",
+      lambda: "no observed variance" in (
+          _L2R["confirmatory"]["H1|m|baseline"].get("degenerate") or ""))
+def stats_supported_probe():
+    """What compare decides for 20 zero deltas, via the same decision helper."""
+    decide = getattr(_cmp, "_decide", None)
+    if decide is None:
+        raise AttributeError("compare._decide does not exist")
+    return decide([0.0] * 20, 0.0, 0.0)[0] is False
+
+
+probe("the probe's case: 20 identical deltas at the k=4 level",
+      lambda: stats_supported_probe())
+
+
+print("M3 coverage is audited per interval shape")
+family_wise_error_over = _need("family_wise_error_over")
+probe("a mixed family multiplies per-interval coverages",
+      lambda: abs(family_wise_error_over([0.823] * 12 + [0.941] * 4)
+                  - (1 - 0.823 ** 12 * 0.941 ** 4)) < 1e-12)
+probe("a uniform family agrees with family_wise_error",
+      lambda: abs(family_wise_error_over([0.823] * 16)
+                  - family_wise_error(16, 0.823)) < 1e-12)
+probe("a coverage outside [0,1] is refused in a mixed family too",
+      lambda: _raises(lambda: family_wise_error_over([0.9, 1.2]), ValueError))
+# 12 five-rep and 12 twenty-rep cells, the shape of stats-all3.json in miniature.
+_M3 = ([_grid("five", c, 5, _T4, lambda t, r: t != "d" or r % 2)
+        for c in ("full", "baseline", "no-outcap")]
+       + [_grid("twenty", c, 20, _T4, lambda t, r: (t, r % 3) != ("d", 0))
+          for c in ("full", "baseline", "no-outcap")])
+try:
+    _M3R = _report(_M3, trials=30)
+except Exception as _e:                                     # noqa: BLE001
+    _M3R = {"_error": repr(_e)}
+probe("a mixed ladder does not report one coverage for every interval",
+      lambda: _M3R["coverage"]["measured"] is None
+      and "measured_per_interval_coverage" not in _M3R["multiplicity"],
+      lambda: {k: _M3R.get("coverage", {}).get(k) for k in ("measured", "n_repeats")})
+probe("it audits each distinct (n_repeats, n_tasks) shape",
+      lambda: sorted((s["n_repeats"], s["n_tasks"], s["n_intervals"])
+                     for s in _M3R["coverage"]["by_shape"])
+      == [(5, 4, 2), (20, 4, 2)],
+      lambda: _M3R.get("coverage", {}).get("by_shape"))
+probe("and the family-wise rate is 1 - prod(coverage_i) over intervals",
+      lambda: abs(_M3R["multiplicity"]["fwer_at_measured_coverage"]
+                  - family_wise_error_over(
+                      [s["measured"] for s in _M3R["coverage"]["by_shape"]
+                       for _ in range(s["n_intervals"])])) < 1e-12)
+_M3S = _report(_M3[:3], trials=30)
+probe("a single-shape ladder keeps the scalar coverage block",
+      lambda: _M3S["coverage"]["measured"] is not None
+      and "by_shape" not in _M3S["coverage"]
+      and _M3S["multiplicity"]["fwer_at_measured_coverage"]
+      == family_wise_error(2, _M3S["coverage"]["measured"]),
+      lambda: _M3S["coverage"])
+
+def _grouped_problems(runs):
+    try:
+        _cmp.grouped(runs)
+    except _cmp.CellMergeError as e:
+        return e.problems
+    return []
+
+
+print("M6 paired deltas align (rep, task) inside every repeat")
+_M6_FULL = [_row(t, r, True) for r in range(3) for t in _T4
+            if not (r == 1 and t in ("c", "d"))]
+_M6_ABL = [_row(t, r, t in ("a", "b")) for r in range(3) for t in _T4]
+probe("a repeat scored on different tasks in the two arms is refused",
+      lambda: _raises(lambda: _cmp.grouped([_cell_run("m", "full", _M6_FULL),
+                                            _cell_run("m", "no-x", _M6_ABL)]),
+                      _cmp.CellMergeError))
+probe("and the refusal names the repeat",
+      lambda: any("rep 1" in p for p in _grouped_problems(
+          [_cell_run("m", "full", _M6_FULL), _cell_run("m", "no-x", _M6_ABL)])))
+
+
+print("L3 malformed rows are refused, not counted")
+probe("pass_counts refuses a string 'false' rather than scoring it a pass",
+      lambda: _raises(lambda: pass_counts_by_repeat(
+          [{"task": "a", "rep": 0, "passed": "false"}]), ValueError))
+probe("grouped() refuses mixed '1'/1 repeat indices instead of a TypeError",
+      lambda: _raises(lambda: _cmp.grouped([
+          _cell_run("m", "full", [_row("a", 0, True), dict(_row("a", 1, True), rep="1")]),
+          _cell_run("m", "no-x", [_row("a", 0, False), _row("a", 1, False)])]),
+          _cmp.CellMergeError))
+_nan = float("nan")
+probe("bootstrap_ci refuses a NaN sample",
+      lambda: _raises(lambda: bootstrap_ci([0.5, _nan, 0.7, 0.6, 0.4], n_boot=200),
+                      ValueError))
+probe("bootstrap_ci refuses an infinite sample",
+      lambda: _raises(lambda: bootstrap_ci([0.5, float("inf")], n_boot=200), ValueError))
+probe("ci_degeneracy refuses NaN rather than returning None",
+      lambda: _raises(lambda: ci_degeneracy([_nan] * 5), ValueError))
+probe("interaction refuses NaN",
+      lambda: _raises(lambda: _inter([0.1, _nan], [0.0, 0.1], n_boot=50), ValueError))
+probe("an empty sample is still an honest nan, not an error",
+      lambda: bootstrap_ci([])[0] != bootstrap_ci([])[0])
+
+
+def _load_one(rows):
+    """compare.load over a throwaway results tree holding one summary."""
+    with _tf.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "m__full__t"))
+        with open(os.path.join(d, "m__full__t", "summary.json"), "w") as f:
+            json.dump({"model": "m", "config": dict(_FLAGS, name="full"),
+                       "rows": rows}, f)
+        old, _cmp.RESULTS = _cmp.RESULTS, d
+        try:
+            return _cmp.load()
+        finally:
+            _cmp.RESULTS = old
+
+
+probe("load refuses a string repeat index",
+      lambda: _raises(lambda: _load_one([_row("a", "1", True)]), _cmp.CellMergeError))
+probe("load refuses passed='false'",
+      lambda: _raises(lambda: _load_one([_row("a", 0, "false")]), _cmp.CellMergeError))
+probe("load refuses a row with no verdict",
+      lambda: _raises(lambda: _load_one([{"task": "a", "rep": 0}]), _cmp.CellMergeError))
+probe("load refuses a boolean repeat index",
+      lambda: _raises(lambda: _load_one([_row("a", True, True)]), _cmp.CellMergeError))
+probe("load accepts a well-formed row",
+      lambda: len(_load_one([_row("a", 0, True)])) == 1)
+
+print("L6 arms are ranked by the weighted cell mean")
+# Arm A's full cell is ragged: rep 0 scored 8 tasks (1 pass), rep 1 scored one
+# (a pass). Unweighted mean of rates 0.5625 > B's 0.5; the weighted cell mean
+# is 2/9, so A is the weaker arm.
+_T8 = [f"t{i}" for i in range(8)]
+_L6 = []
+for _c in ("full", "baseline"):
+    _L6.append(_cell_run("A", _c, [_row(t, 0, t == "t0") for t in _T8]
+                         + [_row("t0", 1, _c == "full")]))
+    _L6.append(_cell_run("B", _c, [_row(t, r, _T8.index(t) % 2 == 0)
+                                   for r in range(2) for t in _T8]))
+try:
+    _L6R = _report(_L6, trials=20)
+except Exception as _e:                                     # noqa: BLE001
+    _L6R = {"_error": repr(_e)}
+probe("the ragged arm's weighted mean ranks it weaker",
+      lambda: _L6R["interaction"]["_arms"]["weaker"] == "A",
+      lambda: _L6R.get("interaction", {}).get("_arms", _L6R.get("_error")))
+probe("and the arm mean reported is the cell mean",
+      lambda: _L6R["interaction"]["_arms"]["weaker_full_mean"]
+      == _L6R["cells"]["A|full"]["mean"])
+
 print()
 if FAIL:
     print(f"FAIL {len(FAIL)}/{len(PASS)+len(FAIL)}")

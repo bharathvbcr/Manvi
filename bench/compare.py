@@ -15,9 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.stats import (aligned_interaction, bootstrap_ci,
                       bootstrap_coverage, capability_arms_detail,
                       ci_degeneracy, deltas_by_repeat, denominators_of,
-                      interaction, mean, multiplicity_report,
+                      interaction, is_infra_failure, multiplicity_report,
                       pass_counts_by_repeat, pearson_r, rates_of,
-                      role_of, sidak_alpha, usable_rows)
+                      role_of, sensitivity_rows, sidak_alpha, usable_rows)
 from mh.pool import (arms_drift, contrast_conflicts, contrast_drift,
                      merge_conflicts, pooled_drift, ragged_reps,
                      rep_denominators, reps_of, seed_conflicts, seed_reuse,
@@ -39,6 +39,29 @@ class CellMergeError(RuntimeError):
     def __init__(self, problems):
         self.problems = list(problems)
         super().__init__(f"{len(self.problems)} cell-assembly conflict(s)")
+
+
+def row_type_problems(rows):
+    """Rows whose `rep` or `passed` cannot be scored as written, as strings.
+
+    `rep` must be an int (not a bool): a string "1" is a different repeat from
+    the integer 1 in every set operation downstream, and pairs with nothing.
+    `passed` must be present and a bool: the string "false" is truthy and used
+    to be counted as a pass, and an absent verdict used to be counted as a
+    fail. Refused here, at the boundary, so no estimator has to guess.
+    """
+    out = []
+    for i, r in enumerate(rows or []):
+        rep = r.get("rep")
+        if "rep" not in r or not isinstance(rep, int) or isinstance(rep, bool):
+            out.append(f"row {i} ({r.get('task')!r}): rep is "
+                       f"{'missing' if 'rep' not in r else repr(rep)}, "
+                       f"not an integer")
+        if not isinstance(r.get("passed"), bool):
+            out.append(f"row {i} ({r.get('task')!r}): passed is "
+                       f"{'missing' if 'passed' not in r else repr(r['passed'])}, "
+                       f"not a bool")
+    return out
 
 
 def load(filter_sub=None, tags=(), exclude=()):
@@ -83,6 +106,11 @@ def load(filter_sub=None, tags=(), exclude=()):
         if bad:
             problems.append(f"{d}: {len(bad)} row(s) are not objects "
                             f"(first at index {bad[0]})")
+            continue
+        malformed = row_type_problems(s["rows"])
+        if malformed:
+            problems.append(f"{d}: {len(malformed)} row(s) with a malformed "
+                            f"field; first: {malformed[0]}")
             continue
         s["dir"] = d
         runs.append(s)
@@ -218,7 +246,7 @@ def _median(values):
 
 
 def interval_reliability(report, shape, trials=5000, n_boot=10000,
-                         skip_reason=None):
+                         skip_reason=None, ladder_shapes=None):
     """Coverage and multiplicity blocks for the ladder this report just built.
 
     Both answer questions the tables cannot: a "95%" interval built from five
@@ -226,16 +254,50 @@ def interval_reliability(report, shape, trials=5000, n_boot=10000,
     somewhere far more often than 5% of the time. Neither number appeared
     anywhere in the code or the writeup, so "the only interval excluding zero"
     read as a finding.
+
+    Coverage depends on the interval's shape. `ladder_shapes` maps each ladder
+    interval to its (n_repeats, n_tasks); when they do not all agree, each
+    distinct shape is audited on its own and the family-wise rate is
+    1 - Π coverage_i over the intervals. One modal coverage applied to a
+    ladder of 5- and 20-repeat intervals stated the family-wise rate of a
+    ladder nobody ran. A single-shape ladder keeps the scalar block exactly.
     """
     ladder = report.get("deltas", {})
     n_excl = sum(1 for v in ladder.values()
                  if (v["lo"] > 0) or (v["hi"] < 0))
+    distinct = sorted(set((ladder_shapes or {}).values()))
     if skip_reason:
         # A check that could not run must never read as one that ran and
         # passed, so the block is present and says so.
         coverage = {"skipped": True, "reason": skip_reason,
                     "nominal": 0.95, "measured": None}
+        if len(distinct) > 1:
+            coverage["shapes"] = [list(s) for s in distinct]
         measured = None
+    elif len(distinct) > 1:
+        provenance = ("p_source", "cell_mean_range")
+        by_shape, per_shape = [], {}
+        for n_rep, n_tasks in distinct:
+            c = bootstrap_coverage(n_repeats=n_rep, n_tasks=n_tasks,
+                                   p=shape["p"], trials=trials, n_boot=n_boot)
+            c["n_intervals"] = sum(1 for s in ladder_shapes.values()
+                                   if s == (n_rep, n_tasks))
+            c["intervals"] = sorted(k for k, s in ladder_shapes.items()
+                                    if s == (n_rep, n_tasks))
+            per_shape[(n_rep, n_tasks)] = c["measured"]
+            by_shape.append(c)
+        coverage = {"nominal": 0.95, "measured": None, "mixed_shapes": True,
+                    "by_shape": by_shape, "p": shape["p"], "trials": trials,
+                    "n_boot": n_boot,
+                    "note": ("The ladder mixes interval shapes, so there is no "
+                             "single per-interval coverage. Each (n_repeats, "
+                             "n_tasks) shape is audited against the same p; "
+                             "the family-wise rate multiplies each interval's "
+                             "own coverage.")}
+        coverage.update({k: shape[k] for k in provenance if k in shape})
+        return coverage, multiplicity_report(
+            len(ladder), n_excl,
+            interval_coverages=[per_shape[ladder_shapes[k]] for k in ladder])
     else:
         # `p_source` and `cell_mean_range` describe where the audited shape
         # came from; they travel with the number but are not settings.
@@ -249,42 +311,50 @@ def interval_reliability(report, shape, trials=5000, n_boot=10000,
                                          measured_coverage=measured)
 
 
-# The preregistered confirmatory tests, and only these. H1 is one test per
-# model; H2 is one test. Everything else on the ladder is H3 and is exploratory
-# by declaration, reported at 95% with the family-wise number beside it.
+# The confirmatory tests, and only these. Everything else on the ladder is H3
+# and is exploratory by declaration, reported at 95% with the family-wise
+# number beside it.
+#
+# The family is every (hypothesis, model) pair below that the grid holds, so
+# H1 AND H2 are each tested once per model: with the registered two-model
+# pair that is k=4 and 98.7% intervals, which is what stats-v2.json and the
+# paper report. Preregistration §5 registered k=3 (H1 on both models, H2 as
+# ONE test) at 98.3%. k=4 is the more conservative family and no verdict in
+# stats-v2.json depends on the difference, but it is a departure from the
+# registration and belongs in DEVIATIONS; test_stats.py pins k=4 so the family
+# cannot change size silently in either direction.
 CONFIRMATORY = (("H1", "baseline", "full harness beats all-off baseline"),
                 ("H2", "no-outcap", "the output cap does not hurt"))
 
 
-def _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms):
-    """Preregistered claims at their Šidák-corrected level, not at 95%.
+def _decide(deltas, lo, hi):
+    """(supported, degenerate_reason) for one confirmatory interval.
 
-    The ladder above prints 95% intervals for everything, which is correct for
-    the exploratory family and wrong for a confirmatory claim: §5 of the
-    registration splits alpha across the preregistered tests, so H1 and H2 are
-    decided on ~98.3% intervals (three tests) and NOT on the 95% ones printed
-    above. Nothing in this file used to say so, and a reader with the 95% table
-    in front of them had no way to know which rows were the registered claims
-    or that those rows are decided at a different width. That is how a marginal
-    delta gets quoted as confirmed.
+    Preregistration §4: supported iff the interval excludes zero in the stated
+    direction, which is lo > 0 -- not lo >= 0, which declared a [0, 0] interval
+    "supported". And an interval with no width is not an interval: twenty
+    identical per-repeat deltas resample to a point, which `ci_degeneracy`
+    flags as carrying no information, so it cannot support a claim either way.
+    `hi` is accepted so the rule reads against the whole interval.
+    """
+    why = ci_degeneracy(deltas)
+    return (bool(lo > 0 and hi >= lo and why is None), why)
 
-    The corrected interval is computed here rather than left as an exercise --
-    a claim whose decision rule is documented but never evaluated is not a
-    decision rule.
+
+def _confirmatory(delta_by_rep, pair_weights):
+    """The confirmatory family as {key: entry}, plus (k, alpha, level).
+
+    Pure: the primary analysis and the §7 sensitivity pass both run it, so the
+    two decisions are taken by one rule at one family size.
     """
     models = sorted({m for (m, _abl) in delta_by_rep})
     tests = [(h, abl, why, m) for (h, abl, why) in CONFIRMATORY
              for m in models if (m, abl) in delta_by_rep]
     if not tests:
-        return
+        return {}, (0, None, None)
     k = len(tests)
     alpha = sidak_alpha(k, 0.05)
     level = 100.0 * (1.0 - alpha)
-    print(f"\n## Preregistered confirmatory tests  ({k} test(s), Šidák "
-          f"α={alpha:.4f}, i.e. {level:.1f}% intervals)\n")
-    print(f"{'':<4} {'model':<30} {'contrast':<14} {'Δ':>7}  "
-          f"{level:.1f}% CI{'':<8} verdict")
-    print("-" * 104)
     out = {}
     for h, abl, why, model in tests:
         by_rep = delta_by_rep[(model, abl)]
@@ -293,29 +363,74 @@ def _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms):
         w = pair_weights(model, abl, keys)
         m_, lo, hi = bootstrap_ci(deltas, alpha=alpha, weights=w)
         m95, lo95, hi95 = bootstrap_ci(deltas, weights=w)
-        supported = lo > 0 if h == "H1" else lo >= 0
+        supported, degenerate = _decide(deltas, lo, hi)
         # A claim that clears 95% but not the corrected level is the case this
         # block exists for, so it is named rather than merely not-supported.
         marginal = (lo95 > 0 or hi95 < 0) and not (lo > 0 or hi < 0)
-        verdict = ("supported" if supported else
-                   "NOT supported (clears 95% but not the corrected level)"
-                   if marginal else "not detected at this n")
-        print(f"{h:<4} {model:<30} full−{abl:<9} {m_:+7.3f}  "
-              f"[{lo:+.3f}, {hi:+.3f}]      {verdict}")
-        out[f"{h}|{model}|{abl}"] = {
+        entry = {
             "hypothesis": h, "claim": why, "model": model, "ablation": abl,
             "n": len(deltas), "delta": m_, "lo": lo, "hi": hi,
             "level": level, "sidak_alpha": alpha, "n_tests": k,
-            "ci95": [lo95, hi95], "supported": bool(supported),
+            "ci95": [lo95, hi95], "supported": supported,
             "clears_95_only": bool(marginal),
         }
+        if degenerate:
+            # Only present when it bites, so a published entry without it is
+            # unchanged.
+            entry["degenerate"] = degenerate
+        out[f"{h}|{model}|{abl}"] = entry
+    return out, (k, alpha, level)
+
+
+def _print_confirmatory(out, k, alpha, level, title):
+    print(f"\n## {title}  ({k} test(s), Šidák α={alpha:.4f}, i.e. "
+          f"{level:.1f}% intervals)\n")
+    print(f"{'':<4} {'model':<30} {'contrast':<14} {'Δ':>7}  "
+          f"{level:.1f}% CI{'':<8} verdict")
+    print("-" * 104)
+    for v in out.values():
+        # An interval wholly below zero is §10's falsification case, not a
+        # null, and must not print as "not detected".
+        verdict = ("supported" if v["supported"] else
+                   "NOT supported (zero-width interval: " + v["degenerate"] + ")"
+                   if v.get("degenerate") else
+                   "REVERSED (interval below zero: falsified, §10)"
+                   if v["hi"] < 0 else
+                   "NOT supported (clears 95% but not the corrected level)"
+                   if v["clears_95_only"] else "not detected at this n")
+        print(f"{v['hypothesis']:<4} {v['model']:<30} full−{v['ablation']:<9} "
+              f"{v['delta']:+7.3f}  [{v['lo']:+.3f}, {v['hi']:+.3f}]      "
+              f"{verdict}")
+
+
+def _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms):
+    """Preregistered claims at their Šidák-corrected level, not at 95%.
+
+    The ladder above prints 95% intervals for everything, which is correct for
+    the exploratory family and wrong for a confirmatory claim: §5 of the
+    registration splits alpha across the confirmatory tests, so H1 and H2 are
+    decided on Šidák-corrected intervals (98.7% for the four-test family this
+    file builds on the registered pair; see CONFIRMATORY) and NOT on the 95%
+    ones printed above. Nothing in this file used to say so, and a reader with
+    the 95% table in front of them had no way to know which rows were the
+    registered claims or that those rows are decided at a different width.
+    That is how a marginal delta gets quoted as confirmed.
+
+    The corrected interval is computed here rather than left as an exercise --
+    a claim whose decision rule is documented but never evaluated is not a
+    decision rule.
+    """
+    out, (k, alpha, level) = _confirmatory(delta_by_rep, pair_weights)
+    if not out:
+        return
+    _print_confirmatory(out, k, alpha, level, "Preregistered confirmatory tests")
     report["confirmatory"] = out
     print("  H3 (every other ablation) is exploratory: read it at 95% above, "
           "with the family-wise number in the reliability block.")
 
 
 def _finish(report, degenerate, cell_denoms, coverage_trials,
-            coverage_skip_reason, unserved_cells=None):
+            coverage_skip_reason, unserved_cells=None, ladder_shapes=None):
     """Sections every report carries, however far the interaction got.
 
     Split out so the "not enough models to rank arms" exit cannot skip
@@ -377,10 +492,18 @@ def _finish(report, degenerate, cell_denoms, coverage_trials,
     p_source = "weaker arm's full-harness mean"
     if p is None or p != p:
         p, p_source = _median(cell_means), "median cell mean"
-    shape = {"n_repeats": _modal([c["n_repeats"] for c in
-                                  report["cells"].values()], 5) or 5,
-             "n_tasks": _modal([n for d in cell_denoms.values()
-                                for n in d.values()], 8) or 8,
+    # The shape the ladder's intervals actually have. With one shape across
+    # the ladder it is that shape; with none (no paired contrast) it falls
+    # back to the cells' modal shape, as it always did; with several, each is
+    # audited separately (interval_reliability).
+    distinct = sorted(set((ladder_shapes or {}).values()))
+    if len(distinct) == 1:
+        n_rep, n_tasks = distinct[0]
+    else:
+        n_rep = _modal([c["n_repeats"] for c in report["cells"].values()], 5) or 5
+        n_tasks = _modal([n for d in cell_denoms.values()
+                          for n in d.values()], 8) or 8
+    shape = {"n_repeats": n_rep, "n_tasks": n_tasks,
              "p": p, "p_source": p_source,
              "cell_mean_range": [cell_means[0], cell_means[-1]]
                                 if cell_means else []}
@@ -392,7 +515,8 @@ def _finish(report, degenerate, cell_denoms, coverage_trials,
         skip = (f"no usable cell mean to audit against (p={shape['p']!r} from "
                 f"the {shape['p_source']})")
     coverage, multiplicity = interval_reliability(
-        report, shape, trials=coverage_trials, skip_reason=skip)
+        report, shape, trials=coverage_trials, skip_reason=skip,
+        ladder_shapes=ladder_shapes)
     report["coverage"] = coverage
     report["multiplicity"] = multiplicity
 
@@ -400,6 +524,16 @@ def _finish(report, degenerate, cell_denoms, coverage_trials,
     if coverage.get("skipped"):
         print(f"  coverage audit SKIPPED: {coverage['reason']}")
         print("  the reported intervals are 95% by construction, unmeasured")
+    elif coverage.get("mixed_shapes"):
+        rng_ = coverage.get("cell_mean_range") or [float("nan")] * 2
+        print(f"  the ladder mixes interval shapes; each audited at "
+              f"p={coverage['p']:.3f} ({coverage['p_source']}; cells span "
+              f"{rng_[0]:.3f}-{rng_[-1]:.3f})")
+        for c in coverage["by_shape"]:
+            print(f"  {c['n_intervals']:>3} interval(s) at {c['n_repeats']} "
+                  f"repeats x {c['n_tasks']} tasks: measured coverage "
+                  f"{100 * c['measured']:5.1f}%  (+/- "
+                  f"{100 * c['mc_stderr']:.1f}; nominal 95.0%)")
     else:
         rng_ = coverage.get("cell_mean_range") or [float("nan")] * 2
         print(f"  cell shape audited: {coverage['n_repeats']} repeats x "
@@ -430,6 +564,138 @@ def _finish(report, degenerate, cell_denoms, coverage_trials,
     print("A CI that includes 0 is not a failed experiment; n=5 with ~15 tasks")
     print("is a small sample. 'We could not detect it at this n' is the claim.")
     return report
+
+
+def _cell_estimate(rows, sensitivity=False):
+    """(rates, denominators, (mean, lo, hi)) for one cell's rows.
+
+    The one place a cell's rate and interval are computed, for the primary
+    analysis and the §7 sensitivity pass alike. Weighting by each repeat's
+    scored-episode count is what stops a one-task repeat from counting as much
+    as an eight-task one; with equal denominators the weighted estimator is
+    the unweighted one.
+    """
+    counts = pass_counts_by_repeat(sensitivity_rows(rows) if sensitivity
+                                   else rows)
+    rates = rates_of(counts)
+    dens = denominators_of(counts)
+    ci = bootstrap_ci(list(rates.values()), weights=[dens[r] for r in rates])
+    return rates, dens, ci
+
+
+def _pair_weights(cell_denoms):
+    """pair_weights(model, abl, reps) over these per-cell denominators."""
+    def pair_weights(model, abl, reps):
+        """Episodes behind each paired repeat: the thinner arm bounds the pair.
+
+        `contrast_conflicts` refuses arms that scored different tasks in a
+        shared repeat, so these agree for the primary analysis; taking the
+        minimum keeps a pair no stronger than its weaker half when they do
+        not, which the §7 sensitivity pass (rows removed per arm) produces.
+        """
+        f = cell_denoms.get(f"{model}|full", {})
+        a = cell_denoms.get(f"{model}|{abl}", {})
+        return [min(f.get(r, 0), a.get(r, 0)) for r in reps]
+    return pair_weights
+
+
+def _delta_ladder(by_model, pair_weights):
+    """Yield (model, abl, by_rep, keys, deltas, ci) for every paired contrast."""
+    for model, cfgs in by_model.items():
+        full = cfgs.get("full")
+        if not full:
+            continue
+        for abl in ABLATIONS:
+            other = cfgs.get(abl)
+            if not other:
+                continue
+            by_rep = deltas_by_repeat(full, other)
+            keys = sorted(by_rep)
+            deltas = [by_rep[k] for k in keys]
+            ci = bootstrap_ci(deltas, weights=pair_weights(model, abl, keys))
+            yield model, abl, by_rep, keys, deltas, ci
+
+
+SENSITIVITY_RULE = (
+    "Preregistration §7 dual report. `cells.*` is the primary analysis "
+    "(serving errors scored as failures). This section re-estimates every "
+    "cell, paired delta and confirmatory test with non-timeout `error:*` "
+    "episodes removed (mh.stats.is_infra_failure: stop_reason error:*, no "
+    "timeout named in the stop reason or error text, not already excluded "
+    "as starved). `infra_failure_rate` is n_infra / n_usable. Errored "
+    "episodes are NOT assumed failed: the final verifier runs after an "
+    "error, so `n_infra_passed` of them passed and are removed with the "
+    "rest. Same estimator, same weights rule, same Šidák family as the "
+    "primary analysis.")
+
+
+def _sensitivity(cells, report):
+    """The §7 sensitivity section, beside (never instead of) the primary one."""
+    out_cells, sdens, by_model = {}, {}, {}
+    for (model, cfg), cell in cells.items():
+        key = f"{model}|{cfg}"
+        usable = usable_rows(cell["rows"])
+        infra = [r for r in usable if is_infra_failure(r)]
+        rates, dens, ci = _cell_estimate(cell["rows"], sensitivity=True)
+        sdens[key] = dens
+        by_model.setdefault(model, {})[cfg] = rates
+        primary = report["cells"][key]["mean"]
+        entry = {
+            "n_usable": len(usable),
+            "n_infra": len(infra),
+            "n_infra_passed": sum(1 for r in infra if r.get("passed") is True),
+            "infra_failure_rate": (len(infra) / len(usable)) if usable else None,
+            "n_scored": len(usable) - len(infra),
+            "n_repeats": len(rates),
+            "rates": rates,
+            "mean": ci[0], "lo": ci[1], "hi": ci[2],
+            "primary_mean": primary,
+            "shift": ci[0] - primary,
+        }
+        why = ci_degeneracy(list(rates.values()))
+        if why:
+            entry["degenerate"] = why
+        out_cells[key] = entry
+
+    pw = _pair_weights(sdens)
+    out_deltas, delta_by_rep = {}, {}
+    for model, abl, by_rep, keys, deltas, ci in _delta_ladder(by_model, pw):
+        key = f"{model}|{abl}"
+        delta_by_rep[(model, abl)] = by_rep
+        out_deltas[key] = {"n": len(deltas), "reps": keys,
+                           "mean": ci[0], "lo": ci[1], "hi": ci[2],
+                           "primary_mean": report["deltas"][key]["mean"],
+                           "sign_flipped": (ci[0] * report["deltas"][key]["mean"]) < 0}
+    conf, (k, alpha, level) = _confirmatory(delta_by_rep, pw)
+    primary_conf = report.get("confirmatory") or {}
+    for key, v in conf.items():
+        was = primary_conf.get(key, {}).get("supported")
+        v["primary_supported"] = was
+        v["verdict_changed"] = (was is not None and was != v["supported"])
+
+    affected = {k_: v for k_, v in out_cells.items() if v["n_infra"]}
+    print("\n## §7 sensitivity: non-timeout serving errors removed\n")
+    if not affected:
+        print("  no cell holds a non-timeout serving error; the sensitivity "
+              "analysis equals the primary one")
+    for key, v in affected.items():
+        print(f"  {key:<56} infra {v['n_infra']:>3}/{v['n_usable']:<3} "
+              f"({100 * v['infra_failure_rate']:4.1f}%, {v['n_infra_passed']} "
+              f"passed)  {100 * v['primary_mean']:5.1f}% -> "
+              f"{_fmt_ci((v['mean'], v['lo'], v['hi']))}")
+    for key, v in out_deltas.items():
+        if v["sign_flipped"]:
+            print(f"  SIGN FLIP {key}: Δ {v['primary_mean']:+.3f} -> {v['mean']:+.3f}")
+    if conf:
+        _print_confirmatory(conf, k, alpha, level,
+                            "Confirmatory tests under the §7 sensitivity rule")
+        for key, v in conf.items():
+            if v["verdict_changed"]:
+                print(f"  VERDICT CHANGED {key}: "
+                      f"{'supported' if v['primary_supported'] else 'not supported'}"
+                      f" -> {'supported' if v['supported'] else 'not supported'}")
+    return {"_rule": SENSITIVITY_RULE, "cells": out_cells,
+            "deltas": out_deltas, "confirmatory": conf}
 
 
 def stats_report(runs, allow_drift=False, coverage_trials=5000,
@@ -482,16 +748,10 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
     cell_denoms = {}
     rates_by_cell = {}
     for (model, cfg), cell in cells.items():
-        counts = pass_counts_by_repeat(cell["rows"])
-        rates = rates_of(counts)
-        dens = denominators_of(counts)
+        rates, dens, ci = _cell_estimate(cell["rows"])
         cell_denoms[f"{model}|{cfg}"] = dens
         rates_by_cell[(model, cfg)] = rates
         xs = list(rates.values())
-        # Weighting by each repeat's scored-episode count is what stops a
-        # one-task repeat from counting as much as an eight-task one. With
-        # equal denominators the weighted estimator is the unweighted one.
-        ci = bootstrap_ci(xs, weights=[dens[r] for r in rates])
         n_starved = sum(1 for r in cell["rows"] if is_starved_episode(r))
         # An episode the provider refused (401/402/403) is not a measurement,
         # and unlike a starved one it is NOT excluded from the denominator --
@@ -557,52 +817,41 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
     for (model, cfg), rates in rates_by_cell.items():
         by_model.setdefault(model, {})[cfg] = rates
 
-    def pair_weights(model, abl, reps):
-        """Episodes behind each paired repeat: the thinner arm bounds the pair.
-
-        `contrast_conflicts` already refuses arms that scored different tasks,
-        so these agree on the frozen grid; taking the minimum keeps a pair no
-        stronger than its weaker half if they ever do not.
-        """
-        f = cell_denoms.get(f"{model}|full", {})
-        a = cell_denoms.get(f"{model}|{abl}", {})
-        return [min(f.get(r, 0), a.get(r, 0)) for r in reps]
-
+    pair_weights = _pair_weights(cell_denoms)
     delta_by_rep = {}
-    for model, cfgs in by_model.items():
-        full = cfgs.get("full")
-        if not full:
-            continue
-        for abl in ABLATIONS:
-            other = cfgs.get(abl)
-            if not other:
-                continue
-            by_rep = deltas_by_repeat(full, other)
-            delta_by_rep[(model, abl)] = by_rep
-            keys = sorted(by_rep)
-            deltas = [by_rep[k] for k in keys]
-            ci = bootstrap_ci(deltas, weights=pair_weights(model, abl, keys))
-            report["deltas"][f"{model}|{abl}"] = {
-                "role": role_of(model),
-                "n": len(deltas), "reps": keys,
-                "mean": ci[0], "lo": ci[1], "hi": ci[2],
-            }
-            why = ci_degeneracy(deltas)
-            if why:
-                degenerate[f"deltas:{model}|{abl}"] = why
-            flag = "  DEGENERATE INTERVAL" if why else ""
-            print(f"{model:<42} {abl:<16} {len(deltas):>3}  "
-                  f"{_fmt_ci(ci, as_pct=False)}{flag}")
+    ladder_shapes = {}
+    for model, abl, by_rep, keys, deltas, ci in _delta_ladder(by_model,
+                                                              pair_weights):
+        delta_by_rep[(model, abl)] = by_rep
+        ladder_shapes[f"{model}|{abl}"] = (
+            len(deltas), _modal(pair_weights(model, abl, keys), 8) or 8)
+        report["deltas"][f"{model}|{abl}"] = {
+            "role": role_of(model),
+            "n": len(deltas), "reps": keys,
+            "mean": ci[0], "lo": ci[1], "hi": ci[2],
+        }
+        why = ci_degeneracy(deltas)
+        if why:
+            degenerate[f"deltas:{model}|{abl}"] = why
+        flag = "  DEGENERATE INTERVAL" if why else ""
+        print(f"{model:<42} {abl:<16} {len(deltas):>3}  "
+              f"{_fmt_ci(ci, as_pct=False)}{flag}")
 
     _confirmatory_block(report, delta_by_rep, pair_weights, cell_denoms)
+    report["sensitivity"] = _sensitivity(cells, report)
 
     print("\n## Interaction  Δ_weaker > Δ_stronger  (empirical full-harness means)\n")
     print(f"{'ablation':<16} {'Δw−Δs':>8}  95% CI                verdict")
     print("-" * 70)
+    # Ranked by the cell's own weighted mean -- the number the pass-rate table
+    # prints for that cell -- not by an unweighted mean of its per-repeat
+    # rates. The two agree on a complete cell and disagree on a ragged one,
+    # where the unweighted mean let a one-task repeat decide which arm was
+    # "weaker".
     full_means = {}
     for model, cfgs in by_model.items():
         if "full" in cfgs and "baseline" in cfgs:
-            full_means[model] = mean(cfgs["full"].values())
+            full_means[model] = report["cells"][f"{model}|full"]["mean"]
     detail = capability_arms_detail(full_means)
     if not detail:
         print("need ≥2 models with both full and baseline in this tag")
@@ -611,7 +860,7 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
         report["interaction_paired"]["_note"] = (
             "need two models with full+baseline")
         return _finish(report, degenerate, cell_denoms, coverage_trials,
-                       coverage_skip_reason, unserved_cells)
+                       coverage_skip_reason, unserved_cells, ladder_shapes)
     weak, strong = detail["weaker"], detail["stronger"]
     # Two arms may legitimately run under different protocols -- that is the
     # normal case once one of them is API-served. The interaction stays valid
@@ -704,7 +953,7 @@ def stats_report(runs, allow_drift=False, coverage_trials=5000,
               f"[{inter['lo']:+.3f}, {inter['hi']:+.3f}]  {verdict}")
 
     return _finish(report, degenerate, cell_denoms, coverage_trials,
-                   coverage_skip_reason, unserved_cells)
+                   coverage_skip_reason, unserved_cells, ladder_shapes)
 
 
 def _refuse(err):

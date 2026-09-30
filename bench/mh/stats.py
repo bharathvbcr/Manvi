@@ -23,9 +23,62 @@ def usable_rows(rows):
     return [r for r in (rows or []) if not is_starved_episode(r)]
 
 
+# The tokens `mh.runtime.is_starved_episode` reads a timeout from. Shared so the
+# two classifiers cannot disagree about what "names a timeout" means.
+_TIMEOUT_TOKENS = ("timed out", "timeouterror")
+
+
+def is_infra_failure(row):
+    """True for a serving error that is not a timeout (preregistration §7).
+
+    §7 scores these as failures in the primary analysis and additionally
+    reports every cell with them removed. The class is: a `stop_reason` of
+    `error:*` whose stop reason and error text name no timeout, on a row the
+    §6 exclusion has not already dropped (a starved row is not in any
+    denominator, so it cannot be removed from one twice). An account refusal
+    (`error:AccountRefused`, or HTTP 401/402/403) is a non-timeout serving
+    error and is included. A `wall_timeout`, or an error naming a timeout, is
+    a result under §6 and stays in both analyses.
+
+    Not assumed to be a failed row: the final verifier runs after an error, so
+    an errored episode can pass. The dual report counts those rather than
+    assuming them away.
+    """
+    if not isinstance(row, dict) or is_starved_episode(row):
+        return False
+    stop = str(row.get("stop_reason") or "")
+    if not stop.startswith("error:"):
+        return False
+    errs = " ".join(str(e) for e in (row.get("errors") or []))
+    blob = (stop + " " + errs).lower()
+    return not any(tok in blob for tok in _TIMEOUT_TOKENS)
+
+
+def sensitivity_rows(rows):
+    """§7 sensitivity sample: usable rows with infrastructure failures removed."""
+    return [r for r in usable_rows(rows) if not is_infra_failure(r)]
+
+
 def mean(xs):
     xs = list(xs)
     return sum(xs) / len(xs) if xs else float("nan")
+
+
+def _finite(xs, what):
+    """Floats of `xs`, refusing any non-finite value.
+
+    A NaN sorts arbitrarily, so a percentile taken over a sample holding one is
+    garbage that still looks like an interval, and `ci_degeneracy` read a NaN
+    sample as "no variance". Refused here, at every estimator's entry, rather
+    than propagated. An empty sample is not an error: callers rely on its
+    nan mean to say "no measurement".
+    """
+    out = [float(x) for x in xs]
+    bad = [x for x in out if not math.isfinite(x)]
+    if bad:
+        raise ValueError(f"{what}: {len(bad)} non-finite value(s) in the sample "
+                         f"({bad[0]!r}); refusing to compute on it")
+    return out
 
 
 def _weights_for(xs, weights):
@@ -52,7 +105,7 @@ def _weights_for(xs, weights):
 
 def weighted_mean(xs, weights=None):
     """Σ w·x / Σ w. With weights=None this is exactly `mean(xs)`."""
-    xs = [float(x) for x in xs]
+    xs = _finite(xs, "weighted_mean")
     if not xs:
         return float("nan")
     ws = _weights_for(xs, weights)
@@ -79,8 +132,10 @@ def bootstrap_ci(xs, n_boot=10000, alpha=0.05, rng_seed=0, weights=None):
     The interval this returns is labelled 95% by construction, not by
     measurement: see `bootstrap_coverage` for what it actually delivers at
     n=5.
+
+    A non-finite sample value raises ValueError; an empty sample returns nan.
     """
-    xs = [float(x) for x in xs]
+    xs = _finite(xs, "bootstrap_ci")
     n = len(xs)
     if n == 0:
         return (float("nan"), float("nan"), float("nan"))
@@ -114,15 +169,17 @@ def ci_degeneracy(xs):
     exactly where the estimator ran out of signal, and it is indistinguishable
     from a genuinely tight one. n=1 renders identically and is not even a
     resample. Both have to be named, not drawn.
+
+    A non-finite value raises ValueError: a NaN sample is not "no variance".
     """
-    xs = [float(x) for x in xs]
+    xs = _finite(xs, "ci_degeneracy")
     n = len(xs)
     if n == 0:
         return "no repeats: there is no interval"
     if n == 1:
         return ("single repeat: lo and hi are the point estimate, not a "
                 "bootstrap interval")
-    if len({x for x in xs if x == x}) == 1:
+    if len(set(xs)) == 1:
         return (f"no observed variance across {n} repeats (every repeat "
                 f"{xs[0]:g}): the interval is zero-width because the "
                 f"estimator has no spread to resample, not because the "
@@ -140,13 +197,21 @@ def pass_counts_by_repeat(rows):
 
     Starved 0-token timeouts are excluded so a wedged server cannot look like
     a harness ablation.
+
+    A `passed` that is present but not a bool raises ValueError: the string
+    "false" is truthy and used to be scored as a pass. An absent `passed` is a
+    fail, as it always was; `compare.load` refuses such rows at the boundary.
     """
     by = {}
     for r in usable_rows(rows):
         rep = r.get("rep", 0)
+        verdict = r.get("passed", False)
+        if not isinstance(verdict, bool):
+            raise ValueError(f"row {r.get('task')!r} rep {rep!r}: passed is "
+                             f"{verdict!r}, not a bool")
         rec = by.setdefault(rep, [0, 0])
         rec[1] += 1
-        if r.get("passed"):
+        if verdict:
             rec[0] += 1
     return {rep: (p, n) for rep, (p, n) in sorted(by.items())}
 
@@ -246,8 +311,8 @@ def interaction(delta_weak, delta_strong, n_boot=10000, rng_seed=0,
     weights every repeat 1.0, which is the unweighted estimator exactly.
     """
     rng = random.Random(rng_seed)
-    dw = [float(x) for x in delta_weak]
-    ds = [float(x) for x in delta_strong]
+    dw = _finite(delta_weak, "interaction (weak arm)")
+    ds = _finite(delta_strong, "interaction (strong arm)")
     if not dw or not ds:
         return {
             "delta_weak_minus_strong": float("nan"),
@@ -401,6 +466,24 @@ def family_wise_error(n_intervals, per_interval_coverage=0.95):
     return 1.0 - c ** n
 
 
+def family_wise_error_over(coverages):
+    """P(at least one interval excludes the truth) for intervals of UNEQUAL
+    coverage: 1 - Π c_i, one entry per interval.
+
+    `family_wise_error(n, c)` assumes every interval covers equally. A ladder
+    mixing 5-repeat and 20-repeat intervals does not, and applying one modal
+    coverage to all of them states the family-wise rate of a ladder that was
+    not run. Same independence caveat as `family_wise_error`.
+    """
+    prod = 1.0
+    for c in coverages:
+        c = float(c)
+        if not 0.0 <= c <= 1.0:
+            raise ValueError(f"per-interval coverage {c!r} is not a probability")
+        prod *= c
+    return 1.0 - prod
+
+
 def sidak_alpha(n_intervals, fwer=0.05):
     """Per-interval alpha giving `fwer` across `n_intervals` (Šidák)."""
     n = int(n_intervals)
@@ -411,8 +494,20 @@ def sidak_alpha(n_intervals, fwer=0.05):
 
 def multiplicity_report(n_intervals, n_excluding_zero,
                         measured_coverage=None, nominal_coverage=0.95,
-                        fwer_target=0.05):
-    """The family-wise numbers for a ladder of `n_intervals` intervals."""
+                        fwer_target=0.05, interval_coverages=None):
+    """The family-wise numbers for a ladder of `n_intervals` intervals.
+
+    `measured_coverage` is one coverage shared by every interval.
+    `interval_coverages` is one coverage per interval, for a ladder whose
+    intervals do not share a shape; then no single per-interval coverage is
+    reported, because there is none, and the family-wise rate is
+    `family_wise_error_over`. Pass one or the other.
+    """
+    if measured_coverage is not None and interval_coverages is not None:
+        raise ValueError("pass measured_coverage or interval_coverages, not both")
+    if interval_coverages is not None and len(interval_coverages) != int(n_intervals):
+        raise ValueError(f"{len(interval_coverages)} coverages for "
+                         f"{int(n_intervals)} intervals")
     out = {
         "n_intervals": int(n_intervals),
         "n_excluding_zero": int(n_excluding_zero),
@@ -431,6 +526,12 @@ def multiplicity_report(n_intervals, n_excluding_zero,
         out["measured_per_interval_coverage"] = float(measured_coverage)
         out["fwer_at_measured_coverage"] = family_wise_error(
             n_intervals, measured_coverage)
+    elif interval_coverages is not None:
+        out["fwer_at_measured_coverage"] = family_wise_error_over(
+            interval_coverages)
+        out["fwer_measured_over"] = ("each interval at the measured coverage "
+                                     "of its own (n_repeats, n_tasks) shape; "
+                                     "see coverage.by_shape")
     return out
 
 

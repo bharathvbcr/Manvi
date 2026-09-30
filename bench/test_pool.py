@@ -389,6 +389,27 @@ check("arms scoring different tasks are refused", contrast_conflicts(mismatch) !
 check("matching arms pass",
       contrast_conflicts({(MODEL, "full"): src("a", range(5))["rows"],
                           (MODEL, "no-outcap"): src("b", range(5))["rows"]}) == [])
+# Same task set per CELL, different task set inside one REPEAT: full rep 1 lost
+# c and d. The cell-level comparison sees {a,b,c,d} on both sides and passed it,
+# and the paired delta for rep 1 compared 2 tasks against 4 (AUDIT M6).
+_hole = [r for r in src("a", range(3))["rows"]
+         if not (r["rep"] == 1 and r["task"] in ("gamma", "delta"))]
+_per_rep = contrast_conflicts({(MODEL, "full"): _hole,
+                               (MODEL, "no-x"): src("b", range(3))["rows"]})
+check("a repeat scored on different tasks in the two arms is refused",
+      len(_per_rep) == 1 and "rep 1" in _per_rep[0], str(_per_rep))
+check("a repeat present in one arm only is not a per-repeat conflict",
+      contrast_conflicts({(MODEL, "full"): src("a", range(3))["rows"],
+                          (MODEL, "no-x"): src("b", range(2))["rows"]}) == [])
+check("a cell-level mismatch is reported once, not once per repeat",
+      len(contrast_conflicts(mismatch)) == 1, str(contrast_conflicts(mismatch)))
+try:
+    _sc = seed_conflicts({(MODEL, "full"): [{"task": "a", "rep": 0, "seed": 0},
+                                            {"task": "a", "rep": "1", "seed": 1}],
+                          (MODEL, "no-x"): [{"task": "a", "rep": 1, "seed": 9}]})
+    check("seed_conflicts survives mixed-type repeat indices", isinstance(_sc, list))
+except TypeError as e:
+    check("seed_conflicts survives mixed-type repeat indices", False, repr(e))
 cd = contrast_drift({(MODEL, "full"): PROTO,
                      (MODEL, "no-outcap"): dict(PROTO, share_gpu=True)})
 check("cross-config protocol drift is reported", cd and cd[0][1] == ["share_gpu"], str(cd))

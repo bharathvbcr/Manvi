@@ -1,0 +1,1621 @@
+{
+  "_what": "Preregistration \u00a77 dual report for the reported grids, derived from the committed stats JSONs alone (the episode logs are not in this checkout). See sensitivity.py for the derivation. `primary` values are copied from the source report; nothing here replaces them.",
+  "_rule": "Sensitivity sample = primary sample minus non-timeout error:* episodes (mh.stats.is_infra_failure).",
+  "_status_legend": {
+    "exact": "no error:* row involved: sensitivity == primary, CI included",
+    "enumerated": "one error:* row: every consistent allocation bootstrapped; ranges are exact",
+    "bounds_only": "two or more error:* rows: exact bounds on the point estimate; no CI"
+  },
+  "_not_derivable": [
+    "per-repeat placement of error:* rows (needed for any CI once E >= 2)",
+    "whether an error:* row's text names a timeout (such rows stay in both analyses), so n_error_stops is an UPPER bound on the infrastructure-failure count",
+    "whether an error:* row passed (the final verifier runs after an error), so 'errored rows are failures' is an assumption, reported separately as sensitivity_if_every_error_is_a_failed_serving_error"
+  ],
+  "grids": {
+    "stats-v2.json": {
+      "sha256": "e961e43e104d0982949250f78374cdd9c3c0d27f8072b84ab1f0086dc780f383",
+      "cells": {
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+          "n": 160,
+          "passes": 64,
+          "n_error_stops": 38,
+          "infra_failure_rate_upper_bound": 0.2375,
+          "primary": {
+            "mean": 0.4,
+            "lo": 0.3375,
+            "hi": 0.4625
+          },
+          "sensitivity_point_bounds": [
+            0.21311475409836064,
+            0.5245901639344263
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.5245901639344263,
+          "status": "bounds_only",
+          "why": "38 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|full": {
+          "n": 160,
+          "passes": 97,
+          "n_error_stops": 20,
+          "infra_failure_rate_upper_bound": 0.125,
+          "primary": {
+            "mean": 0.60625,
+            "lo": 0.5375,
+            "hi": 0.66875
+          },
+          "sensitivity_point_bounds": [
+            0.55,
+            0.6928571428571428
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.6928571428571428,
+          "status": "bounds_only",
+          "why": "20 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+          "n": 40,
+          "passes": 27,
+          "n_error_stops": 4,
+          "infra_failure_rate_upper_bound": 0.1,
+          "primary": {
+            "mean": 0.675,
+            "lo": 0.625,
+            "hi": 0.725
+          },
+          "sensitivity_point_bounds": [
+            0.6388888888888888,
+            0.75
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.75,
+          "status": "bounds_only",
+          "why": "4 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+          "n": 40,
+          "passes": 23,
+          "n_error_stops": 5,
+          "infra_failure_rate_upper_bound": 0.125,
+          "primary": {
+            "mean": 0.575,
+            "lo": 0.5,
+            "hi": 0.675
+          },
+          "sensitivity_point_bounds": [
+            0.5142857142857142,
+            0.6571428571428571
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.6571428571428571,
+          "status": "bounds_only",
+          "why": "5 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+          "n": 40,
+          "passes": 24,
+          "n_error_stops": 9,
+          "infra_failure_rate_upper_bound": 0.225,
+          "primary": {
+            "mean": 0.6,
+            "lo": 0.525,
+            "hi": 0.675
+          },
+          "sensitivity_point_bounds": [
+            0.4838709677419355,
+            0.7741935483870968
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.7741935483870968,
+          "status": "bounds_only",
+          "why": "9 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+          "n": 40,
+          "passes": 22,
+          "n_error_stops": 3,
+          "infra_failure_rate_upper_bound": 0.075,
+          "primary": {
+            "mean": 0.55,
+            "lo": 0.45,
+            "hi": 0.625
+          },
+          "sensitivity_point_bounds": [
+            0.5135135135135135,
+            0.5945945945945946
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.5945945945945946,
+          "status": "bounds_only",
+          "why": "3 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+          "n": 40,
+          "passes": 22,
+          "n_error_stops": 9,
+          "infra_failure_rate_upper_bound": 0.225,
+          "primary": {
+            "mean": 0.55,
+            "lo": 0.425,
+            "hi": 0.675
+          },
+          "sensitivity_point_bounds": [
+            0.41935483870967744,
+            0.7096774193548387
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.7096774193548387,
+          "status": "bounds_only",
+          "why": "9 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+          "n": 160,
+          "passes": 85,
+          "n_error_stops": 38,
+          "infra_failure_rate_upper_bound": 0.2375,
+          "primary": {
+            "mean": 0.53125,
+            "lo": 0.49375,
+            "hi": 0.56875
+          },
+          "sensitivity_point_bounds": [
+            0.38524590163934425,
+            0.6967213114754098
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.6967213114754098,
+          "status": "bounds_only",
+          "why": "38 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+          "n": 40,
+          "passes": 21,
+          "n_error_stops": 3,
+          "infra_failure_rate_upper_bound": 0.075,
+          "primary": {
+            "mean": 0.525,
+            "lo": 0.45,
+            "hi": 0.6
+          },
+          "sensitivity_point_bounds": [
+            0.4864864864864865,
+            0.5675675675675675
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.5675675675675675,
+          "status": "bounds_only",
+          "why": "3 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "qwen3.8:27b|baseline": {
+          "n": 160,
+          "passes": 127,
+          "n_error_stops": 3,
+          "infra_failure_rate_upper_bound": 0.01875,
+          "primary": {
+            "mean": 0.79375,
+            "lo": 0.7375,
+            "hi": 0.85
+          },
+          "sensitivity_point_bounds": [
+            0.7898089171974523,
+            0.8089171974522293
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.8089171974522293,
+          "status": "bounds_only",
+          "why": "3 error rows in unknown repeats, of unknown kind (timeout-text or not) and unknown verdict: the point estimate is bounded exactly, the interval is not computable without per-repeat error counts"
+        },
+        "qwen3.8:27b|full": {
+          "n": 160,
+          "passes": 152,
+          "n_error_stops": 1,
+          "infra_failure_rate_upper_bound": 0.00625,
+          "primary": {
+            "mean": 0.95,
+            "lo": 0.9,
+            "hi": 0.9875
+          },
+          "sensitivity_point_bounds": [
+            0.949685534591195,
+            0.9559748427672956
+          ],
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.9559748427672956,
+          "status": "enumerated",
+          "n_allocations": 26,
+          "sensitivity_ci_range": {
+            "mean": [
+              0.949685534591195,
+              0.9559748427672956
+            ],
+            "lo": [
+              0.8987341772151899,
+              0.9171974522292994
+            ],
+            "hi": [
+              0.9874213836477987,
+              0.9937106918238994
+            ]
+          }
+        },
+        "qwen3.8:27b|no-checklist": {
+          "n": 40,
+          "passes": 39,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.975,
+            "lo": 0.925,
+            "hi": 1.0
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.975,
+            "lo": 0.925,
+            "hi": 1.0
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-envboot": {
+          "n": 40,
+          "passes": 38,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.95,
+            "lo": 0.9,
+            "hi": 1.0
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.95,
+            "lo": 0.9,
+            "hi": 1.0
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-groundfs": {
+          "n": 40,
+          "passes": 38,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.95,
+            "lo": 0.9,
+            "hi": 1.0
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.95,
+            "lo": 0.9,
+            "hi": 1.0
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-loopbreak": {
+          "n": 40,
+          "passes": 38,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.95,
+            "lo": 0.85,
+            "hi": 1.0
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.95,
+            "lo": 0.85,
+            "hi": 1.0
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-nativetools": {
+          "n": 40,
+          "passes": 39,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.975,
+            "lo": 0.925,
+            "hi": 1.0
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.975,
+            "lo": 0.925,
+            "hi": 1.0
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-outcap": {
+          "n": 160,
+          "passes": 148,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.925,
+            "lo": 0.8875,
+            "hi": 0.95625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.925,
+            "lo": 0.8875,
+            "hi": 0.95625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "qwen3.8:27b|no-verifygate": {
+          "n": 40,
+          "passes": 31,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.775,
+            "lo": 0.7,
+            "hi": 0.85
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.775,
+            "lo": 0.7,
+            "hi": 0.85
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        }
+      },
+      "deltas": {
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 20,
+            "baseline": 38
+          },
+          "primary": {
+            "mean": 0.20625,
+            "lo": 0.13125,
+            "hi": 0.28125
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.20624999999999993,
+          "sensitivity_point_bounds": [
+            0.025409836065573788,
+            0.47974238875878217
+          ],
+          "sign_robust": true,
+          "ci": "not computable from the committed report",
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.16826697892271658
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-envboot": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-envboot": 5
+          },
+          "primary": {
+            "mean": 0.025,
+            "lo": -0.175,
+            "hi": 0.225
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.025000000000000022,
+          "sensitivity_point_bounds": [
+            -0.45714285714285713,
+            0.48571428571428577
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-envboot": [
+              5,
+              5
+            ]
+          }
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-verifygate": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-verifygate": 3
+          },
+          "primary": {
+            "mean": 0.075,
+            "lo": -0.075,
+            "hi": 0.225
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.07499999999999996,
+          "sensitivity_point_bounds": [
+            -0.36756756756756753,
+            0.5135135135135135
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-verifygate": [
+              3,
+              3
+            ]
+          }
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-checklist": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-checklist": 4
+          },
+          "primary": {
+            "mean": -0.075,
+            "lo": -0.25,
+            "hi": 0.1
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": -0.07500000000000007,
+          "sensitivity_point_bounds": [
+            -0.55,
+            0.36111111111111116
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-checklist": [
+              4,
+              4
+            ]
+          }
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-loopbreak": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-loopbreak": 3
+          },
+          "primary": {
+            "mean": 0.05,
+            "lo": -0.1,
+            "hi": 0.125
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.04999999999999993,
+          "sensitivity_point_bounds": [
+            -0.3945945945945946,
+            0.4864864864864865
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-loopbreak": [
+              3,
+              3
+            ]
+          }
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 20,
+            "no-outcap": 38
+          },
+          "primary": {
+            "mean": 0.075,
+            "lo": 0.0125,
+            "hi": 0.1375
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.07499999999999996,
+          "sensitivity_point_bounds": [
+            -0.1467213114754098,
+            0.3076112412177986
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "sensitivity_if_every_error_is_a_failed_serving_error": -0.0038641686182669943
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-groundfs": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-groundfs": 9
+          },
+          "primary": {
+            "mean": 0.0,
+            "lo": -0.225,
+            "hi": 0.225
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.0,
+          "sensitivity_point_bounds": [
+            -0.5741935483870968,
+            0.5161290322580645
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-groundfs": [
+              9,
+              9
+            ]
+          }
+        },
+        "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-nativetools": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 20,
+            "no-nativetools": 9
+          },
+          "primary": {
+            "mean": 0.05,
+            "lo": -0.05,
+            "hi": 0.125
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.04999999999999993,
+          "sensitivity_point_bounds": [
+            -0.5096774193548388,
+            0.5806451612903225
+          ],
+          "sign_robust": false,
+          "ci": "not computable from the committed report",
+          "error_rows_in_paired_repeats": {
+            "full": [
+              0,
+              20
+            ],
+            "no-nativetools": [
+              9,
+              9
+            ]
+          }
+        },
+        "qwen3.8:27b|baseline": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 1,
+            "baseline": 3
+          },
+          "primary": {
+            "mean": 0.15625,
+            "lo": 0.0875,
+            "hi": 0.225
+          },
+          "status": "bounds_only",
+          "estimator": "pooled-rate difference over the paired repeats, a proxy: the registered estimator is the weighted mean of per-repeat deltas, which needs the per-repeat error counts the report does not hold",
+          "pooled_primary": 0.15625,
+          "sensitivity_point_bounds": [
+            0.14076833713896564,
+            0.16616592556984333
+          ],
+          "sign_robust": true,
+          "ci": "not computable from the committed report",
+          "sensitivity_if_every_error_is_a_failed_serving_error": 0.14705764531506627
+        },
+        "qwen3.8:27b|no-envboot": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-envboot": 0
+          },
+          "primary": {
+            "mean": 0.05,
+            "lo": 0.0,
+            "hi": 0.1
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.04807692307692308,
+              0.05128205128205128
+            ],
+            "lo95": [
+              0.0,
+              0.0
+            ],
+            "hi95": [
+              0.09935897435897435,
+              0.10256410256410256
+            ],
+            "lo_corrected": [
+              0.0,
+              0.0
+            ],
+            "hi_corrected": [
+              0.125,
+              0.125
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "qwen3.8:27b|no-verifygate": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-verifygate": 0
+          },
+          "primary": {
+            "mean": 0.225,
+            "lo": 0.15,
+            "hi": 0.3
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.22115384615384615,
+              0.22756410256410256
+            ],
+            "lo95": [
+              0.14743589743589744,
+              0.1513157894736842
+            ],
+            "hi95": [
+              0.29605263157894735,
+              0.30448717948717946
+            ],
+            "lo_corrected": [
+              0.125,
+              0.125
+            ],
+            "hi_corrected": [
+              0.32094594594594594,
+              0.32894736842105265
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": true,
+          "supported_under_some_allocation": true
+        },
+        "qwen3.8:27b|no-checklist": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-checklist": 0
+          },
+          "primary": {
+            "mean": 0.025,
+            "lo": 0.0,
+            "hi": 0.075
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.022435897435897436,
+              0.02564102564102564
+            ],
+            "lo95": [
+              0.0,
+              0.0
+            ],
+            "hi95": [
+              0.07094594594594594,
+              0.07692307692307693
+            ],
+            "lo_corrected": [
+              0.0,
+              0.0
+            ],
+            "hi_corrected": [
+              0.09722222222222222,
+              0.1
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "qwen3.8:27b|no-loopbreak": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-loopbreak": 0
+          },
+          "primary": {
+            "mean": 0.05,
+            "lo": 0.0,
+            "hi": 0.15
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.04487179487179487,
+              0.05128205128205128
+            ],
+            "lo95": [
+              0.0,
+              0.0
+            ],
+            "hi95": [
+              0.14189189189189189,
+              0.15384615384615385
+            ],
+            "lo_corrected": [
+              0.0,
+              0.0
+            ],
+            "hi_corrected": [
+              0.19444444444444445,
+              0.2
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "qwen3.8:27b|no-outcap": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 1,
+            "no-outcap": 0
+          },
+          "primary": {
+            "mean": 0.025,
+            "lo": -0.01875,
+            "hi": 0.06875
+          },
+          "status": "enumerated",
+          "n_allocations": 26,
+          "sensitivity": {
+            "mean": [
+              0.02358490566037736,
+              0.031446540880503145
+            ],
+            "lo95": [
+              -0.022151898734177215,
+              -0.007911392405063292
+            ],
+            "hi95": [
+              0.06645569620253164,
+              0.075
+            ],
+            "lo_corrected": [
+              -0.035256410256410256,
+              -0.016025641025641024
+            ],
+            "hi_corrected": [
+              0.07802547770700637,
+              0.08726415094339622
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "qwen3.8:27b|no-groundfs": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-groundfs": 0
+          },
+          "primary": {
+            "mean": 0.05,
+            "lo": 0.0,
+            "hi": 0.1
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.04807692307692308,
+              0.05128205128205128
+            ],
+            "lo95": [
+              0.0,
+              0.0
+            ],
+            "hi95": [
+              0.09935897435897435,
+              0.10256410256410256
+            ],
+            "lo_corrected": [
+              0.0,
+              0.0
+            ],
+            "hi_corrected": [
+              0.125,
+              0.125
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "qwen3.8:27b|no-nativetools": {
+          "n_reps": 5,
+          "n_error_stops": {
+            "full": 1,
+            "no-nativetools": 0
+          },
+          "primary": {
+            "mean": 0.025,
+            "lo": 0.0,
+            "hi": 0.075
+          },
+          "status": "enumerated",
+          "n_allocations": 6,
+          "sensitivity": {
+            "mean": [
+              0.022435897435897436,
+              0.02564102564102564
+            ],
+            "lo95": [
+              0.0,
+              0.0
+            ],
+            "hi95": [
+              0.07094594594594594,
+              0.07692307692307693
+            ],
+            "lo_corrected": [
+              0.0,
+              0.0
+            ],
+            "hi_corrected": [
+              0.09722222222222222,
+              0.1
+            ],
+            "corrected_level": 98.72585449014338
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        }
+      },
+      "confirmatory": {
+        "H1|hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|baseline": {
+          "hypothesis": "H1",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+          "ablation": "baseline",
+          "n_tests": 4,
+          "level": 98.72585449014338,
+          "primary_delta": 0.20625,
+          "primary_ci": [
+            0.1125,
+            0.3
+          ],
+          "primary_supported": true,
+          "status": "bounds_only",
+          "sensitivity_point_bounds": [
+            0.025409836065573788,
+            0.47974238875878217
+          ],
+          "sign_robust": true,
+          "sensitivity_supported": "not computable (no per-repeat error counts)",
+          "verdict_changes": "sign cannot flip; the corrected-level interval is not computable"
+        },
+        "H1|qwen3.8:27b|baseline": {
+          "hypothesis": "H1",
+          "model": "qwen3.8:27b",
+          "ablation": "baseline",
+          "n_tests": 4,
+          "level": 98.72585449014338,
+          "primary_delta": 0.15625,
+          "primary_ci": [
+            0.06875,
+            0.24375
+          ],
+          "primary_supported": true,
+          "status": "bounds_only",
+          "sensitivity_point_bounds": [
+            0.14076833713896564,
+            0.16616592556984333
+          ],
+          "sign_robust": true,
+          "sensitivity_supported": "not computable (no per-repeat error counts)",
+          "verdict_changes": "sign cannot flip; the corrected-level interval is not computable"
+        },
+        "H2|hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0|no-outcap": {
+          "hypothesis": "H2",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+          "ablation": "no-outcap",
+          "n_tests": 4,
+          "level": 98.72585449014338,
+          "primary_delta": 0.075,
+          "primary_ci": [
+            -0.00625,
+            0.15625
+          ],
+          "primary_supported": false,
+          "status": "bounds_only",
+          "sensitivity_point_bounds": [
+            -0.1467213114754098,
+            0.3076112412177986
+          ],
+          "sign_robust": false,
+          "sensitivity_supported": "not computable (no per-repeat error counts)",
+          "verdict_changes": "the sign itself is not determined; the corrected-level interval is not computable"
+        },
+        "H2|qwen3.8:27b|no-outcap": {
+          "hypothesis": "H2",
+          "model": "qwen3.8:27b",
+          "ablation": "no-outcap",
+          "n_tests": 4,
+          "level": 98.72585449014338,
+          "primary_delta": 0.025,
+          "primary_ci": [
+            -0.03125,
+            0.08125
+          ],
+          "primary_supported": false,
+          "status": "enumerated",
+          "sensitivity_delta_range": [
+            0.02358490566037736,
+            0.031446540880503145
+          ],
+          "sensitivity_lo_range": [
+            -0.035256410256410256,
+            -0.016025641025641024
+          ],
+          "sensitivity_hi_range": [
+            0.07802547770700637,
+            0.08726415094339622
+          ],
+          "sensitivity_supported": false,
+          "verdict_changes": "no"
+        }
+      }
+    },
+    "stats-ext-cerebras.json": {
+      "sha256": "accb685cc4d5db8bdc1d1ba5dd2c57c70537ae60438ce30755ad77ce52a790bc",
+      "cells": {
+        "cerebras:gpt-oss-120b|baseline": {
+          "n": 160,
+          "passes": 106,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.6625,
+            "lo": 0.55625,
+            "hi": 0.75625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.6625,
+            "lo": 0.55625,
+            "hi": 0.75625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|full": {
+          "n": 160,
+          "passes": 130,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.8125,
+            "lo": 0.7625,
+            "hi": 0.8625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.8125,
+            "lo": 0.7625,
+            "hi": 0.8625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-checklist": {
+          "n": 160,
+          "passes": 142,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.8875,
+            "lo": 0.8375,
+            "hi": 0.9375
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.8875,
+            "lo": 0.8375,
+            "hi": 0.9375
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-envboot": {
+          "n": 160,
+          "passes": 129,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.80625,
+            "lo": 0.75625,
+            "hi": 0.8625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.80625,
+            "lo": 0.75625,
+            "hi": 0.8625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-groundfs": {
+          "n": 160,
+          "passes": 129,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.80625,
+            "lo": 0.75,
+            "hi": 0.8625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.80625,
+            "lo": 0.75,
+            "hi": 0.8625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-loopbreak": {
+          "n": 160,
+          "passes": 132,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.825,
+            "lo": 0.76875,
+            "hi": 0.875
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.825,
+            "lo": 0.76875,
+            "hi": 0.875
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-nativetools": {
+          "n": 160,
+          "passes": 107,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.66875,
+            "lo": 0.61875,
+            "hi": 0.725
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.66875,
+            "lo": 0.61875,
+            "hi": 0.725
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-outcap": {
+          "n": 160,
+          "passes": 135,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.84375,
+            "lo": 0.7875,
+            "hi": 0.89375
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.84375,
+            "lo": 0.7875,
+            "hi": 0.89375
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        },
+        "cerebras:gpt-oss-120b|no-verifygate": {
+          "n": 160,
+          "passes": 114,
+          "n_error_stops": 0,
+          "infra_failure_rate_upper_bound": 0.0,
+          "primary": {
+            "mean": 0.7125,
+            "lo": 0.6625,
+            "hi": 0.75625
+          },
+          "status": "exact",
+          "sensitivity": {
+            "mean": 0.7125,
+            "lo": 0.6625,
+            "hi": 0.75625
+          },
+          "infra_failure_rate": 0.0,
+          "why": "no error:* row in this cell: nothing to remove"
+        }
+      },
+      "deltas": {
+        "cerebras:gpt-oss-120b|baseline": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "baseline": 0
+          },
+          "primary": {
+            "mean": 0.15,
+            "lo": 0.03125,
+            "hi": 0.275
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              0.15,
+              0.15
+            ],
+            "lo95": [
+              0.03125,
+              0.03125
+            ],
+            "hi95": [
+              0.275,
+              0.275
+            ],
+            "lo_corrected": [
+              0.01875,
+              0.01875
+            ],
+            "hi_corrected": [
+              0.3,
+              0.3
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": true,
+          "supported_under_some_allocation": true
+        },
+        "cerebras:gpt-oss-120b|no-envboot": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-envboot": 0
+          },
+          "primary": {
+            "mean": 0.00625,
+            "lo": -0.0625,
+            "hi": 0.06875
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              0.00625,
+              0.00625
+            ],
+            "lo95": [
+              -0.0625,
+              -0.0625
+            ],
+            "hi95": [
+              0.06875,
+              0.06875
+            ],
+            "lo_corrected": [
+              -0.06875,
+              -0.06875
+            ],
+            "hi_corrected": [
+              0.075,
+              0.075
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "cerebras:gpt-oss-120b|no-verifygate": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-verifygate": 0
+          },
+          "primary": {
+            "mean": 0.1,
+            "lo": 0.0375,
+            "hi": 0.16875
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              0.1,
+              0.1
+            ],
+            "lo95": [
+              0.0375,
+              0.0375
+            ],
+            "hi95": [
+              0.16875,
+              0.16875
+            ],
+            "lo_corrected": [
+              0.025,
+              0.025
+            ],
+            "hi_corrected": [
+              0.18125,
+              0.18125
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": true,
+          "supported_under_some_allocation": true
+        },
+        "cerebras:gpt-oss-120b|no-checklist": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-checklist": 0
+          },
+          "primary": {
+            "mean": -0.075,
+            "lo": -0.14375,
+            "hi": -0.00625
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              -0.075,
+              -0.075
+            ],
+            "lo95": [
+              -0.14375,
+              -0.14375
+            ],
+            "hi95": [
+              -0.00625,
+              -0.00625
+            ],
+            "lo_corrected": [
+              -0.15,
+              -0.15
+            ],
+            "hi_corrected": [
+              0.0,
+              0.0
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "cerebras:gpt-oss-120b|no-loopbreak": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-loopbreak": 0
+          },
+          "primary": {
+            "mean": -0.0125,
+            "lo": -0.0875,
+            "hi": 0.075
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              -0.0125,
+              -0.0125
+            ],
+            "lo95": [
+              -0.0875,
+              -0.0875
+            ],
+            "hi95": [
+              0.075,
+              0.075
+            ],
+            "lo_corrected": [
+              -0.1,
+              -0.1
+            ],
+            "hi_corrected": [
+              0.0875,
+              0.0875
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "cerebras:gpt-oss-120b|no-outcap": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-outcap": 0
+          },
+          "primary": {
+            "mean": -0.03125,
+            "lo": -0.0875,
+            "hi": 0.03125
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              -0.03125,
+              -0.03125
+            ],
+            "lo95": [
+              -0.0875,
+              -0.0875
+            ],
+            "hi95": [
+              0.03125,
+              0.03125
+            ],
+            "lo_corrected": [
+              -0.1,
+              -0.1
+            ],
+            "hi_corrected": [
+              0.0375,
+              0.0375
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "cerebras:gpt-oss-120b|no-groundfs": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-groundfs": 0
+          },
+          "primary": {
+            "mean": 0.00625,
+            "lo": -0.075,
+            "hi": 0.09375
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              0.00625,
+              0.00625
+            ],
+            "lo95": [
+              -0.075,
+              -0.075
+            ],
+            "hi95": [
+              0.09375,
+              0.09375
+            ],
+            "lo_corrected": [
+              -0.0875,
+              -0.0875
+            ],
+            "hi_corrected": [
+              0.10625,
+              0.10625
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": false,
+          "supported_under_some_allocation": false
+        },
+        "cerebras:gpt-oss-120b|no-nativetools": {
+          "n_reps": 20,
+          "n_error_stops": {
+            "full": 0,
+            "no-nativetools": 0
+          },
+          "primary": {
+            "mean": 0.14375,
+            "lo": 0.075,
+            "hi": 0.2125
+          },
+          "status": "exact",
+          "n_allocations": 1,
+          "sensitivity": {
+            "mean": [
+              0.14375,
+              0.14375
+            ],
+            "lo95": [
+              0.075,
+              0.075
+            ],
+            "hi95": [
+              0.2125,
+              0.2125
+            ],
+            "lo_corrected": [
+              0.0625,
+              0.0625
+            ],
+            "hi_corrected": [
+              0.225,
+              0.225
+            ],
+            "corrected_level": 97.46794344808963
+          },
+          "supported_under_every_allocation": true,
+          "supported_under_some_allocation": true
+        }
+      },
+      "confirmatory": {
+        "H1|cerebras:gpt-oss-120b|baseline": {
+          "hypothesis": "H1",
+          "model": "cerebras:gpt-oss-120b",
+          "ablation": "baseline",
+          "n_tests": 2,
+          "level": 97.46794344808963,
+          "primary_delta": 0.15,
+          "primary_ci": [
+            0.01875,
+            0.3
+          ],
+          "primary_supported": true,
+          "status": "exact",
+          "sensitivity_delta_range": [
+            0.15,
+            0.15
+          ],
+          "sensitivity_lo_range": [
+            0.01875,
+            0.01875
+          ],
+          "sensitivity_hi_range": [
+            0.3,
+            0.3
+          ],
+          "sensitivity_supported": true,
+          "verdict_changes": "no"
+        },
+        "H2|cerebras:gpt-oss-120b|no-outcap": {
+          "hypothesis": "H2",
+          "model": "cerebras:gpt-oss-120b",
+          "ablation": "no-outcap",
+          "n_tests": 2,
+          "level": 97.46794344808963,
+          "primary_delta": -0.03125,
+          "primary_ci": [
+            -0.1,
+            0.0375
+          ],
+          "primary_supported": false,
+          "status": "exact",
+          "sensitivity_delta_range": [
+            -0.03125,
+            -0.03125
+          ],
+          "sensitivity_lo_range": [
+            -0.1,
+            -0.1
+          ],
+          "sensitivity_hi_range": [
+            0.0375,
+            0.0375
+          ],
+          "sensitivity_supported": false,
+          "verdict_changes": "no"
+        }
+      }
+    }
+  },
+  "local_evidence": {
+    "what": "non-timeout error:* rows in the local results/ tree (v1 and exploratory tags, not v2 or ext-cerebras) and how many of them passed",
+    "infra_rows": 147,
+    "infra_rows_passed": 12,
+    "by_dir": {
+      "gemini-3.7-flash__baseline__hard-brokenwire": {
+        "infra_rows": 15,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__full__hard-brokenwire": {
+        "infra_rows": 12,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__full__hard": {
+        "infra_rows": 13,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__no-envboot__hard-brokenwire": {
+        "infra_rows": 2,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__no-loopbreak__hard-brokenwire": {
+        "infra_rows": 4,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__no-outcap__hard-brokenwire": {
+        "infra_rows": 18,
+        "infra_rows_passed": 0
+      },
+      "gemini-3.7-flash__no-verifygate__hard-brokenwire": {
+        "infra_rows": 12,
+        "infra_rows_passed": 0
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__baseline__hard-protocol1": {
+        "infra_rows": 9,
+        "infra_rows_passed": 2
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__baseline__hard": {
+        "infra_rows": 9,
+        "infra_rows_passed": 1
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__full__hard-protocol1": {
+        "infra_rows": 6,
+        "infra_rows_passed": 0
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__full__hard": {
+        "infra_rows": 3,
+        "infra_rows_passed": 1
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-checklist__hard": {
+        "infra_rows": 6,
+        "infra_rows_passed": 2
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-envboot__hard": {
+        "infra_rows": 4,
+        "infra_rows_passed": 0
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-groundfs__hard": {
+        "infra_rows": 10,
+        "infra_rows_passed": 1
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-loopbreak__hard": {
+        "infra_rows": 5,
+        "infra_rows_passed": 1
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-nativetools__hard": {
+        "infra_rows": 8,
+        "infra_rows_passed": 1
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-outcap__hard": {
+        "infra_rows": 4,
+        "infra_rows_passed": 0
+      },
+      "hf.co_ornith-ai_Ornith-1.5-35B-A3B-GGUF_Q8_0__no-verifygate__hard": {
+        "infra_rows": 5,
+        "infra_rows_passed": 1
+      },
+      "qwen3.8_27b__no-groundfs__hard": {
+        "infra_rows": 1,
+        "infra_rows_passed": 1
+      },
+      "qwen3.8_27b__no-outcap__hard": {
+        "infra_rows": 1,
+        "infra_rows_passed": 1
+      }
+    }
+  }
+}

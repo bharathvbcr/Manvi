@@ -44,9 +44,21 @@ CONFIG_FLAGS = ("envboot", "nativetools", "outcap", "checklist",
                 "verifygate", "loopbreak", "groundfs")
 
 
+def _rep_order(rep):
+    """Sort key for a repeat index that may be malformed.
+
+    A malformed index ("1" beside 1) must reach the refusal `malformed_reps`
+    raises, not crash a sort before it with a TypeError. Integers keep their
+    numeric order; anything else sorts after them by its text.
+    """
+    if isinstance(rep, int) and not isinstance(rep, bool):
+        return (0, rep, "")
+    return (1, 0, str(rep))
+
+
 def reps_of(rows):
     """Repeat indices present in these rows."""
-    return sorted({r.get("rep", 0) for r in (rows or [])})
+    return sorted({r.get("rep", 0) for r in (rows or [])}, key=_rep_order)
 
 
 def tasks_of(rows):
@@ -93,7 +105,7 @@ def rep_denominators(rows):
     for r in (rows or []):
         rep = r.get("rep", 0)
         out[rep] = out.get(rep, 0) + 1
-    return dict(sorted(out.items()))
+    return dict(sorted(out.items(), key=lambda kv: _rep_order(kv[0])))
 
 
 def ragged_reps(rows):
@@ -252,7 +264,8 @@ def merge_conflicts(sources, allow_drift=False):
                     f"/{(other.get('protocol') or {}).get(k)!r}" for k in drift)
                 out.append(f"{pair}: protocol drift on {detail}")
 
-            overlap = sorted(set(reps_of(head["rows"])) & set(reps_of(other["rows"])))
+            overlap = sorted(set(reps_of(head["rows"])) & set(reps_of(other["rows"])),
+                             key=_rep_order)
             if overlap:
                 out.append(f"{pair}: both hold rep(s) {overlap}; merging would "
                            f"average two protocols inside one repeat")
@@ -304,28 +317,59 @@ def unseeded_cells(cells):
     return out
 
 
+def _tasks_by_rep(rows):
+    """rep -> sorted task names recorded in that repeat."""
+    out = {}
+    for r in (rows or []):
+        if r.get("task"):
+            out.setdefault(r.get("rep", 0), set()).add(r.get("task"))
+    return {rep: sorted(ts) for rep, ts in out.items()}
+
+
 def contrast_conflicts(cells):
     """Reasons a model's configs cannot form a valid paired contrast.
 
     A delta pairs `full` against an ablation repeat by repeat. If the two arms
     scored different tasks, the per-repeat rates have different denominators
     and their difference is not a measurement of the flag.
+
+    Checked per cell AND per shared repeat. The cell-level check alone passed
+    a `full` repeat that scored {a, b} against an ablation repeat that scored
+    {a, b, c, d}: both cells hold all four tasks somewhere, and the delta for
+    that repeat compared two different samples. A repeat held by one arm only
+    is not a conflict here -- it never enters the pairing (`aligned_deltas`
+    pairs on the intersection) and `ragged_reps` reports it. A per-repeat
+    conflict is only reported when the cell-level sets agree, so one fault is
+    one message.
     """
     by_model = {}
     for (model, cfg), rows in cells.items():
-        by_model.setdefault(model, {})[cfg] = tasks_of(rows)
+        by_model.setdefault(model, {})[cfg] = rows
     out = []
     for model, cfgs in sorted(by_model.items(), key=lambda kv: str(kv[0])):
-        ref = cfgs.get("full")
-        if ref is None:
+        if "full" not in cfgs:
             continue
-        for cfg, ts in sorted(cfgs.items()):
-            if cfg == "full" or ts == ref:
+        ref = tasks_of(cfgs["full"])
+        ref_by_rep = _tasks_by_rep(cfgs["full"])
+        for cfg, rows in sorted(cfgs.items()):
+            if cfg == "full":
                 continue
-            diff = sorted(set(ref) ^ set(ts))
-            out.append(f"{model}: `full` and `{cfg}` scored different tasks "
-                       f"({', '.join(diff)}); their paired delta is not a "
-                       f"measurement of the flag")
+            ts = tasks_of(rows)
+            if ts != ref:
+                diff = sorted(set(ref) ^ set(ts))
+                out.append(f"{model}: `full` and `{cfg}` scored different tasks "
+                           f"({', '.join(diff)}); their paired delta is not a "
+                           f"measurement of the flag")
+                continue
+            by_rep = _tasks_by_rep(rows)
+            shared = sorted(set(ref_by_rep) & set(by_rep), key=_rep_order)
+            for rep in shared:
+                if ref_by_rep[rep] != by_rep[rep]:
+                    diff = sorted(set(ref_by_rep[rep]) ^ set(by_rep[rep]))
+                    out.append(f"{model}: `full` and `{cfg}` scored different "
+                               f"tasks in rep {rep} ({', '.join(diff)}); that "
+                               f"repeat's paired delta compares two different "
+                               f"samples")
     return out
 
 
@@ -371,7 +415,8 @@ def seed_conflicts(cells):
             key = (model, r.get("rep", 0))
             seen.setdefault(key, {}).setdefault(r["seed"], set()).add(cfg)
     out = []
-    for (model, rep), by_seed in sorted(seen.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+    for (model, rep), by_seed in sorted(
+            seen.items(), key=lambda kv: (str(kv[0][0]), _rep_order(kv[0][1]))):
         if len(by_seed) > 1:
             detail = "; ".join(
                 f"seed {s} in {', '.join(sorted(cfgs))}"
