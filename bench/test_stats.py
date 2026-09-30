@@ -487,6 +487,41 @@ probe("every Figure 4 point lies inside the plot area",
           r'<circle cx="[-\d.]+" cy="([-\d.]+)"', _render_deltas_under_hashseed(0))))
 
 
+def _render_all(report, source="r.json"):
+    """Every generated figure for `report`, as {filename: svg}."""
+    with _tf.TemporaryDirectory() as d:
+        figures.from_report(report, d, source=source)
+        return {f: open(os.path.join(d, f)).read() for f in sorted(os.listdir(d))}
+
+
+_PAPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper")
+for _name in ("stats-v2.json", "stats-all3.json"):
+    _real = json.load(open(os.path.join(_PAPER, _name)))
+    for _fig, _svg in _render_all(_real, _name).items():
+        # Figure 3's one-line subtitle ran ~90 units past a 1,092-unit canvas.
+        probe(f"{_fig} from {_name} fits its canvas with a margin",
+              lambda s=_svg: figures.overflow(s, pad=4) == [],
+              lambda s=_svg: figures.overflow(s, pad=4)[:3])
+
+WIDE = {"interaction": {"no-extraordinarily-long-flag": {
+    "delta_weak_minus_strong": -0.30, "lo": -0.55, "hi": 0.05}}, "cells": {}}
+probe("an interaction interval wider than 0.40 stays on its axis",
+      lambda: figures.overflow(_render_interaction(WIDE), pad=4) == []
+      and not re.search(r'<line x1="-', _render_interaction(WIDE)),
+      lambda: figures.overflow(_render_interaction(WIDE), pad=4))
+probe("the axis reaches the widest endpoint",
+      lambda: ">-60</text>" in _render_interaction(WIDE))
+probe("Ornith has one colour across the two-arm and three-arm figures",
+      lambda: figures._colour_for("hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+                                  ["qwen3.8:27b", "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0"])
+      == figures._colour_for("hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+                             ["qwen3.8:27b", "cerebras:gpt-oss-120b",
+                              "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0"]))
+probe("an unknown arm does not take a studied arm's colour",
+      lambda: figures._colour_for("llama:x", ["qwen3.8:27b", "llama:x"])
+      not in {c for _, c in figures.ARM_COLOURS})
+
+
 def _legend_ys(svg):
     """y of every legend swatch: the <rect> elements that are not the canvas."""
     return [float(m) for m in re.findall(r'<rect x="[-\d.]+" y="([\d.]+)" width="10"', svg)]

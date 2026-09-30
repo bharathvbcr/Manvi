@@ -15,17 +15,19 @@ caption is a claim about the figure; it is derived here, or it is not written.
 import json
 import math
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "paper", "figures")
 
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
-QWEN, ORNITH = "#2f6fed", "#c45c26"
-# A third arm needs a third colour. Everything not Qwen used to render in the
-# Ornith brown, so a three-arm chart drew two different models identically.
-THIRD = "#2e8b57"
-PALETTE = (QWEN, ORNITH, THIRD, "#7d3c98", "#b8860b")
+BLUE, ORANGE, GREEN = "#2f6fed", "#c45c26", "#2e8b57"
+PALETTE = (BLUE, ORANGE, GREEN, "#7d3c98", "#b8860b")
+# Each studied arm keeps one colour in every figure. Colour used to follow the
+# arm's position among those present, so Ornith was brown in the two-arm
+# graphical abstract and green in the three-arm Figures 3 and 4.
+ARM_COLOURS = (("qwen", BLUE), ("gpt-oss", ORANGE), ("ornith", GREEN))
 
 # Serving-provider prefixes, mirroring mh.runtime.API_PREFIXES. Kept as a
 # literal so figures.py stays importable without the harness package.
@@ -47,18 +49,21 @@ def _short(model):
 
 
 def _colour_for(model, order=()):
-    """Stable colour per arm.
+    """Stable colour per arm, the same in every figure.
 
-    `order` is the arms present in this figure; a model in it takes its
-    palette slot, so three arms get three colours. Falls back to the original
-    two-colour rule when the caller does not pass an ordering.
+    A studied arm takes its fixed colour from ARM_COLOURS. Any other model
+    takes a palette slot by its position in `order` (the arms in this figure),
+    skipping colours the studied arms hold, so distinct arms stay distinct.
     """
-    if order:
-        try:
-            return PALETTE[list(order).index(model) % len(PALETTE)]
-        except ValueError:
-            pass
-    return QWEN if "qwen" in model.lower() else ORNITH
+    low = model.lower()
+    for needle, colour in ARM_COLOURS:
+        if needle in low:
+            return colour
+    taken = {c for _, c in ARM_COLOURS}
+    spare = [c for c in PALETTE if c not in taken]
+    others = [m for m in order if not any(n in m.lower() for n, _ in ARM_COLOURS)]
+    i = others.index(model) if model in others else 0
+    return spare[i % len(spare)]
 
 
 def _arm_order(cells):
@@ -70,6 +75,48 @@ def _arm_order(cells):
     """
     return sorted({k.split("|", 1)[0] for k in cells},
                   key=lambda m: ("qwen" not in m.lower(), m))
+
+
+def _attrs(tag):
+    return dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+
+
+def overflow(svg, pad=4.0):
+    """Elements whose drawn extent leaves the viewBox, less `pad` on each side.
+
+    Text width is estimated from the glyph count at 0.56 em (0.60 em bold),
+    which over-reads Helvetica slightly: a false alarm costs a wider canvas,
+    a miss costs a clipped label. Rotated text is skipped; its extent is
+    governed by the axis it labels.
+    """
+    m = re.search(r'viewBox="([-\d.]+) ([-\d.]+) ([\d.]+) ([\d.]+)"', svg)
+    x0, y0, w, h = map(float, m.groups())
+    lo_x, hi_x, lo_y, hi_y = x0 + pad, x0 + w - pad, y0 + pad, y0 + h - pad
+    out = []
+    for tag in re.findall(r"<rect\b[^>]*>", svg):
+        a = _attrs(tag)
+        if "x" not in a:
+            continue  # the canvas background
+        x, y, rw, rh = (float(a[k]) for k in ("x", "y", "width", "height"))
+        if x < lo_x or y < lo_y or x + rw > hi_x or y + rh > hi_y:
+            out.append(("rect", x, y, x + rw, y + rh))
+    for tag in re.findall(r'<circle\b[^>]*>', svg):
+        a = _attrs(tag)
+        cx, cy, r = float(a["cx"]), float(a["cy"]), float(a.get("r", 0))
+        if cx - r < lo_x or cy - r < lo_y or cx + r > hi_x or cy + r > hi_y:
+            out.append(("circle", cx, cy, r))
+    for tag, body in re.findall(r"(<text\b[^>]*>)(.*?)</text>", svg, re.S):
+        a = _attrs(tag)
+        if "transform" in a:
+            continue
+        fs = float(a.get("font-size", 12))
+        glyphs = len(re.sub(r"&#?\w+;", "x", re.sub(r"<[^>]+>", "", body)))
+        tw = glyphs * fs * (0.60 if a.get("font-weight") in ("600", "700", "bold") else 0.56)
+        x, y = float(a["x"]), float(a["y"])
+        left = {"start": x, "middle": x - tw / 2, "end": x - tw}[a.get("text-anchor", "start")]
+        if left < lo_x or left + tw > hi_x or y - fs < lo_y or y + 0.25 * fs > hi_y:
+            out.append(("text", round(left), round(left + tw), y, body[:40]))
+    return out
 
 
 def _esc(s):
@@ -177,92 +224,118 @@ def _bar_y(pct, top=90, bottom=300, full=100.0):
     return bottom - (pct / full) * (bottom - top)
 
 
+def _wrap_sentences(text, limit):
+    """Break `text` into lines of at most `limit` characters, at sentence ends.
+
+    A sentence longer than `limit` gets its own line rather than being split,
+    so a phrase a reader (or a test) searches for is never broken in two.
+    """
+    lines, cur = [], ""
+    for s in re.findall(r"[^.]+(?:\.|$)", text):
+        s = s.strip()
+        if not s:
+            continue
+        if cur and len(cur) + 1 + len(s) > limit:
+            lines.append(cur)
+            cur = s
+        else:
+            cur = f"{cur} {s}".strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def pass_rates_svg(cells, path, subtitle=None, degenerate=()):
-    """cells: list of (model, config, mean, lo, hi). Grouped by model, coloured by model.
+    """cells: list of (model, config, mean, lo, hi). One panel per model.
 
     `subtitle` is the derived shape caption; `degenerate` names the (model,
     config) cells whose interval carries no width, which are drawn as an open
     marker rather than as a confident zero-length error bar.
+
+    The panels are stacked. A single row of twenty-seven bars printed at page
+    width set its labels near five points; per-model rows keep the arm's nine
+    cells side by side, which is the comparison the figure exists for, and
+    the separate panels say visually what the subtitle says in words: pass
+    rates are not compared across arms served under different protocols.
     """
     degenerate = set(degenerate)
     subtitle = subtitle or "Shape not available from this report."
-    # Width follows the cell count. It was fixed at 760 for the eighteen cells
-    # of a two-arm grid; a three-arm pool has twenty-seven and overran the
-    # canvas, and the rasteriser refused the truncated result rather than
-    # writing a chart with its first bars sliced off.
-    n_cells = max(len(cells), 1)
-    top, bot, axis_l = 90, 300, 80
-    span = max(640, int(36 * n_cells))
-    axis_r = axis_l + span
-    w, h = axis_r + 40, 380
-    mid = w // 2
+    arms = []
+    for model, *_ in cells:
+        if model not in arms:
+            arms.append(model)
+    per_arm = {m: [c for c in cells if c[0] == m] for m in arms}
+    n_max = max([len(v) for v in per_arm.values()] + [1])
+
+    w = 760
+    axis_l, axis_r = 64, w - 24
+    sub_lines = _wrap_sentences(subtitle, 110)
+    head = 54 + 15 * len(sub_lines)
+    plot_h, panel_h = 128, 222
+    n_deg = sum(1 for m, c, *_ in cells if f"{m}|{c}" in degenerate)
+    h = head + panel_h * max(len(arms), 1) + (22 if n_deg else 6)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
         f'viewBox="0 0 {w} {h}" {FONT}>',
         f'<rect width="{w}" height="{h}" fill="#fff"/>',
-        f'<text x="{mid}" y="26" text-anchor="middle" font-size="14" font-weight="600" '
+        f'<text x="{w // 2}" y="26" text-anchor="middle" font-size="14" font-weight="600" '
         f'fill="#111">Pass rate by (model, configuration), bootstrap 95% CI</text>',
-        f'<text x="{mid}" y="44" text-anchor="middle" font-size="11" fill="#555">'
-        f'{subtitle}</text>',
     ]
-    for t in (0, 25, 50, 75, 100):
-        yy = _bar_y(t, top, bot)
-        parts.append(f'<line x1="{axis_l}" y1="{yy:.1f}" x2="{axis_r}" y2="{yy:.1f}" stroke="#eee"/>')
-        parts.append(f'<text x="{axis_l-8}" y="{yy+4:.1f}" text-anchor="end" font-size="10" fill="#444">{t}</text>')
-    parts.append(f'<text x="30" y="{(top+bot)//2}" transform="rotate(-90 30 {(top+bot)//2})" font-size="11" fill="#333">pass rate (%)</text>')
-    parts.append(f'<line x1="{axis_l}" y1="{bot}" x2="{axis_r}" y2="{bot}" stroke="#222"/>')
-    parts.append(f'<line x1="{axis_l}" y1="{top}" x2="{axis_l}" y2="{bot}" stroke="#222"/>')
+    for i, line in enumerate(sub_lines):
+        parts.append(f'<text x="{w // 2}" y="{46 + 15 * i}" text-anchor="middle" '
+                     f'font-size="10.5" fill="#555">{line}</text>')
 
-    n = n_cells
-    gap = (span - 20) / n
-    arm_order = []
-    for _m, *_r in cells:
-        if _m not in arm_order:
-            arm_order.append(_m)
-    width = max(6.0, gap * 0.66)
-    prev_model = None
-    for i, (model, cfg, mean, lo, hi) in enumerate(cells):
-        x = axis_l + 12 + i * gap
-        cx = x + width / 2
-        if prev_model is not None and model != prev_model:
-            sep = x - gap * 0.18
-            parts.append(f'<line x1="{sep:.1f}" y1="{top}" x2="{sep:.1f}" y2="{bot+26}" stroke="#bbb" stroke-dasharray="2,3"/>')
-        prev_model = model
-        colour = _colour_for(model, arm_order)
-        y, ylo, yhi = _bar_y(100*mean, top, bot), _bar_y(100*lo, top, bot), _bar_y(100*hi, top, bot)
-        opacity = "1" if cfg in ("full", "baseline") else "0.55"
-        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{bot-y:.1f}" '
-                     f'fill="{colour}" fill-opacity="{opacity}"/>')
-        if f"{model}|{cfg}" in degenerate:
-            # No width to draw. A zero-length error bar reads as certainty;
-            # this reads as an estimator that ran out of signal.
-            parts.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="4.5" fill="#fff" '
-                         f'stroke="#111" stroke-width="1.4"/>')
-            parts.append(f'<text x="{cx:.1f}" y="{y-9:.1f}" text-anchor="middle" '
-                         f'font-size="9" fill="#111">{100*mean:.1f}*</text>')
-        else:
-            parts.append(f'<line x1="{cx:.1f}" y1="{ylo:.1f}" x2="{cx:.1f}" y2="{yhi:.1f}" stroke="#111" stroke-width="1.4"/>')
-            parts.append(f'<line x1="{cx-3:.1f}" y1="{ylo:.1f}" x2="{cx+3:.1f}" y2="{ylo:.1f}" stroke="#111" stroke-width="1.4"/>')
-            parts.append(f'<line x1="{cx-3:.1f}" y1="{yhi:.1f}" x2="{cx+3:.1f}" y2="{yhi:.1f}" stroke="#111" stroke-width="1.4"/>')
-            parts.append(f'<text x="{cx:.1f}" y="{yhi-5:.1f}" text-anchor="middle" font-size="9" fill="#111">{100*mean:.1f}</text>')
-        parts.append(f'<text x="{cx:.1f}" y="{bot+8:.1f}" text-anchor="end" font-size="9" fill="#333" '
-                     f'transform="rotate(-45 {cx:.1f} {bot+8:.1f})">{_esc(cfg)}</text>')
+    gap = (axis_r - axis_l - 12) / n_max
+    width = max(6.0, gap * 0.6)
+    for k, model in enumerate(arms):
+        colour = _colour_for(model, arms)
+        py = head + k * panel_h
+        top, bot = py + 44, py + 44 + plot_h
+        parts.append(f'<rect x="{axis_l}" y="{py + 8}" width="10" height="10" fill="{colour}"/>')
+        parts.append(f'<text x="{axis_l + 16}" y="{py + 17}" font-size="11.5" '
+                     f'font-weight="600" fill="#222">{_esc(_short(model))}</text>')
+        for t in (0, 25, 50, 75, 100):
+            yy = _bar_y(t, top, bot)
+            parts.append(f'<line x1="{axis_l}" y1="{yy:.1f}" x2="{axis_r}" y2="{yy:.1f}" stroke="#eee"/>')
+            if t % 50 == 0:
+                parts.append(f'<text x="{axis_l - 7}" y="{yy + 4:.1f}" text-anchor="end" '
+                             f'font-size="10" fill="#444">{t}</text>')
+        mid_y = (top + bot) // 2
+        parts.append(f'<text x="22" y="{mid_y}" transform="rotate(-90 22 {mid_y})" '
+                     f'text-anchor="middle" font-size="10" fill="#333">pass rate (%)</text>')
+        parts.append(f'<line x1="{axis_l}" y1="{bot}" x2="{axis_r}" y2="{bot}" stroke="#222"/>')
+        parts.append(f'<line x1="{axis_l}" y1="{top}" x2="{axis_l}" y2="{bot}" stroke="#222"/>')
+        for i, (_m, cfg, mean, lo, hi) in enumerate(per_arm[model]):
+            x = axis_l + 12 + i * gap
+            cx = x + width / 2
+            y, ylo, yhi = (_bar_y(100 * v, top, bot) for v in (mean, lo, hi))
+            opacity = "1" if cfg in ("full", "baseline") else "0.55"
+            parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{width:.1f}" height="{bot - y:.1f}" '
+                         f'fill="{colour}" fill-opacity="{opacity}"/>')
+            if f"{model}|{cfg}" in degenerate:
+                # No width to draw. A zero-length error bar reads as certainty;
+                # this reads as an estimator that ran out of signal.
+                parts.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="4.5" fill="#fff" '
+                             f'stroke="#111" stroke-width="1.4"/>')
+                parts.append(f'<text x="{cx:.1f}" y="{y - 9:.1f}" text-anchor="middle" '
+                             f'font-size="10" fill="#111">{100 * mean:.1f}*</text>')
+            else:
+                for yy in (ylo, yhi):
+                    parts.append(f'<line x1="{cx - 3.5:.1f}" y1="{yy:.1f}" x2="{cx + 3.5:.1f}" '
+                                 f'y2="{yy:.1f}" stroke="#111" stroke-width="1.4"/>')
+                parts.append(f'<line x1="{cx:.1f}" y1="{ylo:.1f}" x2="{cx:.1f}" y2="{yhi:.1f}" '
+                             f'stroke="#111" stroke-width="1.4"/>')
+                parts.append(f'<text x="{cx:.1f}" y="{yhi - 5:.1f}" text-anchor="middle" '
+                             f'font-size="10" fill="#111">{100 * mean:.1f}</text>')
+            parts.append(f'<text x="{cx:.1f}" y="{bot + 12:.1f}" text-anchor="end" font-size="10" '
+                         f'fill="#333" transform="rotate(-35 {cx:.1f} {bot + 12:.1f})">{_esc(cfg)}</text>')
 
-    seen = []
-    for model, *_ in cells:
-        if model not in seen:
-            seen.append(model)
-    stride = max(150, (span - 20) // max(len(seen), 1))
-    for j, model in enumerate(seen):
-        parts.append(f'<rect x="{axis_l+10+j*stride}" y="62" width="10" height="10" fill="{_colour_for(model, seen)}"/>')
-        parts.append(f'<text x="{axis_l+26+j*stride}" y="71" font-size="10" fill="#333">{_esc(_short(model))}</text>')
-    n_deg = sum(1 for m, c, *_ in cells if f"{m}|{c}" in degenerate)
     if n_deg:
         # Footer rather than legend: the note has to fit, and a cell with no
         # spread to resample is a caveat on the reading, not a series.
-        parts.append(f'<circle cx="{axis_l+4}" cy="{h-12}" r="4" fill="#fff" '
+        parts.append(f'<circle cx="{axis_l + 4}" cy="{h - 12}" r="4" fill="#fff" '
                      f'stroke="#111" stroke-width="1.4"/>')
-        parts.append(f'<text x="{axis_l+14}" y="{h-8}" font-size="9" fill="#555">'
+        parts.append(f'<text x="{axis_l + 14}" y="{h - 8}" font-size="9" fill="#555">'
                      f'* {n_deg} {_plural(n_deg, "cell")} with no observed '
                      f'variance across repeats: the bootstrap has no spread to '
                      f'resample, so no interval is drawn.</text>')
@@ -303,8 +376,8 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
     xs = [left + 70 + i * ((right - left - 110) / max(nrep - 1, 1)) for i in range(nrep)]
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="340" viewBox="0 0 720 340" {FONT}>',
-        '<rect width="720" height="340" fill="#fff"/>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="720" height="352" viewBox="0 0 720 352" {FONT}>',
+        '<rect width="720" height="352" fill="#fff"/>',
         f'<text x="360" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">'
         f'Paired &#916; = full &#8722; {_esc(ablation)}, by repeat</text>',
         f'<text x="360" y="42" text-anchor="middle" font-size="11" fill="#555">'
@@ -333,7 +406,7 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
     parts.append('<g font-size="10" fill="#333">')
     for i in range(nrep):
         parts.append(f'<text x="{xs[i]:.1f}" y="318" text-anchor="middle">{i}</text>')
-    parts.append(f'<text x="{(left+right)/2:.0f}" y="334" text-anchor="middle" fill="#555">repeat (pinned seed)</text>')
+    parts.append(f'<text x="{(left+right)/2:.0f}" y="338" text-anchor="middle" fill="#555">repeat (pinned seed)</text>')
     parts.append("</g>")
     # Legend sits in the clear band between the subtitle and the plot top, laid
     # out horizontally and centred. It used to be pinned inside the plot at
@@ -365,11 +438,19 @@ def interaction_svg(report, path, section="interaction", source=None):
     if not inter:
         return
     rows = sorted(inter.items(), key=lambda kv: -kv[1]["delta_weak_minus_strong"])
-    left, right, top = 160, 590, 70
-    rowh = 26
+    # Label columns are sized to their text and the axis to the widest interval.
+    # Both were fixed (160 px, +/-0.40): a longer ablation name ran off the left
+    # edge, and an interval past 0.40 would have been drawn off the axis.
     w = 800
+    label_w = max(len(name) for name in inter) * 11 * 0.56
+    num_w = max(len(f"{100*v['delta_weak_minus_strong']:+.1f} [{100*v['lo']:+.1f}, {100*v['hi']:+.1f}]")
+                for v in inter.values()) * 9 * 0.56
+    left, right, top = int(24 + label_w + 12), int(w - 24 - num_w - 10), 70
+    rowh = 26
     h = top + rowh * len(rows) + 76
-    lim = 0.40
+    widest = max([abs(v[k]) for v in inter.values() for k in ("lo", "hi")] + [0.1])
+    tick = 0.1 if widest <= 0.3 else 0.2
+    lim = tick * math.ceil(widest / tick - 1e-9)
     zero = (left + right) / 2
     def x(v):
         return zero + (v / lim) * ((right - left) / 2)
@@ -396,7 +477,8 @@ def interaction_svg(report, path, section="interaction", source=None):
                      f'{100*mid:+.1f} [{100*lo:+.1f}, {100*hi:+.1f}]</text>')
     ybase = top + rowh * len(rows) + 6
     parts.append(f'<line x1="{left}" y1="{ybase}" x2="{right}" y2="{ybase}" stroke="#222"/>')
-    for t in (-0.4, -0.2, 0.0, 0.2, 0.4):
+    n_t = int(round(lim / tick))
+    for t in [k * tick for k in range(-n_t, n_t + 1)]:
         parts.append(f'<text x="{x(t):.1f}" y="{ybase+16}" text-anchor="middle" font-size="10" fill="#444">'
                      f'{100*t:+.0f}</text>')
     parts.append(f'<text x="{zero}" y="{ybase+34}" text-anchor="middle" font-size="10" fill="#555">'
@@ -429,7 +511,7 @@ def graphical_abstract_svg(report, path, source=None):
     if not arms:
         return
 
-    W, H = 900, 250 + 96 * len(arms)
+    W, H = 900, 266 + 96 * len(arms)
     FLAGS = ["envboot", "nativetools", "outcap", "checklist",
              "verifygate", "loopbreak", "groundfs"]
     parts = [
@@ -444,7 +526,7 @@ def graphical_abstract_svg(report, path, source=None):
              ("Switchable harness", "7 independent flags"),
              ("Hidden verifier", "outside the sandbox"),
              ("Pass / fail", "unrun never passes")]
-    bw, gap, by, bh = 190, 26, 58, 104
+    bw, gap, by, bh = 190, 26, 58, 120
     bx0 = (W - (len(boxes) * bw + (len(boxes) - 1) * gap)) // 2
     for i, (head, sub) in enumerate(boxes):
         x = bx0 + i * (bw + gap)
@@ -458,7 +540,7 @@ def graphical_abstract_svg(report, path, source=None):
             for j, fl in enumerate(FLAGS):
                 fx = x + 14 + (j % 2) * 88
                 fy = by + 62 + (j // 2) * 13
-                parts.append(f'<circle cx="{fx}" cy="{fy-3}" r="3" fill="{QWEN}"/>')
+                parts.append(f'<circle cx="{fx}" cy="{fy-3}" r="3" fill="#8a97a8"/>')
                 parts.append(f'<text x="{fx+7}" y="{fy}" font-size="8.5" '
                              f'fill="#444">{_esc(fl)}</text>')
         if i < len(boxes) - 1:

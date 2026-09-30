@@ -10,7 +10,9 @@ import io, os, re, subprocess, sys, tempfile
 from PIL import Image, ImageChops
 
 SIZE = 2400          # first thumbnail attempt; reduced on clipping
-MARGIN = 8           # px of white kept around the content
+# px of white kept around the content. At 8 (about 3 SVG units at this scale)
+# every boxed figure printed with its border on the image edge and read as clipped.
+MARGIN = 32
 MIN_SIZE = 700       # below this we would rather fail than ship a blurry figure
 
 
