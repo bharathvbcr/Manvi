@@ -54,9 +54,23 @@ those buckets pass at ~100% and ~67% respectively, which accounts for the whole
 delta. It buys nothing because `verifygate` already prevents the failure it
 targets.
 
-**Figures.** Regenerated from the v2 reports in 5d9293a. Figures 3–4 and the graphical
-abstract carry their source stamp (`stats-all3.json` / `stats-v2.json`). The interaction
-figures (5–6) do not, because `figures.py`'s `interaction_svg` takes no `source` argument.
+**Figures.** Figures 3–6 are rendered from `stats-all3.json` and the graphical abstract
+from `stats-v2.json` (see `build_pdf.sh`). Every generated figure carries its source stamp.
+Two fixes in revision 4:
+- Arm order no longer depends on the hash seed. Before, Figure 4 could colour an arm
+  differently from Figure 3.
+- Figure 4's axis grows to fit the data. A `gpt-oss-120b` seed at Δ +0.875 used to be
+  drawn off the canvas.
+
+## Revision 4 (submission preparation)
+
+The manuscript's revision-history preamble and §8 ("Corrections to the previous draft") are
+removed, because a submitted paper is read by people who never saw revisions 1–3. Their
+substance lives in this README and in §5.9, which now describes v1 as "an earlier grid on a
+previous version of the instrument". The one unique item, the cross-arm protocol-check
+defect, moved into §5.7. The abstract is one paragraph. Appendix B no longer names the
+literature-search tool. Venue and route: [`SUBMISSION.md`](SUBMISSION.md), Route A (TMLR
+plus arXiv).
 
 **Submission.** See [`SUBMISSION.md`](SUBMISSION.md) for what's left, venues and deadlines.
 The workshop paper in `workshop/` is still built on the superseded v1 grid.

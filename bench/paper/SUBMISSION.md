@@ -12,6 +12,22 @@ There are two manuscripts. They are not at the same stage.
 | Data | Registered v2 grid (`stats-v2.json`) + third arm (`stats-ext-cerebras.json`) | **Superseded v1 grid** (`stats-hard.json`) |
 | State | Results are final. The framing is written for the repository, not for a venue. | **Its thesis has been overturned.** It needs a rewrite, not formatting. |
 
+## Status (Route A chosen, 29 Sep 2026)
+
+Done in revision 4:
+- §1.3 front matter
+- §1.5 figure provenance, plus two Figure 4 defects found along the way:
+  - arm colours depended on the hash seed
+  - one seed was drawn off the canvas
+- §1.6
+
+Still open:
+- §1.4 reference [5]
+- the TMLR style port and anonymised build (§4, Route A steps 4–6)
+- OpenReview profile and arXiv endorsement (§2)
+- the length question: the manuscript is about 18,500 words, and TMLR warns that unusually
+  long papers delay review
+
 ## 1. What's left
 
 ### Blocking

@@ -152,7 +152,7 @@
 \title{Harness Architecture as an Experimental Object: Measuring
 Switchable Components on Local Coding Agents}
 \author{BHARATH CHANDRA VADDARAM}
-\date{29 August 2026}
+\date{29 September 2026}
 
 \begin{document}
 \maketitle
@@ -162,36 +162,6 @@ Switchable Components on Local Coding Agents}
 \setcounter{tocdepth}{2}
 \tableofcontents
 }
-\textbf{Draft --- 29 August 2026 (revision 3).} This manuscript reports
-a local, stdlib-only coding harness and a \textbf{preregistered
-1,440-episode grid} (two models \(\times\) nine configurations
-\(\times\) eight tasks, twenty seeds on the confirmatory contrasts and
-five on the exploratory ladder) on two locally served models under one
-frozen protocol (\texttt{max\_steps=0} from turn one, 1800 s episode
-wall, sole tenant, tag \texttt{v2}). A separately registered extension
-adds a third arm, API-served \texttt{gpt-oss-120b}, at 1,440 further
-episodes.
-
-\textbf{Revision 3 replaces the headline.} Revision 2 reported a
-720-episode grid under tag \texttt{hard}. A subsequent audit of that
-instrument found five defects, two of which bear directly on the
-full-versus-baseline contrast: the verify gate returned hidden-test
-output, including expected values, on a failed \texttt{finish} --- 77 of
-760 episodes received it, and \textbf{only in gate-on configurations}
---- and \texttt{run\_shell} had no containment, leaving hidden tests
-readable and writable. Five of the hard tasks also accepted demonstrably
-wrong solutions. All are fixed. Because the tasks are now stricter and
-the gate no longer leaks, \textbf{v1 pass rates are not comparable with
-v2 and the two are never pooled.} An audit of all 760 v1 episodes and
-3,879 file-writing tool calls found \textbf{zero} episodes that
-exploited any defect; v1's numbers are not fabricated, they are measured
-on an instrument that could not rule the exploits out. v1 is retained in
-§5.9 as the instrument-failure record, not as a measurement. The design,
-hypotheses, directions, and analysis for v2 were registered before the
-first v2 episode (\texttt{paper/preregistration.md}); every departure is
-recorded in \texttt{paper/DEVIATIONS.md} with what had been observed
-when it was decided.
-
 \pandocbounded{\includegraphics[keepaspectratio]{figures/graphical_abstract.generated.png}}
 
 \textbf{Figure 1.} Graphical abstract. The object of measurement is the
@@ -200,93 +170,36 @@ components, a sandbox the agent can write, and a verifier the agent
 cannot. On the eight-task hard suite under the registered v2 protocol,
 Qwen 3.8 27B goes from 79.4\% (baseline) to 95.0\% (full) and Ornith-1.5
 35B-A3B from 40.0\% to 60.6\%. Both deltas exclude zero at the
-Šidák-corrected 98.7\% level. The 720-episode v1 grid that revision 2
-reported is superseded and appears only as §5.9's instrument-failure
-record. This figure is generated from \texttt{stats-v2.json} like every
-other data figure; the hand-drawn version it replaces still carried
-protocol-1's 97.5\%-versus-75\% and \(\Delta +22.5\), which revision 2
-had already archived as not-the-headline.
+Šidák-corrected 98.7\% level. Generated from \texttt{stats-v2.json}.
 
 \subsection{Abstract}\label{abstract}
 
-The pass rate of a coding agent is not a property of the model alone. It
-is a joint property of the model and the harness: the code that builds
-context, exposes tools, truncates output, and decides when the work is
-done. Lee et al.~showed that this joint property is large enough to
-matter on Terminal-Bench 2.0, where Claude Haiku 4.5 spanned 13.9\% to
-37.6\% across published harnesses and Claude Opus 4.6 spanned 58.0\% to
-81.8\% {[}1{]}, {[}2{]}. That result was measured on frontier APIs. It
-does not say which components of a harness pay, on which models, or
-whether the same structure helps a 27B model served from a single GPU.
-We treat the harness as an experimental object rather than a fixed
-wrapper. Seven components---environment bootstrap, native file tools,
-output capping, a pre-finish checklist, a hidden verify gate, loop
-breaking, and filesystem grounding---are independently switchable. The
-agent works inside a path-resolved sandbox. Hidden tests live outside
-it, protected files are SHA-256 checked, and a check that did not run
-never reports the same result as a check that ran and passed.
-
-We report a \textbf{preregistered} grid of nine harness configurations
-(full, all-off baseline, and each flag off in isolation) on eight
-hidden-test coding tasks and two locally served models on one NVIDIA
-GH200: Qwen 3.8 27B and Ornith-1.5 35B-A3B (Q8). Hypothesis directions,
-the analysis, and the multiplicity correction were fixed before the
-first episode. That is 1,440 episodes, all completed, with zero starved
-rows, zero unserved rows, and one protocol block across all eighteen
-cells. \textbf{The full harness beats the all-off baseline on both
-models at the corrected level.} Qwen goes from 79.4\% (bootstrap 95\% CI
-73.8--85.0) to 95.0\% (90.0--98.8), a paired \(\Delta\) of \(+0.156\)
-whose Šidák-corrected 98.7\% interval is \([+0.069, +0.244]\); Ornith
-goes from 40.0\% (33.8--46.2) to 60.6\% (53.8--66.9),
-\(\Delta = +0.206\), 98.7\% interval \([+0.113, +0.300]\). Both are
-supported. The second confirmatory hypothesis is \textbf{not} supported:
-removing the output cap leaves Ornith at \(\Delta = +0.075\) with a
-98.7\% interval of \([-0.006, +0.156]\), which clears the uncorrected
-95\% bar and fails the corrected one. That result matters because the
-superseded v1 grid had reported the opposite sign for the same cell ---
-\(\Delta = -0.100\), interval \([-0.175, -0.025]\), excluding zero ---
-and that reversal is the clearest single piece of evidence that v1's
-anomaly was an instrument artefact rather than a harness effect.
-
-The exploratory one-flag ladder \textbf{on the local arms} is reported
-as uninformative rather than as a set of findings, and the reason is
-measured rather than asserted. A deviation from the registered design
-moved seeds out of the six exploratory cells and into the confirmatory
-contrasts, leaving those cells at \(n=5\); at that cell shape a
-Monte-Carlo audit puts the percentile bootstrap's actual coverage at
-\textbf{82.3\% against a nominal 95\%}, and across the grid's sixteen
-ladder intervals four exclude zero where a global null produces at least
-one \textbf{96\%} of the time at that coverage. Four exclusions is what
-noise looks like here. Only one local ladder result is large enough to
-survive the deficiency: turning the verify gate off costs Qwen
-\(\Delta = +0.225\), interval \([+0.150, +0.300]\). \textbf{The
-component-level evidence in this paper therefore rests on the third
-arm}, which ran twenty repeats on all nine cells: there four of eight
-intervals exclude zero against a null expectation of 0.47 at 94.1\%
-coverage, and two components --- native file tools and the verify gate
---- survive a Šidák correction across that arm's entire ladder. The
-capability-by-harness interaction is again not detected --- every
-\(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) interval includes
-zero under both the unpaired and the seed-paired scheme, as it did in
-v1.
-
-A separately registered extension adds a third arm, API-served
-\texttt{gpt-oss-120b}, at a further 1,440 episodes under a different
-serving protocol whose pass rates are therefore not comparable to the
-local arms', though its within-arm deltas are. It reproduces H1 in
-direction and magnitude (\(\Delta = +0.150\)) and supplies the study's
-most interesting disagreement: removing native file tools costs that arm
-\(+0.144\), the largest single-component effect anywhere in this work
-and one that survives a correction across all eight of its ladder tests,
-while costing Qwen \(+0.025\) and Ornith \(+0.050\). The component that
-matters most on one model is close to free on the other two. A 43.8-hour
-telemetry log shows the serial batch-1 loop drawing a median 302 W
-against the GH200's 900 W cap while \texttt{utilization.gpu} reads 89\%,
-which is why we report steps and tokens rather than seconds; on the v2
-grid roughly 28\% of wall-clock is sandboxed tool execution with the
-device idle. The architecture makes these distinctions measurable. What
-survives is H1 on both arms, H2 unsupported, an interaction null, and a
-ladder whose honest reading is ``not detectable at this \(n\).''
+A coding agent's pass rate is a joint property of the model and its
+harness: the code that builds context, exposes tools, truncates output,
+and decides when the work is done. Prior work shows that harness choice
+moves frontier-model scores by tens of points, but not which components
+pay, or on which models. We build a local, standard-library coding
+harness with seven independently switchable components and a grader the
+agent cannot reach. We run a preregistered grid of nine configurations
+and eight hidden-test tasks on two locally served models (1,440
+episodes), plus a separately registered API-served arm (1,440 more). The
+full harness beats an all-off baseline on both local models at a
+Šidák-corrected level: Qwen 3.8 27B rises from 79.4\% to 95.0\%
+(\(\Delta = +0.156\), 98.7\% CI \([+0.069, +0.244]\)) and Ornith-1.5
+35B-A3B from 40.0\% to 60.6\% (\(\Delta = +0.206\),
+\([+0.113, +0.300]\)). The third arm reproduces the effect (\(+0.150\)).
+Component-level effects do not transfer across models. Removing native
+file tools costs the third arm 14.4 points, which survives correction
+across its ladder, but costs the local models only 2.5 and 5.0. The
+capability-by-harness interaction is not detected. We also report what
+the measurement is worth. A deviation from the registered design left
+the local one-flag ladder at \(n=5\), where measured bootstrap coverage
+is 82.3\%, so we report that ladder as uninformative. And an earlier
+grid, run on a previous version of the instrument whose verify gate
+leaked hidden-test values in gate-on cells only, produced an
+interval-excluding-zero effect that reversed sign once the instrument
+was fixed, even though an audit of all 760 of its episodes found no
+exploitation.
 
 \subsection{1. Introduction}\label{introduction}
 
@@ -383,12 +296,12 @@ and nine configurations (1,440 episodes), with a per-task matrix, a
 stop-reason table, a one-flag-off ladder, an explicit interaction table,
 and a measured statement of what the ladder's intervals are actually
 worth. Fourth, we report an instrument-failure record: five defects
-found by audit in the grid this paper previously headlined, the evidence
-that no episode exploited them, and the one case where the corrected
-instrument reverses the sign of a published effect. Fifth, we report the
-compute envelope the grid occupied, from 78,027 device samples, as an
-argument that the conventional utilization number is not the cost that
-matters for a serial agent loop.
+found by audit in an earlier grid we ran on a previous version of the
+instrument, the evidence that no episode exploited them, and the one
+case where the corrected instrument reverses the sign of a published
+effect. Fifth, we report the compute envelope the grid occupied, from
+78,027 device samples, as an argument that the conventional utilization
+number is not the cost that matters for a serial agent loop.
 
 The result the registered grid supports is no longer modest. The full
 harness beats the all-off baseline on both models, and both intervals
@@ -407,14 +320,15 @@ mean.
 Two negative results are worth stating as results rather than as
 absences. The first is that three of the seven components ---
 environment bootstrap, filesystem grounding, and loop breaking --- are
-not measurably distinguishable from doing nothing on any of the three
-arms, and on the one arm with enough seeds to say so precisely the
-intervals are tight around zero. The second is that our own exploratory
-ladder cannot support the claims a reader would want from it: a
-registered-design deviation left those cells at \(n=5\), where the
-percentile bootstrap's measured coverage is 82.3\% rather than 95\%, and
-four intervals excluding zero out of sixteen is the expected yield of
-pure noise. We report the number rather than the finding.
+not distinguishable from zero on any of the three arms. On the one arm
+with enough seeds to bound them, none is worth more than roughly nine
+points on this suite. That is an upper bound, not evidence that they do
+nothing (§6). The second is that our own exploratory ladder cannot
+support the claims a reader would want from it: a registered-design
+deviation left those cells at \(n=5\), where the percentile bootstrap's
+measured coverage is 82.3\% rather than 95\%, and four intervals
+excluding zero out of sixteen is the expected yield of pure noise. We
+report the number rather than the finding.
 
 The rest of the paper is organized as follows. Section 2 situates the
 work against Meta-Harness and against the inner loops that table spans.
@@ -425,10 +339,9 @@ statistics, the registered design, and the deviations from it. Section 5
 reports v2 pass rates, per-task outcomes, stop reasons, the confirmatory
 tests, the exploratory ladder and what its intervals are worth, the
 interaction nulls, cost proxies, and the v1 instrument-failure record.
-Section 6 interprets them. Section 7 states limitations. Section 8
-records the corrections this revision makes. Appendix A records serving
-flags and both protocols; Appendix B records the verification status of
-every citation.
+Section 6 interprets them. Section 7 states limitations and Section 8
+concludes. Appendix A records serving flags and both protocols; Appendix
+B records the verification status of every citation.
 
 \subsection{2. Related work}\label{related-work}
 
@@ -1010,8 +923,8 @@ commit that produced the grid:
   escapes via \texttt{..}, absolute paths and symlinks; malformed and
   unknown tool calls; JSON-string arguments; multi-call turns; duplicate
   \texttt{finish}; loop-break windows; cap boundaries. The count grew
-  from revision 2's 106 with the containment and account-refusal work
-  that the v2 instrument required.
+  from 106 on the previous instrument with the containment and
+  account-refusal work that the v2 instrument required.
 \item
   \texttt{test\_stats.py} --- \textbf{166 assertions passed.} Bootstrap
   intervals, paired \(\Delta\), the interaction statistic, seed pinning,
@@ -1249,11 +1162,11 @@ with \texttt{max\_steps=40} before the ceiling was set to zero; a cell
 whose recorded maximum is exactly the old ceiling is a cell still
 carrying it, and Qwen's protocol-1 baseline has a maximum of exactly 40
 steps. \textbf{The v1 \texttt{hard} grid} was 720 episodes under the
-frozen protocol and was revision 2's headline. It is superseded for the
-reasons in the revision-3 note above and analysed in §5.9 as an
-instrument-failure record. Neither is pooled with v2;
-\texttt{compare.py\ -\/-tag\ hard} matches every directory ending in
-that tag, which is why v2 carries its own tag.
+frozen protocol on the previous instrument. It is superseded for the
+reasons given in §5.9 and analysed there as an instrument-failure
+record. Neither is pooled with v2; \texttt{compare.py\ -\/-tag\ hard}
+matches every directory ending in that tag, which is why v2 carries its
+own tag.
 
 \subsubsection{4.7 The registered v2 grid}\label{the-registered-v2-grid}
 
@@ -1549,13 +1462,15 @@ H2 & Qwen & \texttt{full\ −\ no-outcap} & +0.025 & {[}\(-0.031\),
 \pandocbounded{\includegraphics[keepaspectratio]{figures/repeat_deltas.generated.png}}
 
 \textbf{Figure 4.} Paired \(\Delta\) (\texttt{full} \(-\)
-\texttt{baseline}) at each of the twenty pinned seeds, both arms. Every
-point is one repeat's difference of eight-task pass rates. The spread is
-the quantity the bootstrap resamples; it is what an interval on a single
-run cannot show.
+\texttt{baseline}) at each of the twenty pinned seeds, all three arms.
+Each arm's deltas are within-arm and seed-paired, so they are comparable
+even though the third arm's pass rates are not. The widest single seed
+is \texttt{gpt-oss-120b} at \(+0.875\). Every point is one repeat's
+difference of eight-task pass rates. The spread is the quantity the
+bootstrap resamples; it is what an interval on a single run cannot show.
 
 \textbf{H1 is supported on both arms.} This is the result the grid was
-built to obtain, and it is the claim revision 2 could not make: v1's
+built to obtain, and it is the claim the v1 grid could not support: v1's
 Qwen contrast was \(+5.0\) points with an interval touching zero, on an
 instrument whose verify gate leaked hidden-test values into gate-on
 cells only.
@@ -1739,13 +1654,15 @@ adds API-served \texttt{gpt-oss-120b} at 1,440 episodes under tag
 on \texttt{num\_ctx} (65536), \texttt{num\_predict} (16384),
 \texttt{reasoning\_effort} and \texttt{concurrency}, so \textbf{its pass
 rates are not comparable to Table 3}. \texttt{compare.py} prints the
-differing keys and says so --- though only after a defect found while
-preparing this revision, recorded in §8: the check had compared just the
-two \emph{interaction} arms, the lowest and highest full-harness mean,
-and this arm ranks between them, so pooling all three printed
-twenty-seven pass rates with no caveat at all. Its within-arm deltas are
-comparable, because each is seed-paired inside one arm under one
-protocol.
+differing keys and says so --- though only after we fixed a defect in
+our own analysis tool: the check had compared just the two
+\emph{interaction} arms, the lowest and highest full-harness mean, and
+this arm ranks between them, so pooling all three printed twenty-seven
+pass rates with no caveat at all. A check that cannot see the case it
+exists to flag reports the same result as a check that ran and passed
+--- the invariant of §3.2, violated by our own tooling. It now compares
+every pair of arms in the pool. Its within-arm deltas are comparable,
+because each is seed-paired inside one arm under one protocol.
 
 This arm ran \textbf{twenty repeats on all nine cells}, which the local
 arms did not (§4.4, deviation D2). That makes it the only ladder in the
@@ -1962,8 +1879,9 @@ around a single \texttt{full} configuration cannot see (§7, item 9).
 \subsubsection{5.9 The v1 grid as an instrument-failure
 record}\label{the-v1-grid-as-an-instrument-failure-record}
 
-Revision 2 headlined a 720-episode grid under tag \texttt{hard}. An
-audit of that instrument found five defects:
+Before the registered grid we ran a 720-episode grid under tag
+\texttt{hard} on a previous version of the instrument. An audit of that
+instrument found five defects:
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -1993,7 +1911,7 @@ five hard tasks did not enforce their stated contracts &
 \texttt{concurrency\_race}, \texttt{nfa\_match}, \texttt{globmatch} each
 accepted a demonstrably wrong solution \\
 \texttt{summary.json} was rebuilt from one invocation's task subset &
-root cause of the revision-2 correction \\
+miscounted one \texttt{navigate} tag in an earlier analysis (§5.11) \\
 \end{longtable}
 }
 
@@ -2206,8 +2124,8 @@ the loop regardless of what the model claimed.
 \subsection{6. Discussion}\label{discussion}
 
 \textbf{What the registered grid supports.} H1 holds on both arms at the
-corrected level, and that is a stronger, cleaner claim than anything
-revision 2 could make. Qwen goes 79.4\% \(\to\) 95.0\% and Ornith 40.0\%
+corrected level, and that is a stronger, cleaner claim than anything the
+v1 grid could support. Qwen goes 79.4\% \(\to\) 95.0\% and Ornith 40.0\%
 \(\to\) 60.6\%, with 98.7\% intervals of \([+0.069, +0.244]\) and
 \([+0.113, +0.300]\). The bundle of six components pays, on two models,
 on an instrument whose gate does not leak and whose tasks enforce their
@@ -2411,94 +2329,7 @@ capability-by-harness interaction remains undetectable.
   answer from the same data.
 \end{enumerate}
 
-\subsection{8. Corrections to the previous
-draft}\label{corrections-to-the-previous-draft}
-
-Revision 3 does not correct revision 2's arithmetic. It \textbf{retires
-revision 2's evidentiary base.} Every headline number in that draft came
-from the 720-episode \texttt{hard} grid, and an audit of that instrument
-found the five defects tabulated in §5.9. The numbers were re-derived
-correctly from the data they had; the data was collected on an
-instrument that could not rule out the exploits it was supposed to. The
-correct response is not a corrected table but a new experiment, which is
-what the registered v2 grid is.
-
-{\def\LTcaptype{none} % do not increment counter
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
-  >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}@{}}
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Location
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Revision 2
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Revision 3
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Cause
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-Headline contrast (Qwen) & 90.0\% \(\to\) 95.0\%, \(\Delta +5.0\) pp, CI
-{[}0.0, +10.0{]} & 79.4\% \(\to\) 95.0\%, \(\Delta +0.156\), 98.7\% CI
-{[}+0.069, +0.244{]}, \textbf{supported} & New instrument and new
-registered grid; v1 gate leaked hidden-test values into gate-on cells
-only, and five tasks accepted wrong solutions. \\
-Headline contrast (Ornith) & 57.5\% \(\to\) 65.0\%, \(\Delta +7.5\), CI
-{[}\(-5.0\), +20.0{]} & 40.0\% \(\to\) 60.6\%, \(\Delta +0.206\), 98.7\%
-CI {[}+0.113, +0.300{]}, \textbf{supported} & Same. \\
-Ornith \texttt{no-outcap} & \(\Delta -10.0\), CI {[}\(-17.5\),
-\(-2.5\){]} --- ``a component can cost the weaker model'' &
-\(\Delta +0.075\), 98.7\% CI {[}\(-0.006\), +0.156{]} --- \textbf{sign
-reversed, not supported} & The only interval in revision 2 that excluded
-zero. It did not survive the instrument fix. This is §5.9's central
-example. \\
-``Neither model's best configuration is \texttt{full}'' & asserted from
-point estimates at \(n=5\) & withdrawn & At \(n=5\) with 82.3\% measured
-coverage, ordering cells by point estimate is not supported. Qwen's
-\texttt{no-checklist} and \texttt{no-nativetools} still sit above
-\texttt{full} numerically; the intervals do not distinguish them. \\
-Degenerate interval & Qwen \texttt{no-loopbreak} 100\%, zero-width
-interval & none & No v2 cell produced a degenerate interval. \\
-Multiplicity & not corrected; family-wise number not reported & Šidák
-across a registered four-test confirmatory family (98.7\%); family-wise
-number reported for the exploratory ladder & Registered in §5 of the
-preregistration. \\
-Interval calibration & described qualitatively as ``not asymptotic'' &
-measured: 94.1\% at \(n=20\), \textbf{82.3\%} at \(n=5\), 5,000 trials &
-New. It changes how Table 7 must be read. \\
-Interaction & eight nulls at \(n=5\) & eight nulls, both pairing schemes
-reported & Unchanged in conclusion; the paired-versus-unpaired
-discrepancy is now shown rather than chosen silently. \\
-Cross-arm protocol check & fired on the two interaction arms only &
-fires on every pair of arms in the pool & \textbf{Instrument defect
-found in revision 3.} \texttt{compare.py} compared the protocol of the
-weakest and strongest arm. With three arms and the divergent one ranked
-between them, it compared the two matching local arms, found nothing,
-and printed no caveat beneath a pass-rate table spanning all three. A
-check that cannot see the case it exists to flag reports the same result
-as a check that ran and passed --- the invariant of §3.2, violated by
-our own analysis tool. Fixed (\texttt{arms\_drift}), tested, and the
-figure now carries the caveat too. \\
-Table 8 \(\to\) Table 9, Table 9 \(\to\) Table 10 & --- & renumbered &
-§5 gained subsections. The device envelope and the \texttt{navigate}
-gate case are retained; both are properties of the serving stack or of a
-pre-fix mechanism demonstration, and neither depends on the v1 grid's
-pass rates. \\
-\end{longtable}
-}
-
-Revision 2's own corrections to revision 1 --- the \texttt{navigate}
-census, the median midpoints, the hand-drawn Figure 4 --- stand as
-recorded there and are not restated. The \texttt{navigate} contrast in
-§5.11 is unchanged and still does not reach \(\alpha = 0.05\) on its
-matched-tag reading.
-
-\subsection{9. Conclusion}\label{conclusion}
+\subsection{8. Conclusion}\label{conclusion}
 
 We described a coding harness small enough to run around a local 27B
 model and factored enough that its components can be switched
@@ -2543,15 +2374,14 @@ alongside an interval.
 The contribution we are most confident in is not an effect size. It is
 the pairing of two things this literature usually separates: an
 instrument whose grader the agent cannot reach, and a published record
-of that instrument being wrong. The 720-episode grid this paper
-previously headlined was collected on a harness whose verify gate leaked
-hidden-test values into gate-on cells only, and whose tasks accepted
-wrong solutions. No episode exploited it --- we audited all 760 and
-3,879 file-writing tool calls to say so --- and one published,
-interval-excluding-zero effect still did not survive the fix. An audit
-that finds no cheating is not the same as an instrument that makes
-cheating impossible, and the difference is worth a section rather than a
-footnote.
+of that instrument being wrong. The 720-episode grid we ran first was
+collected on a harness whose verify gate leaked hidden-test values into
+gate-on cells only, and whose tasks accepted wrong solutions. No episode
+exploited it --- we audited all 760 and 3,879 file-writing tool calls to
+say so --- and one published, interval-excluding-zero effect still did
+not survive the fix. An audit that finds no cheating is not the same as
+an instrument that makes cheating impossible, and the difference is
+worth a section rather than a footnote.
 
 \subsection{Data and code}\label{data-and-code}
 
@@ -2627,12 +2457,13 @@ Reproduction:
 
 Figures 3--6 are written by \texttt{figures.py} and are pure functions
 of the stats JSON passed to them; regenerating them after a re-run is
-the only supported way to update them. They are rendered from
-\texttt{stats-v2.json} and carry the source filename in the SVG. Figure
-6, the seed-paired interaction, is new in this revision: v1's report had
-no \texttt{interaction\_paired} block for \texttt{figures.py} to render.
-Figures 1 and 2 (graphical abstract, control-flow diagram) are drawn by
-hand and carry no data values. The superseded
+the only supported way to update them. Figures 3--6 are rendered from
+\texttt{stats-all3.json}, whose interaction blocks are identical to
+\texttt{stats-v2.json}'s because the interaction arms are the same two
+local models. The graphical abstract is rendered from
+\texttt{stats-v2.json}. Each generated figure carries its source
+filename in the SVG. Figures 1 and 2 (graphical abstract, control-flow
+diagram) are drawn by hand and carry no data values. The superseded
 \texttt{paper/figures/repeat\_deltas.png} and \texttt{pass\_rates.svg}
 are retained only as a record of the protocol-1 era.
 
@@ -2792,21 +2623,17 @@ Tables 3--8. Figures can be regenerated with
 \subsection{Appendix B. Citation verification
 status}\label{appendix-b.-citation-verification-status}
 
-Citations were checked against the academic providers reachable from
-this workstation (arXiv and OpenAlex, via the local ScholarLM/WisDev MCP
-server). Status is recorded so that a reader can see which identifiers
-were machine-confirmed and which were carried over from the author's
-notes. \textbf{All twenty-four references resolve except {[}5{]}}, which
-has no independent identifier.
+Every citation was checked against its arXiv abstract page, OpenAlex, or
+Crossref. Status is recorded so that a reader can see which identifiers
+were confirmed at source and which were carried over from secondary
+citation. \textbf{All twenty-four references resolve except {[}5{]}},
+which has no independent identifier.
 
-The five references added in revision 3 were found through the MCP
-server's search tool but \textbf{verified outside it}: that deployment's
-\texttt{paperLookup} returns \texttt{no\ provider\ found}, so each arXiv
-entry was confirmed against its abstract page and {[}24{]} against its
-Crossref record. This matters for the same reason §5.9 does --- a
-retrieval tool that returns a plausible record is not a tool that has
-confirmed one, and the server's evidence mode labels every retrieved
-abstract a ``supporting source'' without testing entailment.
+References {[}20{]}--{[}24{]} were found through a literature-search
+tool but \textbf{verified outside it}: each arXiv entry against its
+abstract page, and {[}24{]} against its Crossref record. This matters
+for the same reason §5.9 does --- a retrieval tool that returns a
+plausible record is not a tool that has confirmed one.
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
