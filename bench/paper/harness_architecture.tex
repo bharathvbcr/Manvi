@@ -190,14 +190,14 @@ harness: the code that builds context, exposes tools, truncates output,
 and decides when the work is done. Prior work shows that harness choice
 moves frontier-model scores by tens of points, but not which components
 pay, or on which models. We build a local, standard-library coding
-harness with seven independently switchable components and a grader the
-agent cannot reach. We run a preregistered grid of nine configurations
-and eight hidden-test tasks on two locally served models (1,440
-episodes), plus a separately registered API-served arm (1,440 more). The
-full harness beats an all-off baseline on both local models at a
-Šidák-corrected level: Qwen 3.8 27B rises from 79.4\% to 95.0\%
-(\(\Delta = +0.156\), 98.7\% CI \([+0.069, +0.244]\)) and Ornith-1.5
-35B-A3B from 40.0\% to 60.6\% (\(\Delta = +0.206\),
+harness with seven independently switchable components and a grader
+whose tests the agent cannot read, edit or shadow. We run a
+preregistered grid of nine configurations and eight hidden-test tasks on
+two locally served models (1,440 episodes), plus a separately registered
+API-served arm (1,440 more). The full harness beats an all-off baseline
+on both local models at a Šidák-corrected level: Qwen 3.8 27B rises from
+79.4\% to 95.0\% (\(\Delta = +0.156\), 98.7\% CI \([+0.069, +0.244]\))
+and Ornith-1.5 35B-A3B from 40.0\% to 60.6\% (\(\Delta = +0.206\),
 \([+0.113, +0.300]\)). The third arm reproduces the effect (\(+0.150\)).
 Component-level effects do not transfer across models. Removing native
 file tools costs the third arm 14.4 points, which survives correction
@@ -289,9 +289,10 @@ treat detection and prevention as a first-class evaluation problem;
 benchmarks widely enough to inflate reported pass rates beyond genuine
 capability; and \citet{aleithan2024swebenchplus} traced a material
 fraction of reported SWE-bench passes to solution leakage and weak test
-suites. We therefore built the grader to be unreachable --- hidden tests
-outside the sandbox, visible tests content-hashed, the checker
-unshadowable (§3.2) --- and Appendix D reports a case where a model does
+suites. We therefore put the grader's tests out of the agent's reach ---
+hidden tests outside the sandbox, visible tests content-hashed, the
+checker unshadowable --- though not, on the instrument that ran the
+grid, its verdict (§3.2). Appendix D reports a case where a model does
 exactly what this literature predicts. The second is that repeated runs
 of the same prompt do not agree even with decoding parameters fixed
 \citep{nicholson2026drift}, which makes a single-run pass rate an
@@ -510,11 +511,12 @@ The limiting case is an agent that edits the grader itself: models
 trained on a curriculum of gameable environments occasionally generalise
 zero-shot to rewriting their own reward function
 \citep{denison2024subterfuge}. That result concerns trained models, not
-the off-the-shelf ones evaluated here, but it is why §3.2 makes the
-grader structurally unreachable rather than asking the model not to
-touch it. \citet{kouremetis2026cheats} document the same behaviour in
-the wild on cybersecurity benchmarks, where cheating inflates reported
-pass rates beyond genuine capability, and study prompt-level mitigations
+the off-the-shelf ones evaluated here, but it is why §3.2 puts the
+grader's tests structurally out of reach rather than asking the model
+not to touch them, and why §3.2 also states the channel that was left
+open. \citet{kouremetis2026cheats} document the same behaviour in the
+wild on cybersecurity benchmarks, where cheating inflates reported pass
+rates beyond genuine capability, and study prompt-level mitigations
 against it. Terminal-Bench's own design response is to score final
 container state rather than the trace \citep{merrill2026terminalbench}.
 
@@ -675,8 +677,9 @@ The grader must not be reachable by the agent. This is not a
 hypothetical concern: agents are documented to reach benchmark grades by
 exploiting shortcuts rather than solving the task
 \citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}.
-Three independent mechanisms enforce unreachability here, and they are
-independent on purpose: defeating one does not defeat the others.
+Three independent mechanisms keep the hidden test's source and files out
+of the agent's reach, and they are independent on purpose: defeating one
+does not defeat the others.
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -715,6 +718,25 @@ independent on purpose: defeating one does not defeat the others.
   \texttt{PYTHONPATH}, and a two-line \texttt{sitecustomize.py} bought a
   pass on 18 of 19 tasks.
 \end{enumerate}
+
+\textbf{What these mechanisms did not close.} They protect the hidden
+test's files and source, not its verdict. On the instrument that ran the
+grid, the verdict was the exit code of the interpreter that ran the
+hidden test, and that interpreter imported the agent's code into its own
+process. Code the agent wrote therefore ran inside the grader. It could
+end the process with status 0 before any assertion ran: a module that
+calls \texttt{os.\_exit(0)} when imported passes all 18 Python tasks on
+that instrument. It could also reach the test's own state through the
+interpreter's frames. The instrument's source recorded the in-process
+residual when the grid ran, as a gap in source isolation; nobody tested
+whether it could forge a verdict. The released harness closes it. The
+hidden test runs in a checker process that never executes candidate
+code; the candidate runs in a separate contained worker that cannot
+write the sandbox; the two exchange typed values over a socket. The
+checker's exit code is then out of the candidate's reach, and the same
+payloads, frame-walking and protocol-forging variants included, all fail
+(§4.2). The v2 and \texttt{ext-cerebras} episodes have not been audited
+for code aimed at the grader rather than the task (Limitation 12).
 
 On top of these, the loop's scoring rule is that a check that did not
 run is not a pass. The final verifier always runs after the loop stops,
@@ -1032,7 +1054,15 @@ commit that produced the grid:
 
 Counts are the ones we ran on the instrument commit, not the ones any
 \texttt{README} records; where a \texttt{README} disagrees it is stale
-and the suite output governs.
+and the suite output governs. None of these suites asked whether the
+agent's code could set the verifier's exit code, which is how the gap in
+§3.2 went unnoticed. The released harness's \texttt{selftest.py} adds
+two columns per task: a candidate that exits 0 (at import, inside a
+called function, from a thread and from an exit hook) is rejected, and
+so is one that walks the interpreter's frames to reach the test's state.
+Its \texttt{stress\_test.py} runs 215 assertions, adding forged protocol
+frames, worker-containment probes and a turn that crosses the wall clock
+before a passing gate.
 
 \subsubsection{4.3 Models and serving}\label{models-and-serving}
 
@@ -2101,7 +2131,7 @@ estimates differ:
 The generalisation we draw is narrow and is the paper's thesis in
 miniature: \textbf{a component's value is conditional on what else is in
 the harness.} A prompt asking the model to check its work is redundant
-beside a check the model cannot reach, and once redundant its cost ---
+beside a check the model cannot edit, and once redundant its cost ---
 turns, and the episodes those turns lose --- is all that remains. This
 is not an argument against checklists in harnesses that have no external
 verifier. It is an argument that the two components cannot be evaluated
@@ -2401,6 +2431,16 @@ capability-by-harness interaction remains undetectable.
   its H1 verdict (§5.7). We report the registered family and the
   alternative; a reader who prefers the pooled family gets a different
   answer from the same data.
+\item
+  \textbf{The reported episodes have not been audited for exploitation.}
+  Neither v2 nor \texttt{ext-cerebras} has been checked for the
+  behaviour §3.2 describes --- code that ends the grader's process or
+  reaches into its state --- or for any read or write of a hidden test.
+  The audit is a query over each episode's recorded file writes and
+  verifier output, and those logs are on the run host, not in this
+  release. Until it runs, the reported pass rates rest on the §3.2
+  mechanisms and on v1's audit, which found no attempt of any kind in
+  760 episodes, not on a check of these episodes.
 \end{enumerate}
 
 \subsection{8. Conclusion}\label{conclusion}
@@ -2447,15 +2487,19 @@ measured coverage alongside an interval.
 
 The contribution we are most confident in is not an effect size. It is
 the pairing of two things this literature usually separates: an
-instrument whose grader the agent cannot reach, and a published record
-of that instrument being wrong. The 720-episode grid we ran first was
-collected on a harness whose verify gate leaked hidden-test values into
-gate-on cells only, and whose tasks accepted wrong solutions. No episode
-exploited it --- we audited all 760 and 3,879 file-writing tool calls to
-say so --- and one published, interval-excluding-zero effect still did
-not survive the fix. An audit that finds no cheating is not the same as
-an instrument that makes cheating impossible, and the difference is
-worth a section rather than a footnote.
+instrument built so that the agent cannot reach its grader, and a
+published record of where that instrument was wrong. The 720-episode
+grid we ran first was collected on a harness whose verify gate leaked
+hidden-test values into gate-on cells only, and whose tasks accepted
+wrong solutions. No episode exploited it --- we audited all 760 and
+3,879 file-writing tool calls to say so --- and one published,
+interval-excluding-zero effect still did not survive the fix. An audit
+that finds no cheating is not the same as an instrument that makes
+cheating impossible, and the difference is worth a section rather than a
+footnote. The record is not closed. The instrument that ran the reported
+grid still let the agent's code set the grader's exit code (§3.2), a
+residual its own source recorded and nobody tested, and the audit that
+would say whether any episode used it has not been run.
 
 \subsection{Data and code}\label{data-and-code}
 
@@ -2521,7 +2565,7 @@ Reproduction:
 \begin{Shaded}
 \begin{Highlighting}[]
 \ExtensionTok{python3}\NormalTok{ selftest.py                 }\CommentTok{\# 19 tasks: start broken, accept reference, reject tampering}
-\ExtensionTok{python3}\NormalTok{ stress\_test.py              }\CommentTok{\# 189 adversarial harness tests, no GPU}
+\ExtensionTok{python3}\NormalTok{ stress\_test.py              }\CommentTok{\# adversarial harness tests, no GPU (189 at the grid commit)}
 \ExtensionTok{python3}\NormalTok{ test\_stats.py               }\CommentTok{\# bootstrap / delta / coverage / figure tests, no GPU}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2 }\AttributeTok{{-}{-}json{-}out}\NormalTok{ paper/stats{-}v2.json         }\CommentTok{\# Tables 3{-}8}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2,ext{-}cerebras                            }\CommentTok{\# three{-}arm family (§5.7)}
