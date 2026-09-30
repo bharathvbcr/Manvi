@@ -2509,7 +2509,9 @@ directory of this repository (\texttt{mh/harness.py},
 \texttt{mh/compute.py}, \texttt{grid.py}, \texttt{compare.py}). The
 instrument for every reported v2 episode is commit \texttt{82e453a},
 verified byte-identical on the run host across all nine harness files
-after the grid completed.
+after the grid completed. The released code is not that instrument: it
+adds \texttt{mh/rpc.py}, the checker/worker split of §3.2, and changes
+five hidden tests with it (\texttt{paper/DEVIATIONS.md}, O6).
 
 \textbf{The reported grid is tag \texttt{v2}: 1,440 episodes, two
 models, nine configurations, frozen protocol, sole tenant.} The compare

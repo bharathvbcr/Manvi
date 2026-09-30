@@ -991,6 +991,8 @@ def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dir
     return "\n".join(lines)
 
 
+# Unverified: this profile mirrors tools.py's bwrap profile but has not been run
+# on a Linux host. The sandbox-exec profile is the one stress_test.py C6 proves.
 def _bwrap_argv(exe, argv, write_dirs, read_ro_dirs, guard_roots):
     out = [exe, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
     tmp = os.environ.get("TMPDIR") or "/tmp"

@@ -29,7 +29,7 @@ Done in revision 4:
 - **TMLR build** from the unmodified `tmlr/tmlr.sty` (Apache-2.0, fetched 29 Sep 2026 from
   JmlrOrg/tmlr-style-file, style dated 30 Jun 2023):
   - `build_pdf.sh tmlr-review`: anonymous, "Under review as submission to TMLR", with the
-    commit hash withheld (the repository is public, so the hash would identify you) and Acknowledgments dropped, as the TMLR template asks until acceptance. 31 pages.
+    commit hash withheld (the repository is public, so the hash would identify you) and Acknowledgments dropped, as the TMLR template asks until acceptance. 36 pages.
   - `build_pdf.sh tmlr-preprint`: named, for arXiv.
   - Both outputs go to `tmlr/`, are gitignored and are rebuilt on demand.
 

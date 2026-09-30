@@ -526,7 +526,7 @@ The contribution we are most confident in is not an effect size. It is the pairi
 
 ## Data and code
 
-The harness, tasks, runner, and statistics live in the `bench/` directory of this repository (`mh/harness.py`, `mh/tools.py`, `mh/bench.py`, `mh/stats.py`, `mh/compute.py`, `grid.py`, `compare.py`). The instrument for every reported v2 episode is commit `82e453a`, verified byte-identical on the run host across all nine harness files after the grid completed.
+The harness, tasks, runner, and statistics live in the `bench/` directory of this repository (`mh/harness.py`, `mh/tools.py`, `mh/bench.py`, `mh/stats.py`, `mh/compute.py`, `grid.py`, `compare.py`). The instrument for every reported v2 episode is commit `82e453a`, verified byte-identical on the run host across all nine harness files after the grid completed. The released code is not that instrument: it adds `mh/rpc.py`, the checker/worker split of §3.2, and changes five hidden tests with it (`paper/DEVIATIONS.md`, O6).
 
 **The reported grid is tag `v2`: 1,440 episodes, two models, nine configurations, frozen protocol, sole tenant.** The compare summary behind Tables 3–8 is `paper/stats-v2.json`. Per-cell stop reasons in Table 5 come from the eighteen `summary.json` files. The registered design, hypotheses and analysis are `paper/preregistration.md`; every departure is `paper/DEVIATIONS.md`; the six-phase driver that ran the grid is `paper/run_v2.sh`, committed verbatim.
 

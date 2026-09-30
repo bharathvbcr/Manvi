@@ -1,6 +1,6 @@
 # Paper draft
 
-Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 3, 29 August 2026**.
+Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 4, 29 September 2026**.
 
 Three protocol documents sit beside it and are not part of the manuscript:
 [`preregistration.md`](preregistration.md), the registered v2 grid (two locally

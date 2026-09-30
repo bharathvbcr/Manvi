@@ -425,6 +425,9 @@ Verification and scoring:
   verifier's own process, so its code could set the verdict (paper, section 3.2).
   Each verification now records a static scan of the candidate's source for
   code aimed at the verdict; the record is evidence, never a verdict.
+  The worker's macOS profile (`sandbox-exec`) is verified by the stress
+  suite's containment probes; its Linux profile (`bwrap`) has not yet been
+  exercised on a Linux host.
 - `mh/harness.py`: an episode whose tool dispatch crosses the wall clock before
   a passing gate now fails. On the instrument it scored the gate's verdict.
 - `bench/tasks/`: five hidden tests changed with the verifier split, each
