@@ -21,6 +21,8 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+## [0.0.6] — 2026-09-30
+
 ### Changed
 
 - Pins move to gusset 92c2056 (DevCouncil 3b58dd7): handles dropped to the
@@ -89,6 +91,8 @@ under **Unreleased** in the same commit as the code.
 - `verify.sh`: five `NOT COVERED` lines (skipped tests, an unreadable or stale
   map, starved fuzz targets) printed mid-log but never reached the verdict
   list; they now go through `notcovered` like the rest.
+- `verify.sh` runs `bench/paper/test_supplement.py` with the other bench
+  tests, so the supplementary-archive check is part of the gate.
 
 ---
 
@@ -458,7 +462,8 @@ process boundary, the native tool suite, the full-screen TUI, multi-provider
 support (Anthropic, Gemini, xAI, and local servers), the benchmark rig, and
 `verify.sh` as the single gate over all of it.
 
-[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/bharathvbcr/Manvi/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/bharathvbcr/Manvi/compare/v0.0.2...v0.0.5
 [0.0.2]: https://github.com/bharathvbcr/Manvi/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/bharathvbcr/Manvi/releases/tag/v0.0.1
