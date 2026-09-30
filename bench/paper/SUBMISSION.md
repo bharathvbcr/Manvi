@@ -33,11 +33,26 @@ Done in revision 4:
   - `build_pdf.sh tmlr-preprint`: named, for arXiv.
   - Both outputs go to `tmlr/`, are gitignored and are rebuilt on demand.
 
+Done after that, on the same day:
+- **Citations** are natbib author-year from `references.bib` (33 entries), nine of them added from
+  a literature review (`litreview.md`). Appendix B has one verification row per entry, which a
+  test enforces.
+- **Supplementary ZIP**: `python3 build_supplement.py --verify` builds it from committed files
+  only. It fails closed on any identity marker, then unpacks the ZIP outside the repository and
+  runs the self-tests from that copy (Route A steps 5 and 6).
+- **Post-hoc audit** (`AUDIT.md`) and fixes:
+  - The ladder's family-wise figure is 92%, not 96%.
+  - The preregistered §7 sensitivity is bounded (D5).
+  - D3 and D4 are recorded.
+  - Paper-versus-code mismatches are corrected against the instrument commit.
+- **The grid's verifier let candidate code set the verdict** (DEVIATIONS O6): `os._exit(0)`
+  passes all 18 Python tasks on the instrument. The manuscript discloses this in §3.2, §4.2,
+  Limitation 12 and the conclusion. The released harness closes it with a checker/worker split.
+
 Still open:
-- **Citation style.** `tmlr.sty` sets natbib author-year. The manuscript uses a hand-written
-  numeric list ([1]–[24]), which renders but doesn't match TMLR's house style. Converting to a
-  `.bib` file with `\citep` calls is the remaining formatting job.
-- **Anonymised supplementary ZIP** (Route A step 5), then the self-tests from that copy (step 6).
+- **The exploitation audit of v2 and `ext-cerebras`** (DEVIATIONS O5, Limitation 12). It needs
+  the episode logs on the run host. This is the one result a reviewer is most likely to ask for.
+  Run it before submitting if you can, and put its result in the manuscript whatever it says.
 - **OpenReview profile and arXiv endorsement** (§2). Only you can do these.
 
 ## 1. What's left

@@ -463,6 +463,62 @@ recorded without the verifier running, and that the containment backend in each
 episode matches the one its host could provide. Its result belongs in the
 manuscript next to v1's, whatever it says.
 
+*Added 29 September 2026.* The audit must also look for code aimed at the
+verdict rather than the task (O6): every file the agent wrote, searched for the
+tokens in `mh/bench.py:TACTIC_TOKENS` (`os._exit`, `SystemExit`, `sys.exit`,
+`atexit`, `_getframe`, `f_back`, `tb_frame`, `f_globals`, `inspect`, `ctypes`,
+`__main__`, `sys.modules`, `gc.get_objects`), with each hit read by hand.
+`Task._scan_tactics` records the same flags for new episodes; the grid's
+episodes predate it. The manuscript states the audit as Limitation 12.
+
+## O6 — The grid's verifier let candidate code set the verdict
+
+*Recorded 29 September 2026, from a post-hoc audit.*
+
+**What the instrument did.** At `82e453a` the Python verifier piped the hidden
+test into `python -I -B` and executed it in a process that also imported the
+agent's code. The verdict was that process's exit code. A module that calls
+`os._exit(0)` when imported therefore passed every one of the 18 Python tasks
+(measured with `82e453a`'s verifier, `os._exit(0)` prepended to every
+unprotected file of each task's broken `setup/`). An uncaught
+`SystemExit(0)` at import ends the same process the same way, and the test's
+own state was reachable through the interpreter's frames; those two were not
+re-measured on `82e453a`. The instrument's own
+comment named the in-process residual but not this consequence. The shell task
+(`envbuild`) was not affected: its checker is a shell whose exit code the
+agent's `build.sh` cannot set.
+
+**What changed.** The released harness (`mh/rpc.py`) runs the hidden test in a
+checker process that never executes candidate code, and the candidate in a
+separate contained worker that cannot write the sandbox; they exchange typed
+JSON over a socket. The same payloads fail. Five hidden tests changed with it,
+each documented in the file:
+
+- `globmatch`, `nfa_match`, `concurrency_race`: the import ban's static scan
+  runs in the checker and its runtime half in the worker. Same two layers.
+- `concurrency_race`: the multi-consumer block checks no loss and no
+  duplication per producer, not strict per-producer order. **This check is
+  weaker.** The per-`get` order across eight consumers was never atomic, and the
+  round trip widens the window; strict FIFO is still checked by the
+  single-consumer block.
+- `ast_transformer`: code the candidate generates runs in the worker, not the
+  checker.
+- `json_patch`: "copy is deep" is checked inside one patch, because values now
+  cross the boundary by copy and a later mutation outside the call cannot show
+  aliasing.
+
+Two further checks are weaker in effect for the same reason, though their text
+is unchanged: `cache_invalidation_dist` "split arg not reused" and
+`state_machine_fuzz` "no mutate" can no longer see a candidate that keeps an
+argument and is affected by a later mutation outside the call. The harness also
+now fails an episode whose tool dispatch crosses the wall clock before a passing
+gate; at `82e453a` such an episode scored the gate's verdict.
+
+**Effect on the reported numbers.** None was measured. The grid ran on
+`82e453a`, and whether any episode used the channel is O5's audit. The released
+harness is not the instrument that produced the grid, and results from it are
+not comparable cell for cell.
+
 ## What has *not* been deviated from
 
 - **§4 primary analysis** — per-repeat pass rate, weighted mean over repeats,

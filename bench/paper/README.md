@@ -83,6 +83,14 @@ sixteen local ladder intervals, four of which have 20 repeats. The family-wise f
 three are the powered 20-repeat contrasts, and one is among the twelve 5-repeat intervals.
 Revision 4 also records deviations D3 and D4 (see `DEVIATIONS.md`).
 
+**The grid's verifier let candidate code set the verdict.** On the instrument, the Python hidden
+test ran in the same process that imported the agent's code, and a module that calls
+`os._exit(0)` on import passes all 18 Python tasks. The manuscript now says so: §3.2, §4.2,
+Limitation 12 and the conclusion. `DEVIATIONS.md` O6 records it. The released harness runs the
+test in a checker process that never executes candidate code (`mh/rpc.py`). Whether any v2 or
+`ext-cerebras` episode used the channel is the exploitation audit still owed (O5). It needs the
+episode logs on the run host.
+
 **Submission.** See [`SUBMISSION.md`](SUBMISSION.md) for what's left, venues and deadlines.
 The workshop paper in `workshop/` is still built on the superseded v1 grid.
 

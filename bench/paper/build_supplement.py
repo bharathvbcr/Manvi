@@ -413,17 +413,49 @@ the extension arm; see `bench/README.md`.
 
 The reported episodes were run on an earlier revision of this harness (the
 paper calls it the instrument, and its identifier is withheld for review). The
-files shipped here are the submission revision. Between the two, the harness
-files changed in three ways, none of which alters what the model sees or how an
-episode is scored:
+files shipped here are the submission revision. **It is not the instrument, and
+results from it are not comparable cell for cell with the paper's tables.**
+`bench/paper/DEVIATIONS.md` (O4, O6) records each change and why. In summary:
 
-- `mh/tools.py`, `mh/harness.py`: the containment provenance record is built by
-  one function (`containment_event`), which fixes episodes on Linux being
-  stamped "not OS-contained" although `bwrap` contained them; and tool dispatch
-  goes through an explicit table of the same five tools instead of `getattr`.
-- `mh/pool.py`, `compare.py`: the cross-arm protocol check compares every pair
-  of arms (the paper's §5.7 describes the defect this fixed).
-- `bench/tasks/`: identical to the instrument's task files.
+Verification and scoring:
+
+- `mh/rpc.py` (new), `mh/bench.py`: Python hidden tests run in a checker process
+  that never executes candidate code, and the candidate runs in a separate
+  contained worker. On the instrument the candidate was imported into the
+  verifier's own process, so its code could set the verdict (paper, section 3.2).
+  Each verification now records a static scan of the candidate's source for
+  code aimed at the verdict; the record is evidence, never a verdict.
+- `mh/harness.py`: an episode whose tool dispatch crosses the wall clock before
+  a passing gate now fails. On the instrument it scored the gate's verdict.
+- `bench/tasks/`: five hidden tests changed with the verifier split, each
+  documented in the file. `globmatch`, `nfa_match` and `concurrency_race` split
+  their import ban between the checker and the worker. `ast_transformer` runs
+  generated code in the worker. `json_patch` checks "copy is deep" inside one
+  patch. `concurrency_race`'s multi-consumer check is **weaker**: it checks no
+  loss and no duplication per producer, not strict per-producer order. Two
+  checks in `cache_invalidation_dist` and `state_machine_fuzz` are weaker in
+  effect, because values now cross the boundary by copy. Every other task file
+  is identical to the instrument's.
+
+Runtime:
+
+- `mh/tools.py`, `mh/harness.py`: one function builds the containment record,
+  which fixes contained Linux episodes being stamped "not OS-contained". Tool
+  dispatch goes through an explicit table of the same five tools. Shell output
+  is captured with a bound while it streams, and the process group is killed on
+  every return.
+- `run.py`, `grid.py`, `mh/runtime.py`: the runner refuses to start without
+  containment, and only timeouts and account refusals are re-drawn.
+
+Statistics:
+
+- `mh/stats.py`, `mh/pool.py`, `compare.py`: the cross-arm protocol check
+  compares every pair of arms (the paper's section 5.7 describes the defect).
+  Coverage is audited per interval shape. Paired deltas are aligned per repeat.
+  Rows are validated. The preregistered serving-error sensitivity report is
+  produced (`bench/paper/sensitivity.py`). The committed summaries behind the
+  paper's tables (`bench/paper/stats-v2.json`, `stats-ext-cerebras.json`,
+  `stats-all3.json`) were not regenerated after these changes.
 
 ## Anonymisation
 
