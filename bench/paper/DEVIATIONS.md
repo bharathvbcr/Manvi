@@ -148,6 +148,48 @@ The six reduced cells should be presented as descriptive, not as tests.
 
 ---
 
+## D3 — §5 confirmatory family: four tests, not three
+
+*Recorded 29 September 2026, from a post-hoc audit of the analysis code. Not
+decided in advance; found after the fact.*
+
+**Registered.** H1 is two tests (one per model) and H2 is one test, on the
+weaker model: three tests, Šidák α = 0.0170, 98.3% intervals (§5).
+
+**What ran.** `compare.py` tests H2 on every model in the family, not only the
+weaker one. The family therefore has four members, α = 0.0127, 98.7% intervals.
+The manuscript reports the four-test family (§4.4, Table 6), and an earlier
+version of this file listed §5 as not deviated from, which was wrong.
+
+**Effect.** The four-test family is the more conservative one. Recomputed at the
+registered 98.3% level with the same resampler (10,000 resamples, seed 0) from
+`stats-v2.json`:
+
+| Test | 98.7% (reported) | 98.3% (registered) | Verdict |
+|---|---|---|---|
+| H1 Qwen | [+0.069, +0.244] | [+0.069, +0.238] | supported under both |
+| H1 Ornith | [+0.113, +0.300] | [+0.119, +0.294] | supported under both |
+| H2 Ornith | [−0.006, +0.156] | [−0.006, +0.150] | not supported under both |
+
+No verdict changes.
+
+## D4 — §4 interaction: the manuscript cites the unpaired block
+
+*Recorded 29 September 2026, from the same audit.*
+
+**Registered.** "Interaction and paired deltas use one index vector per resample
+applied to both arms (seed-paired)" (§4).
+
+**What ran.** `compare.py` computes both schemes. The manuscript's Table 8 and
+Figure 5 cite the unpaired block and show the seed-paired one beside it
+(Figure 6); the text named the unpaired block as the one it cites.
+
+**Effect.** None on any conclusion: H4 is exploratory, and every interaction
+interval includes zero under both schemes (§5.6). The manuscript now names the
+seed-paired block as the registered one.
+
+---
+
 ## O1 — Saturation signal (an observation, not a deviation)
 
 Recorded here because §11's condition 2 was never cleared (D1) and this is the
@@ -389,9 +431,10 @@ manuscript next to v1's, whatever it says.
 
 - **§4 primary analysis** — per-repeat pass rate, weighted mean over repeats,
   percentile bootstrap, 10,000 resamples, RNG seed 0, one index vector applied
-  to both arms.
-- **§5 multiplicity** — confirmatory claims at 98.3% intervals; H3 at 95% with
-  the family-wise probability stated.
+  to both arms. (Which interaction block the manuscript cites is D4.)
+- **§5 multiplicity** — H3 at 95% with the family-wise probability stated. The
+  confirmatory level is not as registered: see D3 (98.7% for four tests, not
+  98.3% for three; no verdict changes).
 - **§6 exclusion rule** — zero output tokens, at most one step, stopped on a
   timeout. Still the only exclusion. Notably, the account-refusal rows that the
   `ext-cerebras` run produced are *not* excluded by any rule; they are re-run.
