@@ -16,8 +16,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mh.bench import load_tasks
 from mh.runtime import (CellError, cell_rows, ensure_sole_tenant,
-                        is_api_model, is_starved_episode, is_unserved_episode,
-                        observed_parallel_slots)
+                        is_api_model, is_starved_episode, observed_parallel_slots,
+                        should_rerun_episode)
 from run import ACCOUNT_REFUSED_RC, CONFIGS, seed_for_repeat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -108,8 +108,11 @@ def unusable(row):
     grid.complete() decided the cell was finished and run.py was never invoked
     for it. A cell of 160 zero-token refusals reported 0.0% and the grid
     printed "skip complete".
+
+    It is the same predicate as run.py's resume rule, and delegates to it: a
+    cell is incomplete exactly when it holds a row a resume would draw again.
     """
-    return is_starved_episode(row) or is_unserved_episode(row)
+    return should_rerun_episode(row)
 
 
 def complete(model, config, tag, n_tasks, repeats, rep_offset=0):

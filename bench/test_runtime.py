@@ -56,12 +56,28 @@ check("timeout is both", is_starved_episode({
 check("a real fail with tokens is neither",
       not is_first_turn_failure({"steps": 8, "output_tokens": 5381,
                                  "stop_reason": "error:ModelError"}))
-check("non-timeout failure is still re-run on resume",
-      not keep_existing_episode(http500))
+# M5. This used to assert the opposite ("non-timeout failure is still re-run on
+# resume"). That expectation was wrong: prereg §7 and is_starved_episode's own
+# docstring say a non-timeout first-turn failure is a real result that must be
+# scored. Re-drawing it on resume or retry re-samples only failures, so a cell
+# can only move upward. Only the registered exclusion (a first-turn timeout)
+# and an account refusal (nothing was served) are re-run.
+http500_row = dict(http500, task="x")
+check("a non-timeout first-turn failure is KEPT on resume",
+      keep_existing_episode(http500_row))
+check("so is a malformed-body first-turn failure",
+      keep_existing_episode(dict(badjson, task="x")))
+check("and a runner_error row is kept and scored, not re-drawn",
+      keep_existing_episode({"task": "x", "steps": 0, "output_tokens": 0,
+                             "stop_reason": "runner_error:KeyError"}))
 
 from mh.runtime import keep_existing_episode, should_retry_starved
+# A starved row as is_starved_episode defines it: a first-turn TIMEOUT. This
+# fixture used to carry no timeout at all, i.e. it was an HTTP-level first-turn
+# failure, which after M5 is a scored result and is neither kept-out nor retried.
 starve = {"task": "x", "steps": 1, "output_tokens": 0,
-          "stop_reason": "error:ModelError"}
+          "stop_reason": "error:ModelError",
+          "errors": ["ModelError: TimeoutError: timed out"]}
 real = {"task": "x", "steps": 8, "output_tokens": 100,
         "stop_reason": "finished", "passed": True}
 check("skip keeps real episode", keep_existing_episode(real))
@@ -70,6 +86,12 @@ check("force reruns real", not keep_existing_episode(real, force=True))
 check("retry starved first attempt", should_retry_starved(starve, 0))
 check("no second retry", not should_retry_starved(starve, 1))
 check("no retry of real fail", not should_retry_starved(real, 0))
+check("no in-run retry of a non-timeout first-turn failure (M5)",
+      not should_retry_starved(http500_row, 0))
+starve_timeout = dict(starve, errors=["ModelError: TimeoutError: timed out"])
+check("a first-turn timeout is still retried once",
+      should_retry_starved(starve_timeout, 0)
+      and not keep_existing_episode(starve_timeout))
 
 print("complete() reads the episodes, not the summary's word for them")
 import json, shutil, tempfile
@@ -1177,6 +1199,114 @@ with tempfile.TemporaryDirectory() as tmp:
           FakeHarness.ran == ["alpha"], str(FakeHarness.ran))
     check("the resumed cell holds both repeats",
           summary_of(tmp, "hard-ext")["n"] == 2)
+
+print("run.py re-runs only the registered exclusion, and says how many (M5)")
+
+
+def http500_res():
+    return FakeRes(passed=False, finished=False, stop_reason="error:ModelError",
+                   steps=1, tool_calls=0, output_tokens=0,
+                   errors=["ModelError: HTTP 500: invalid tool call arguments"])
+
+
+def refused_res():
+    return FakeRes(passed=False, finished=False, stop_reason="error:ModelError",
+                   steps=1, tool_calls=0, output_tokens=0,
+                   errors=['ModelError: HTTP 402: {"message":"Payment required"}'])
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    code, out = run_main(["--model", "m", "--tag", "m5", "--tasks", "alpha,beta"],
+                         tmp, plan={"alpha": http500_res, "beta": starved_res})
+    check("the first run completes", code == 0, f"{code} {out[-300:]}")
+    check("a non-timeout first-turn failure is not retried in the same run",
+          FakeHarness.ran.count("alpha") == 1, str(FakeHarness.ran))
+    check("a first-turn timeout is retried once",
+          FakeHarness.ran.count("beta") == 2, str(FakeHarness.ran))
+    outc = summary_of(tmp, "m5").get("outcomes") or {}
+    check("the in-run retry is counted in outcomes",
+          outc.get("episodes_retried") == 1, str(outc))
+    check("a fresh run replaced nothing", outc.get("episodes_replaced") == 0,
+          str(outc))
+    # Resume. Everything would now pass; only the starved row may be re-drawn.
+    code, out = run_main(["--model", "m", "--tag", "m5", "--tasks", "alpha,beta"],
+                         tmp)
+    check("the resume completes", code == 0, f"{code} {out[-300:]}")
+    check("the resume keeps the first-turn error:ModelError row (audit M5 test)",
+          "alpha" not in FakeHarness.ran, str(FakeHarness.ran))
+    rows = {r["task"]: r for r in summary_of(tmp, "m5")["rows"]}
+    check("and that row is still scored as the failure it was",
+          rows["alpha"].get("stop_reason") == "error:ModelError"
+          and rows["alpha"].get("passed") is False, str(rows.get("alpha")))
+    check("the starved row is re-run", FakeHarness.ran == ["beta"],
+          str(FakeHarness.ran))
+    outc = summary_of(tmp, "m5").get("outcomes") or {}
+    check("the replacement is counted and named in outcomes",
+          outc.get("episodes_replaced") == 1
+          and outc.get("replaced_episodes") == ["beta.rep0.json"], str(outc))
+    # An account refusal served nothing; it is still replaced on resume.
+    run_main(["--model", "m", "--tag", "m5b", "--tasks", "gamma"], tmp,
+             plan={"gamma": refused_res})
+    code, out = run_main(["--model", "m", "--tag", "m5b", "--tasks", "gamma"], tmp)
+    check("an unserved (HTTP 402) row is still replaced on resume",
+          FakeHarness.ran == ["gamma"]
+          and (summary_of(tmp, "m5b").get("outcomes") or {})
+          .get("episodes_replaced") == 1, f"{FakeHarness.ran} {out[-200:]}")
+
+
+print("run.py refuses to start when containment does not prove itself (M4)")
+import mh.tools as _tools
+
+_saved_tools = (_tools.contained_argv, _tools.containment_backend)
+
+
+def _leaky_argv(argv, allow_write=(), protected_roots=()):
+    # A "backend" that confines nothing: the canary read succeeds.
+    return ["/bin/sh", "-c", "echo READ_OK; echo PROBE_RAN"], "bwrap"
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    _tools._PROBE_CACHE.clear()
+    _tools.containment_backend = lambda: "bwrap"
+    _tools.contained_argv = _leaky_argv
+    try:
+        code, out = run_main(["--model", "m", "--tag", "leaky", "--tasks", "alpha"],
+                             tmp)
+    finally:
+        _tools.contained_argv, _tools.containment_backend = _saved_tools
+        _tools._PROBE_CACHE.clear()
+    check("a backend whose probe reads the canary aborts run.main",
+          isinstance(code, str) and "did not stop a read" in code, str(code))
+    check("the refusal runs nothing", FakeHarness.ran == [], str(FakeHarness.ran))
+    check("the refusal evicts nothing", EVICTED == [], str(EVICTED))
+    check("the refusal creates no cell directory",
+          not os.path.exists(os.path.join(tmp, "m__full__leaky")))
+
+    _tools.containment_backend = lambda: None
+    try:
+        code, out = run_main(["--model", "m", "--tag", "none", "--tasks", "alpha"],
+                             tmp)
+    finally:
+        _tools.contained_argv, _tools.containment_backend = _saved_tools
+    check("no backend at all aborts run.main too",
+          isinstance(code, str) and "no containment backend" in code, str(code))
+
+    # The existing explicit opt-out still works, loudly.
+    os.environ[_tools.UNCONTAINED_ENV] = "1"
+    try:
+        code, out = run_main(["--model", "m", "--tag", "optout", "--tasks", "alpha"],
+                             tmp)
+    finally:
+        del os.environ[_tools.UNCONTAINED_ENV]
+    check(f"{_tools.UNCONTAINED_ENV}=1 still runs", code == 0, str(code))
+    check("and says the shell is not contained", "NOT OS-contained" in out,
+          out[:400])
+
+    code, out = run_main(["--model", "m", "--tag", "real", "--tasks", "alpha"], tmp)
+    check("this host's real backend proves itself and runs", code == 0,
+          f"{code} {out[-200:]}")
+    check("and the runner says which backend it checked",
+          "containment" in out and "proved" in out, out[:400])
 
 # ---------------------------------------------------------------------------
 # Containment provenance. The note used to fire on `backend != "sandbox-exec"`,

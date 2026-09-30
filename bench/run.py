@@ -8,10 +8,13 @@ else was mid-inference.
 import argparse
 import atexit
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mh import tools as toolmod
 from mh.bench import load_tasks
 from mh.compute import Sampler, tok_s
 from mh.harness import Config, Harness
@@ -63,6 +66,45 @@ def seed_for_repeat(base, rep, n_repeat):
     if n_repeat > 1:
         return rep
     return None
+
+
+def require_containment():
+    """Make this host's shell containment prove itself before anything runs.
+
+    containment_proves_itself used to run only in stress_test.py, and the
+    per-sandbox start-up check only on sandbox-exec. A bwrap host that cannot
+    set up its namespaces, or whose mask silently fails, would run the whole
+    grid: every run_shell an exit=1 wrapper error scored as a model failure,
+    or every hidden test readable. Probed in a directory under WORK, because
+    that is where the real sandboxes live (inside the protected benchmark tree,
+    the layout bwrap's bind order exists for).
+
+    Returns the backend. Refuses (SystemExit) on any failed probe, and on a
+    host with no backend. The one way past is the existing explicit opt-out,
+    MH_UNCONTAINED_SHELL=1, which is announced, and stamped on every episode by
+    the harness.
+    """
+    os.makedirs(WORK, exist_ok=True)
+    probe = tempfile.mkdtemp(prefix="containment-probe-", dir=WORK)
+    try:
+        ok, backend, detail = toolmod.containment_proves_itself(probe)
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+    if backend == "off":
+        print(f"[runner] WARNING: {toolmod.UNCONTAINED_ENV}=1 -- shell commands "
+              f"are NOT OS-contained in this run; the model's shell can read and "
+              f"write the hidden tests. Every episode is stamped uncontained and "
+              f"must not be reported as contained.", flush=True)
+        return backend
+    if not ok:
+        raise SystemExit(
+            f"[runner] refusing to run: shell containment did not prove itself "
+            f"on this host ({detail}). Episodes run here would be scored "
+            f"against an instrument that is not the one reported. Fix the "
+            f"backend, or set {toolmod.UNCONTAINED_ENV}=1 to run explicitly "
+            f"uncontained.")
+    print(f"[runner] containment: {backend} proved itself ({detail})", flush=True)
+    return backend
 
 
 def main():
@@ -155,6 +197,9 @@ def main():
     if args.max_steps < 0:
         raise SystemExit(f"[runner] --max-steps must be >= 0 (0 disables), got "
                          f"{args.max_steps}")
+    # Before the cell directory, the tenancy lease and any eviction: a host
+    # that cannot contain the shell must not get as far as touching the GPU.
+    require_containment()
 
     spec = model_spec(args.model)
     num_ctx = args.num_ctx if args.num_ctx is not None else spec["num_ctx"]
@@ -272,7 +317,10 @@ def main():
               f"independent samples, not seeded replicates", flush=True)
 
     cap = "uncapped" if not args.max_steps else str(args.max_steps)
-    written = kept = 0
+    written = kept = retried = 0
+    # Episode files this invocation overwrote. Re-running only some rows can
+    # move a cell, so how many were re-drawn is part of the result (M5).
+    replaced = []
     starve_streak = 0
     starved_abort = False
     print(f"[runner] model={args.model} config={cfg.name} tasks={len(tasks)} "
@@ -295,7 +343,8 @@ def main():
             if starved_abort:
                 break
             ep_path = os.path.join(outdir, episode_name(task.name, rep))
-            if os.path.isfile(ep_path) and not args.force:
+            existed = os.path.isfile(ep_path)
+            if existed and not args.force:
                 try:
                     prev = read_episode(ep_path, task.name, rep)
                     row = prev.get("row") or {}
@@ -376,6 +425,7 @@ def main():
                        "prompt_tok_s": prompt_tok_s,
                        "compute": compute}
                 if should_retry_starved(row, attempt):
+                    retried += 1
                     # An API-served model has no local server to unstick, and
                     # evicting a resident local model for a remote failure
                     # kills an unrelated cell. ensure_sole_tenant already makes
@@ -412,6 +462,8 @@ def main():
                            "protocol": ep_protocol, "run": run_meta,
                            "verify_output": verify_output,
                            "events": events})
+            if existed:
+                replaced.append(episode_name(task.name, rep))
             mark = "PASS" if row.get("passed") else "fail"
             extra = ""
             compute = row.get("compute") or {}
@@ -454,6 +506,12 @@ def main():
         "force_starved": bool(args.force_starved),
         "episodes_written": written,
         "episodes_kept": kept,
+        # Rows re-drawn: existing files overwritten (a resume re-runs only
+        # should_rerun_episode's rows; --force re-runs all), and first-turn
+        # timeouts retried once inside this invocation.
+        "episodes_replaced": len(replaced),
+        "replaced_episodes": replaced,
+        "episodes_retried": retried,
         "sibling_overlap": {os.path.basename(d): len(v)
                             for d, v in sorted(dup.items())},
     }

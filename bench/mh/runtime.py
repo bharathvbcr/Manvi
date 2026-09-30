@@ -67,18 +67,38 @@ def api_model_id(model):
     return model
 
 
+def should_rerun_episode(row):
+    """The only recorded rows a resume or an in-run retry may draw again.
+
+    A row whose instrument took no measurement: the registered exclusion (a
+    first-turn timeout, is_starved_episode) or an account the provider refused
+    (is_unserved_episode). Every other row is a result, a first-turn HTTP 500,
+    malformed body or runner_error included, and is kept and scored.
+
+    It used to be every first-turn failure (is_first_turn_failure). Prereg §7
+    says those non-timeout failures must be scored, and re-drawing only
+    failures means a resume or a retry can move a cell's rate up and never
+    down. grid.unusable is the same predicate for "is this cell complete".
+    """
+    return is_starved_episode(row) or is_unserved_episode(row)
+
+
 def keep_existing_episode(row, force=False):
-    """Skip-existing must not treat a 0-token timeout as a finished episode."""
+    """Skip-existing keeps every recorded result except should_rerun_episode's."""
     if force:
         return False
     if not isinstance(row, dict) or not row.get("task"):
         return False
-    return not is_first_turn_failure(row)
+    return not should_rerun_episode(row)
 
 
 def should_retry_starved(row, attempt):
-    """One retry after unstick. A wedged llama-server is not a harness fail."""
-    return attempt == 0 and is_first_turn_failure(row)
+    """One retry after unstick. A wedged llama-server is not a harness fail.
+
+    Only for should_rerun_episode's rows; see there for why a non-timeout
+    first-turn failure is scored rather than retried.
+    """
+    return attempt == 0 and should_rerun_episode(row)
 
 
 def serving_env(host=None, model=None):
@@ -767,7 +787,8 @@ def is_starved_episode(row):
     that quietly moved is worse than no rate.
 
     For the operational question "should this episode be re-run", use
-    is_first_turn_failure, which is broader on purpose.
+    should_rerun_episode: this predicate plus account refusals, and nothing
+    else, because re-drawing a scored failure biases the cell upward.
     """
     if not _died_on_first_turn(row):
         return False
@@ -821,9 +842,12 @@ def unserved_count(rows):
 
 def is_first_turn_failure(row):
     """True when an episode died on turn one with nothing generated, for any
-    reason. Drives retry and resume, where re-running is cheap and safe.
+    reason. Descriptive only.
 
-    Never use this to exclude a row from a reported rate.
+    It used to drive retry and resume; that let a resume re-draw scored
+    first-turn failures (audit M5). Re-running is decided by
+    should_rerun_episode, and exclusion from a rate by is_starved_episode.
+    Never use this for either.
     """
     if not _died_on_first_turn(row):
         return False

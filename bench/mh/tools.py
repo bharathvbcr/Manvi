@@ -15,13 +15,20 @@ NOTE: this file is the measuring instrument. The frozen grid under bench/results
 collected and analysed with the pre-hardening version and is NOT to be re-run or
 re-scored; everything here applies to future runs only.
 """
+import codecs
+import errno
+import io
+import locale
 import os
+import selectors
 import signal
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 MAX_OUTPUT_BYTES = 30_000       # Terminus-KIRA's cap, inherited by the paper's harness
 SHELL_TIMEOUT_S = 120
@@ -49,6 +56,26 @@ class ContainmentUnavailable(RuntimeError):
     """No OS containment backend on this platform, and no explicit opt-out."""
 
 
+def _elided(head_raw, tail_raw, total, limit):
+    """The capped rendering of a `total`-byte text, from its two ends.
+
+    `head_raw` must start with the text's first `limit // 2` bytes and `tail_raw`
+    must end with its last `limit // 2` bytes; nothing else of the text is needed.
+    That is what lets a streamed capture that never held the middle render exactly
+    what cap_output renders from the whole string: both call this.
+    """
+    keep = limit // 2
+    # A cut can land mid-codepoint; drop the partial character rather than emit
+    # a replacement char the model would have to reason about.
+    head = head_raw[:keep].decode("utf-8", "ignore")
+    # Not tail_raw[-keep:]: with keep == 0 that is tail_raw[0:], the WHOLE tail,
+    # which is how cap_output(text, 1) used to return its entire input.
+    tail = tail_raw[len(tail_raw) - keep:].decode("utf-8", "ignore") if keep else ""
+    dropped = total - 2 * keep
+    return (f"{head}\n\n... [{dropped} bytes elided by the harness; "
+            f"{keep} head + {keep} tail bytes shown] ...\n\n{tail}")
+
+
 def cap_output(text, limit=MAX_OUTPUT_BYTES):
     """Head+tail truncation, measured in UTF-8 bytes.
 
@@ -59,6 +86,25 @@ def cap_output(text, limit=MAX_OUTPUT_BYTES):
     The cap is a *byte* cap, as the name and the banner have always said. It used to
     count characters, so 40k CJK characters passed a 30,000 "byte" cap as 90,084
     bytes -- 3x the budget the context accounting assumes.
+
+    Exact semantics, which the paper's "head-and-tail cap of 30,000 bytes" means:
+
+    * Sizes are of the text's UTF-8 encoding. For run_shell that text is the
+      command's stdout, then (only if stderr is not blank) a "[stderr]" line and
+      stderr, each decoded with errors="replace" and universal newlines.
+    * A text of at most `limit` bytes is returned unchanged.
+    * A longer text is replaced by its first `limit // 2` bytes, an elision
+      banner, and its last `limit // 2` bytes. The limit bounds the RETAINED
+      payload; the banner is not counted against it. The banner is
+      "\\n\\n... [D bytes elided by the harness; K head + K tail bytes shown]
+      ...\\n\\n": 69 bytes plus the decimal digits of D once and of K twice.
+      At limit=30,000 that is 80-88 bytes, so a capped result is 30,080 bytes
+      (D=1) to 30,084 (100 KB of output) to 30,088 (D of nine digits). An odd
+      limit retains limit - 1 bytes.
+    * A cut that lands inside a multi-byte character drops that partial
+      character, so up to 3 bytes fewer than K may be shown on each side; the
+      banner still states K.
+    * limit <= 0 disables the cap (the no-outcap ablation passes 10**9 instead).
     """
     if limit <= 0:
         return text, False
@@ -66,13 +112,117 @@ def cap_output(text, limit=MAX_OUTPUT_BYTES):
     if len(raw) <= limit:
         return text, False
     keep = limit // 2
-    # A cut can land mid-codepoint; drop the partial character rather than emit
-    # a replacement char the model would have to reason about.
-    head = raw[:keep].decode("utf-8", "ignore")
-    tail = raw[-keep:].decode("utf-8", "ignore")
-    dropped = len(raw) - 2 * keep
-    return (f"{head}\n\n... [{dropped} bytes elided by the harness; "
-            f"{keep} head + {keep} tail bytes shown] ...\n\n{tail}"), True
+    return _elided(raw[:keep], raw[len(raw) - keep:], len(raw), limit), True
+
+
+def _text_encoding():
+    """The encoding subprocess's text mode decodes with; what run_bounded used."""
+    return "utf-8" if sys.flags.utf8_mode else locale.getencoding()
+
+
+class StreamCapture:
+    """One pipe's output, held as its first and last `limit` bytes only.
+
+    Decodes exactly as Popen(text=True, errors="replace") did -- the process's
+    text encoding, replacement for bad bytes, universal newlines -- but a chunk
+    at a time, so a split multi-byte character or a split "\\r\\n" decodes the
+    same as it would whole. The decoded text is re-encoded as UTF-8, because
+    that is the unit cap_output measures in, and only its two ends are kept.
+
+    run_shell used to hold the whole of a command's output before capping it:
+    `yes` for 120 s is gigabytes of harness RSS for a 30,000-byte answer. Now
+    memory is O(limit) per stream, whatever the command produces.
+
+    limit <= 0 keeps everything (run_bounded's contract, and the no-outcap
+    ablation's), which is the old behaviour.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit if limit and limit > 0 else 0
+        self._dec = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(_text_encoding())(errors="replace"),
+            translate=True)
+        self._head = bytearray()
+        self._tail = bytearray()
+        self.total = 0          # UTF-8 bytes of the decoded text
+        self.raw_bytes = 0      # bytes read from the pipe
+        self.nonblank = False   # whether str.strip() of the whole text is non-empty
+        self._closed = False
+
+    def feed(self, data):
+        self.raw_bytes += len(data)
+        self._add(self._dec.decode(data))
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._add(self._dec.decode(b"", final=True))
+
+    def _add(self, text):
+        if not text:
+            return
+        if not self.nonblank and text.strip():
+            self.nonblank = True
+        b = text.encode("utf-8", "replace")
+        self.total += len(b)
+        if not self.limit:
+            self._head += b
+            return
+        if len(self._head) < self.limit:
+            self._head += b[:self.limit - len(self._head)]
+        self._tail += b
+        if len(self._tail) > 2 * self.limit:
+            del self._tail[:len(self._tail) - self.limit]
+
+    def head(self):
+        """At least the first min(total, limit) bytes."""
+        return bytes(self._head)
+
+    def tail(self):
+        """Exactly the last min(total, limit) bytes (everything when unbounded)."""
+        if not self.limit:
+            return bytes(self._head)
+        return bytes(self._tail[len(self._tail) - min(self.total, self.limit):])
+
+    def complete(self):
+        """True when the whole text is held."""
+        return not self.limit or self.total <= self.limit
+
+    def text(self):
+        if not self.complete():
+            raise ValueError("this capture holds only the two ends of its text")
+        return self._head.decode("utf-8")
+
+    def held_bytes(self):
+        return len(self._head) + len(self._tail)
+
+
+_STDERR_MARK = "[stderr]\n"
+
+
+def shell_body(out, err, limit):
+    """run_shell's body from two captures: cap_output(stdout [+ stderr]).
+
+    Byte-identical to building the whole string and calling cap_output on it,
+    which is the old path and the property test's reference. `out` and `err`
+    must be StreamCaptures made with this same `limit`.
+    """
+    joined = err.nonblank
+    sep = ""
+    if joined and out.total and out.tail()[-1:] != b"\n":
+        sep = "\n"
+    mid = (sep + _STDERR_MARK).encode() if joined else b""
+    err_total = err.total if joined else 0
+    total = out.total + len(mid) + err_total
+    if limit <= 0 or total <= limit:
+        body = out.text()
+        if joined:
+            body += sep + _STDERR_MARK + err.text()
+        return body
+    head = out.head() + mid + (err.head() if joined else b"")
+    tail = out.tail() + mid + (err.tail() if joined else b"")
+    keep = limit // 2
+    return _elided(head[:keep], tail[len(tail) - keep:], total, limit)
 
 
 # --- OS containment ----------------------------------------------------------
@@ -318,8 +468,12 @@ def _kill_group(proc):
     running after the episode ends; three orphans per timed-out command was the
     measured behaviour.
     """
+    # start_new_session=True makes the child a session and group leader, so its
+    # pgid IS its pid. os.getpgid(proc.pid) is not used: it raises once the
+    # leader has been reaped, which silently degraded this to proc.kill() of a
+    # process that was already gone, leaving its group running.
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         try:
             proc.kill()
@@ -327,28 +481,155 @@ def _kill_group(proc):
             pass
 
 
-def run_bounded(argv, cwd=None, env=None, input_text=None, timeout=None):
-    """subprocess.run, except a timeout takes the whole process group with it.
+# After a kill, how long to wait for the pipes to close and the leader to be
+# reaped. A `setsid`'d escapee on macOS can hold a pipe open forever; this
+# bounds the harness's wait for it.
+_KILL_GRACE_S = 10
 
-    One owner for "run something with a deadline": the shell tool and the
-    verifier both go through here, so neither can leave orphans behind while the
-    other cleans up. Raises subprocess.TimeoutExpired, like subprocess.run does.
+
+def _exited_unreaped(pid):
+    """True once `pid` has exited, WITHOUT reaping it (so its pid stays reserved)."""
+    try:
+        return os.waitid(os.P_PID, pid,
+                         os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return True
+
+
+def _wait_exit_then_kill_group(proc, deadline):
+    """Wait for the leader to exit, kill what is left of its group, then reap.
+
+    The group is killed while the exited leader is still an unreaped zombie:
+    its pid, and therefore the group id, cannot be reused by another process
+    until it is reaped, so the killpg cannot reach a stranger. Returns False
+    when the deadline passed first (nothing killed; the caller times out).
     """
+    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+        delay = 0.001
+        while not _exited_unreaped(proc.pid):
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            time.sleep(delay)
+            delay = min(delay * 2, 0.05)
+        _kill_group(proc)
+        proc.wait()
+        return True
+    try:
+        proc.wait(None if deadline is None
+                  else max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return False
+    _kill_group(proc)
+    return True
+
+
+def run_bounded_capture(argv, cwd=None, env=None, input_text=None, timeout=None,
+                        limit=MAX_OUTPUT_BYTES):
+    """Run argv; return (returncode, stdout StreamCapture, stderr StreamCapture).
+
+    The one engine behind run_bounded and run_shell. Semantics:
+
+    * Waits, as communicate() did, for both pipes to reach EOF and the process
+      to exit, so what is captured is what communicate() would have captured.
+    * Then kills the process's whole group, on success as well as on timeout.
+      A `nohup sleep 300 &` used to outlive the command and the episode on
+      macOS, because the group was killed only on a timeout. (bwrap's
+      --unshare-pid already took descendants down with the namespace.) A
+      process that setsid()s itself out of the group is not reached on macOS.
+    * A timeout kills the group and raises subprocess.TimeoutExpired, like
+      subprocess.run.
+    * Output is held as a StreamCapture of `limit` (<= 0: keep everything).
+    """
+    enc = _text_encoding()
     proc = subprocess.Popen(
         argv, cwd=cwd, env=env,
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, errors="replace", start_new_session=True)
+        start_new_session=True)
+    deadline = None if timeout is None else time.monotonic() + timeout
+    caps = {proc.stdout.fileno(): StreamCapture(limit),
+            proc.stderr.fileno(): StreamCapture(limit)}
+    out_cap, err_cap = caps[proc.stdout.fileno()], caps[proc.stderr.fileno()]
+    pending = memoryview(input_text.encode(enc, "replace")) if input_text else None
+    # Kept as an int: once proc.stdin is closed its fileno() raises.
+    stdin_fd = proc.stdin.fileno() if proc.stdin is not None else None
+    sel = selectors.DefaultSelector()
     try:
-        out, err = proc.communicate(input_text, timeout=timeout)
+        for fd in caps:
+            sel.register(fd, selectors.EVENT_READ)
+        if stdin_fd is not None:
+            if pending:
+                os.set_blocking(stdin_fd, False)
+                sel.register(stdin_fd, selectors.EVENT_WRITE)
+            else:
+                proc.stdin.close()
+        while sel.get_map():
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+            for key, _ in sel.select(remaining):
+                fd = key.fd
+                if fd == stdin_fd:
+                    try:
+                        n = os.write(fd, pending[:65536])
+                        pending = pending[n:]
+                    except BlockingIOError:
+                        continue
+                    except (BrokenPipeError, OSError):
+                        pending = None
+                    if not pending:
+                        sel.unregister(fd)
+                        proc.stdin.close()
+                    continue
+                chunk = os.read(fd, 65536)
+                if chunk:
+                    caps[fd].feed(chunk)
+                else:
+                    sel.unregister(fd)
+                    caps[fd].close()
+        if not _wait_exit_then_kill_group(proc, deadline):
+            raise subprocess.TimeoutExpired(argv, timeout)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
         try:
-            proc.communicate(timeout=10)
+            proc.wait(timeout=_KILL_GRACE_S)
         except subprocess.TimeoutExpired:
             pass
         raise
-    return proc.returncode, out or "", err or ""
+    except BaseException:
+        # Never leave the command's group running behind an exception
+        # (KeyboardInterrupt included).
+        _kill_group(proc)
+        raise
+    finally:
+        sel.close()
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+    out_cap.close()
+    err_cap.close()
+    return proc.returncode, out_cap, err_cap
+
+
+def run_bounded(argv, cwd=None, env=None, input_text=None, timeout=None):
+    """subprocess.run, except the whole process group is killed afterwards.
+
+    One owner for "run something with a deadline": the shell tool and the
+    verifier both go through here, so neither can leave orphans behind while the
+    other cleans up. Raises subprocess.TimeoutExpired, like subprocess.run does.
+    Returns (returncode, stdout, stderr) as text, decoded exactly as
+    Popen(text=True, errors="replace") decoded them. Nothing is capped here; see
+    run_bounded_capture for the bounded form.
+    """
+    rc, out, err = run_bounded_capture(argv, cwd=cwd, env=env,
+                                       input_text=input_text, timeout=timeout,
+                                       limit=0)
+    return rc, out.text(), err.text()
 
 
 class Sandbox:
@@ -359,6 +640,7 @@ class Sandbox:
         self.protected_roots = tuple(p for p in protected_roots if p)
         self.containment = None      # set on first run_shell
         self._containment_checked = False
+        self.last_shell_stats = None  # byte counts of the latest run_shell
 
     def resolve(self, path):
         """Resolve a model-supplied path inside the sandbox, or refuse."""
@@ -411,7 +693,9 @@ class Sandbox:
             raise ToolError("run_shell requires a non-empty 'cmd' string")
         argv = self._shell_argv(cmd)
         try:
-            rc, out, err = run_bounded(argv, cwd=self.root, timeout=SHELL_TIMEOUT_S)
+            rc, out, err = run_bounded_capture(argv, cwd=self.root,
+                                               timeout=SHELL_TIMEOUT_S,
+                                               limit=self.output_cap)
         except subprocess.TimeoutExpired:
             raise ToolError(
                 f"command timed out after {SHELL_TIMEOUT_S}s; the command and every "
@@ -419,14 +703,106 @@ class Sandbox:
                 f"Long-running or interactive commands will not work here.")
         except OSError as e:
             raise ToolError(f"could not start the shell: {e}")
-        body = out
-        if err.strip():
-            body += ("\n" if body and not body.endswith("\n") else "") + "[stderr]\n" + err
-        body, _ = cap_output(body, self.output_cap)
+        # What the command produced, which the model is shown only as a count
+        # in the elision banner: recorded so a capped result stays auditable.
+        self.last_shell_stats = {"stdout_bytes": out.raw_bytes,
+                                 "stderr_bytes": err.raw_bytes,
+                                 "stdout_text_bytes": out.total,
+                                 "stderr_text_bytes": err.total}
+        body = shell_body(out, err, self.output_cap)
         return f"exit={rc}\n{body}" if body.strip() else f"exit={rc}\n(no output)"
 
-    def _list_dir(self, path, real):
-        entries = sorted(os.listdir(real))
+    # ---- file access that cannot be redirected after resolve() -------------
+    #
+    # resolve() realpath()s a model-supplied path and checks it is inside the
+    # sandbox; the open used to happen afterwards, by name, in the uncontained
+    # harness process. Anything able to swap a path component for a symlink in
+    # between -- a background process the model left running -- could send the
+    # read or the write anywhere the harness can reach. So the open walks the
+    # already-resolved (symlink-free) path from a directory fd on the sandbox
+    # root, one component at a time, refusing to follow any symlink it meets.
+
+    def _open_in_root(self, real, flags, mode=0o666, make_dirs=False):
+        """os.open() of a resolve()d path, walked from the root without symlinks.
+
+        Raises FileNotFoundError for a missing path (callers phrase that), and
+        ToolError when a component is, or has become, a symlink or a non-directory.
+        """
+        rel = os.path.relpath(real, self.root)
+        parts = [] if rel == os.curdir else rel.split(os.sep)
+        if any(p in ("", os.curdir, os.pardir) for p in parts):
+            raise ToolError(f"path {real!r} is not a plain path inside the sandbox")
+        dfd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            if not parts:
+                return os.open(os.curdir, flags | os.O_NOFOLLOW, mode, dir_fd=dfd)
+            for comp in parts[:-1]:
+                try:
+                    nfd = self._open_dir_at(comp, dfd)
+                except FileNotFoundError:
+                    if not make_dirs:
+                        raise
+                    try:
+                        os.mkdir(comp, 0o777, dir_fd=dfd)
+                    except FileExistsError:
+                        pass
+                    nfd = self._open_dir_at(comp, dfd)
+                os.close(dfd)
+                dfd = nfd
+            try:
+                return os.open(parts[-1], flags | os.O_NOFOLLOW, mode, dir_fd=dfd)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.EMLINK):
+                    raise ToolError(
+                        f"{rel!r} is a symbolic link that was not there when the "
+                        f"path was checked; refused.") from e
+                raise
+        finally:
+            os.close(dfd)
+
+    @staticmethod
+    def _open_dir_at(comp, dfd):
+        try:
+            return os.open(comp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                           dir_fd=dfd)
+        except OSError as e:
+            if e.errno in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+                raise ToolError(
+                    f"path component {comp!r} is not a plain directory (it is, or "
+                    f"became, a symbolic link or a file); refused.") from e
+            raise
+
+    def _open_checked(self, path, real, flags, mode=0o666, make_dirs=False,
+                      verb="read"):
+        """_open_in_root plus the fstat every caller needs.
+
+        Opened O_NONBLOCK so a FIFO the model made cannot hang the harness in
+        open(), then refused unless it is a regular file or a directory.
+        Returns (fd, stat_result).
+        """
+        try:
+            fd = self._open_in_root(real, flags | os.O_NONBLOCK, mode, make_dirs)
+        except FileNotFoundError:
+            raise ToolError(f"{path!r} does not exist. List the directory before "
+                            f"reading.")
+        except IsADirectoryError:
+            raise ToolError(f"{path!r} is a directory, not a file; pick a path "
+                            f"inside it.")
+        except OSError as e:
+            raise ToolError(f"could not {verb} {path!r}: {e}")
+        try:
+            st = os.fstat(fd)
+            if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+                raise ToolError(f"{path!r} is not a regular file (a FIFO, socket or "
+                                f"device); refused.")
+            os.set_blocking(fd, True)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd, st
+
+    def _list_dir(self, path, entries):
+        entries = sorted(entries)
         shown = entries[:DIR_LIST_LIMIT]
         head = f"{path} is a directory containing {len(entries)} entries"
         if len(entries) > len(shown):
@@ -440,35 +816,38 @@ class Sandbox:
 
     def read_file(self, path=None, **_):
         real = self.resolve(path)
-        if not os.path.exists(real):
-            raise ToolError(f"{path!r} does not exist. List the directory before reading.")
-        if os.path.isdir(real):
-            return self._list_dir(path, real)
+        fd, st = self._open_checked(path, real, os.O_RDONLY)
         try:
-            size = os.path.getsize(real)
-        except OSError as e:
-            raise ToolError(f"could not read {path!r}: {e}")
-        # Bound the read *before* building per-line strings. Reading a 200 MB file
-        # and then splitting it into numbered lines grew RSS by 857 MB; the budget
-        # now bounds the bytes we touch, not just the bytes we return.
-        cap = self.output_cap if self.output_cap > 0 else MAX_READ_BYTES
-        budget = max(1024, min(cap, MAX_READ_BYTES))
-        try:
-            return self._numbered(real, size, budget)
-        except OSError as e:
-            raise ToolError(f"could not read {path!r}: {e}")
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    return self._list_dir(path, os.listdir(fd))
+                except OSError as e:
+                    raise ToolError(f"could not read {path!r}: {e}")
+            # Bound the read *before* building per-line strings. Reading a 200 MB
+            # file and then splitting it into numbered lines grew RSS by 857 MB;
+            # the budget now bounds the bytes we touch, not just the bytes we
+            # return.
+            cap = self.output_cap if self.output_cap > 0 else MAX_READ_BYTES
+            budget = max(1024, min(cap, MAX_READ_BYTES))
+            try:
+                return self._numbered(fd, st.st_size, budget)
+            except OSError as e:
+                raise ToolError(f"could not read {path!r}: {e}")
+        finally:
+            os.close(fd)
 
-    def _numbered(self, real, size, budget):
+    def _numbered(self, fd, size, budget):
         """The file with line numbers, built a line at a time under a byte budget.
 
         The old version read the whole file and then built one string per line
         before capping anything, so a 200 MB file grew RSS by 857 MB. Nothing
         here holds more than `budget` bytes, whatever the file's size or shape.
+        `fd` is an open regular file; it is read, never closed, here.
         """
         big = size > budget
         limit = budget // 2 if big else budget
         parts, total, lines, overran = [], 0, 0, False
-        with open(real, "r", errors="replace") as f:
+        with os.fdopen(os.dup(fd), "r", errors="replace") as f:
             for i, line in enumerate(f, 1):
                 piece = f"{i:>5}\t{line.rstrip(chr(10))}"
                 n = len(piece.encode("utf-8", "replace")) + 1
@@ -484,9 +863,8 @@ class Sandbox:
             return body if body.strip() else "(empty file)"
         # Keep the tail: the end of a file is where the thing you are looking for
         # usually is, and a silently head-only read invites confident nonsense.
-        with open(real, "rb") as f:
-            f.seek(max(total, size - budget // 2))
-            tail = f.read(budget // 2).decode("utf-8", "replace")
+        tail = os.pread(fd, budget // 2, max(total, size - budget // 2))
+        tail = tail.decode("utf-8", "replace")
         tail = tail.split("\n", 1)[1] if "\n" in tail else tail
         return (head +
                 f"\n\n... [the harness read only part of this {size}-byte file: "
@@ -494,6 +872,25 @@ class Sandbox:
                 f"last {len(tail.encode('utf-8', 'replace'))} bytes without them. "
                 f"The middle was never read. Use run_shell with sed -n to see a "
                 f"specific line range.] ...\n\n" + tail)
+
+    def _write_text(self, path, real, text, make_dirs=False):
+        """Truncate and write `text` to a regular file opened without symlinks."""
+        fd, st = self._open_checked(path, real, os.O_WRONLY | os.O_CREAT,
+                                    make_dirs=make_dirs, verb="write")
+        if stat.S_ISDIR(st.st_mode):
+            os.close(fd)
+            raise ToolError(f"{path!r} is a directory, not a file; pick a path "
+                            f"inside it.")
+        try:
+            os.ftruncate(fd, 0)
+            with os.fdopen(fd, "w") as f:
+                fd = None
+                f.write(text)
+        except OSError as e:
+            raise ToolError(f"could not write {path!r}: {e}")
+        finally:
+            if fd is not None:
+                os.close(fd)
 
     def write_file(self, path=None, content=None, **_):
         real = self.resolve(path)
@@ -503,12 +900,7 @@ class Sandbox:
             raise ToolError(f"{path!r} is a directory, not a file; pick a path inside it.")
         if not isinstance(content, str):
             content = str(content)
-        os.makedirs(os.path.dirname(real) or self.root, exist_ok=True)
-        try:
-            with open(real, "w") as f:
-                f.write(content)
-        except OSError as e:
-            raise ToolError(f"could not write {path!r}: {e}")
+        self._write_text(path, real, content, make_dirs=True)
         return f"wrote {len(content)} bytes to {path}"
 
     def edit_file(self, path=None, old=None, new=None, **_):
@@ -521,8 +913,12 @@ class Sandbox:
             raise ToolError("edit_file requires a non-empty 'old' string to replace")
         if new is None:
             new = ""
+        fd, st = self._open_checked(path, real, os.O_RDONLY)
+        if stat.S_ISDIR(st.st_mode):
+            os.close(fd)
+            raise ToolError(f"{path!r} is a directory, not a file; edit a file inside it.")
         try:
-            with open(real, "r", errors="replace") as f:
+            with os.fdopen(fd, "r", errors="replace") as f:
                 text = f.read()
         except OSError as e:
             raise ToolError(f"could not read {path!r}: {e}")
@@ -535,11 +931,7 @@ class Sandbox:
             raise ToolError(
                 f"the 'old' text appears {count} times in {path!r}; it must match "
                 f"exactly once. Include more surrounding context to disambiguate.")
-        try:
-            with open(real, "w") as f:
-                f.write(text.replace(old, new, 1))
-        except OSError as e:
-            raise ToolError(f"could not write {path!r}: {e}")
+        self._write_text(path, real, text.replace(old, new, 1))
         return f"replaced 1 occurrence in {path}"
 
     def finish(self, summary=None, **_):
