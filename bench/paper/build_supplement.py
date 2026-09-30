@@ -84,6 +84,7 @@ POLICY = (
     ("bench/paper/header.tex", "exclude", "manuscript typesetting"),
     ("bench/paper/references.bib", "exclude", "the manuscript's bibliography; the harness does not use it"),
     ("bench/paper/litreview.md", "exclude", "the author's literature-review notes for the manuscript"),
+    ("bench/paper/AUDIT.md", "exclude", "the author's internal audit notes (findings are fixed in the shipped code)"),
     ("bench/paper/build_pdf.sh", "exclude", "manuscript build; carries the author block"),
     ("bench/paper/prepare_body.py", "exclude", "manuscript build; carries the withheld commit hash"),
     ("bench/paper/svg2png.py", "exclude", "manuscript figure rasteriser"),
