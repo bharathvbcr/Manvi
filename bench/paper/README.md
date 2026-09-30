@@ -77,6 +77,12 @@ defect, moved into §5.7. The abstract is one paragraph. Appendix B no longer na
 literature-search tool. Venue and route: [`SUBMISSION.md`](SUBMISSION.md), Route A (TMLR
 plus arXiv).
 
+The coverage audit is now per interval shape. Revision 3 applied the 5-repeat coverage to all
+sixteen local ladder intervals, four of which have 20 repeats. The family-wise figure is 92%
+(not 96%), and the null expectation is 2.36 exclusions (not 2.83). Of the four exclusions,
+three are the powered 20-repeat contrasts, and one is among the twelve 5-repeat intervals.
+Revision 4 also records deviations D3 and D4 (see `DEVIATIONS.md`).
+
 **Submission.** See [`SUBMISSION.md`](SUBMISSION.md) for what's left, venues and deadlines.
 The workshop paper in `workshop/` is still built on the superseded v1 grid.
 

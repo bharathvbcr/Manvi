@@ -139,6 +139,14 @@ left to a reader inferring from an `n` column:
    Four exclusions is what pure noise produces almost every time at this
    coverage. The n=5 H3 cells therefore support no claim of effect — only
    "not detectable at this n" — and this is the direct, quantified cost of D2.
+   *Corrected 29 September 2026.* The 96% applied the 5-repeat coverage to
+   all sixteen intervals, but four of them (both `baseline` contrasts and both
+   `no-outcap` contrasts) are 20-repeat intervals at 94.1%. Audited per
+   interval shape the figure is **92%**, with a null expectation of 2.36
+   exclusions, not 2.83. Three of the four exclusions are those powered
+   contrasts; among the twelve 5-repeat intervals one excludes zero (Qwen
+   `no-verifygate`), which a global null produces 90% of the time. The
+   conclusion for the n=5 cells is unchanged.
 2. **H4 on those six is not inferential.** The capability × harness interaction
    over the six reduced ablations will be very wide and should be reported as
    descriptive. H4 on the *primary* contrast is unaffected: both arms hold
@@ -147,6 +155,34 @@ left to a reader inferring from an `n` column:
 The six reduced cells should be presented as descriptive, not as tests.
 
 ---
+
+## D5 — §7 infrastructure-failure dual report not produced
+
+*Recorded 29 September 2026, from a post-hoc audit. An earlier version of this
+file listed §7 as not deviated from, which was wrong.*
+
+**Registered.** Every cell's pass rate is reported twice — primary, and with
+non-timeout serving errors removed — together with the cell's
+infrastructure-failure rate (§7).
+
+**What ran.** Neither `compare.py` nor the manuscript produced the second rate
+or the failure rate for v2 or `ext-cerebras`.
+
+**What was done instead.** `compare.py` now computes the full dual report from
+episode logs. The v2 logs are on the run host, not in this checkout, so
+`paper/sensitivity.py` derives what the committed summaries allow
+(`paper/stats-sensitivity.json`): exact bounds on each sensitivity point
+estimate, and no intervals, because the summaries do not record which repeat
+an error fell in, whether its text named a timeout, or whether the episode
+passed anyway (12 of 147 such rows in the local logs passed; §7 assumes they
+fail). Up to 23.8% of Ornith's `baseline` episodes and 12.5% of its `full`
+episodes end in a serving error.
+
+**Effect.** H1 keeps its sign on both arms under every consistent allocation
+(Qwen [+0.141, +0.166]; Ornith [+0.025, +0.480]). Whether Ornith's H1 still
+clears 98.7% under the sensitivity rule, and the sign of H2 on Ornith
+([−0.147, +0.308]), cannot be settled without the episode logs. `ext-cerebras`
+has no error rows; its sensitivity report equals its primary one.
 
 ## D3 — §5 confirmatory family: four tests, not three
 
@@ -438,7 +474,6 @@ manuscript next to v1's, whatever it says.
 - **§6 exclusion rule** — zero output tokens, at most one step, stopped on a
   timeout. Still the only exclusion. Notably, the account-refusal rows that the
   `ext-cerebras` run produced are *not* excluded by any rule; they are re-run.
-- **§7 infrastructure-failure dual report.**
 - **§8 stopping rule** — honoured in full. All 18 cells ran to completion; there
   was no early stop and no contrast was computed at any point during
   collection. Everything observed while the grid ran was a marginal rate or an

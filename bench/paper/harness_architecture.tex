@@ -341,9 +341,9 @@ points on this suite. That is an upper bound, not evidence that they do
 nothing (§6). The second is that our own exploratory ladder cannot
 support the claims a reader would want from it: a registered-design
 deviation left those cells at \(n=5\), where the percentile bootstrap's
-measured coverage is 82.3\% rather than 95\%, and four intervals
-excluding zero out of sixteen is the expected yield of pure noise. We
-report the number rather than the finding.
+measured coverage is 82.3\% rather than 95\%, and one exclusion among
+the twelve intervals at that shape is what a global null produces 90\%
+of the time. We report the number rather than the finding.
 
 The rest of the paper is organized as follows. Section 2 situates the
 work against Meta-Harness and against the inner loops that table spans.
@@ -616,12 +616,14 @@ every discovered component off except native file tools, which stay on
 because the alternative is asking a small model to get shell quoting
 right in order to touch a file.
 
-The whole instrument is about 3,500 lines of Python across the runner,
-the harness, the task loader, the statistics, and the test suites, with
-no dependencies outside the standard library. That is a deliberate
-constraint, not an accident of scope: a measurement rig that a reader
-cannot audit in one sitting cannot be trusted to make claims about a
-system it wraps.
+At the commit that produced the grid, the instrument was about 7,200
+lines of Python across the runner, the harness, the task loader and the
+statistics, of which the harness package is about 4,800, plus about
+4,200 lines of test suites, with no dependencies outside the standard
+library. That is a deliberate constraint, not an accident of scope: a
+measurement rig that a reader cannot audit cannot be trusted to make
+claims about a system it wraps. Section 3.2 records what an audit of it
+found.
 
 \begin{figure}
 \centering
@@ -695,13 +697,23 @@ independent on purpose: defeating one does not defeat the others.
   hidden test is even run. Editing the test to make it pass is therefore
   not a partial win; it is a definite loss.
 \item
-  \textbf{The hidden test cannot be shadowed.} The checker is copied
-  into a fresh temporary directory outside the sandbox and executed from
-  there, with the sandbox supplied as \texttt{PYTHONPATH} and as the
-  working directory. This matters because the natural attack on a Python
-  checker is to drop a file with the same name, or a same-named module
-  the checker imports, into the directory it runs from. Running it from
-  a directory the agent has never been able to write closes that path.
+  \textbf{The hidden test cannot be shadowed or read from disk.} It is
+  never written to any file. The verifier pipes its source on standard
+  input to an isolated interpreter (\texttt{python\ -I\ -B}: no
+  \texttt{PYTHONPATH}, no user site directory, no bytecode cache the
+  agent can write), which puts the sandbox on its import path itself and
+  scrubs \texttt{sys.argv} and \texttt{\_\_file\_\_}. Files an
+  interpreter or test runner loads without being imported by name
+  (\texttt{sitecustomize.py}, \texttt{usercustomize.py},
+  \texttt{conftest.py}, \texttt{pyvenv.cfg}, any \texttt{.pth} file) are
+  refused if the agent added them, as are added top-level modules that
+  shadow a standard-library module and environment variables that
+  redirect an interpreter, before the test runs. This matters because
+  the natural attack on a Python checker is to plant a start-up hook or
+  a same-named module where the checker will load it; an earlier version
+  of this verifier launched the checker with the sandbox on
+  \texttt{PYTHONPATH}, and a two-line \texttt{sitecustomize.py} bought a
+  pass on 18 of 19 tasks.
 \end{enumerate}
 
 On top of these, the loop's scoring rule is that a check that did not
@@ -817,22 +829,29 @@ why the verify gate is a separate flag.
 
 \textbf{Verify gate (\texttt{verifygate}).} On a subsequent
 \texttt{finish}, if the flag is on, the harness runs the task's hidden
-tests and, on failure, returns the failing output (capped at 4,000
-bytes) as a tool result with the instruction to keep working. On
-success, the loop stops with \texttt{stop\_reason=finished}. The tests
-are not in the sandbox and cannot be shadowed (§3.2). Visible tests in
-the task directory are part of the problem statement; they are not the
-grade. Unlike self-repair schemes that feed a model its own reflection
-or its own test run \citep{chen2023selfdebug, li2024ldb}, the evidence
-returned here comes from a check the agent cannot influence.
+tests and, on failure, returns a redacted summary as a tool result with
+the instruction to keep working: that the hidden checks fail, how many
+failing check lines they reported, and up to eight assertion labels with
+every value removed. The hidden test's output, its expected values and
+its source are never shown. On success, the loop stops with
+\texttt{stop\_reason=finished}. The tests are not in the sandbox and
+cannot be shadowed (§3.2). Visible tests in the task directory are part
+of the problem statement; they are not the grade. Unlike self-repair
+schemes that feed a model its own reflection or its own test run
+\citep{chen2023selfdebug, li2024ldb}, the evidence returned here comes
+from a check the agent's tools cannot edit; §3.2 states what the agent's
+code could still do to it.
 
 \textbf{Loop breaking (\texttt{loopbreak}).} The harness keeps a sliding
 window of the last eight tool-call signatures, where a signature is the
 canonical JSON of the tool name and its arguments. If the same signature
-has already appeared twice in that window, the third identical call is
-not executed; the tool result says so and asks for a different approach.
-Without this flag, a local model can burn the rest of a context window
-on a command that already returned.
+has already appeared at least twice in that window and its last two
+results were byte-identical, the next identical call is not executed;
+the tool result says so and asks for a different approach. Keying on the
+result as well as the call keeps the legitimate edit, test, edit cycle
+from being blocked when the file changed between runs. Without this
+flag, a local model can burn the rest of a context window on a command
+that already returned.
 
 These seven flags are the experimental factors. They are not a claim
 that this is the unique decomposition of a coding harness. They are a
@@ -891,12 +910,14 @@ result. This is the same reasoning as the output cap, applied to the
 prompt rather than to a tool result.
 
 Per-request HTTP timeout equals the remaining episode budget (at most
-1800 s) and is not retried; the first turn is capped at 600 s so a
-wedged server cannot burn the full wall. An earlier protocol used a
-40-turn ceiling and is archived as protocol-1 (§4.6). We do not report
-wall-clock as a comparative result: some expansion cells overlapped two
-models on one GPU, and later cells did not. The 1800 s line is a stop
-condition, not a speed claim.
+1800 s) and a timed-out request is not retried; connection errors and
+HTTP 429 or 5xx responses are retried at most twice, after 1 s and 2 s,
+by the local client (the API arm's client retries up to six times); the
+first turn is capped at 600 s so a wedged server cannot burn the full
+wall. An earlier protocol used a 40-turn ceiling and is archived as
+protocol-1 (§4.6). We do not report wall-clock as a comparative result:
+some expansion cells overlapped two models on one GPU, and later cells
+did not. The 1800 s line is a stop condition, not a speed claim.
 
 \subsection{4. Methods}\label{methods}
 
@@ -1003,7 +1024,7 @@ commit that produced the grid:
   from 106 on the previous instrument with the containment and
   account-refusal work that the v2 instrument required.
 \item
-  \texttt{test\_stats.py} --- \textbf{166 assertions passed.} Bootstrap
+  \texttt{test\_stats.py} --- \textbf{160 assertions passed.} Bootstrap
   intervals, paired \(\Delta\), the interaction statistic, seed pinning,
   the Šidák correction, the Monte-Carlo coverage audit, and the figure
   renderers.
@@ -1200,10 +1221,14 @@ rate over baseline (\(\Delta > 0\)); and H2, that removing the output
 cap does not help the weaker model (\(\Delta \geq 0\)). Each is tested
 on each of the two arms, so the confirmatory family has four members and
 the Šidák correction gives \(\alpha = 1 - 0.95^{1/4} = 0.0127\),
-i.e.~\textbf{98.7\% intervals}. Confirmatory verdicts in Table 6 are
-read at that level and nowhere else. The remaining ablations are H3,
-exploratory, read at 95\% with the family-wise number attached (§5.5).
-H4, the interaction, is exploratory.
+i.e.~\textbf{98.7\% intervals}. The preregistration counted H2 once, on
+the weaker arm, which gives three tests and 98.3\% intervals; testing it
+on both arms is the more conservative choice and is recorded as a
+deviation (D3). At the registered 98.3\% level every verdict in Table 6
+is unchanged, and H2 on Ornith reads \([-0.006, +0.150]\). Confirmatory
+verdicts in Table 6 are read at that level and nowhere else. The
+remaining ablations are H3, exploratory, read at 95\% with the
+family-wise number attached (§5.5). H4, the interaction, is exploratory.
 
 \textbf{What the intervals are actually worth.} A percentile bootstrap
 on few repeats is not well calibrated, and we measure the deficiency
@@ -1215,10 +1240,14 @@ against a nominal 95\%. At the 5-repeat shape it delivers
 0.2\% of trials. The consequence for H3 is stated in §5.5 and is not a
 footnote: at 82.3\% per-interval coverage, the probability that at least
 one of the sixteen ladder intervals excludes zero under a global null is
-96\%. The grid produced four. No multiplicity correction is applied to
-the exploratory ladder; a Šidák \(\alpha\) of 0.0032 would be required
-for a 5\% family-wise rate, and we report that number instead of quietly
-applying it.
+92\%, with coverage audited per interval shape (twelve 5-repeat
+intervals at 82.3\%, four 20-repeat intervals at 94.1\%). The grid
+produced four: the two full-versus-baseline contrasts, Ornith
+\texttt{no-outcap} at 95\%, and Qwen \texttt{no-verifygate}, the only
+one among the twelve 5-repeat intervals. No multiplicity correction is
+applied to the exploratory ladder; a Šidák \(\alpha\) of 0.0032 would be
+required for a 5\% family-wise rate, and we report that number instead
+of quietly applying it.
 
 The arms are assigned by empirical full-harness mean pass rate
 \textbf{in the tag}, not by parameter count: Ornith is the weaker arm
@@ -1627,6 +1656,29 @@ H2 was worth testing. On the corrected instrument the same cell, same
 model, same tasks, same \(n\), gives \(+0.075\). The anomaly did not
 survive the fix.
 
+\textbf{The preregistered sensitivity to serving errors.} The
+preregistration (§7) asks for every cell's rate a second time with
+non-timeout serving errors removed, together with each cell's
+infrastructure-failure rate. That report was not produced when the grid
+was analysed (deviation D5). The committed summary records each cell's
+error stops, but not which repeat they fell in, whether their text named
+a timeout, or whether the episode passed anyway: the final verifier runs
+after an error, and 12 of the 147 such rows in our local logs passed.
+From it we can bound the sensitivity point estimates exactly but cannot
+put intervals on them. Up to 23.8\% of Ornith's baseline episodes and
+12.5\% of its full-harness episodes end in a serving error; no Qwen cell
+holds more than three. H1 keeps its sign under every allocation
+consistent with the summary: Qwen's full-versus-baseline difference lies
+in \([+0.141, +0.166]\), and Ornith's in \([+0.025, +0.480]\), or
+\(+0.168\) if every errored episode is taken as a failed one. Whether
+Ornith's H1 still clears the corrected level under the sensitivity rule
+cannot be settled from the summary. H2 on Ornith is not determined even
+in sign (\([-0.147, +0.308]\); \(-0.004\) if every errored episode
+failed). The episode logs that settle both are on the run host, and
+\texttt{compare.py} now produces the full dual report from them
+(\texttt{paper/sensitivity.py} derives the bounds above from the
+committed summaries).
+
 \subsubsection{5.5 The exploratory ladder, and what its intervals are
 worth}\label{the-exploratory-ladder-and-what-its-intervals-are-worth}
 
@@ -1688,12 +1740,17 @@ Ornith \(\Delta\)
 reason is measured.} The six exploratory cells run at \(n=5\) (deviation
 D2). At that cell shape a 5,000-trial Monte-Carlo audit puts the
 percentile bootstrap's actual coverage at \textbf{82.3\%}, not 95\%.
-Across the grid's sixteen ladder intervals, four exclude zero --- and at
-82.3\% per-interval coverage the probability that a \textbf{global null}
-produces at least one exclusion is \textbf{96\%}. Four exclusions is the
-expected yield of noise at this coverage, not a set of findings. A Šidák
-\(\alpha\) of 0.0032 would be needed for a 5\% family-wise rate; we
-report that number rather than apply it silently.
+Across the grid's sixteen ladder intervals, four exclude zero, and three
+of those are the 20-repeat contrasts of Table 6 (both \texttt{baseline}
+rows and Ornith \texttt{no-outcap}), which are powered and read at the
+corrected level there. Among the twelve 5-repeat intervals, the ones
+this table is about, one excludes zero --- and at 82.3\% per-interval
+coverage the probability that a \textbf{global null} produces at least
+one exclusion among twelve is \textbf{90\%}. One exclusion is what noise
+produces at this coverage, not a finding; which one it is matters only
+on its own terms, below. A Šidák \(\alpha\) of 0.0032 would be needed
+for a 5\% family-wise rate; we report that number rather than apply it
+silently.
 
 One result is large enough to survive the deficiency on its own terms:
 \textbf{Qwen \texttt{no-verifygate}, \(\Delta = +0.225\), interval
@@ -1782,11 +1839,13 @@ Seed-paired
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 5. Interaction \textbackslash Delta\_\{\textbackslash text\{weaker\}\} - \textbackslash Delta\_\{\textbackslash text\{stronger\}\} per ablation, unpaired resampling, 95\% intervals. This is the block the manuscript cites.}]{figures/interaction.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 5. Interaction \textbackslash Delta\_\{\textbackslash text\{weaker\}\} - \textbackslash Delta\_\{\textbackslash text\{stronger\}\} per ablation, unpaired resampling, 95\% intervals. The preregistration specifies the seed-paired scheme of Figure 6; showing the unpaired block first is deviation D4, and no conclusion depends on the choice, since every interval includes zero under both.}]{figures/interaction.generated.png}}
 \caption{\textbf{Figure 5.} Interaction
 \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) per ablation,
-unpaired resampling, 95\% intervals. This is the block the manuscript
-cites.}
+unpaired resampling, 95\% intervals. The preregistration specifies the
+seed-paired scheme of Figure 6; showing the unpaired block first is
+deviation D4, and no conclusion depends on the choice, since every
+interval includes zero under both.}
 \end{figure}
 
 \begin{figure}
@@ -1802,7 +1861,9 @@ choosing one silently is the error this pair is meant to prevent.}
 interval did. H4 is not answered by this grid. We report both pairing
 schemes because they are different procedures and publishing one beside
 a power analysis computed under the other is a contradiction the section
-exists to expose; the manuscript cites the unpaired block.
+exists to expose. The registered scheme is the seed-paired one
+(deviation D4 records that earlier drafts cited the unpaired block); the
+conclusion is the same under both.
 
 The one interval that reaches the boundary is \texttt{no-verifygate} at
 \(-0.150\), and its sign is the opposite of the hypothesis: the verify
@@ -1893,12 +1954,13 @@ difference is quantified rather than asserted.} Both produced four
 intervals excluding zero. At this arm's measured coverage of
 \textbf{94.1\%} the expected number under a global null is
 \textbf{0.47}, and the probability that at least one excludes zero is
-39\%. On the local arms, at 82.3\% coverage over sixteen intervals, the
-expected number is \textbf{2.83} and the probability is 96\%. Four
-exclusions out of eight here is roughly eight times the null
-expectation; four out of sixteen there is barely above it. The same
-count means opposite things, and the reason is the twenty repeats D2
-removed from the local ladder.
+39\%. On the local arms, audited per interval shape (twelve 5-repeat
+intervals at 82.3\%, four 20-repeat intervals at 94.1\%), the expected
+number is \textbf{2.36} and the probability is 92\%. Four exclusions out
+of eight here is roughly eight times the null expectation; four out of
+sixteen there is less than twice it, and three of those four are the
+powered 20-repeat contrasts. The same count means opposite things, and
+the reason is the twenty repeats D2 removed from the local ladder.
 
 Two components survive a Šidák correction across all eight of this arm's
 ladder tests (\(\alpha = 0.0064\), 99.36\% intervals):
@@ -2137,8 +2199,8 @@ ladder \emph{on the local arms} cannot carry component-level claims. We
 want to be plain about the last one because it is our own design's fault
 and not a property of the world: a deviation moved seeds out of those
 cells, and at \(n=5\) the bootstrap's measured coverage is 82.3\%, at
-which four of sixteen intervals excluding zero is what a global null
-produces 96\% of the time. A reader is entitled to treat Table 7 as
+which one exclusion among its twelve 5-repeat intervals is what a global
+null produces 90\% of the time. A reader is entitled to treat Table 7 as
 uninformative except for Qwen \texttt{no-verifygate}, and we treat it
 that way ourselves. The component-level claims we do make come from
 Table 10, the third arm's ladder at \(n=20\), where four of eight
@@ -2268,9 +2330,10 @@ capability-by-harness interaction remains undetectable.
   much.} The six one-flag cells run at \(n=5\) because of deviation D2.
   Monte-Carlo coverage at that cell shape is \textbf{82.3\%} against a
   nominal 95\%, and
-  \(P(\geq 1 \text{ interval excludes } 0 \mid \text{global null}) = 96\%\)
-  across the sixteen ladder intervals. Table 7 supports no
-  component-level claim except Qwen \texttt{no-verifygate}. The third
+  \(P(\geq 1 \text{ interval excludes } 0 \mid \text{global null}) = 90\%\)
+  across its twelve 5-repeat intervals (92\% across all sixteen ladder
+  intervals, with coverage audited per interval shape). Table 7 supports
+  no component-level claim except Qwen \texttt{no-verifygate}. The third
   arm's ladder (Table 10) is unaffected and carries the component-level
   results; what was lost is their replication on the local arms, and
   with it the interaction. This is the single largest weakness of the
@@ -2295,8 +2358,10 @@ capability-by-harness interaction remains undetectable.
   \textbf{Ornith is not a controlled weak arm.} Half its full-harness
   episodes never reach \texttt{finish}; 20 of 160 end in
   \texttt{ModelError} and 48 in \texttt{context\_exhausted}. Its
-  \(\Delta\) mixes harness effect with serving fragility, and we did not
-  filter those rows because the filter would have to be preregistered.
+  \(\Delta\) mixes harness effect with serving fragility. The
+  preregistered sensitivity analysis that removes serving errors was not
+  produced when the grid was analysed; from the committed summary it can
+  only be bounded (§5.4), and its intervals need the episode logs.
 \item
   \textbf{Eight tasks, one author, one language.} All hard tasks are
   Python and were written by the author who wrote the harness, biasing
@@ -2369,16 +2434,16 @@ model is not supported by evidence of this shape.
 
 We are equally clear about what the local grid cannot say. A deviation
 left its six exploratory cells at \(n=5\), where the percentile
-bootstrap's measured coverage is 82.3\% rather than 95\% and four of
-sixteen intervals excluding zero is what a global null yields 96\% of
-the time. That table is reported with the number that makes it
-unreadable as findings. The third arm, which kept twenty repeats on all
-nine cells, is where the component-level results come from: four of
-eight intervals exclude zero there against a null expectation of 0.47,
-and two components survive a correction across its whole ladder. The
-same four exclusions mean opposite things on the two ladders, which is
-the clearest argument in this paper for reporting measured coverage
-alongside an interval.
+bootstrap's measured coverage is 82.3\% rather than 95\% and one
+exclusion among its twelve 5-repeat intervals is what a global null
+yields 90\% of the time. That table is reported with the number that
+makes it unreadable as findings. The third arm, which kept twenty
+repeats on all nine cells, is where the component-level results come
+from: four of eight intervals exclude zero there against a null
+expectation of 0.47, and two components survive a correction across its
+whole ladder. The same count of exclusions means opposite things on the
+two ladders, which is the clearest argument in this paper for reporting
+measured coverage alongside an interval.
 
 The contribution we are most confident in is not an effect size. It is
 the pairing of two things this literature usually separates: an
@@ -2457,7 +2522,7 @@ Reproduction:
 \begin{Highlighting}[]
 \ExtensionTok{python3}\NormalTok{ selftest.py                 }\CommentTok{\# 19 tasks: start broken, accept reference, reject tampering}
 \ExtensionTok{python3}\NormalTok{ stress\_test.py              }\CommentTok{\# 189 adversarial harness tests, no GPU}
-\ExtensionTok{python3}\NormalTok{ test\_stats.py               }\CommentTok{\# 166 bootstrap / delta / coverage / figure tests, no GPU}
+\ExtensionTok{python3}\NormalTok{ test\_stats.py               }\CommentTok{\# bootstrap / delta / coverage / figure tests, no GPU}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2 }\AttributeTok{{-}{-}json{-}out}\NormalTok{ paper/stats{-}v2.json         }\CommentTok{\# Tables 3{-}8}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2,ext{-}cerebras                            }\CommentTok{\# three{-}arm family (§5.7)}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# v1 record (§5.9)}
@@ -2497,31 +2562,37 @@ Models in Tables 3--8 were \texttt{qwen3.8:27b} and
 0.33.0, stamped on every v2 episode, on the GH200 (aarch64, CUDA 13,
 97,871 MiB HBM, 900 W power cap, 1,980 MHz max SM clock).
 
-Runner defaults were \texttt{-\/-num-ctx\ 32768},
+Runner settings were \texttt{-\/-num-ctx\ 32768},
 \texttt{-\/-num-predict\ 4096}, \texttt{-\/-temperature\ 0.6},
-\texttt{-\/-think} on with fallback if unsupported, and
-\texttt{-\/-seed} equal to the repeat index for \texttt{-\/-repeat\ 5}
-starting at 0. Each frozen cell's \texttt{summary.json} carries a
-\texttt{protocol} object recording exactly this; for the four headline
-cells it reads
-\texttt{\{"max\_steps":\ 0,\ "max\_wall":\ 1800,\ "share\_gpu":\ false,\ "share\_gpu\_demoted":\ false,\ "starved\_abort":\ false,\ "num\_ctx":\ 32768,\ "num\_predict":\ 4096,\ "temperature":\ 0.6,\ "think":\ true\}}.
+\texttt{top\_p} 0.95, \texttt{-\/-think} on with fallback if
+unsupported, and the seed equal to the repeat index, starting at 0
+(repeats 0--19 in the confirmatory cells, 0--4 in the exploratory ones).
+Every cell's \texttt{summary.json} carries a \texttt{protocol} object,
+which is a pooling key; for all eighteen v2 cells it reads
+\texttt{\{"max\_steps":\ 0,\ "max\_wall":\ 1800,\ "share\_gpu":\ false,\ "num\_ctx":\ 32768,\ "num\_predict":\ 4096,\ "temperature":\ 0.6,\ "think":\ true,\ "top\_p":\ 0.95,\ "reasoning\_effort":\ null,\ "concurrency":\ 1\}}
+plus the host stamps (\texttt{env\_gpu}, \texttt{env\_ollama\_version},
+\texttt{env\_platform}, and the node names). Whether a cell was demoted
+from a shared GPU or aborted for starvation is recorded separately,
+under \texttt{outcomes}.
 
-Frozen cells use \texttt{max\_steps=0} from turn one, a 1800 s episode
+The v2 cells use \texttt{max\_steps=0} from turn one, a 1800 s episode
 wall (\texttt{wall\_timeout} scores fail), first-turn HTTP timeout 600
-s, later turns capped at the remaining wall and not retried. A 0-token
-first-turn timeout is re-run, not skipped. Context exhaustion fires at
-90\% of \texttt{num\_ctx} (29,491 prompt tokens). Shell tool calls time
-out at 120 s; hidden tests time out at 60 s; the environment bootstrap
-times out at 15 s and its snapshot is capped at 4,000 bytes; verify-gate
-failure output returned to the model is capped at 4,000 bytes.
+s, and later turns capped at the remaining wall; timeouts are not
+retried (§3.5). A 0-token first-turn timeout is re-run, not skipped.
+Context exhaustion fires at 90\% of \texttt{num\_ctx} (29,491 prompt
+tokens). Shell tool calls time out at 120 s; hidden tests time out at 60
+s; the environment bootstrap times out at 15 s and its snapshot is
+capped at 4,000 bytes; the verify gate returns only the redacted summary
+of §3.3.
 
-Protocol-1 (archived \texttt{*-protocol1}) used a 40-step ceiling on
-early episodes, skip-existing, and \texttt{-\/-share-gpu} for part of
-the 160; it is not mixed into Tables 3--8. Ornith one-flag cells ran
-under \texttt{-\/-share-gpu}; remaining Qwen cells and the frozen
-full/baseline re-run were sole tenant
-(\texttt{OLLAMA\_MAX\_LOADED\_MODELS=2}, \texttt{KEEP\_ALIVE=-1},
-\texttt{FLASH\_ATTENTION=1}, \texttt{NUM\_PARALLEL=1}).
+All v2 cells ran sole tenant (\texttt{share\_gpu} false,
+\texttt{concurrency} 1; \texttt{OLLAMA\_MAX\_LOADED\_MODELS=2},
+\texttt{KEEP\_ALIVE=-1}, \texttt{FLASH\_ATTENTION=1},
+\texttt{NUM\_PARALLEL=1}). The superseded collections differ: protocol-1
+(archived \texttt{*-protocol1}) used a 40-step ceiling on early
+episodes, skip-existing, and \texttt{-\/-share-gpu} for part of its 160
+episodes, and the v1 grid's Ornith one-flag cells ran under
+\texttt{-\/-share-gpu}. Neither is mixed into Tables 3--8.
 
 The verify-gate case (Appendix D) used \texttt{qwen3.8:27b-mlx} and
 Ornith Q8 on Apple silicon with \texttt{max\_steps=40} and is not mixed
