@@ -522,33 +522,133 @@ probe("an unknown arm does not take a studied arm's colour",
       not in {c for _, c in figures.ARM_COLOURS})
 
 
-print("the paper body is prepared for LaTeX without losing captions or identity")
-sys.path.insert(0, _PAPER)
-import prepare_body as _pb  # noqa: E402
-_MS = open(os.path.join(_PAPER, "harness_architecture.md")).read().split("\n", 1)[1]
-_n_fig = len(re.findall(r"^\*\*Figure \d+\.\*\*", _MS, re.M))
-_n_tab = len(re.findall(r"^\*\*Table \d+\.\*\*", _MS, re.M))
+# Paper probes. The supplementary archive ships bench/ without the manuscript
+# and without prepare_body.py, so these are registered first and run only when
+# both are present; otherwise the block reports one SKIP line and counts none of
+# them as passes. When the files ARE present, a prepare_body that fails to import
+# is a failure, not a skip.
+_PAPER_PROBES = []
+
+
+def paper_probe(name, fn, detail=""):
+    _PAPER_PROBES.append((name, fn, detail))
+
+
+def _read(name):
+    with open(os.path.join(_PAPER, name), encoding="utf-8") as f:
+        return f.read()
+
+
+# A hand-numbered citation: [n] or [n, locator] with n a reference number.
+# CI intervals ([90.0, 98.8]) and data lists ([1175, 4250, ...]) are not.
+_NUMERIC_CITE = re.compile(r"\[(\d{1,2})(?:, [A-Za-z§][^\]\n]*)?\](?!\()")
+
+
+def _numeric_cites(text):
+    return [m.group(0) for m in _NUMERIC_CITE.finditer(text) if 1 <= int(m.group(1)) <= 24]
+
+
+_n_fig = lambda: len(re.findall(r"^\*\*Figure \d+\.\*\*", _MS, re.M))  # noqa: E731
+_n_tab = lambda: len(re.findall(r"^\*\*Table \d+\.\*\*", _MS, re.M))   # noqa: E731
 # Figure 1's caption was a loose paragraph and printed a page after its figure.
-probe("every Figure/Table caption is folded into its float",
-      lambda: _pb.attach_captions(_MS)[1:] == (_n_fig, _n_tab) and _n_fig and _n_tab,
-      lambda: (_pb.attach_captions(_MS)[1:], _n_fig, _n_tab))
-probe("a caption with no float next to it fails the build",
-      lambda: _raises(lambda: _pb.attach_captions("text\n\n**Figure 9.** orphan\n"),
-                      _pb.BuildError))
-probe("the review body carries no commit hash",
-      lambda: "82e453a" not in _pb.prepare(_MS, "tmlr-review"))
-probe("the preprint body keeps it",
-      lambda: "82e453a" in _pb.prepare(_MS, "tmlr-preprint"))
-probe("the TMLR abstract is lifted out of the body",
-      lambda: _pb.prepare(_MS, "tmlr-review").startswith("---\nabstract: |\n")
-      and "## Abstract" not in _pb.prepare(_MS, "tmlr-review"))
-probe("the review body has no acknowledgments (TMLR: add after acceptance)",
-      lambda: "## Acknowledgments" not in _pb.prepare(_MS, "tmlr-review")
-      and "## Acknowledgments" in _pb.prepare(_MS, "tmlr-preprint"))
-probe("the review body does not point at 'this repository'",
-      lambda: "this repository" not in _pb.prepare(_MS, "tmlr-review"))
-probe("an unanticipated hash occurrence fails the review build",
-      lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), _pb.BuildError))
+paper_probe("every Figure/Table caption is folded into its float",
+            lambda: _pb.attach_captions(_MS)[1:] == (_n_fig(), _n_tab())
+            and _n_fig() and _n_tab(),
+            lambda: (_pb.attach_captions(_MS)[1:], _n_fig(), _n_tab()))
+paper_probe("a caption with no float next to it fails the build",
+            lambda: _raises(lambda: _pb.attach_captions("text\n\n**Figure 9.** orphan\n"),
+                            _pb.BuildError))
+paper_probe("the review body carries no commit hash",
+            lambda: "82e453a" not in _pb.prepare(_MS, "tmlr-review"))
+paper_probe("the preprint body keeps it",
+            lambda: "82e453a" in _pb.prepare(_MS, "tmlr-preprint"))
+paper_probe("the TMLR abstract is lifted out of the body",
+            lambda: _pb.prepare(_MS, "tmlr-review").startswith("---\nabstract: |\n")
+            and "## Abstract" not in _pb.prepare(_MS, "tmlr-review"))
+paper_probe("the review body has no acknowledgments (TMLR: add after acceptance)",
+            lambda: "## Acknowledgments" not in _pb.prepare(_MS, "tmlr-review")
+            and "## Acknowledgments" in _pb.prepare(_MS, "tmlr-preprint"))
+paper_probe("the review body does not point at 'this repository'",
+            lambda: "this repository" not in _pb.prepare(_MS, "tmlr-review"))
+paper_probe("an unanticipated hash occurrence fails the review build",
+            lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), _pb.BuildError))
+
+# Citations: hand-numbered [n] markers became BibTeX keys cited through natbib.
+paper_probe("the manuscript carries no hand-numbered citation markers",
+            lambda: _numeric_cites(_MS) == [], lambda: _numeric_cites(_MS)[:5])
+paper_probe("the non-citation brackets survived the conversion",
+            lambda: "[1175, 4250, 89900, 125000, 250000]" in _MS
+            and "[90.0, 98.8]" in _MS and "[+0." in _MS)
+paper_probe("references.bib is pure ASCII (TeX escapes for diacritics)",
+            lambda: _read("references.bib").isascii(),
+            lambda: sorted({c for c in _read("references.bib") if not c.isascii()}))
+paper_probe("references.bib holds the 24 references, each key once",
+            lambda: len(_pb.bib_keys(_read("references.bib"))) == 24,
+            lambda: _pb.bib_keys(_read("references.bib")))
+paper_probe("every cited key is defined in references.bib",
+            lambda: _pb.cited_keys(_MS) - set(_pb.bib_keys(_read("references.bib"))) == set(),
+            lambda: _pb.cited_keys(_MS) - set(_pb.bib_keys(_read("references.bib"))))
+paper_probe("every references.bib entry is cited",
+            lambda: set(_pb.bib_keys(_read("references.bib"))) - _pb.cited_keys(_MS) == set(),
+            lambda: set(_pb.bib_keys(_read("references.bib"))) - _pb.cited_keys(_MS))
+paper_probe("narrative citations survive as @key (natbib renders 'Lee et al. (2026)')",
+            lambda: "reported by @lee2026metaharness [App. B.3]." in _MS
+            and re.search(r"(?<![\[;] )(?<!\[)@ernst2023registered argue", _MS))
+for _mode in ("article", "tmlr-review", "tmlr-preprint"):
+    paper_probe(f"the {_mode} body has exactly one bibliography, before the appendices",
+                lambda m=_mode: _pb.prepare(_MS, m).count("\\bibliography{") == 1
+                and _pb.prepare(_MS, m).index("\\bibliography{references}")
+                < _pb.prepare(_MS, m).index("## Appendix A"),
+                lambda m=_mode: _pb.prepare(_MS, m).count("\\bibliography{"))
+    paper_probe(f"the {_mode} body leaves the style to its template",
+                lambda m=_mode: "\\bibliographystyle" not in _pb.prepare(_MS, m))
+# pandoc --natbib drops a section sign from a narrative locator: `@k [§B.3]`
+# became \citet[B.3]{k}, printed "Lee et al. (2026, B.3)".
+paper_probe("no narrative citation carries a section-sign locator",
+            lambda: not re.search(r"(?<!\[)@[\w:-]+ \[§", _MS),
+            lambda: re.findall(r"(?<!\[)@[\w:-]+ \[§[^\]]*\]", _MS))
+paper_probe("a surviving numeric marker fails the build",
+            lambda: _raises(lambda: _pb.prepare(_MS + "\nsee [3].\n", "article"),
+                            _pb.BuildError))
+paper_probe("a second bibliography fails the build",
+            lambda: _raises(lambda: _pb.prepare(
+                _MS + "\n```{=latex}\n\\bibliography{references}\n```\n", "article"),
+                _pb.BuildError))
+paper_probe("a key missing from references.bib fails the build",
+            lambda: _raises(lambda: _pb.check_citations("see @nobody1999x.",
+                                                        _read("references.bib")),
+                            _pb.BuildError))
+paper_probe("an uncited references.bib entry fails the build",
+            lambda: _raises(lambda: _pb.check_citations("see @lee2026metaharness.",
+                                                        _read("references.bib")),
+                            _pb.BuildError))
+paper_probe("the TMLR template owns the tmlr style, once",
+            lambda: _read("tmlr/template.tex").count("\\bibliographystyle{tmlr}") == 1
+            and _read("tmlr/template.tex").count("\\bibliographystyle") == 1)
+_sh_code = lambda: re.sub(r"(?m)^\s*#.*$", "", _read("build_pdf.sh"))  # noqa: E731
+paper_probe("the article build names plainnat and never hands pandoc a bibliography",
+            lambda: "biblio-style=plainnat" in _sh_code()
+            and "--bibliography" not in _sh_code()
+            and "--natbib" in _sh_code())
+paper_probe("the build fails closed on undefined citations",
+            lambda: "There were undefined references" in _read("build_pdf.sh")
+            and "(?)" in _read("build_pdf.sh"))
+
+print("the paper body is prepared for LaTeX without losing captions, identity or citations")
+_PAPER_MISSING = [f for f in ("harness_architecture.md", "prepare_body.py")
+                  if not os.path.exists(os.path.join(_PAPER, f))]
+if _PAPER_MISSING:
+    print(f"SKIP {len(_PAPER_PROBES)} paper probes: "
+          f"{' and '.join(_PAPER_MISSING)} not present (supplementary archive)")
+else:
+    sys.path.insert(0, _PAPER)
+    try:
+        import prepare_body as _pb  # noqa: E402
+    except Exception as _e:                                 # noqa: BLE001
+        check("prepare_body imports", False, f"{type(_e).__name__}: {_e}")
+    _MS = _read("harness_architecture.md").split("\n", 1)[1]
+    for _name, _fn, _detail in _PAPER_PROBES:
+        probe(_name, _fn, _detail)
 
 
 def _legend_ys(svg):

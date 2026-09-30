@@ -9,6 +9,10 @@
 \usepackage[utf8]{inputenc}
 \usepackage{textcomp}
 \usepackage$if(tmlr-option)$[$tmlr-option$]$endif${tmlr}
+% tmlr.sty loads natbib (author-year); the journal's own style formats the
+% list. The body carries the one bibliography command, where the manuscript's
+% References section stands (prepare_body.py and build_pdf.sh check both).
+\bibliographystyle{tmlr}
 \usepackage{newunicodechar}
 \newunicodechar{×}{\ensuremath{\times}}
 \newunicodechar{−}{\ensuremath{-}}

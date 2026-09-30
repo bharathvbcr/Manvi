@@ -109,6 +109,8 @@
 \setlength{\emergencystretch}{3em} % prevent overfull lines
 \providecommand{\tightlist}{%
   \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage[authoryear,round]{natbib}
+\bibliographystyle{plainnat}
 % Wide result tables are the reason for most of this preamble.
 \usepackage{booktabs}
 \usepackage{longtable}
@@ -217,41 +219,45 @@ the model sees on the first turn, which tools it may call, how much of a
 tool result is returned, whether a repeated call is blocked, and whether
 a \texttt{finish} call ends the episode or is sent back with failing
 tests. That loop is the harness. Changing it, while holding the model
-fixed, can move pass rate by tens of points {[}1{]}, {[}2{]}.
-Practitioners already know this informally: they add a system prompt, a
-memory file, a retry, a verifier, and then treat the resulting number as
-a property of the model. The number is not. It is a property of a pair.
+fixed, can move pass rate by tens of points
+\citep{lee2026metaharness, merrill2026terminalbench}. Practitioners
+already know this informally: they add a system prompt, a memory file, a
+retry, a verifier, and then treat the resulting number as a property of
+the model. The number is not. It is a property of a pair.
 
 Lee, Nair, Zhang, Lee, Khattab, and Finn made the pair an object of
-search {[}1{]}. Their framing is the one we adopt: the performance of an
-LLM system ``depends not only on model weights, but also on their
-harness: the code that determines what information to store, retrieve,
-and present to the model,'' and harnesses ``are still designed largely
-by hand'' {[}1{]}. Meta-Harness answers that with an outer loop whose
-proposer rewrites harness code given filesystem access to prior source,
-scores, and traces. On Terminal-Bench 2.0 {[}2{]} their discovered
+search \citep{lee2026metaharness}. Their framing is the one we adopt:
+the performance of an LLM system ``depends not only on model weights,
+but also on their harness: the code that determines what information to
+store, retrieve, and present to the model,'' and harnesses ``are still
+designed largely by hand'' \citep{lee2026metaharness}. Meta-Harness
+answers that with an outer loop whose proposer rewrites harness code
+given filesystem access to prior source, scores, and traces. On
+Terminal-Bench 2.0 \citep{merrill2026terminalbench} their discovered
 harness ranked first among reported Claude Haiku 4.5 agents at 37.6\%
 and second among reported Claude Opus 4.6 agents at 76.4\%, against a
 leaderboard that itself spans 13.9--37.6\% for Haiku and 58.0--81.8\%
-for Opus {[}1, Table 7{]}. That table is evidence that harness choice is
-first-order. It is not a component ablation, it is not a local-model
-result, and it is not a statistical test that the ablation delta shrinks
-as capability rises. The search that produced it also consumes a
-frontier coding agent as the proposer.
+for Opus \citep[Table 7]{lee2026metaharness}. That table is evidence
+that harness choice is first-order. It is not a component ablation, it
+is not a local-model result, and it is not a statistical test that the
+ablation delta shrinks as capability rises. The search that produced it
+also consumes a frontier coding agent as the proposer.
 
 The same tension runs through the agentic software-engineering
 literature, where three incompatible stories about the source of the
-pass rate coexist. Yang et al.~argued that the agent--computer interface
-is what enables automated software engineering, and engineered one
-deliberately {[}4{]}. Xia et al.~pushed the opposite way with Agentless,
-replacing the agent with a fixed localize--repair--validate pipeline and
-reporting competitive SWE-bench resolution at lower cost --- evidence
-that much of the apparent gain from ``agents'' was scaffold engineering
-nobody had isolated {[}8{]}, {[}9{]}. Zhang et al.'s AutoCodeRover kept
-the loop but attributed its gains to AST-aware code search rather than
-to the loop's freedom {[}10{]}. Multi-agent systems such as Magentic-One
-add an orchestration layer on top of all of this {[}19{]}, and the
-surveys now catalogue dozens of such designs {[}11{]}. Each of these is
+pass rate coexist. \citet{yang2024sweagent} argued that the
+agent--computer interface is what enables automated software
+engineering, and engineered one deliberately. Xia et al.~pushed the
+opposite way with Agentless, replacing the agent with a fixed
+localize--repair--validate pipeline and reporting competitive SWE-bench
+resolution at lower cost --- evidence that much of the apparent gain
+from ``agents'' was scaffold engineering nobody had isolated
+\citep{xia2024agentless, xia2025demystifying}. Zhang et al.'s
+AutoCodeRover kept the loop but attributed its gains to AST-aware code
+search rather than to the loop's freedom \citep{zhang2024autocoderover}.
+Multi-agent systems such as Magentic-One add an orchestration layer on
+top of all of this \citep{fourney2024magenticone}, and the surveys now
+catalogue dozens of such designs \citep{liu2024survey}. Each of these is
 a claim about \emph{which component pays}, and none of them is settled
 by a leaderboard position, because the systems differ in many components
 at once.
@@ -277,19 +283,19 @@ standard library, five tools, no training, no outer-loop proposer.
 Two further constraints came from outside our own results. The first is
 that agent benchmarks are increasingly unreliable in a specific way:
 models reach high scores by exploiting shortcuts rather than solving the
-task. Lodkaew et al.~name this deceptive performance and treat detection
-and prevention as a first-class evaluation problem {[}13{]}; Kouremetis
-et al.~found LLM agents cheating on cybersecurity benchmarks widely
-enough to inflate reported pass rates beyond genuine capability
-{[}14{]}; and Aleithan et al.~traced a material fraction of reported
-SWE-bench passes to solution leakage and weak test suites {[}12{]}. We
-therefore built the grader to be unreachable --- hidden tests outside
-the sandbox, visible tests content-hashed, the checker unshadowable
-(§3.2) --- and Appendix D reports a case where a model does exactly what
-this literature predicts. The second is that repeated runs of the same
-prompt do not agree even with decoding parameters fixed {[}15{]}, which
-makes a single-run pass rate an anecdote. We pin a seed per repeat and
-report intervals throughout.
+task. \citet{lodkaew2026deceive} name this deceptive performance and
+treat detection and prevention as a first-class evaluation problem;
+\citet{kouremetis2026cheats} found LLM agents cheating on cybersecurity
+benchmarks widely enough to inflate reported pass rates beyond genuine
+capability; and \citet{aleithan2024swebenchplus} traced a material
+fraction of reported SWE-bench passes to solution leakage and weak test
+suites. We therefore built the grader to be unreachable --- hidden tests
+outside the sandbox, visible tests content-hashed, the checker
+unshadowable (§3.2) --- and Appendix D reports a case where a model does
+exactly what this literature predicts. The second is that repeated runs
+of the same prompt do not agree even with decoding parameters fixed
+\citep{nicholson2026drift}, which makes a single-run pass rate an
+anecdote. We pin a seed per repeat and report intervals throughout.
 
 This paper makes five contributions. First, we specify a coding harness
 whose seven components are independently switchable, each tied to a
@@ -358,56 +364,59 @@ cost proxies and the verify-gate mechanism.
 \subsubsection{2.1 The harness as an object of design and of
 search}\label{the-harness-as-an-object-of-design-and-of-search}
 
-Lee et al.~define a harness as the code that determines what to store,
-retrieve, and present to a frozen model, and they treat harness
-engineering as a search problem rather than a one-off prompt edit
-{[}1{]}. Their outer loop is itself agentic: a proposer with filesystem
+\citet{lee2026metaharness} define a harness as the code that determines
+what to store, retrieve, and present to a frozen model, and they treat
+harness engineering as a search problem rather than a one-off prompt
+edit. Their outer loop is itself agentic: a proposer with filesystem
 access to every prior candidate's source, scores, and execution traces.
 The inner objects of that search, in the coding domain, are complete
 agent loops evaluated on Terminal-Bench 2.0, a suite of long-horizon
 interactive terminal tasks whose tests score final container state
-rather than the agent's command trace {[}2{]}. Merrill et al.~built that
-benchmark, in part, because existing benchmarks ``either do not measure
-real-world tasks, or are not sufficiently difficult to meaningfully
-measure frontier models'' {[}2{]} --- and because the same model under
-OpenHands {[}3{]}, Mini-SWE-Agent in the SWE-agent line {[}4{]}, Claude
+rather than the agent's command trace \citep{merrill2026terminalbench}.
+\citet{merrill2026terminalbench} built that benchmark, in part, because
+existing benchmarks ``either do not measure real-world tasks, or are not
+sufficiently difficult to meaningfully measure frontier models'' --- and
+because the same model under OpenHands \citep{wang2024openhands},
+Mini-SWE-Agent in the SWE-agent line \citep{yang2024sweagent}, Claude
 Code, or their own Terminus scaffold is not the same agent. Terminus 2
-is deliberately thin: one headless terminal tool and Bash {[}2{]}.
-Terminus-KIRA, which Meta-Harness uses as a coding-domain parent,
-replaces in-context JSON parsing with native tool calling and adds a 30
-kB output cap and a multi-perspective completion checklist {[}1{]},
-{[}5{]}. The Meta-Harness discovery on top of that parent is environment
-bootstrap: one compound shell command before the first model turn {[}1,
-§B.3{]}. Three of our seven flags --- \texttt{nativetools},
-\texttt{outcap}, \texttt{envboot} --- are direct implementations of
-components from that lineage, which is why we can ablate them rather
-than re-derive them.
+is deliberately thin: one headless terminal tool and Bash
+\citep{merrill2026terminalbench}. Terminus-KIRA, which Meta-Harness uses
+as a coding-domain parent, replaces in-context JSON parsing with native
+tool calling and adds a 30 kB output cap and a multi-perspective
+completion checklist \citep{lee2026metaharness, krafton2026kira}. The
+Meta-Harness discovery on top of that parent is environment bootstrap:
+one compound shell command before the first model turn
+\citep[§B.3]{lee2026metaharness}. Three of our seven flags ---
+\texttt{nativetools}, \texttt{outcap}, \texttt{envboot} --- are direct
+implementations of components from that lineage, which is why we can
+ablate them rather than re-derive them.
 
 The harness has since become an object of study in its own right, and a
 2026 review catalogues the shift as \emph{externalization}: capabilities
 earlier expected of the weights are moved into memory stores, skills,
-protocols, and the harness itself {[}20{]}. Two systems automate its
-construction on different objectives --- AutoHarness synthesizes a code
-wrapper that prevents an agent from attempting environment-prohibited
-actions {[}21{]}, while Self-Harness has the harness revise itself
-{[}22{]}. \textbf{Self-Harness states our central empirical finding as
-its motivating premise}: ``Because different models exhibit distinct
-behaviors, effective harness design is inherently model-specific''
-{[}22{]}. That is asserted there to justify per-model search. We arrive
-at it from the other direction and measure it: on our suite the single
-largest component effect, native file tools at \(\Delta = +0.144\),
-appears on one of three models and is close to free on the other two
-(§5.7). A claim used as a design premise and a claim supported by a
-paired ablation are different objects, and the second is what this paper
-contributes.
+protocols, and the harness itself \citep{zhou2026externalization}. Two
+systems automate its construction on different objectives ---
+AutoHarness synthesizes a code wrapper that prevents an agent from
+attempting environment-prohibited actions \citep{lou2026autoharness},
+while Self-Harness has the harness revise itself
+\citep{zhang2026selfharness}. \textbf{Self-Harness states our central
+empirical finding as its motivating premise}: ``Because different models
+exhibit distinct behaviors, effective harness design is inherently
+model-specific'' \citep{zhang2026selfharness}. That is asserted there to
+justify per-model search. We arrive at it from the other direction and
+measure it: on our suite the single largest component effect, native
+file tools at \(\Delta = +0.144\), appears on one of three models and is
+close to free on the other two (§5.7). A claim used as a design premise
+and a claim supported by a paired ablation are different objects, and
+the second is what this paper contributes.
 
 The finding that matters for this paper is not the search algorithm. It
 is the empirical fact that, for a fixed base model, published harnesses
-on Terminal-Bench 2.0 already differ by more than twenty points {[}1,
-Table 7{]}. OpenHands on Haiku 4.5 is 13.9\%; the Meta-Harness discovery
-is 37.6\%. Claude Code on Opus 4.6 is 58.0\%; ForgeCode is 81.8\%. Once
-those gaps exist, a component nobody A/B-tested is a guess, even if the
-full loop looks strong.
+on Terminal-Bench 2.0 already differ by more than twenty points
+\citep[Table 7]{lee2026metaharness}. OpenHands on Haiku 4.5 is 13.9\%;
+the Meta-Harness discovery is 37.6\%. Claude Code on Opus 4.6 is 58.0\%;
+ForgeCode is 81.8\%. Once those gaps exist, a component nobody
+A/B-tested is a guess, even if the full loop looks strong.
 
 \subsubsection{2.2 Scaffolds, pipelines, and the disagreement about
 where value
@@ -416,15 +425,17 @@ lives}\label{scaffolds-pipelines-and-the-disagreement-about-where-value-lives}
 SWE-agent's thesis is that the loop is where the value is: a
 purpose-built agent--computer interface, with tools shaped for a
 language model rather than for a human shell user, is what makes the
-model effective {[}4{]}. Agentless is the null hypothesis made concrete
---- Xia et al.~replaced the agent entirely with a fixed three-phase
-pipeline and reported competitive SWE-bench resolution at lower cost,
-arguing that autonomy per se was not carrying the result {[}8{]},
-{[}9{]}. AutoCodeRover sits between them, keeping an agentic loop but
-locating its gains in code-aware retrieval over an AST representation
-{[}10{]}. Magentic-One goes the other direction, adding a generalist
-orchestrator over specialized agents {[}19{]}. Liu et al.'s survey
-catalogues the resulting proliferation {[}11{]}.
+model effective \citep{yang2024sweagent}. Agentless is the null
+hypothesis made concrete --- Xia et al.~replaced the agent entirely with
+a fixed three-phase pipeline and reported competitive SWE-bench
+resolution at lower cost, arguing that autonomy per se was not carrying
+the result \citep{xia2024agentless, xia2025demystifying}. AutoCodeRover
+sits between them, keeping an agentic loop but locating its gains in
+code-aware retrieval over an AST representation
+\citep{zhang2024autocoderover}. Magentic-One goes the other direction,
+adding a generalist orchestrator over specialized agents
+\citep{fourney2024magenticone}. Liu et al.'s survey catalogues the
+resulting proliferation \citep{liu2024survey}.
 
 Our position is methodological rather than partisan. All four are claims
 about which component pays, and none was measured by holding the rest of
@@ -435,52 +446,52 @@ can \emph{discover}; we ask which declared components, implemented once,
 switchable inner loop is the right substrate for an outer search,
 because a proposer that rewrites a monolith cannot tell which edit paid.
 
-Tool use in particular is not a uniform competence. Shen et al.~find
-that smaller models are weak tool learners, with performance limitations
-in query understanding, tool invocation, and result summarization that
-are specifically pronounced below frontier scale, and decompose the role
-across several models to recover it {[}23{]}. Our \texttt{nativetools}
-result is the harness-side counterpart: withdrawing the native calling
-path and requiring the model to emit calls the loop must parse costs one
-arm \(+0.144\) and the other two nothing measurable (§5.7). Which models
-can afford that withdrawal is a property of the model, not of the
-harness.
+Tool use in particular is not a uniform competence.
+\citet{shen2024smallllms} find that smaller models are weak tool
+learners, with performance limitations in query understanding, tool
+invocation, and result summarization that are specifically pronounced
+below frontier scale, and decompose the role across several models to
+recover it. Our \texttt{nativetools} result is the harness-side
+counterpart: withdrawing the native calling path and requiring the model
+to emit calls the loop must parse costs one arm \(+0.144\) and the other
+two nothing measurable (§5.7). Which models can afford that withdrawal
+is a property of the model, not of the harness.
 
 \subsubsection{2.3 Verification, self-repair, and the
 gate}\label{verification-self-repair-and-the-gate}
 
-The verify gate is a member of a well-studied family. Chen et al.~showed
-that a model given execution feedback can repair its own program without
-human supervision {[}16{]}, and Li et al.'s LDB refines that by
-verifying runtime execution step by step against unit tests rather than
-treating the program as an indivisible artifact {[}17{]}. Our gate
-differs from both in the direction that matters for measurement: it is
-not a self-repair prompt but an \emph{external} precondition on
-termination. The tests it runs are ones the agent cannot read, edit, or
-shadow (§3.2), and their failure output --- not the model's own
-reflection --- is what re-enters the context. The \texttt{checklist}
-flag is the prompt-side analogue, and keeping the two as separate flags
-is deliberate: it lets us ask whether the prompt intervention and the
-external check are substitutes. Table 7 says they are not: removing the
-gate costs Qwen \(+0.225\) while removing the checklist costs
-\(+0.025\).
+The verify gate is a member of a well-studied family.
+\citet{chen2023selfdebug} showed that a model given execution feedback
+can repair its own program without human supervision, and Li et al.'s
+LDB refines that by verifying runtime execution step by step against
+unit tests rather than treating the program as an indivisible artifact
+\citep{li2024ldb}. Our gate differs from both in the direction that
+matters for measurement: it is not a self-repair prompt but an
+\emph{external} precondition on termination. The tests it runs are ones
+the agent cannot read, edit, or shadow (§3.2), and their failure output
+--- not the model's own reflection --- is what re-enters the context.
+The \texttt{checklist} flag is the prompt-side analogue, and keeping the
+two as separate flags is deliberate: it lets us ask whether the prompt
+intervention and the external check are substitutes. Table 7 says they
+are not: removing the gate costs Qwen \(+0.225\) while removing the
+checklist costs \(+0.025\).
 
 \subsubsection{2.4 When the grade can be reached without the
 work}\label{when-the-grade-can-be-reached-without-the-work}
 
 A benchmark's grade is only as good as the difficulty of reaching it
-dishonestly. Aleithan et al.~audited SWE-bench and found solution
-leakage and weak test suites behind a material fraction of reported
-passes {[}12{]}. Lodkaew et al.~formalize the general case: agents ``can
-achieve high evaluation scores by exploiting shortcuts instead of
-solving the intended task, producing deceptive performance,'' which
-makes scores unreliable as measures of ability, and they propose
-randomized tests and capped evaluation as countermeasures {[}13{]}.
-Kouremetis et al.~document the same behaviour in the wild on
+dishonestly. \citet{aleithan2024swebenchplus} audited SWE-bench and
+found solution leakage and weak test suites behind a material fraction
+of reported passes. \citet{lodkaew2026deceive} formalize the general
+case: agents ``can achieve high evaluation scores by exploiting
+shortcuts instead of solving the intended task, producing deceptive
+performance,'' which makes scores unreliable as measures of ability, and
+they propose randomized tests and capped evaluation as countermeasures.
+\citet{kouremetis2026cheats} document the same behaviour in the wild on
 cybersecurity benchmarks, where cheating inflates reported pass rates
-beyond genuine capability, and study prompt-level mitigations against it
-{[}14{]}. Terminal-Bench's own design response is to score final
-container state rather than the trace {[}2{]}.
+beyond genuine capability, and study prompt-level mitigations against
+it. Terminal-Bench's own design response is to score final container
+state rather than the trace \citep{merrill2026terminalbench}.
 
 Ours is narrower and stricter, and it is structural rather than
 prompt-level: hidden tests the agent never sees, visible tests hashed
@@ -489,17 +500,18 @@ test executed from a directory outside the sandbox so it cannot be
 shadowed. Section 5.7 is a worked example of exactly the failure this
 literature describes --- a visible test passing while the documented
 contract is broken --- caught by a check the model does not control. It
-is also a small piece of evidence on the open question in {[}14{]}: on
-our task, the prompt-side checklist was on in \emph{both} arms and did
-not prevent the false finish; only the external gate did.
+is also a small piece of evidence on the open question in
+\citet{kouremetis2026cheats}: on our task, the prompt-side checklist was
+on in \emph{both} arms and did not prevent the false finish; only the
+external gate did.
 
 \subsubsection{2.5 Context handling}\label{context-handling}
 
 The output cap and the loud context-exhaustion stop are not
-conveniences. Liu et al.~showed that language models use long contexts
-unevenly, with material degradation for information placed in the middle
-of a long input {[}7{]}. A harness that silently drops the middle of a
-build log is therefore not merely losing bytes; it is moving the
+conveniences. \citet{liu2024lost} showed that language models use long
+contexts unevenly, with material degradation for information placed in
+the middle of a long input. A harness that silently drops the middle of
+a build log is therefore not merely losing bytes; it is moving the
 evidence into the region the model handles worst, or removing it while
 leaving the model confident that it read the log. Our head-and-tail cap
 keeps both ends and states in-band how many bytes were elided, and the
@@ -515,22 +527,22 @@ Pass rates on small suites with sampling temperature are noisy, and a
 point estimate over a handful of episodes is not a result. Worse,
 identical prompts need not produce identical outputs even with
 temperature and decoding parameters fixed; Nicholson's repeated-run
-experiments quantify that drift directly {[}15{]}. Reproducibility of
-the surrounding artifact is its own research problem, as CORE-Bench
-makes explicit by turning computational reproducibility into an agent
-benchmark {[}18{]}. We respond on four fronts: a seed pinned per repeat
-index so any cell can be re-run, percentile bootstrap confidence
-intervals throughout following the standard treatment {[}6{]}, a
-\texttt{protocol} object serialized into every result file so a cell's
-stop conditions travel with its numbers, and \textbf{preregistration} of
-the design, the hypothesis directions, and the analysis before the first
-episode.
+experiments quantify that drift directly \citep{nicholson2026drift}.
+Reproducibility of the surrounding artifact is its own research problem,
+as CORE-Bench makes explicit by turning computational reproducibility
+into an agent benchmark \citep{siegel2024corebench}. We respond on four
+fronts: a seed pinned per repeat index so any cell can be re-run,
+percentile bootstrap confidence intervals throughout following the
+standard treatment \citep{diciccio1996bootstrap}, a \texttt{protocol}
+object serialized into every result file so a cell's stop conditions
+travel with its numbers, and \textbf{preregistration} of the design, the
+hypothesis directions, and the analysis before the first episode.
 
 The last is uncommon in this literature and is borrowed from an adjacent
-one. Ernst and Baldassarre argue for registered reports in software
-engineering precisely because reviewing a protocol before results exist
-removes the degrees of freedom that outcome-dependent analysis
-introduces {[}24{]}. We do not submit a registered report, but we do fix
+one. \citet{ernst2023registered} argue for registered reports in
+software engineering precisely because reviewing a protocol before
+results exist removes the degrees of freedom that outcome-dependent
+analysis introduces. We do not submit a registered report, but we do fix
 the directions, the estimator, and the multiplicity correction in a
 document written before any v2 episode ran
 (\texttt{paper/preregistration.md}), and we record every departure from
@@ -547,7 +559,7 @@ was arrived at, which is why §5.8 is labelled post-hoc.
 Our tasks are a separate, smaller suite with hidden tests. They are not
 a drop-in substitute for Terminal-Bench 2.0 or SWE-bench, and we do not
 report them as such. We cite leaderboard names only as they appear in
-Lee et al.~{[}1{]}. We did not re-run that leaderboard.
+\citet{lee2026metaharness}. We did not re-run that leaderboard.
 
 The failure modes that motivated the flags are local-loop failures, not
 leaderboard failures. A 27B model spent early turns discovering what is
@@ -608,28 +620,29 @@ episode. Tool bugs are also recoverable: an unexpected exception becomes
 a tool result, not a crashed run.
 
 Output from the shell and from files is passed through a head-and-tail
-cap of 30,000 bytes. Lee et al.~report that their discovered
-Terminal-Bench harness inherits a ``30KB output cap'' from Terminus-KIRA
-{[}1, App. B.3{]}, whose own description gives it as a cap on terminal
-output ``to prevent context bloat'' {[}5{]}. The middle is never dropped
-silently. The truncation notice states how many bytes were elided and
-that both the head and the tail are shown ---
+cap of 30,000 bytes. \citet[App. B.3]{lee2026metaharness} report that
+their discovered Terminal-Bench harness inherits a ``30KB output cap''
+from Terminus-KIRA, whose own description gives it as a cap on terminal
+output ``to prevent context bloat'' \citep{krafton2026kira}. The middle
+is never dropped silently. The truncation notice states how many bytes
+were elided and that both the head and the tail are shown ---
 \texttt{...\ {[}N\ bytes\ elided\ by\ the\ harness;\ K\ head\ +\ K\ tail\ bytes\ shown{]}\ ...}
 --- because a model that does not see that notice will invent a cause
 for a failure whose log it never read, and because the middle is
 precisely the region a long-context model handles least reliably
-{[}7{]}. When \texttt{outcap} is off, the cap is raised to \(10^9\)
-bytes so that the flag is a real ablation rather than a comment.
+\citep{liu2024lost}. When \texttt{outcap} is off, the cap is raised to
+\(10^9\) bytes so that the flag is a real ablation rather than a
+comment.
 
 \subsubsection{3.2 The non-cheating
 invariant}\label{the-non-cheating-invariant}
 
 The grader must not be reachable by the agent. This is not a
 hypothetical concern: agents are documented to reach benchmark grades by
-exploiting shortcuts rather than solving the task {[}12{]}, {[}13{]},
-{[}14{]}. Three independent mechanisms enforce unreachability here, and
-they are independent on purpose: defeating one does not defeat the
-others.
+exploiting shortcuts rather than solving the task
+\citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}.
+Three independent mechanisms enforce unreachability here, and they are
+independent on purpose: defeating one does not defeat the others.
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -740,7 +753,7 @@ and the omission is recorded as an \texttt{envboot\_empty} event. A
 broken bootstrap must degrade to the baseline, not abort the grid. The
 point of the component is to remove the two to four turns a local model
 otherwise spends asking what is installed, which is the coding-domain
-discovery reported by Lee et al.~{[}1, §B.3{]}.
+discovery reported by \citet[App. B.3]{lee2026metaharness}.
 
 \textbf{Filesystem grounding (\texttt{groundfs}).} A single sentence is
 appended to the first user message: everything needed is already in the
@@ -778,8 +791,8 @@ success, the loop stops with \texttt{stop\_reason=finished}. The tests
 are not in the sandbox and cannot be shadowed (§3.2). Visible tests in
 the task directory are part of the problem statement; they are not the
 grade. Unlike self-repair schemes that feed a model its own reflection
-or its own test run {[}16{]}, {[}17{]}, the evidence returned here comes
-from a check the agent cannot influence.
+or its own test run \citep{chen2023selfdebug, li2024ldb}, the evidence
+returned here comes from a check the agent cannot influence.
 
 \textbf{Loop breaking (\texttt{loopbreak}).} The harness keeps a sliding
 window of the last eight tool-call signatures, where a signature is the
@@ -1135,15 +1148,16 @@ flag.
 \subsubsection{4.5 Statistics}\label{statistics}
 
 Repeats are not a formality. Identical prompts do not reliably produce
-identical outputs even with decoding parameters fixed {[}15{]}, so a
-single run is an anecdote and the spread across repeats is part of the
-measurement. Let \(p_{m,c,r}\) be the pass rate of model \(m\),
-configuration \(c\), repeat \(r\), over the eight tasks. The cell
-estimate is the mean of \(\{p_{m,c,r}\}\), weighted by scored episodes.
-Intervals are percentile bootstrap 95\% confidence intervals on that
-mean, 10,000 resamples, RNG seed 0, as implemented in
-\texttt{mh/stats.py} and following the standard treatment of bootstrap
-intervals {[}6{]}. For each model and each ablation the paired delta is
+identical outputs even with decoding parameters fixed
+\citep{nicholson2026drift}, so a single run is an anecdote and the
+spread across repeats is part of the measurement. Let \(p_{m,c,r}\) be
+the pass rate of model \(m\), configuration \(c\), repeat \(r\), over
+the eight tasks. The cell estimate is the mean of \(\{p_{m,c,r}\}\),
+weighted by scored episodes. Intervals are percentile bootstrap 95\%
+confidence intervals on that mean, 10,000 resamples, RNG seed 0, as
+implemented in \texttt{mh/stats.py} and following the standard treatment
+of bootstrap intervals \citep{diciccio1996bootstrap}. For each model and
+each ablation the paired delta is
 \(\Delta_r = p_{m,\text{full},r} - p_{m,c,r}\), and the same bootstrap
 is applied to \(\{\Delta_r\}\), with one index vector applied to both
 arms.
@@ -2047,7 +2061,8 @@ v1's numbers are not fabricated, and no model in this study cheated.
 They are measured on an instrument that could not have detected it if
 one had. A benchmark that cannot rule out the exploit reports the same
 number whether or not the exploit occurred, which is the failure mode
-the recent validity literature describes {[}12{]}, {[}13{]}, {[}14{]}
+the recent validity literature describes
+\citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}
 --- and the reason we treat ``we audited and found none'' as a weaker
 claim than ``the instrument makes it impossible.''
 
@@ -2148,17 +2163,18 @@ capability with serving behaviour. Ornith is a second model, not a
 controlled weak arm.
 
 \textbf{Why the interaction came back empty a second time.} Our design
-is the paired one Lee et al.'s leaderboard span is not {[}1{]}, {[}2{]},
-and it returned eight nulls again. Three reasons we cannot separate: the
-exploratory cells are at \(n=5\); the local capability spread (60.6\% to
-95.0\%) is narrower than Haiku-to-Opus; and the weaker arm's failures
-are dominated by context exhaustion and serving errors that no
-prompt-side component addresses. The one interval that reaches the
-boundary, \texttt{no-verifygate} at \(-0.150\), points the
-\emph{opposite} way to the hypothesis --- the gate worth more to the
-stronger model. We do not claim it. A future design should widen the
-capability ladder before adding repeats, and should fund the ladder at
-\(n=20\) before adding arms.
+is the paired one Lee et al.'s leaderboard span is not
+\citep{lee2026metaharness, merrill2026terminalbench}, and it returned
+eight nulls again. Three reasons we cannot separate: the exploratory
+cells are at \(n=5\); the local capability spread (60.6\% to 95.0\%) is
+narrower than Haiku-to-Opus; and the weaker arm's failures are dominated
+by context exhaustion and serving errors that no prompt-side component
+addresses. The one interval that reaches the boundary,
+\texttt{no-verifygate} at \(-0.150\), points the \emph{opposite} way to
+the hypothesis --- the gate worth more to the stronger model. We do not
+claim it. A future design should widen the capability ladder before
+adding repeats, and should fund the ladder at \(n=20\) before adding
+arms.
 
 \textbf{What the v1 record contributes.} A published effect that
 excluded zero --- Ornith \texttt{no-outcap} at \(-0.100\), interval
@@ -2417,116 +2433,15 @@ are retained only as a record of the protocol-1 era.
 \subsection{Acknowledgments}\label{acknowledgments}
 
 The component list and the 30 kB output cap follow the coding-harness
-setting studied by Lee et al.~{[}1{]}, building on Terminus-KIRA {[}5{]}
-and Terminal-Bench 2.0 {[}2{]}. The non-cheating invariant is inherited
-from the parent evaluation rules of this repository.
+setting studied by \citet{lee2026metaharness}, building on Terminus-KIRA
+\citep{krafton2026kira} and Terminal-Bench 2.0
+\citep{merrill2026terminalbench}. The non-cheating invariant is
+inherited from the parent evaluation rules of this repository.
 
 \subsection{References}\label{references}
 
-{[}1{]} Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab, and C. Finn,
-``Meta-Harness: End-to-End Optimization of Model Harnesses,''
-arXiv:2603.28052, 2026.
-
-{[}2{]} M. A. Merrill \emph{et al.}, ``Terminal-Bench: Benchmarking
-Agents on Hard, Realistic Tasks in Command Line Interfaces,''
-arXiv:2601.11868, 2026.
-
-{[}3{]} X. Wang, B. Li, Y. Song, F. F. Xu, X. Tang, M. Zhuge, J. Pan, Y.
-Song, B. Li, J. Singh, H. H. Tran, F. Li, R. Ma, M. Zheng, B. Qian, Y.
-Shao, N. Muennighoff, Y. Zhang, B. Hui, J. Lin, R. Brennan, H. Peng, H.
-Ji, and G. Neubig, ``OpenHands: An Open Platform for AI Software
-Developers as Generalist Agents,'' 2024. arXiv:2407.16741.
-doi:10.48550/arXiv.2407.16741.
-
-{[}4{]} J. Yang, C. E. Jimenez, A. Wettig, K. Lieret, S. Yao, K.
-Narasimhan, and O. Press, ``SWE-agent: Agent-Computer Interfaces Enable
-Automated Software Engineering,'' in \emph{Proc. NeurIPS}, 2024.
-arXiv:2405.15793. doi:10.48550/arXiv.2405.15793.
-
-{[}5{]} KRAFTON AI and Ludo Robotics, ``Terminus-KIRA: Boosting Frontier
-Model Performance on Terminal-Bench with Minimal Harness,'' 2026.
-Software repository, https://github.com/krafton-ai/kira.
-
-{[}6{]} T. J. DiCiccio and B. Efron, ``Bootstrap confidence intervals,''
-\emph{Statistical Science}, vol.~11, no. 3, pp.~189--228, 1996.
-doi:10.1214/ss/1032280214.
-
-{[}7{]} N. F. Liu, K. Lin, J. Hewitt, A. Paranjape, M. Bevilacqua, F.
-Petroni, and P. Liang, ``Lost in the Middle: How Language Models Use
-Long Contexts,'' \emph{Transactions of the ACL}, vol.~12, 2024.
-doi:10.1162/tacl\_a\_00638. Preprint arXiv:2307.03172.
-
-{[}8{]} C. S. Xia, Y. Deng, S. Dunn, and L. Zhang, ``Agentless:
-Demystifying LLM-based Software Engineering Agents,'' 2024.
-arXiv:2407.01489. doi:10.48550/arXiv.2407.01489.
-
-{[}9{]} C. S. Xia, Y. Deng, S. Dunn, and L. Zhang, ``Demystifying
-LLM-Based Software Engineering Agents,'' \emph{Proc. ACM Softw. Eng.},
-2025. doi:10.1145/3715754.
-
-{[}10{]} Y. Zhang, H. Ruan, Z. Fan, and A. Roychoudhury,
-``AutoCodeRover: Autonomous Program Improvement,'' in \emph{Proc.
-ISSTA}, 2024. doi:10.1145/3650212.3680384.
-
-{[}11{]} J. Liu, K. Wang, Y. Chen, X. Peng, Z. Chen, L. Zhang, and Y.
-Lou, ``Large Language Model-Based Agents for Software Engineering: A
-Survey,'' 2024. arXiv:2409.02977. doi:10.48550/arXiv.2409.02977.
-
-{[}12{]} R. Aleithan, H. Xue, M. M. Mohajer, E. Nnorom, G. Uddin, and S.
-Wang, ``SWE-Bench+: Enhanced Coding Benchmark for LLMs,'' 2024.
-arXiv:2410.06992. doi:10.48550/arXiv.2410.06992.
-
-{[}13{]} T. Lodkaew, J. Ackermann, S. Nishimori, N. Charoenphakdee, M.
-Sugiyama, and T. Ishida, ``Do Coding Agents Deceive Us? Detecting and
-Preventing Cheating via Capped Evaluation with Randomized Tests,'' 2026.
-arXiv:2606.07379.
-
-{[}14{]} M. Kouremetis, A. Dawson, R. S. R. Dheekonda, and B. Greunke,
-``Every Model Cheats: Prompt-Level Mitigation of Cheating on Offensive
-Cyber Tasks,'' 2026. arXiv:2607.21763.
-
-{[}15{]} C. Nicholson, ``Quantifying non-deterministic drift in large
-language models,'' 2026. arXiv:2601.19934.
-
-{[}16{]} X. Chen, M. Lin, N. Schärli, and D. Zhou, ``Teaching Large
-Language Models to Self-Debug,'' 2023. arXiv:2304.05128.
-doi:10.48550/arXiv.2304.05128.
-
-{[}17{]} Z. Li, Z. Wang, and J. Shang, ``Debug like a Human: A Large
-Language Model Debugger via Verifying Runtime Execution Step by Step,''
-in \emph{Findings of the ACL}, 2024.
-doi:10.18653/v1/2024.findings-acl.49.
-
-{[}18{]} Z. S. Siegel, S. Kapoor, N. Nagdir, B. Stroebl, and A.
-Narayanan, ``CORE-Bench: Fostering the Credibility of Published Research
-Through a Computational Reproducibility Agent Benchmark,'' 2024.
-arXiv:2409.11363. doi:10.48550/arXiv.2409.11363.
-
-{[}19{]} A. Fourney, G. Bansal, H. Mozannar, C. Tan, E. Salinas, E. Zhu,
-F. Niedtner, G. Proebsting, G. Bassman, J. Gerrits, J. Alber, P. Chang,
-R. Loynd, R. West, V. Dibia, A. Awadallah, E. Kamar, R. Hosn, and S.
-Amershi, ``Magentic-One: A Generalist Multi-Agent System for Solving
-Complex Tasks,'' 2024. arXiv:2411.04468. doi:10.48550/arXiv.2411.04468.
-
-{[}20{]} C. Zhou, H. Chai, W. Chen, Z. Guo, R. Shan, Y. Song, \emph{et
-al.}, ``Externalization in LLM Agents: A Unified Review of Memory,
-Skills, Protocols and Harness Engineering,'' 2026. arXiv:2604.08224.
-
-{[}21{]} X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W.
-Lehrach, and K. P. Murphy, ``AutoHarness: improving LLM agents by
-automatically synthesizing a code harness,'' 2026. arXiv:2603.03329.
-
-{[}22{]} H. Zhang, S. Zhang, K. Li, C. Zhang, Y. Chen, Y. Zhang, L. Bai,
-and S. Hu, ``Self-Harness: Harnesses That Improve Themselves,'' 2026.
-arXiv:2606.09498.
-
-{[}23{]} W. Shen, C. Li, H. Chen, M. Yan, X. Quan, H. Chen, J. Zhang,
-and F. Huang, ``Small LLMs Are Weak Tool Learners: A Multi-LLM Agent,''
-2024. arXiv:2401.07324.
-
-{[}24{]} N. A. Ernst and M. T. Baldassarre, ``Registered reports in
-software engineering,'' \emph{Empirical Software Engineering}, vol.~28,
-no. 2, art. 55, 2023. doi:10.1007/s10664-022-10277-5.
+\renewcommand{\bibsection}{}
+\bibliography{references}
 
 \subsection{Appendix A. Serving and
 protocol}\label{appendix-a.-serving-and-protocol}
@@ -2575,12 +2490,15 @@ status}\label{appendix-b.-citation-verification-status}
 Every citation was checked against its arXiv abstract page, OpenAlex, or
 Crossref. Status is recorded so that a reader can see which identifiers
 were confirmed at source and which were carried over from secondary
-citation. \textbf{All twenty-four references resolve.} {[}5{]} is a
-software repository rather than a paper, and is cited by its URL.
+citation. \textbf{All twenty-four references resolve.}
+\citet{krafton2026kira} is a software repository rather than a paper,
+and is cited by its URL.
 
-References {[}20{]}--{[}24{]} were found through a literature-search
-tool but \textbf{verified outside it}: each arXiv entry against its
-abstract page, and {[}24{]} against its Crossref record. This matters
+Five references
+\citep{zhou2026externalization, lou2026autoharness, zhang2026selfharness, shen2024smallllms, ernst2023registered}
+were found through a literature-search tool but \textbf{verified outside
+it}: each arXiv entry against its abstract page, and
+\citet{ernst2023registered} against its Crossref record. This matters
 for the same reason §5.9 does --- a retrieval tool that returns a
 plausible record is not a tool that has confirmed one.
 
@@ -2601,69 +2519,73 @@ Status
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-{[}1{]} Meta-Harness & arXiv:2603.28052 & \textbf{Verified.} Title, all
-six authors (Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab, C. Finn),
-year 2026, DOI \texttt{10.48550/arxiv.2603.28052}. Abstract confirms the
-harness definition quoted in §1. \\
-{[}2{]} Terminal-Bench & arXiv:2601.11868 & \textbf{Verified.} Title,
-first author M. A. Merrill, year 2026, DOI
-\texttt{10.48550/arxiv.2601.11868}. Abstract confirms Terminal-Bench
-\textbf{2.0}; a separate record (\texttt{10.60882/cispa.32056182})
-describes 1.5. We cite 2.0, as Lee et al.~do. \\
-{[}3{]} OpenHands & arXiv:2407.16741 & Verified --- title, 24 authors,
-2024, DOI \texttt{10.48550/arxiv.2407.16741}. \\
-{[}4{]} SWE-agent & arXiv:2405.15793 & Verified --- title, 7 authors,
-2024, DOI \texttt{10.48550/arxiv.2405.15793}. \\
-{[}5{]} Terminus-KIRA & github.com/krafton-ai/kira & \textbf{Verified at
-source.} Title, authors (KRAFTON AI and Ludo Robotics) and year match
-the repository's own citation block, and its description states the ``30
-KB cap on terminal output''. The cap in §3.1 is also stated in {[}1{]},
-Appendix B.3, which cites the KIRA repository. \\
-{[}6{]} DiCiccio \& Efron & doi:10.1214/ss/1032280214 & Verified ---
+\citet{aleithan2024swebenchplus} & arXiv:2410.06992 & Verified ---
+2024. \\
+\citet{chen2023selfdebug} & arXiv:2304.05128 & Verified --- 2023. \\
+\citet{diciccio1996bootstrap} & doi:10.1214/ss/1032280214 & Verified ---
 \emph{Statistical Science}, 1996. \\
-{[}20{]} Externalization review & arXiv:2604.08224 & Verified --- title
-and first six authors confirmed at the arXiv abstract page, submitted 9
-April 2026. \\
-{[}21{]} AutoHarness & arXiv:2603.03329 & Verified --- title and all six
-authors (X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W.
-Lehrach, K. P. Murphy), submitted 10 February 2026. \\
-{[}22{]} Self-Harness & arXiv:2606.09498 & \textbf{Verified.} Title, all
-eight authors, submitted 8 June 2026. The sentence quoted in §2.1 ---
-``Because different models exhibit distinct behaviors, effective harness
-design is inherently model-specific'' --- was confirmed verbatim against
-the abstract. \\
-{[}23{]} Small LLMs Are Weak Tool Learners & arXiv:2401.07324 & Verified
---- title and all eight authors, submitted 14 January 2024. Abstract
-confirms the claim attributed in §2.2 that performance limitations in
-tool use are pronounced for smaller models. \\
-{[}24{]} Ernst \& Baldassarre & doi:10.1007/s10664-022-10277-5 &
-Verified via Crossref --- \emph{Empirical Software Engineering},
-vol.~28, no. 2, art. 55, 2023; authors N. A. Ernst and M. T.
-Baldassarre. \\
-{[}7{]} Liu et al. & doi:10.1162/tacl\_a\_00638 & Verified --- TACL
-2024; preprint arXiv:2307.03172 also resolved. \\
-{[}8{]} Agentless & arXiv:2407.01489 & Verified --- 2024. \\
-{[}9{]} Xia et al.~(published) & doi:10.1145/3715754 & Verified ---
-2025. Same work as {[}8{]}; both records cited because the identifiers
-differ. \\
-{[}10{]} AutoCodeRover & doi:10.1145/3650212.3680384 & Verified ---
-ISSTA 2024. \\
-{[}11{]} Liu et al.~survey & arXiv:2409.02977 & Verified --- 2024. \\
-{[}12{]} SWE-Bench+ & arXiv:2410.06992 & Verified --- 2024. \\
-{[}13{]} Lodkaew et al. & arXiv:2606.07379 & Verified --- 2026. Abstract
-confirms the ``deceptive performance'' framing quoted in §2.4. \\
-{[}14{]} Kouremetis et al. & arXiv:2607.21763 & Verified --- 2026.
+\citet{ernst2023registered} & doi:10.1007/s10664-022-10277-5 & Verified
+via Crossref --- \emph{Empirical Software Engineering}, vol.~28, no. 2,
+art. 55, 2023; authors N. A. Ernst and M. T. Baldassarre. \\
+\citet{fourney2024magenticone} & arXiv:2411.04468 & Verified ---
+2024. \\
+\citet{kouremetis2026cheats} & arXiv:2607.21763 & Verified --- 2026.
 Abstract confirms the cheating-inflates-pass-rates finding cited in §2.4
 and §5.7. \\
-{[}15{]} Nicholson & arXiv:2601.19934 & Verified --- 2026. Abstract
-confirms repeated-run drift under fixed decoding parameters, as cited in
-§4.5. \\
-{[}16{]} Chen et al.~(Self-Debug) & arXiv:2304.05128 & Verified ---
-2023. \\
-{[}17{]} Li et al.~(LDB) & doi:10.18653/v1/2024.findings-acl.49 &
-Verified --- Findings of ACL 2024. \\
-{[}18{]} CORE-Bench & arXiv:2409.11363 & Verified --- 2024. \\
-{[}19{]} Magentic-One & arXiv:2411.04468 & Verified --- 2024. \\
+\citet{krafton2026kira} & github.com/krafton-ai/kira & \textbf{Verified
+at source.} Title, authors (KRAFTON AI and Ludo Robotics) and year match
+the repository's own citation block, and its description states the ``30
+KB cap on terminal output''. The cap in §3.1 is also stated in
+\citet[App. B.3]{lee2026metaharness}, which cites the KIRA
+repository. \\
+\citet{lee2026metaharness} & arXiv:2603.28052 & \textbf{Verified.}
+Title, all six authors (Y. Lee, R. Nair, Q. Zhang, K. Lee, O. Khattab,
+C. Finn), year 2026, DOI \texttt{10.48550/arxiv.2603.28052}. Abstract
+confirms the harness definition quoted in §1. \\
+\citet{li2024ldb} & doi:10.18653/v1/2024.findings-acl.49 & Verified ---
+Findings of ACL 2024. \\
+\citet{liu2024survey} & arXiv:2409.02977 & Verified --- 2024. \\
+\citet{liu2024lost} & doi:10.1162/tacl\_a\_00638 & Verified --- TACL
+2024; preprint arXiv:2307.03172 also resolved. \\
+\citet{lodkaew2026deceive} & arXiv:2606.07379 & Verified --- 2026.
+Abstract confirms the ``deceptive performance'' framing quoted in
+§2.4. \\
+\citet{lou2026autoharness} & arXiv:2603.03329 & Verified --- title and
+all six authors (X. Lou, M. Lázaro-Gredilla, A. Dedieu, C. Wendelken, W.
+Lehrach, K. P. Murphy), submitted 10 February 2026. \\
+\citet{merrill2026terminalbench} & arXiv:2601.11868 & \textbf{Verified.}
+Title, first author M. A. Merrill, year 2026, DOI
+\texttt{10.48550/arxiv.2601.11868}. Abstract confirms Terminal-Bench
+\textbf{2.0}; a separate record (\texttt{10.60882/cispa.32056182})
+describes 1.5. We cite 2.0, as Lee et al.~do. The full list of 85
+authors in \texttt{references.bib} is taken from the arXiv record. \\
+\citet{nicholson2026drift} & arXiv:2601.19934 & Verified --- 2026.
+Abstract confirms repeated-run drift under fixed decoding parameters, as
+cited in §4.5. \\
+\citet{shen2024smallllms} & arXiv:2401.07324 & Verified --- title and
+all eight authors, submitted 14 January 2024. Abstract confirms the
+claim attributed in §2.2 that performance limitations in tool use are
+pronounced for smaller models. \\
+\citet{siegel2024corebench} & arXiv:2409.11363 & Verified --- 2024. \\
+\citet{wang2024openhands} & arXiv:2407.16741 & Verified --- title, 24
+authors, 2024, DOI \texttt{10.48550/arxiv.2407.16741}. \\
+\citet{xia2024agentless} & arXiv:2407.01489 & Verified --- 2024. \\
+\citet{xia2025demystifying} & doi:10.1145/3715754 & Verified --- 2025.
+Same work as \citet{xia2024agentless}; both records cited because the
+identifiers differ. \\
+\citet{yang2024sweagent} & arXiv:2405.15793 & Verified --- title, 7
+authors, 2024, DOI \texttt{10.48550/arxiv.2405.15793}. \\
+\citet{zhang2024autocoderover} & doi:10.1145/3650212.3680384 & Verified
+--- ISSTA 2024. \\
+\citet{zhang2026selfharness} & arXiv:2606.09498 & \textbf{Verified.}
+Title, all eight authors, submitted 8 June 2026. The sentence quoted in
+§2.1 --- ``Because different models exhibit distinct behaviors,
+effective harness design is inherently model-specific'' --- was
+confirmed verbatim against the abstract. \\
+\citet{zhou2026externalization} & arXiv:2604.08224 & Verified --- title
+and first six authors confirmed at the arXiv abstract page, submitted 9
+April 2026; the full list of 21 authors in \texttt{references.bib} is
+taken from the arXiv record. \\
 \end{longtable}
 }
 
@@ -2792,15 +2714,16 @@ passes, because the pipeline still converts once, and the model calls
 \texttt{finish} satisfied. The hidden verifier records
 \texttt{FAIL\ loader\ returns\ dollars\ got\ {[}1175,\ 4250,\ 89900,\ 125000,\ 250000{]}\ want\ {[}11.75,\ 42.5,\ 899.0,\ 1250.0,\ 2500.0{]}}.
 This is precisely the benchmark-validity failure the recent literature
-documents at scale {[}12{]}, {[}13{]}, {[}14{]}: the visible grade is
-reachable without the intended fix, which is what makes a raw score an
-unreliable measure of ability. Only a check the model does not control
-catches it. Note that the prompt-side \texttt{checklist} was \textbf{on}
-in both arms of this contrast --- it asks the model directly whether it
-weakened any test and whether the fix addresses the cause --- and it did
-not prevent the false finish. That is a small data point against
-prompt-level mitigation alone {[}14{]} and in favour of a structural
-gate.
+documents at scale
+\citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}:
+the visible grade is reachable without the intended fix, which is what
+makes a raw score an unreliable measure of ability. Only a check the
+model does not control catches it. Note that the prompt-side
+\texttt{checklist} was \textbf{on} in both arms of this contrast --- it
+asks the model directly whether it weakened any test and whether the fix
+addresses the cause --- and it did not prevent the false finish. That is
+a small data point against prompt-level mitigation alone
+\citep{kouremetis2026cheats} and in favour of a structural gate.
 
 \textbf{The counts.} Restricting to configurations that differ from
 \texttt{full} in the \texttt{verifygate} flag alone, at

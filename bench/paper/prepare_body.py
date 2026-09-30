@@ -14,11 +14,20 @@ caption text.
 TMLR modes: the abstract moves from its "## Abstract" section into a YAML
 metadata block, rendered in the style's own abstract environment.
 
+Every mode: citations are pandoc keys ([@key], @key) resolved by BibTeX
+against references.bib through natbib. The manuscript places the one
+\\bibliography{references} where its References section is, so the list prints
+before the appendices; the style (\\bibliographystyle) belongs to whichever
+template loads natbib, so the body must not carry one. A leftover hand-numbered
+marker, a second bibliography, a key missing from references.bib, or an entry
+nothing cites fails the build.
+
 tmlr-review also withholds the instrument's commit hash. The repository is
 public, so the hash resolves to it: it identifies the author without adding
 anything a reviewer needs to judge the results. Any occurrence the
 substitution does not cover fails the build rather than shipping.
 """
+import os
 import re
 import sys
 
@@ -80,9 +89,55 @@ def anonymise(text):
     return text
 
 
+BIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "references.bib")
+# A hand-numbered citation: [n] or [n, locator]. CI intervals ([90.0, 98.8])
+# and data lists ([1175, 4250, ...]) do not match; neither does a link [n](url).
+NUMERIC_CITE = re.compile(r"\[(\d{1,2})(?:, [A-Za-z§][^\]\n]*)?\](?!\()")
+CITE_KEY = re.compile(r"(?<![\w.@])@([A-Za-z][A-Za-z0-9_:-]*[A-Za-z0-9])")
+BIB_KEY = re.compile(r"^@\w+\{([^,\s]+),", re.M)
+
+
+def bib_keys(bib):
+    """Entry keys of a .bib file, in file order (duplicates kept, to be caught)."""
+    return BIB_KEY.findall(bib)
+
+
+def cited_keys(text):
+    return set(CITE_KEY.findall(text))
+
+
+def check_citations(text, bib):
+    keys = bib_keys(bib)
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if dup:
+        raise BuildError(f"references.bib defines keys more than once: {dup}")
+    cited = cited_keys(text)
+    missing = sorted(cited - set(keys))
+    if missing:
+        raise BuildError(f"cited but not in references.bib: {missing}")
+    uncited = sorted(set(keys) - cited)
+    if uncited:
+        raise BuildError(f"in references.bib but never cited: {uncited}")
+
+
+def check_bibliography(text):
+    left = [m.group(0) for m in NUMERIC_CITE.finditer(text) if 1 <= int(m.group(1)) <= 99]
+    if left:
+        raise BuildError(f"hand-numbered citation markers survive: {left[:5]}")
+    n = text.count("\\bibliography{")
+    if n != 1 or "\\bibliography{references}" not in text:
+        raise BuildError(f"expected exactly one \\bibliography{{references}}, found {n}")
+    if "\\bibliographystyle" in text:
+        raise BuildError("the body sets \\bibliographystyle; the template owns the style")
+    appendix = text.find("\n## Appendix")
+    if appendix != -1 and text.index("\\bibliography{") > appendix:
+        raise BuildError("the bibliography comes after the appendices")
+
+
 def prepare(text, mode):
     if mode not in MODES:
         raise BuildError(f"unknown mode {mode}")
+    check_bibliography(text)
     text, _, _ = attach_captions(text)
     if mode.startswith("tmlr"):
         text = lift_abstract(text)
@@ -96,7 +151,9 @@ if __name__ == "__main__":
     with open(path) as f:
         try:
             out = prepare(f.read(), mode)
-        except BuildError as e:
+            with open(BIB, encoding="ascii") as b:
+                check_citations(out, b.read())
+        except (BuildError, OSError, UnicodeDecodeError) as e:
             raise SystemExit(f"prepare_body: {e}")
     with open(path, "w") as f:
         f.write(out)
