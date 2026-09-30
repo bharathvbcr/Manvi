@@ -1,0 +1,67 @@
+% Pandoc template for the TMLR build of harness_architecture.md.
+%
+% tmlr.sty is the journal's own style file, unmodified (the author guide makes
+% it mandatory and rejects changes to its layout). Everything below is what
+% pandoc's output needs on top of it. Mode comes from build_pdf.sh:
+%   tmlr-review    no option: anonymous, "Under review as submission to TMLR"
+%   tmlr-preprint  [preprint]: de-anonymised, no TMLR header (arXiv)
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
+\usepackage$if(tmlr-option)$[$tmlr-option$]$endif${tmlr}
+\usepackage{newunicodechar}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{−}{\ensuremath{-}}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\makeatletter
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{%
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}%
+  \fi}
+\makeatother
+\usepackage{etoolbox}
+\usepackage{calc}
+\usepackage{longtable,booktabs,array}
+\newcounter{none} % pandoc's unnumbered longtables step this counter
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+\usepackage{fancyvrb}
+\setcounter{secnumdepth}{-\maxdimen}
+$for(header-includes)$
+$header-includes$
+$endfor$
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\title{$title$}
+$if(tmlr-option)$
+\author{\name $author$ \email $email$ \\ \addr $affiliation$}
+$endif$
+\def\month{$month$}
+\def\year{$year$}
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}}
+
+\begin{document}
+\maketitle
+$if(abstract)$
+\begin{abstract}
+$abstract$
+\end{abstract}
+$endif$
+
+$body$
+
+\end{document}

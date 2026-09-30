@@ -117,6 +117,10 @@
 \usepackage{float}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
+% Caption text already starts with its own bold "Figure N." / "Table N."
+% (prepare_body.py moves it into the float), so LaTeX's label would repeat it.
+\captionsetup[figure]{labelformat=empty}
+\captionsetup[table]{labelformat=empty}
 
 % Tables in this paper are numerous and wide; shrink them rather than let them
 % run into the margin.
@@ -162,15 +166,18 @@ Switchable Components on Local Coding Agents}
 \setcounter{tocdepth}{2}
 \tableofcontents
 }
-\pandocbounded{\includegraphics[keepaspectratio]{figures/graphical_abstract.generated.png}}
-
-\textbf{Figure 1.} Graphical abstract. The object of measurement is the
-harness around a frozen local model: seven independently switchable
-components, a sandbox the agent can write, and a verifier the agent
-cannot. On the eight-task hard suite under the registered v2 protocol,
-Qwen 3.8 27B goes from 79.4\% (baseline) to 95.0\% (full) and Ornith-1.5
-35B-A3B from 40.0\% to 60.6\%. Both deltas exclude zero at the
-Šidák-corrected 98.7\% level. Generated from \texttt{stats-v2.json}.
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 1. Graphical abstract. The object of measurement is the harness around a frozen local model: seven independently switchable components, a sandbox the agent can write, and a verifier the agent cannot. On the eight-task hard suite under the registered v2 protocol, Qwen 3.8 27B goes from 79.4\% (baseline) to 95.0\% (full) and Ornith-1.5 35B-A3B from 40.0\% to 60.6\%. Both deltas exclude zero at the Šidák-corrected 98.7\% level. Generated from stats-v2.json.}]{figures/graphical_abstract.generated.png}}
+\caption{\textbf{Figure 1.} Graphical abstract. The object of
+measurement is the harness around a frozen local model: seven
+independently switchable components, a sandbox the agent can write, and
+a verifier the agent cannot. On the eight-task hard suite under the
+registered v2 protocol, Qwen 3.8 27B goes from 79.4\% (baseline) to
+95.0\% (full) and Ornith-1.5 35B-A3B from 40.0\% to 60.6\%. Both deltas
+exclude zero at the Šidák-corrected 98.7\% level. Generated from
+\protect\texttt{stats-v2.json}.}
+\end{figure}
 
 \subsection{Abstract}\label{abstract}
 
@@ -570,13 +577,16 @@ constraint, not an accident of scope: a measurement rig that a reader
 cannot audit in one sitting cannot be trusted to make claims about a
 system it wraps.
 
-\pandocbounded{\includegraphics[keepaspectratio]{figures/architecture.png}}
-
-\textbf{Figure 2.} Control flow of one episode. Initial context, the
-model turn, and sandbox tools are flag-gated. The first \texttt{finish}
-may inject a checklist. A later \texttt{finish} may run the hidden
-verifier and bounce the model back to work. A final verifier always runs
-after the loop stops, whatever the model claimed.
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 2. Control flow of one episode. Initial context, the model turn, and sandbox tools are flag-gated. The first finish may inject a checklist. A later finish may run the hidden verifier and bounce the model back to work. A final verifier always runs after the loop stops, whatever the model claimed.}]{figures/architecture.png}}
+\caption{\textbf{Figure 2.} Control flow of one episode. Initial
+context, the model turn, and sandbox tools are flag-gated. The first
+\protect\texttt{finish} may inject a checklist. A later
+\protect\texttt{finish} may run the hidden verifier and bounce the model
+back to work. A final verifier always runs after the loop stops,
+whatever the model claimed.}
+\end{figure}
 
 \subsubsection{3.1 Tool surface and
 sandbox}\label{tool-surface-and-sandbox}
@@ -665,15 +675,26 @@ The mapping is a hypothesis about the loop, not a result. Section 5
 tests the bundle on the hard suite and one flag (\texttt{verifygate}) on
 a single easier task.
 
-\textbf{Table 1.} Flags and the failures they target. Native tools stay
-on in every cell except \texttt{no-nativetools}.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
   >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
   >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}
   >{\raggedright\arraybackslash}p{(\linewidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\caption{\textbf{Table 1.} Flags and the failures they target. Native
+tools stay on in every cell except
+\protect\texttt{no-nativetools}.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Flag
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Component
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Targeted failure
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Off in \texttt{baseline}
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Flag
@@ -703,7 +724,6 @@ context window dies & yes \\
 \texttt{groundfs} & Read-before-write sentence & Edits to files the
 model has not opened & yes \\
 \end{longtable}
-}
 
 \textbf{Environment bootstrap (\texttt{envboot}).} Before the first
 model turn, the harness runs a compound shell command with a 15 s
@@ -844,15 +864,23 @@ documented contract is part of the problem and editing it is a fail.
 \texttt{cache\_invalidation\_dist} uses an in-process three-node cache,
 not a cluster. None of the eight is an HPC workload.
 
-\textbf{Table 2.} The eight hard tasks. ``Protected'' files are SHA-256
-checked before the hidden test runs (§3.2). Hidden-test timeout is 60 s
-for every task.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
   >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
   >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\caption{\textbf{Table 2.} The eight hard tasks. ``Protected'' files are
+SHA-256 checked before the hidden test runs (§3.2). Hidden-test timeout
+is 60 s for every task.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What makes it hard
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Protected
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Task
@@ -893,7 +921,6 @@ insert/delete; site-id tie-break; convergence & \texttt{test\_ot.py},
 \texttt{-}, move-into-self, \texttt{test}, no mutation &
 \texttt{test\_patch.py}, \texttt{SPEC.md} \\
 \end{longtable}
-}
 
 An easier eleven-task suite exists in the same repository and is not the
 headline grid, because several cells saturated and could not move: Qwen
@@ -1220,20 +1247,32 @@ here.
 
 \subsubsection{5.1 Pass rates}\label{pass-rates}
 
-\textbf{Table 3.} Registered v2 pass rate on the eight-task hard suite.
-Qwen is \texttt{qwen3.8:27b}, Ornith is
-\texttt{Ornith-1.5-35B-A3B-GGUF:Q8\_0}. \(n\) is repeats; each repeat is
-eight tasks. CI is the percentile bootstrap 95\% interval on the
-weighted mean of the per-repeat pass rates. Source:
-\texttt{stats-v2.json}.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.4242}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}@{}}
+\caption{\textbf{Table 3.} Registered v2 pass rate on the eight-task
+hard suite. Qwen is \protect\texttt{qwen3.8:27b}, Ornith is
+\protect\texttt{Ornith-1.5-35B-A3B-GGUF:Q8\_0}. \(n\) is repeats; each
+repeat is eight tasks. CI is the percentile bootstrap 95\% interval on
+the weighted mean of the per-repeat pass rates. Source:
+\protect\texttt{stats-v2.json}.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Configuration
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Qwen
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Ornith
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Configuration
@@ -1269,20 +1308,21 @@ Ornith
 \texttt{no-verifygate} (\(n=5\)) & 77.5\% & {[}70.0, 85.0{]} & 52.5\% &
 {[}45.0, 60.0{]} \\
 \end{longtable}
-}
 
-\pandocbounded{\includegraphics[keepaspectratio]{figures/pass_rates.generated.png}}
-
-\textbf{Figure 3.} Pass rate by configuration for \textbf{all three
-arms}, 27 cells, with percentile bootstrap 95\% intervals. Rendered from
-\texttt{stats-all3.json} by \texttt{figures.py}; a figure cannot
-disagree with a table. Two things are visible here that no table shows
-as directly. The local arms' six \(n=5\) cells carry visibly wider
-intervals than their three \(n=20\) cells --- the D2 deviation made
-visual --- while every one of the hosted arm's nine cells is at
-\(n=20\). And the subtitle carries the comparability caveat: the hosted
-arm's \emph{heights} may not be read against the local arms', only its
-within-arm differences (§5.7).
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 3. Pass rate by configuration for all three arms, 27 cells, with percentile bootstrap 95\% intervals. Rendered from stats-all3.json by figures.py; a figure cannot disagree with a table. Two things are visible here that no table shows as directly. The local arms' six n=5 cells carry visibly wider intervals than their three n=20 cells --- the D2 deviation made visual --- while every one of the hosted arm's nine cells is at n=20. And the subtitle carries the comparability caveat: the hosted arm's heights may not be read against the local arms', only its within-arm differences (§5.7).}]{figures/pass_rates.generated.png}}
+\caption{\textbf{Figure 3.} Pass rate by configuration for \textbf{all
+three arms}, 27 cells, with percentile bootstrap 95\% intervals.
+Rendered from \protect\texttt{stats-all3.json} by
+\protect\texttt{figures.py}; a figure cannot disagree with a table. Two
+things are visible here that no table shows as directly. The local arms'
+six \(n=5\) cells carry visibly wider intervals than their three
+\(n=20\) cells --- the D2 deviation made visual --- while every one of
+the hosted arm's nine cells is at \(n=20\). And the subtitle carries the
+comparability caveat: the hosted arm's \emph{heights} may not be read
+against the local arms', only its within-arm differences (§5.7).}
+\end{figure}
 
 Qwen is the stronger arm on every configuration, so the arms are
 assigned empirically as \(\text{stronger} = \text{Qwen}\) (full mean
@@ -1293,10 +1333,6 @@ interval, unlike v1.
 \subsubsection{5.2 Per-task matrix, and the saturation
 check}\label{per-task-matrix-and-the-saturation-check}
 
-\textbf{Table 4.} Passes per task on the confirmatory contrast, out of
-twenty repeats. \(\Delta\) is episodes gained by the full harness.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.5714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
@@ -1305,6 +1341,27 @@ twenty repeats. \(\Delta\) is episodes gained by the full harness.
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}@{}}
+\caption{\textbf{Table 4.} Passes per task on the confirmatory contrast,
+out of twenty repeats. \(\Delta\) is episodes gained by the full
+harness.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Qwen \texttt{full}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Qwen \texttt{base}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(\Delta\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Orn. \texttt{full}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Orn. \texttt{base}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(\Delta\)
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Task
@@ -1336,7 +1393,6 @@ Orn. \texttt{base}
 \textbf{total} & \textbf{152} & \textbf{127} & \textbf{+25} &
 \textbf{97} & \textbf{64} & \textbf{+33} \\
 \end{longtable}
-}
 
 The two arms reach comparable aggregate deltas by different routes.
 Two-thirds of Qwen's gain is \texttt{concurrency\_race} and
@@ -1366,11 +1422,6 @@ both arms; it is the ablations that reveal which tasks carry signal.
 \subsubsection{5.3 Stop reasons and finish
 rate}\label{stop-reasons-and-finish-rate}
 
-\textbf{Table 5.} Stop reasons and finish rate, v2 grid. Finish rate is
-the fraction of episodes ending in a \texttt{finish} call, which bounds
-how much of \texttt{verifygate} was ever exercised in that cell.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.5714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
@@ -1379,6 +1430,28 @@ how much of \texttt{verifygate} was ever exercised in that cell.
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0714}}@{}}
+\caption{\textbf{Table 5.} Stop reasons and finish rate, v2 grid. Finish
+rate is the fraction of episodes ending in a \protect\texttt{finish}
+call, which bounds how much of \protect\texttt{verifygate} was ever
+exercised in that cell.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Cell
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(n\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+finished
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+context exhausted
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+no tool call
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+model error
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+finish rate
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Cell
@@ -1408,7 +1481,6 @@ Ornith \texttt{baseline} & 160 & 66 & 30 & 26 & 38 & 41\% \\
 Ornith \texttt{no-outcap} & 160 & 79 & 26 & 17 & 38 & 49\% \\
 Ornith \texttt{no-verifygate} & 40 & 27 & 7 & 3 & 3 & 68\% \\
 \end{longtable}
-}
 
 The finish rate is not a constant of the model and it moves with the
 ablation, which bounds what any \texttt{verifygate} result can mean: a
@@ -1425,10 +1497,6 @@ Four confirmatory tests, so Šidák \(\alpha = 0.0127\) and the decision
 is made on \textbf{98.7\% intervals}. The 95\% intervals in Table 3 are
 not the decision level and must not be read as one.
 
-\textbf{Table 6.} Preregistered confirmatory tests. Directions were
-fixed before the first episode.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.0685}}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1096}}
@@ -1436,6 +1504,23 @@ fixed before the first episode.
   >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.0548}}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.2740}}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1918}}@{}}
+\caption{\textbf{Table 6.} Preregistered confirmatory tests. Directions
+were fixed before the first episode.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Model
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Contrast
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(\Delta\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+98.7\% CI
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Verdict
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
@@ -1462,17 +1547,19 @@ H2 & Ornith & \texttt{full\ −\ no-outcap} & +0.075 & {[}\(-0.006\),
 H2 & Qwen & \texttt{full\ −\ no-outcap} & +0.025 & {[}\(-0.031\),
 +0.081{]} & not detected \\
 \end{longtable}
-}
 
-\pandocbounded{\includegraphics[keepaspectratio]{figures/repeat_deltas.generated.png}}
-
-\textbf{Figure 4.} Paired \(\Delta\) (\texttt{full} \(-\)
-\texttt{baseline}) at each of the twenty pinned seeds, all three arms.
-Each arm's deltas are within-arm and seed-paired, so they are comparable
-even though the third arm's pass rates are not. The widest single seed
-is \texttt{gpt-oss-120b} at \(+0.875\). Every point is one repeat's
-difference of eight-task pass rates. The spread is the quantity the
-bootstrap resamples; it is what an interval on a single run cannot show.
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 4. Paired \textbackslash Delta (full - baseline) at each of the twenty pinned seeds, all three arms. Each arm's deltas are within-arm and seed-paired, so they are comparable even though the third arm's pass rates are not. The widest single seed is gpt-oss-120b at +0.875. Every point is one repeat's difference of eight-task pass rates. The spread is the quantity the bootstrap resamples; it is what an interval on a single run cannot show.}]{figures/repeat_deltas.generated.png}}
+\caption{\textbf{Figure 4.} Paired \(\Delta\) (\protect\texttt{full}
+\(-\) \protect\texttt{baseline}) at each of the twenty pinned seeds, all
+three arms. Each arm's deltas are within-arm and seed-paired, so they
+are comparable even though the third arm's pass rates are not. The
+widest single seed is \protect\texttt{gpt-oss-120b} at \(+0.875\). Every
+point is one repeat's difference of eight-task pass rates. The spread is
+the quantity the bootstrap resamples; it is what an interval on a single
+run cannot show.}
+\end{figure}
 
 \textbf{H1 is supported on both arms.} This is the result the grid was
 built to obtain, and it is the claim the v1 grid could not support: v1's
@@ -1495,18 +1582,30 @@ survive the fix.
 \subsubsection{5.5 The exploratory ladder, and what its intervals are
 worth}\label{the-exploratory-ladder-and-what-its-intervals-are-worth}
 
-\textbf{Table 7.} One-flag-off ladder,
-\(\Delta = \text{full} - \text{ablation}\), paired by repeat, 95\%
-intervals. Positive means the flag earned its keep. \textbf{These are
-exploratory and the family-wise number below applies.}
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.4242}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}@{}}
+\caption{\textbf{Table 7.} One-flag-off ladder,
+\(\Delta = \text{full} - \text{ablation}\), paired by repeat, 95\%
+intervals. Positive means the flag earned its keep. \textbf{These are
+exploratory and the family-wise number below applies.}}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Ablation
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Qwen \(\Delta\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Ornith \(\Delta\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Ablation
@@ -1536,7 +1635,6 @@ Ornith \(\Delta\)
 \texttt{no-nativetools} & +0.025 & {[}+0.000, +0.075{]} & +0.050 &
 {[}\(-0.050\), +0.125{]} \\
 \end{longtable}
-}
 
 \textbf{This table does not support component-level claims, and the
 reason is measured.} The six exploratory cells run at \(n=5\) (deviation
@@ -1576,18 +1674,30 @@ paired value is the registered estimator and the one reported here.
 
 \subsubsection{5.6 The interaction}\label{the-interaction}
 
-\textbf{Table 8.} Interaction
-\(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\), Ornith minus
-Qwen, with bootstrap 95\% intervals. A positive value is the direction
-the hypothesis predicts.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.4242}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.0606}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2273}}@{}}
+\caption{\textbf{Table 8.} Interaction
+\(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\), Ornith minus
+Qwen, with bootstrap 95\% intervals. A positive value is the direction
+the hypothesis predicts.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Ablation
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(\Delta_w - \Delta_s\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Seed-paired
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+95\% CI
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Ablation
@@ -1621,21 +1731,24 @@ Seed-paired
 \texttt{no-verifygate} & \(-0.150\) & {[}\(-0.325\), +0.000{]} &
 \(-0.150\) & {[}\(-0.375\), +0.075{]} \\
 \end{longtable}
-}
 
-\pandocbounded{\includegraphics[keepaspectratio]{figures/interaction.generated.png}}
-
-\textbf{Figure 5.} Interaction
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 5. Interaction \textbackslash Delta\_\{\textbackslash text\{weaker\}\} - \textbackslash Delta\_\{\textbackslash text\{stronger\}\} per ablation, unpaired resampling, 95\% intervals. This is the block the manuscript cites.}]{figures/interaction.generated.png}}
+\caption{\textbf{Figure 5.} Interaction
 \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) per ablation,
 unpaired resampling, 95\% intervals. This is the block the manuscript
-cites.
+cites.}
+\end{figure}
 
-\pandocbounded{\includegraphics[keepaspectratio]{figures/interaction_paired.generated.png}}
-
-\textbf{Figure 6.} The same statistic under the seed-paired scheme the
-protocol describes. Published side by side deliberately: the two
-procedures give different interval widths on the same data, and choosing
-one silently is the error this pair is meant to prevent.
+\begin{figure}
+\centering
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 6. The same statistic under the seed-paired scheme the protocol describes. Published side by side deliberately: the two procedures give different interval widths on the same data, and choosing one silently is the error this pair is meant to prevent.}]{figures/interaction_paired.generated.png}}
+\caption{\textbf{Figure 6.} The same statistic under the seed-paired
+scheme the protocol describes. Published side by side deliberately: the
+two procedures give different interval widths on the same data, and
+choosing one silently is the error this pair is meant to prevent.}
+\end{figure}
 
 \textbf{Every interval includes zero under both schemes}, as every v1
 interval did. H4 is not answered by this grid. We report both pairing
@@ -1674,11 +1787,14 @@ arms did not (§4.4, deviation D2). That makes it the only ladder in the
 study whose intervals are worth reading, and the component-level results
 below rest on it rather than on Table 7.
 
-\textbf{Table 9.} \texttt{gpt-oss-120b} pass rate and finish rate, nine
-cells, \(n=20\) each. Source: \texttt{stats-ext-cerebras.json}.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrlr@{}}
+\caption{\textbf{Table 9.} \protect\texttt{gpt-oss-120b} pass rate and
+finish rate, nine cells, \(n=20\) each. Source:
+\protect\texttt{stats-ext-cerebras.json}.}\tabularnewline
+\toprule\noalign{}
+Configuration & Pass rate & 95\% CI & Finish rate \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 Configuration & Pass rate & 95\% CI & Finish rate \\
 \midrule\noalign{}
@@ -1696,14 +1812,15 @@ Configuration & Pass rate & 95\% CI & Finish rate \\
 \textbf{\texttt{baseline}} & \textbf{66.2\%} & {[}55.6, 75.6{]} &
 91\% \\
 \end{longtable}
-}
 
-\textbf{Table 10.} \texttt{gpt-oss-120b} one-flag ladder,
-\(\Delta = \text{full} - \text{ablation}\), paired by repeat, 95\%
-intervals. Bold rows exclude zero.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrl@{}}
+\caption{\textbf{Table 10.} \protect\texttt{gpt-oss-120b} one-flag
+ladder, \(\Delta = \text{full} - \text{ablation}\), paired by repeat,
+95\% intervals. Bold rows exclude zero.}\tabularnewline
+\toprule\noalign{}
+Ablation & \(\Delta\) & 95\% CI \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 Ablation & \(\Delta\) & 95\% CI \\
 \midrule\noalign{}
@@ -1722,7 +1839,6 @@ Ablation & \(\Delta\) & 95\% CI \\
 \(-0.006\){]} \\
 \textbf{\texttt{baseline}} & \textbf{+0.150} & {[}+0.031, +0.275{]} \\
 \end{longtable}
-}
 
 \textbf{This ladder carries signal and Table 7's does not, and the
 difference is quantified rather than asserted.} Both produced four
@@ -1802,12 +1918,14 @@ and whether the fix addresses the cause. On \texttt{gpt-oss-120b} its
 effect is not on the quality of the work. It is on whether the episode
 ends at all.
 
-\textbf{Table 11.} Outcome of the same 160 episodes with and without the
-prompt-side checklist, \texttt{gpt-oss-120b}. \texttt{verifygate} is on
-in both cells.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}lrrrr@{}}
+\caption{\textbf{Table 11.} Outcome of the same 160 episodes with and
+without the prompt-side checklist, \protect\texttt{gpt-oss-120b}.
+\protect\texttt{verifygate} is on in both cells.}\tabularnewline
+\toprule\noalign{}
+Outcome & \texttt{full} & passed & \texttt{no-checklist} & passed \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 Outcome & \texttt{full} & passed & \texttt{no-checklist} & passed \\
 \midrule\noalign{}
@@ -1820,7 +1938,6 @@ stalled with no tool call & \textbf{88} & 59 (67.0\%) & 57 & 39
 (68.4\%) \\
 \textbf{total} & 160 & \textbf{130} & 160 & \textbf{142} \\
 \end{longtable}
-}
 
 The checklist moves \textbf{31 episodes} out of the finished bucket and
 into the stalled bucket; both columns shift by the same 31 in opposite
@@ -2588,13 +2705,6 @@ envelope. Anyone budgeting GPU-hours for an agent grid from a
 utilization percentage will overestimate what the device is doing and
 underestimate how much of it a batched design could reclaim.
 
-\textbf{Table 12.} GH200 envelope during the v1 grid. 78,027 samples at
-\textasciitilde2.0 s cadence over 43.8 h. Source:
-\texttt{results/compute.jsonl}. The envelope is a property of the
-serving stack and the serial loop, not of the defects in §5.9, so it is
-retained.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
@@ -2602,6 +2712,27 @@ retained.
   >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1818}}
   >{\raggedright\arraybackslash}p{(\linewidth - 10\tabcolsep) * \real{0.1364}}@{}}
+\caption{\textbf{Table 12.} GH200 envelope during the v1 grid. 78,027
+samples at \textasciitilde2.0 s cadence over 43.8 h. Source:
+\protect\texttt{results/compute.jsonl}. The envelope is a property of
+the serving stack and the serial loop, not of the defects in §5.9, so it
+is retained.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Quantity
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+p05
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+median
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+p95
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+max
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Reference
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Quantity
@@ -2627,7 +2758,6 @@ HBM used (MiB) & 20,736 & 58,070 & 58,576 & 96,204 & 97,871 MiB total \\
 SM clock (MHz) & 1,980 & 1,980 & 1,980 & 1,980 & 1,980 MHz max \\
 Temperature (°C) & 35 & 45 & 54 & 58 & --- \\
 \end{longtable}
-}
 
 The peak draw over 43.8 hours was 518.8 W, 58\% of the cap. HBM
 occupancy has a clear two-model signature: the p05 of 20.7 GiB is the
@@ -2674,20 +2804,33 @@ gate.
 \texttt{full} in the \texttt{verifygate} flag alone, at
 \texttt{max\_steps=40}, on \texttt{navigate}:
 
-\textbf{Table 13.} Verify-gate contrast on \texttt{navigate}. Two-sided
-Fisher exact. Directories are
-\texttt{results/\textless{}model\textgreater{}\_\_\{full,no-verifygate\}\_\_\textless{}tag\textgreater{}}.
-The tag named \texttt{v2} in the pooled row is an early
-\texttt{navigate} tag and is \textbf{not} the registered v2 grid; the
-collision is an artefact of tag naming and the two share no episodes.
-
-{\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
   >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.1667}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}
   >{\raggedleft\arraybackslash}p{(\linewidth - 8\tabcolsep) * \real{0.2222}}@{}}
+\caption{\textbf{Table 13.} Verify-gate contrast on
+\protect\texttt{navigate}. Two-sided Fisher exact. Directories are
+\protect\texttt{results/\textless{}model\textgreater{}\_\_\{full,no-verifygate\}\_\_\textless{}tag\textgreater{}}.
+The tag named \protect\texttt{v2} in the pooled row is an early
+\protect\texttt{navigate} tag and is \textbf{not} the registered v2
+grid; the collision is an artefact of tag naming and the two share no
+episodes.}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Model
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Scope
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Gate on
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Gate off
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Fisher exact \(p\)
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
 Model
@@ -2713,7 +2856,6 @@ Ornith-1.5 35B-A3B Q8 & matched tag (\texttt{orep}) & 6/6 & 5/6 &
 Ornith-1.5 35B-A3B Q8 & pooled (\texttt{orep}, \texttt{v1}) & 7/7 & 5/6
 & 0.46 \\
 \end{longtable}
-}
 
 The conservative reading is the matched-tag row, where only the two tags
 in which \textbf{both} arms ran \texttt{navigate} are counted: 9/9

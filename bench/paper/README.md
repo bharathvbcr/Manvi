@@ -18,8 +18,13 @@ The frozen 720-episode v1 grid that revision 2 headlined is **superseded** and
 appears only in §5.9 as an instrument-failure record; none of the three are
 pooled for pass rates.
 
-Build the PDF and TeX with [`build_pdf.sh`](build_pdf.sh) (pandoc + xelatex).
-The markdown is the source of truth; the script works on a copy.
+Build the PDF and TeX with [`build_pdf.sh`](build_pdf.sh). The markdown is the source of
+truth; the script works on a copy (see [`prepare_body.py`](prepare_body.py)). Three modes:
+
+- `build_pdf.sh`: the repository copy (pandoc article, xelatex, named author).
+- `build_pdf.sh tmlr-review`: the TMLR submission. It uses the unmodified `tmlr/tmlr.sty` and
+  pdflatex, is anonymous, and withholds the commit hash.
+- `build_pdf.sh tmlr-preprint`: the same layout, de-anonymised, for arXiv.
 
 ## Revision 3
 

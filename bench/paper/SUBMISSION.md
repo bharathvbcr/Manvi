@@ -8,7 +8,7 @@ There are two manuscripts. They are not at the same stage.
 | | Long paper | Workshop paper |
 |---|---|---|
 | File | `harness_architecture.md` → `.tex`/`.pdf` via `build_pdf.sh` | `workshop/harness_ablation.tex` |
-| Date | Revision 3, 29 Aug 2026 | 23 Aug 2026 |
+| Date | Revision 4, 29 Sep 2026 | 23 Aug 2026 |
 | Data | Registered v2 grid (`stats-v2.json`) + third arm (`stats-ext-cerebras.json`) | **Superseded v1 grid** (`stats-hard.json`) |
 | State | Results are final. The framing is written for the repository, not for a venue. | **Its thesis has been overturned.** It needs a rewrite, not formatting. |
 
@@ -16,17 +16,29 @@ There are two manuscripts. They are not at the same stage.
 
 Done in revision 4:
 - §1.3 front matter
-- §1.5 figure provenance, plus two Figure 4 defects found along the way:
-  - arm colours depended on the hash seed
-  - one seed was drawn off the canvas
+- §1.4 reference [5]:
+  - the 30 kB cap is anchored on [1, App. B.3], which states it verbatim
+  - [5] itself is verified at github.com/krafton-ai/kira
+- §1.5 figure provenance
 - §1.6
+- figures:
+  - nothing is clipped (every figure is checked by `figures.overflow`)
+  - Figure 3 has one panel per arm
+  - each model keeps one colour in every figure
+- §5.10 and §5.11 moved to Appendices C and D; the main text is about 15,200 words
+- **TMLR build** from the unmodified `tmlr/tmlr.sty` (Apache-2.0, fetched 29 Sep 2026 from
+  JmlrOrg/tmlr-style-file, style dated 30 Jun 2023):
+  - `build_pdf.sh tmlr-review`: anonymous, "Under review as submission to TMLR", with the
+    commit hash withheld. The repository is public, so the hash would identify you. 32 pages.
+  - `build_pdf.sh tmlr-preprint`: named, for arXiv.
+  - Both outputs go to `tmlr/`, are gitignored and are rebuilt on demand.
 
 Still open:
-- §1.4 reference [5]
-- the TMLR style port and anonymised build (§4, Route A steps 4–6)
-- OpenReview profile and arXiv endorsement (§2)
-- the length question: the manuscript is about 18,500 words, and TMLR warns that unusually
-  long papers delay review
+- **Citation style.** `tmlr.sty` sets natbib author-year. The manuscript uses a hand-written
+  numeric list ([1]–[24]), which renders but doesn't match TMLR's house style. Converting to a
+  `.bib` file with `\citep` calls is the remaining formatting job.
+- **Anonymised supplementary ZIP** (Route A step 5), then the self-tests from that copy (step 6).
+- **OpenReview profile and arXiv endorsement** (§2). Only you can do these.
 
 ## 1. What's left
 

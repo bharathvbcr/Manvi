@@ -6,6 +6,10 @@
 \usepackage{float}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
+% Caption text already starts with its own bold "Figure N." / "Table N."
+% (prepare_body.py moves it into the float), so LaTeX's label would repeat it.
+\captionsetup[figure]{labelformat=empty}
+\captionsetup[table]{labelformat=empty}
 
 % Tables in this paper are numerous and wide; shrink them rather than let them
 % run into the margin.

@@ -522,6 +522,30 @@ probe("an unknown arm does not take a studied arm's colour",
       not in {c for _, c in figures.ARM_COLOURS})
 
 
+print("the paper body is prepared for LaTeX without losing captions or identity")
+sys.path.insert(0, _PAPER)
+import prepare_body as _pb  # noqa: E402
+_MS = open(os.path.join(_PAPER, "harness_architecture.md")).read().split("\n", 1)[1]
+_n_fig = len(re.findall(r"^\*\*Figure \d+\.\*\*", _MS, re.M))
+_n_tab = len(re.findall(r"^\*\*Table \d+\.\*\*", _MS, re.M))
+# Figure 1's caption was a loose paragraph and printed a page after its figure.
+probe("every Figure/Table caption is folded into its float",
+      lambda: _pb.attach_captions(_MS)[1:] == (_n_fig, _n_tab) and _n_fig and _n_tab,
+      lambda: (_pb.attach_captions(_MS)[1:], _n_fig, _n_tab))
+probe("a caption with no float next to it fails the build",
+      lambda: _raises(lambda: _pb.attach_captions("text\n\n**Figure 9.** orphan\n"),
+                      SystemExit))
+probe("the review body carries no commit hash",
+      lambda: "82e453a" not in _pb.prepare(_MS, "tmlr-review"))
+probe("the preprint body keeps it",
+      lambda: "82e453a" in _pb.prepare(_MS, "tmlr-preprint"))
+probe("the TMLR abstract is lifted out of the body",
+      lambda: _pb.prepare(_MS, "tmlr-review").startswith("---\nabstract: |\n")
+      and "## Abstract" not in _pb.prepare(_MS, "tmlr-review"))
+probe("an unanticipated hash occurrence fails the review build",
+      lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), SystemExit))
+
+
 def _legend_ys(svg):
     """y of every legend swatch: the <rect> elements that are not the canvas."""
     return [float(m) for m in re.findall(r'<rect x="[-\d.]+" y="([\d.]+)" width="10"', svg)]
