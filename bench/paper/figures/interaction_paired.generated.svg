@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="338" viewBox="0 0 800 338" font-family="Helvetica, Arial, sans-serif">
-<rect width="800" height="338" fill="#fff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="354" viewBox="0 0 800 354" font-family="Helvetica, Arial, sans-serif">
+<rect width="800" height="354" fill="#fff"/>
 <text x="400" y="26" text-anchor="middle" font-size="14" font-weight="600" fill="#111">Interaction: &#916;<tspan font-size="10">weaker</tspan> &#8722; &#916;<tspan font-size="10">stronger</tspan> (bootstrap 95% CI, seed-paired resampling)</text>
 <text x="400" y="44" text-anchor="middle" font-size="11" fill="#555">Positive is the direction the weak-vs-strong hypothesis predicts. All 8 intervals cross zero.</text>
 <line x1="375.0" y1="62" x2="375.0" y2="278" stroke="#222" stroke-dasharray="3,3"/>
@@ -58,4 +58,5 @@
 <text x="482.5" y="300" text-anchor="middle" font-size="10" fill="#444">+20</text>
 <text x="590.0" y="300" text-anchor="middle" font-size="10" fill="#444">+40</text>
 <text x="375.0" y="318" text-anchor="middle" font-size="10" fill="#555">percentage points</text>
+<text x="375.0" y="336" text-anchor="middle" font-size="9" fill="#888">Generated from stats-all3.json.</text>
 </svg>

@@ -416,6 +416,19 @@ probe("the rendered SVG counts what it drew",
       lambda: "1 of 2 intervals excludes zero" in _render_interaction(REPORT_A))
 
 
+def _render_interaction_via_report(report, source):
+    with _tf.TemporaryDirectory() as d:
+        figures.from_report(report, d, source=source)
+        return open(os.path.join(d, "interaction.generated.svg")).read()
+
+
+# The paper says every generated figure names the report it was drawn from.
+# The interaction figure used to be the one that did not.
+probe("the interaction figure names its source report",
+      lambda: "Generated from stats-all3.json." in _render_interaction_via_report(
+          REPORT_A, "stats-all3.json"))
+
+
 def _render_deltas(nrep):
     """Render repeat_deltas for a grid with `nrep` repeats and return the SVG."""
     rates_full = {str(r): (0.5 if r % 2 else 1.0) for r in range(nrep)}
@@ -428,6 +441,50 @@ def _render_deltas(nrep):
         path = os.path.join(d, "d.svg")
         figures.repeat_deltas_svg(report, path, source="stats-v2.json")
         return open(path).read()
+
+
+THREE_ARMS = {"cells": {
+    f"{m}|{c}": {"mean": 0.5, "lo": 0.4, "hi": 0.6,
+                 "rates": {"0": (0.875 if c == "full" and "gpt" in m else 0.5),
+                           "1": (0.0 if c == "full" and "gpt" in m else 0.5)}}
+    for m in ("qwen3.8:27b", "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0",
+              "cerebras:gpt-oss-120b")
+    for c in ("full", "baseline")}}
+THREE_ARMS["cells"]["cerebras:gpt-oss-120b|baseline"]["rates"] = {"0": 0.0, "1": 0.375}
+
+
+def _render_deltas_under_hashseed(seed):
+    """Render Figure 4 in a fresh interpreter with a given PYTHONHASHSEED."""
+    import subprocess
+    code = ("import json, sys, figures; "
+            "figures.repeat_deltas_svg(json.loads(sys.argv[1]), sys.argv[2])")
+    with _tf.TemporaryDirectory() as d:
+        path = os.path.join(d, "d.svg")
+        subprocess.run([sys.executable, "-c", code, json.dumps(THREE_ARMS), path],
+                       check=True, cwd=os.path.dirname(os.path.abspath(__file__)),
+                       env={**os.environ, "PYTHONHASHSEED": str(seed)})
+        return open(path).read()
+
+
+# Arm order came from iterating a set, so which arm got which colour depended on
+# the interpreter's hash seed: two builds of the same report could disagree.
+probe("Figure 4 is byte-identical across hash seeds",
+      lambda: len({_render_deltas_under_hashseed(s) for s in range(6)}) == 1)
+probe("Figure 4 colours each arm as Figure 3 does",
+      lambda: all(figures._colour_for(m, figures._arm_order(THREE_ARMS["cells"]))
+                  == figures._colour_for(m, ["qwen3.8:27b", "cerebras:gpt-oss-120b",
+                                             "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0"])
+                  for m in ("qwen3.8:27b", "cerebras:gpt-oss-120b",
+                            "hf.co/x/Ornith-1.5-35B-A3B-GGUF:Q8_0")))
+# A delta of +0.875 was drawn at y=-20, outside the canvas: the point existed
+# in the file and nowhere on the page.
+probe("every Figure 4 point lies on the canvas",
+      lambda: all(0 <= float(v) <= 340 for v in re.findall(
+          r'<circle cx="[-\d.]+" cy="([-\d.]+)"', _render_deltas_under_hashseed(0))),
+      lambda: re.findall(r'cy="(-[\d.]+)"', _render_deltas_under_hashseed(0)))
+probe("every Figure 4 point lies inside the plot area",
+      lambda: all(70 <= float(v) <= 300 for v in re.findall(
+          r'<circle cx="[-\d.]+" cy="([-\d.]+)"', _render_deltas_under_hashseed(0))))
 
 
 def _legend_ys(svg):

@@ -13,6 +13,7 @@ survived injecting a detectable interaction into the data and re-rendering. A
 caption is a claim about the figure; it is derived here, or it is not written.
 """
 import json
+import math
 import os
 import sys
 
@@ -58,6 +59,17 @@ def _colour_for(model, order=()):
         except ValueError:
             pass
     return QWEN if "qwen" in model.lower() else ORNITH
+
+
+def _arm_order(cells):
+    """Arms present in `cells`, Qwen first, then by name.
+
+    The same order `from_report` gives the pass-rate chart, so an arm keeps its
+    colour from figure to figure. Sorting on the Qwen flag alone left every
+    other arm in set-iteration order, which moves with the hash seed.
+    """
+    return sorted({k.split("|", 1)[0] for k in cells},
+                  key=lambda m: ("qwen" not in m.lower(), m))
 
 
 def _esc(s):
@@ -263,7 +275,7 @@ def pass_rates_svg(cells, path, subtitle=None, degenerate=()):
 def repeat_deltas_svg(report, path, ablation="baseline", source=None):
     """Paired Delta = full - <ablation>, per pinned seed, straight from cell rates."""
     cells = report.get("cells", {})
-    models = sorted({k.split("|", 1)[0] for k in cells}, key=lambda m: "qwen" not in m.lower())
+    models = _arm_order(cells)
     series = []
     for m in models:
         full = cells.get(f"{m}|full")
@@ -278,9 +290,16 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
     nrep = max(len(d) for _, d, _ in series)
 
     top, zero, bot, left, right = 70, 190, 300, 70, 680
-    lim = 0.5
+    # The axis grows in quarter steps to hold the widest delta either side. It
+    # was fixed at 0.5, and a +0.875 seed was written at y=-20, off the canvas.
+    step = 0.25
+    need = max([0.5] + [abs(v) for _, d, _ in series for v in d if v > 0]
+               + [-v * (zero - top) / (bot - zero) for _, d, _ in series for v in d if v < 0])
+    lim = step * math.ceil(need / step - 1e-9)
     def y(d):
         return zero - (d / lim) * (zero - top)
+    ticks = [k * step for k in range(int(round(lim / step)), -int(round(lim / step)) - 1, -1)
+             if y(k * step) <= bot]
     xs = [left + 70 + i * ((right - left - 110) / max(nrep - 1, 1)) for i in range(nrep)]
 
     parts = [
@@ -295,7 +314,7 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         f'<text x="28" y="185" transform="rotate(-90 28 185)" font-size="11" fill="#333">&#916; pass rate</text>',
         '<g font-size="10" fill="#444">',
     ]
-    for t in (0.5, 0.25, 0.0, -0.25):
+    for t in ticks:
         yy = y(t)
         parts.append(f'<text x="{left-6}" y="{yy+4:.1f}" text-anchor="end">{t:+.2f}</text>'
                      if t else f'<text x="{left-6}" y="{yy+4:.1f}" text-anchor="end">0</text>')
@@ -334,13 +353,13 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
 
 # --- Figure 5: interaction, weaker minus stronger ---------------------------
 
-def interaction_svg(report, path, section="interaction"):
+def interaction_svg(report, path, section="interaction", source=None):
     """The interaction ladder from `section` of the report.
 
     `section` selects the resampling scheme: "interaction" is the unpaired one
     the paper cites, "interaction_paired" the seed-paired one. They are
     different procedures and produce different widths, so the figure says
-    which it drew.
+    which it drew. `source` names the report, as every other figure does.
     """
     inter = {k: v for k, v in report.get(section, {}).items() if not k.startswith("_")}
     if not inter:
@@ -349,7 +368,7 @@ def interaction_svg(report, path, section="interaction"):
     left, right, top = 160, 590, 70
     rowh = 26
     w = 800
-    h = top + rowh * len(rows) + 60
+    h = top + rowh * len(rows) + 76
     lim = 0.40
     zero = (left + right) / 2
     def x(v):
@@ -382,6 +401,8 @@ def interaction_svg(report, path, section="interaction"):
                      f'{100*t:+.0f}</text>')
     parts.append(f'<text x="{zero}" y="{ybase+34}" text-anchor="middle" font-size="10" fill="#555">'
                  'percentage points</text>')
+    parts.append(f'<text x="{zero}" y="{ybase+52}" text-anchor="middle" font-size="9" fill="#888">'
+                 f'{_source_note(source)}</text>')
     parts.append("</svg>")
     _write(path, parts)
 
@@ -398,8 +419,7 @@ def graphical_abstract_svg(report, path, source=None):
     page cannot disagree with Table 3.
     """
     cells = report.get("cells", {})
-    models = sorted({k.split("|", 1)[0] for k in cells},
-                    key=lambda m: "qwen" not in m.lower())
+    models = _arm_order(cells)
     arms = []
     for m in models:
         full, base = cells.get(f"{m}|full"), cells.get(f"{m}|baseline")
@@ -531,11 +551,12 @@ def from_report(report, outdir, source=None):
     graphical_abstract_svg(report,
                            os.path.join(outdir, "graphical_abstract.generated.svg"),
                            source=source)
-    interaction_svg(report, os.path.join(outdir, "interaction.generated.svg"))
+    interaction_svg(report, os.path.join(outdir, "interaction.generated.svg"),
+                    source=source)
     if report.get("interaction_paired"):
         interaction_svg(report,
                         os.path.join(outdir, "interaction_paired.generated.svg"),
-                        section="interaction_paired")
+                        section="interaction_paired", source=source)
 
 
 def main():
