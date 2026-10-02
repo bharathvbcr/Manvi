@@ -1150,15 +1150,27 @@ printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states
 # on the project's front door while every gate stayed green. Only the real
 # grammar sees that class, so every fenced block is handed to mermaid.parse
 # here. The dependency tree this needs is dev-only (nothing in it reaches a
-# shipped binary), pinned by package-lock.json.
+# shipped binary), pinned by bun.lock. Bun only installs it; the parser runs on
+# node, the runtime mermaid and jsdom declare.
 step "Docs — mermaid blocks parse with the real grammar"
-if command -v node >/dev/null && command -v npm >/dev/null; then
+if have node && have bun; then
   if [[ ! -d node_modules ]]; then
-    npm ci --no-audit --no-fund --silent || fail "npm ci could not provision the mermaid parser gate"
+    bun install --frozen-lockfile --silent || fail "bun install could not provision the mermaid parser gate"
   fi
   node scripts/check-mermaid.mjs || fail "a mermaid diagram does not parse with the real grammar"
 else
-  notcovered 'node/npm not on PATH — diagrams are checked structurally only'
+  notcovered 'node/bun not on PATH — diagrams are checked structurally only'
+fi
+
+# GitHub's dependency graph does not read bun.lock, so Dependabot raises no
+# alert for anything under mermaid or jsdom. bun audit reads the lockfile
+# itself — no install needed — against the GitHub advisory database.
+step "Docs tooling — supply chain"
+if have bun; then
+  bun audit || fail "bun audit found a vulnerable package in bun.lock"
+  printf '    covered: every package in bun.lock against the GitHub advisory database\n'
+else
+  notcovered "bun is not installed — the docs tooling's dependency tree is unaudited"
 fi
 
 step "Brand — the published mark is the drawn mark"

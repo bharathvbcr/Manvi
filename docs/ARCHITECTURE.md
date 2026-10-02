@@ -12,7 +12,7 @@ DevCouncil owns the components. Four are already Rust and ship as standalone bin
 
 MANVI is the harness that wraps them into a working coding agent: it drives the turn loop, the provider seam, the policy ladder, the session log and the terminal, and it reaches every component across that one boundary. It is not a rewrite of DevCouncil and does not replace it; it is what turns a set of components into something an operator or another application can run. GitPulse uses that wrap for policy, workbench, and agent hosting, and selected DevCouncil crates for code intelligence.
 
-**That makes MANVI embeddable.** Because the harness is a single static Go binary (`CGO_ENABLED=0`) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
+**That makes MANVI embeddable.** Because the harness is a single Go binary (static on Linux) whose only external contract is `fork`/`exec` plus line-delimited JSON, it drops into other applications without dragging an interpreter, a shared library, or a package manager behind it. Release builds link exactly one Rust archive, the Gusset policy engine; no DevCouncil component is ever linked. `manvi serve` exposes the whole harness — policy enforcement, capability discovery, token budgeting, completion settling — over NDJSON on stdio, which is what an IDE, an editor extension, or a host process integrates against. See [`SERVE_HOST_PLANE.md`](SERVE_HOST_PLANE.md).
 
 The host plane is assembled from immutable per-server modules. Built-in policy,
 local-model, and chat handlers use the same router as optional services; the
@@ -85,7 +85,7 @@ flowchart TB
         Stream["NDJSON CI Event Sink (manvi watch --json)"]
     end
 
-    subgraph GoPlane["Go Execution Plane (CGO_ENABLED=0)"]
+    subgraph GoPlane["Go Execution Plane (links one archive: Gusset engine)"]
         Bus["Event Bus & Sinks (ui.Event)"]
         AgentLoop["Agent Turn Driver & Waterfalls"]
         Registry["Flags Registry & Posture Engine"]
@@ -134,10 +134,10 @@ flowchart TB
 
 ### Architectural Axioms
 
-1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries, exchanging JSON objects over `stdin`/`stdout`. Linking them via `cgo` would sacrifice `CGO_ENABLED=0`, instantaneous cross-compilation, static binary portability, and process isolation. What the axiom fixes is the *process*, not a fork per call: `dcstore` is additionally reachable as a `serve` session that answers many requests over one process, holding one SQLite connection across them, and gives up none of the four.
+1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries, exchanging JSON objects over `stdin`/`stdout`. Linking components via `cgo` would sacrifice instantaneous cross-compilation, static binary portability, and process isolation. The one exception is the **Gusset policy engine**: since v0.0.6 release binaries link a single Rust archive whose dc-glob engine answers every policy pattern question (Linux releases stay static against musl). `CGO_ENABLED=0` still builds, is still gated in `verify.sh`, and decides with Go's fnmatch. What the axiom fixes is the *process*, not a fork per call: `dcstore` is additionally reachable as a `serve` session that answers many requests over one process, holding one SQLite connection across them, and gives up none of the four.
 2. **Mutual Exclusion in Storage, Not Application Code**: Multi-agent task concurrency is guaranteed by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`), not by an in-memory lock in Go.
 3. **Session Log Invariant**: The history provided to LLMs is *always* projected on demand from the append-only session log, never accumulated in volatile local memory.
-4. **Zero Third-Party Runtime Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines, custom damage-diffed terminal painting, and zero external packages.
+4. **Restricted Third-Party Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines and custom damage-diffed terminal painting. The only non-standard-library packages are the allowlisted ones in [section 7](#7-restricted-dependency-design) (`memguard`, `samber/mo`) plus the sibling DevCouncil and Gusset modules pinned in `scripts/module-pins.txt`.
 
 ---
 
@@ -267,7 +267,7 @@ flowchart LR
 
 ## 5. Process Boundary & IPC Protocol
 
-The interface between Go and Rust avoids CGO by invoking command-line tools with structured JSON stdio.
+The interface between Go and the DevCouncil components avoids CGO by invoking command-line tools with structured JSON stdio. (The Gusset engine is the single linked exception and is a policy-matching library, not a component; see the axiom above.)
 
 ```mermaid
 sequenceDiagram
@@ -338,7 +338,7 @@ the allowlist being edited and reviewed alongside it.
 
 | Plane | Direct dependencies | Rationale |
 |---|---|---|
-| **Go (`manvi/go.mod`)** | `awnumar/memguard`, `samber/mo`, and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; `mo.Option` gives absence one spelling at the local provider's credential seam; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. `CGO_ENABLED=0` still holds — all three are pure Go. |
+| **Go (`manvi/go.mod`)** | `awnumar/memguard`, `samber/mo`, and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; `mo.Option` gives absence one spelling at the local provider's credential seam; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. All three are pure Go; the cgo-off gate (`CGO_ENABLED=0`) still builds and tests them, while release builds additionally link the Gusset archive. |
 | **Rust (`crates/Cargo.toml`)** | `rusqlite` (with `bundled`) and ripgrep's engine (`grep-regex`, `grep-searcher`, `ignore`) | Compiles SQLite from source so the store's partial unique index does not depend on the host's libsqlite3 (22 transitive crates), and embeds ripgrep's ignore-rule resolution and regex matching engine for repository search in `dc-grep` (31 transitive crates). `cargo audit` checks all dependencies on every run. `dc-glob` and `dc-verify` have no external dependencies. |
 
 `valyala/fastjson` was measured for this list and refused; see the hardening

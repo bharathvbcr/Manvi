@@ -5,16 +5,19 @@
     ".agents/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
     ".agents/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
     ".agents/skills/devmap/SKILL.md": "344cbd0cf98c45e0d37ea46bc66030be327b1a997b3555bf1502cc280e41b928",
+    ".agents/skills/language-policy/SKILL.md": "246b9fbbfc61fde4792729bb01e4acf3e08d22f14651f80e23c8920ea647108f",
     ".claude/skills/devmap-debugging/SKILL.md": "1176d84a92e92a6b49bf87ed2b6c0c97c9bf44b0d14a10bf227b0a42ed9b3965",
     ".claude/skills/devmap-exploring/SKILL.md": "05fefbdf7a138de41c6e2a4128e237ff4d93b4374f4c7aecdf72ad342a6d033c",
     ".claude/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
     ".claude/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
     ".claude/skills/devmap/SKILL.md": "344cbd0cf98c45e0d37ea46bc66030be327b1a997b3555bf1502cc280e41b928",
+    ".claude/skills/language-policy/SKILL.md": "246b9fbbfc61fde4792729bb01e4acf3e08d22f14651f80e23c8920ea647108f",
     ".cursor/skills/devmap-debugging/SKILL.md": "1176d84a92e92a6b49bf87ed2b6c0c97c9bf44b0d14a10bf227b0a42ed9b3965",
     ".cursor/skills/devmap-exploring/SKILL.md": "05fefbdf7a138de41c6e2a4128e237ff4d93b4374f4c7aecdf72ad342a6d033c",
     ".cursor/skills/devmap-impact/SKILL.md": "797e9b2c37bd71f42cfd7dd6712675fa21939608d663661adb2f8cda7d110556",
     ".cursor/skills/devmap-refactoring/SKILL.md": "1eb5ddf7b2e340e7cd1a5d0d2b2fbf69a7e380f236ed1b94ebd81a1ac8f716b9",
-    ".cursor/skills/devmap/SKILL.md": "0f9315f61951b21c0918795903236a0cccfaf0bc75182ddd1f7be3415802edb0"
+    ".cursor/skills/devmap/SKILL.md": "0f9315f61951b21c0918795903236a0cccfaf0bc75182ddd1f7be3415802edb0",
+    ".cursor/skills/language-policy/SKILL.md": "246b9fbbfc61fde4792729bb01e4acf3e08d22f14651f80e23c8920ea647108f"
   },
   "schema": 1
 }

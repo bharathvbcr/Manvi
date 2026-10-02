@@ -21,6 +21,23 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Changed
+
+- The docs tooling (the mermaid grammar gate, jsdom) is provisioned with **bun**
+  instead of npm: `bun.lock` replaces `package-lock.json`, `package.json` pins
+  `packageManager: bun@1.4.2`, and `verify.sh` installs with
+  `bun install --frozen-lockfile`. The parser still runs on node. Dependabot
+  moves to the `bun` ecosystem and CI sets up bun in place of the npm cache.
+  Nothing here reaches the `manvi` binary.
+- `verify.sh` gains a `Docs tooling — supply chain` step running `bun audit`
+  against `bun.lock`. GitHub's dependency graph does not read `bun.lock`, so
+  Dependabot raises no alerts for it; this step is what catches a vulnerable
+  package. Without bun the step reports `NOT COVERED` instead of passing.
+- Docs: `ARCHITECTURE.md`, `README.md` and the docs index no longer claim a
+  `CGO_ENABLED=0` / zero-dependency shipped binary, matching the v0.0.6 engine
+  link. The visual architecture guide is rewritten with fuller descriptions of
+  each plane, ladder rung, posture and lifecycle stage.
+
 ## [0.0.6] — 2026-09-30
 
 ### Changed

@@ -3,6 +3,7 @@
   "private": true,
   "description": "Dev-time tooling for documentation gates. Nothing here ships in the manvi binary.",
   "type": "module",
+  "packageManager": "bun@1.4.2",
   "bin": {
     "check-mermaid": "./scripts/check-mermaid.mjs"
   },

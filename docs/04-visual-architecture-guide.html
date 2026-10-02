@@ -406,6 +406,93 @@
     padding: 2px 6px;
     border-radius: 3px;
   }
+
+  /* ---- Added: descriptive panels, explorer, trace, tables ---- */
+  html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+  .sub { color: var(--ink-3); font-size: 14px; margin: 6px 0 0; max-width: 62ch; }
+  .tldr {
+    background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--brand);
+    border-radius: 6px; padding: 16px 20px; margin: 0 0 32px; font-size: 15px; color: var(--ink-2);
+  }
+  .tldr strong { color: var(--ink); }
+  .tldr ul { margin: 8px 0 0; padding-left: 20px; }
+  .tldr li { margin-bottom: 4px; }
+  h3.sec { font-size: 17px; margin: 32px 0 8px; letter-spacing: -.01em; }
+  p.note { font-size: 14px; color: var(--ink-2); max-width: 78ch; margin: 0 0 16px; }
+  .callout {
+    background: var(--amber-soft); border: 1px solid var(--rule); border-left: 4px solid var(--amber);
+    border-radius: 6px; padding: 12px 16px; font-size: 14px; margin: 16px 0 24px; color: var(--ink-2);
+  }
+  .callout.ok { background: var(--ok-soft); border-left-color: var(--ok); }
+  .callout strong { color: var(--ink); }
+  .scroll-x { overflow-x: auto; margin: 0 0 24px; }
+  .scroll-x table.matrix { margin: 0; min-width: 620px; }
+  table.matrix td code { white-space: nowrap; }
+
+  /* Component explorer */
+  .explorer { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; gap: 20px; margin: 16px 0 32px; }
+  @media (max-width: 760px) { .explorer { grid-template-columns: 1fr; } }
+  .explorer-list { display: flex; flex-direction: column; gap: 6px; }
+  .explorer-group { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin: 10px 0 2px; }
+  .explorer-group:first-child { margin-top: 0; }
+  .comp-btn {
+    text-align: left; font-family: var(--mono); font-size: 13px; background: var(--surface);
+    border: 1px solid var(--rule); border-left-width: 4px; border-radius: 4px; padding: 8px 12px; color: var(--ink); cursor: pointer;
+  }
+  .comp-btn[data-kind="go"] { border-left-color: var(--go); }
+  .comp-btn[data-kind="rust"] { border-left-color: var(--rust); }
+  .comp-btn[data-kind="link"] { border-left-color: var(--accent); }
+  .comp-btn:hover { background: var(--surface-2); }
+  .comp-btn[aria-pressed="true"] { background: var(--surface-2); border-color: var(--ink-3); outline: 2px solid var(--ink-3); outline-offset: -2px; }
+  .comp-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .detail-panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 22px 24px; box-shadow: var(--shadow); }
+  .detail-panel h3 { margin: 0 0 4px; font-family: var(--mono); font-size: 18px; }
+  .detail-panel .lang { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 12px; }
+  .detail-panel dl { margin: 0; }
+  .detail-panel dt { font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-top: 14px; }
+  .detail-panel dd { margin: 4px 0 0; font-size: 14.5px; color: var(--ink-2); }
+
+  /* Cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 16px 0 32px; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 18px 20px; }
+  .card h4 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; font-size: 14px; color: var(--ink-2); }
+  .card .tag { font-family: var(--mono); font-size: 11px; color: var(--ink-3); display: block; margin-bottom: 6px; letter-spacing: .08em; text-transform: uppercase; }
+
+  /* Outcome chips */
+  .chip { font-family: var(--mono); font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 3px; white-space: nowrap; }
+  .chip.passed { background: var(--ok-soft); color: var(--ok); }
+  .chip.blocked { background: var(--brand-soft); color: var(--crit); }
+  .chip.granted { background: var(--amber-soft); color: var(--amber); }
+  .chip.demoted { background: var(--accent-soft); color: var(--accent); }
+  .chip.degraded { background: var(--sunken); color: var(--ink-2); }
+
+  /* Simulator trace */
+  .sim-result { border: 1px solid var(--rule); border-radius: 6px; padding: 16px; background: var(--paper); }
+  .sim-headline { font-family: var(--mono); font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .sim-why { font-size: 14px; color: var(--ink-2); margin: 0 0 14px; }
+  .trace { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12.5px; }
+  .trace li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 6px 0; border-top: 1px solid var(--rule-soft); }
+  .trace .mark { font-weight: 700; text-align: center; }
+  .trace .m-pass { color: var(--ok); } .trace .m-stop { color: var(--crit); } .trace .m-fire { color: var(--amber); } .trace .m-skip { color: var(--ink-3); }
+  .trace .t-name { color: var(--ink); } .trace .t-detail { color: var(--ink-3); display: block; font-size: 12px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .presets button { font-family: var(--mono); font-size: 12px; background: var(--surface-2); border: 1px solid var(--rule); border-radius: 4px; padding: 5px 10px; color: var(--ink-2); cursor: pointer; }
+  .presets button:hover { border-color: var(--accent); color: var(--accent); }
+
+  details.more { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 16px; margin: 0 0 12px; }
+  details.more summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  details.more[open] summary { margin-bottom: 8px; }
+  details.more p, details.more li { font-size: 14px; color: var(--ink-2); }
+
+  pre.code { background: var(--sunken); padding: 14px 16px; border-radius: 6px; font-family: var(--mono); font-size: 13px; overflow-x: auto; margin: 0 0 20px; }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 12px 0 24px; }
+  .steps li { counter-increment: s; position: relative; padding: 0 0 14px 44px; font-size: 14.5px; color: var(--ink-2); }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: -2px; width: 28px; height: 28px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--rule); display: grid; place-items: center; font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--ink); }
+  .steps li strong { color: var(--ink); }
+  footer.foot { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--ink-3); }
+  footer.foot a { color: var(--ink-2); }
 </style>
 </head>
 <body>
@@ -414,62 +501,80 @@
   <header class="mast">
     <div class="brand-title">
       <div class="logo-box">
-        <svg width="34" height="34" viewBox="0 0 7 7" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg width="34" height="34" viewBox="0 0 7 7" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <rect width="7" height="7" fill="#9E2A2B"/>
           <path d="M1 1H2V6H1V1ZM5 1H6V6H5V1ZM2 2H3V4H2V2ZM4 2H5V4H4V2ZM3 3H4V5H3V3Z" fill="#F6F5F2"/>
         </svg>
       </div>
       <div>
-        <div class="kicker">MANVI Architecture Reference</div>
+        <div class="kicker">MANVI Architecture Reference · v0.0.6</div>
         <h1>Dual-Plane System Guide</h1>
+        <p class="sub">A visual tour of how MANVI turns a language model into a coding agent you can audit: what runs where, what the policy gate decides, and why a turn can be trusted to have ended.</p>
       </div>
     </div>
     <button class="theme-toggle" onclick="toggleTheme()">Theme: Auto</button>
   </header>
 
-  <nav class="nav-bar">
+  <nav class="nav-bar" aria-label="Sections">
     <a href="#dual-plane" class="nav-link">Dual-Plane Map</a>
+    <a href="#explorer" class="nav-link">Component Explorer</a>
     <a href="#policy-ladder" class="nav-link">Policy Ladder</a>
+    <a href="#outcomes" class="nav-link">Outcomes &amp; Postures</a>
     <a href="#simulator" class="nav-link">Policy Simulator</a>
     <a href="#turn-lifecycle" class="nav-link">Turn Lifecycle</a>
     <a href="#lease-concurrency" class="nav-link">Task Leases</a>
+    <a href="#build-deps" class="nav-link">Build &amp; Dependencies</a>
     <a href="ARCHITECTURE.md" class="nav-link">ARCHITECTURE.md</a>
     <a href="POLICY_AND_SAFETY.md" class="nav-link">POLICY_AND_SAFETY.md</a>
     <a href="AGENT_AND_TURN_LIFECYCLE.md" class="nav-link">LIFECYCLE.md</a>
   </nav>
 
+  <div class="tldr">
+    <strong>MANVI in four sentences.</strong> MANVI is a coding-agent <em>harness</em>: it runs the model loop, enforces what the agent may touch, and records everything. It is written in Go for the IO-bound parts and delegates the CPU-bound, determinism-critical parts to DevCouncil components written in Rust.
+    <ul>
+      <li><strong>Components over a process boundary.</strong> Go execs <code>dcstore</code>, <code>dcverify</code>, <code>dcgrep</code> and <code>devmap</code> and exchanges JSON over stdio; none is ever linked.</li>
+      <li><strong>Blocks are never invisible.</strong> A check that did not run, or a rule cleared by a grant, is always labelled; it never looks like a clean pass.</li>
+      <li><strong>Evidence ends turns.</strong> The model saying "done" is not enough; a harness checkpoint verifies what the turn actually changed.</li>
+      <li><strong>The log is the truth.</strong> History sent to the model is always re-projected from an append-only session log.</li>
+    </ul>
+  </div>
+
   <section id="dual-plane">
     <h2>1. The Dual-Plane Architecture</h2>
     <p class="lead">
-      MANVI splits work cleanly on the axis of <strong>IO-bound concurrency</strong> vs <strong>CPU-bound determinism</strong>. Go drives goroutines, providers, and terminals with zero CGO; Rust provides zero-allocation diff parsing, coverage analysis, and ACID SQLite locking.
+      MANVI splits work on the axis of <strong>IO-bound concurrency</strong> versus <strong>CPU-bound determinism</strong>. Go drives goroutines, provider streams and the terminal; Rust provides diff parsing, coverage analysis, repository search, code-graph extraction and the ACID SQLite lease store.
+    </p>
+    <p class="note">
+      The rule of thumb for where a new piece of work belongs: if it is heavy parsing or matching that must behave identically every time, or needs a database invariant, it is a Rust component. If it waits on the network, a terminal or another process, it is Go. Tie goes to Go, because the Go module builds in seconds and a Rust build with tree-sitter grammars takes minutes. See <a href="COMPONENTS_AND_HARNESS.md">COMPONENTS_AND_HARNESS.md</a>.
     </p>
 
     <div class="plane-grid">
       <div class="plane-card go-card">
         <span class="plane-tag go-tag">Go Execution Plane</span>
-        <h3 class="plane-title">Concurrency & Interaction</h3>
-        <p class="plane-desc">Pure Go static binary (<code>CGO_ENABLED=0</code>). Zero external dependencies in <code>go.mod</code>.</p>
+        <h3 class="plane-title">Concurrency &amp; Interaction</h3>
+        <p class="plane-desc">The <code>manvi</code> binary. Static on Linux (musl); release builds link exactly one Rust archive, the Gusset policy engine. Beyond the standard library, the Go module takes only an allowlisted few packages (<code>memguard</code>, <code>samber/mo</code>) plus the pinned DevCouncil and Gusset modules.</p>
         <ul class="component-list">
           <li><span class="pkg">manvi/agent</span> <span class="role">Turn/step state machine</span></li>
-          <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI stream</span></li>
-          <li><span class="pkg">manvi/gate</span> <span class="role">6-rung policy composition</span></li>
-          <li><span class="pkg">manvi/grants</span> <span class="role">Human & agent override ledger</span></li>
-          <li><span class="pkg">manvi/ui/tui</span> <span class="role">Elm-loop fullscreen terminal</span></li>
-          <li><span class="pkg">manvi/session</span> <span class="role">Immutable session log</span></li>
+          <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI, local models</span></li>
+          <li><span class="pkg">manvi/gate</span> <span class="role">Write &amp; command policy ladders</span></li>
+          <li><span class="pkg">manvi/grants</span> <span class="role">Human &amp; agent override ledger</span></li>
+          <li><span class="pkg">manvi/tools</span> <span class="role">Guarded native tool pipeline</span></li>
+          <li><span class="pkg">manvi/session</span> <span class="role">Append-only session log</span></li>
+          <li><span class="pkg">manvi/ui</span> <span class="role">Elm-loop fullscreen TUI</span></li>
+          <li><span class="pkg">manvi/serve</span> <span class="role">NDJSON stdio host plane</span></li>
         </ul>
       </div>
 
       <div class="plane-card rust-card">
         <span class="plane-tag rust-tag">Rust Analysis Plane</span>
         <h3 class="plane-title">Deterministic Analysis</h3>
-        <p class="plane-desc">High-performance native utilities invoked over JSON stdio child processes.</p>
+        <p class="plane-desc">DevCouncil components, resolved from <code>PATH</code> as standalone binaries with a JSON-on-stdio contract. Usable by any coding agent or host, not only MANVI.</p>
         <ul class="component-list">
-          <li><span class="pkg">crates/dc-store</span> <span class="role">SQLite task lease mutex</span></li>
-          <li><span class="pkg">crates/dc-verify</span> <span class="role">Diff parser & rigor gates</span></li>
-          <li><span class="pkg">crates/dc-verify</span> <span class="role">Go & LCOV coverage bitsets</span></li>
-          <li><span class="pkg">crates/dc-glob</span> <span class="role">CPython fnmatch glob engine</span></li>
-          <li><span class="pkg">crates/dc-grep</span> <span class="role">Ignore-aware search (ripgrep)</span></li>
-          <li><span class="pkg">devmap</span> <span class="role">AST code graph & adjacency — external tool, resolved from PATH</span></li>
+          <li><span class="pkg">dcstore</span> <span class="role">Tasks &amp; SQLite lease mutex</span></li>
+          <li><span class="pkg">dcverify</span> <span class="role">Diff parser, rigor gates, coverage</span></li>
+          <li><span class="pkg">dcgrep</span> <span class="role">Ignore-aware search (ripgrep engine)</span></li>
+          <li><span class="pkg">devmap</span> <span class="role">AST code graph &amp; adjacency</span></li>
+          <li><span class="pkg">dc-glob</span> <span class="role">CPython-fnmatch glob engine (library)</span></li>
         </ul>
       </div>
     </div>
@@ -478,41 +583,61 @@
       <div class="ipc-content">
         <div class="ipc-title">Process Boundary, Not CGO</div>
         <p class="ipc-desc">
-          Go execs <code>dcstore</code>, <code>dcverify</code>, <code>dcgrep</code>, and <code>devmap</code> passing arguments and JSON over pipes. Mutexes live in SQLite's partial unique index, not in Go memory. A crash in Rust never corrupts Go memory.
+          Go execs the components, passing arguments and JSON over pipes. Mutual exclusion lives in SQLite's partial unique index, not in Go memory, and a crash in a component cannot corrupt the harness. The boundary is the <em>process</em>, not a fork per call: <code>dcstore</code> also runs as a long-lived <code>serve</code> session that answers many requests over one connection.
         </p>
       </div>
-      <span class="badge-no-cgo">CGO_ENABLED=0</span>
+      <span class="badge-no-cgo">Components: never linked</span>
+    </div>
+
+    <div class="callout">
+      <strong>The one linked archive.</strong> Since v0.0.6 release binaries link the <strong>Gusset</strong> engine, which answers every policy pattern question (secret paths, protected paths, planned-file globs, command allowlists). Its answers are held equal to Go's fnmatch by a CPython parity fixture and a fuzz differential. If the engine cannot answer mid-decision the result is a hard denial (<code>path.engine_unavailable</code>), never a guessed boolean; a question unanswered within 250&nbsp;ms falls back to fnmatch. A <code>CGO_ENABLED=0</code> build has no engine and decides with fnmatch. Verify a binary with <code>manvi gusset-check</code>.
+    </div>
+
+    <h3 class="sec">Why this shape</h3>
+    <div class="cards">
+      <div class="card"><span class="tag">Embeddable</span><h4>One binary, one contract</h4><p>The only external contract is <code>fork</code>/<code>exec</code> plus line-delimited JSON, so another application takes the harness without inheriting any component's dependency tree. <code>manvi serve</code> exposes the harness over NDJSON stdio for IDEs and host apps.</p></div>
+      <div class="card"><span class="tag">Fault isolation</span><h4>Crashes stay on their side</h4><p>A panic inside <code>dcverify</code> surfaces as a failed call with a non-zero exit. The harness treats an unparseable or failed response as a hard failure, never as an empty pass.</p></div>
+      <div class="card"><span class="tag">Independent updates</span><h4>Swap one component</h4><p>Because nothing is linked, a host can update <code>devmap</code> or <code>dcstore</code> without rebuilding the harness, or take only the subset it needs.</p></div>
+    </div>
+  </section>
+
+  <section id="explorer">
+    <h2>2. Component Explorer</h2>
+    <p class="lead">Pick a component to see what it owns, how the harness reaches it, and what happens when it is missing or fails.</p>
+    <div class="explorer">
+      <div class="explorer-list" id="compList" role="group" aria-label="Components"></div>
+      <div class="detail-panel" id="compDetail" aria-live="polite"></div>
     </div>
   </section>
 
   <section id="policy-ladder">
-    <h2>2. The Five-Tier Policy Ladder</h2>
+    <h2>3. The Six-Rung Policy Ladder</h2>
     <p class="lead">
-      Blocks are overridable when appropriate, but never invisible. A check that did not run records that fact, and a grant that cleared a write is explicitly branded on the tool output.
+      Every file write and every shell command passes the same ladder. Blocks are overridable when appropriate, but never invisible: a check that did not run records that fact, and a grant that cleared a rule is branded on the tool output.
     </p>
 
     <div class="ladder-box">
       <div class="ladder-step">
         <div class="step-num">1</div>
         <div>
-          <div class="step-title">Workspace Boundary Check</div>
-          <p class="step-desc">Refuses any file write or command that escapes the repository root.</p>
-          <div class="step-rules">
-            <span class="rule-pill hard">path.outside_root</span>
-          </div>
+          <div class="step-title">Workspace Boundary</div>
+          <p class="step-desc">Refuses any file write or command target that escapes the repository root: <code>../</code> traversal and absolute paths outside the workspace. This is the one rung that holds under every posture, including <code>yolo</code>.</p>
+          <div class="step-rules"><span class="rule-pill hard">path.outside_root</span></div>
         </div>
       </div>
 
       <div class="ladder-step">
         <div class="step-num">2</div>
         <div>
-          <div class="step-title">Hard Security Rules (Ungrantable)</div>
-          <p class="step-desc">Secret paths, .git directory internals, and git force pushes can never be bypassed by any grant or posture.</p>
+          <div class="step-title">Hard Security Rules (ungrantable)</div>
+          <p class="step-desc">Credentials, <code>.git</code> internals, agent configuration and unsafe git or shell operations. No grant clears them. Attempting to issue one fails immediately with <code>ErrUngrantableRule</code>. They are switched off only by <code>yolo</code> or by explicitly setting <code>policy.hard_rules.enabled=false</code>, and that is recorded as <em>degraded</em>.</p>
           <div class="step-rules">
-            <span class="rule-pill hard">path.credential (.env, *.pem)</span>
+            <span class="rule-pill hard">path.credential (.env*, *.pem, *.key, id_rsa)</span>
             <span class="rule-pill hard">path.git_internal (.git/*)</span>
+            <span class="rule-pill hard">path.agent_config</span>
             <span class="rule-pill hard">cmd.git.force_push</span>
             <span class="rule-pill hard">cmd.git.bypass (--no-verify)</span>
+            <span class="rule-pill hard">command.too_long (128 KiB)</span>
           </div>
         </div>
       </div>
@@ -520,11 +645,13 @@
       <div class="ladder-step">
         <div class="step-num">3</div>
         <div>
-          <div class="step-title">Soft Scope & Adjacency Rules</div>
-          <p class="step-desc">Evaluates whether changes match declared task planned files or resolved code-graph neighbors.</p>
+          <div class="step-title">Soft Scope &amp; Adjacency Rules</div>
+          <p class="step-desc">Does the change match the files the task declared in <code>devcouncil_checkout_task</code>, or sit inside the code-graph neighbourhood of one? A path in the same subsystem as a planned file, or a declared neighbour of one, is admitted; only past that does the soft rule fire.</p>
           <div class="step-rules">
             <span class="rule-pill soft">scope.unplanned</span>
             <span class="rule-pill soft">scope.neighbourhood</span>
+            <span class="rule-pill soft">command.no_lease</span>
+            <span class="rule-pill soft">command.not_allowed</span>
           </div>
         </div>
       </div>
@@ -533,113 +660,206 @@
         <div class="step-num">4</div>
         <div>
           <div class="step-title">Grants Ledger Consultation</div>
-          <p class="step-desc">Checks if an active, unexpired Human or Agent grant with valid justification exists.</p>
+          <p class="step-desc">Is there an active, unexpired grant matching this rule and target, with a non-empty justification? Grants are scoped and time-bounded (default maximum 15 minutes). An agent may clear most soft rules for itself, but never <code>command.no_lease</code> or <code>command.not_allowed</code>: arbitrary shell execution is how gates themselves could be subverted.</p>
         </div>
       </div>
 
       <div class="ladder-step">
         <div class="step-num">5</div>
         <div>
-          <div class="step-title">Posture Demotion & Operator Escalation</div>
-          <p class="step-desc">Under <code>dev</code>/<code>yolo</code>, soft rules demote with warnings. Under <code>strict</code> in TUI, escalates to interactive modal.</p>
+          <div class="step-title">Posture Demotion</div>
+          <p class="step-desc">Under <code>dev</code> (the shipped default) a violated soft rule is allowed but reported as <em>demoted</em>. Under <code>yolo</code> soft rules are off. Under <code>strict</code> nothing is demoted and the decision falls through to rung 6.</p>
+        </div>
+      </div>
+
+      <div class="ladder-step">
+        <div class="step-num">6</div>
+        <div>
+          <div class="step-title">Operator Escalation</div>
+          <p class="step-desc">Under <code>strict</code> in an attended TUI the operator is asked in a modal; approval issues a human grant and the write proceeds, denial blocks it. With no approver attached (CI, unattended) the soft rule blocks outright.</p>
         </div>
       </div>
     </div>
+
+    <details class="more">
+      <summary>How the command gate differs from the write gate</summary>
+      <p>A command line has two things to judge: the command and the files its redirections open. Redirect targets go through exactly the path a <code>WriteFile</code> call faces, so <code>cmd &gt; .env</code> cannot be treated differently from writing <code>.env</code> directly. Redirect enumeration descends into <code>$( )</code>, backticks and process substitution; a target that cannot be resolved (<code>&gt; $HOME/x</code>) is refused rather than skipped. The invariant: <em>the gate's verdict on a command line is never more permissive than its verdict on the files that command writes.</em></p>
+      <p>Cost is bounded: lines over 128&nbsp;KiB are refused before any rung reads them, a line may be judged to write at most 64 distinct paths, and heredocs and <code>eval</code> arguments are refused outright because their meaning is not in the text being judged. Running a script that lives on disk (<code>make</code>, <code>pytest</code>) is deliberately outside the ladder; the allowlist decides whether the command word may run.</p>
+    </details>
+    <details class="more">
+      <summary>Grant authority invariants</summary>
+      <ul>
+        <li><strong>Hard rules are ungrantable</strong> by anyone, human or agent.</li>
+        <li><strong>A reason is mandatory.</strong> Every grant carries a non-empty justification.</li>
+        <li><strong>TTL is bounded.</strong> A zero or negative lifetime fails validation.</li>
+        <li><strong>Literal vs glob matching is strict.</strong> A literal path cannot alias to a glob.</li>
+      </ul>
+    </details>
+  </section>
+
+  <section id="outcomes">
+    <h2>4. Outcome States &amp; Postures</h2>
+    <p class="lead">Every operation ends in one of five states. The state, not just allow/deny, is what appears in the transcript and the run report.</p>
+
+    <div class="scroll-x">
+    <table class="matrix">
+      <thead><tr><th>Outcome</th><th>Meaning</th><th>Metadata carried</th></tr></thead>
+      <tbody>
+        <tr><td><span class="chip passed">Passed</span></td><td>All rules evaluated and satisfied. The only state that counts as clean.</td><td>None</td></tr>
+        <tr><td><span class="chip blocked">Blocked</span></td><td>A hard rule fired, or a soft rule fired with no grant and no relaxing posture.</td><td>Rule, reason, severity</td></tr>
+        <tr><td><span class="chip granted">Granted</span></td><td>Allowed because an explicit override was recorded.</td><td>Rule, grant ID, grantor, reason, expiry</td></tr>
+        <tr><td><span class="chip demoted">Demoted</span></td><td>Allowed because posture (<code>dev</code>/<code>yolo</code>) relaxed a soft rule.</td><td>Demoting posture, shadowed rule</td></tr>
+        <tr><td><span class="chip degraded">Degraded</span></td><td>The check ran without an optional dependency, or a hard rule was switched off. It did <em>not</em> run in full.</td><td>Degraded subsystem name</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="scroll-x">
+    <table class="matrix">
+      <thead><tr><th>Behaviour</th><th><code>strict</code></th><th><code>dev</code> (default)</th><th><code>yolo</code></th></tr></thead>
+      <tbody>
+        <tr><td>Root containment</td><td>Enforced</td><td>Enforced</td><td>Enforced</td></tr>
+        <tr><td>Credential &amp; git hard rules</td><td>Enforced</td><td>Enforced</td><td>Off (recorded as degraded)</td></tr>
+        <tr><td>Task-scope soft rules</td><td>Enforced</td><td>Advisory (demoted)</td><td>Off</td></tr>
+        <tr><td>Operator escalation (TUI)</td><td>Prompts a modal</td><td>No prompts</td><td>No prompts</td></tr>
+        <tr><td>Run classification</td><td>Strict</td><td>Weakened</td><td>Weakened</td></tr>
+        <tr><td>Who may grant</td><td>Human / agent</td><td>Human / agent</td><td>Human only</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="note">Posture constrains <em>writing</em>, never <em>looking</em>: <code>devcouncil_read_file</code>, <code>devcouncil_list_dir</code>, <code>devcouncil_grep</code> and <code>devcouncil_find_files</code> are limited by root containment alone and never enter the policy gate. A <code>dev</code> run that denied nothing is not evidence that nothing would have been denied, which is why a demoted run is never reported as strictly clean.</p>
   </section>
 
   <section id="simulator">
-    <h2>3. Interactive Policy & Posture Simulator</h2>
-    <p class="lead">Test how MANVI evaluates file write operations across different paths, task plans, postures, and human grants:</p>
+    <h2>5. Interactive Policy &amp; Posture Simulator</h2>
+    <p class="lead">Try a file write against the ladder. The trace shows which rung decided and which were never reached. This is an illustrative model of the documented ladder, not the real gate; the real one lives in <code>manvi/gate</code> and <code>manvi/policy</code>.</p>
+
+    <div class="presets" aria-label="Presets">
+      <button type="button" onclick="preset('src/main.go','dev','src/main.go,src/util.go','unrelated','none','tui')">In-plan write</button>
+      <button type="button" onclick="preset('src/helper.go','strict','src/main.go,src/util.go','unrelated','none','tui')">Unplanned, strict</button>
+      <button type="button" onclick="preset('src/helper.go','strict','src/main.go,src/util.go','unrelated','none','ci')">Unplanned, strict, CI</button>
+      <button type="button" onclick="preset('.env','dev','src/main.go','unrelated','human','tui')">Write .env with a grant</button>
+      <button type="button" onclick="preset('../outside.txt','yolo','src/main.go','unrelated','none','tui')">Escape the repo</button>
+    </div>
 
     <div class="sim-container">
       <div class="sim-controls">
         <div class="sim-field">
-          <label>Target File Path</label>
+          <label for="simPath">Target file path</label>
           <input type="text" id="simPath" value="src/helper.go" oninput="runSim()">
         </div>
         <div class="sim-field">
-          <label>Harness Posture</label>
+          <label for="simPosture">Harness posture</label>
           <select id="simPosture" onchange="runSim()">
             <option value="dev">dev (shipped default)</option>
             <option value="strict">strict (enforce all)</option>
-            <option value="yolo">yolo (soft gates off)</option>
+            <option value="yolo">yolo (gates off)</option>
           </select>
         </div>
         <div class="sim-field">
-          <label>Task Planned Files</label>
+          <label for="simPlanned">Task planned files</label>
           <input type="text" id="simPlanned" value="src/main.go,src/util.go" oninput="runSim()">
         </div>
         <div class="sim-field">
-          <label>Active Grant?</label>
+          <label for="simGraph">Relation to planned files</label>
+          <select id="simGraph" onchange="runSim()">
+            <option value="unrelated">Unrelated subsystem</option>
+            <option value="neighbour">Declared neighbour / same subsystem</option>
+          </select>
+        </div>
+        <div class="sim-field">
+          <label for="simGrant">Active grant</label>
           <select id="simGrant" onchange="runSim()">
-            <option value="none">No Grant</option>
-            <option value="human">Human Grant (ID: G-101)</option>
+            <option value="none">No grant</option>
+            <option value="human">Human grant (G-101)</option>
+            <option value="agent">Agent grant (15 min TTL)</option>
+          </select>
+        </div>
+        <div class="sim-field">
+          <label for="simSession">Session (matters under strict)</label>
+          <select id="simSession" onchange="runSim()">
+            <option value="tui">Attended TUI</option>
+            <option value="ci">Unattended / CI</option>
           </select>
         </div>
       </div>
-
-      <div class="sim-output" id="simResult">
-        Evaluating...
-      </div>
+      <div class="sim-result" id="simResult" aria-live="polite">Evaluating...</div>
     </div>
   </section>
 
   <section id="turn-lifecycle">
-    <h2>4. Evidence-Driven Turn Lifecycle</h2>
+    <h2>6. Evidence-Driven Turn Lifecycle</h2>
     <p class="lead">
-      The agent loop terminates on tangible evidence, not model declaration. History is always projected from the immutable session log on disk.
+      The agent loop in <code>manvi/agent</code> terminates on tangible evidence, not on the model declaring victory. History is always projected fresh from the append-only session log on disk.
     </p>
 
+    <div class="scroll-x">
     <table class="matrix">
-      <thead>
-        <tr>
-          <th>Stage</th>
-          <th>Component</th>
-          <th>Guarantee & Invariant</th>
-        </tr>
-      </thead>
+      <thead><tr><th>Stage</th><th>Component</th><th>Guarantee &amp; invariant</th></tr></thead>
       <tbody>
-        <tr>
-          <td><strong>1. History Projection</strong></td>
-          <td><code>session.Project()</code></td>
-          <td>Messages projected fresh from the session log; in-memory drift is impossible.</td>
-        </tr>
-        <tr>
-          <td><strong>2. Pre-Step Waterfall</strong></td>
-          <td><code>bus.PreStep</code></td>
-          <td>Allows context compaction, pruning, or step rejection before token expenditure.</td>
-        </tr>
-        <tr>
-          <td><strong>3. Streaming Provider</strong></td>
-          <td><code>llm.Stream()</code></td>
-          <td>Separates reasoning from text; records delta and token usage in real time.</td>
-        </tr>
-        <tr>
-          <td><strong>4. Tool Execution</strong></td>
-          <td><code>tools.Execute()</code></td>
-          <td>Passes through Write/Command gate; logs input, output, and qualification status.</td>
-        </tr>
-        <tr>
-          <td><strong>5. Termination Evidence</strong></td>
-          <td><code>agent.TurnStopping</code></td>
-          <td>Loop terminates when model emits 0 tool calls, hits step limit, or passes serial checks.</td>
-        </tr>
+        <tr><td><strong>1. History projection</strong></td><td><code>session.Project()</code></td><td>Messages are projected from the log each step. <code>AssertModelVisible</code> aborts the turn if anything the model sees lacks a log record, so in-memory drift cannot occur.</td></tr>
+        <tr><td><strong>2. Pre-step waterfall</strong></td><td><code>bus.PreStep</code></td><td>Lets listeners compact context (appending <code>ToolResultCompacted</code> events, never rewriting history) or reject the step before any tokens are spent.</td></tr>
+        <tr><td><strong>3. Streaming provider</strong></td><td><code>llm.Stream()</code></td><td>Separates reasoning from text and tool calls; records each delta, token usage and the provider's replay state for deterministic resume.</td></tr>
+        <tr><td><strong>4. Tool execution</strong></td><td><code>tools.Execute()</code></td><td>Pre-execute waterfall, then the policy gate, then the tool body, then post-execute. The result carries its qualification (grant ID, demotion, degraded checks) back to the model and the log.</td></tr>
+        <tr><td><strong>5. Termination evidence</strong></td><td><code>agent.TurnStopping</code></td><td>When the model emits no tool calls, a serial checkpoint judges what the turn actually did before the loop is allowed to end.</td></tr>
       </tbody>
     </table>
+    </div>
+
+    <h3 class="sec">The terminal checkpoint</h3>
+    <ol class="steps">
+      <li><strong>A listener supplies the reason.</strong> To keep a turn open it states what changed and what the model should do; the loop appends that text. It does not silently re-ask with an unchanged history.</li>
+      <li><strong>The inject is marked.</strong> It occupies the <code>user</code> role on the wire, but is recorded with <code>Origin: harness</code>, so transcripts and reports show the harness speaking, not the operator.</li>
+      <li><strong>Bounces are bounded.</strong> At most <code>MaxCheckpointBounces</code> (two) per turn. After that the turn closes and <code>Outcome.BouncesExhausted</code> records that the objection still stood.</li>
+      <li><strong>A failing check closes the turn as degraded.</strong> A check that could not run has asked for nothing and is never reported as a pass.</li>
+    </ol>
+    <p class="note">The harness's own listener (the end-of-turn check) skips turns that changed nothing, verifies the paths a mutating turn wrote, and escalates to an adversarial reviewer only after telling the model was not enough. <code>manvi serve</code> is out of scope: the host owns the model call, <code>agent.Loop</code> does not run, and the checkpoint never fires.</p>
+
+    <h3 class="sec">The session log invariant</h3>
+    <p class="note">On disk the log is one checksummed JSON document per generation (<code>&lt;id&gt;.&lt;generation&gt;.json</code>), written whole and linked into place atomically, so a corrupt write is refused rather than half-read. Each message records who authored it, so a verdict the harness handed back is never rendered as the operator's words.</p>
   </section>
 
   <section id="lease-concurrency">
-    <h2>5. SQLite Task Lease Concurrency</h2>
+    <h2>7. SQLite Task Lease Concurrency</h2>
     <p class="lead">
-      Multi-agent concurrency is enforced at the database level via SQLite's partial unique index:
+      Multi-agent safety is enforced by the database, not by Go. Two agents can never both hold an active lease on a task, because SQLite refuses the second row.
     </p>
-    <div style="background: var(--sunken); padding: 16px; border-radius: 6px; font-family: var(--mono); font-size: 13px; overflow-x: auto; margin-bottom: 24px;">
-      CREATE UNIQUE INDEX ux_task_leases_active ON task_leases (task_id) WHERE status = 'active';
-    </div>
-    <p>
-      When sub-agent trees are cancelled (e.g. user presses <code>Ctrl+C</code>), MANVI invokes <code>dcstore release</code> using a <strong>fresh uncancelled context</strong>, ensuring task locks are immediately freed for subsequent turns.
-    </p>
+    <pre class="code">CREATE UNIQUE INDEX ux_task_leases_active ON task_leases (task_id) WHERE status = 'active';</pre>
+    <ol class="steps">
+      <li><strong>Acquire.</strong> <code>dcstore</code> opens <code>BEGIN IMMEDIATE</code> and inserts a lease row. A unique-index violation comes back as <code>{"ok":false,"error":"task held by ..."}</code>.</li>
+      <li><strong>Renew and release.</strong> Leases carry a token and expiry; heartbeats extend them and release frees them.</li>
+      <li><strong>Cancel cleanly.</strong> When a sub-agent tree is cancelled (for example <kbd>Ctrl</kbd>+<kbd>C</kbd>), MANVI calls <code>dcstore release</code> with a <strong>fresh, uncancelled context</strong> so the lock is freed for the next turn instead of lingering until expiry.</li>
+      <li><strong>Stay fast.</strong> A small pool of long-lived <code>dcstore serve</code> processes holds one SQLite connection each. A lease check drops from about 3.9&nbsp;ms (fork/exec dominated) to about 0.03&nbsp;ms p50 on an idle machine; under load the speed-up narrows, so treat it as one to two orders of magnitude.</li>
+    </ol>
   </section>
+
+  <section id="build-deps">
+    <h2>8. Build, Dependencies &amp; Failure Modes</h2>
+    <p class="lead">A full source build needs Go 1.26, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
+
+    <div class="cards">
+      <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, <code>samber/mo</code> gives optional values one spelling, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
+      <div class="card"><span class="tag">Rust crates</span><h4>Two external families</h4><p><code>rusqlite</code> (bundled) for the store, and ripgrep's engine crates for <code>dc-grep</code>. <code>dc-glob</code> and <code>dc-verify</code> have no external dependencies, and <code>cargo audit</code> runs on every gate.</p></div>
+      <div class="card"><span class="tag">Docs tooling</span><h4>Dev-time only</h4><p>Mermaid diagrams are parsed with the real grammar on node, provisioned by bun from <code>bun.lock</code>, and <code>bun audit</code> checks the lockfile. Nothing here reaches the <code>manvi</code> binary.</p></div>
+    </div>
+
+    <h3 class="sec">What happens when a component is missing</h3>
+    <div class="scroll-x">
+    <table class="matrix">
+      <thead><tr><th>Missing binary</th><th>Consequence</th></tr></thead>
+      <tbody>
+        <tr><td><code>dcverify</code></td><td>Secret scanning, stub detection and diff coverage report as <em>did not run</em> in the decision's degraded list; they are never counted as passing.</td></tr>
+        <tr><td><code>dcstore</code></td><td>Store-backed tools fail hard: no leases, no tasks, no mutual exclusion. Under <code>dev</code> a Go-only build still drives turns, with writes landing as <span class="chip demoted">demoted</span>.</td></tr>
+        <tr><td><code>dcgrep</code></td><td><code>devcouncil_grep</code> refuses and names the build command and <code>MANVI_GREP_BINARY</code>. There is no Go fallback, because a second search implementation would answer differently, and a missing searcher reporting zero matches is worse than being unavailable.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="note">Binaries are discovered through the <code>MANVI_*_BINARY</code> environment variables first, then <code>PATH</code>, then sibling build artifacts in <code>crates/target/{release,debug}</code>. <code>manvi doctor</code> reports what it found.</p>
+  </section>
+
+  <footer class="foot">
+    Continue with <a href="ARCHITECTURE.md">ARCHITECTURE.md</a>, <a href="POLICY_AND_SAFETY.md">POLICY_AND_SAFETY.md</a>, <a href="AGENT_AND_TURN_LIFECYCLE.md">AGENT_AND_TURN_LIFECYCLE.md</a> and <a href="TRADE_OFFS.md">TRADE_OFFS.md</a>, or return to the <a href="README.md">documentation index</a>.
+  </footer>
 </div>
 
 <script>
@@ -656,62 +876,224 @@ function toggleTheme() {
   }
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------- Component explorer ---------- */
+const GO = 'Go execution plane', RS = 'Rust components (DevCouncil)', LK = 'Linked engine';
+const COMPONENTS = [
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/agent',
+    owns: 'The turn and step state machine. Drives the loop, stream cancellation, step budgets, and the terminal checkpoint that decides whether a turn that looks finished really is.',
+    reach: 'In-process Go. Talks to the provider seam, tool registry and session log through typed interfaces.',
+    fail: 'A listener error closes the turn as degraded; it is never reported as a pass.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/llm',
+    owns: 'One normalized interface over Anthropic, Gemini, xAI Grok and local models, including replay state so a turn can resume deterministically and KV prefix caches survive on local servers.',
+    reach: 'In-process HTTP/SSE clients on the standard library.',
+    fail: 'Local-model wire quirks (Hermes and Qwen3 XML tool calls, think tags, truncation) are recovered at the wire level.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/gate + policy',
+    owns: 'The write and command ladders, posture, grant consultation and TUI approval. Rule definitions are pure in policy; gate combines them with grants and posture.',
+    reach: 'In-process; asked about every write and every command. Pattern questions go to the Gusset engine in a cgo build and to fnmatch otherwise.',
+    fail: 'An engine that cannot answer mid-decision is a hard denial (engine_unavailable), never a guessed boolean.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/grants',
+    owns: 'The override ledger. Human and agent grants with mandatory justification, scoped patterns and a bounded TTL (15 minutes by default).',
+    reach: 'In-process, in memory and persisted.',
+    fail: 'Issuing a grant for a hard rule fails immediately with ErrUngrantableRule.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/session',
+    owns: 'The append-only session log: checksummed JSON per generation, authorship (origin) on every message, and the AssertModelVisible invariant.',
+    reach: 'In-process; every step projects history from it.',
+    fail: 'A corrupt generation is refused, not half-read. A model-visible message with no log record aborts the turn.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/tools',
+    owns: 'The guarded pipeline for the 44 native tools: pre-execute waterfall, gate, body, post-execute, with qualification metadata attached to every result.',
+    reach: 'In-process. Component-backed tools exec a binary across the process boundary.',
+    fail: 'A blocked call returns a policy error with rule and reason to the model rather than failing silently.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/fetch',
+    owns: 'The only outbound network path for tools. Refuses plaintext, unlisted hosts and every private address range, re-checking on each redirect and pinning the vetted address against DNS rebinding.',
+    reach: 'In-process, standard library only.',
+    fail: 'Off entirely unless an operator sets an allowlist.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi/ui',
+    owns: 'The Elm-loop fullscreen TUI: damage-diffed painter, Unicode width handling, raw terminal mode, live themes, multi-session tabs and the approval modals.',
+    reach: 'In-process; terminal raw mode through direct syscall, no third-party TUI library.',
+    fail: 'Terminal restoration is covered by the verification gate, which uses script(1) when it is available.' },
+  { group: GO, kind: 'go', lang: 'Go', name: 'manvi serve',
+    owns: 'The embedded stdio host plane: policy evaluation, capability discovery, token budgeting and completion settling over line-delimited JSON.',
+    reach: 'NDJSON over stdin/stdout from an IDE extension or host app. Operations are negotiated in hello.ops.',
+    fail: 'The host owns the model call here, so agent.Loop and the terminal checkpoint do not run.' },
+
+  { group: RS, kind: 'rust', lang: 'Rust', name: 'dcstore',
+    owns: 'Tasks and leases in SQLite. Mutual exclusion is a partial unique index on active leases, so the database is the single owner of the guarantee.',
+    reach: 'Child process, JSON over stdio. A pooled "serve" mode keeps one connection open across many requests (about 3.9 ms down to 0.03 ms per lease check).',
+    fail: 'Missing: every store-backed tool fails hard. Under dev a Go-only build still drives turns with writes marked demoted.' },
+  { group: RS, kind: 'rust', lang: 'Rust', name: 'dcverify',
+    owns: 'Unified-diff parsing, scope classification against planned globs, secret and stub detection, and intersection of added lines with Go coverprofile or LCOV coverage.',
+    reach: 'Child process, JSON over stdio. Links dc-glob internally.',
+    fail: 'Missing: scans report "did not run" in the degraded list and are never counted as passing.' },
+  { group: RS, kind: 'rust', lang: 'Rust', name: 'dcgrep',
+    owns: 'Ignore-aware repository search built on ripgrep\'s own regex, searcher and ignore crates.',
+    reach: 'Child process, JSON over stdio. Located via MANVI_GREP_BINARY, PATH, or sibling build output.',
+    fail: 'Missing: devcouncil_grep refuses and names the build command. There is deliberately no Go fallback.' },
+  { group: RS, kind: 'rust', lang: 'Rust', name: 'devmap',
+    owns: 'The AST code graph: tree-sitter extraction, call graph, adjacency, dead-code and impact analysis. The graph is what the neighbourhood rung consults.',
+    reach: 'External tool resolved from PATH; child process with JSON over stdio.',
+    fail: 'Code-graph tools are unavailable without it; see manvi doctor for what was found.' },
+  { group: RS, kind: 'rust', lang: 'Rust', name: 'dc-glob',
+    owns: 'CPython fnmatch semantics (* crosses directory separators, character classes behave the same). Implemented twice, in Rust and in Go, pinned by a shared 775-case parity fixture.',
+    reach: 'A library, never a process. Linked into dcverify, and into the Go binary through the Gusset archive in release builds.',
+    fail: 'In a CGO_ENABLED=0 build there is no engine and Go\'s fnmatch decides.' },
+
+  { group: LK, kind: 'link', lang: 'Rust archive, linked via cgo', name: 'Gusset engine',
+    owns: 'The policy engine behind every pattern question the ladders ask: secret paths, restricted and protected paths, planned-file globs and command allowlists.',
+    reach: 'The one linked archive in release binaries (since v0.0.6). Linux builds are static against musl, so each target builds on a native runner. manvi gusset-check proves it, including a deliberate Rust panic that must surface as ErrPanic then ErrPoisoned while the shared handle keeps matching.',
+    fail: 'No answer within 250 ms falls back to fnmatch; a matcher that cannot answer at all is a hard denial. The handle is released on exit with a bounded 2 s join.' }
+];
+
+function renderExplorer() {
+  const list = document.getElementById('compList');
+  let lastGroup = '';
+  COMPONENTS.forEach((c, i) => {
+    if (c.group !== lastGroup) {
+      const g = document.createElement('div');
+      g.className = 'explorer-group';
+      g.textContent = c.group;
+      list.appendChild(g);
+      lastGroup = c.group;
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'comp-btn';
+    b.dataset.kind = c.kind;
+    b.dataset.idx = i;
+    b.setAttribute('aria-pressed', 'false');
+    b.textContent = c.name;
+    b.addEventListener('click', () => selectComponent(i));
+    list.appendChild(b);
+  });
+  selectComponent(0);
+}
+
+function selectComponent(i) {
+  const c = COMPONENTS[i];
+  document.querySelectorAll('.comp-btn').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.idx) === i)));
+  document.getElementById('compDetail').innerHTML =
+    '<h3>' + esc(c.name) + '</h3><div class="lang">' + esc(c.lang) + '</div><dl>' +
+    '<dt>What it owns</dt><dd>' + esc(c.owns) + '</dd>' +
+    '<dt>How it is reached</dt><dd>' + esc(c.reach) + '</dd>' +
+    '<dt>When it fails or is missing</dt><dd>' + esc(c.fail) + '</dd></dl>';
+}
+
+/* ---------- Policy simulator (illustrative model of the documented ladder) ---------- */
+function preset(path, posture, planned, graph, grant, session) {
+  document.getElementById('simPath').value = path;
+  document.getElementById('simPosture').value = posture;
+  document.getElementById('simPlanned').value = planned;
+  document.getElementById('simGraph').value = graph;
+  document.getElementById('simGrant').value = grant;
+  document.getElementById('simSession').value = session;
+  runSim();
+}
+
 function runSim() {
   const path = document.getElementById('simPath').value.trim();
   const posture = document.getElementById('simPosture').value;
-  const planned = document.getElementById('simPlanned').value.split(',').map(s => s.trim());
+  const planned = document.getElementById('simPlanned').value.split(',').map(s => s.trim()).filter(Boolean);
+  const graph = document.getElementById('simGraph').value;
   const grant = document.getElementById('simGrant').value;
+  const session = document.getElementById('simSession').value;
   const out = document.getElementById('simResult');
 
-  // Hard Rule Check
-  if (path.startsWith('../') || path.startsWith('/')) {
-    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Refusal)</span><br>Rule: <code>path.outside_root</code><br>Reason: Path escapes workspace root. Cannot be overridden by any posture or grant.`;
+  const names = ['1. Workspace boundary', '2. Hard security rules', '3. Soft scope rules',
+                 '4. Grants ledger', '5. Posture demotion', '6. Operator escalation'];
+  const trace = names.map(n => ({ name: n, state: 'skip', detail: 'Not reached.' }));
+  const set = (i, state, detail) => { trace[i].state = state; trace[i].detail = detail; };
+  const marks = { pass: ['✓', 'm-pass'], stop: ['✕', 'm-stop'], fire: ['!', 'm-fire'], skip: ['–', 'm-skip'] };
+  const finish = (cls, label, rule, why) => {
+    out.innerHTML =
+      '<div class="sim-headline"><span class="chip ' + cls + '">' + esc(label) + '</span>' + (rule ? ' <code>' + esc(rule) + '</code>' : '') + '</div>' +
+      '<p class="sim-why">' + why + '</p>' +
+      '<ol class="trace">' + trace.map(t => {
+        const m = marks[t.state];
+        return '<li><span class="mark ' + m[1] + '">' + m[0] + '</span><span><span class="t-name">' + esc(t.name) + '</span><span class="t-detail">' + esc(t.detail) + '</span></span></li>';
+      }).join('') + '</ol>';
+  };
+
+  if (!path) { out.textContent = 'Enter a target path.'; return; }
+  const p = path.replace(/^\.\//, '');
+
+  // Rung 1: root containment holds under every posture
+  if (p.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(p)) {
+    set(0, 'stop', 'Path leaves the repository root. Holds under every posture, including yolo.');
+    finish('blocked', 'Blocked (hard refusal)', 'path.outside_root', 'The path escapes the workspace. No posture or grant can change this.');
     return;
   }
-  if (path.includes('.env') || path.endsWith('.pem') || path.endsWith('.key') || path.includes('id_rsa')) {
+  set(0, 'pass', 'Path stays inside the repository root.');
+
+  // Rung 2: hard rules
+  let hard = null;
+  if (/(^|\/)\.env/.test(p) || /\.(pem|key)$/.test(p) || /(^|\/)id_(rsa|ed25519)/.test(p) || /(^|\/)credentials\.json$/.test(p)) hard = 'path.credential';
+  else if (/(^|\/)\.git(\/|$)/.test(p)) hard = 'path.git_internal';
+  else if (/(^|\/)(\.claude\/settings(\.local)?\.json|\.cursorrules)$/.test(p)) hard = 'path.agent_config';
+  if (hard) {
     if (posture === 'yolo') {
-      out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo)</span><br>Notice: <code>policy.hard_rules.disabled</code><br>Warning: Hard rules are disabled under yolo. Containment stays in repo.`;
+      set(1, 'fire', hard + ' would fire, but hard rules are off under yolo.');
+      finish('degraded', 'Allowed (degraded)', hard, 'Hard rules are disabled under <code>yolo</code>. The write proceeds, the run is classified as weakened, and the skipped hard rule is recorded rather than hidden. Root containment still held.');
       return;
     }
-    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Security Rule)</span><br>Rule: <code>path.credential</code><br>Reason: Sensitive credential path. Ungrantable.`;
+    set(1, 'stop', hard + ' matched. Ungrantable: grants and posture cannot clear it.');
+    finish('blocked', 'Blocked (hard security rule)', hard, 'This is a hard rule. Even an active grant is ignored, and attempting to issue one fails with <code>ErrUngrantableRule</code>.');
     return;
   }
-  if (path.startsWith('.git/') || path === '.git') {
-    if (posture === 'yolo') {
-      out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo)</span><br>Notice: Git internal safety bypassed under yolo.`;
-      return;
-    }
-    out.innerHTML = `<span class="sim-res-block">BLOCKED (Hard Security Rule)</span><br>Rule: <code>path.git_internal</code><br>Reason: Direct write to git repository metadata.`;
-    return;
-  }
+  set(1, 'pass', 'No credential, .git or agent-config rule matched.');
 
-  // Soft Scope Check
-  const inScope = planned.includes(path);
-  if (inScope) {
-    out.innerHTML = `<span class="sim-res-pass">PASSED (Clean Pass)</span><br>Path <code>${path}</code> is declared in task plan. No qualification needed.`;
+  // Rung 3: soft scope
+  if (planned.includes(p)) {
+    set(2, 'pass', 'Path is declared in the task plan.');
+    finish('passed', 'Passed (clean)', '', 'The path is in the task plan, so no soft rule fires and nothing needs qualifying. This is the only kind of result that counts as clean.');
     return;
   }
-
-  // Soft Scope Failed: Check Grant
-  if (grant === 'human') {
-    out.innerHTML = `<span class="sim-res-grant">ALLOWED (Qualified: Human Grant G-101)</span><br>Rule: <code>scope.unplanned</code><br>Reason: Cleared by operator grant with justification. Not an ordinary pass.`;
-    return;
-  }
-
-  // Check Posture
-  if (posture === 'dev') {
-    out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by dev posture)</span><br>Rule: <code>scope.unplanned</code><br>Notice: Soft scope rule reported as advisory under dev posture.`;
+  if (graph === 'neighbour') {
+    set(2, 'pass', 'Not planned, but admitted by the neighbourhood rung (same subsystem or declared neighbour).');
+    finish('passed', 'Passed (neighbour rung)', 'scope.neighbourhood', 'The path is outside the plan but inside the code-graph neighbourhood of a planned file, so <code>scope.unplanned</code> does not fire.');
     return;
   }
   if (posture === 'yolo') {
-    out.innerHTML = `<span class="sim-res-demote">ALLOWED (Qualified: Demoted by yolo posture)</span><br>Rule: <code>scope.unplanned</code><br>Notice: All soft gates turned off under yolo.`;
+    set(2, 'fire', 'scope.unplanned would fire, but soft rules are off under yolo.');
+    finish('demoted', 'Allowed (soft rules off)', 'scope.unplanned', 'Under <code>yolo</code> task-scope rules are off. The write proceeds and the run is classified as weakened.');
     return;
   }
+  set(2, 'fire', 'scope.unplanned fires: path is not in the plan or its neighbourhood.');
 
-  // Strict Mode
-  out.innerHTML = `<span class="sim-res-block">BLOCKED (Soft Scope Rule)</span><br>Rule: <code>scope.unplanned</code><br>Action: In TUI, prompts operator for approval modal. In CI/CLI, rejects write.`;
+  // Rung 4: grants
+  if (grant === 'human') {
+    set(3, 'pass', 'Active human grant G-101 matches, with justification.');
+    finish('granted', 'Allowed (granted by G-101)', 'scope.unplanned', 'Cleared by an operator grant. The output is branded <code>[granted]</code> with the grant ID, grantor, reason and expiry, so it can never read as an ordinary pass.');
+    return;
+  }
+  if (grant === 'agent') {
+    set(3, 'pass', 'Active agent grant matches (justified, 15 min TTL).');
+    finish('granted', 'Allowed (agent grant)', 'scope.unplanned', 'An agent may clear this soft rule for itself, bounded by a justification and a short TTL. It is recorded as <code>[granted]</code> with no human in the loop. (An agent could not do this for <code>command.not_allowed</code>.)');
+    return;
+  }
+  set(3, 'skip', 'No active grant.');
+
+  // Rung 5: posture
+  if (posture === 'dev') {
+    set(4, 'fire', 'dev posture demotes the soft rule to advisory.');
+    finish('demoted', 'Allowed (demoted by dev)', 'scope.unplanned', 'Under the shipped default the rule is reported, not enforced. The write proceeds marked <code>[demoted]</code>, and a run containing it is never reported as strictly clean.');
+    return;
+  }
+  set(4, 'skip', 'strict demotes nothing.');
+
+  // Rung 6: operator escalation
+  if (session === 'tui') {
+    set(5, 'fire', 'Attended TUI: the operator is asked in a modal.');
+    finish('blocked', 'Escalated to operator', 'scope.unplanned', 'Under <code>strict</code> in an attended session the TUI asks the operator. Approval issues a human grant and the write proceeds as <code>[granted]</code>; denial blocks it.');
+    return;
+  }
+  set(5, 'stop', 'No approver attached (CI or unattended).');
+  finish('blocked', 'Blocked (soft rule, no approver)', 'scope.unplanned', 'Under <code>strict</code> with no human to ask, the soft rule blocks the write outright. Add the file to the task plan or issue a grant to proceed.');
 }
 
+renderExplorer();
 runSim();
 </script>
 

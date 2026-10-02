@@ -30,7 +30,7 @@ go install go.uber.org/nilaway/cmd/nilaway@latest
 cargo install cargo-audit
 ```
 
-`node` and `npm` (the mermaid grammar gate), `sqlite3` (schema readability), and
+`node` and `bun` (the mermaid grammar gate and its `bun audit`), `sqlite3` (schema readability), and
 `script(1)` (TUI terminal restoration) are picked up if present.
 
 **DevCouncil's components.** MANVI links none of them and builds only one —

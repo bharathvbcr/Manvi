@@ -1,6 +1,6 @@
 # MANVI Documentation Hub
 
-Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-performance coding-agent harness built in pure Go and Rust with native tool execution, dual-plane determinism, and zero external runtime dependencies.
+Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-performance coding-agent harness built in Go and Rust with native tool execution and dual-plane determinism. It ships as one binary with no interpreter or runtime to install; the only linked native code is the Gusset policy engine.
 
 **Start here if you are new:** MANVI *wraps* DevCouncil **components and modules**. DevCouncil owns `devmap`, `dcstore`, `dcverify` and `dcgrep` — standalone binaries with a JSON-on-stdio contract — and MANVI is the harness that turns them into a runnable agent while linking none of them. Host apps such as GitPulse use MANVI and selected DevCouncil modules independently, and can update one without taking the rest. That boundary is what makes MANVI embeddable. See [**Components and Harness**](COMPONENTS_AND_HARNESS.md).
 
@@ -10,7 +10,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 
 | Document | Format | Description |
 |---|---|---|
-| [**Interactive Visual Architecture Guide**](04-visual-architecture-guide.html) | HTML | **Interactive visual guide**, component explorer, state machine explorer, and policy simulator. |
+| [**Interactive Visual Architecture Guide**](04-visual-architecture-guide.html) | HTML | Start here for a visual tour: dual-plane map, the six-rung policy ladder, outcome states, posture matrix, a live write-gate simulator, the turn lifecycle, and task leases. |
 | [**Language & Runtime Partition Decision**](01-language-decision.html) | HTML | Go vs Rust evaluation, memory safety, and dual-plane partition rationale. |
 | [**Build Plan & Seam Specifications**](02-build-plan.html) | HTML | The seven architectural seams, plugin tiers, and multi-provider replay state. |
 | [**DevCouncil Harness Strategy**](03-devcouncil-harness-strategy.html) | HTML | Original Go+Rust strategy, native integration, and phase milestones. |
@@ -85,4 +85,8 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**Contributing Guide**](../CONTRIBUTING.md)  
   What to install, how to read `./verify.sh`'s verdict, what the gate refuses, how the parity fixtures are regenerated, and the commit conventions.
 - [**Changelog**](../CHANGELOG.md)  
-  What changed per release. Organised by version; the hardening ledger below is organised by defect.
+  What changed per release. Organised by version; the hardening ledger above is organised by defect.
+- [**Release Notes**](releases/v0.0.6.md)  
+  Per-release notes with install and verification steps (latest: v0.0.6, which links the Gusset engine into release binaries). Earlier: [v0.0.5](releases/v0.0.5.md), [v0.0.4](releases/v0.0.4.md).
+- [**Benchmark & Paper**](../bench/paper/README.md)  
+  The preregistered benchmark, its deviations and audit trail, and the manuscript source.
