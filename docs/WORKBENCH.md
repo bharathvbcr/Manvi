@@ -233,6 +233,10 @@ The owning `manvi serve --workbench-db` host advertises three methods:
    or sent the task. GitPulse rejects incompatible receipts and requests cleanup.
    Unactivated helpers expire after five
    minutes. GitPulse uses a stable `managed_launch_<run ID>` request identity.
+   The claim's `owner_id` is `manvi-{pid}-{unix nanos}-{random}`: this Manvi
+   process and the moment it claimed. A host reconciling after a crash
+   releases an attempt that never recorded a provider process only when no
+   process holds that pid, or the one that does started after the stamp.
 2. `runs.managed.activate` takes the prepared `id`, `owner_id`, `session_id`,
    `process_id` and native `process_start`. It first records the running process,
    then initializes an ephemeral thread, verifies the returned checkout/approval/

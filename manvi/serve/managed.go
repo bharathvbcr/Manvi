@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,20 @@ type ManagedPrepared struct {
 	Phase           string `json:"phase"`
 }
 
+// managedOwnerID is the owner a managed attempt records:
+// manvi-{this process's pid}-{unix nanos now}-{random}. A host reconciling
+// after a crash can then prove the owner gone — no process with that pid, or
+// one that started after the stamp — the way it already proves a terminal
+// launch's owner gone. A random id alone named nothing that could be checked,
+// so an attempt whose Manvi died before activation held its checkout forever.
+func managedOwnerID() (string, error) {
+	token, err := generationID()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("manvi-%d-%d-%s", os.Getpid(), time.Now().UnixNano(), token), nil
+}
+
 func NewManagedRunner(client *store.Client, factory ManagedFactory, failureText func(error) string) (*ManagedRunner, error) {
 	if client == nil || factory == nil || failureText == nil {
 		return nil, errors.New("managed runner requires a store, provider factory and error scrubber")
@@ -155,7 +170,7 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			r.mu.Unlock()
 			return ManagedPrepared{}, fmt.Errorf("%d managed sessions are already active, the most one machine supervises; finish or stop one first", MaxManagedSessions)
 		}
-		owner, err := generationID()
+		owner, err := managedOwnerID()
 		if err != nil {
 			r.mu.Unlock()
 			return ManagedPrepared{}, err

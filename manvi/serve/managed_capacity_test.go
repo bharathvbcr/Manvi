@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,6 +98,36 @@ func TestManagedRunnerAdmitsUpToItsCeilingAndNoFurther(t *testing.T) {
 	}
 	if ended != 0 {
 		t.Fatalf("ended sessions must be swept before counting, %d remain", ended)
+	}
+}
+
+// The owner a managed attempt records names this process and when it
+// claimed, so a host can prove the owner gone after a crash. It must also
+// stay within the store's opaque-id grammar (alphanumerics, '-', '_', at
+// most 128) and the host's (at most 100), and stay unique per attempt.
+func TestManagedOwnerNamesTheManviProcessThatClaimed(t *testing.T) {
+	before := time.Now().UnixNano()
+	seen := map[string]bool{}
+	for range 64 {
+		owner, err := managedOwnerID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(owner, "-")
+		if len(parts) != 4 || parts[0] != "manvi" || parts[1] != fmt.Sprint(os.Getpid()) {
+			t.Fatalf("owner %q does not name this process", owner)
+		}
+		var stamp int64
+		if _, err := fmt.Sscan(parts[2], &stamp); err != nil || stamp < before || stamp > time.Now().UnixNano() {
+			t.Fatalf("owner %q does not carry the claim time", owner)
+		}
+		if len(owner) > 100 || strings.Trim(owner, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" {
+			t.Fatalf("owner %q is outside the id grammar", owner)
+		}
+		if seen[owner] {
+			t.Fatalf("owner %q repeated", owner)
+		}
+		seen[owner] = true
 	}
 }
 
