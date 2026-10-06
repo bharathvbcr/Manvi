@@ -30,6 +30,17 @@ type ManagedSession interface {
 // it owns startup cleanup; the runner never dereferences an error result or
 // interprets an ordinary error as proof that the provider did not start.
 type ManagedFactory func(context.Context, codingagent.Options) (ManagedSession, error)
+
+// MaxManagedSessions bounds the provider processes one runner holds at once.
+// How many agents run concurrently is the user's choice, enforced where every
+// attempt is admitted: the task store's runs.prepare, which a host passes the
+// user's limit. A run reaches this runner only after the store admitted it,
+// so this is a resource ceiling, not a second product limit, and it equals
+// dc-store's MAX_ACTIVE_RUNS_CEILING so it can never refuse what the store
+// let through. It was a fixed 2, which refused a third session the store and
+// the host had both already accepted.
+const MaxManagedSessions = 64
+
 type ManagedRunner struct {
 	client      *store.Client
 	factory     ManagedFactory
@@ -140,9 +151,9 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 				active++
 			}
 		}
-		if active >= 2 {
+		if active >= MaxManagedSessions {
 			r.mu.Unlock()
-			return ManagedPrepared{}, errors.New("two managed sessions are already active")
+			return ManagedPrepared{}, fmt.Errorf("%d managed sessions are already active, the most one machine supervises; finish or stop one first", MaxManagedSessions)
 		}
 		owner, err := generationID()
 		if err != nil {

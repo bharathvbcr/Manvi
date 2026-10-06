@@ -166,10 +166,12 @@ canonical task brief once in the same transaction as the run and receipt. Only
 `runs.get` adds `item.brief`. Run lists omit output and effective configuration;
 protocol mutation receipts and stored history can retain those bounded fields. Task deletion preserves the snapshot and run history.
 
-Preparations expire after five minutes. At most two prepared/active/unresolved
-attempts may reserve the profile, and one may reserve a repository. Expired
-unclaimed preparations release capacity; expiry never releases a claimed or
-unresolved run. Configurable limits remain implementation work.
+Preparations expire after five minutes. One prepared/active/unresolved attempt
+may reserve a checkout (a linked worktree is its own checkout). Across the
+profile, the host names the limit in `runs.prepare`'s `max_active_runs`,
+between 1 and 64; a host that names none gets 8. Expired unclaimed
+preparations release capacity; expiry never releases a claimed or unresolved
+run.
 
 | Method | Required state and result |
 |---|---|
@@ -292,7 +294,9 @@ can still race that write, so uncertain delivery is never retried. A
 Provider turn completion, direct-child reaping and human task acceptance are
 separate facts. Model completion never moves or accepts the task.
 
-Limits: two active managed sessions; a 45-minute turn budget; 256 KiB protocol
+Limits: 64 active managed sessions per runner (`MaxManagedSessions`, equal to
+the store's ceiling, so it never refuses a run the store admitted under the
+host's limit); a 45-minute turn budget; 256 KiB protocol
 frames; 32 MiB stdout and 64 KiB discarded stderr; 32 pending callbacks and 2,048
 callback IDs per connection; a 64 KiB complete request; 128 KiB retained output
 and 64 KiB effective configuration. Run history excludes the latter two fields;
