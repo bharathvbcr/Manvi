@@ -207,7 +207,10 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	defer close(job.ready)
 	run, _, err := r.run(ctx, job.id)
-	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(run.Brief.Markdown) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
+	// The bound is checked on the turn the provider will receive, not on the
+	// brief alone: a brief just under the adapter's limit would otherwise pass
+	// here and be refused by StartTurn after the process was already claimed.
+	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(managedTurn(run.Provider, run.Mode, run.Brief.Markdown)) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
 		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
 	}
 	claimed := false
@@ -356,9 +359,58 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	job.activation = append(json.RawMessage(nil), result...)
 	job.phase = "running"
 	launched = true
-	go r.drive(job, run.Brief.Markdown)
+	go r.drive(job, managedTurn(run.Provider, run.Mode, run.Brief.Markdown))
 	return result, nil
 }
+
+// managedTurn is the one message a managed provider receives: what the
+// launching side knows about this attempt, then the task brief exactly as the
+// store recorded it.
+//
+// How to work is not repeated here. The store's brief opens with the agent
+// guidance every handoff carries, and the run snapshot records it, so a
+// managed agent and a terminal agent are told the same thing by construction.
+// What only the launcher knows goes here instead:
+//
+//   - The permission mode decides whether the agent may finish the task. An
+//     inspect attempt must not change the task's status, so it is never told
+//     how to. The external-terminal lane states the same scope in GitPulse's
+//     launch argument; the wording matches on purpose.
+//   - The turn is unattended and single: approvals reach the host's decision
+//     queue, but a question asked in prose gets no answer before it ends.
+//   - A Claude session here runs with `--setting-sources user` (see
+//     claudeArgs), which leaves the repository's project context unloaded:
+//     measured on Claude Code 2.1.289, the project CLAUDE.md is absent from
+//     the session's context. The agent must read those files itself, or it
+//     works with none of the repository's rules.
+func managedTurn(provider, mode, brief string) string {
+	parts := []string{
+		"You are a managed coding agent that Manvi started for a saved GitPulse task, in the checkout that is your working directory. This is one unattended turn: permission requests go to the host's approval queue, but nobody can answer a question you ask in text before the turn ends, so when you need a person's decision, stop and say what is needed.",
+	}
+	if provider == "claude" {
+		parts = append(parts, "This session loads user settings only, so the repository's project instructions, rules, skills and MCP servers were not loaded for you. Before anything else, read the repository's AGENTS.md and CLAUDE.md, and any rules or skills directories it has, and follow them.")
+	}
+	if mode == "inspect" {
+		parts = append(parts, "Inspect and propose a plan; do not modify files or change the task's status.")
+	} else {
+		parts = append(parts, "Carry out the saved task within the selected permission mode. When every acceptance criterion is met and your verification passed, mark the task done with the gitpulse_complete_task tool, using the id on the brief's Task: line and a short summary of what changed and how you verified it; if anything is unfinished or needs a person's judgement, use status review instead and say what remains.")
+	}
+	parts = append(parts, "Do not publish changes (push, merge, release) on the user's behalf.")
+	// Say the brief carries guidance only when this brief does. Manvi and the
+	// store that renders briefs ship separately, so a store that predates the
+	// section must not be described as having it.
+	if strings.Contains(brief, managedGuidanceHeading) {
+		parts = append(parts, "The task brief follows. It opens with the agent guidance every GitPulse handoff carries, then the saved task.")
+	} else {
+		parts = append(parts, "The task brief follows. Before you change anything, read the repository's own instructions and the code the task touches, and verify your work with the project's own checks.")
+	}
+	return strings.Join(append(parts, brief), "\n\n")
+}
+
+// managedGuidanceHeading is the section dc-store's brief renders its agent
+// guidance under (dc-store `AGENT_GUIDANCE_HEADING`).
+const managedGuidanceHeading = "\n## Agent guidance\n"
+
 func (r *ManagedRunner) abandon(job *managedJob, cause error) {
 	_, err := job.provider.Close()
 	r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")

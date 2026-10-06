@@ -23,6 +23,20 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- A managed attempt's one turn now opens with what the launcher alone knows,
+  ahead of the store's brief: the turn is unattended; an `inspect` attempt is
+  told not to modify files or change the task's status, and every other mode
+  is told when to mark the task done with `gitpulse_complete_task`; nothing is
+  published on the user's behalf. A Claude session is also told to read the
+  repository's AGENTS.md and CLAUDE.md itself. It runs with
+  `--setting-sources user`, which leaves the project CLAUDE.md out of its
+  context (measured on Claude Code 2.1.289). How to work comes from the brief's
+  own `## Agent guidance` section (DevCouncil dc-store), which the turn carries
+  unchanged; a brief without that section is not described as having it.
+- Preparation bounds the composed turn at 128 KiB, not the brief alone. A brief
+  just under the limit used to be claimed and its provider started, then
+  refused by the adapter when the turn was sent.
+
 - The docs tooling (the mermaid grammar gate, jsdom) is provisioned with **bun**
   instead of npm: `bun.lock` replaces `package-lock.json`, `package.json` pins
   `packageManager: bun@1.4.2`, and `verify.sh` installs with

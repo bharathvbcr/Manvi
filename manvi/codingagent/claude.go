@@ -212,8 +212,12 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 // honouring them would let a repository widen the permissions of the run
 // inspecting it — and in `ask` mode, empty the approval surface the managed
 // lane exists to provide. The operator's own user settings still apply, which
-// is their choice to have made. CLAUDE.md and other project context are
-// unaffected; only settings files are scoped.
+// is their choice to have made. The flag scopes more than settings files:
+// project CLAUDE.md, rules, skills and `.mcp.json` follow it too (measured on
+// Claude Code 2.1.289, the project CLAUDE.md is absent from such a session's
+// context). serve.managedTurn therefore tells the agent to read the
+// repository's instruction files itself; they are content, not settings, so
+// reading them widens nothing.
 func claudeArgs(mode, session string) []string {
 	return []string{
 		"--print",

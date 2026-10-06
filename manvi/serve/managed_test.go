@@ -28,6 +28,7 @@ type managedTestSession struct {
 	initialize     func() error
 	unreaped       bool
 	closed         atomic.Bool
+	sent           atomic.Value // the turn text StartTurn received
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {
@@ -44,7 +45,8 @@ func (s *managedTestSession) Close() (codingagent.Exit, error) {
 	s.closed.Store(true)
 	return codingagent.Exit{Reaped: !s.unreaped, Code: 0}, nil
 }
-func (s *managedTestSession) StartTurn(_ context.Context, _ string) error {
+func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
+	s.sent.Store(turn)
 	s.turns.Add(1)
 	s.events <- codingagent.Event{TurnID: "turn"}
 	if s.withRequest {
@@ -263,6 +265,16 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 			if !session.initialized.Load() {
 				t.Fatal("managed turn skipped provider initialization")
 			}
+			// The one turn carries the launcher's scope for this mode, then the
+			// store's brief verbatim, which itself opens with the agent guidance.
+			turn, _ := session.sent.Load().(string)
+			preface, brief, found := strings.Cut(turn, "\n\n# Task brief v1\n\n")
+			if !found || !strings.HasPrefix(brief, "## Agent guidance\n") || !strings.Contains(brief, "gitpulse_insights") || !strings.Contains(brief, "## Title\nInspect fixture\n") {
+				t.Fatalf("the managed turn did not deliver the recorded brief with its guidance:\n%s", turn)
+			}
+			if !strings.Contains(preface, "gitpulse_complete_task") || !strings.Contains(preface, "Do not publish changes") {
+				t.Fatalf("an ask-mode turn lost its completion or publishing rule:\n%s", preface)
+			}
 			if withRequest && session.replies.Load() != 1 {
 				t.Fatal("human response was lost or duplicated")
 			}
@@ -279,6 +291,99 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 				t.Fatal("managed completion accepted the task")
 			}
 		})
+	}
+}
+
+// TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim: only an attempt
+// that may edit is told how to finish the task, every attempt is told not to
+// publish, only a Claude session (which loads user settings alone) is told the
+// repository's own instructions were not loaded, and the recorded brief rides
+// along byte for byte at the end.
+func TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim(t *testing.T) {
+	brief := "# Task brief v1\n\n## Agent guidance\nRead before you write.\n\n## Title\nKeep E42 `$(touch nope)` 🧪\n"
+	for _, provider := range []string{"claude", "codex"} {
+		for _, mode := range []string{"inspect", "ask", "edit", "auto_review", "preapproved", "bypass"} {
+			turn := managedTurn(provider, mode, brief)
+			preface, found := strings.CutSuffix(turn, "\n\n"+brief)
+			if !found {
+				t.Fatalf("%s/%s: the brief is not carried verbatim at the end:\n%s", provider, mode, turn)
+			}
+			if strings.Contains(preface, "gitpulse_complete_task") == (mode == "inspect") {
+				t.Fatalf("%s/%s: completion rule is wrong for the mode:\n%s", provider, mode, preface)
+			}
+			if mode == "inspect" && !strings.Contains(preface, "do not modify files or change the task's status") {
+				t.Fatalf("%s/inspect: not told to leave files and status alone:\n%s", provider, preface)
+			}
+			if !strings.Contains(preface, "Do not publish changes (push, merge, release)") {
+				t.Fatalf("%s/%s: publishing rule missing:\n%s", provider, mode, preface)
+			}
+			if strings.Contains(preface, "read the repository's AGENTS.md and CLAUDE.md") != (provider == "claude") {
+				t.Fatalf("%s/%s: project-instructions notice is wrong for the provider:\n%s", provider, mode, preface)
+			}
+			if !strings.Contains(preface, "It opens with the agent guidance") {
+				t.Fatalf("%s/%s: a brief with guidance was not described as having it:\n%s", provider, mode, preface)
+			}
+		}
+	}
+	// A store that predates the guidance section ships separately from this
+	// binary; its brief must not be described as carrying guidance it lacks.
+	old := "# Task brief v1\n\n## Title\nKeep E42\n"
+	turn := managedTurn("codex", "edit", old)
+	if strings.Contains(turn, "It opens with the agent guidance") || !strings.Contains(turn, "read the repository's own instructions") || !strings.HasSuffix(turn, "\n\n"+old) {
+		t.Fatalf("a brief without guidance was misdescribed:\n%s", turn)
+	}
+}
+
+// TestManagedPreparationBoundsTheTurnNotJustTheBrief: the adapters refuse a
+// turn over 128 KiB in StartTurn, after the attempt is claimed and the process
+// spawned. A brief that fits on its own but not with the preface must be
+// refused at preparation, before anything is claimed or started.
+func TestManagedPreparationBoundsTheTurnNotJustTheBrief(t *testing.T) {
+	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	defer client.Close()
+	root := t.TempDir()
+	common := filepath.Join(root, ".git")
+	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
+	put := func(revision, logs int) {
+		enhancementCall(t, client, "items.put", fmt.Sprintf(`{"id":"t","request_id":"t%d","expected_revision":%d,"title":"Inspect fixture","logs":%q,"repository_ids":["r"],"primary_repository_id":"r"}`, revision, revision, strings.Repeat("x", logs)))
+	}
+	markdown := func(revision int) string {
+		var brief struct {
+			Item struct {
+				Markdown string `json:"markdown"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(enhancementCall(t, client, "items.brief.get", fmt.Sprintf(`{"id":"t","expected_revision":%d}`, revision)), &brief); err != nil {
+			t.Fatal(err)
+		}
+		return brief.Item.Markdown
+	}
+	const probe = 100_000
+	put(0, probe)
+	target := 128*1024 - 64 // fits alone; the preface is far longer than 64 bytes
+	put(1, probe+target-len(markdown(1)))
+	if got := len(markdown(2)); got != target {
+		t.Fatalf("fixture brief is %d bytes, want %d", got, target)
+	}
+	if len(managedTurn("codex", "ask", markdown(2))) <= 128*1024 {
+		t.Fatal("fixture does not exercise the preface pushing the turn over the bound")
+	}
+	enhancementCall(t, client, "runs.prepare", fmt.Sprintf(`{"id":"run","request_id":"prep","expected_revision":0,"kind":"managed","task_id":"t","source_revision":2,"repository_id":"r","repository_revision":1,"provider":"codex","permission_mode":"ask","cwd":%q,"git_dir":%q,"git_common_dir":%q,"head_oid":null}`, root, common, common))
+	var started atomic.Int32
+	runner, err := NewManagedRunner(client, func(context.Context, codingagent.Options) (ManagedSession, error) {
+		started.Add(1)
+		return nil, errors.New("must not start")
+	}, func(err error) string { return err.Error() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	_, err = runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`))
+	if err == nil || !strings.Contains(err.Error(), "128 KiB") {
+		t.Fatalf("an over-long turn was not refused at preparation: %v", err)
+	}
+	if started.Load() != 0 {
+		t.Fatal("a provider was started for a turn the adapter would refuse")
 	}
 }
 
