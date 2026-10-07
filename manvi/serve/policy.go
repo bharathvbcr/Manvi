@@ -143,9 +143,17 @@ func (h *HostScope) task(op dc.Operation) *dc.Task {
 		// the override seam both rely on.
 		id = hostScopeID
 	}
+	// The unspecialised write is not itself a change a plan can permit: the
+	// operation rung accepts OpWrite only against create or modify. Stamping
+	// "write" onto the plan refused every redirection into a planned file as
+	// scope.operation. Modify is the narrowest change OpWrite satisfies.
+	change := dc.AllowedChange(op)
+	if op == dc.OpWrite {
+		change = dc.ChangeModify
+	}
 	planned := make([]dc.PlannedFile, 0, len(h.PlannedFiles))
 	for _, f := range h.PlannedFiles {
-		planned = append(planned, dc.PlannedFile{Path: f, AllowedChange: dc.AllowedChange(op)})
+		planned = append(planned, dc.PlannedFile{Path: f, AllowedChange: change})
 	}
 	return &dc.Task{
 		ID:               id,
