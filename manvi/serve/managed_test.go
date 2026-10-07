@@ -377,7 +377,11 @@ func TestManagedPreparationBoundsTheTurnNotJustTheBrief(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runner.Close()
+	defer func() {
+		if err := runner.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	_, err = runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`))
 	if err == nil || !strings.Contains(err.Error(), "128 KiB") {
 		t.Fatalf("an over-long turn was not refused at preparation: %v", err)
