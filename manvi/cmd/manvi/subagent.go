@@ -346,14 +346,16 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		CacheReadTokens: outcome.Usage.CacheReadTokens,
 	}
 	cfg.meter.add(spent)
+	// Every exit returns this, so the paths travel even on the failure paths.
+	// A child that wrote three files and then died left three changed files
+	// behind, and a parent told nothing about them cannot verify what is now
+	// in its tree.
+	result := devcouncil.SubAgentResult{
+		Steps: outcome.Steps, Usage: spent,
+		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+	}
 	if err != nil {
-		// The paths travel even on the failure path. A child that wrote three
-		// files and then died left three changed files behind, and a parent
-		// told nothing about them cannot verify what is now in its tree.
-		return devcouncil.SubAgentResult{
-			Steps: outcome.Steps, Usage: spent,
-			Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
-		}, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
+		return result, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
 	}
 
 	summary := strings.TrimSpace(outcome.Final.Text())
@@ -362,11 +364,8 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		// to: a child that finished with nothing to say did not do the work its
 		// prompt described. Saying so here means the report names the child
 		// rather than leaving the caller to infer it from a blank field.
-		return devcouncil.SubAgentResult{
-				Steps: outcome.Steps, Usage: spent,
-				Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
-			}, fmt.Errorf(
-				"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
+		return result, fmt.Errorf(
+			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
 	}
 	// Everything worth saying about the turn, from the one function that
 	// answers that question, rather than a third hand-rolled copy.
@@ -385,16 +384,14 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		summary += "\n\n[this sub-agent: " + n.Text + "]"
 	}
 
-	return devcouncil.SubAgentResult{
-		Summary: summary, Steps: outcome.Steps, Usage: spent,
-		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
-		// Read out of the child's own answer against a stated contract, and
-		// reconciled to fail closed. A judging role is asked for one line in a
-		// fixed shape; anything else — a missing line, a pass that still lists
-		// objections — comes back as no judgement rather than as a pass, which
-		// is the only direction it is safe to be wrong in.
-		Verdict: parseVerdict(req.Verdict, summary),
-	}, nil
+	result.Summary = summary
+	// Read out of the child's own answer against a stated contract, and
+	// reconciled to fail closed. A judging role is asked for one line in a
+	// fixed shape; anything else — a missing line, a pass that still lists
+	// objections — comes back as no judgement rather than as a pass, which
+	// is the only direction it is safe to be wrong in.
+	result.Verdict = parseVerdict(req.Verdict, summary)
+	return result, nil
 }
 
 // spawnSubagentsTool is the dispatching tool a child must never be given.
