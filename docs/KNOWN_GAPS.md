@@ -37,6 +37,73 @@ Highest confidence. Each was checked in this session.
 
 ### GAP-1 — ~26 of 35 languages have no call graph *(the big one)*
 
+> **Re-verified 2026-10-06 — mostly STALE; the residue is below.** Read this
+> box before the 2026-09-01 text under it, which is kept as the record.
+>
+> - **Call extraction landed (P2.7b/c).** `rust/devmap-extract/src/langcalls/`
+>   has a module per language, dispatched from `langcalls::extract_calls`:
+>   C#, Dart, Erlang, Java, Kotlin, Lua/Luau, Nix, Pascal, PHP, R, Ruby,
+>   Scala, shell, Solidity, SQL, Swift. Python, JS/TS, Go, Rust and the C
+>   family keep their own arms. The per-language control is
+>   `rust/testdata/capabilities/` plus
+>   `devmap-extract/tests/language_capabilities.rs`, which pins every
+>   language's `CALLS` bit to observed extraction in both directions (9/9
+>   pass). Measured end to end with a two-method control per language
+>   (`entry` calls `helper`, `orphan` called by nothing): Java, C#, PHP,
+>   Swift, Ruby (`helper()`) and Python each produce exactly one `Calls`
+>   edge, and `dead` flags `orphan` but not `helper`.
+> - **Still call-blind, by name** (`the_call_blind_clean_parsing_languages_are_named`):
+>   `vb` (no grammar, GAP-7), `cobol` (refused by `UNSAFE_GRAMMARS`),
+>   `cfml` and `hcl` (parse clean, no call extractor — P2.7d's "not
+>   applicable, reported unavailable"). Non-registry rows without `CALLS`:
+>   protobuf and PowerShell (`NONE`), HTML and CSS (`REFERENCES` only), and
+>   the prose/data formats.
+> - **P2.7a was half done, now closed.** `dead` already priced call-blind
+>   files with `CALL_BLIND_REASON`. `impact`, `trace`, `impact --layers`,
+>   `neighbors`, `explore` and scoped `trace A B` did not: `impact` on an
+>   HCL symbol answered `total: 0, Available, walk_incomplete: None`. Fixed
+>   in DevCouncil `devmap-query` `traverse_walked` / `trace_between`, from
+>   the same predicate `dead` uses (`devmap_extract::model::is_call_blind`);
+>   pinned by `devmap-query/tests/a_call_blind_target_is_unavailable_not_empty.rs`.
+> - **Ruby bare send — closed 2026-10-06, residue below.** `def entry;
+>   helper; end` parses as a bare `identifier`, so `impact` on `helper`
+>   answered `total: 0, Available, walk_incomplete: None`. DevCouncil
+>   `langcalls/ruby.rs` (`extract_bare_sends`) now claims it under the
+>   conservative half of Ruby's lexical rule: an identifier in a
+>   positively-listed value slot is a send only when **no** binding of the
+>   name exists anywhere in its `def`/`class`/`module`/file scope
+>   (parameters of every kind, block params and locals, rescue/for
+>   variables, single/multiple/operator assignment, every pattern binding
+>   including `in {k:}`, regex named captures). Also refused: `defined?(x)`,
+>   `_1`–`_9`, `it` in a block, superclass and `class << x` expressions, any
+>   scope with a parse error, and any name an enclosing class defines without
+>   `def` (`attr_*`, `define_method`, `alias(_method)`, delegators,
+>   `Struct.new(:x)` superclass). Measured: control corpus 0 → 1 caller
+>   (`paren_helper` unchanged at 1, same-named local read stays 0); Homebrew
+>   (476 `.rb` files) `Calls` 3,244 → 4,116, 0 lost. Pinned by
+>   `devmap-extract/tests/langcalls_ruby_php.rs` and
+>   `devmap-query/tests/a_bare_ruby_send_has_a_caller.rs`.
+> - **Residue, open — Ruby methods defined without `def` are not symbols.**
+>   Bare sends are how attribute readers are called, so they fed the
+>   resolver's `UniqueGlobal` rung names with no declaration: 26 of the first
+>   126 new cross-class 0.9 edges had an `attr_*` of the callee's name in the
+>   caller's own file (0 of the 807 pre-existing such edges did). The
+>   enclosing-class refusal removes 20; still wrong are attributes inherited
+>   from a superclass (6 on Homebrew, all `AbstractCaskErrorWithToken#reason`
+>   → `Denylist.reason`), mixed in from a module, splatted delegators, and
+>   `method_missing`. Of the 105 remaining new `UniqueGlobal` edges, 36 follow
+>   a recorded `Extends` chain; the other 69 mix mixin/delegation-correct
+>   targets with wrong namesakes and are not classified. The owner is the
+>   declaration emitter (`langdecl`): `attr_*` declares a method. 872 new
+>   edges split 523 `SameFile` same-class, 244 `AmbiguousGlobal` (0.2), 105
+>   `UniqueGlobal` (0.9).
+> - **Scala's `def entry = helper` is the same shape but not the same fix.**
+>   tree-sitter-scala gives `helper` (a `def`) and `field` (a `val`) the same
+>   `identifier` body, and both are template members, not method-scope
+>   locals — so the lexical-local rule cannot tell a call from a field read.
+>   Distinguishing them needs the enclosing template's member table
+>   (resolution, not extraction); `langcalls/scala.rs` keeps refusing it.
+
 **VERIFIED** (`DevCouncil/docs/devmap/STATUS.md` SC34, measured 2026-08-17 with a
 per-language control). `treesitter.rs` has **9 `calls.push` sites, all inside
 language-specific arms**. Every other language falls through to a generic arm

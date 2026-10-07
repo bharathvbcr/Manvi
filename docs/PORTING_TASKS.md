@@ -299,6 +299,18 @@ Until it exists, no other agent can use any of this.
 Split deliberately: **P2.7a is small, urgent and makes the defect honest; the
 rest is large and makes it go away.** Do not let the second block the first.
 
+> **Status 2026-10-06 (re-verified against DevCouncil source):** P2.7a is
+> **done** — `dead` prices call-blind files, and `impact`/`trace` (and every
+> traversal sharing `traverse_walked`, plus scoped `trace A B`) now refuse or
+> qualify an answer whose start is in a call-blind file, from the same
+> `is_call_blind` predicate. **P2.4 is unblocked on that count.** P2.7b and
+> P2.7c have landed as `devmap-extract/src/langcalls/`, controlled by
+> `language_capabilities.rs`; COBOL stays refused by `UNSAFE_GRAMMARS`. P2.7d
+> resolved as "not applicable, reported unavailable" for HCL and CFML; Nix,
+> SQL, shell, Vue, Svelte, Astro and Liquid extract calls. Open residue: Ruby's
+> bare receiverless send — see [GAP-1](KNOWN_GAPS.md). The text below is the
+> original plan, kept as the record.
+
 **The defect, verified in source.** `extract_node`'s `match lang` in
 `devmap-extract/src/treesitter.rs:1578` has exactly **four** language arms —
 `python`, `javascript | typescript | tsx`, `rust`, `go`. Everything else falls to
