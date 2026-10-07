@@ -26,14 +26,18 @@ import (
 // answer", which is exactly what an operator was previously promised and did
 // not have.
 //
-// stubbedSource is a diff the stub gate blocks. The `unimplemented!()` marker
-// is one of crates/dc-verify's empty-body shapes, which it matches anywhere on
-// an added line, and it is the only thing in this file any gate objects to —
-// there is no credential here and the fixture's coverage profile covers it. So
-// `passed` answers exactly one question: did the stub gate run.
+// stubbedSource is a diff the stub gate blocks under both of crates/dc-verify's
+// detectors, because which one runs depends on the DevCouncil revision the
+// crates symlink reaches. The substring detector blocks the `unimplemented!()`
+// comment, matching an empty-body shape anywhere on an added line. The AST
+// detector (DevCouncil c6b48a28) parses Go, no longer blocks on a word in a
+// comment, and blocks the `panic("TODO")` body as a proven placeholder. The
+// stub is the only thing in this file any gate objects to — there is no
+// credential here and the fixture's coverage profile covers it. So `passed`
+// answers exactly one question: did the stub gate run.
 const stubbedSource = "package calc\n\n" +
 	"// Add is not written yet: unimplemented!()\n" +
-	"func Add(a, b int) int { return 0 }\n"
+	"func Add(a, b int) int { panic(\"TODO\") }\n"
 
 // verifyAfterWriting checks out the seeded task, writes content to the one
 // planned file, and returns the verifier's report.
