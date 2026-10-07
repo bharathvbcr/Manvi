@@ -11,20 +11,28 @@ edition = "2024"
 license = "MIT"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits
-# rusqlite, `dc-evidence` inherits sha2 and `dc-proc` inherits libc from that
-# workspace. This workspace must declare the same pins so
+# rusqlite, `dc-evidence` inherits sha2, `dc-proc` inherits libc and
+# `dc-verify` inherits tree-sitter and four grammars from that workspace. This
+# workspace must declare the same pins so
 # `cargo build --manifest-path crates/Cargo.toml` can resolve `workspace = true`.
 #
 # A symlinked member inherits from *this* file, not from DevCouncil's, so a new
 # `foo.workspace = true` upstream fails the whole workspace to load — not just
 # that member — until its pin is mirrored below. The failure names the
 # inherited key, so read the `Caused by` chain rather than the member it
-# blamed. These three are every workspace-inherited dependency the six members
-# currently declare.
+# blamed. These eight are every workspace-inherited dependency the six members
+# currently declare; the spec strings are DevCouncil's, and Cargo.lock holds
+# the versions DevCouncil's own lock resolves.
 [workspace.dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
 libc = "0.2"
+# dc-verify's AST-aware stub and test-rigor detection (src/stub_ast.rs).
+tree-sitter = "0.25"
+tree-sitter-rust = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
 
 # Every other crate a member pulls in is a dependency-audit surface paid for
 # weekly; the analysis plane earns one when a task needs it, not before, and
