@@ -142,10 +142,17 @@ func TestServeCommandsWithoutARedirectAreUnchanged(t *testing.T) {
 		{"git push --force origin main", policy.Deny, policy.RuleCommandForcePush},
 		{"git commit --no-verify -m x", policy.Deny, policy.RuleCommandBypassFlag},
 		{"", policy.Deny, policy.RuleCommandEmpty},
-		// The ladder's own substitution rung, not the redirect one: `date` is
-		// in no allowlist, so the substituted command is refused and the line
-		// with it. Hard, so the host demotion leaves it alone.
-		{"echo $(date)", policy.Deny, policy.RuleCommandSubstitution},
+		// The substituted command is judged as itself: `date` is in no
+		// allowlist, so the line is refused under `date`'s own soft
+		// command.not_allowed — which the host posture demotes, exactly as it
+		// demotes `ls -la` above. It used to be re-issued as a hard
+		// command.substitution, making the same refusal negotiable or not by
+		// where the command was written (DevCouncil 92569677).
+		{"echo $(date)", policy.Allow, policy.RuleCommandNotAllowed},
+		// What must stay hard inside a substitution, and ahead of an earlier
+		// clause: neither position may launder git safety.
+		{"echo $(git push --force origin main)", policy.Deny, policy.RuleCommandForcePush},
+		{"date; git push --force origin main", policy.Deny, policy.RuleCommandForcePush},
 	} {
 		d := decodeDecision(t, roundTrip(t, hostOpts(), commandCheckWith(t, CommandCheckParams{
 			Command: tc.command,
