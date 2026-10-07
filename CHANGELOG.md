@@ -36,6 +36,14 @@ under **Unreleased** in the same commit as the code.
 - Preparation bounds the composed turn at 128 KiB, not the brief alone. A brief
   just under the limit used to be claimed and its provider started, then
   refused by the adapter when the turn was sent.
+- The opt-in that lets cross-boundary tests skip when a toolchain is missing is
+  renamed `MANVI_TEST_ALLOW_SKIP` → `DEVCOUNCIL_TEST_ALLOW_SKIP`, since the
+  helper is DevCouncil's `testsupport` (GAP-19). The old name no longer opts
+  anything in: a test that reaches a missing prerequisite with it set fails and
+  names the new variable, and `verify.sh` refuses either name. The build lock
+  and stable binary copies move to `.devcouncil-testbin.lock` and
+  `target/devcouncil-testbin/`; an existing `target/manvi-testbin/` is no longer
+  used and goes with the next `cargo clean`.
 
 - The docs tooling (the mermaid grammar gate, jsdom) is provisioned with **bun**
   instead of npm: `bun.lock` replaces `package-lock.json`, `package.json` pins

@@ -89,7 +89,8 @@ bug worth its own commit.
 These are enforced mechanically, so it is cheaper to know them before the build
 goes red than after:
 
-- **A skipped test.** `MANVI_TEST_ALLOW_SKIP` is refused outright, and every
+- **A skipped test.** `DEVCOUNCIL_TEST_ALLOW_SKIP` (formerly
+  `MANVI_TEST_ALLOW_SKIP`, which is refused too) is refused outright, and every
   skip that survives is named in the output. A package whose tests all skip
   still prints `ok`; the gate counts what actually ran.
 - **Statement coverage below 78%** across the tree, measured with

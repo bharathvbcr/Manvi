@@ -190,9 +190,15 @@ step "Go — vet"
 # Rust workspace with a hand-counted relative path, the path was wrong by one
 # level, and `go test ./...` printed "ok" for a package that executed nothing.
 step "Go — test"
-if [[ -n "${MANVI_TEST_ALLOW_SKIP:-}" ]]; then
-  fail "MANVI_TEST_ALLOW_SKIP is set; this gate will not certify a run that is permitted to skip seams"
-fi
+# MANVI_TEST_ALLOW_SKIP is the opt-in's name from before testsupport moved to
+# DevCouncil. It no longer opts anything in — testsupport fails a test that
+# finds it set — but it is refused here too, by name, so a stale config hears
+# about it before a long run rather than from the middle of one.
+for allow_skip in DEVCOUNCIL_TEST_ALLOW_SKIP MANVI_TEST_ALLOW_SKIP; do
+  if [[ -n "${!allow_skip:-}" ]]; then
+    fail "$allow_skip is set; this gate will not certify a run that is permitted to skip seams"
+  fi
+done
 (cd manvi && go test -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./...) || fail "go test"
 
 # A package whose tests all skip still prints "ok". Count what actually ran in
@@ -232,7 +238,7 @@ fi
 # A skipped test is coverage that silently is not there, and nothing in this
 # gate could see one. `go test ./...` prints ok whether a package ran its tests
 # or skipped every one of them, and the count below covers two packages out of
-# forty. MANVI_TEST_ALLOW_SKIP is refused above precisely because a skip must
+# forty. DEVCOUNCIL_TEST_ALLOW_SKIP is refused above precisely because a skip must
 # not be able to hide — but that only closes the skips this repository's own
 # helper produces, not a bare t.Skip anywhere else.
 #

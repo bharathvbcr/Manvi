@@ -107,7 +107,7 @@ func unboundedPeerRead(m dsl.Matcher) {
 // up is not a test that was silently waived.
 //
 // What survives is the skip that says nothing. verify.sh already refuses to
-// certify a run when MANVI_TEST_ALLOW_SKIP is set, because "a package whose
+// certify a run when DEVCOUNCIL_TEST_ALLOW_SKIP is set, because "a package whose
 // tests all skip still prints ok"; a skip with no message is that same hole
 // with no way to tell from the output which case went unexamined.
 func unexplainedSkip(m dsl.Matcher) {
