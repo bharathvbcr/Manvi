@@ -88,6 +88,27 @@ func TestHostPostureStillDemotesWhenNoScopeIsDeclared(t *testing.T) {
 	}
 }
 
+// A write that does not say whether the file exists — a shell redirection, or
+// a host reporting no op — is still a write to a planned file, and the scope
+// authorises it. HostScope used to stamp the operation itself onto the plan as
+// AllowedChange "write", which the operation rung accepts only as create or
+// modify, so every `echo x >> planned.ts` from a scoped host came back
+// scope.operation — a refusal of the one file the task authorised.
+func TestAnUnspecialisedWriteToAPlannedFileIsAllowed(t *testing.T) {
+	s := scopedServer(t, PostureHost)
+	for _, op := range []dc.Operation{dc.OpWrite, dc.OpCreate, dc.OpModify, dc.OpDelete} {
+		d := s.evaluateHostWrite(nil, t.TempDir(), plannedFile, op, false, hostScope())
+		if d.Blocked() {
+			t.Errorf("op %q on a planned file was refused: rule=%q reason=%q", op, d.Rule, d.Reason)
+		}
+	}
+	// And the scope still bites for the same unspecialised write elsewhere.
+	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpWrite, false, hostScope())
+	if d.Rule != policy.RuleUnplannedScope || !d.Blocked() {
+		t.Errorf("an unplanned write must stay refused: rule=%q action=%q", d.Rule, d.Action)
+	}
+}
+
 func TestHardRulesAreNeverDemotedWithOrWithoutAScope(t *testing.T) {
 	// The scope machinery must not have widened anything. A credential path is
 	// Hard, and no scope, posture or grant clears one.
