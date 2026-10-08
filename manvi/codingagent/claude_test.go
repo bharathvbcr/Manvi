@@ -159,6 +159,14 @@ func TestClaudeProtocolChild(t *testing.T) {
 				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"asking"}]},"uuid":"u1"}`, session)
 				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"request_user_dialog","dialog_kind":"refusal_fallback_prompt","payload":{}}}`)
 				continue
+			case "elicitation":
+				// An MCP server asking the person for structured input. The
+				// adapter reads only `subtype` before refusing, so the body
+				// beyond it is illustrative, not a recorded frame.
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"asking"}]},"uuid":"u1"}`, session)
+				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"elicitation","mcp_server_name":"fixture-mcp","message":"Which environment?"}}`)
+				continue
 			case "duplicate":
 				initFrame("default")
 				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"uuid":"u1"}`, session)
@@ -421,6 +429,34 @@ func TestClaudeRefusesFramesThatDoNotBelongToThisRun(t *testing.T) {
 			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("%s hung rather than refusing: %v", scenario, err)
+			}
+		})
+	}
+}
+
+// A callback the adapter cannot answer must be refused in words that name it:
+// this error is what the managed host records as the run's reason, so a
+// generic failure would leave the person unable to tell what the agent asked.
+func TestClaudeRefusalNamesTheCallbackItCouldNotAnswer(t *testing.T) {
+	for scenario, subtype := range map[string]string{"dialog": "request_user_dialog", "elicitation": "elicitation"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := openFixture(t, scenario, "ask")
+			if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			for i := 0; err == nil && i < 8; i++ {
+				ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+				var e Event
+				e, err = s.Next(ctx)
+				stop()
+				if err == nil && (e.Status != "" || e.Request != nil) {
+					t.Fatalf("%s was answered or completed instead of refused: %+v", subtype, e)
+				}
+			}
+			want := fmt.Sprintf("unsupported Claude callback %q; no response was granted", subtype)
+			if err == nil || err.Error() != want {
+				t.Fatalf("refusal = %v, want %q", err, want)
 			}
 		})
 	}

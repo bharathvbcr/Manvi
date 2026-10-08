@@ -469,18 +469,18 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 	}
 	return Event{}, false, nil
 }
+
+// capture turns a server request into a durable, one-use callback.
+//
+// Whether the method is one this adapter can answer is decided before whether
+// the request belongs to the active turn. The refusal is what the host records
+// as the run's reason, and most callbacks Codex can send that are not handled
+// here — MCP elicitation, dynamic tool calls, account refresh, the legacy
+// approvals — carry no itemId or no threadId. Checked the other way round,
+// every one of them was reported as "no matching active turn", which names
+// neither what the agent asked nor why nobody answered.
 func (s *Codex) capture(p packet, thread, turn, item string) (Event, bool, error) {
-	if !s.started || s.finished || thread != s.effective.Thread.ID || turn != s.turnID || !opaque(item) {
-		return Event{}, false, errors.New("Codex callback has no matching active turn")
-	}
-	id, err := wireIdentity(p.ID)
-	if err != nil {
-		return Event{}, false, err
-	}
-	if s.seen[id] || len(s.pending) >= 32 || s.requestCount >= 2048 {
-		return Event{}, false, errors.New("Codex callback is duplicated or exceeds the run budget")
-	}
-	r := Request{ID: id, ThreadID: thread, TurnID: turn, Kind: "permission", ExpiresAt: time.Now().Add(5 * time.Minute)}
+	r := Request{ThreadID: thread, TurnID: turn, Kind: "permission", ExpiresAt: time.Now().Add(5 * time.Minute)}
 	var extra json.RawMessage
 	switch p.Method {
 	case "item/commandExecution/requestApproval":
@@ -528,6 +528,17 @@ func (s *Codex) capture(p packet, thread, turn, item string) (Event, bool, error
 	default:
 		return Event{}, false, fmt.Errorf("unsupported Codex callback %q; no response was granted", p.Method)
 	}
+	if !s.started || s.finished || thread != s.effective.Thread.ID || turn != s.turnID || !opaque(item) {
+		return Event{}, false, errors.New("Codex callback has no matching active turn")
+	}
+	id, err := wireIdentity(p.ID)
+	if err != nil {
+		return Event{}, false, err
+	}
+	if s.seen[id] || len(s.pending) >= 32 || s.requestCount >= 2048 {
+		return Event{}, false, errors.New("Codex callback is duplicated or exceeds the run budget")
+	}
+	r.ID = id
 	payload, err := json.Marshal(struct {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`

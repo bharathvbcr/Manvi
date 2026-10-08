@@ -58,6 +58,14 @@ func TestProtocolChild(t *testing.T) {
 				fmt.Println(`{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn","status":"completed","items":[]}}}`)
 				continue
 			}
+			if method, ok := strings.CutPrefix(scenario, "callback:"); ok {
+				params, known := codexUnhandledCallbacks[method]
+				if !known {
+					os.Exit(8)
+				}
+				fmt.Printf("{\"id\":\"callback\",\"method\":%q,\"params\":%s}\n", method, params)
+				continue
+			}
 			if scenario == "foreign" {
 				fmt.Println(`{"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"other","turnId":"turn","itemId":"item","command":"git status","cwd":"/foreign","startedAtMs":1}}`)
 				continue
@@ -295,6 +303,50 @@ func TestCodexRefusesForeignRequestsAndOversizedFrames(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("invalid provider stream accepted")
+			}
+		})
+	}
+}
+
+// codexUnhandledCallbacks is every server-initiated request in codex-cli
+// 0.153.4's app-server schema (`codex app-server generate-json-schema`,
+// ServerRequest.json) that this adapter does not answer, with params carrying
+// that schema's required fields for the fixture's thread and turn. Several
+// carry no itemId, and the legacy and account requests no threadId at all.
+// #nosec G101 -- protocol method names and fixture params; none is a credential.
+var codexUnhandledCallbacks = map[string]string{
+	"item/permissions/requestApproval":  `{"threadId":"thread","turnId":"turn","itemId":"item","cwd":"/fixture","permissions":{},"startedAtMs":1}`,
+	"mcpServer/elicitation/request":     `{"threadId":"thread","turnId":"turn","serverName":"fixture-mcp","message":"Which environment?"}`,
+	"item/tool/call":                    `{"threadId":"thread","turnId":"turn","callId":"call","tool":"fixture_tool","arguments":{}}`,
+	"account/chatgptAuthTokens/refresh": `{"reason":"unauthorized"}`,
+	"attestation/generate":              `{}`,
+	"applyPatchApproval":                `{"conversationId":"thread","callId":"call","fileChanges":{}}`,
+	"execCommandApproval":               `{"conversationId":"thread","callId":"call","command":["ls"],"cwd":"/fixture","parsedCmd":[]}`,
+}
+
+// A callback the adapter cannot answer must be refused in words that name it,
+// whatever identity fields it does or does not carry: this error is what the
+// managed host records as the run's reason.
+func TestCodexRefusalNamesEveryCallbackItCouldNotAnswer(t *testing.T) {
+	for method := range codexUnhandledCallbacks {
+		t.Run(method, func(t *testing.T) {
+			s := fixture(t, "callback:"+method)
+			if err := s.StartTurn(t.Context(), "Inspect"); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			for i := 0; err == nil && i < 8; i++ {
+				ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+				var e Event
+				e, err = s.Next(ctx)
+				stop()
+				if err == nil && (e.Status != "" || e.Request != nil) {
+					t.Fatalf("%s was captured or completed instead of refused: %+v", method, e)
+				}
+			}
+			want := fmt.Sprintf("unsupported Codex callback %q; no response was granted", method)
+			if err == nil || err.Error() != want {
+				t.Fatalf("refusal = %v, want %q", err, want)
 			}
 		})
 	}

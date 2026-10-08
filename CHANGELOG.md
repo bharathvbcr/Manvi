@@ -36,6 +36,14 @@ under **Unreleased** in the same commit as the code.
   context (measured on Claude Code 2.1.289). How to work comes from the brief's
   own `## Agent guidance` section (DevCouncil dc-store), which the turn carries
   unchanged; a brief without that section is not described as having it.
+- A managed Codex run that ends on a server request the adapter does not answer
+  now records `unsupported Codex callback "<method>"; no response was granted`
+  as its reason. MCP elicitation, dynamic tool calls, account token refresh,
+  attestation and the legacy `applyPatchApproval` / `execCommandApproval`
+  requests carry no `itemId` or no `threadId` (codex-cli 0.153.4 schema), so
+  they used to fail the turn-identity check first and the run read only
+  "Codex callback has no matching active turn". The callback is still refused,
+  and nothing reaches the decision queue.
 - Preparation bounds the composed turn at 128 KiB, not the brief alone. A brief
   just under the limit used to be claimed and its provider started, then
   refused by the adapter when the turn was sent.
