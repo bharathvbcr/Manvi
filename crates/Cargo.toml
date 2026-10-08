@@ -5,10 +5,13 @@ resolver = "3"
 # from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
 members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc"]
 
+# Every value a symlinked member inherits from here must equal DevCouncil's
+# own, because the crates are DevCouncil's: scripts/check-release.mjs
+# (crateMirrorProblems) compares them and fails the build on a difference.
 [workspace.package]
-version = "0.1.0"
+version = "1.3.5"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits
 # rusqlite, `dc-evidence` inherits sha2, `dc-proc` inherits libc and
