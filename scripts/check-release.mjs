@@ -486,8 +486,8 @@ export function inheritedKeys(manifest) {
  * What a member inherits — its version, licence, lints and pinned
  * dependencies — it inherits from Manvi's `crates/Cargo.toml`, though, not
  * from DevCouncil's, and those values were copied by hand. They drifted: the
- * crates built here reported version 0.1.0 under MIT while DevCouncil ships
- * 1.3.5 under Apache-2.0. This compares every value a member inherits with
+ * crates built here reported version 0.1.0 under MIT while DevCouncil's own
+ * manifest said otherwise under Apache-2.0. This compares every value a member inherits with
  * DevCouncil's own, and refuses a member that is a copy rather than a link.
  *
  * DevCouncil's side is read at the commit scripts/module-pins.txt pins, not

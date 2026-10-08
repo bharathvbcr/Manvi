@@ -23,6 +23,9 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The DevCouncil pin moves to `a29a11b` (DevCouncil v0.2.4 line), which carries
+  `dc-redact` and the substitution ruling the `serve` policy tests pin. The
+  `dc-*` crates built here now report DevCouncil's version, 0.2.4.
 - A managed attempt's one turn now opens with what the launcher alone knows,
   ahead of the store's brief: the turn is unattended; an `inspect` attempt is
   told not to modify files or change the task's status, and every other mode
