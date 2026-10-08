@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { after, describe, it } from "node:test";
 import {
   NOTES_LIMIT,
   assetProblems,
+  contractMirrorProblems,
   crateMirrorProblems,
   inheritedKeys,
   parseManifest,
@@ -321,5 +323,149 @@ rusqlite = {version="0.40.2",features=["bundled"]}
       return;
     }
     assert.deepEqual(crateMirrorProblems(REPO_ROOT), []);
+  });
+});
+
+describe("contract mirror", () => {
+  const CONTRACTS = {
+    "README.md": "# contracts\n",
+    "event.schema.json": '{"type":"object"}\n',
+    "lease.schema.md": "# lease\n",
+  };
+  const sha256 = (body) => createHash("sha256").update(body).digest("hex");
+  const checksumsFor = (files) =>
+    Object.entries(files)
+      .map(([name, body]) => `${sha256(body)}  ${name}\n`)
+      .join("");
+  /**
+   * A Manvi root whose contracts/ holds `files`, plus CHECKSUMS (recorded
+   * from `recorded`, which defaults to `files`) and the noise a real copy
+   * carries: a tools/ subdirectory and a hidden file.
+   */
+  function manvi(files = CONTRACTS, { recorded = files, checksums } = {}) {
+    const root = mkdtempSync(path.join(tmpdir(), "manvi-contracts-"));
+    tempDirs.push(root);
+    const dir = path.join(root, "contracts");
+    mkdirSync(path.join(dir, "tools"), { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(path.join(dir, name), body);
+    writeFileSync(path.join(dir, "CHECKSUMS"), checksums ?? checksumsFor(recorded));
+    writeFileSync(path.join(dir, "tools", "checksums.py"), "machinery, not contract\n");
+    writeFileSync(path.join(dir, ".DS_Store"), "finder noise\n");
+    return root;
+  }
+  /** DevCouncil backend/contracts at the pin, as git ls-tree and git show see it. */
+  function upstream(files = CONTRACTS, { unreadable = [], extraEntries = [] } = {}) {
+    /** @type {Record<string, string>} */
+    const all = { ...files, CHECKSUMS: checksumsFor(files) };
+    return {
+      list: (/** @type {string} */ dir) => {
+        assert.equal(dir, "backend/contracts");
+        return [
+          ...Object.keys(all).map((name) => ({ mode: "100644", type: "blob", name })),
+          { mode: "040000", type: "tree", name: "tools" },
+          ...extraEntries,
+        ];
+      },
+      read: (/** @type {string} */ relative) => {
+        const name = relative.replace(/^backend\/contracts\//, "");
+        if (unreadable.includes(name) || !(name in all)) {
+          throw new Error(`fatal: path '${relative}' does not exist in the pin`);
+        }
+        return Buffer.from(all[name]);
+      },
+    };
+  }
+
+  it("holds when every contract file matches DevCouncil's at the pin", () => {
+    // tools/, .DS_Store and an upstream symlink are not contract files.
+    const pinned = upstream(CONTRACTS, { extraEntries: [{ mode: "120000", type: "blob", name: "link.md" }] });
+    assert.deepEqual(contractMirrorProblems(manvi(), pinned), []);
+  });
+
+  it("names a contract file edited here", () => {
+    const edited = { ...CONTRACTS, "event.schema.json": '{"type":"array"}\n' };
+    const problems = contractMirrorProblems(manvi(edited), upstream());
+    assert.ok(
+      problems.includes("contracts/event.schema.json differs from DevCouncil backend/contracts/event.schema.json at the pinned commit"),
+      problems.join("\n"),
+    );
+  });
+
+  it("names a contract file missing here", () => {
+    /** @type {Record<string, string>} */
+    const files = { ...CONTRACTS };
+    delete files["lease.schema.md"];
+    const problems = contractMirrorProblems(manvi(files, { recorded: CONTRACTS }), upstream());
+    assert.ok(
+      problems.includes("contracts/lease.schema.md is missing; DevCouncil has backend/contracts/lease.schema.md at the pinned commit"),
+      problems.join("\n"),
+    );
+  });
+
+  it("names a contract file here that DevCouncil does not have", () => {
+    const problems = contractMirrorProblems(manvi({ ...CONTRACTS, "extra.json": "[]\n" }), upstream());
+    assert.ok(
+      problems.includes("contracts/extra.json is not in DevCouncil backend/contracts at the pinned commit"),
+      problems.join("\n"),
+    );
+  });
+
+  it("names an upstream contract file it cannot read", () => {
+    const problems = contractMirrorProblems(manvi(), upstream(CONTRACTS, { unreadable: ["README.md"] }));
+    assert.ok(
+      problems.some((p) => p.startsWith("contracts/README.md: cannot read DevCouncil backend/contracts/README.md at the pinned commit")),
+      problems.join("\n"),
+    );
+  });
+
+  it("reports that the comparison could not run, rather than returning nothing", () => {
+    const unlistable = {
+      list: () => {
+        throw new Error("fatal: not a git repository: ../DevCouncil\nmore");
+      },
+      read: () => {
+        throw new Error("unreachable");
+      },
+    };
+    const problems = contractMirrorProblems(manvi(), unlistable);
+    assert.equal(problems.length, 1, problems.join("\n"));
+    assert.match(
+      problems[0],
+      /^contract mirror could not run: cannot list DevCouncil backend\/contracts at the pinned commit \(fatal: not a git repository/,
+    );
+
+    const empty = { list: () => [], read: unlistable.read };
+    const none = contractMirrorProblems(manvi(), empty);
+    assert.equal(none.length, 1, none.join("\n"));
+    assert.match(none[0], /^contract mirror could not run: DevCouncil backend\/contracts has no contract files at the pinned commit/);
+  });
+
+  it("reports that the comparison could not run when no DevCouncil checkout is beside Manvi", () => {
+    // The default reader, not an injected one: a pin with nothing to read it from.
+    const root = manvi();
+    mkdirSync(path.join(root, "scripts"));
+    writeFileSync(
+      path.join(root, "scripts", "module-pins.txt"),
+      `DevCouncil\thttps://github.com/bharathvbcr/DevCouncil.git\t${"a".repeat(40)}\n`,
+    );
+    const problems = contractMirrorProblems(root);
+    assert.equal(problems.length, 1, problems.join("\n"));
+    assert.match(problems[0], /^contract mirror could not run: /);
+  });
+
+  it("checks that this copy's CHECKSUMS describes its own files", () => {
+    // Every file matches upstream byte for byte; only the manifest is stale.
+    const stale = { ...CONTRACTS, "README.md": "# old readme\n" };
+    const problems = contractMirrorProblems(manvi(CONTRACTS, { recorded: stale }), upstream());
+    assert.deepEqual(problems, [
+      `contracts/CHECKSUMS: README.md: recorded ${sha256("# old readme\n")}, actual ${sha256("# contracts\n")}`,
+    ]);
+
+    const added = { ...CONTRACTS, "new.json": "{}\n" };
+    const unrecorded = contractMirrorProblems(manvi(added, { recorded: CONTRACTS }), upstream(added));
+    assert.ok(unrecorded.some((p) => p.startsWith("contracts/CHECKSUMS: new.json: not recorded")), unrecorded.join("\n"));
+
+    const malformed = contractMirrorProblems(manvi(CONTRACTS, { checksums: "not a checksum line\n" }), upstream());
+    assert.ok(malformed.some((p) => p.startsWith("contracts/CHECKSUMS line 1 is not")), malformed.join("\n"));
   });
 });

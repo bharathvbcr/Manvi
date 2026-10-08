@@ -481,6 +481,182 @@ export function inheritedKeys(manifest) {
 }
 
 /**
+ * @typedef {{ mode: string, type: string, name: string }} TreeEntry
+ * @typedef {{
+ *   read: (relativePath: string) => Buffer | string,
+ *   list: (relativeDir: string) => TreeEntry[],
+ * }} PinnedTree
+ */
+
+/**
+ * DevCouncil as scripts/module-pins.txt pins it, read through git in the
+ * sibling checkout rather than from its working tree: the release builds the
+ * pin, so a check against whatever the checkout has open would pass on one
+ * machine and fail in CI, or the reverse. Nothing runs git until `read` or
+ * `list` is called, and each throws when the pin cannot be read.
+ * @param {string} root
+ * @returns {PinnedTree | { problem: string }}
+ */
+export function pinnedDevCouncil(root) {
+  let pin;
+  try {
+    pin = parsePins(readFileSync(path.join(root, "scripts", "module-pins.txt"), "utf8")).find(
+      (row) => row.name === "DevCouncil",
+    );
+  } catch (err) {
+    return { problem: `scripts/module-pins.txt: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!pin) return { problem: "scripts/module-pins.txt does not pin DevCouncil, so there is nothing to compare against" };
+  const { sha } = pin;
+  const checkout = path.join(root, "..", "DevCouncil");
+  /** @param {string[]} args */
+  const git = (args) => execFileSync("git", ["-C", checkout, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  return {
+    read: (relative) => git(["show", `${sha}:${relative}`]),
+    list: (relativeDir) => {
+      // `<sha>:<dir>` names the tree itself: entries come back as basenames,
+      // and a directory absent at the pin is a git error, not empty output.
+      const out = git(["ls-tree", "-z", `${sha}:${relativeDir}`]).toString("utf8");
+      return out
+        .split("\0")
+        .filter((record) => record !== "")
+        .map((record) => {
+          const tab = record.indexOf("\t");
+          const [mode, type] = record.slice(0, tab).split(" ");
+          if (tab < 0 || !mode || !type) throw new Error(`git ls-tree printed an entry it cannot read: ${JSON.stringify(record)}`);
+          return { mode, type, name: record.slice(tab + 1) };
+        });
+    },
+  };
+}
+
+const firstLine = (/** @type {unknown} */ err) => (err instanceof Error ? err.message.split("\n")[0] : String(err));
+
+/**
+ * Manvi vendors DevCouncil's `backend/contracts/` as `contracts/`. The
+ * vendored copy must be DevCouncil's at the pin byte for byte, and its
+ * CHECKSUMS must describe its own files, or a contract edited here instead
+ * of upstream ships unnoticed.
+ *
+ * The contract set follows DevCouncil's producer-side rule
+ * (backend/go_orchestrator/policy/contract_checksums_test.go): every
+ * regular, non-hidden file in the directory. Subdirectories such as tools/
+ * are machinery, not contract. CHECKSUMS is not compared with upstream
+ * byte for byte; it is checked against this copy's own files instead.
+ *
+ * When the pinned DevCouncil cannot be listed this returns a problem saying
+ * the comparison could not run, never an empty list.
+ * @param {string} root
+ * @param {PinnedTree} [pinnedTree] DevCouncil at the pinned commit; the
+ *   default asks git in the sibling checkout.
+ * @returns {string[]}
+ */
+export function contractMirrorProblems(root, pinnedTree) {
+  const UPSTREAM_DIR = "backend/contracts";
+  /** @type {PinnedTree} */
+  let pinned;
+  if (pinnedTree) pinned = pinnedTree;
+  else {
+    const found = pinnedDevCouncil(root);
+    if ("problem" in found) return [`contract mirror could not run: ${found.problem}`];
+    pinned = found;
+  }
+  let upstreamNames;
+  try {
+    upstreamNames = pinned
+      .list(UPSTREAM_DIR)
+      .filter((entry) => entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755"))
+      .map((entry) => entry.name)
+      .filter((name) => !name.startsWith(".") && name !== "CHECKSUMS");
+  } catch (err) {
+    return [
+      `contract mirror could not run: cannot list DevCouncil ${UPSTREAM_DIR} at the pinned commit (${firstLine(err)}); run scripts/fetch-modules.sh`,
+    ];
+  }
+  if (upstreamNames.length === 0) {
+    return [`contract mirror could not run: DevCouncil ${UPSTREAM_DIR} has no contract files at the pinned commit`];
+  }
+
+  const dir = path.join(root, "contracts");
+  let localNames;
+  try {
+    localNames = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name !== "CHECKSUMS")
+      .map((entry) => entry.name);
+  } catch (err) {
+    return [`contract mirror could not run: cannot read contracts/ (${firstLine(err)})`];
+  }
+
+  /** @type {string[]} */
+  const errors = [];
+  const local = new Set(localNames);
+  for (const name of [...upstreamNames].sort()) {
+    let theirs;
+    try {
+      theirs = Buffer.from(pinned.read(`${UPSTREAM_DIR}/${name}`));
+    } catch (err) {
+      errors.push(`contracts/${name}: cannot read DevCouncil ${UPSTREAM_DIR}/${name} at the pinned commit (${firstLine(err)})`);
+      continue;
+    }
+    if (!local.has(name)) {
+      errors.push(`contracts/${name} is missing; DevCouncil has ${UPSTREAM_DIR}/${name} at the pinned commit`);
+      continue;
+    }
+    if (!theirs.equals(readFileSync(path.join(dir, name)))) {
+      errors.push(`contracts/${name} differs from DevCouncil ${UPSTREAM_DIR}/${name} at the pinned commit`);
+    }
+  }
+  const upstream = new Set(upstreamNames);
+  for (const name of [...localNames].sort()) {
+    if (!upstream.has(name)) errors.push(`contracts/${name} is not in DevCouncil ${UPSTREAM_DIR} at the pinned commit`);
+  }
+  errors.push(...checksumsProblems(dir, localNames));
+  return errors;
+}
+
+/**
+ * Whether contracts/CHECKSUMS records exactly `names` at their current
+ * digests, in the "<sha256>  <name>" form DevCouncil writes. A line it cannot
+ * read is refused rather than skipped.
+ * @param {string} dir
+ * @param {string[]} names
+ * @returns {string[]}
+ */
+function checksumsProblems(dir, names) {
+  let body;
+  try {
+    body = readFileSync(path.join(dir, "CHECKSUMS"), "utf8");
+  } catch (err) {
+    return [`contracts/CHECKSUMS: cannot read (${firstLine(err)})`];
+  }
+  /** @type {Map<string, string>} */
+  const recorded = new Map();
+  const lines = body.replace(/\n+$/, "").split("\n");
+  for (const [i, line] of lines.entries()) {
+    const at = line.indexOf("  ");
+    const digest = at < 0 ? "" : line.slice(0, at);
+    const name = at < 0 ? "" : line.slice(at + 2);
+    if (!/^[0-9a-f]{64}$/.test(digest) || name === "") {
+      return [`contracts/CHECKSUMS line ${i + 1} is not "<sha256>  <name>": ${JSON.stringify(line)}`];
+    }
+    if (recorded.has(name)) return [`contracts/CHECKSUMS names ${name} twice`];
+    recorded.set(name, digest);
+  }
+  /** @type {string[]} */
+  const drift = [];
+  for (const name of names) {
+    const actual = createHash("sha256").update(readFileSync(path.join(dir, name))).digest("hex");
+    const got = recorded.get(name);
+    if (got === undefined) drift.push(`contracts/CHECKSUMS: ${name}: not recorded (actual ${actual})`);
+    else if (got !== actual) drift.push(`contracts/CHECKSUMS: ${name}: recorded ${got}, actual ${actual}`);
+  }
+  for (const name of recorded.keys()) {
+    if (!names.includes(name)) drift.push(`contracts/CHECKSUMS: ${name}: recorded but no such contract file`);
+  }
+  return drift.sort();
+}
+
+/**
  * Manvi's `crates/` workspace builds DevCouncil's dc-* crates in place: each
  * member is a symlink into DevCouncil `rust/`, so the sources have one owner.
  * What a member inherits — its version, licence, lints and pinned
@@ -513,23 +689,13 @@ export function crateMirrorProblems(root, readPinned) {
   const members = membersValue === undefined ? null : parseStringArray(membersValue);
   if (members === null) return [`crates/Cargo.toml: cannot read workspace members ${membersValue ?? "(absent)"}`];
   if (members.length === 0) return ["crates/Cargo.toml names no workspace members"];
-  let read = readPinned;
-  if (!read) {
-    let pin;
-    try {
-      pin = parsePins(readFileSync(path.join(root, "scripts", "module-pins.txt"), "utf8")).find(
-        (row) => row.name === "DevCouncil",
-      );
-    } catch (err) {
-      return [`scripts/module-pins.txt: ${err instanceof Error ? err.message : String(err)}`];
-    }
-    if (!pin) return ["scripts/module-pins.txt does not pin DevCouncil, so the crate mirror has nothing to compare"];
-    const checkout = path.join(root, "..", "DevCouncil");
-    read = (relative) =>
-      execFileSync("git", ["-C", checkout, "show", `${pin.sha}:${relative}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+  /** @type {(relativePath: string) => string} */
+  let read;
+  if (readPinned) read = readPinned;
+  else {
+    const pinned = pinnedDevCouncil(root);
+    if ("problem" in pinned) return [pinned.problem];
+    read = (relative) => pinned.read(relative).toString("utf8");
   }
   /** @type {Map<string, Map<string, string>>} */
   let upstream;
@@ -665,6 +831,7 @@ export function main(argv = process.argv.slice(2)) {
   errors.push(...notesFileProblems(root));
   errors.push(...pinProblems(root, args.requirePins));
   errors.push(...crateMirrorProblems(root));
+  errors.push(...contractMirrorProblems(root));
 
   if (args.tag) {
     const parsed = parseTag(args.tag);
