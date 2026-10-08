@@ -1,8 +1,9 @@
 # Build and publish manvi binaries for darwin and linux (amd64, arm64).
 #
 # Triggered by version tags (v*). Each matrix cell builds on a runner of its
-# own OS and links the Gusset engine, which makes every policy decision:
-# Linux fully static against musl, darwin against libSystem. Each binary must
+# own OS and links the Gusset engine (policy decisions use Go's fnmatch;
+# see DevCouncil's docs/gusset-candidates.md): Linux fully static against
+# musl, darwin against libSystem. Each binary must
 # pass its own `gusset-check` (boundary parity and the I2 panic firewall)
 # before it is uploaded; see scripts/release-build.sh. The publish job then
 # attaches every artifact plus SHA-256 checksums and the curated notes in

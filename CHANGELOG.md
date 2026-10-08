@@ -23,6 +23,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Policy decisions use Go's fnmatch in every build, not the Gusset engine.
+  This covers `manvi` CLI gates and `serve`'s `policy.check.file` and
+  `policy.check.command`. The answers are the same, since the engine was held
+  equal to fnmatch, and fnmatch gives them about twice as fast (DevCouncil's
+  `docs/gusset-candidates.md` has the A/B). `serve` no longer refuses a policy
+  check with `E_INTERNAL` when the engine fails its check, and no decision
+  comes back as `path.engine_unavailable` or `command.engine_unavailable`.
+  Those refusals guarded an engine that no longer decides anything. Release
+  binaries still link the engine, and `manvi gusset-check` still proves it.
+  `gussetcheck.Matcher` and `gussetcheck.Ready` are removed.
 - The DevCouncil pin moves to `a29a11b` (DevCouncil v0.2.4 line), which carries
   `dc-redact` and the substitution ruling the `serve` policy tests pin. The
   `dc-*` crates built here now report DevCouncil's version, 0.2.4.

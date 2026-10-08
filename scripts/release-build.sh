@@ -3,8 +3,9 @@
 # interpolated into -ldflags. workflow_dispatch may stamp a tag that is not
 # HEAD; a tag push may not.
 #
-# The binary links the Gusset engine, which makes every policy decision in a
-# cgo build (DevCouncil's policy.Matcher). That takes a native job per target:
+# The binary links the Gusset engine. Policy decisions do not use it — Go's
+# fnmatch is the one policy matcher (DevCouncil's docs/gusset-candidates.md)
+# — but the archive ships, so it is proven. That takes a native job per target:
 # Linux is linked fully static against musl, so it runs on any distribution;
 # darwin links libSystem as every macOS binary does. The binary runs its own
 # `gusset-check` before it is accepted: parity through the boundary and a real
@@ -12,8 +13,8 @@
 # unwind table links and matches and then aborts on that panic, which is the
 # failure this step exists to catch.
 #
-# MANVI_RELEASE_ENGINE=0 builds the old CGO_ENABLED=0 binary, which decides
-# with Go's fnmatch. For a local dry run only; the workflow never sets it.
+# MANVI_RELEASE_ENGINE=0 builds the old CGO_ENABLED=0 binary, which has no
+# engine to check. For a local dry run only; the workflow never sets it.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

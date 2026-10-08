@@ -35,7 +35,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/bootstrap"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
-	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -1440,15 +1439,8 @@ func buildGate(reg *flags.Registry) (*gate.Gate, *repomap.Map, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// The engine decides every pattern question in a build that links it;
-	// fnmatch in one that does not. Not gated on a health check: a failing
-	// engine is a hard denial per decision (path.engine_unavailable), which
-	// names the cause, and the handle reopens itself after a poison. The
-	// check below only says so at startup, rather than at the first refusal.
-	if err := gussetcheck.Ready(); err != nil && !errors.Is(err, gussetcheck.ErrNotLinked) {
-		fmt.Fprintf(os.Stderr, "manvi: the gusset policy engine failed its check (%v); policy decisions will be refused under path.engine_unavailable / command.engine_unavailable until it recovers\n", err)
-	}
-	g.Matcher = gussetcheck.Matcher()
+	// The gate's Matcher stays nil: fnmatch decides every pattern question
+	// (DevCouncil's docs/gusset-candidates.md).
 	if err := loadGrants(g); err != nil {
 		return nil, nil, err
 	}
