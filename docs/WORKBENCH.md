@@ -176,8 +176,10 @@ stays there and cleared to null when it leaves; no request can set it.
 text of at most 4,096 bytes and a boolean `done`. `links` is an array of at most
 64 distinct `{"kind","item_id"}` objects; kinds are `parent`, `blocks`,
 `related` and `duplicate_of`. A task cannot link to itself, has at most one
-parent, and cannot take one of its own descendants as parent; a parent chain
-deeper than 256 is refused rather than walked. A new link must name a live task;
+parent, and cannot take one of its own descendants as parent. A new parent link
+is refused if the chain it would make — the parent's ancestors, the parent, the
+task and its deepest subtask — holds more than 256 tasks; a parent the task
+already has is not checked again. A new link must name a live task;
 a link the task already holds survives its target's deletion, so deleting a
 task never makes the tasks that link to it unsaveable. Links are indexed in
 `work_item_links`; the task body remains the record of truth.
