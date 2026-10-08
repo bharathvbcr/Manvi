@@ -15,7 +15,7 @@ license = "Apache-2.0"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits
 # rusqlite, `dc-evidence` inherits sha2, `dc-proc` inherits libc and
-# `dc-verify` inherits tree-sitter and four grammars from that workspace. This
+# `dc-verify` inherits tree-sitter and six grammars from that workspace. This
 # workspace must declare the same pins so
 # `cargo build --manifest-path crates/Cargo.toml` can resolve `workspace = true`.
 #
@@ -23,7 +23,7 @@ license = "Apache-2.0"
 # `foo.workspace = true` upstream fails the whole workspace to load — not just
 # that member — until its pin is mirrored below. The failure names the
 # inherited key, so read the `Caused by` chain rather than the member it
-# blamed. These eight are every workspace-inherited dependency the seven members
+# blamed. These ten are every workspace-inherited dependency the seven members
 # currently declare (dc-redact inherits none); the spec strings are
 # DevCouncil's, and Cargo.lock holds the versions DevCouncil's own lock
 # resolves. manvi/devcouncil/crate_pins_test.go fails when they drift.
@@ -37,6 +37,8 @@ tree-sitter-rust = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-typescript = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
 
 # Every other crate a member pulls in is a dependency-audit surface paid for
 # weekly; the analysis plane earns one when a task needs it, not before, and
