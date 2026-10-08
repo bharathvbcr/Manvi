@@ -283,7 +283,7 @@ func toWireInputShaped(msg llm.Message, shape historyShapeInfo) ([]wireInput, er
 			// Dropped, and it used to be an error.
 			//
 			// The refusal made sense while nothing about an assistant turn was
-			// replayable: PrepareHistory stripped the whole message, so a
+			// replayable: PrepareHistoryFor stripped the whole message, so a
 			// reasoning block arriving here meant something upstream had gone
 			// wrong. Now the message is kept — it carries the call signatures
 			// that let a tool call be replayed at all — and the reasoning

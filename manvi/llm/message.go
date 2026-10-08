@@ -209,22 +209,17 @@ type ReasoningReplayer interface {
 	ReplayableOn(fromModel, toModel string) bool
 }
 
-// PrepareHistory adapts a message history for a target provider and model.
+// PrepareHistoryFor adapts a message history for a target adapter and model.
 //
 // An assistant message keeps its ReplayState and its reasoning blocks only when
 // the target adapter owns the provider that produced it, and only when that
 // adapter says the reasoning is replayable. Same provider but a different model
 // still drops reasoning: providers tie thinking state to a specific model, and
 // replaying it onto a sibling is the failure this function exists to prevent.
+// An adapter that implements ReasoningReplayer is asked rather than assumed.
 //
 // Returns the adapted history and every drop, so the caller can log what was
 // lost rather than discovering it as a quality regression.
-func PrepareHistory(messages []Message, targetProvider, targetModel string) ([]Message, []Drop) {
-	return prepareHistory(messages, targetProvider, targetModel, nil)
-}
-
-// PrepareHistoryFor is PrepareHistory with the target adapter available, so an
-// adapter that implements ReasoningReplayer is asked rather than assumed.
 func PrepareHistoryFor(messages []Message, target Provider, targetModel string) ([]Message, []Drop) {
 	if target == nil {
 		// A nil provider is a programming error, not a history transformation.

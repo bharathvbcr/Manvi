@@ -497,7 +497,7 @@ func TestPromptAssemblyRefusesADuplicateSectionQuietly(t *testing.T) {
 // phantom faults on a healthy assembly.
 func TestAssemblePromptStillCarriesEverySection(t *testing.T) {
 	reg := newTestRegistry(t)
-	text, faults := assemblePromptWithFaults(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
+	text, _, faults := assemblePromptReported(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
 	if len(faults) != 0 {
 		t.Fatalf("the shipped prompt reports faults it should not have: %v", faults)
 	}

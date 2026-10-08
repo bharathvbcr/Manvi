@@ -30,7 +30,7 @@ func (e *InvariantError) Error() string {
 // the log's projection, in order.
 //
 // The comparison is on model-visible content only. Provenance is deliberately
-// excluded: PrepareHistory legitimately strips non-portable replay state on the
+// excluded: PrepareHistoryFor legitimately strips non-portable replay state on the
 // way out, and that transformation is itself logged as provenance/dropped. What
 // must never differ is what the model reads.
 //
@@ -45,7 +45,7 @@ func AssertModelVisible(log *Log, request []llm.Message) error {
 	}
 
 	// The request must be a subsequence of the projection, not an index-for-
-	// index copy of it. PrepareHistory legitimately omits a message the target
+	// index copy of it. PrepareHistoryFor legitimately omits a message the target
 	// cannot carry — an assistant turn whose only content was reasoning has
 	// nothing left to send once reasoning is stripped, and sending it hollow is
 	// a wire error — so the projection can hold messages the request does not.
@@ -83,7 +83,7 @@ func AssertModelVisible(log *Log, request []llm.Message) error {
 		}
 	}
 
-	// The log holding more than the request is normal: PrepareHistory may drop
+	// The log holding more than the request is normal: PrepareHistoryFor may drop
 	// a message a target provider cannot carry, and compaction removes history
 	// deliberately. Only the reverse — content the model saw that nothing
 	// recorded — is a violation.
@@ -119,7 +119,7 @@ func sameVisibleContent(logged, sent llm.Message) error {
 
 // visibleBlocks renders a message's content into comparable strings.
 //
-// Reasoning blocks are excluded on purpose. PrepareHistory strips them when
+// Reasoning blocks are excluded on purpose. PrepareHistoryFor strips them when
 // handing history to a provider that cannot replay them, and that removal is
 // recorded separately — treating it as an invariant violation would make the
 // correct behaviour fail the check.

@@ -56,13 +56,6 @@ func SelfTest(ctx context.Context) error {
 	return selfTest(ctx)
 }
 
-// Close releases the engine's shared handle. It joins the engine's workers
-// without a bound; at process exit use Shutdown. A cgo-off build has nothing
-// to release.
-func Close() error {
-	return closeEngine()
-}
-
 // Shutdown releases the engine at process exit within drain: it cancels
 // every job and refuses new work process-wide, then joins. An engine still
 // running at the deadline is reported and left to process exit rather than

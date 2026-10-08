@@ -30,7 +30,6 @@ import (
 
 // Errors callers branch on.
 var (
-	ErrDepthExceeded  = errors.New("agents: spawn depth limit reached")
 	ErrFanoutExceeded = errors.New("agents: concurrent fan-out limit reached")
 	ErrClosed         = errors.New("agents: the pool is closed")
 )
@@ -276,13 +275,12 @@ type Result struct {
 
 // Pool runs bounded fan-out.
 type Pool struct {
-	// MaxDepth bounds delegation depth. A pool at depth d spawns children at
-	// depth d+1, and a child at MaxDepth cannot spawn at all.
+	// MaxDepth is the delegation depth this pool was configured with. The
+	// bound itself is structural: a child's registry holds no dispatching
+	// tools, so there is no grandchild for a counter to refuse.
 	MaxDepth int
 	// MaxFanout bounds how many children run at once.
 	MaxFanout int
-	// Depth is this pool's own position in the tree.
-	Depth int
 	// Releaser hands leases back. Required: a pool without one cannot clean up
 	// after a cancellation, and constructing one is refused rather than
 	// discovering it at the moment it matters.
@@ -307,18 +305,6 @@ func New(maxDepth, maxFanout int, releaser Releaser) (*Pool, error) {
 		MaxDepth: maxDepth, MaxFanout: maxFanout,
 		Releaser: releaser, ReleaseTimeout: 10 * time.Second,
 	}, nil
-}
-
-// Child returns a pool for the next level down, or an error when the depth
-// limit is reached. The limit is checked here, at the point of descent, rather
-// than trusted to the caller.
-func (p *Pool) Child() (*Pool, error) {
-	if p.Depth >= p.MaxDepth {
-		return nil, fmt.Errorf("%w: depth %d of %d", ErrDepthExceeded, p.Depth, p.MaxDepth)
-	}
-	child := *p
-	child.Depth = p.Depth + 1
-	return &child, nil
 }
 
 func (p *Pool) now() time.Time {

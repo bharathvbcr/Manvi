@@ -240,7 +240,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 			}
 		}},
 		{"fifo", func(t *testing.T, at, outside string) {
-			if err := syscall_Mkfifo(at, 0o644); err != nil {
+			if err := runMkfifo(at, 0o644); err != nil {
 				t.Skipf("cannot create a fifo here: %v", err)
 			}
 		}},

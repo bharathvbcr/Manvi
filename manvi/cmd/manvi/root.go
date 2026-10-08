@@ -35,18 +35,6 @@ func projectRoot() string {
 	return findProjectRoot(cwd)
 }
 
-// setProjectRootForTest overrides the cached project root during testing.
-func setProjectRootForTest(root string) func() {
-	testRootMu.Lock()
-	testProjectRootOverride = root
-	testRootMu.Unlock()
-	return func() {
-		testRootMu.Lock()
-		testProjectRootOverride = ""
-		testRootMu.Unlock()
-	}
-}
-
 // findProjectRoot discovers the project root starting from startDir and walking upwards.
 //
 // Search precedence:

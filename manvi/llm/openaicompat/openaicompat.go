@@ -334,10 +334,10 @@ func toWireMessages(msg llm.Message, name string) ([]wireMessage, error) {
 			text.WriteString(b.Text)
 		case llm.ReasoningBlock:
 			// Reasoning is not replayable on this wire (see each provider's
-			// ReplayableOn), and PrepareHistory strips it before a request is
+			// ReplayableOn), and PrepareHistoryFor strips it before a request is
 			// assembled. One arriving here means it was not stripped, and
 			// sending it as text would silently change the prompt.
-			return nil, errors.New("reasoning blocks are not replayable on this provider and must be stripped by PrepareHistory")
+			return nil, errors.New("reasoning blocks are not replayable on this provider and must be stripped by PrepareHistoryFor")
 		case llm.ImageBlock:
 			return nil, errors.New("this adapter does not send images")
 		case llm.ToolCallBlock:
@@ -2168,7 +2168,7 @@ func (s *stream) Response() (llm.Response, error) {
 	}
 	if s.reasoning.Len() > 0 {
 		// Carried with no signature: this wire documents no way to replay it,
-		// so PrepareHistory will strip it on the next turn and report the drop.
+		// so PrepareHistoryFor will strip it on the next turn and report the drop.
 		// Recording it here keeps the session log complete.
 		msg.Content = append(msg.Content, llm.ReasoningBlock{Text: s.reasoning.String()})
 	}

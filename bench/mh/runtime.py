@@ -44,8 +44,8 @@ API_ENDPOINTS = {
 def api_provider(model):
     """The provider serving `model`, or None when local ollama serves it.
 
-    Canonical owner. `is_api_model` and `is_gemini_model` are both derived from
-    it, and mh.model imports it rather than keeping a second copy.
+    Canonical owner. `is_api_model` is derived from it, and mh.model imports
+    it rather than keeping a second copy.
     """
     if not model:
         return None
@@ -1028,11 +1028,6 @@ def observed_parallel_slots():
 def is_api_model(model):
     """True for a model served over someone else's API, not by local ollama."""
     return api_provider(model) is not None
-
-
-# mh.model used to carry a byte-identical copy of this predicate under the
-# older name; the alias keeps that import working against the one definition.
-is_gemini_model = is_api_model
 
 
 def unstick_server(model, host=HOST, restart=True):

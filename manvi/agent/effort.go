@@ -139,12 +139,6 @@ func planEffort(cfg Config) (EffortPlan, error) {
 // Escalates reports whether this plan can ever raise the tier.
 func (p EffortPlan) Escalates() bool { return p.ceiling != "" }
 
-// Base is the tier a turn opens at.
-func (p EffortPlan) Base() string { return p.base }
-
-// Ceiling is as far as the tier may be raised, empty when it may not be.
-func (p EffortPlan) Ceiling() string { return p.ceiling }
-
 // Next returns the rung above current, and false when there is none — either
 // because the plan does not escalate, or because current is already at the
 // ceiling.

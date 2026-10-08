@@ -252,7 +252,7 @@ func TestToolResultsBecomeOneMessageEach(t *testing.T) {
 }
 
 // TestUnstrippedReasoningIsRefused: this provider cannot replay it, so
-// PrepareHistory removes it. One arriving here means it did not, and sending it
+// PrepareHistoryFor removes it. One arriving here means it did not, and sending it
 // as text would silently change the prompt.
 func TestUnstrippedReasoningIsRefused(t *testing.T) {
 	adapter, _ := adapterFor(t, happyStream)

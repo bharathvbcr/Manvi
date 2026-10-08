@@ -46,7 +46,7 @@ func buildTurn(t *testing.T, steps int, budget Budget, resultLines func(int) int
 		if err != nil {
 			t.Fatal(err)
 		}
-		plan := PlanCompaction(msgs, "sys", nil, budget, done)
+		plan := PlanCompactionCalibrated(msgs, "sys", nil, budget, done, nil)
 		if !plan.Empty() {
 			if err := plan.Apply(log); err != nil {
 				t.Fatal(err)
@@ -172,8 +172,8 @@ func TestCompactionSkipsResultsThatAreAlreadySmall(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		msgs = append(msgs, toolResultMsg(llm.CallID(fmt.Sprintf("big%d", i)), bigOutput(300, "b")))
 	}
-	plan := PlanCompaction(msgs, "sys", nil, Budget{ContextWindow: 9000, ReservedOutput: 1024, Overhead: 256},
-		map[llm.CallID]struct{}{})
+	plan := PlanCompactionCalibrated(msgs, "sys", nil, Budget{ContextWindow: 9000, ReservedOutput: 1024, Overhead: 256},
+		map[llm.CallID]struct{}{}, nil)
 	for _, s := range plan.Steps {
 		if s.FromBytes <= s.ToBytes {
 			t.Fatalf("%s was 'compacted' from %d to %d bytes", s.ToolCallID, s.FromBytes, s.ToBytes)

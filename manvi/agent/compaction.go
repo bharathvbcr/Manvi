@@ -131,22 +131,12 @@ type CompactionPlan struct {
 // Empty reports whether the plan changes anything.
 func (p CompactionPlan) Empty() bool { return len(p.Steps) == 0 }
 
-// PlanCompaction decides what to shorten.
+// PlanCompactionCalibrated decides what to shorten, with the estimator
+// corrected against what the server has been counting. A nil Calibrator leaves
+// the estimate uncorrected.
 //
 // already names tool results that carry a compaction from an earlier step;
 // they are never revisited, which is what keeps the prompt prefix stable.
-func PlanCompaction(
-	messages []llm.Message,
-	systemPrompt string,
-	tools []llm.ToolSchema,
-	budget Budget,
-	already map[llm.CallID]struct{},
-) CompactionPlan {
-	return PlanCompactionCalibrated(messages, systemPrompt, tools, budget, already, nil)
-}
-
-// PlanCompactionCalibrated is PlanCompaction with the estimator corrected
-// against what the server has been counting.
 func PlanCompactionCalibrated(
 	messages []llm.Message,
 	systemPrompt string,

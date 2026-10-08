@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .runtime import api_model_id, api_provider, is_gemini_model  # noqa: F401
+from .runtime import api_model_id, api_provider
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"

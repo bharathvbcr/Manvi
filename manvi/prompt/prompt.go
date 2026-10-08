@@ -194,9 +194,6 @@ type Report struct {
 	Tokens int       `json:"tokens,omitempty"`
 }
 
-// Complete reports whether every section was contributed and included.
-func (r Report) Complete() bool { return len(r.Omitted) == 0 && len(r.Failed) == 0 }
-
 // Assemble builds the prompt and the account of how it was built.
 //
 // A failing source does not abort assembly. The alternative — refusing to build
@@ -401,20 +398,6 @@ func (r *Router) Sources() []Source {
 	return out
 }
 
-// Config returns the routing config this router was built with, so a caller
-// that derived a budget or a density from it can report what it used.
-func (r *Router) Config() RouterConfig { return r.config }
-
-// Assemble filters active sources and builds the final system prompt.
-func (r *Router) Assemble(maxTokens int) (string, Report) {
-	a := New()
-	a.MaxTokens = maxTokens
-	for _, src := range r.Sources() {
-		_ = a.Add(src)
-	}
-	return a.Assemble()
-}
-
 // WhenProvider matches specific provider names (e.g. "local", "anthropic").
 func WhenProvider(names ...string) ConditionFunc {
 	return func(cfg RouterConfig) bool {
@@ -424,13 +407,6 @@ func WhenProvider(names ...string) ConditionFunc {
 			}
 		}
 		return false
-	}
-}
-
-// WhenDensity matches the density mode.
-func WhenDensity(d Density) ConditionFunc {
-	return func(cfg RouterConfig) bool {
-		return cfg.Density == d
 	}
 }
 

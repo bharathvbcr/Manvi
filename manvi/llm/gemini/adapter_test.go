@@ -307,7 +307,7 @@ data: {"event_type":"error","error":{"message":"quota exhausted","status":"RESOU
 // unstripped reasoning block to be an error.
 //
 // That was right while nothing about an assistant turn was replayable, so a
-// reasoning block reaching the encoder meant PrepareHistory had failed. It is
+// reasoning block reaching the encoder meant PrepareHistoryFor had failed. It is
 // wrong now: the assistant message is deliberately kept, because it carries the
 // call signatures without which a tool call cannot be replayed at all — and the
 // reasoning rides along with it.

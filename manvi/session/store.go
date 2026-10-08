@@ -204,20 +204,6 @@ func NewStore(dir string) *Store {
 // Dir is where sessions are kept.
 func (s *Store) Dir() string { return s.dir }
 
-// SetLimits overrides the retention bounds. A non-positive value leaves the
-// corresponding default in place: a store with no bound at all is the thing
-// this exists to prevent, so it is not expressible.
-func (s *Store) SetLimits(maxBytes, maxSessions int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if maxBytes > 0 {
-		s.maxBytes = maxBytes
-	}
-	if maxSessions > 0 {
-		s.maxSessions = maxSessions
-	}
-}
-
 // NewID returns an identifier for a fresh session.
 //
 // It is random rather than sequential or time-derived so that a short prefix

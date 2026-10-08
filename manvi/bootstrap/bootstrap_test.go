@@ -4,9 +4,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// changed reports whether an Ensure call altered the working tree.
+func changed(r Report) bool { return len(r.CreatedDirs) > 0 || len(r.AddedRules) > 0 }
+
+// allRules lists every managed rule, sorted.
+func allRules() []string {
+	var all []string
+	for _, section := range Sections {
+		all = append(all, section.Rules...)
+	}
+	sort.Strings(all)
+	return all
+}
 
 func options() Options {
 	return Options{StateDir: ".devcouncil", Gitignore: true}
@@ -31,7 +45,7 @@ func TestEnsureScaffoldsAFreshRepository(t *testing.T) {
 	if len(report.Failures) > 0 {
 		t.Fatalf("failures on a fresh repository: %v", report.Failures)
 	}
-	if !report.Changed() {
+	if !changed(report) {
 		t.Fatal("the report says nothing changed in a directory that had neither the state dir nor an ignore file")
 	}
 	if got := report.CreatedDirs; len(got) != 1 || got[0] != ".devcouncil" {
@@ -42,7 +56,7 @@ func TestEnsureScaffoldsAFreshRepository(t *testing.T) {
 	}
 
 	content := read(t, filepath.Join(root, ".gitignore"))
-	for _, rule := range Rules() {
+	for _, rule := range allRules() {
 		if !strings.Contains(content, rule) {
 			t.Errorf(".gitignore is missing %q", rule)
 		}
@@ -68,7 +82,7 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	if len(report.Failures) > 0 {
 		t.Fatalf("failures on the second run: %v", report.Failures)
 	}
-	if report.Changed() {
+	if changed(report) {
 		t.Fatalf("the second run reported changes: dirs=%q rules=%q", report.CreatedDirs, report.AddedRules)
 	}
 	if len(report.Lines()) != 0 {
@@ -288,7 +302,7 @@ func TestReportSummarisesALongAddition(t *testing.T) {
 		t.Fatalf("the line names nothing it added:\n%s", ignoreLine)
 	}
 	// The count is the part that has to be exact.
-	if !strings.Contains(ignoreLine, fmt.Sprintf("%d ignore rule(s)", len(Rules()))) {
+	if !strings.Contains(ignoreLine, fmt.Sprintf("%d ignore rule(s)", len(allRules()))) {
 		t.Fatalf("the line does not count what was added:\n%s", ignoreLine)
 	}
 }
@@ -314,7 +328,7 @@ func TestARelocatedStateDirIsIgnoredToo(t *testing.T) {
 		t.Fatal("moving the state directory dropped the DevCouncil rules")
 	}
 	// Idempotent for the added rule as much as the fixed ones.
-	if Ensure(root, Options{StateDir: filepath.Join("var", "manvi"), Gitignore: true}).Changed() {
+	if changed(Ensure(root, Options{StateDir: filepath.Join("var", "manvi"), Gitignore: true})) {
 		t.Fatal("the second run with a relocated state directory changed something")
 	}
 }

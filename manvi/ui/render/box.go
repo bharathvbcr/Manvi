@@ -106,44 +106,6 @@ func Spinner(frames []string, tick int) string {
 	return frames[i]
 }
 
-// barBlocks are the eighth-width block elements, which give a progress bar
-// eight times the resolution of its column count.
-var barBlocks = []string{"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"}
-
-// ProgressBar renders a bar of w columns at fraction f, sub-column accurate.
-func ProgressBar(w int, f float64, filled, empty Style) Line {
-	if w <= 0 {
-		return nil
-	}
-	if f < 0 {
-		f = 0
-	}
-	if f > 1 {
-		f = 1
-	}
-	eighths := int(f*float64(w)*8 + 0.5)
-	full := eighths / 8
-	part := eighths % 8
-	if full > w {
-		full, part = w, 0
-	}
-	line := Line{}
-	if full > 0 {
-		line = line.Append(strings.Repeat("█", full), filled)
-	}
-	rest := w - full
-	if part > 0 && rest > 0 {
-		// The partial block is drawn in the filled colour on the empty
-		// background, so the bar reads as one shape rather than two.
-		line = line.Append(barBlocks[part], Style{Fg: filled.Fg, Bg: empty.Bg, Attrs: filled.Attrs})
-		rest--
-	}
-	if rest > 0 {
-		line = line.Append(strings.Repeat("░", rest), empty)
-	}
-	return line
-}
-
 // GradientLine renders text with its foreground swept from one colour to
 // another across the string.
 //

@@ -13,6 +13,19 @@ import (
 )
 
 // conversation records one complete turn: prompt, tool call, result, answer.
+// setLimits lowers the retention bounds so a test can cross them without
+// writing megabytes. A non-positive value leaves that default in place.
+func (s *Store) setLimits(maxBytes, maxSessions int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if maxBytes > 0 {
+		s.maxBytes = maxBytes
+	}
+	if maxSessions > 0 {
+		s.maxSessions = maxSessions
+	}
+}
+
 func conversation(t *testing.T, l *Log, prompt, toolText, answer string) {
 	t.Helper()
 	mustAppend(t, l, TurnStart, nil)
@@ -511,7 +524,7 @@ func TestACrashedRunLeavesTheSessionResumable(t *testing.T) {
 func TestSessionFileIsBoundedByDroppingWholeTurns(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-	store.SetLimits(6000, 0)
+	store.setLimits(6000, 0)
 	id := newID(t)
 
 	log := NewLog()
@@ -566,7 +579,7 @@ func TestSessionFileIsBoundedByDroppingWholeTurns(t *testing.T) {
 func TestASingleOversizedTurnIsKeptAndFlagged(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-	store.SetLimits(512, 0)
+	store.setLimits(512, 0)
 	id := newID(t)
 
 	log := NewLog()
@@ -594,7 +607,7 @@ func TestASingleOversizedTurnIsKeptAndFlagged(t *testing.T) {
 func TestTheDirectoryKeepsABoundedNumberOfSessions(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-	store.SetLimits(0, 3)
+	store.setLimits(0, 3)
 
 	var ids []string
 	for i := 0; i < 6; i++ {

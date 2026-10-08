@@ -211,30 +211,6 @@ func TestFanoutBeyondTheLimitIsRefusedNotTrimmed(t *testing.T) {
 	}
 }
 
-// TestDepthIsBoundedInCode: a limit expressed as a prompt instruction is a
-// limit the model can decline to follow.
-func TestDepthIsBoundedInCode(t *testing.T) {
-	rel := newRecorder()
-	p, err := New(2, 4, rel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	depth1, err := p.Child()
-	if err != nil {
-		t.Fatal(err)
-	}
-	depth2, err := depth1.Child()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := depth2.Child(); !errors.Is(err, ErrDepthExceeded) {
-		t.Fatalf("err = %v, want ErrDepthExceeded at depth %d", err, depth2.Depth)
-	}
-	if depth2.Depth != 2 {
-		t.Fatalf("depth = %d", depth2.Depth)
-	}
-}
-
 // TestAPoolWithoutAReleaserIsRefused: discovering it at the moment a
 // cancellation needs cleanup is discovering it too late.
 func TestAPoolWithoutAReleaserIsRefused(t *testing.T) {

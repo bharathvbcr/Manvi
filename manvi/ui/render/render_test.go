@@ -432,15 +432,6 @@ func TestPainterResizeForcesRepaintAndDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestProgressBarStaysWithinItsWidth(t *testing.T) {
-	for _, f := range []float64{-1, 0, 0.01, 0.5, 0.999, 1, 2} {
-		got := ProgressBar(10, f, Plain, Plain)
-		if got.Width() != 10 {
-			t.Fatalf("ProgressBar(10, %v) is %d columns, want exactly 10", f, got.Width())
-		}
-	}
-}
-
 func TestGradientLineKeepsTheText(t *testing.T) {
 	got := GradientLine("manvi", Hex("#ff0000"), Hex("#0000ff"), 0)
 	if got.Text() != "manvi" {

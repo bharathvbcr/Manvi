@@ -34,7 +34,7 @@ func TestAnOverBudgetHistoryWithNothingEligibleIsStillInsufficient(t *testing.T)
 	}
 
 	budget := Budget{ContextWindow: 8192, ReservedOutput: 2048}
-	plan := PlanCompaction(messages, "you are a coding assistant", nil, budget, nil)
+	plan := PlanCompactionCalibrated(messages, "you are a coding assistant", nil, budget, nil, nil)
 
 	if plan.Before <= budget.Threshold() {
 		t.Fatalf("fixture is not over budget: before=%d threshold=%d",
@@ -55,7 +55,7 @@ func TestAnUnderBudgetHistoryIsNotInsufficient(t *testing.T) {
 	messages := []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hello"}}},
 	}
-	plan := PlanCompaction(messages, "sys", nil, Budget{ContextWindow: 8192}, nil)
+	plan := PlanCompactionCalibrated(messages, "sys", nil, Budget{ContextWindow: 8192}, nil, nil)
 	if plan.Insufficient {
 		t.Error("a small history was reported insufficient")
 	}

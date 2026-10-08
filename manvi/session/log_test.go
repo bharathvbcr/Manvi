@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -150,9 +151,19 @@ func TestSilentlyEditedMessageFailsLoudly(t *testing.T) {
 	_ = logged
 }
 
+// namedProvider is a target with no replay opinion of its own, so
+// llm.PrepareHistoryFor applies the same-provider-and-model rule.
+type namedProvider string
+
+func (n namedProvider) Name() string { return string(n) }
+func (n namedProvider) Capability(string) (llm.Capability, bool) {
+	return llm.Capability{Provider: string(n)}, true
+}
+func (n namedProvider) Stream(context.Context, llm.Request) (llm.Stream, error) { return nil, nil }
+
 // TestReasoningStrippedByPrepareHistoryStillSatisfiesTheInvariant guards
 // against the invariant being so strict it fails correct behaviour.
-// PrepareHistory legitimately removes reasoning a target cannot replay, and
+// PrepareHistoryFor legitimately removes reasoning a target cannot replay, and
 // that removal is recorded separately as provenance/dropped.
 func TestReasoningStrippedByPrepareHistoryStillSatisfiesTheInvariant(t *testing.T) {
 	l := NewLog()
@@ -170,7 +181,7 @@ func TestReasoningStrippedByPrepareHistoryStillSatisfiesTheInvariant(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, drops := llm.PrepareHistory(logged, "gemini", "g1")
+	prepared, drops := llm.PrepareHistoryFor(logged, namedProvider("gemini"), "g1")
 	if len(drops) != 1 {
 		t.Fatalf("expected one drop, got %d", len(drops))
 	}

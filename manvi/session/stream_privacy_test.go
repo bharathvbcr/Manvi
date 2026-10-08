@@ -68,37 +68,3 @@ func TestOrdinaryLogRetainsStreaming(t *testing.T) {
 		t.Fatal("ordinary streaming changed")
 	}
 }
-
-func TestSensitiveRestoreSanitizesBeforeFirstProjection(t *testing.T) {
-	l := NewLog()
-	mustAppend(t, l, AssistantChunk, llm.Chunk{Kind: llm.ChunkText, Text: "legacy-secret"})
-	mustAppend(t, l, AssistantMessage, MessageData{Message: llm.Message{Role: llm.RoleAssistant, Content: llm.Content{llm.TextBlock{Text: "legacy-secret"}}}})
-	imported := l.Events()
-	restored, err := RestoreSensitiveLog(imported, func(s string) string { return strings.ReplaceAll(s, "legacy-secret", "[redacted]") })
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range restored.Events() {
-		if strings.Contains(string(e.Data), "legacy-secret") {
-			t.Fatal("restored secret escaped")
-		}
-	}
-	if !strings.Contains(string(imported[1].Data), "legacy-secret") {
-		t.Fatal("caller-owned import mutated")
-	}
-	warm, err := restored.DeriveMessages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cold, err := RestoreLog(restored.Events())
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, err := cold.DeriveMessages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(warm, messages) {
-		t.Fatal("warm/restored privacy differs")
-	}
-}
