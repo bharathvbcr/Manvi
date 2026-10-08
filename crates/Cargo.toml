@@ -3,7 +3,7 @@ resolver = "3"
 # Canonical sources live in DevCouncil rust/. These members are
 # symlinks for local `cargo build` / verify.sh; release consumers pin or vendor
 # from DevCouncil (see README note below and GitPulse vendor-crates.mjs).
-members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc"]
+members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc", "dc-redact"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,9 +20,10 @@ license = "MIT"
 # `foo.workspace = true` upstream fails the whole workspace to load — not just
 # that member — until its pin is mirrored below. The failure names the
 # inherited key, so read the `Caused by` chain rather than the member it
-# blamed. These eight are every workspace-inherited dependency the six members
-# currently declare; the spec strings are DevCouncil's, and Cargo.lock holds
-# the versions DevCouncil's own lock resolves.
+# blamed. These eight are every workspace-inherited dependency the seven members
+# currently declare (dc-redact inherits none); the spec strings are
+# DevCouncil's, and Cargo.lock holds the versions DevCouncil's own lock
+# resolves. manvi/devcouncil/crate_pins_test.go fails when they drift.
 [workspace.dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"

@@ -185,6 +185,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-redact"
+version = "0.1.0"
+
+[[package]]
 name = "dc-store"
 version = "0.1.0"
 dependencies = [
@@ -198,6 +202,7 @@ dependencies = [
  "dc-evidence",
  "dc-glob",
  "dc-proc",
+ "dc-redact",
  "serde_json",
  "tree-sitter",
  "tree-sitter-go",
