@@ -72,6 +72,11 @@ the process receipt and records provider failure without fabricating thread data
 Provider completion, process reaping and task acceptance remain separate. The real
 read-only native/provider path is verified; real-account approval variants,
 managed Claude and process-tree/crash recovery remain open.
+Schema eleven separates the archive from Done: `archived` is a task flag
+independent of status, with a store-maintained `completed_at`, checklists,
+typed task links and `items.restore` for deleted tasks. Its upgrade archives
+every Done task, and hosts on schema ten refuse the upgraded profile; Manvi's
+DevCouncil pin still carries schema ten.
 See [Workbench](WORKBENCH.md) for supported operations, bounds and remaining
 product integration work.
 
