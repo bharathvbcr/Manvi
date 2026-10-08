@@ -9,6 +9,18 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
+// setProjectRootForTest overrides the cached project root during testing.
+func setProjectRootForTest(root string) func() {
+	testRootMu.Lock()
+	testProjectRootOverride = root
+	testRootMu.Unlock()
+	return func() {
+		testRootMu.Lock()
+		testProjectRootOverride = ""
+		testRootMu.Unlock()
+	}
+}
+
 func TestFindProjectRoot_GitRepo(t *testing.T) {
 	tmp := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {

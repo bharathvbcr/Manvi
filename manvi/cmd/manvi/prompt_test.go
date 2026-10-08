@@ -4,9 +4,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 )
+
+// promptText is the text the live assembly path produces, for tests that assert
+// only on what the model is told.
+func promptText(reg *flags.Registry, opts PromptOptions) string {
+	text, _, _ := assemblePromptReported(reg, opts)
+	return text
+}
 
 // The prompt used to be identical for a frontier model and a 4-bit 27B. The
 // smaller model does not infer what is unsaid, and this is the cheapest quality
@@ -14,8 +22,8 @@ import (
 func TestLocalModelsGetScaffoldingAFrontierModelDoesNot(t *testing.T) {
 	reg := registryWith(t, nil)
 
-	generic := systemPromptFor(reg, "anthropic")
-	scaffolded := systemPromptFor(reg, local.Name)
+	generic := promptText(reg, PromptOptions{Provider: "anthropic", TaskToolsOffered: true})
+	scaffolded := promptText(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
 
 	if len(scaffolded) <= len(generic) {
 		t.Fatal("the local prompt carries no extra scaffolding")
@@ -40,7 +48,7 @@ func TestLocalModelsGetScaffoldingAFrontierModelDoesNot(t *testing.T) {
 func TestEveryProviderKeepsThePolicyContract(t *testing.T) {
 	reg := registryWith(t, nil)
 	for _, provider := range []string{"anthropic", "gemini", "xai", local.Name, ""} {
-		got := systemPromptFor(reg, provider)
+		got := promptText(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
 		if !strings.Contains(got, "policy gate") {
 			t.Errorf("provider %q: the prompt does not mention the policy gate", provider)
 		}
@@ -54,9 +62,9 @@ func TestThePromptIsDeterministic(t *testing.T) {
 	// Two runs with the same inputs must produce the same bytes, or the
 	// server's prefix cache has nothing stable to key the system prompt on.
 	reg := registryWith(t, nil)
-	first := systemPromptFor(reg, local.Name)
+	first := promptText(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
 	for i := 0; i < 5; i++ {
-		if got := systemPromptFor(reg, local.Name); got != first {
+		if got := promptText(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true}); got != first {
 			t.Fatal("the assembled prompt is not byte-stable across calls")
 		}
 	}
@@ -69,12 +77,12 @@ func TestThePromptIsDeterministic(t *testing.T) {
 func TestThePromptNeverNamesAToolTheProfileRemoved(t *testing.T) {
 	reg := registryWith(t, nil)
 
-	full := assemblePrompt(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
+	full := promptText(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: true})
 	if !strings.Contains(full, "devcouncil_next_task") {
 		t.Error("the full surface should still explain the task tools")
 	}
 
-	reduced := assemblePrompt(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: false})
+	reduced := promptText(reg, PromptOptions{Provider: local.Name, TaskToolsOffered: false})
 	for _, absent := range []string{
 		"devcouncil_next_task", "devcouncil_checkout_task", "check one out",
 	} {
@@ -155,7 +163,7 @@ func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 					inProfile[s.Name] = true
 				}
 
-				text := assemblePrompt(reg, PromptOptions{
+				text := promptText(reg, PromptOptions{
 					Provider:         provider,
 					TaskToolsOffered: taskToolsOffered(pipeline, coreOnly),
 					DynamicTools:     dynamic,
@@ -218,7 +226,7 @@ func TestPromptNeverContradictsTheOfferedToolProfile(t *testing.T) {
 func TestPromptContainsCoreEngineeringPrinciples(t *testing.T) {
 	reg := registryWith(t, nil)
 	for _, provider := range []string{"anthropic", "gemini", "xai", local.Name} {
-		got := systemPromptFor(reg, provider)
+		got := promptText(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
 		principles := []struct {
 			name string
 			key  string
@@ -252,7 +260,7 @@ func TestCapabilityGuidanceFollowsTheCapability(t *testing.T) {
 	reg := registryWith(t, nil)
 	for _, provider := range []string{"anthropic", local.Name} {
 		t.Run(provider+"/absent", func(t *testing.T) {
-			got := assemblePrompt(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
+			got := promptText(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
 			for _, forbidden := range []string{"current documentation", "dev map", "code index"} {
 				if strings.Contains(strings.ToLower(got), forbidden) {
 					t.Errorf("the prompt mentions %q while the harness cannot do it", forbidden)
@@ -260,7 +268,7 @@ func TestCapabilityGuidanceFollowsTheCapability(t *testing.T) {
 			}
 		})
 		t.Run(provider+"/present", func(t *testing.T) {
-			got := assemblePrompt(reg, PromptOptions{
+			got := promptText(reg, PromptOptions{
 				Provider: provider, TaskToolsOffered: true,
 				CodeMapAvailable:   true,
 				DocLookupAvailable: true,

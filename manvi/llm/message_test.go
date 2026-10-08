@@ -24,7 +24,7 @@ func TestReplayStateSurvivesTheSameModel(t *testing.T) {
 			TextBlock{Text: "answer"}),
 	}
 
-	out, drops := PrepareHistory(history, "anthropic", "m1")
+	out, drops := PrepareHistoryFor(history, silentProvider{name: "anthropic"}, "m1")
 	if len(drops) != 0 {
 		t.Fatalf("same provider and model must drop nothing, got %v", drops)
 	}
@@ -46,7 +46,7 @@ func TestCrossProviderHandoffIsExplicitlyLossy(t *testing.T) {
 			TextBlock{Text: "answer"}),
 	}
 
-	out, drops := PrepareHistory(history, "gemini", "g1")
+	out, drops := PrepareHistoryFor(history, silentProvider{name: "gemini"}, "g1")
 	if len(drops) != 1 {
 		t.Fatalf("expected one reported drop, got %d", len(drops))
 	}
@@ -76,7 +76,7 @@ func TestCrossProviderHandoffIsExplicitlyLossy(t *testing.T) {
 // specific model. Replaying it onto a sibling is the failure this prevents.
 func TestSameProviderDifferentModelAlsoDrops(t *testing.T) {
 	history := []Message{assistantWith("anthropic", "m1", ReasoningBlock{Text: "x"})}
-	_, drops := PrepareHistory(history, "anthropic", "m2")
+	_, drops := PrepareHistoryFor(history, silentProvider{name: "anthropic"}, "m2")
 	if len(drops) != 1 {
 		t.Fatalf("a sibling model must not inherit reasoning state, got %d drops", len(drops))
 	}
@@ -84,7 +84,7 @@ func TestSameProviderDifferentModelAlsoDrops(t *testing.T) {
 
 func TestUserMessagesAreNeverTouched(t *testing.T) {
 	history := []Message{{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "hi"}}}}
-	out, drops := PrepareHistory(history, "gemini", "g1")
+	out, drops := PrepareHistoryFor(history, silentProvider{name: "gemini"}, "g1")
 	if len(drops) != 0 || len(out[0].Content) != 1 {
 		t.Fatal("user messages carry no provider state and must pass through unchanged")
 	}

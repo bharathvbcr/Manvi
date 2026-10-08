@@ -9,6 +9,9 @@ import (
 // TestAssemblyIsDeterministic: two runs with the same inputs must produce the
 // same bytes, or the prompt cannot be diffed across runs or cached by a
 // provider.
+// complete reports whether every section was contributed and included.
+func complete(r Report) bool { return len(r.Omitted) == 0 && len(r.Failed) == 0 }
+
 func TestAssemblyIsDeterministic(t *testing.T) {
 	build := func() string {
 		a := New()
@@ -62,7 +65,7 @@ func TestAFailingSourceIsReportedNotSwallowed(t *testing.T) {
 	if !strings.Contains(text, "You are the builder.") {
 		t.Fatal("a failing source aborted the whole assembly")
 	}
-	if report.Complete() {
+	if complete(report) {
 		t.Fatal("a prompt built while a contributor was failing must not report complete")
 	}
 	if len(report.Failed) != 1 || report.Failed[0].Source != "repo-map" {
@@ -90,7 +93,7 @@ func TestAnEssentialSectionIsNeverTrimmedForBudget(t *testing.T) {
 	if !strings.Contains(text, "Never write outside") {
 		t.Fatal("an essential section was dropped for budget")
 	}
-	if report.Complete() {
+	if complete(report) {
 		t.Fatal("a prompt that blew its budget must say so")
 	}
 	// And the overrun is recorded, so nobody reads the prompt as within budget.
@@ -170,7 +173,7 @@ func TestEveryIncludedSectionIsAccountedFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, report := a.Assemble()
-	if len(report.Included) != 3 || !report.Complete() {
+	if len(report.Included) != 3 || !complete(report) {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.Runes != len([]rune(text)) {
@@ -254,8 +257,8 @@ func TestGuidanceRouter(t *testing.T) {
 		ActiveGroups: []string{"core", "nav"},
 	}
 	router := NewRouter(localCfg)
-	router.Add(Static("identity-compact", 10, true, "I am local agent."), WhenDensity(DensityCompact))
-	router.Add(Static("identity-full", 10, true, "I am full agent with verbose capabilities."), WhenDensity(DensityFull))
+	router.Add(Static("identity-compact", 10, true, "I am local agent."), WhenProvider("local"))
+	router.Add(Static("identity-full", 10, true, "I am full agent with verbose capabilities."), WhenProvider("anthropic"))
 	router.Add(Static("nav-guidance", 20, false, "DevMap navigation guidance."), WhenGroupActive("nav"))
 	router.Add(Static("subagent-guidance", 30, false, "Subagent fanout guidance."), WhenGroupActive("subagent"))
 
@@ -267,14 +270,20 @@ func TestGuidanceRouter(t *testing.T) {
 		t.Fatalf("unexpected active sources: %v, %v", sources[0].Name(), sources[1].Name())
 	}
 
-	text, report := router.Assemble(0)
+	a := New()
+	for _, src := range sources {
+		if err := a.Add(src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, report := a.Assemble()
 	if !strings.Contains(text, "I am local agent.") || !strings.Contains(text, "DevMap navigation guidance.") {
 		t.Fatalf("unexpected assembled text: %s", text)
 	}
 	if strings.Contains(text, "verbose") || strings.Contains(text, "Subagent fanout") {
 		t.Fatalf("unwanted sections included in local prompt: %s", text)
 	}
-	if !report.Complete() {
+	if !complete(report) {
 		t.Fatalf("expected complete report, got: %+v", report)
 	}
 }

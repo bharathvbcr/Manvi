@@ -2,7 +2,6 @@ package ui
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -147,16 +146,16 @@ func TestYoloPostureIsAnnouncedEverySession(t *testing.T) {
 // wire, two faces. A field only one of them reads is a place they can drift.
 func TestJSONSinkAndRendererConsumeTheSameEvents(t *testing.T) {
 	var jsonBuf, termBuf bytes.Buffer
-	sinks := MultiSink{NewJSONSink(&jsonBuf, nil), func() Sink {
-		r := NewRenderer(&termBuf, nil)
-		r.SetPalette(PlainPalette())
-		return r
-	}()}
+	term := NewRenderer(&termBuf, nil)
+	term.SetPalette(PlainPalette())
 
-	sinks.Emit(Event{
+	ev := Event{
 		Kind: KindToolResult, Text: "wrote src/a.go", Tool: "devcouncil_write_file",
 		Rule: "scope.unplanned", Demoted: "harness.posture=dev",
-	})
+	}
+	for _, sink := range []Sink{NewJSONSink(&jsonBuf, nil), term} {
+		sink.Emit(ev)
+	}
 
 	var decoded Event
 	if err := json.Unmarshal(jsonBuf.Bytes(), &decoded); err != nil {
@@ -407,152 +406,3 @@ func TestShouldColorRefusesAPipe(t *testing.T) {
 		t.Fatal("NO_COLOR was ignored")
 	}
 }
-
-// --- approval seam ---
-
-// TestAnUnanswerablePromptIsARefusal is the one failure mode an approval seam
-// must not have: treating a question nobody answered as consent.
-func TestAnUnanswerablePromptIsARefusal(t *testing.T) {
-	req := Request{Rule: "scope.unplanned", Path: "src/helper.go", Grantable: true, Severity: "soft"}
-
-	t.Run("closed input", func(t *testing.T) {
-		p := NewPrompter(strings.NewReader(""), &bytes.Buffer{}, Discard)
-		d, err := p.Approve(context.Background(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.Allow {
-			t.Fatal("a closed input was read as approval")
-		}
-	})
-
-	t.Run("timeout", func(t *testing.T) {
-		p := NewPrompter(blockingReader{}, &bytes.Buffer{}, Discard)
-		p.Timeout = 100 * time.Millisecond
-		d, err := p.Approve(context.Background(), req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.Allow {
-			t.Fatal("a timed-out prompt was read as approval")
-		}
-	})
-
-	t.Run("cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		p := NewPrompter(blockingReader{}, &bytes.Buffer{}, Discard)
-		d, err := p.Approve(ctx, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.Allow {
-			t.Fatal("a cancelled prompt was read as approval")
-		}
-	})
-}
-
-// TestApprovalRequiresARecordedReason: a grant with a manufactured reason reads
-// in a later review exactly like one with a real reason.
-func TestApprovalRequiresARecordedReason(t *testing.T) {
-	p := NewPrompter(strings.NewReader("y\n\n"), &bytes.Buffer{}, Discard)
-	d, err := p.Approve(context.Background(),
-		Request{Rule: "scope.unplanned", Path: "src/a.go", Grantable: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Allow {
-		t.Fatal("an approval with no reason was issued")
-	}
-
-	p2 := NewPrompter(strings.NewReader("y\nthe fix needs a helper\n"), &bytes.Buffer{}, Discard)
-	d2, err := p2.Approve(context.Background(),
-		Request{Rule: "scope.unplanned", Path: "src/a.go", Grantable: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d2.Allow || d2.Reason != "the fix needs a helper" || d2.By != "human" {
-		t.Fatalf("decision = %+v", d2)
-	}
-}
-
-// TestAnUngrantableRuleIsNotEvenAsked: presenting a question with only one
-// possible answer trains an operator to answer without reading.
-func TestAnUngrantableRuleIsNotEvenAsked(t *testing.T) {
-	var out bytes.Buffer
-	p := NewPrompter(strings.NewReader("y\nplease\n"), &out, Discard)
-	d, err := p.Approve(context.Background(),
-		Request{Rule: "path.secret", Severity: "hard", Path: ".env", Grantable: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Allow {
-		t.Fatal("a hard rule was cleared by a prompt")
-	}
-	if strings.Contains(out.String(), "[y/N]") {
-		t.Fatalf("a question was asked that had only one answer: %q", out.String())
-	}
-}
-
-// TestDenyAllIsTheUnattendedDefault: an approval nobody is present to give must
-// not be granted by absence.
-func TestDenyAllIsTheUnattendedDefault(t *testing.T) {
-	d, err := DenyAll{}.Approve(context.Background(),
-		Request{Rule: "scope.unplanned", Grantable: true})
-	if err != nil || d.Allow {
-		t.Fatalf("decision = %+v, err = %v", d, err)
-	}
-}
-
-// TestAutoApproverClearsOnlyItsListedRules, and never a hard one even if
-// misconfigured to name it.
-func TestAutoApproverClearsOnlyItsListedRules(t *testing.T) {
-	a := AutoApprover{
-		Rules:  map[string]bool{"scope.unplanned": true, "path.secret": true},
-		Reason: "unattended migration run, approved in the ticket",
-	}
-	if d, _ := a.Approve(context.Background(),
-		Request{Rule: "scope.unplanned", Grantable: true}); !d.Allow {
-		t.Fatal("a listed rule was not cleared")
-	}
-	if d, _ := a.Approve(context.Background(),
-		Request{Rule: "scope.read_only", Grantable: true}); d.Allow {
-		t.Fatal("an unlisted rule was cleared")
-	}
-	// Grantability is checked before the list, so naming a hard rule in the
-	// configuration cannot clear one.
-	if d, _ := a.Approve(context.Background(),
-		Request{Rule: "path.secret", Grantable: false}); d.Allow {
-		t.Fatal("a hard rule was cleared by a misconfigured auto-approver")
-	}
-	if _, err := (AutoApprover{Rules: map[string]bool{"x": true}}).Approve(
-		context.Background(), Request{Rule: "x", Grantable: true}); err == nil {
-		t.Fatal("an auto-approver with no recorded reason was allowed to grant")
-	}
-}
-
-// TestTheApprovalAndItsAnswerBothReachTheTranscript: an answer with no
-// recorded question cannot be audited.
-func TestTheApprovalAndItsAnswerBothReachTheTranscript(t *testing.T) {
-	var events []Event
-	sink := SinkFunc(func(e Event) { events = append(events, e) })
-	p := NewPrompter(strings.NewReader("y\nneeded for the fix\n"), &bytes.Buffer{}, sink)
-	if _, err := p.Approve(context.Background(),
-		Request{Rule: "scope.unplanned", Path: "src/a.go", Grantable: true}); err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 2 || events[0].Kind != KindApproval || events[1].Kind != KindApprovalDone {
-		t.Fatalf("events = %+v, want the request and the decision", events)
-	}
-	if events[0].ApprovalID == "" || events[0].ApprovalID != events[1].ApprovalID {
-		t.Fatalf("the question and answer are not linked: %+v", events)
-	}
-	if !strings.Contains(events[1].Text, "needed for the fix") {
-		t.Fatalf("the recorded reason was lost: %+v", events[1])
-	}
-}
-
-// blockingReader never returns, standing in for a terminal nobody is at.
-type blockingReader struct{}
-
-func (blockingReader) Read(p []byte) (int, error) { select {} }

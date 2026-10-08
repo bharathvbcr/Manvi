@@ -1274,18 +1274,6 @@ func (h *harnessHost) resolveEffort(registry *llm.Registry, provider, model stri
 	return effort, nil
 }
 
-// resolveModel picks the model for a provider.
-//
-// There is no default. The catalogues here are transcribed from vendor
-// documentation and a model chosen for the operator would be a guess presented
-// as a configuration — discovered as a 404 mid-turn rather than as a missing
-// setting. So an unset MANVI_MODEL is an error that names the models this
-// provider actually serves.
-// systemPrompt assembles the prompt for a turn using prompt.Assembler.
-func systemPrompt(reg *flags.Registry) string {
-	return systemPromptFor(reg, "")
-}
-
 // PromptOptions is what the assembled prompt has to match.
 type PromptOptions struct {
 	// Provider selects provider-specific scaffolding.
@@ -1332,54 +1320,9 @@ type PromptOptions struct {
 	Areas []repomap.AreaSummary
 }
 
-// systemPromptFor assembles the prompt for a specific provider.
-//
-// The sections below were written for a model that infers what is unsaid. A
-// smaller local model does not: it needs the working directory named, the tool
-// contract spelled out, and the stopping condition stated, because none of that
-// is derivable from four sentences about policy. The scaffolding is added as an
-// ordinary Source so it appears in the assembly report like everything else —
-// what the model was told stays answerable.
-func systemPromptFor(reg *flags.Registry, provider string) string {
-	return assemblePrompt(reg, PromptOptions{Provider: provider, TaskToolsOffered: true})
-}
-
-// assemblePrompt builds the system prompt, and refuses to build it quietly
-// when a section did not make it in.
-//
-// package prompt exists so "what did the model actually know" is answerable:
-// Assemble returns the text *and* a Report naming what was included, what was
-// dropped for budget, and what failed to load. This call site threw all of it
-// away — seven `_ = a.Add(...)` and an `assembled, _ := a.Assemble()` — which
-// left the package's whole reason for existing unenforced at the only place
-// that could enforce it.
-//
-// Nothing here can fail today: every source is a prompt.Static. That is the
-// argument for fixing it rather than leaving it. The day a source reads
-// AGENTS.md or the repo map, a missing file would produce a prompt with a
-// section silently absent, a model that was never told the tool contract, and
-// a run whose transcript gives no hint why.
-//
-// The signature stays a plain string because both call sites build an
-// agent.Config literal around it and cannot take a second return. So the fault
-// goes to stderr instead, guarded by the same reasoning as the step-ceiling
-// warning above: the alternative is a prompt that is quietly wrong.
-func assemblePrompt(reg *flags.Registry, opts PromptOptions) string {
-	text, faults := assemblePromptWithFaults(reg, opts)
-	for _, fault := range faults {
-		fmt.Fprintf(os.Stderr, "manvi: system prompt: %s\n", fault)
-	}
-	return text
-}
-
-// assemblePromptWithFaults is the same assembly with the account kept, so a
-// test can assert on it rather than scraping stderr.
-func assemblePromptWithFaults(reg *flags.Registry, opts PromptOptions) (string, []string) {
-	text, _, faults := assemblePromptReported(reg, opts)
-	return text, faults
-}
-
-// assemblePromptReported is the assembly with its own account kept.
+// assemblePromptReported builds the system prompt and keeps the account of how
+// it was built. It is the only assembly path: the string-only wrappers that
+// sent faults to stderr were retired with the line-mode face.
 //
 // The Report has always been computed and always been thrown away: the faults
 // went to stderr, which is invisible under this face's alternate screen and is

@@ -614,15 +614,15 @@ print("is_api_model has one owner")
 from mh.runtime import is_api_model
 import mh.runtime as _runtime
 import mh.model as _model
-check("runtime owns the predicate under both names",
-      getattr(_runtime, "is_gemini_model", None) is is_api_model)
+check("the retired is_gemini_model alias is gone",
+      not hasattr(_runtime, "is_gemini_model")
+      and not hasattr(_model, "is_gemini_model"))
+check("mh.model routes through the owner rather than a copy",
+      _model.api_provider is _runtime.api_provider)
 CASES = ["gemini-3.7-flash", "models/gemini-3.7-flash", "live-gemini",
          "qwen3.8:27b", "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0",
          "gemma4:e4b", "not-gemini-really", "cerebras:gpt-oss-120b",
          "cerebras:gemma-4-31b", "gpt-oss-120b", "gemma-4-31b"]
-check("mh.model's copy still agrees with the owner",
-      all(_model.is_gemini_model(m) == is_api_model(m) for m in CASES),
-      "mh/model.py must import is_gemini_model from mh.runtime")
 from mh.runtime import api_model_id, api_provider
 check("api_provider routes each name to exactly one provider",
       [api_provider(m) for m in CASES]

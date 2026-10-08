@@ -64,7 +64,7 @@ type Adapter struct {
 	DefaultMaxTokens int
 	// Thinking is the reasoning configuration this adapter sends. It is an
 	// adapter-level setting rather than a per-request one because what omitting
-	// the parameter *means* differs by model — see thinkingOnByDefault — and a
+	// the parameter *means* differs by model — see ThinkingDefault — and a
 	// harness that leaves it unstated inherits a different behaviour when the
 	// model changes underneath it.
 	Thinking ThinkingMode

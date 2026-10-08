@@ -60,7 +60,7 @@ func countReasoning(messages []Message) int {
 }
 
 // The defect this locks: a local model that thinks out loud produced a
-// ReasoningBlock, PrepareHistory kept it because the model matched, and the
+// ReasoningBlock, PrepareHistoryFor kept it because the model matched, and the
 // OpenAI-compatible adapter then refused the whole message — so the turn died
 // on the step after the model first reasoned.
 func TestReasoningIsNotReplayedToAnAdapterThatCannotCarryIt(t *testing.T) {
@@ -156,7 +156,7 @@ func TestReasoningOnlyMessageIsOmittedRatherThanSentHollow(t *testing.T) {
 		{Role: RoleUser, Content: []ContentBlock{TextBlock{Text: "continue"}}},
 	}
 
-	out, drops := PrepareHistory(history, "local", "other-model")
+	out, drops := PrepareHistoryFor(history, silentProvider{name: "local"}, "other-model")
 
 	for i, msg := range out {
 		if len(msg.Content) == 0 {
@@ -186,7 +186,7 @@ func TestReasoningOnlyMessageIsOmittedRatherThanSentHollow(t *testing.T) {
 			TextBlock{Text: "the answer"},
 		},
 	}}
-	kept, _ := PrepareHistory(mixed, "local", "other-model")
+	kept, _ := PrepareHistoryFor(mixed, silentProvider{name: "local"}, "other-model")
 	if len(kept) != 1 || len(kept[0].Content) != 1 {
 		t.Fatalf("a message with sendable content was altered: %+v", kept)
 	}

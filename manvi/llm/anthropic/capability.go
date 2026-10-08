@@ -88,21 +88,12 @@ const (
 	// effort-dependent — see ValidateThinking.
 	ThinkingDisabled ThinkingMode = "disabled"
 	// ThinkingDefault omits the parameter. What that means differs by model,
-	// which is the trap ThinkingDefaultRuns exists to make explicit.
+	// and silently: on Opus 4.8 and 4.7, omitting `thinking` meant no thinking;
+	// on Opus 5 it means adaptive. Since max_tokens caps thinking *plus*
+	// response text, a request carried over unchanged can now truncate
+	// mid-answer with nothing in the request looking wrong.
 	ThinkingDefault ThinkingMode = ""
 )
-
-// thinkingOnByDefault lists models that think when the parameter is omitted.
-//
-// This is the silent one. On Opus 4.8 and 4.7, omitting `thinking` meant no
-// thinking; on Opus 5 it means adaptive. Since max_tokens caps thinking *plus*
-// response text, a request carried over unchanged can now truncate mid-answer
-// with nothing in the request looking wrong.
-var thinkingOnByDefault = map[string]bool{
-	"claude-opus-5":   true,
-	"claude-fable-5":  true,
-	"claude-sonnet-5": true,
-}
 
 // alwaysThinking lists models where reasoning cannot be turned off at all.
 var alwaysThinking = map[string]bool{
@@ -124,10 +115,6 @@ func Models() []string {
 	}
 	return out
 }
-
-// ThinkingDefaultRuns reports whether omitting the thinking parameter results
-// in reasoning for this model. Callers size max_tokens from this.
-func ThinkingDefaultRuns(model string) bool { return thinkingOnByDefault[model] }
 
 // ValidateThinking reports why a thinking configuration is not serviceable.
 //
@@ -194,7 +181,7 @@ func ValidateRequest(req llm.Request, mode ThinkingMode) error {
 //
 // Anthropic's rule is exact: thinking blocks must be echoed back unchanged on
 // the same model, and other models drop them. The harness's neutral layer
-// implements the general form of this in llm.PrepareHistory; this function is
+// implements the general form of this in llm.PrepareHistoryFor; this function is
 // the provider-specific statement of it, kept here so the rule has one owner
 // per provider rather than being inferred at the call site.
 func ReplayableOn(fromModel, toModel string) bool {

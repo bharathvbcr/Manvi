@@ -84,17 +84,6 @@ type Claude struct {
 func StartClaude(ctx context.Context, options Options) (*Claude, error) {
 	return startClaude(ctx, options, claudeArgs)
 }
-func OpenClaude(ctx context.Context, options Options) (*Claude, error) {
-	s, err := startClaude(ctx, options, claudeArgs)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.Initialize(ctx); err != nil {
-		_, closeErr := s.Close()
-		return nil, errors.Join(err, closeErr)
-	}
-	return s, nil
-}
 
 // claudePolicy maps a managed permission mode onto the CLI's own vocabulary,
 // and onto what the CLI then *reports* being in — which is not always the same

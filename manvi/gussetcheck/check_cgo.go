@@ -24,10 +24,6 @@ func selfTest(ctx context.Context) error {
 	return classify(gussetfn.SelfTest(ctx))
 }
 
-func closeEngine() error {
-	return gussetfn.Close()
-}
-
 func shutdownEngine(drain time.Duration) error {
 	return gussetfn.Shutdown(drain)
 }

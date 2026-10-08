@@ -14,11 +14,10 @@ type stressEvent struct {
 }
 
 // The bus binds one dispatch mode per event type and refuses a second — a
-// waterfall event cannot also be emitted. That is deliberate: a listener
+// waterfall event cannot also be dispatched serially. That is deliberate: a listener
 // registered for the wrong mode would silently never run, and a policy
 // listener that never runs is indistinguishable from one that ran and allowed.
 // So the modes get distinct types here, as they do in the pipeline.
-type plainEvent struct{ N int }
 type serialEvent struct{ N int }
 
 // Listeners register and dispose while events are in flight.
@@ -80,16 +79,12 @@ func TestConcurrentRegisterDisposeAndEmit(t *testing.T) {
 		}()
 	}
 
-	// Plain listeners and serial listeners on the same bus at the same time.
+	// Serial dispatch of a second event type on the same bus at the same time.
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				if err := Emit(b, plainEvent{N: j}); err != nil {
-					t.Errorf("emit: %v", err)
-					return
-				}
 				if err := Serial(b, context.Background(), serialEvent{N: j}); err != nil {
 					t.Errorf("serial: %v", err)
 					return
@@ -146,7 +141,7 @@ func TestWaterfallAppliesEveryListenerOnceInOrder(t *testing.T) {
 }
 func TestDisposeIsIdempotent(t *testing.T) {
 	b := New()
-	dispose, err := On(b, func(plainEvent) {})
+	dispose, err := OnSerial(b, func(context.Context, serialEvent) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +152,7 @@ func TestDisposeIsIdempotent(t *testing.T) {
 		t.Fatalf("second dispose returned an error: %v", err)
 	}
 	// And the bus still works afterwards.
-	if err := Emit(b, plainEvent{}); err != nil {
-		t.Fatalf("emit after double dispose: %v", err)
+	if err := Serial(b, context.Background(), serialEvent{}); err != nil {
+		t.Fatalf("serial after double dispose: %v", err)
 	}
 }

@@ -27,21 +27,6 @@ type Placement struct {
 // model, in which case the runner has nothing to switch.
 func (p Placement) Inherits() bool { return p.Provider == "" && p.Model == "" }
 
-// String renders the placement the way ParsePlacement would read it back, for
-// run reports and log lines.
-func (p Placement) String() string {
-	switch {
-	case p.Inherits():
-		return InheritSpec
-	case p.Provider == "":
-		return p.Model
-	case p.Model == "":
-		return p.Provider
-	default:
-		return p.Provider + "/" + p.Model
-	}
-}
-
 // ParsePlacement reads a Definition.Model spec — or a per-call override — into
 // the provider and model it names.
 //

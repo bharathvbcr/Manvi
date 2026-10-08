@@ -41,18 +41,6 @@ func TestAlwaysThinkingModelRefusesDisabling(t *testing.T) {
 	}
 }
 
-// TestThinkingDefaultDiffersByModel is the silent one: the same request that
-// ran without reasoning on Opus 4.8 reasons on Opus 5, and max_tokens caps
-// thinking plus response text together.
-func TestThinkingDefaultDiffersByModel(t *testing.T) {
-	if !ThinkingDefaultRuns("claude-opus-5") {
-		t.Fatal("omitting the thinking parameter reasons on claude-opus-5")
-	}
-	if ThinkingDefaultRuns("claude-opus-4-8") {
-		t.Fatal("omitting the thinking parameter does not reason on claude-opus-4-8")
-	}
-}
-
 func TestSamplingParametersAreRefused(t *testing.T) {
 	temp := 0.7
 	r := req("claude-opus-5")
@@ -143,8 +131,9 @@ func TestReplayabilityMatchesTheDocumentedRule(t *testing.T) {
 }
 
 // TestNeutralLayerAgreesWithTheProviderRule is the cross-check that matters:
-// llm.PrepareHistory is written generically, and this asserts its behaviour
-// coincides with Anthropic's actual rule rather than merely resembling it.
+// llm.PrepareHistoryFor is written generically, and this asserts that, handed
+// this adapter, its behaviour coincides with Anthropic's actual rule rather
+// than merely resembling it.
 func TestNeutralLayerAgreesWithTheProviderRule(t *testing.T) {
 	history := []llm.Message{{
 		Role: llm.RoleAssistant,
@@ -155,12 +144,12 @@ func TestNeutralLayerAgreesWithTheProviderRule(t *testing.T) {
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: "claude-opus-5"},
 	}}
 
-	same, drops := llm.PrepareHistory(history, Name, "claude-opus-5")
+	same, drops := llm.PrepareHistoryFor(history, &Adapter{}, "claude-opus-5")
 	if len(drops) != 0 || len(same[0].Content) != 2 {
 		t.Fatal("same model: reasoning must survive, matching ReplayableOn")
 	}
 
-	sibling, drops := llm.PrepareHistory(history, Name, "claude-opus-4-8")
+	sibling, drops := llm.PrepareHistoryFor(history, &Adapter{}, "claude-opus-4-8")
 	if len(drops) != 1 || len(sibling[0].Content) != 1 {
 		t.Fatal("sibling model: reasoning must be dropped and reported, matching ReplayableOn")
 	}

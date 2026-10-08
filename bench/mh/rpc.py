@@ -810,10 +810,6 @@ class _ImportBan:
             raise ImportError(f"import of {name!r} is forbidden by the task")
         return None
 
-    def find_module(self, name, path=None):   # pragma: no cover - py<3.12
-        self.find_spec(name, path)
-        return None
-
 
 class _ProxyLoader:
     """Loader that turns a sandbox module into a proxy to the worker's copy."""

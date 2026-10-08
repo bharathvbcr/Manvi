@@ -108,7 +108,7 @@ func TestSystemPromptAssembly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := systemPrompt(reg)
+	prompt := promptText(reg, PromptOptions{TaskToolsOffered: true})
 	if !strings.Contains(prompt, "You are a builder agent inside MANVI") {
 		t.Errorf("expected identity in system prompt, got: %s", prompt)
 	}
@@ -364,20 +364,22 @@ func TestResumeRefusesACorruptSession(t *testing.T) {
 func TestSaveSessionReportsWhatTheBoundCost(t *testing.T) {
 	t.Setenv("MANVI_STATE_DIR", t.TempDir())
 	store := session.NewStore(sessionsDir())
-	store.SetLimits(4000, 0)
 	var notes bytes.Buffer
 
 	id, log, err := openSession(&notes, store, runOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for turn := 0; turn < 6; turn++ {
+	// Three turns of half the shipped bound each: the store's own default is
+	// what has to be crossed, not a limit lowered for the test.
+	text := strings.Repeat("q", session.DefaultMaxBytes/2)
+	for turn := 0; turn < 3; turn++ {
 		if _, err := log.Append(session.TurnStart, nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := log.Append(session.UserMessage, session.MessageData{Message: llm.Message{
 			Role:    llm.RoleUser,
-			Content: []llm.ContentBlock{llm.TextBlock{Text: strings.Repeat("q", 900)}},
+			Content: []llm.ContentBlock{llm.TextBlock{Text: text}},
 		}}); err != nil {
 			t.Fatal(err)
 		}

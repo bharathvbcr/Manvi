@@ -19,7 +19,7 @@ type Request struct {
 	Model string `json:"model"`
 	// System is the assembled system prompt.
 	System string `json:"system,omitempty"`
-	// Messages is the conversation, already passed through PrepareHistory.
+	// Messages is the conversation, already passed through PrepareHistoryFor.
 	Messages []Message    `json:"messages"`
 	Tools    []ToolSchema `json:"tools,omitempty"`
 	// MaxTokens bounds the response. Zero means the adapter's default, which
@@ -252,7 +252,7 @@ type Stream interface {
 // Provider is one model backend behind the seam.
 type Provider interface {
 	// Name is the adapter's stable identifier, e.g. "anthropic" or "xai". It is
-	// what PrepareHistory compares against, so it must match what an adapter
+	// what PrepareHistoryFor compares against, so it must match what an adapter
 	// writes into AssistantProvenance.Provider.
 	Name() string
 	// Capability describes a model, or reports that this adapter does not serve

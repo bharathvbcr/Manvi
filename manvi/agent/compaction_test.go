@@ -86,7 +86,7 @@ func TestCompactionIsStickyAcrossSteps(t *testing.T) {
 	budget := testBudget(8192)
 	already := map[llm.CallID]struct{}{}
 
-	first := PlanCompaction(msgs, "sys", nil, budget, already)
+	first := PlanCompactionCalibrated(msgs, "sys", nil, budget, already, nil)
 	if first.Empty() {
 		t.Fatal("expected the first plan to compact something")
 	}
@@ -97,7 +97,7 @@ func TestCompactionIsStickyAcrossSteps(t *testing.T) {
 	// Apply the first plan to the history, as the log projection would.
 	applied := applyPlan(msgs, first)
 
-	second := PlanCompaction(applied, "sys", nil, budget, already)
+	second := PlanCompactionCalibrated(applied, "sys", nil, budget, already, nil)
 	for _, step := range second.Steps {
 		if _, seen := already[step.ToolCallID]; seen {
 			t.Fatalf("tool result %s was compacted twice; the prompt prefix would move again", step.ToolCallID)
@@ -107,7 +107,7 @@ func TestCompactionIsStickyAcrossSteps(t *testing.T) {
 
 func TestCompactionLeavesTheRecentWorkingSetAlone(t *testing.T) {
 	msgs := history(20, 40)
-	plan := PlanCompaction(msgs, "sys", nil, testBudget(8192), map[llm.CallID]struct{}{})
+	plan := PlanCompactionCalibrated(msgs, "sys", nil, testBudget(8192), map[llm.CallID]struct{}{}, nil)
 
 	protectedFrom := len(msgs) - ProtectedTail
 	protected := map[llm.CallID]bool{}
@@ -128,7 +128,7 @@ func TestCompactionLeavesTheRecentWorkingSetAlone(t *testing.T) {
 func TestCompactionAimsPastTheThresholdSoItFiresRarely(t *testing.T) {
 	msgs := history(30, 40)
 	budget := testBudget(8192)
-	plan := PlanCompaction(msgs, "sys", nil, budget, map[llm.CallID]struct{}{})
+	plan := PlanCompactionCalibrated(msgs, "sys", nil, budget, map[llm.CallID]struct{}{}, nil)
 
 	if plan.Empty() {
 		t.Fatal("expected compaction")
@@ -153,7 +153,7 @@ func TestCompactionReportsWhenItCannotFit(t *testing.T) {
 	}
 	msgs = append([]llm.Message{toolResultMsg("old", bigOutput(10, "o"))}, msgs...)
 
-	plan := PlanCompaction(msgs, "sys", nil, testBudget(8192), map[llm.CallID]struct{}{})
+	plan := PlanCompactionCalibrated(msgs, "sys", nil, testBudget(8192), map[llm.CallID]struct{}{}, nil)
 	if !plan.Insufficient {
 		t.Fatalf("expected the plan to report it could not fit; after=%d threshold=%d",
 			plan.After, testBudget(8192).Threshold())

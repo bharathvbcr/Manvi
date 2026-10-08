@@ -149,7 +149,7 @@ func TestAssertModelVisibleRejectsInjectedContent(t *testing.T) {
 
 // The request is a subsequence of the projection, not a copy of it.
 //
-// PrepareHistory omits an assistant message whose only content was reasoning,
+// PrepareHistoryFor omits an assistant message whose only content was reasoning,
 // because stripping the reasoning leaves nothing any wire can carry. That is
 // correct behaviour and must not read as a violation — but tolerating the gap
 // must not also start tolerating injection, which is the whole point of the
@@ -176,7 +176,7 @@ func TestAssertModelVisibleAllowsAnOmittedMessageButStillCatchesInjection(t *tes
 		t.Fatal(err)
 	}
 
-	// What PrepareHistory would hand a provider that cannot replay reasoning:
+	// What PrepareHistoryFor would hand a provider that cannot replay reasoning:
 	// the middle message is gone.
 	sent := []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}}},

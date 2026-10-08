@@ -722,10 +722,3 @@ func containedUnder(root, child string) bool {
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
-
-// syscall_Mkfifo builds a fifo for the non-regular-file refusal test. Mkfifo
-// is not in the portable syscall surface, so it shells out to the platform's
-// tool; the test skips when that is unavailable.
-func syscall_Mkfifo(path string, mode uint32) error {
-	return runMkfifo(path, mode)
-}

@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -170,9 +169,6 @@ type Report struct {
 	// Failures holds every step that could not run.
 	Failures []Failure
 }
-
-// Changed reports whether this call altered the working tree.
-func (r Report) Changed() bool { return len(r.CreatedDirs) > 0 || len(r.AddedRules) > 0 }
 
 // Lines renders the report for a human, one fact per line, and returns nothing
 // when there is nothing to say. A run that changed nothing and failed at
@@ -450,15 +446,4 @@ func writeAtomic(path, content string, mode os.FileMode) error {
 		_ = d.Close()
 	}
 	return nil
-}
-
-// Rules lists every managed rule, sorted. It exists for the tests and for any
-// caller that has to report what the harness would maintain without writing it.
-func Rules() []string {
-	var all []string
-	for _, section := range Sections {
-		all = append(all, section.Rules...)
-	}
-	sort.Strings(all)
-	return all
 }

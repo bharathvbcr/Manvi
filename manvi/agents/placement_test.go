@@ -70,12 +70,3 @@ func TestBuiltinDefinitionsInheritPlacement(t *testing.T) {
 		}
 	}
 }
-
-func TestPlacementStringRoundTrips(t *testing.T) {
-	known := func(string) bool { return true }
-	for _, spec := range []string{"inherit", "anthropic/claude-opus-4-5", "local"} {
-		if got := ParsePlacement(spec, known).String(); got != spec {
-			t.Fatalf("ParsePlacement(%q).String() = %q, want %q", spec, got, spec)
-		}
-	}
-}

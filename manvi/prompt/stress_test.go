@@ -115,7 +115,7 @@ func TestAFailingSourceIsReportedAndTheRestStillAssemble(t *testing.T) {
 	if len(report.Failed) != 1 {
 		t.Fatalf("Failed = %v, want the broken contributor named", report.Failed)
 	}
-	if report.Complete() {
+	if complete(report) {
 		t.Error("a prompt assembled while a contributor was failing reported itself complete")
 	}
 }

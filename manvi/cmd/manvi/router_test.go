@@ -65,9 +65,9 @@ func TestCompactPromptKeepsEverySectionTheFullOneHas(t *testing.T) {
 // Compact must actually be smaller, or the density is decorative.
 func TestCompactPromptIsSmallerThanFull(t *testing.T) {
 	opts := PromptOptions{Provider: local.Name, TaskToolsOffered: true}
-	full, _ := assemblePromptWithFaults(
+	full, _, _ := assemblePromptReported(
 		routerRegistry(t, map[string]string{flags.LLMLocalGuidanceRouter: "false"}), opts)
-	compact, _ := assemblePromptWithFaults(
+	compact, _, _ := assemblePromptReported(
 		routerRegistry(t, map[string]string{flags.LLMLocalGuidanceRouter: "true"}), opts)
 
 	fullTokens := prompt.EstimateTokens(full)
@@ -170,7 +170,7 @@ func TestPromptTokenBudgetTracksTheContextWindow(t *testing.T) {
 func TestTheShippedLocalPromptFitsItsBudget(t *testing.T) {
 	reg := routerRegistry(t, nil)
 	opts := PromptOptions{Provider: local.Name, TaskToolsOffered: true}
-	text, faults := assemblePromptWithFaults(reg, opts)
+	text, _, faults := assemblePromptReported(reg, opts)
 	if len(faults) != 0 {
 		t.Fatalf("the shipped local prompt reports faults: %v", faults)
 	}
@@ -203,7 +203,7 @@ func TestBothDensitiesCarryTheEngineeringPrinciples(t *testing.T) {
 	}
 	for _, router := range []string{"false", "true"} {
 		reg := routerRegistry(t, map[string]string{flags.LLMLocalGuidanceRouter: router})
-		text, faults := assemblePromptWithFaults(reg,
+		text, _, faults := assemblePromptReported(reg,
 			PromptOptions{
 				Provider: local.Name, TaskToolsOffered: true,
 				CodeMapAvailable: true, DocLookupAvailable: true,
@@ -226,7 +226,7 @@ func TestBothDensitiesCarryTheEngineeringPrinciples(t *testing.T) {
 func TestDynamicToolsPromptTellsTheModelHowToLoadMore(t *testing.T) {
 	reg := routerRegistry(t, nil)
 	opts := PromptOptions{Provider: local.Name, TaskToolsOffered: true, DynamicTools: true}
-	text, faults := assemblePromptWithFaults(reg, opts)
+	text, _, faults := assemblePromptReported(reg, opts)
 	if len(faults) != 0 {
 		t.Fatalf("%v", faults)
 	}
@@ -244,7 +244,7 @@ func TestDynamicToolsPromptTellsTheModelHowToLoadMore(t *testing.T) {
 func TestStaticToolsPromptKeepsTheFlatRule(t *testing.T) {
 	reg := routerRegistry(t, nil)
 	opts := PromptOptions{Provider: local.Name, TaskToolsOffered: true, DynamicTools: false}
-	text, _ := assemblePromptWithFaults(reg, opts)
+	text, _, _ := assemblePromptReported(reg, opts)
 	if !strings.Contains(text, "A tool that is not listed does not exist") {
 		t.Error("without dynamic loading the prompt must still say an unlisted tool does not exist")
 	}
@@ -288,7 +288,7 @@ func TestGroupGuidanceFollowsTheActiveGroups(t *testing.T) {
 
 	without := base
 	without.ActiveGroups = []string{tools.GroupCore}
-	text, faults := assemblePromptWithFaults(reg, without)
+	text, _, faults := assemblePromptReported(reg, without)
 	if len(faults) != 0 {
 		t.Fatalf("%v", faults)
 	}
@@ -301,7 +301,7 @@ func TestGroupGuidanceFollowsTheActiveGroups(t *testing.T) {
 
 	with := base
 	with.ActiveGroups = []string{tools.GroupCore, tools.GroupNav}
-	text, faults = assemblePromptWithFaults(reg, with)
+	text, _, faults = assemblePromptReported(reg, with)
 	if len(faults) != 0 {
 		t.Fatalf("%v", faults)
 	}
@@ -317,7 +317,7 @@ func TestGroupGuidanceFollowsTheActiveGroups(t *testing.T) {
 // group exists after activating it would never activate it.
 func TestToolDiscoveryNamesGroupsThatAreNotYetActive(t *testing.T) {
 	reg := routerRegistry(t, nil)
-	text, _ := assemblePromptWithFaults(reg, PromptOptions{
+	text, _, _ := assemblePromptReported(reg, PromptOptions{
 		Provider: local.Name, TaskToolsOffered: true, DynamicTools: true,
 		ActiveGroups: []string{tools.GroupCore},
 	})

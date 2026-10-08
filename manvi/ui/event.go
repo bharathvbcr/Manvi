@@ -138,18 +138,5 @@ type SinkFunc func(Event)
 // Emit calls f.
 func (f SinkFunc) Emit(e Event) { f(e) }
 
-// MultiSink fans an event out to several sinks, so a run can render to a
-// terminal and write a JSON transcript at once without either knowing.
-type MultiSink []Sink
-
-// Emit delivers to every sink.
-func (m MultiSink) Emit(e Event) {
-	for _, sink := range m {
-		if sink != nil {
-			sink.Emit(e)
-		}
-	}
-}
-
 // Discard drops events, for tests and for non-interactive callers.
 var Discard Sink = SinkFunc(func(Event) {})

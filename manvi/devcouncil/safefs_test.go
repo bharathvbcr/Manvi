@@ -191,7 +191,7 @@ func TestReadRefusesAfterDirectorySwap(t *testing.T) {
 func TestWriteRefusesNonRegularFile(t *testing.T) {
 	root := t.TempDir()
 	fifo := filepath.Join(root, "pipe")
-	if err := syscall_Mkfifo(fifo, 0o644); err != nil {
+	if err := runMkfifo(fifo, 0o644); err != nil {
 		t.Skipf("cannot create a fifo here: %v", err)
 	}
 
