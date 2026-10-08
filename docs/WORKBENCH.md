@@ -31,6 +31,9 @@ The flag is optional; only a server configured with it advertises `work.*`
 operations in `hello.ops`. The operation set describes the host handlers;
 successful storage requests additionally require a compatible `dcstore` binary.
 An old or unavailable binary produces an error, never an empty successful board.
+A `dcstore` build that reports its profile schema answers `dcstore --version`
+with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":11}`;
+earlier builds print the same object without `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
 profile CRUD. These operations are not registered as agent tools, do not grant
@@ -44,8 +47,8 @@ All names below receive a `work.` prefix over `manvi serve`.
 | Resource | Methods |
 |---|---|
 | Workspaces | `workspaces.list`, `workspaces.get`, `workspaces.put`, `workspaces.delete` |
-| Repositories | `repositories.list`, `repositories.get`, `repositories.put` |
-| Items | `items.list`, `items.get`, `items.brief.get`, `items.put`, `items.delete`, `items.history` |
+| Repositories | `repositories.list`, `repositories.get`, `repositories.put`, `repositories.relink` |
+| Items | `items.list`, `items.get`, `items.brief.get`, `items.put`, `items.delete`, `items.restore`, `items.history` |
 | Changes | `events.list` |
 | Enhancements | `enhancements.create`, `enhancements.claim`, `enhancements.complete`, `enhancements.recover`, `enhancements.get`, `enhancements.list`, `enhancements.accept`, `enhancements.revise`, `enhancements.dismiss`, `enhancements.undo` |
 | Automatic scheduling | `automation.get`, `automation.put`, `automation.list`, `automation.prepare` |
@@ -55,9 +58,13 @@ All names below receive a `work.` prefix over `manvi serve`.
 
 `.put` creates or replaces a record. Supply every editable field that should
 survive replacement; omitted optional fields return to their defaults. It is not
-a partial patch. The `locked_fields` exception preserves existing locks when
-omitted or null, so an older host cannot silently unlock a task. Supply `[]` to
-unlock explicitly. Automation settings also preserve the provider/model pair when
+a partial patch, with these exceptions on `items.put`: `locked_fields`, `logs`,
+`archived`, `checklist` and `links` keep their stored value when omitted or
+null, so a host that does not edit a field (an agent's status move, a merge, an
+older code path) cannot silently unlock, unarchive, uncheck or unlink a task.
+Supply `[]`, `""` or `false` to clear explicitly. `completed_at` belongs to the
+store; an `items.put` naming it is refused as an unknown field. Automation
+settings also preserve the provider/model pair when
 both are omitted; see the scheduling contract below. Mutations require
 `request_id`, `id` and `expected_revision`.
 Revision zero creates a new record. An edit or deletion must match the latest
@@ -77,8 +84,11 @@ an uncertain claim; do not treat an old successful receipt as permission to spaw
 {"id":"register","op":"work.repositories.put","params":{"request_id":"repo-1","id":"manvi","expected_revision":0,"name":"Manvi","identity_key":"clone-uuid-1"}}
 {"id":"group","op":"work.workspaces.put","params":{"request_id":"group-1","id":"devtools","expected_revision":0,"name":"Devtools","repository_ids":["manvi"]}}
 {"id":"create","op":"work.items.put","params":{"request_id":"task-1","id":"startup","expected_revision":0,"title":"Reduce board startup latency","kind":"improvement","description":"Measure and reduce the time to the first usable board.","acceptance_criteria":["Record cold and warm measurements."],"repository_ids":["manvi"],"primary_repository_id":"manvi","home_workspace_id":"devtools"}}
-{"id":"board","op":"work.items.list","params":{"workspace_id":"devtools","limit":100}}
+{"id":"board","op":"work.items.list","params":{"workspace_id":"devtools","archived":false,"limit":100}}
+{"id":"archive","op":"work.items.list","params":{"workspace_id":"devtools","archived":true,"order":"completed","limit":100}}
 ```
+
+Omitting `archived` lists both sides, so a board reads `archived:false`.
 
 Successful host responses wrap the store document in `result`. That document
 contains `ok:true`, `item` and `sequence` for a mutation, or the page fields below
@@ -102,7 +112,10 @@ launch authorization or proof that the underlying checkout remains unchanged.
 
 Markdown preserves the saved title, description and acceptance criteria and
 includes task metadata, repository revisions and primary-repository designation.
-Missing criteria remain explicitly missing. Export refuses inconsistent links
+Missing criteria remain explicitly missing. A task with a checklist gains a
+`## Checklist` section with each entry's done state; a task with links gains
+`## Linked tasks`, listing the links it names and the live tasks that name it
+(at most 128 lines, a linked task deleted since shown as deleted). Export refuses inconsistent links
 and oversized replies instead of dropping repositories or truncating instructions.
 The complete response fits the existing 2 MiB transport budget; large valid briefs
 can exceed both the 256 KiB request limit and an individual terminal argument.
@@ -125,11 +138,20 @@ revisions and records their history in the same transaction.
 
 Repositories have a name, immutable unique `identity_key` and optional `remote_url`.
 The host owns identity assignment; a matching remote does not merge clones.
-Checkout discovery, moved-path relinking and checkout aliases are not yet part of
-this API. Remote URLs are metadata and are never executed by these operations.
+`repositories.relink` points an existing repository at the checkout it moved to:
+it takes `identity_key` and optional `name`, keeps the ID (so task links,
+memberships and runs stay attached) and keeps the old identity in history. It
+refuses while a run is active on the repository (`repository_busy`). An identity
+another record holds is refused unless that record is named in `absorb_id` and
+holds no task links, memberships or runs (otherwise `repository_not_empty`); it
+is then removed in the same transaction. Two distinct clones are never merged.
+Checkout discovery and checkout aliases are not yet part of this API. Remote
+URLs are metadata and are never executed by these operations.
 
 Items support title, description, kind, status, priority, optional severity, owner,
-due date, labels, acceptance criteria, ordering position and repository links.
+due date, labels, acceptance criteria, ordering position, repository links,
+pasted `logs` (up to 256 KiB), and the schema 11 fields below: `archived`,
+`checklist`, `links` and the store-maintained `completed_at`.
 Saved items need 1–64 distinct registered repositories, including their primary
 repository. A home workspace is optional. Titles are limited to 300 characters
 and 1,200 UTF-8 bytes; descriptions to 64 KiB. Status is one of `inbox`, `backlog`,
@@ -141,6 +163,42 @@ integer range. Custom nonblank kind strings are accepted.
 prevent enhancement requests, acceptance and undo from changing those fields;
 they do not prevent a human's ordinary task edit. The native task editor exposes
 the locks alongside the description, and they take effect after saving.
+
+### Schema eleven: archive, checklists, links and restore
+
+`archived` is a boolean independent of `status`: Done is a column, not the
+archive. Changing `archived` does not change `status`, so a restored task
+returns to the column it left.
+`completed_at` (Unix seconds) is set when a task enters `done`, kept while it
+stays there and cleared to null when it leaves; no request can set it.
+
+`checklist` is an array of at most 128 `{"text","done"}` objects with nonblank
+text of at most 4,096 bytes and a boolean `done`. `links` is an array of at most
+64 distinct `{"kind","item_id"}` objects; kinds are `parent`, `blocks`,
+`related` and `duplicate_of`. A task cannot link to itself, has at most one
+parent, and cannot take one of its own descendants as parent. A new parent link
+is refused if the chain it would make — the parent's ancestors, the parent, the
+task and its deepest subtask — holds more than 256 tasks; a parent the task
+already has is not checked again. A new link must name a live task;
+a link the task already holds survives its target's deletion, so deleting a
+task never makes the tasks that link to it unsaveable. Links are indexed in
+`work_item_links`; the task body remains the record of truth.
+
+`items.restore` takes only `request_id`, `id` and `expected_revision`, where the
+revision is the one the deletion produced. It clears the deleted flag at the
+next revision, keeping repository links, task links and history; queued
+enhancement suggestions discarded by the delete are not re-queued. A live task
+returns `invalid_state` rather than a revision conflict. `items.put` on a
+deleted ID is still refused; restore it instead.
+
+The 10 → 11 upgrade (`items.sql`) adds `archived` and `completed_at` as
+indexed VIRTUAL generated columns, adds `work_item_links`, and marks every Done
+task archived, because every earlier reader treated Done as the archive. Each
+migrated task's `completed_at` is recovered from the start of its current Done
+streak in history, falling back to `updated_at`. Every other task gets
+`archived:false`, `completed_at:null`, an empty checklist and no links, so
+pre- and post-upgrade rows read the same shape. No revision is bumped, so a
+host's pending write is not invalidated.
 
 ## Durable terminal attempt records
 
@@ -157,7 +215,10 @@ optional full `head_oid`. `head_ref` records `refs/heads/...`; null means detach
 or unobserved for direct store callers. Modes are `inspect`, `ask`, `edit`,
 `auto_review`, `preapproved`, and `bypass`. `acknowledge_bypass:true` is required
 exactly when requesting bypass. These are requested modes, not verified effective
-provider capabilities or grants.
+provider capabilities or grants. An optional `model_choice` object (at most eight
+lowercase field names with nonblank string values of at most 128 bytes, such as
+`{"model":"opus","effort":"high"}`) records what the launching host chose for
+this attempt; it is stored as null when omitted.
 
 The selected repository must be linked to the saved task at the supplied
 revision and registered as `local:<git_common_dir>`. Storage cannot verify the
@@ -457,9 +518,19 @@ Schema version four adds durable automation settings and a task enhancement
 queue to the version-three worker ownership and version-two proposal lifecycle.
 Migration preserves existing tasks, revisions, groups and leases; it does not
 queue existing tasks. Unknown versions and failed migrations are errors. Upgrade
-every host's store together: an older binary refuses a newer profile. The current
-schema is eight, including terminal attempts, the activity inbox, native
-notification records and structured agent requests described above.
+every host's store together: an older binary refuses a newer profile with
+`schema_unsupported`. The current schema is eleven. Five through eight add the
+terminal attempts, activity inbox, native notification records and structured
+agent requests described above. Nine and ten change no tables: nine adds the
+managed/terminal run kinds and their claim/protocol invariants, and ten
+requires native process identity before provider initialization, so a failed
+initialization records no fabricated thread or configuration. Eleven adds the
+task archive, completion time, checklists and links described under
+[Records and board scopes](#schema-eleven-archive-checklists-links-and-restore);
+a host that builds a task body without them would unarchive and unlink every
+task it saved, which is why the rung is a hard fence. Manvi's release pin
+(`scripts/module-pins.txt`, DevCouncil `a29a11b`) still carries schema ten;
+builds against it refuse an upgraded profile until that pin moves.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank
@@ -714,6 +785,15 @@ scope returns `not_found`. Optional `status` and plain-text `query` filters appl
 to the complete scope. Search uses quoted prefix tokens joined with AND in FTS5;
 user text cannot supply FTS operators.
 
+`archived` selects one side: `false` for the board, `true` for the archive.
+Omitted or null lists both, so a board that omits it also shows archived tasks.
+`deleted:true` reads deleted tasks instead of live ones (what a restore is
+chosen from). `order` is `board` (the default: position then ID, ascending),
+`completed` (`completed_at` then ID, descending; a task not in Done sorts as
+zero) or `updated` (`updated_at` then ID, descending; for deleted tasks, when
+they were deleted). `updated` is not indexed and is meant for the deleted list,
+not a whole board.
+
 Count and page predicates share one SQL builder with bound parameters. Repository
 queries begin with indexed links; workspace queries union indexed home membership
 and member-repository links before fetching task rows. Empty optional-filter OR
@@ -729,7 +809,8 @@ one lookahead row, including when search or membership candidates arrive in the
 opposite order. These are query changes against the existing schema and indexes;
 no migration, auxiliary search engine or worker is introduced.
 
-Deletion is soft, preserving history. Deleted IDs cannot be reused. An agent's
+Deletion is soft, preserving history. Deleted IDs cannot be reused by
+`items.put`; `items.restore` brings the same task back. An agent's
 execution status, verification evidence and human acceptance are not represented
 by changing this board status; their separate models remain to be implemented.
 
@@ -740,9 +821,14 @@ by changing this board status; their separate models remain to be implemented.
 - `total` counts all matching records; `shown` counts this page. `has_more` and
   `next_cursor` disclose omitted records. Never treat `shown` as the full count.
 - Workspace navigation omits descriptions/membership arrays and returns
-  `repository_count`. Item cards omit descriptions and acceptance criteria.
+  `repository_count`. Item cards omit descriptions, acceptance criteria, logs,
+  checklists and links.
   Fetch the corresponding `.get` record when opening details or replacing it.
-- Workspace and item cursors order by `(position,id)`; repository membership
+- Workspace cursors and board-order item cursors order by `(position,id)`
+  with the opaque prefix `1:`; `items.list` with `order:"completed"` uses `2:`
+  and `order:"updated"` uses `3:`. A cursor from one order is refused under
+  another with `invalid_input` rather than resuming at a
+  position that means something else. Repository membership
   lists retain the workspace's ordering. Each page/count pair shares a read
   transaction. Pagination across multiple requests is not a snapshot: restart a
   board query after intervening mutations; do not reuse a cursor across filters.
