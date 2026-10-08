@@ -14,7 +14,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/session"
@@ -328,37 +327,23 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		})
 	}
 
-	// The loop's bus is held rather than built inline, because the terminal
-	// checkpoint listener has to be registered on this instance. Compaction
-	// already had to be, for the same reason; the checkpoint is the second
-	// listener that only works when it is attached to the bus the loop actually
-	// dispatches on.
-	loopBus := bus.New()
-	loop, err := agent.NewLoop(agent.Config{
-		Provider:        provider,
-		Registry:        registry,
-		Model:           model,
-		Effort:          effort,
-		EffortCeiling:   effortCeiling,
-		SystemPrompt:    systemPrompt,
-		MaxSteps:        opts.maxSteps,
-		MaxTokens:       0,
-		CoreToolsOnly:   coreOnly,
-		AssertInvariant: assertInvariant(reg),
-	}, loopBus, log, pipeline)
+	loop, err := newTurnLoop(turnFace{
+		maxSteps: opts.maxSteps,
+		check: &sensor{
+			native: native, log: log, flags: reg,
+			runner:  subRunner,
+			command: operatorVerifyCommand(),
+		},
+	}, turnDeps{
+		provider: provider, models: registry, model: model,
+		effort: effort, effortCeiling: effortCeiling,
+		systemPrompt:    systemPrompt,
+		coreToolsOnly:   coreOnly,
+		assertInvariant: assertInvariant(reg),
+		log:             log, tools: pipeline,
+	})
 	if err != nil {
 		return err
-	}
-	// Registered before the turn runs, and its failure is fatal rather than
-	// logged. A harness that silently ran without its end-of-turn check would
-	// report every turn as finished, which is the exact condition this was
-	// built to make impossible.
-	if err := attachSensor(loopBus, &sensor{
-		native: native, log: log, flags: reg,
-		runner:  subRunner,
-		command: operatorVerifyCommand(),
-	}); err != nil {
-		return fmt.Errorf("the end-of-turn check could not be attached: %w", err)
 	}
 
 	outcome, err := loop.Run(ctx, llm.Message{

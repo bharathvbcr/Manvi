@@ -6,11 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 )
 
 // rigorClient runs the Rust verifier over a diff.
@@ -66,6 +63,11 @@ type rigorResult struct {
 // a large but legitimate result is possible; an unbounded read is not.
 const (
 	maxRigorOutput = 16 << 20
+	// maxRigorHealthOutput bounds the identity reply, which is one small
+	// object; anything larger is not an honest answer to "who are you".
+	maxRigorHealthOutput = 64 << 10
+	// maxRigorStderr bounds diagnostics, which travel on an error string.
+	maxRigorStderr = 64 << 10
 	// maxPatchReadBytes bounds how large a file patchFile will pull into
 	// memory for a read-modify-write.
 	maxPatchReadBytes = 64 << 20
@@ -84,9 +86,6 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	// Planned paths are newline-separated so one containing a comma or a space
 	// survives the boundary intact.
 	args := []string{"check", "--planned", strings.Join(planned, "\n")}
@@ -96,37 +95,27 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	if c.Root != "" {
 		args = append(args, "--root", c.Root)
 	}
-	cmd := exec.CommandContext(ctx, c.Binary, args...)
-	// Group-isolated so the deadline reaches anything the verifier spawned,
-	// not just the verifier. See proc.ConfigureGroup.
-	proc.ConfigureGroup(cmd)
-	cmd.Stdin = strings.NewReader(diff)
 	// Capped during the copy, not checked after it: a verifier gone rogue on
 	// a large diff used to be able to allocate the whole result before the
-	// bound was ever consulted. Same shape as the store boundary's
-	// cappedBuffer.
-	stdout := &cappedRigorBuffer{limit: maxRigorOutput}
-	var stderr bytes.Buffer
-	cmd.Stdout = stdout
-	cmd.Stderr = &stderr
-	// The same bound as the store boundary: killing the process does not
-	// unblock Wait while a child holds the stdout pipe.
-	cmd.WaitDelay = 2 * time.Second
-
-	runErr, timedOut := proc.RunBounded(ctx, cmd.Run)
-	if timedOut {
+	// bound was ever consulted.
+	res := runProc(ctx, procSpec{
+		argv: append([]string{c.Binary}, args...), stdin: strings.NewReader(diff),
+		timeout: timeout, stdoutLimit: maxRigorOutput, stderrLimit: maxRigorStderr,
+	})
+	if res.timedOut {
 		return nil, fmt.Errorf("verifier timed out after %s", timeout)
 	}
-	if stdout.overflow {
+	if res.stdoutNote != "" {
 		return nil, fmt.Errorf("verifier produced more than %d bytes", maxRigorOutput)
 	}
+	runErr := res.err
 
 	var out rigorResult
-	if err := json.Unmarshal(bytes.TrimSpace(stdout.buf.Bytes()), &out); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(res.stdout), &out); err != nil {
 		if runErr != nil {
-			return nil, fmt.Errorf("verifier failed: %w (stderr: %s)", runErr, bytes.TrimSpace(stderr.Bytes()))
+			return nil, fmt.Errorf("verifier failed: %w (stderr: %s)", runErr, bytes.TrimSpace(res.stderr))
 		}
-		return nil, fmt.Errorf("verifier returned unparseable output: %w (%q)", err, stdout.buf.String())
+		return nil, fmt.Errorf("verifier returned unparseable output: %w (%q)", err, res.stdout)
 	}
 	if !out.OK {
 		reason := out.Error
@@ -144,15 +133,19 @@ func (c rigorClient) available(ctx context.Context) error {
 	if c.Binary == "" {
 		return errors.New("no dcverify binary configured")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, c.Binary, "health")
-	proc.ConfigureGroup(cmd)
-	cmd.WaitDelay = 2 * time.Second
-	out, err := cmd.Output()
-	if err != nil {
-		return err
+	res := runProc(ctx, procSpec{
+		argv: []string{c.Binary, "health"}, timeout: 10 * time.Second,
+		stdoutLimit: maxRigorHealthOutput, stderrLimit: maxRigorStderr,
+	})
+	switch {
+	case res.timedOut:
+		return fmt.Errorf("%s health timed out", c.Binary)
+	case res.err != nil:
+		return res.err
+	case res.stdoutNote != "":
+		return fmt.Errorf("%s health replied with more than %d bytes", c.Binary, maxRigorHealthOutput)
 	}
+	out := res.stdout
 	var health struct {
 		OK            bool   `json:"ok"`
 		Verifier      string `json:"verifier"`
@@ -282,31 +275,4 @@ func gapsFrom(taskID string, result *rigorResult) ([]Gap, []NextAction) {
 	}
 
 	return gaps, actions
-}
-
-// cappedRigorBuffer collects up to a limit and then records that it stopped,
-// so a runaway verifier is a reported condition rather than an allocation the
-// harness pays for before it ever looks at the result. Deliberately its own
-// type rather than an import of the store client's: one boundary's transport
-// detail is not another's API.
-type cappedRigorBuffer struct {
-	buf      bytes.Buffer
-	limit    int
-	overflow bool
-}
-
-func (b *cappedRigorBuffer) Write(p []byte) (int, error) {
-	if remaining := b.limit - b.buf.Len(); remaining > 0 {
-		if len(p) > remaining {
-			b.buf.Write(p[:remaining])
-			b.overflow = true
-		} else {
-			b.buf.Write(p)
-		}
-	} else if len(p) > 0 {
-		b.overflow = true
-	}
-	// Always report a full write: returning short would make the copier treat
-	// this as an I/O failure and mask the real diagnostic.
-	return len(p), nil
 }

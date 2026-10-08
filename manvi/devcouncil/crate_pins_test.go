@@ -2,7 +2,9 @@ package devcouncil
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -79,23 +81,19 @@ func readCargoMetadata(manifest string) (cargoMetadata, error) {
 	if err != nil {
 		return cargoMetadata{}, fmt.Errorf("cargo is not on PATH, so the crate pins could not be compared: %w", err)
 	}
-	cmd := exec.Command(cargo, "metadata", "--manifest-path", manifest, "--no-deps", "--format-version", "1", "--offline")
+	ctx, cancel := context.WithTimeout(context.Background(), cargoMetadataTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, cargo, "metadata", "--manifest-path", manifest, "--no-deps", "--format-version", "1", "--offline")
+	// cargo may leave a helper holding the pipes after it is killed; this
+	// bounds how long Wait waits on them.
+	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
-		return cargoMetadata{}, fmt.Errorf("start cargo metadata for %s: %w", manifest, err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			return cargoMetadata{}, fmt.Errorf("cargo metadata for %s: %w\n%s", manifest, err, stderr.String())
+	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return cargoMetadata{}, fmt.Errorf("cargo metadata for %s did not finish within %s", manifest, cargoMetadataTimeout)
 		}
-	case <-time.After(cargoMetadataTimeout):
-		_ = cmd.Process.Kill()
-		<-done
-		return cargoMetadata{}, fmt.Errorf("cargo metadata for %s did not finish within %s", manifest, cargoMetadataTimeout)
+		return cargoMetadata{}, fmt.Errorf("cargo metadata for %s: %w\n%s", manifest, err, stderr.String())
 	}
 	var md cargoMetadata
 	if err := json.Unmarshal(stdout.Bytes(), &md); err != nil {

@@ -354,3 +354,28 @@ func TestSessionStartLineCarriesTheMark(t *testing.T) {
 		t.Fatalf("the plain session line lost content: %q", got)
 	}
 }
+
+// TestAChildsEntryNamesTheChildFoldedOrNot: a sub-agent's evidence is
+// forwarded into this session's transcript, and every line of it has to say
+// whose it is. The attribution was drawn on the folded summary only, so
+// expanding a child's tool call — the view a reader opens to see what it did —
+// presented it as this session's own.
+func TestAChildsEntryNamesTheChildFoldedOrNot(t *testing.T) {
+	for _, ev := range []ui.Event{
+		{Kind: ui.KindToolStart, Tool: "read", Agent: "worker-1"},
+		{Kind: ui.KindToolResult, Text: "contents", Agent: "worker-1"},
+		{Kind: ui.KindPolicy, Text: "blocked", Rule: "scope.unplanned", Agent: "worker-1"},
+	} {
+		for _, folded := range []bool{true, false} {
+			e := &Entry{Event: ev, Folded: folded}
+			if got := lineText(e.Lines(Dark(), 80)); !strings.Contains(got, "[worker-1]") {
+				t.Errorf("%s entry (folded=%v) does not name the child:\n%s", ev.Kind, folded, got)
+			}
+		}
+	}
+	// And only a child's entry is attributed.
+	e := &Entry{Event: ui.Event{Kind: ui.KindToolStart, Tool: "read"}}
+	if got := lineText(e.Lines(Dark(), 80)); strings.Contains(got, "[") {
+		t.Errorf("an entry of this session's own carries an attribution: %q", got)
+	}
+}

@@ -1,7 +1,6 @@
 package devcouncil
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,10 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -566,53 +563,37 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 		decision = escalated
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(cmdCtx, "git", argv...)
-	// git starts helpers of its own — credential helpers, hooks, filters —
-	// and any of them can outlive it holding the pipe. See proc.ConfigureGroup.
-	proc.ConfigureGroup(cmd)
-	cmd.Dir = r.deps.Root
-	cmd.WaitDelay = 5 * time.Second
-
-	var stdout, stderr bytes.Buffer
-	outCap := &limitWriter{w: &stdout, limit: maxGitOutputBytes}
-	errCap := &limitWriter{w: &stderr, limit: 64 * 1024}
-	cmd.Stdout = outCap
-	cmd.Stderr = errCap
-
-	runErr, timedOut := proc.RunBounded(cmdCtx, cmd.Run)
-	if timedOut {
+	// The same construction site as every read-side git child, so the paths
+	// in a commit summary are spelled the way the verifier reads them.
+	spec := gitSpec(r.deps.Root, "", argv)
+	spec.stdoutLimit = maxGitOutputBytes
+	res := runProc(ctx, spec)
+	if res.timedOut {
 		return unavailable("git execution", fmt.Errorf("timed out after %s", gitTimeout))
 	}
-
-	exitCode := 0
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(runErr, &exitErr) {
-			return unavailable("git execution", runErr)
-		}
-		exitCode = exitErr.ExitCode()
+	if res.failedToRun() {
+		return unavailable("git execution", res.err)
 	}
+	exitCode := res.exitCode
 
 	payload := map[string]any{}
 	for k, v := range extra {
 		payload[k] = v
 	}
 	payload["exit_code"] = exitCode
-	if out := strings.TrimRight(stdout.String(), "\n"); out != "" {
+	if out := strings.TrimRight(string(res.stdout), "\n"); out != "" {
 		payload["output"] = out
 	}
-	if errMsg := strings.TrimSpace(stderr.String()); errMsg != "" {
+	if errMsg := strings.TrimSpace(string(res.stderr)); errMsg != "" {
 		payload["git_stderr"] = errMsg
 	}
 	// A capped capture says it was capped. Reading a trimmed diff as the whole
 	// diff is how "nothing else changed" gets asserted from a partial sample.
-	if note := outCap.truncationNote(); note != "" {
-		payload["output_truncated"] = note
+	if res.stdoutNote != "" {
+		payload["output_truncated"] = res.stdoutNote
 	}
-	if note := errCap.truncationNote(); note != "" {
-		payload["git_stderr_truncated"] = note
+	if res.stderrNote != "" {
+		payload["git_stderr_truncated"] = res.stderrNote
 	}
 
 	if exitCode != 0 {

@@ -18,14 +18,12 @@
 package devcouncil
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1568,93 +1566,36 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 // ctx, and returns the captured output, the exit code, and whether the
 // deadline fired.
 //
-// Two properties make this safe for agent-authored commands. First, the child
-// runs as its own process-group leader and the whole group is killed when the
-// deadline fires — CommandContext reaches only sh itself, and a descendant it
-// backgrounded would otherwise keep running with the inherited stdout pipe.
-// Second, WaitDelay bounds how long those descendants may hold the stdio pipes
-// after sh is gone; without it, os/exec's copy goroutine waits on EOF forever
-// and this function never returns, wedging the tool call past its own timeout.
-// A command whose foreground work completed reports success even when its
-// leftover descendants were cut off that way.
+// The process group, the group reap on every exit path, the output cap and
+// the wait delay are runProc's, shared with every other child this package
+// starts. What is particular to an agent-authored command is two things.
 //
-// Third, the group is reaped on every exit path, not only on the deadline. The
-// kill used to hang off ctx.Done() alone, so a command that exited zero closed
-// the watcher and left its descendants running: `sleep 30 &` outlived the tool
-// call that started it, unattached to anything that would ever clean it up. A
-// process this function started must not survive the call, whichever way the
-// call ended.
+// The child gets a built environment rather than the operator's. It used to
+// inherit everything, so an agent-authored command could print the operator's
+// API keys straight back into the transcript, and an interpreter preload
+// variable in the operator's shell would apply to whatever the agent chose to
+// run. See sanitizedEnv.
 //
-// Fourth, the child gets a built environment rather than the operator's. It
-// used to inherit everything, so an agent-authored command could print the
-// operator's API keys straight back into the transcript, and an interpreter
-// preload variable in the operator's shell would apply to whatever the agent
-// chose to run. See sanitizedEnv.
+// And stdout and stderr share one capture, in the order the command wrote
+// them, because the model reads them as one transcript. A command whose
+// foreground work completed reports success even when leftover descendants
+// were cut off holding the pipes.
 func runShell(ctx context.Context, dir, command string) (string, int, bool, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = dir
-	cmd.Env = sanitizedEnv(dir)
-	setOwnProcessGroup(cmd)
-
-	var buf bytes.Buffer
-	capture := &limitWriter{w: &buf, limit: 1024 * 1024}
-	cmd.Stdout = capture
-	cmd.Stderr = capture
-
-	cmd.WaitDelay = 5 * time.Second
-
-	if err := cmd.Start(); err != nil {
-		return "", 0, false, err
+	res := runProc(ctx, procSpec{
+		argv: []string{"sh", "-c", command}, dir: dir, env: sanitizedEnv(dir),
+		stdoutLimit: 1024 * 1024, combined: true,
+	})
+	output := string(res.stdout)
+	if res.stdoutNote != "" {
+		output = strings.TrimRight(output, "\n") + "\n" + res.stdoutNote + "\n"
 	}
-	pgid := cmd.Process.Pid
-	// Reaped on every path out of this function: deadline, clean exit, and
-	// non-zero exit alike.
-	defer killProcessGroup(pgid)
-
-	killed := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			// The context has already signalled the child; reach the rest of
-			// its process group so a held pipe cannot outlive the deadline.
-			killProcessGroup(pgid)
-		case <-killed:
-		}
-	}()
-
-	runErr := cmd.Wait()
-	close(killed)
-
-	output := func() string {
-		if note := capture.truncationNote(); note != "" {
-			return strings.TrimRight(buf.String(), "\n") + "\n" + note + "\n"
-		}
-		return buf.String()
+	if res.timedOut {
+		return output, 0, true, nil
 	}
-
-	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-	if timedOut {
-		return output(), 0, true, nil
+	if res.failedToRun() {
+		return output, 0, false, res.err
 	}
-	exitCode := 0
-	if runErr != nil {
-		if errors.Is(runErr, exec.ErrWaitDelay) {
-			// The command itself exited; only leftover descendants kept the
-			// pipes open past the grace period. Report the command's own
-			// outcome rather than dressing plumbing cleanup up as a failure.
-			runErr = nil
-			if cmd.ProcessState != nil {
-				exitCode = cmd.ProcessState.ExitCode()
-			}
-		} else {
-			var exitErr *exec.ExitError
-			if !errors.As(runErr, &exitErr) {
-				return output(), 0, false, runErr
-			}
-			exitCode = exitErr.ExitCode()
-		}
-	}
-	return output(), exitCode, false, nil
+	return output, res.exitCode, false, nil
 }
 
 // sanitizedEnv builds the environment an agent-authored command runs under.

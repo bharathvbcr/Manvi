@@ -44,6 +44,8 @@ type e2eRequest struct {
 	Model    string           `json:"model"`
 	Messages []map[string]any `json:"messages"`
 	Tools    []map[string]any `json:"tools"`
+	// MaxTokens is the output bound the request named, zero when it named none.
+	MaxTokens int `json:"max_tokens"`
 }
 
 func (m *e2eModel) start(t *testing.T) string {

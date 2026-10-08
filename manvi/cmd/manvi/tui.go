@@ -19,7 +19,6 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -1006,16 +1005,6 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return errors.New("no model provider is attached to this session")
 	}
 
-	maxTokens := 0
-	if name, _, err := h.reg.String(flags.LLMDefaultProvider); err == nil && name == "local" {
-		if capTokens, _, err := h.reg.Int(flags.LLMLocalMaxOutputTokens); err == nil && capTokens > 0 {
-			maxTokens = capTokens
-		}
-	}
-	if maxTokens <= 0 {
-		maxTokens = 8192
-	}
-
 	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
 	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
 	if dynamic {
@@ -1075,31 +1064,24 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	// apart from what earlier turns of this session already spent.
 	before := s.subMeter.Total()
 
-	// One bus per submit, and the checkpoint listener goes on this one. A
-	// listener registered on any other instance is a listener that never fires,
-	// which is how compaction was nearly shipped inert.
-	loopBus := bus.New()
-	loop, err := agent.NewLoop(agent.Config{
-		Provider:        at.provider,
-		Registry:        at.registry,
-		Model:           at.model,
-		Effort:          at.effort,
-		EffortCeiling:   at.effortCeiling,
-		SystemPrompt:    systemPrompt,
-		MaxSteps:        maxSteps(h.reg),
-		MaxTokens:       maxTokens,
-		CoreToolsOnly:   coreOnly,
-		AssertInvariant: assertInvariant(h.reg),
-	}, loopBus, s.log, s.pipeline)
+	loop, err := newTurnLoop(turnFace{
+		maxTokens: tuiMaxTokens(h.reg),
+		maxSteps:  maxSteps(h.reg),
+		check: &sensor{
+			native: s.native, log: s.log, flags: h.reg,
+			runner:  subRunner,
+			command: operatorVerifyCommand(),
+		},
+	}, turnDeps{
+		provider: at.provider, models: at.registry, model: at.model,
+		effort: at.effort, effortCeiling: at.effortCeiling,
+		systemPrompt:    systemPrompt,
+		coreToolsOnly:   coreOnly,
+		assertInvariant: assertInvariant(h.reg),
+		log:             s.log, tools: s.pipeline,
+	})
 	if err != nil {
 		return err
-	}
-	if err := attachSensor(loopBus, &sensor{
-		native: s.native, log: s.log, flags: h.reg,
-		runner:  subRunner,
-		command: operatorVerifyCommand(),
-	}); err != nil {
-		return fmt.Errorf("the end-of-turn check could not be attached: %w", err)
 	}
 
 	outcome, err := loop.Run(ctx, llm.Message{
@@ -1159,6 +1141,21 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		})
 	}
 	return nil
+}
+
+// tuiMaxTokens is the output bound the TUI names for a turn: the operator's
+// local cap when the local provider is selected, and 8192 otherwise.
+//
+// Unlike `manvi run`, which leaves the bound to the adapter, this face names
+// one. The difference predates the shared constructor and is kept as it was;
+// it is stated here so that it is a decision rather than a drift.
+func tuiMaxTokens(reg *flags.Registry) int {
+	if name, _, err := reg.String(flags.LLMDefaultProvider); err == nil && name == "local" {
+		if capTokens, _, err := reg.Int(flags.LLMLocalMaxOutputTokens); err == nil && capTokens > 0 {
+			return capTokens
+		}
+	}
+	return 8192
 }
 
 // creds returns this host's credential resolver and the scrubber armed from it.

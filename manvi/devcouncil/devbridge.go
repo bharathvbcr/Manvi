@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -124,36 +123,19 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 		argv = append(argv, "--verify")
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, devInspectTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(cmdCtx, argv[0], argv[1:]...)
-	// A pinned inspect binary may spawn children. Killing only the direct
-	// process leaves those children holding the inherited stdout pipe, and
-	// os/exec then waits on an EOF that never comes.
-	proc.ConfigureGroup(cmd)
-	cmd.Dir = r.deps.Root
-	cmd.WaitDelay = 5 * time.Second
-
-	var stdout, stderr bytes.Buffer
-	outCap := &limitWriter{w: &stdout, limit: maxGitOutputBytes}
-	errCap := &limitWriter{w: &stderr, limit: 32 * 1024}
-	cmd.Stdout = outCap
-	cmd.Stderr = errCap
-
-	runErr, timedOut := proc.RunBounded(cmdCtx, cmd.Run)
-	if timedOut {
+	// A pinned inspect binary may spawn children; runProc reaches them.
+	child := runProc(ctx, procSpec{
+		argv: argv, dir: r.deps.Root, timeout: devInspectTimeout,
+		stdoutLimit: maxGitOutputBytes, stderrLimit: 32 * 1024,
+	})
+	if child.timedOut {
 		return unavailable(fmt.Sprintf("the devcouncil CLI (%s)", bin),
 			fmt.Errorf("timed out after %s", devInspectTimeout))
 	}
-
-	exitCode := 0
-	if runErr != nil {
-		exitErr, ok := runErr.(*exec.ExitError)
-		if !ok {
-			return unavailable(fmt.Sprintf("the devcouncil CLI (%s)", bin), runErr)
-		}
-		exitCode = exitErr.ExitCode()
+	if child.failedToRun() {
+		return unavailable(fmt.Sprintf("the devcouncil CLI (%s)", bin), child.err)
 	}
+	exitCode := child.exitCode
 
 	envelope := map[string]any{
 		"binary":    bin,
@@ -164,13 +146,13 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	// Truncation is a degradation, not a detail: a JSON document cut off at the
 	// cap will not parse, and the raw_output fallback below would otherwise
 	// present the surviving prefix as though it were all the CLI said.
-	if note := outCap.truncationNote(); note != "" {
-		notes = append(notes, "dev_inspect: "+note)
+	if child.stdoutNote != "" {
+		notes = append(notes, "dev_inspect: "+child.stdoutNote)
 	}
-	if note := errCap.truncationNote(); note != "" {
-		notes = append(notes, "dev_inspect stderr: "+note)
+	if child.stderrNote != "" {
+		notes = append(notes, "dev_inspect stderr: "+child.stderrNote)
 	}
-	out := stdout.Bytes()
+	out := child.stdout
 	var parsed any
 	if json.Unmarshal(out, &parsed) == nil && parsed != nil {
 		envelope["devcouncil"] = parsed
@@ -181,7 +163,7 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 		envelope["raw_output"] = string(out)
 		notes = append(notes, "dev_inspect: output was not JSON; returned as raw_output")
 	}
-	if tail := strings.TrimSpace(stderr.String()); tail != "" {
+	if tail := strings.TrimSpace(string(child.stderr)); tail != "" {
 		envelope["stderr_tail"] = tail
 	}
 	res := ok(envelope)

@@ -188,8 +188,10 @@ func TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame(t *testing.T) {
 		"rule": event(func(s string) ui.Event {
 			return ui.Event{Kind: ui.KindPolicy, Text: "blocked", Rule: s, Severity: "soft"}
 		}),
+		// Path is drawn on the approval row, the event that names a blocked
+		// path to a human; a policy entry carries it without drawing it.
 		"path": event(func(s string) ui.Event {
-			return ui.Event{Kind: ui.KindPolicy, Text: "blocked", Path: s, Severity: "soft"}
+			return ui.Event{Kind: ui.KindApproval, Text: "approval required", Rule: "scope.unplanned", Path: s}
 		}),
 		"error":  event(func(s string) ui.Event { return ui.Event{Kind: ui.KindError, Text: s} }),
 		"notice": event(func(s string) ui.Event { return ui.Event{Kind: ui.KindNotice, Text: s} }),

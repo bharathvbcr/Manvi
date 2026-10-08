@@ -6,9 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
-	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/session"
@@ -292,26 +290,31 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + verdictInstruction()
 	}
 
-	loop, err := agent.NewLoop(agent.Config{
-		Provider: provider,
-		// The same model registry the parent uses, so a child's request gets the
-		// same assembly-time capability check. Without it an impossible request
-		// surfaces as a 400 mid-turn instead of a refusal before the wire.
-		Registry:      cfg.models,
-		Model:         model,
-		Effort:        cfg.effort,
-		EffortCeiling: cfg.effortCeiling,
-		SystemPrompt:  systemPrompt,
-		MaxSteps:      maxSubAgentSteps,
+	loop, err := newTurnLoop(turnFace{
+		maxSteps: maxSubAgentSteps,
 		// ReadOnly narrows the schemas the child is offered to match the
 		// registry it actually has. Both are needed and they answer different
 		// questions: this one stops the model wasting steps asking for tools
 		// that would come back "unknown", the registry subset above is what
 		// makes the answer "unknown" rather than "done".
-		ReadOnly:        req.ReadOnly,
-		CoreToolsOnly:   cfg.coreToolsOnly,
-		AssertInvariant: cfg.assertInvariant,
-	}, bus.New(), log, registry)
+		readOnly: req.ReadOnly,
+		// No end-of-turn check: the child's written paths come back through
+		// SubAgentResult.Wrote and the parent's check covers them.
+	}, turnDeps{
+		provider: provider,
+		// The same model registry the parent uses, so a child's request gets the
+		// same assembly-time capability check. Without it an impossible request
+		// surfaces as a 400 mid-turn instead of a refusal before the wire.
+		models:          cfg.models,
+		model:           model,
+		effort:          cfg.effort,
+		effortCeiling:   cfg.effortCeiling,
+		systemPrompt:    systemPrompt,
+		coreToolsOnly:   cfg.coreToolsOnly,
+		assertInvariant: cfg.assertInvariant,
+		log:             log,
+		tools:           registry,
+	})
 	if err != nil {
 		return devcouncil.SubAgentResult{}, fmt.Errorf("sub-agent %q could not be started: %w", req.Label, err)
 	}

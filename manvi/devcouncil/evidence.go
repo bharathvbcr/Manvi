@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"io"
 	"os/exec"
 	"strconv"
@@ -127,42 +126,32 @@ type EvidenceRequest struct {
 	Epoch                                                                                               uint64
 }
 
-type evidenceOutput struct {
-	bytes.Buffer
-	limit int
-}
-
-func (b *evidenceOutput) Write(p []byte) (int, error) {
-	if len(p) > b.limit-b.Len() {
-		return 0, errors.New("verifier output exceeds limit")
-	}
-	return b.Buffer.Write(p)
-}
 func VerifyEvidence(ctx context.Context, r EvidenceRequest) (EvidenceReport, error) {
 	var report EvidenceReport
 	if r.Binary == "" || r.ContractPath == "" || r.BundlePath == "" || r.ArtifactsRoot == "" || r.RunID == "" || r.SessionID == "" || r.Epoch == 0 || len(r.ContractSHA256) != 64 || len(r.CapabilitySHA256) != 64 {
 		return report, errors.New("independent evidence expectations are incomplete")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, r.Binary, "evidence-check", "--contract", r.ContractPath, "--bundle", r.BundlePath, "--artifacts-root", r.ArtifactsRoot, "--expected-contract-sha256", r.ContractSHA256, "--expected-capability-sha256", r.CapabilitySHA256, "--expected-run-id", r.RunID, "--expected-session-id", r.SessionID, "--expected-epoch", strconv.FormatUint(r.Epoch, 10))
-	proc.ConfigureGroup(cmd)
-	cmd.WaitDelay = 2 * time.Second
-	out := evidenceOutput{limit: 1 << 20}
-	stderr := evidenceOutput{limit: 4096}
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	err, timedOut := proc.RunBounded(ctx, cmd.Run)
-	if timedOut || ctx.Err() != nil {
-		return report, ctx.Err()
+	res := runProc(ctx, procSpec{
+		argv:    []string{r.Binary, "evidence-check", "--contract", r.ContractPath, "--bundle", r.BundlePath, "--artifacts-root", r.ArtifactsRoot, "--expected-contract-sha256", r.ContractSHA256, "--expected-capability-sha256", r.CapabilitySHA256, "--expected-run-id", r.RunID, "--expected-session-id", r.SessionID, "--expected-epoch", strconv.FormatUint(r.Epoch, 10)},
+		timeout: 10 * time.Second, stdoutLimit: 1 << 20, stderrLimit: 4096,
+	})
+	if res.timedOut {
+		return report, context.DeadlineExceeded
 	}
-	if len(bytes.TrimSpace(out.Bytes())) == 0 {
+	if errors.Is(res.err, context.Canceled) {
+		return report, res.err
+	}
+	if res.stdoutNote != "" {
+		return report, errors.New("verifier output exceeds limit")
+	}
+	out, err := res.stdout, res.err
+	if len(bytes.TrimSpace(out)) == 0 {
 		if err == nil {
 			return report, errors.New("evidence verifier produced no report")
 		}
 		return report, fmt.Errorf("evidence verifier unavailable or produced no report: %w", err)
 	}
-	d := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	d := json.NewDecoder(bytes.NewReader(out))
 	d.DisallowUnknownFields()
 	if parseErr := d.Decode(&report); parseErr != nil {
 		return report, fmt.Errorf("evidence response: %w", parseErr)

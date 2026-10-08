@@ -337,6 +337,12 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 	if len(out) == 0 {
 		out = append(out, render.Line{})
 	}
+	// The same attribution the folded summary carries. Expanding a child's
+	// entry is how a reader looks at what the child did, so the expanded form
+	// is the last place it can be dropped.
+	if ev.Agent != "" {
+		out[0] = render.Styled("["+ev.Agent+"] ", th.Subtle()).Concat(out[0]).Truncate(body)
+	}
 	// The gutter marker goes on the first row; continuation rows are indented
 	// to line up under it.
 	out[0] = e.gutterLine(th, out[0], g)

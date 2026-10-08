@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,15 @@ func TestSubAgentsInheritTheEffortCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(src, "EffortCeiling:") {
+	// The child builds its loop through newTurnLoop, so the ceiling has to
+	// travel both legs: from the child's config into the constructor, and from
+	// the constructor onto the loop's Config.
+	ctor, err := readSource("cmd/manvi/turnloop.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`effortCeiling:\s+cfg\.effortCeiling`).MatchString(src) ||
+		!regexp.MustCompile(`EffortCeiling:\s+deps\.effortCeiling`).MatchString(ctor) {
 		t.Fatal("the child loop is built without EffortCeiling: a sub-agent that " +
 			"starts going in circles can never raise its effort, however the " +
 			"parent was configured")
