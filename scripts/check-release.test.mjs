@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,9 @@ import { after, describe, it } from "node:test";
 import {
   NOTES_LIMIT,
   assetProblems,
+  crateMirrorProblems,
+  inheritedKeys,
+  parseManifest,
   expectedBinaries,
   notesProblems,
   parsePins,
@@ -153,5 +156,170 @@ describe("pins", () => {
     const rows = parsePins(readFileSync(path.join(REPO_ROOT, "scripts", "module-pins.txt"), "utf8"));
     assert.deepEqual(rows.map((row) => row.name), ["DevCouncil", "gusset"]);
     for (const row of rows) assert.match(row.sha, /^[0-9a-f]{40}$/);
+  });
+});
+
+describe("crate mirror", () => {
+  const UPSTREAM_WORKSPACE = `[workspace]
+members = ["dc-a", "dc-b"]
+
+[workspace.package]
+version = "1.3.5"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+sha2 = "0.10.9"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+`;
+  const MEMBER_A = `[package]
+name = "dc-a"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true
+`;
+  const MEMBER_B = `[package]
+name = "dc-b"
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+dc-a = { path = "../dc-a" }
+`;
+  const LOCAL = `[workspace]
+resolver = "3"
+members = [
+  "dc-a", # the first
+  "dc-b",
+]
+
+[workspace.package]
+version = "1.3.5"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+sha2 = "0.10.9"
+rusqlite = {version="0.40.2",features=["bundled"]}
+`;
+  /** A Manvi root whose crates/* link into a DevCouncil rust/ beside it. */
+  function layout(local = LOCAL, { copy = [] } = {}) {
+    const top = mkdtempSync(path.join(tmpdir(), "manvi-mirror-"));
+    tempDirs.push(top);
+    const rust = path.join(top, "DevCouncil", "rust");
+    for (const crate of ["dc-a", "dc-b"]) mkdirSync(path.join(rust, crate), { recursive: true });
+    const root = path.join(top, "Manvi");
+    mkdirSync(path.join(root, "crates"), { recursive: true });
+    writeFileSync(path.join(root, "crates", "Cargo.toml"), local);
+    for (const crate of ["dc-a", "dc-b"]) {
+      if (copy.includes(crate)) mkdirSync(path.join(root, "crates", crate));
+      else symlinkSync(path.join("..", "..", "DevCouncil", "rust", crate), path.join(root, "crates", crate));
+    }
+    return root;
+  }
+  const pinned = (files) => (relative) => {
+    if (!(relative in files)) throw new Error(`fatal: path '${relative}' does not exist in the pin`);
+    return files[relative];
+  };
+  const UPSTREAM = {
+    "rust/Cargo.toml": UPSTREAM_WORKSPACE,
+    "rust/dc-a/Cargo.toml": MEMBER_A,
+    "rust/dc-b/Cargo.toml": MEMBER_B,
+  };
+
+  it("holds when every inherited value equals DevCouncil's at the pin", () => {
+    // Whitespace inside an inline table and a multi-line members array with a
+    // comment are spellings, not differences.
+    assert.deepEqual(crateMirrorProblems(layout(), pinned(UPSTREAM)), []);
+  });
+
+  it("names a drifted version and licence, per member", () => {
+    const local = LOCAL.replace('version = "1.3.5"', 'version = "0.1.0"').replace('license = "Apache-2.0"', 'license = "MIT"');
+    const problems = crateMirrorProblems(layout(local), pinned(UPSTREAM));
+    assert.ok(problems.includes('dc-a inherits package field version = "0.1.0" here but "1.3.5" in DevCouncil'), problems.join("\n"));
+    assert.ok(problems.includes('dc-b inherits package field license = "MIT" here but "Apache-2.0" in DevCouncil'), problems.join("\n"));
+  });
+
+  it("ignores fields a member declares itself", () => {
+    // Both members set or omit edition themselves; 2024 here differs from
+    // 2021 upstream and must not be reported.
+    assert.equal(crateMirrorProblems(layout(), pinned(UPSTREAM)).some((p) => p.includes("edition")), false);
+  });
+
+  it("refuses an inherited dependency this workspace forgot or pinned differently", () => {
+    const missing = LOCAL.replace('sha2 = "0.10.9"\n', "");
+    assert.ok(
+      crateMirrorProblems(layout(missing), pinned(UPSTREAM)).includes(
+        'dc-a inherits dependency sha2; crates/Cargo.toml must declare it as DevCouncil does: "0.10.9"',
+      ),
+    );
+    const drifted = LOCAL.replace('features=["bundled"]', 'features=[]');
+    assert.ok(crateMirrorProblems(layout(drifted), pinned(UPSTREAM)).some((p) => p.startsWith("dc-b inherits dependency rusqlite =")));
+  });
+
+  it("compares the lints a member inherits", () => {
+    const local = LOCAL.replace('unsafe_code = "forbid"', 'unsafe_code = "warn"');
+    assert.ok(crateMirrorProblems(layout(local), pinned(UPSTREAM)).some((p) => p.startsWith("dc-a inherits lints.rust lint unsafe_code")));
+  });
+
+  it("refuses a member that is a copy instead of a link", () => {
+    const problems = crateMirrorProblems(layout(LOCAL, { copy: ["dc-b"] }), pinned(UPSTREAM));
+    assert.ok(problems.some((p) => p.startsWith("crates/dc-b is a copy")), problems.join("\n"));
+  });
+
+  it("fails, rather than passing, when the pinned DevCouncil cannot be read", () => {
+    const problems = crateMirrorProblems(layout(), pinned({}));
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /cannot read DevCouncil rust\/Cargo.toml at the pinned commit/);
+  });
+
+  it("reports a member DevCouncil does not have at the pin", () => {
+    const problems = crateMirrorProblems(layout(), pinned({ ...UPSTREAM, "rust/dc-b/Cargo.toml": undefined }));
+    // An own key whose value is undefined still answers `in`; drop it.
+    const files = { ...UPSTREAM };
+    delete files["rust/dc-b/Cargo.toml"];
+    const missing = crateMirrorProblems(layout(), pinned(files));
+    assert.ok(missing.some((p) => p.startsWith("crates/dc-b: DevCouncil has no rust/dc-b/Cargo.toml")), missing.join("\n"));
+    assert.ok(Array.isArray(problems));
+  });
+
+  it("refuses a manifest line it cannot read rather than skipping a key", () => {
+    assert.throws(() => parseManifest("[package]\nname\n", "x"), /x:2: cannot read "name"/);
+    assert.throws(() => parseManifest('[workspace]\nmembers = [\n  "a",\n', "x"), /never closes/);
+  });
+
+  it("finds every way a member inherits", () => {
+    assert.deepEqual(inheritedKeys(parseManifest(MEMBER_A, "a")), { fields: ["version", "license"], dependencies: ["sha2"], lints: true });
+    assert.deepEqual(inheritedKeys(parseManifest(MEMBER_B, "b")), { fields: ["version", "license"], dependencies: ["rusqlite"], lints: false });
+  });
+
+  it("holds for this repository at its pin", () => {
+    // The real thing: crates/Cargo.toml against DevCouncil at module-pins.txt.
+    // Skipped, and said so, only when no DevCouncil checkout is beside Manvi.
+    const checkout = path.join(REPO_ROOT, "..", "DevCouncil", ".git");
+    let present = true;
+    try {
+      readFileSync(path.join(REPO_ROOT, "..", "DevCouncil", "rust", "Cargo.toml"));
+    } catch {
+      present = false;
+    }
+    if (!present) {
+      console.log(`crate mirror: no DevCouncil checkout at ${checkout}; run scripts/fetch-modules.sh`);
+      return;
+    }
+    assert.deepEqual(crateMirrorProblems(REPO_ROOT), []);
   });
 });

@@ -9,15 +9,24 @@ This directory keeps **symlinks** so `cargo build --manifest-path crates/Cargo.t
 and `./verify.sh` keep working in a sibling checkout. DevCouncil is the component
 layer; MANVI wraps the binaries at runtime and does not own these crates.
 
-## The one thing mirrored by hand
+## What is still copied, and how it is kept honest
 
-A symlinked member's `foo.workspace = true` resolves against **this**
-`Cargo.toml`'s `[workspace.dependencies]`, not DevCouncil's. When DevCouncil
-adds or changes such a pin, copy it here. A missing key fails the workspace
-load. A different version or feature set fails
-`manvi/devcouncil/crate_pins_test.go`, which compares what `cargo metadata`
-resolves for every member here against DevCouncil's `rust/` workspace. It also
-fails if a member stops being a symlink into DevCouncil.
+The sources have one owner, but a symlinked member inherits its `version`,
+`license`, lints and `foo.workspace = true` dependency pins from `Cargo.toml`
+here, not from DevCouncil's, and those values are copied by hand. When
+DevCouncil adds or changes one, copy it here. A missing dependency key fails
+the workspace load. Two checks catch the rest:
+
+- `scripts/check-release.mjs` (`crateMirrorProblems`, run by `./verify.sh`)
+  compares every inherited value against DevCouncil's manifests **at the
+  commit `scripts/module-pins.txt` pins**, read through git, because that is
+  what CI and the release build. It refuses a member that is a copied
+  directory rather than a symlink. Bump the pin and the check names each value
+  to update.
+- `manvi/devcouncil/crate_pins_test.go` compares what `cargo metadata`
+  resolves for every member's dependencies here against DevCouncil's `rust/`
+  workspace, so a different version or feature set fails. It also fails if a
+  member stops being a symlink into DevCouncil.
 
 ## Release / CI without a DevCouncil tree
 

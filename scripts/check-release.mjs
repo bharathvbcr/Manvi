@@ -19,10 +19,12 @@ import { execFileSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  lstatSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -322,6 +324,276 @@ export function pinProblems(root, requireCheckouts) {
 }
 
 /**
+ * Strips a TOML comment, leaving a `#` inside a string alone.
+ * @param {string} line
+ */
+function stripTomlComment(line) {
+  let quote = "";
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') i += 1;
+      else if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * A value with the whitespace outside its strings removed, so two spellings of
+ * one spec compare equal and any other difference does not.
+ * @param {string} value
+ */
+export function normalizeTomlValue(value) {
+  let out = "";
+  let quote = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (quote) {
+      out += ch;
+      if (ch === "\\" && quote === '"') out += value[++i] ?? "";
+      else if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+    } else if (!/\s/.test(ch)) out += ch;
+  }
+  return out;
+}
+
+/**
+ * The tables of a Cargo manifest, as `table -> key -> normalized value`.
+ *
+ * Only what Cargo manifests here use: `[table]` headers and `key = value`
+ * lines, a value that opens a bracket or brace running until it closes. An
+ * array-of-tables header (`[[bin]]`) is kept as its own table name, and a
+ * line this cannot read is refused rather than skipped, because a key it
+ * skipped would be a key the mirror check never compared.
+ * @param {string} text
+ * @param {string} label
+ * @returns {Map<string, Map<string, string>>}
+ */
+export function parseManifest(text, label) {
+  /** @type {Map<string, Map<string, string>>} */
+  const tables = new Map([["", new Map()]]);
+  let current = "";
+  let pendingKey = "";
+  let pending = "";
+  let depth = 0;
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = stripTomlComment(lines[index]).trim();
+    if (depth > 0) {
+      pending += ` ${line}`;
+      depth += balance(line);
+      if (depth <= 0) {
+        tables.get(current)?.set(pendingKey, normalizeTomlValue(pending));
+        depth = 0;
+      }
+      continue;
+    }
+    if (!line) continue;
+    const header = /^\[\[?([^[\]]+)\]\]?$/.exec(line);
+    if (header) {
+      current = header[1].trim();
+      if (!tables.has(current)) tables.set(current, new Map());
+      continue;
+    }
+    const eq = line.indexOf("=");
+    if (eq <= 0) throw new Error(`${label}:${index + 1}: cannot read "${line}"`);
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    depth = balance(value);
+    if (depth > 0) {
+      pendingKey = key;
+      pending = value;
+      continue;
+    }
+    tables.get(current)?.set(key, normalizeTomlValue(value));
+  }
+  if (depth > 0) throw new Error(`${label}: a value for ${pendingKey} never closes`);
+  return tables;
+}
+
+/**
+ * A normalized TOML array of basic strings, trailing comma allowed; null for
+ * anything else, so an array this cannot read is refused rather than read as
+ * empty.
+ * @param {string} value
+ * @returns {string[] | null}
+ */
+export function parseStringArray(value) {
+  if (!value.startsWith("[") || !value.endsWith("]")) return null;
+  const body = value.slice(1, -1);
+  /** @type {string[]} */
+  const items = [];
+  const item = /^"((?:[^"\\]|\\.)*)"(,|$)/;
+  let rest = body;
+  while (rest.length > 0) {
+    const match = item.exec(rest);
+    if (!match) return null;
+    items.push(match[1]);
+    rest = rest.slice(match[0].length);
+  }
+  return items;
+}
+
+/**
+ * Net opening brackets and braces outside strings.
+ * @param {string} text
+ */
+function balance(text) {
+  let depth = 0;
+  let quote = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') i += 1;
+      else if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "[" || ch === "{") depth += 1;
+    else if (ch === "]" || ch === "}") depth -= 1;
+  }
+  return depth;
+}
+
+/**
+ * What one member manifest takes from its workspace instead of declaring.
+ * @param {Map<string, Map<string, string>>} manifest
+ */
+export function inheritedKeys(manifest) {
+  const fields = [];
+  const dependencies = [];
+  let lints = false;
+  for (const [table, entries] of manifest) {
+    for (const [key, value] of entries) {
+      const dotted = /^([A-Za-z0-9_-]+)\.workspace$/.exec(key);
+      const inherits = (dotted && value === "true") || /(^|[{,])workspace=true([,}]|$)/.test(value);
+      if (table === "lints" && key === "workspace" && value === "true") lints = true;
+      if (!inherits) continue;
+      const name = dotted ? dotted[1] : key;
+      if (table === "package") fields.push(name);
+      else if (/(^|\.)(dev-|build-)?dependencies$/.test(table)) dependencies.push(name);
+    }
+  }
+  return { fields, dependencies, lints };
+}
+
+/**
+ * Manvi's `crates/` workspace builds DevCouncil's dc-* crates in place: each
+ * member is a symlink into DevCouncil `rust/`, so the sources have one owner.
+ * What a member inherits — its version, licence, lints and pinned
+ * dependencies — it inherits from Manvi's `crates/Cargo.toml`, though, not
+ * from DevCouncil's, and those values were copied by hand. They drifted: the
+ * crates built here reported version 0.1.0 under MIT while DevCouncil ships
+ * 1.3.5 under Apache-2.0. This compares every value a member inherits with
+ * DevCouncil's own, and refuses a member that is a copy rather than a link.
+ *
+ * DevCouncil's side is read at the commit scripts/module-pins.txt pins, not
+ * from whatever the sibling checkout has open: the release builds the pin,
+ * so a comparison against a newer checkout would pass on one machine and
+ * fail in CI, or the reverse.
+ * @param {string} root
+ * @param {(relativePath: string) => string} [readPinned] DevCouncil file at
+ *   the pinned commit; the default asks git in the sibling checkout.
+ * @returns {string[]}
+ */
+export function crateMirrorProblems(root, readPinned) {
+  /** @type {string[]} */
+  const errors = [];
+  const workspaceFile = path.join(root, "crates", "Cargo.toml");
+  let local;
+  try {
+    local = parseManifest(readFileSync(workspaceFile, "utf8"), "crates/Cargo.toml");
+  } catch (err) {
+    return [`crates/Cargo.toml: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  const membersValue = local.get("workspace")?.get("members");
+  const members = membersValue === undefined ? null : parseStringArray(membersValue);
+  if (members === null) return [`crates/Cargo.toml: cannot read workspace members ${membersValue ?? "(absent)"}`];
+  if (members.length === 0) return ["crates/Cargo.toml names no workspace members"];
+  let read = readPinned;
+  if (!read) {
+    let pin;
+    try {
+      pin = parsePins(readFileSync(path.join(root, "scripts", "module-pins.txt"), "utf8")).find(
+        (row) => row.name === "DevCouncil",
+      );
+    } catch (err) {
+      return [`scripts/module-pins.txt: ${err instanceof Error ? err.message : String(err)}`];
+    }
+    if (!pin) return ["scripts/module-pins.txt does not pin DevCouncil, so the crate mirror has nothing to compare"];
+    const checkout = path.join(root, "..", "DevCouncil");
+    read = (relative) =>
+      execFileSync("git", ["-C", checkout, "show", `${pin.sha}:${relative}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+  }
+  /** @type {Map<string, Map<string, string>>} */
+  let upstream;
+  try {
+    upstream = parseManifest(read("rust/Cargo.toml"), "DevCouncil rust/Cargo.toml at the pin");
+  } catch (err) {
+    return [
+      `cannot read DevCouncil rust/Cargo.toml at the pinned commit (${err instanceof Error ? err.message.split("\n")[0] : String(err)}); run scripts/fetch-modules.sh`,
+    ];
+  }
+  /** @type {string | null} */
+  let upstreamRoot = null;
+  for (const member of members) {
+    const link = path.join(root, "crates", member);
+    let target;
+    try {
+      if (!lstatSync(link).isSymbolicLink()) {
+        errors.push(`crates/${member} is a copy, not a symlink into DevCouncil rust/: two owners of one crate drift`);
+        continue;
+      }
+      target = realpathSync(link);
+    } catch {
+      errors.push(`crates/${member} does not resolve; check DevCouncil out beside Manvi (scripts/fetch-modules.sh)`);
+      continue;
+    }
+    const memberRoot = path.dirname(target);
+    if (upstreamRoot === null) upstreamRoot = memberRoot;
+    else if (memberRoot !== upstreamRoot) {
+      errors.push(`crates/${member} links into ${memberRoot}, not ${upstreamRoot}`);
+      continue;
+    }
+    const crate = path.basename(target);
+    let manifest;
+    try {
+      manifest = parseManifest(read(`rust/${crate}/Cargo.toml`), `DevCouncil rust/${crate}/Cargo.toml at the pin`);
+    } catch (err) {
+      errors.push(`crates/${member}: DevCouncil has no rust/${crate}/Cargo.toml at the pinned commit (${err instanceof Error ? err.message.split("\n")[0] : String(err)})`);
+      continue;
+    }
+    const wanted = inheritedKeys(manifest);
+    const compare = (table, key, what) => {
+      const theirs = upstream.get(table)?.get(key);
+      const ours = local.get(table)?.get(key);
+      if (theirs === undefined) {
+        errors.push(`${member} inherits ${what} ${key}, which DevCouncil's workspace does not declare`);
+      } else if (ours === undefined) {
+        errors.push(`${member} inherits ${what} ${key}; crates/Cargo.toml must declare it as DevCouncil does: ${theirs}`);
+      } else if (ours !== theirs) {
+        errors.push(`${member} inherits ${what} ${key} = ${ours} here but ${theirs} in DevCouncil`);
+      }
+    };
+    for (const field of wanted.fields) compare("workspace.package", field, "package field");
+    for (const dependency of wanted.dependencies) compare("workspace.dependencies", dependency, "dependency");
+    if (wanted.lints) {
+      for (const [table, entries] of upstream) {
+        if (!table.startsWith("workspace.lints")) continue;
+        for (const key of entries.keys()) compare(table, key, `${table.slice("workspace.".length)} lint`);
+      }
+    }
+  }
+  return [...new Set(errors)];
+}
+
+/**
  * @param {string} root
  * @param {string} tag
  * @returns {{ tagSha: string | null, headSha: string }}
@@ -392,6 +664,7 @@ export function main(argv = process.argv.slice(2)) {
   }
   errors.push(...notesFileProblems(root));
   errors.push(...pinProblems(root, args.requirePins));
+  errors.push(...crateMirrorProblems(root));
 
   if (args.tag) {
     const parsed = parseTag(args.tag);
