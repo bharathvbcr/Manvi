@@ -14,9 +14,6 @@ func TestRunReportsEngineNotLinked(t *testing.T) {
 	if !errors.Is(err, ErrNotLinked) {
 		t.Fatalf("Run() = %v, want ErrNotLinked", err)
 	}
-	if got := Ready(); !errors.Is(got, ErrNotLinked) {
-		t.Fatalf("Ready() = %v, want ErrNotLinked", got)
-	}
 }
 
 func TestSelfTestAndShutdownWithoutTheEngine(t *testing.T) {

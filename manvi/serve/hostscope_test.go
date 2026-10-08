@@ -31,12 +31,12 @@ func hostScope() *HostScope {
 func TestDeclaredScopeReachesTheScopeRungs(t *testing.T) {
 	s := scopedServer(t, PostureDevCouncil)
 
-	in := s.evaluateHostWrite(nil, t.TempDir(), plannedFile, dc.OpModify, false, hostScope())
+	in := s.evaluateHostWrite(t.TempDir(), plannedFile, dc.OpModify, false, hostScope())
 	if in.Blocked() {
 		t.Errorf("a planned file was refused: rule=%q reason=%q", in.Rule, in.Reason)
 	}
 
-	out := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
+	out := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
 	if out.Rule != policy.RuleUnplannedScope {
 		t.Errorf("unplanned write: rule = %q, want %q", out.Rule, policy.RuleUnplannedScope)
 	}
@@ -49,7 +49,7 @@ func TestDeclaredScopeReachesTheScopeRungs(t *testing.T) {
 func TestHostPostureDoesNotDemoteARealScopeViolation(t *testing.T) {
 	s := scopedServer(t, PostureHost)
 
-	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
+	d := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
 
 	if d.Rule != policy.RuleUnplannedScope {
 		t.Fatalf("rule = %q, want %q", d.Rule, policy.RuleUnplannedScope)
@@ -75,7 +75,7 @@ func TestHostPostureDoesNotDemoteARealScopeViolation(t *testing.T) {
 func TestHostPostureStillDemotesWhenNoScopeIsDeclared(t *testing.T) {
 	s := scopedServer(t, PostureHost)
 
-	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpModify, false, nil)
+	d := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpModify, false, nil)
 
 	if d.Rule != policy.RuleNoTask {
 		t.Fatalf("rule = %q, want %q", d.Rule, policy.RuleNoTask)
@@ -97,13 +97,13 @@ func TestHostPostureStillDemotesWhenNoScopeIsDeclared(t *testing.T) {
 func TestAnUnspecialisedWriteToAPlannedFileIsAllowed(t *testing.T) {
 	s := scopedServer(t, PostureHost)
 	for _, op := range []dc.Operation{dc.OpWrite, dc.OpCreate, dc.OpModify, dc.OpDelete} {
-		d := s.evaluateHostWrite(nil, t.TempDir(), plannedFile, op, false, hostScope())
+		d := s.evaluateHostWrite(t.TempDir(), plannedFile, op, false, hostScope())
 		if d.Blocked() {
 			t.Errorf("op %q on a planned file was refused: rule=%q reason=%q", op, d.Rule, d.Reason)
 		}
 	}
 	// And the scope still bites for the same unspecialised write elsewhere.
-	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpWrite, false, hostScope())
+	d := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpWrite, false, hostScope())
 	if d.Rule != policy.RuleUnplannedScope || !d.Blocked() {
 		t.Errorf("an unplanned write must stay refused: rule=%q action=%q", d.Rule, d.Action)
 	}
@@ -118,7 +118,7 @@ func TestHardRulesAreNeverDemotedWithOrWithoutAScope(t *testing.T) {
 			scope = &HostScope{TaskID: "TASK-42", PlannedFiles: []string{".env"}}
 		}
 		s := scopedServer(t, PostureHost)
-		d := s.evaluateHostWrite(nil, t.TempDir(), ".env", dc.OpModify, false, scope)
+		d := s.evaluateHostWrite(t.TempDir(), ".env", dc.OpModify, false, scope)
 		if !d.Blocked() {
 			t.Errorf("%s: writing .env was allowed (rule=%q)", name, d.Rule)
 		}
@@ -135,7 +135,7 @@ func TestForbiddenChangesAreHonoured(t *testing.T) {
 		PlannedFiles:     []string{plannedFile},
 		ForbiddenChanges: []string{plannedFile},
 	}
-	d := s.evaluateHostWrite(nil, t.TempDir(), plannedFile, dc.OpModify, false, scope)
+	d := s.evaluateHostWrite(t.TempDir(), plannedFile, dc.OpModify, false, scope)
 	if d.Rule != policy.RuleForbiddenChange {
 		t.Errorf("rule = %q, want %q — forbidden must outrank planned", d.Rule, policy.RuleForbiddenChange)
 	}
@@ -146,7 +146,7 @@ func TestAScopeWithNoFilesAuthorisesNothing(t *testing.T) {
 	// authorises no file, so every write is unplanned. Treating it as "no
 	// scope" would silently re-enable the demotion.
 	s := scopedServer(t, PostureHost)
-	d := s.evaluateHostWrite(nil, t.TempDir(), plannedFile, dc.OpModify, false, &HostScope{TaskID: "TASK-42"})
+	d := s.evaluateHostWrite(t.TempDir(), plannedFile, dc.OpModify, false, &HostScope{TaskID: "TASK-42"})
 	if !d.Blocked() {
 		t.Errorf("an empty plan authorised a write: rule=%q action=%q", d.Rule, d.Action)
 	}
@@ -156,7 +156,7 @@ func TestTheDecisionNamesTheTaskItWasMeasuredAgainst(t *testing.T) {
 	// An audit must be able to trace a verdict to the task, not to a
 	// placeholder that every host shares.
 	s := scopedServer(t, PostureDevCouncil)
-	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
+	d := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpModify, false, hostScope())
 	if d.TaskID != "TASK-42" {
 		t.Errorf("TaskID = %q, want TASK-42", d.TaskID)
 	}
@@ -164,7 +164,7 @@ func TestTheDecisionNamesTheTaskItWasMeasuredAgainst(t *testing.T) {
 
 func TestAnIdlessScopeStillNamesSomething(t *testing.T) {
 	s := scopedServer(t, PostureDevCouncil)
-	d := s.evaluateHostWrite(nil, t.TempDir(), unplannedFile, dc.OpModify, false, &HostScope{})
+	d := s.evaluateHostWrite(t.TempDir(), unplannedFile, dc.OpModify, false, &HostScope{})
 	if d.TaskID != hostScopeID {
 		t.Errorf("TaskID = %q, want the %q placeholder", d.TaskID, hostScopeID)
 	}
@@ -178,7 +178,7 @@ func TestSameDirRungFollowsTheOperatorFlagNotTheScope(t *testing.T) {
 	sibling := "src/unplanned.ts" // same directory as the planned file
 
 	off := &Server{posture: PostureDevCouncil, hardRules: true, allowNeighbors: true, allowSameDir: false}
-	d := off.evaluateHostWrite(nil, t.TempDir(), sibling, dc.OpModify, false, scope)
+	d := off.evaluateHostWrite(t.TempDir(), sibling, dc.OpModify, false, scope)
 	if !d.Blocked() {
 		t.Errorf("same_dir=false: sibling write allowed (rule=%q)", d.Rule)
 	}
@@ -187,7 +187,7 @@ func TestSameDirRungFollowsTheOperatorFlagNotTheScope(t *testing.T) {
 	}
 
 	on := &Server{posture: PostureDevCouncil, hardRules: true, allowNeighbors: true, allowSameDir: true}
-	d = on.evaluateHostWrite(nil, t.TempDir(), sibling, dc.OpModify, false, scope)
+	d = on.evaluateHostWrite(t.TempDir(), sibling, dc.OpModify, false, scope)
 	if d.Blocked() {
 		t.Errorf("same_dir=true: sibling write refused (rule=%q)", d.Rule)
 	}
@@ -201,7 +201,7 @@ func TestSameDirRungFollowsTheOperatorFlagNotTheScope(t *testing.T) {
 func TestADistantFileIsUnplannedEvenWithSameDirOn(t *testing.T) {
 	s := &Server{posture: PostureDevCouncil, hardRules: true, allowNeighbors: true, allowSameDir: true}
 	scope := &HostScope{TaskID: "TASK-42", PlannedFiles: []string{"src/planned.ts"}}
-	d := s.evaluateHostWrite(nil, t.TempDir(), "docs/elsewhere.md", dc.OpModify, false, scope)
+	d := s.evaluateHostWrite(t.TempDir(), "docs/elsewhere.md", dc.OpModify, false, scope)
 	if d.Rule != policy.RuleUnplannedScope || !d.Blocked() {
 		t.Errorf("rule=%q action=%q, want scope.unplanned/deny", d.Rule, d.Action)
 	}
