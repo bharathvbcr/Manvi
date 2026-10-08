@@ -33,9 +33,19 @@ under **Unreleased** in the same commit as the code.
   Those refusals guarded an engine that no longer decides anything. Release
   binaries still link the engine, and `manvi gusset-check` still proves it.
   `gussetcheck.Matcher` and `gussetcheck.Ready` are removed.
-- The DevCouncil pin moves to `a29a11b` (DevCouncil v0.2.4 line), which carries
-  `dc-redact` and the substitution ruling the `serve` policy tests pin. The
+- The DevCouncil pin moves to `ad5c941c` (DevCouncil v0.2.4 line, by way of
+  `a29a11b`), which carries `dc-redact`, the substitution ruling the `serve`
+  policy tests pin, and dc-store workbench schema 11, so a release build no
+  longer refuses a profile a current DevCouncil or GitPulse has upgraded. The
   `dc-*` crates built here now report DevCouncil's version, 0.2.4.
+- **`contracts/` is checked against DevCouncil at the pin.**
+  `scripts/check-release.mjs` compares every contract file with DevCouncil's
+  `backend/contracts` at the commit `scripts/module-pins.txt` pins, and
+  `contracts/CHECKSUMS` with this copy's own files; it used to check only that
+  the copy agreed with itself. The mirror is refreshed to `ad5c941c`:
+  `verdict_json` is described as the `PolicyVerdict` projection the ledger
+  stores, and the owner paths name DevCouncil's sources. The unused
+  `contracts/tools/checksums.py` is removed, as it was upstream.
 - A managed attempt's one turn now opens with what the launcher alone knows,
   ahead of the store's brief: the turn is unattended; an `inspect` attempt is
   told not to modify files or change the task's status, and every other mode

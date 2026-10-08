@@ -529,8 +529,9 @@ task archive, completion time, checklists and links described under
 [Records and board scopes](#schema-eleven-archive-checklists-links-and-restore);
 a host that builds a task body without them would unarchive and unlink every
 task it saved, which is why the rung is a hard fence. Manvi's release pin
-(`scripts/module-pins.txt`, DevCouncil `a29a11b`) still carries schema ten;
-builds against it refuse an upgraded profile until that pin moves.
+(`scripts/module-pins.txt`) moved from DevCouncil `a29a11b`, which carried
+schema ten, to `ad5c941c`, which carries eleven; a Manvi built before that
+move refuses an upgraded profile.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank
