@@ -103,7 +103,7 @@ type TurnStopping struct {
 	// check runs against; `git diff` is not, because it also carries whatever
 	// the operator had in the tree before the turn started.
 	//
-	// Bounded — see MaxTrackedWrites — and WroteTruncated says when the bound bit.
+	// Bounded — see tools.MaxTrackedWrites — and WroteTruncated says when the bound bit.
 	Wrote []string
 	// WroteTruncated is true when more paths were written than are listed. A
 	// checker that reads Wrote as the complete set would certify files it never
@@ -186,15 +186,6 @@ const (
 // defaults to 500 and charges StallCost 3 for the steps a bounced turn tends to
 // produce: the same dead end, discovered an hour later.
 const MaxCheckpointBounces = 2
-
-// MaxTrackedWrites bounds the per-turn written-path set.
-//
-// A turn can rewrite a thousand files, and the paths are carried into a session
-// event and a checker's argument list. Capped rather than unbounded, and the
-// cap is reported: a truncated list that claimed to be complete would let a
-// verifier certify files nobody looked at, which is exactly the failure the
-// whole checkpoint exists to prevent.
-const MaxTrackedWrites = 256
 
 // Config drives one loop.
 type Config struct {
@@ -988,7 +979,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 						out.UnenumeratedEffects = true
 					}
 				}
-				out.Wrote, out.WroteTruncated = trackWrites(out.Wrote, out.WroteTruncated, result.Wrote)
+				out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
 			}
 			out.ToolCalls++
 

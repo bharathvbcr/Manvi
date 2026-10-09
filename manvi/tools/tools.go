@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -151,6 +152,49 @@ type Result struct {
 // A successful result that is not qualified is an ordinary pass.
 func (r Result) Qualified() bool {
 	return r.GrantID != "" || r.Demoted != "" || r.Widened != "" || len(r.Degraded) > 0
+}
+
+// MaxTrackedWrites bounds a written-path set: the per-turn set the agent loop
+// carries to its checkpoint, and the set one sub-agent fan-out reports upward.
+//
+// A turn can rewrite a thousand files, and the paths are carried into a session
+// event and a checker's argument list. Capped rather than unbounded, and the
+// cap is reported: a truncated list that claimed to be complete would let a
+// verifier certify files nobody looked at, which is exactly the failure the
+// whole checkpoint exists to prevent.
+//
+// One bound for both sets, because a fan-out's set lands in the loop's: a
+// larger fan-out cap would carry paths the parent then discards, which is a
+// truncation nobody records.
+const MaxTrackedWrites = 256
+
+// MergeWrites folds one call's changed paths (Result.Wrote) into a set.
+//
+// Ordered, de-duplicated and capped. Ordered because a checker's argument list
+// and a session event both read better in the order the work happened;
+// de-duplicated because a file edited eight times is one file to verify; capped
+// because the set is carried into both, and an unbounded one is a turn that can
+// make its own evidence unreadable.
+//
+// The cap reports itself, and once reported stays reported. A truncated list
+// handed on as though it were complete is how a check that examined 256 of 900
+// files comes to be recorded as having examined all of them, and "never present
+// a capped sample as complete coverage" is the rule that failure breaks.
+func MergeWrites(have []string, truncated bool, add []string) ([]string, bool) {
+	for _, p := range add {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if slices.Contains(have, p) {
+			continue
+		}
+		if len(have) >= MaxTrackedWrites {
+			return have, true
+		}
+		have = append(have, p)
+	}
+	return have, truncated
 }
 
 // Errorf builds an error result.

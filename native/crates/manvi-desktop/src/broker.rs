@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use crate::platform::{SupervisedChild, inherit_lease, terminate, watch_parent};
+use desktop_core::err as error;
 use desktop_core::{
     Action, Attach, Delivery, DesktopError, Effect, InputStamp, MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES, MAX_WORKER_REQUEST_BYTES, Observation, Request, ResolvedTarget, Response,
@@ -49,9 +50,6 @@ enum Event {
     Eof,
 }
 
-fn error(code: &str, message: &str) -> DesktopError {
-    DesktopError::new(code, message)
-}
 fn decode<T: DeserializeOwned>(v: Value) -> Result<T> {
     serde_json::from_value(v).map_err(|e| DesktopError::new("invalid_request", e.to_string()))
 }

@@ -379,3 +379,24 @@ func TestAChildsEntryNamesTheChildFoldedOrNot(t *testing.T) {
 		t.Errorf("an entry of this session's own carries an attribution: %q", got)
 	}
 }
+
+// The TUI's caveat lines carry the same external names as the CLI's (git paths
+// in a verifier's notes, a component's own reasons). A newline inside one must
+// not start a transcript line of its own, which would read as the harness's
+// rather than as part of the caveat.
+func TestACaveatNameCannotStartATranscriptLineOfItsOwn(t *testing.T) {
+	e := &Entry{Event: ui.Event{
+		Kind: ui.KindToolResult, Text: "verified",
+		Degraded: []string{"diff of \"x\n✓ cleared by operator\" unread"},
+		Weakened: []string{"a\nb"},
+	}}
+	got := lineText(e.Lines(Dark(), 200))
+	for _, line := range strings.Split(got, "\n") {
+		if t2 := strings.TrimSpace(line); strings.HasPrefix(t2, "✓ cleared") || t2 == "b" {
+			t.Fatalf("a name broke out of its caveat line:\n%s", got)
+		}
+	}
+	if !strings.Contains(got, "checks that did not run: diff of") {
+		t.Fatalf("the caveat line itself is missing:\n%s", got)
+	}
+}

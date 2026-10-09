@@ -466,3 +466,88 @@ func RenameOverlay(current string) *Overlay {
 	}
 	return o
 }
+
+func (a *App) acceptOverlay() []Effect {
+	o := a.overlay
+	if o == nil {
+		return nil
+	}
+	if o.Kind == OverlaySearch {
+		query := ""
+		if o.Query() != nil {
+			query = o.Query().Value()
+		}
+		a.overlay = nil
+		if v := a.Current(); v != nil {
+			v.Focus = CtxScrollback
+			if query != "" {
+				v.Scroll.SetSearch(query, a.Theme)
+				if v.Scroll.MatchCount() > 0 {
+					a.setNotice(v.Scroll.SearchStatus()+" (n/N jumps)", StatusInfo)
+				} else {
+					a.setNotice("no matches for: "+query, StatusWarn)
+				}
+			} else {
+				v.Scroll.ClearSearch()
+			}
+		}
+		return nil
+	}
+	if o.Kind == OverlayRename {
+		newTitle := ""
+		if o.Query() != nil {
+			newTitle = strings.TrimSpace(o.Query().Value())
+		}
+		a.overlay = nil
+		if newTitle != "" {
+			if a.mode == ModeDashboard && len(a.views) > 0 {
+				idx := a.dashboard.Selected()
+				if idx >= 0 && idx < len(a.views) {
+					a.views[idx].SetTitle(newTitle)
+				}
+			} else if v := a.Current(); v != nil {
+				v.SetTitle(newTitle)
+			}
+			a.setNotice("session renamed to "+newTitle, StatusInfo)
+		}
+		return nil
+	}
+	item, ok := o.Selected()
+	if !ok {
+		return nil
+	}
+	switch o.Kind {
+	case OverlayComplete:
+		if v := a.Current(); v != nil {
+			v.Prompt.ApplyCompletion(o.Trigger, item.Value)
+		}
+		a.overlay = nil
+		return nil
+	case OverlayPalette:
+		a.overlay = nil
+		if a.takesArgs(item.Value) {
+			return a.armCommand(item.Value)
+		}
+		return a.runCommand(item.Value, "")
+	case OverlaySettings:
+		a.overlay = nil
+		return a.armSetting(item.Value)
+	case OverlaySessions:
+		a.overlay = nil
+		for i, v := range a.views {
+			if v.ID == item.Value {
+				a.active = i
+				a.mode = ModeSession
+			}
+		}
+		return nil
+	case OverlayTheme:
+		a.overlay = nil
+		// Resolved against the terminal's capability, not the outgoing theme's.
+		a.Theme = PickThemeByNameUnchecked(item.Value, a.Profile, a.Unicode)
+		return nil
+	case OverlayHelp:
+		return nil
+	}
+	return nil
+}

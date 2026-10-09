@@ -9,6 +9,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // Gap is one verification finding.
@@ -608,4 +609,64 @@ func changedFiles(diff string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// --- evidence ---
+
+func (r *Registry) getDiff(ctx context.Context, call tools.Call) tools.Result {
+	diff, notes, err := gitDiff(ctx, r.deps.Root)
+	if err != nil {
+		return unavailable("working-tree diff", err)
+	}
+	files, err := changedFiles(diff)
+	if err != nil {
+		return unavailable("diff parse", err)
+	}
+	out := map[string]any{"files": files, "diff": diff}
+	if len(notes) > 0 {
+		// The model has to be able to tell a complete diff from a capped one;
+		// acting on a partial diff as though it were whole is how a change is
+		// reported finished with files nobody looked at.
+		out["degraded"] = notes
+	}
+	return ok(out)
+}
+
+func (r *Registry) verify(ctx context.Context, call tools.Call) tools.Result {
+	report, err := r.report(ctx)
+	if err != nil {
+		return unavailable("verification", err)
+	}
+	return reported(report, report)
+}
+
+func (r *Registry) getGaps(ctx context.Context, call tools.Call) tools.Result {
+	report, err := r.report(ctx)
+	if err != nil {
+		return unavailable("gaps", err)
+	}
+	return reported(map[string]any{"gaps": report.Gaps, "blocking": report.BlockingCount()}, report)
+}
+
+func (r *Registry) getNextActions(ctx context.Context, call tools.Call) tools.Result {
+	report, err := r.report(ctx)
+	if err != nil {
+		return unavailable("next actions", err)
+	}
+	return reported(map[string]any{"next_actions": report.NextActions}, report)
+}
+
+// reported carries a verification's degradations onto the tool result.
+//
+// The JSON body already names them, and that is what the model reads. This is
+// the other reader: the session log and the run report are assembled from
+// tools.Result, and a verification whose degradations lived only in the payload
+// would arrive there looking exactly like one where every gate ran —
+// Result.Qualified() would answer false for a run that skipped a check. The
+// three tools below all project the same report, so all three carry it; a gap
+// list assembled with a gate switched off is as incomplete as the verdict is.
+func reported(payload any, report *Report) tools.Result {
+	result := ok(payload)
+	result.Degraded = report.Degraded
+	return result
 }

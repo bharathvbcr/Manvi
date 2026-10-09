@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -170,4 +171,61 @@ func (c *lockedCapture) snapshot() ([]byte, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return bytes.Clone(c.buf.Bytes()), c.lw.truncationNote()
+}
+
+// limitWriter forwards at most limit bytes to w and silently discards the rest,
+// while remaining a well-behaved io.Writer.
+//
+// That second half is the whole point. io.Writer requires a short return to
+// carry a non-nil error, and os/exec copies a child's stdout with io.Copy,
+// which enforces it: the write that straddled the cap used to return
+// (truncated, nil), io.Copy turned that into io.ErrShortWrite, os/exec closed
+// the pipe, and the child took SIGPIPE. A command that had already run to
+// completion was then reported as a failure — "failed to execute command" from
+// exec_command, and "git … failed with exit code 141" from the git tools — for
+// work whose side effects were already on disk. Capping output is not a reason
+// to kill the process producing it, and it is never a reason to call a
+// successful command failed.
+//
+// dropped counts what the cap ate, so a truncated capture can say so rather
+// than passing a partial sample off as the whole output.
+type limitWriter struct {
+	w       io.Writer
+	limit   int
+	wrote   int
+	dropped int
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.wrote >= l.limit {
+		l.dropped += len(p)
+		return len(p), nil
+	}
+	remaining := l.limit - l.wrote
+	if len(p) <= remaining {
+		n, err := l.w.Write(p)
+		l.wrote += n
+		return n, err
+	}
+	n, err := l.w.Write(p[:remaining])
+	l.wrote += n
+	if err != nil {
+		// A real downstream failure is still short, and still an error.
+		return n, err
+	}
+	l.dropped += len(p) - remaining
+	return len(p), nil
+}
+
+// truncated reports whether the cap discarded anything.
+func (l *limitWriter) truncated() bool { return l.dropped > 0 }
+
+// truncationNote renders the discarded byte count for a result, so a capped
+// capture is never presented as complete coverage.
+func (l *limitWriter) truncationNote() string {
+	if !l.truncated() {
+		return ""
+	}
+	return fmt.Sprintf("[output truncated: %d bytes captured, %d further bytes discarded]",
+		l.wrote, l.dropped)
 }

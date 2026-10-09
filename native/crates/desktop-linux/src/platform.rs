@@ -11,8 +11,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use desktop_core::{
     Action, ActionKind, Attach, Bounds, Delivery, DesktopError, MAX_DEPTH, MAX_IMAGE_PIXELS,
     MAX_NODES, MAX_TEXT_BYTES, Node, Observation, Receipt, ResolvedTarget, Result, Screenshot,
-    VisualAnchor, VisualMatch, Window, WorkerRequest, now_ms, revalidate_visual, same_target,
-    validate_state,
+    VisualAnchor, VisualMatch, Window, WorkerRequest, bounded_text, err, now_ms, revalidate_visual,
+    same_target, validate_state,
 };
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde_json::{Value, json};
@@ -29,21 +29,8 @@ use x11rb::{
     rust_connection::RustConnection,
 };
 
-fn err(code: &str, message: impl Into<String>) -> DesktopError {
-    DesktopError::new(code, message)
-}
 fn native(e: impl std::fmt::Display) -> DesktopError {
     err("native_api", e.to_string())
-}
-fn bounded(text: String) -> Result<String> {
-    if text.len() > MAX_TEXT_BYTES {
-        Err(err(
-            "attribute_limit",
-            "Accessibility text exceeds byte limit",
-        ))
-    } else {
-        Ok(text)
-    }
 }
 fn process_identity(pid: u32) -> Result<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(native)?;
@@ -632,7 +619,7 @@ async fn root(
             if root_matches(
                 window,
                 role,
-                &bounded(accessible.name().await.map_err(native)?)?,
+                &bounded_text(accessible.name().await.map_err(native)?)?,
                 extents(connection, &child).await?,
                 visible_windows,
             ) {
@@ -690,8 +677,8 @@ async fn describe(
         Role::TableRow => "row",
         _ => "group",
     };
-    let name = bounded(proxy.name().await.map_err(native)?)?;
-    let identifier = bounded(proxy.accessible_id().await.map_err(native)?)?;
+    let name = bounded_text(proxy.name().await.map_err(native)?)?;
+    let identifier = bounded_text(proxy.accessible_id().await.map_err(native)?)?;
     // AccessKit currently exposes Editable + Text without EditableText. Such
     // controls require the separately fenced physical keyboard path below.
     let editable = state.contains(State::Editable)
@@ -719,7 +706,9 @@ async fn describe(
         if count > MAX_TEXT_BYTES as i32 {
             return Err(err("attribute_limit", "Text exceeds character limit"));
         }
-        Some(bounded(text.get_text(0, count).await.map_err(native)?)?)
+        Some(bounded_text(
+            text.get_text(0, count).await.map_err(native)?,
+        )?)
     } else {
         None
     };

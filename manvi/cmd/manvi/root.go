@@ -205,25 +205,22 @@ func configPath() string {
 }
 
 // storeDBPath is the lease and task store database.
-func storeDBPath() string {
-	if custom := os.Getenv("MANVI_STORE_DB"); custom != "" {
-		if filepath.IsAbs(custom) {
-			return filepath.Clean(custom)
-		}
-		return filepath.Join(projectRoot(), custom)
-	}
-	return filepath.Join(stateDir(), "state.sqlite")
-}
+func storeDBPath() string { return overridablePath("MANVI_STORE_DB", "state.sqlite") }
 
 // graphArtifactPath is where the code graph artifact is written.
-func graphArtifactPath() string {
-	if custom := os.Getenv("MANVI_GRAPH"); custom != "" {
+func graphArtifactPath() string { return overridablePath("MANVI_GRAPH", "code_graph.json") }
+
+// overridablePath is name inside the state directory unless envKey names
+// another place: an absolute override is used as given, and a relative one is
+// anchored at the project root rather than the working directory.
+func overridablePath(envKey, name string) string {
+	if custom := os.Getenv(envKey); custom != "" {
 		if filepath.IsAbs(custom) {
 			return filepath.Clean(custom)
 		}
 		return filepath.Join(projectRoot(), custom)
 	}
-	return filepath.Join(stateDir(), "code_graph.json")
+	return filepath.Join(stateDir(), name)
 }
 
 // repoMapArtifactPath is where the repo map artifact is written.

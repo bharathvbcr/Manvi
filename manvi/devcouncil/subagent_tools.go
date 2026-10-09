@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -46,7 +47,7 @@ var conversationCounter atomic.Int64
 // management tool would never see, so "list" answered count 0 with children
 // live and "kill" could never find anything to kill.
 //
-// Production wires both (cmd/manvi/main.go), so this map stays empty there. It
+// Production wires both (cmd/manvi/harness.go), so this map stays empty there. It
 // holds a reference to any Registry that does reach it, which is a bounded cost
 // only an embedder that leaves the fields nil pays.
 var fallbackPlanes sync.Map // *Registry -> *subagentPlane
@@ -126,10 +127,9 @@ func (r *Registry) getSubagentManager() *agents.InstanceManager {
 // did not happen.
 //
 // It is a function rather than a line inside each dispatcher because there are
-// two dispatchers and the judgement drifted between them: this one lost the
-// check entirely and reported "completed" for an empty result. The second copy
-// still stands inline in the spawn_subagents fan-out in tools.go, which is
-// owned elsewhere; it should call this instead of restating it.
+// two dispatchers and the judgement drifted between them: invoke_subagent lost
+// the check entirely and reported "completed" for an empty result. Both call
+// it now.
 func requireSummary(label, summary string) error {
 	if strings.TrimSpace(summary) != "" {
 		return nil
@@ -372,13 +372,13 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					Leases: leaseSinkFor(holder),
 				})
 				if err != nil {
-					return nil, recordFailure(inst, err)
+					return leftBehind(out), recordFailure(inst, err)
 				}
 				// The same judgement the other dispatcher makes, from the same
 				// function rather than a second copy of it: a child that came
 				// back with nothing to say is not a completion.
 				if err := requireSummary(s.Role, out.Summary); err != nil {
-					return nil, recordFailure(inst, err)
+					return leftBehind(out), recordFailure(inst, err)
 				}
 
 				// Only now, with a result in hand, is "completed" claimed — and
@@ -388,7 +388,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 				// completed work is exactly the fabrication this file exists to
 				// prevent.
 				if err := inst.SetState(agents.StateCompleted, "done"); err != nil {
-					return nil, fmt.Errorf(
+					return leftBehind(out), fmt.Errorf(
 						"sub-agent %q was terminated before it could report its work: %w", s.Role, err)
 				}
 				outcome := map[string]any{
@@ -438,6 +438,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		if res.Err != nil {
 			outcome["status"] = "failed"
 			outcome["error"] = res.Error
+			carryLeftBehind(outcome, res.Value)
 		} else if value, isMap := res.Value.(map[string]any); isMap {
 			for k, v := range value {
 				outcome[k] = v
@@ -453,16 +454,17 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		outcomes = append(outcomes, outcome)
 	}
 
-	// Same shape as the fan-out in tools.go, deliberately: this was the second
+	// Same shape as the spawnSubagents fan-out, deliberately: this was the second
 	// copy, and it carried neither the report nor clean, so a caller could not
 	// tell a wholly failed dispatch from a successful one at all. "dispatched"
 	// counts what was asked for, not what ran.
 	report := agents.Summarise(results)
 	// Summed here as well as reported per child, because the dispatching model
 	// is deciding whether to delegate again and the per-child figures make it
-	// do the arithmetic. Absent rather than zero when nothing was learned: a
-	// fan-out whose children all failed spent nothing this can see, and
-	// printing 0 would read as "delegation is free".
+	// do the arithmetic. A failed child's spend is counted too (see
+	// leftBehind): it spent what it spent. Absent rather than zero when
+	// nothing was learned, because printing 0 would read as "delegation is
+	// free".
 	var spent SubAgentUsage
 	for _, res := range results {
 		if value, isMap := res.Value.(map[string]any); isMap {
@@ -494,34 +496,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 
 	// Children changed paths on their own logs, and this is the only hop that
 	// carries them to the parent's terminal checkpoint. See SubAgentResult.Wrote.
-	var wrote []string
-	truncated := false
-	for _, res := range results {
-		value, isMap := res.Value.(map[string]any)
-		if !isMap {
-			continue
-		}
-		if paths, ok := value["wrote"].([]string); ok {
-			wrote, truncated = mergeWrites(wrote, truncated, paths)
-		}
-		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
-			truncated = true
-		}
-	}
-
-	if report.Children > 0 && report.Failed == report.Children {
-		res := failure(payload, fmt.Sprintf(
-			"all %d sub-agent(s) failed; nothing was dispatched successfully", report.Children))
-		res.Wrote = wrote
-		return res
-	}
-	res := ok(payload)
-	res.Wrote = wrote
-	if truncated {
-		res.Degraded = append(res.Degraded,
-			"a sub-agent changed more paths than it reported; the list is incomplete")
-	}
-	return res
+	return fanoutResult(payload, report, results, "dispatched")
 }
 
 // recordFailure moves an instance to errored and returns the failure the child
@@ -746,4 +721,570 @@ func refuseRetiredRoleKeys(call tools.Call) *tools.Result {
 		return &res
 	}
 	return nil
+}
+
+// SubAgentRequest is one unit of delegated work, as devcouncil_spawn_subagents
+// received it from the model.
+type SubAgentRequest struct {
+	// Label names the work in the fan-out report.
+	Label string
+	// Prompt is the instruction the sub-agent is to carry out. It is the whole
+	// point of the call: a dispatch that does not deliver it has not delegated
+	// anything.
+	Prompt string
+	// TaskID, when set, is the task the child is to hold a lease on while it
+	// works.
+	TaskID string
+	// ReadOnly asks for a child that cannot mutate — an analysis fan-out rather
+	// than a build one. A runner that cannot honour it must fail rather than
+	// quietly hand back a child that can write.
+	ReadOnly bool
+	// ModelSpec is where the child is to run, in the form Definition.Model
+	// uses: "" or "inherit" for the parent's provider and model,
+	// "provider/model", a bare provider, or a bare model. It is carried
+	// unparsed because resolving it needs the provider registry, which lives
+	// with the runner and not in this package — see agents.ParsePlacement.
+	//
+	// This field is what makes a role's Model mean anything. Before it existed
+	// the dispatch read a definition, resolved its role and its write
+	// permission, and dropped the rest on the floor: every child ran on the
+	// parent's provider whatever its role said, so a planner on a frontier
+	// model dispatching workers to a local one was not expressible.
+	ModelSpec string
+	// SystemPrompt is the role's own prompt. Empty means the child inherits the
+	// parent's, which is what the "self" role wants and what a fan-out with no
+	// named type gets.
+	//
+	// A role is its instructions. Carrying Model without this would let an
+	// operator place a critic on a cheaper model while the child still ran with
+	// the parent's builder prompt — the bill would move and the behaviour would
+	// not.
+	SystemPrompt string
+	// Surface is the tool set the role declared: whether it admits the MCP
+	// group, and any allowlist it named. A zero value means no role was named
+	// and the child inherits the parent's surface, narrowed only by ReadOnly.
+	//
+	// Like ReadOnly, a runner that cannot honour it must fail rather than hand
+	// back a child with a wider surface than the role asked for. This field is
+	// what makes agents.Definition's tool permissions mean anything: before it
+	// existed they were decoded into a struct nothing downstream ever read, so
+	// a role declaring `"enable_mcp_tools": false` produced a child holding the
+	// MCP tools, and the operator had a written permission that did nothing.
+	Surface agents.ToolSurface
+	// Leases is told about every lease this child takes for itself, so the
+	// fan-out that dispatched it can give those back when the child cannot.
+	//
+	// It is the fix for the one hole in the cleanup this harness already had.
+	// agents.Holder was only ever told about a lease the *dispatcher* named in
+	// tasks[].task_id; a child that called devcouncil_checkout_task — the tool
+	// it is given, and the only way it ever takes a lease — registered nothing.
+	// Measured: an eight-way fan-out of children that each checked out a task
+	// left seven leases held for the full TTL after the run exited cleanly,
+	// and the fan-out reported "clean": true with no orphans.
+	Leases LeaseSink
+	// Verdict asks the child for a structured judgement in addition to its
+	// prose, and is set only by a dispatcher that is going to act on one.
+	//
+	// It carries the marker the child is told to emit. The runner reads that
+	// line out of the answer against a stated contract rather than guessing at
+	// the prose, and a child that never emits it comes back having reached no
+	// judgement — which is not a pass. Empty means the caller wants no
+	// judgement, and none is parsed.
+	Verdict string
+}
+
+// SubAgentResult is what one sub-agent actually produced.
+type SubAgentResult struct {
+	// Summary is the child's own account of its work, and it is what the
+	// dispatching agent reads. An empty one is treated as a failure by the
+	// dispatch: a child that finished with nothing to say did not do the work
+	// its prompt described.
+	Summary string
+	// Steps is how many steps the child spent, for the run report.
+	Steps int
+	// Usage is what the child's own turn cost.
+	//
+	// It is carried because it was being discarded. A fan-out's children do
+	// the bulk of the work and therefore the bulk of the spend, and the run's
+	// reported usage counted only the dispatching agent: measured on an
+	// eight-way fan-out, 2,200 of 38,200 input tokens — 5.8% of the real cost
+	// — reported as the whole of it. A benchmark reading that number is being
+	// told the harness is seventeen times cheaper than it is.
+	Usage SubAgentUsage
+	// Wrote names the repository-relative paths the child changed.
+	//
+	// A child runs on its own bus and its own log, so nothing it does reaches
+	// the parent's terminal checkpoint by itself. Without this a fan-out of
+	// builders leaves the parent with an empty written-path set and a
+	// dispatch tool that merely counts as a mutation, so the parent's
+	// end-of-turn check runs against nothing and reports a pass for work it
+	// never looked at. The paths come back so the parent can verify what its
+	// children did.
+	Wrote []string
+	// WroteTruncated is true when the child changed more paths than Wrote
+	// lists, so the incompleteness survives the handoff rather than being
+	// re-derived — or, worse, assumed away.
+	WroteTruncated bool
+	// Verdict is a structured judgement, set only by children dispatched to
+	// judge something. It is empty for ordinary work.
+	//
+	// It exists because "completed" does not mean "passed". A child's status
+	// is set from whether its summary was non-empty, so a critic that ran,
+	// found three defects and said so in prose is reported exactly like one
+	// that found none. Scraping the summary for a word like PASSED is not a
+	// contract — it is a hope about prose — and an advance rule built on it
+	// certifies whatever the model happened to write.
+	Verdict SubAgentVerdict
+}
+
+// SubAgentVerdict is a judging child's structured answer.
+//
+// Passed is deliberately not the zero value. A verdict that was never set, a
+// child that died, and a child that ran and found nothing wrong must not
+// serialise to the same thing: the first two are the absence of a judgement and
+// the third is a judgement, and an advance rule that cannot tell them apart
+// advances on silence.
+type SubAgentVerdict struct {
+	// Judged is false unless a judgement was actually reached. Nothing may read
+	// Passed without it.
+	Judged bool `json:"judged"`
+	// Passed is the judgement itself, meaningful only when Judged is true.
+	Passed bool `json:"passed"`
+	// Findings are what the judge objected to, already capped by its producer.
+	// A verdict that failed with no findings is still a failure — the reason
+	// may simply not have survived — but a verdict that passed while carrying
+	// findings is a contradiction, and Reconcile refuses it.
+	Findings []string `json:"findings,omitempty"`
+}
+
+// Reconcile folds a claimed verdict into a safe one, failing closed.
+//
+// Three ways a judgement can be untrustworthy, and all three resolve to the
+// same answer: not passed. A judgement that was never reached is not a pass. A
+// judgement that says it passed while listing objections is not internally
+// consistent, and the direction that is safe to be wrong in is the one that
+// asks a human. Being generous here is how "approved" comes to mean
+// "unexamined".
+func (v SubAgentVerdict) Reconcile() SubAgentVerdict {
+	if !v.Judged {
+		return SubAgentVerdict{Judged: false}
+	}
+	if v.Passed && len(v.Findings) > 0 {
+		v.Passed = false
+	}
+	return v
+}
+
+// SubAgentUsage is one child's token cost.
+//
+// Declared here in plain integers rather than as llm.Usage so this package,
+// which describes what a delegated turn owes its caller, does not take on the
+// provider layer as a dependency.
+type SubAgentUsage struct {
+	InputTokens     int `json:"input_tokens"`
+	OutputTokens    int `json:"output_tokens"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+}
+
+// Add accumulates another child's cost.
+func (u *SubAgentUsage) Add(o SubAgentUsage) {
+	u.InputTokens += o.InputTokens
+	u.OutputTokens += o.OutputTokens
+	u.ReasoningTokens += o.ReasoningTokens
+	u.CacheReadTokens += o.CacheReadTokens
+}
+
+// Any reports whether anything was spent, so a fan-out that learned nothing
+// about its children's cost says nothing rather than reporting zero.
+func (u SubAgentUsage) Any() bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.ReasoningTokens > 0 || u.CacheReadTokens > 0
+}
+
+// SubAgentRunner runs one sub-agent turn to completion.
+//
+// It is an interface, and Deps.SubAgent is allowed to be nil, because running a
+// turn needs a provider, a model, a system prompt and a session log — none of
+// which this package has or should acquire for itself. The seam lets whoever
+// already builds those attach the capability; until something does, the tool
+// says so instead of pretending.
+type SubAgentRunner interface {
+	RunSubAgent(ctx context.Context, req SubAgentRequest) (SubAgentResult, error)
+}
+
+// spawnSubagents fans delegated work out across a bounded worker pool.
+//
+// What this must never do is the thing it used to do. The handler decoded
+// `prompt` — required by its own schema — and then never read it; each worker
+// took a lease and returned {"status":"completed"} for work no model had been
+// asked to perform. Because agents.Result drops its Value from the JSON, even
+// that fiction never reached the caller: a fan-out of four analyses came back
+// as {"children":4,"failed":0}, which reads as four successes and is the
+// strongest possible claim the payload can make. An agent fanning out four
+// investigations was told all four had landed and reported the work done.
+//
+// So the capability is now either present or refused. With no runner attached
+// the dispatch fails before it acquires anything — refusing after taking leases
+// would leave every named task locked against other builders until its TTL
+// lapsed, on behalf of work that never started.
+func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Result {
+	var args struct {
+		Tasks []struct {
+			Label    string `json:"label"`
+			Prompt   string `json:"prompt"`
+			TaskID   string `json:"task_id,omitempty"`
+			ReadOnly bool   `json:"read_only,omitempty"`
+			Type     string `json:"type,omitempty"`
+		} `json:"tasks"`
+	}
+	if err := decode(call, &args); err != nil {
+		return tools.Errorf("bad arguments: %v", err)
+	}
+	if len(args.Tasks) == 0 {
+		return tools.Errorf("tasks array is required and must not be empty")
+	}
+
+	// Validated before anything is acquired. The schema marks prompt required,
+	// but the schema is a request to the model, not a guarantee about what
+	// arrives, and a child dispatched with an empty prompt is a child that
+	// cannot do anything except report that it finished.
+	for i, t := range args.Tasks {
+		if strings.TrimSpace(t.Label) == "" {
+			return tools.Errorf("tasks[%d] has no label; a fan-out result nobody can attribute is not a result", i)
+		}
+		if strings.TrimSpace(t.Prompt) == "" {
+			return tools.Errorf("tasks[%d] (%s) has an empty prompt; there is nothing to delegate", i, t.Label)
+		}
+	}
+
+	// Resolved by agents.ResolveBounds rather than re-derived here. This block
+	// was a second copy of that logic, and it had already drifted: its
+	// fallbacks were the literals 2 and 4 while the registry's defaults moved
+	// on, so a run with no configuration used one pair of bounds and a run with
+	// configuration used another. Two readers of one setting is one reader too
+	// many when the setting is a bound on how much work a turn may spawn.
+	var reg *flags.Registry
+	if r.deps.Gate != nil {
+		reg = r.deps.Gate.Flags
+	}
+	bounds := agents.ResolveBounds(reg)
+	maxDepth, maxFanout := bounds.MaxDepth, bounds.MaxFanout
+
+	// The depth bound, applied. It was read into a variable, handed to a pool
+	// whose Child() nothing ever calls, and enforced nowhere: setting
+	// agents.max_spawn_depth to 0 dispatched a full fan-out exactly as 2 did.
+	// A setting that reports itself through `manvi flags` and binds at no value
+	// is worse than one that is not offered, because an operator reads it as a
+	// control that is in force.
+	//
+	// Depth below this level stays structural — a child's registry simply has
+	// no dispatching tools, so there is no path to a grandchild to count. What
+	// this adds is the level the structure cannot express: zero, meaning this
+	// harness delegates nothing at all. agents.max_fanout cannot say that; its
+	// floor is one child.
+	if maxDepth < 1 {
+		// The reason, not the flag, when something other than the flag decided.
+		// A refusal citing agents.max_spawn_depth=0 to an operator who set it
+		// to 2 sends them to look at a setting that is not the cause.
+		cause := fmt.Sprintf("%s=%d", flags.AgentsMaxSpawnDepth, maxDepth)
+		if bounds.DepthReason != "" {
+			cause = bounds.DepthReason
+		}
+		res := tools.Errorf(
+			"delegation is off: %s, so no sub-agent may be dispatched at any width. "+
+				"Nothing was dispatched and no child ran — this is not a report of zero results. "+
+				"Carry out the work in this turn.",
+			cause)
+		res.Rule = flags.AgentsMaxSpawnDepth
+		return res
+	}
+
+	// Checked after the depth bound above. Both refuse the same call, and when
+	// both apply the setting is the more useful answer: "no runner is attached"
+	// sends an operator to look at how the harness was built, when what
+	// actually decided it was a value they can change.
+	runner := r.deps.SubAgent
+	if runner == nil {
+		// Named as a missing capability rather than as a failed fan-out, so the
+		// dispatching agent stops delegating and does the work itself instead
+		// of retrying a tool that cannot ever answer.
+		return tools.Errorf(
+			"sub-agent dispatch is not available: this harness has no sub-agent runner attached, " +
+				"so no child could be run — this is not a report of zero results, nothing was delegated; " +
+				"carry out the work in this turn instead of fanning it out")
+	}
+
+	roles := r.getSubagentRegistry()
+
+	// Where the children will actually run decides how many may run at once.
+	// The bound above came from the session's default provider, which is the
+	// wrong answer for a mixed team: a frontier parent placing builders on a
+	// local model resolved to the frontier width and dispatched all of them
+	// onto the one device the local cap exists to protect.
+	placements := make([]string, 0, len(args.Tasks))
+	for _, t := range args.Tasks {
+		if t.Type == "" {
+			continue
+		}
+		if def, ok := roles.Get(t.Type); ok {
+			placements = append(placements, def.Model)
+		}
+	}
+	maxFanout, narrowed := agents.FanoutFor(bounds, placements)
+
+	pool, err := agents.New(maxDepth, maxFanout, r.deps.Store)
+	if err != nil {
+		return tools.Errorf("creating subagent pool: %v", err)
+	}
+
+	subTasks := make([]agents.Task, 0, len(args.Tasks))
+	for _, t := range args.Tasks {
+		subTasks = append(subTasks, agents.Task{
+			Label: t.Label,
+			Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {
+				if t.TaskID != "" {
+					req := store.AcquireRequest{
+						TaskID: t.TaskID,
+						Owner:  t.Label,
+						TTL:    r.deps.LeaseTTL,
+					}
+					lease, err := r.deps.Store.Acquire(childCtx, req)
+					if err != nil {
+						return nil, fmt.Errorf("acquiring task %s: %w", t.TaskID, err)
+					}
+					if lease == nil {
+						return nil, fmt.Errorf("task %s is already held by another agent", t.TaskID)
+					}
+					// Registered before the child does any work with it, so a
+					// cancellation always finds it. See agents.Holder.
+					holder.Add(agents.Lease{TaskID: lease.TaskID, Token: lease.Token})
+				}
+
+				// A task may name a role, which is what lets one fan-out
+				// put a planner on one model and its workers on another. A
+				// task that names none keeps the placement this tool has
+				// always had: the parent's.
+				req := SubAgentRequest{
+					Label: t.Label, Prompt: t.Prompt, TaskID: t.TaskID, ReadOnly: t.ReadOnly,
+					// So a lease this child takes for itself is released by the
+					// same cleanup that releases one the dispatch named.
+					Leases: leaseSinkFor(holder),
+				}
+				if t.Type != "" {
+					if def, ok := roles.Get(t.Type); ok {
+						req.ModelSpec = def.Model
+						req.SystemPrompt = def.SystemPrompt
+						req.Surface = def.Surface()
+						// ReadOnly is a floor, never a ceiling: a caller that
+						// asked for a non-mutating child must not be handed a
+						// writing one because the role permits writes.
+						req.ReadOnly = t.ReadOnly || !def.EnableWriteTools
+						if t.ReadOnly {
+							// The caller demanded a non-mutating child, so the
+							// role's named write exceptions do not apply. Both
+							// facts arrive as one bool at the runner, so the
+							// distinction has to be made here, where the
+							// caller's own request is still separable from the
+							// role's default.
+							req.Surface.Writes = nil
+						}
+					}
+				}
+
+				out, err := runner.RunSubAgent(childCtx, req)
+				if err != nil {
+					return leftBehind(out), fmt.Errorf("sub-agent %s: %w", t.Label, err)
+				}
+				if err := requireSummary(t.Label, out.Summary); err != nil {
+					return leftBehind(out), err
+				}
+				child := map[string]any{
+					"status":  "completed",
+					"task_id": t.TaskID,
+					"summary": out.Summary,
+					"steps":   out.Steps,
+					"usage":   out.Usage,
+				}
+				if len(out.Wrote) > 0 {
+					child["wrote"] = out.Wrote
+				}
+				if out.WroteTruncated {
+					child["wrote_truncated"] = true
+				}
+				if out.Verdict.Judged {
+					child["verdict"] = out.Verdict.Reconcile()
+				}
+				return child, nil
+			},
+		})
+	}
+
+	results, err := pool.Run(ctx, subTasks)
+	if err != nil {
+		return tools.Errorf("subagent fan-out failed: %v", err)
+	}
+
+	// agents.Result carries its Value with a `json:"-"` tag, so marshalling the
+	// results directly would hand the caller labels and lease bookkeeping and
+	// no sub-agent output at all — a fan-out reported entirely as a count of
+	// children that did not fail. The outcomes are projected here so what each
+	// child actually produced is what the dispatching agent reads.
+	outcomes := make([]map[string]any, 0, len(results))
+	for _, res := range results {
+		outcome := map[string]any{"label": res.Label}
+		if res.Err != nil {
+			outcome["status"] = "failed"
+			outcome["error"] = res.Error
+			carryLeftBehind(outcome, res.Value)
+		} else if value, isMap := res.Value.(map[string]any); isMap {
+			for k, v := range value {
+				outcome[k] = v
+			}
+		} else {
+			// Unreachable with the closure above, and still not reported as a
+			// success: an outcome nobody can read is not evidence of work.
+			outcome["status"] = "failed"
+			outcome["error"] = "the sub-agent returned an unreadable outcome"
+		}
+		if len(res.ReleasedLeases) > 0 {
+			outcome["released_leases"] = res.ReleasedLeases
+		}
+		if len(res.OrphanedLeases) > 0 {
+			outcome["orphaned_leases"] = res.OrphanedLeases
+		}
+		outcomes = append(outcomes, outcome)
+	}
+
+	report := agents.Summarise(results)
+	// Summed here as well as reported per child, because the dispatching model
+	// is deciding whether to delegate again and the per-child figures make it
+	// do the arithmetic. A failed child's spend is counted too (see
+	// leftBehind): it spent what it spent. Absent rather than zero when
+	// nothing was learned, because printing 0 would read as "delegation is
+	// free".
+	var spent SubAgentUsage
+	for _, res := range results {
+		if value, isMap := res.Value.(map[string]any); isMap {
+			if u, ok := value["usage"].(SubAgentUsage); ok {
+				spent.Add(u)
+			}
+		}
+	}
+	payload := map[string]any{
+		"report":  report,
+		"clean":   report.Clean(),
+		"results": outcomes,
+	}
+	if narrowed != "" {
+		// Said out loud. An operator who set max_fanout to eight and watched
+		// two children run has to be able to find out which of their settings
+		// did not decide it.
+		payload["fanout_narrowed"] = narrowed
+	}
+	if spent.Any() {
+		payload["usage"] = spent
+	}
+
+	// The children's changed paths are carried onto this call's own result so
+	// the parent turn's terminal checkpoint can see them. Without this hop the
+	// paths stop at the child's log: the parent's checkpoint would be told the
+	// turn mutated — a dispatch is a mutating tool — and handed no file to
+	// look at, which is a check that runs against nothing and passes.
+	return fanoutResult(payload, report, results, "delegated")
+}
+
+// fanoutResult is how both dispatch tools close.
+//
+// A fan-out in which every child failed is a failed check, and this package
+// has one rule for those: "a failed check is an error result, never an empty
+// success" (see unavailable). It was returning ok() regardless, so the model
+// read a total failure as a completed delegation — and, because a non-error
+// result from a mutating tool is credited as progress, the no-progress
+// detector reset its streak too. A model that keeps delegating into failures
+// was never interrupted.
+//
+// Partial failure stays a success result: some work did land, and the
+// per-child status and clean=false in the payload say what did not.
+//
+// Either way the children's changed paths are carried onto the result, and a
+// cut list says so. A child that wrote a file and then failed still changed
+// the tree, and a checkpoint told otherwise would leave those bytes
+// unexamined. The total-failure branch used to return before the truncation
+// note, so a cut list arrived looking complete exactly when every child had
+// failed; one exit for both outcomes is what keeps that from recurring.
+func fanoutResult(payload map[string]any, report agents.Report, results []agents.Result, verb string) tools.Result {
+	var res tools.Result
+	if report.Children > 0 && report.Failed == report.Children {
+		res = failure(payload, fmt.Sprintf(
+			"all %d sub-agent(s) failed; nothing was %s successfully", report.Children, verb))
+	} else {
+		res = ok(payload)
+	}
+	wrote, truncated := childWrites(results)
+	res.Wrote = wrote
+	if truncated {
+		res.Degraded = append(res.Degraded,
+			"a sub-agent changed more paths than it reported; the list is incomplete")
+	}
+	return res
+}
+
+// leftBehind is what a child that did not complete still reports: the paths
+// it changed and what it spent. The runner returns both on its failure paths,
+// and agents.Pool keeps a task's value beside its error, so returning this with
+// the failure is what carries a failed child's writes to the parent's
+// checkpoint through childWrites. Returning nil instead dropped them: a child
+// that wrote three files and then failed was reported upward as having changed
+// nothing, and the parent verified a tree that did not include them.
+func leftBehind(out SubAgentResult) any {
+	v := map[string]any{}
+	if len(out.Wrote) > 0 {
+		v["wrote"] = out.Wrote
+	}
+	if out.WroteTruncated {
+		v["wrote_truncated"] = true
+	}
+	if out.Usage.Any() {
+		v["usage"] = out.Usage
+	}
+	if len(v) == 0 {
+		return nil
+	}
+	return v
+}
+
+// carryLeftBehind puts a failed child's changed paths on its outcome, so the
+// dispatching model reads that the failure still changed files.
+func carryLeftBehind(outcome map[string]any, value any) {
+	left, isMap := value.(map[string]any)
+	if !isMap {
+		return
+	}
+	for _, k := range []string{"wrote", "wrote_truncated"} {
+		if v, ok := left[k]; ok {
+			outcome[k] = v
+		}
+	}
+}
+
+// childWrites folds every child's changed paths into one fan-out set with
+// tools.MergeWrites, so the set a dispatch reports upward is bounded by the
+// same cap as the parent turn's set it lands in. A child that reported its own
+// list as truncated keeps the fan-out's list marked truncated too.
+func childWrites(results []agents.Result) ([]string, bool) {
+	var wrote []string
+	truncated := false
+	for _, res := range results {
+		value, isMap := res.Value.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if paths, ok := value["wrote"].([]string); ok {
+			wrote, truncated = tools.MergeWrites(wrote, truncated, paths)
+		}
+		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
+			truncated = true
+		}
+	}
+	return wrote, truncated
 }

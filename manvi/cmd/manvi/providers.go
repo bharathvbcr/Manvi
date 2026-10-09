@@ -611,3 +611,89 @@ func stallTimeoutSetting(reg *flags.Registry) (time.Duration, error) {
 	}
 	return d, nil
 }
+
+// --- providers ---
+
+// showProviders reports which model backends could actually be used. It prints
+// the source variable and the key's length, never the key: a diagnostic that
+// discloses the thing it is diagnosing is a diagnostic nobody can paste into a
+// bug report.
+func showProviders(out io.Writer, reg *flags.Registry) error {
+	resolver := credentials.NewResolver()
+	fmt.Fprintln(out, "providers")
+	fmt.Fprintln(out)
+	for _, status := range resolver.Statuses() {
+		// The local provider's readiness is not a credential question. Its
+		// servers are on loopback and ignore authorisation, so the credential
+		// line reported "unavailable" for a provider that was working — the
+		// one report an operator most needed to be right, since local is the
+		// provider they are least likely to have configured on purpose.
+		if status.Provider == local.Name {
+			fmt.Fprintf(out, "  %-12s %s\n", status.Provider, describeLocalReadiness(reg))
+			continue
+		}
+		if status.Present {
+			fmt.Fprintf(out, "  %-12s ready — credential from %s (%d chars)\n",
+				status.Provider, status.Source, status.Length)
+			continue
+		}
+		fmt.Fprintf(out, "  %-12s unavailable\n", status.Provider)
+		fmt.Fprintf(out, "               %s\n", status.Detail)
+	}
+	return nil
+}
+
+// describeLocalReadiness reports whether a local model server can be reached,
+// which is what "ready" means for this provider.
+//
+// It is bounded tightly and never fails the command: `manvi providers` is a
+// configuration report, and a scan that could not finish must degrade to
+// saying so rather than turn the whole listing into an error.
+func describeLocalReadiness(reg *flags.Registry) string {
+	// Settings first, before any server is contacted.
+	//
+	// doctor is the one command whose whole job is "is my configuration
+	// sound", and it used to answer "ready" for a configuration no turn could
+	// use: MANVI_LLM_LOCAL_TEMPERATURE=0.7x reported two healthy servers and
+	// exited 0, leaving the failure to arrive on the first turn instead. A
+	// server answering on a port says nothing about whether the sampling
+	// settings will encode, so both questions are asked and the one that
+	// cannot be satisfied is the one reported.
+	//
+	// localConfig is the same resolution a real run performs, so this cannot
+	// drift from what it is certifying.
+	if _, err := localConfig(reg); err != nil {
+		return "misconfigured — " + err.Error()
+	}
+
+	declared, origin, err := reg.String(flags.LLMLocalBaseURL)
+	if err != nil {
+		return "unavailable — " + err.Error()
+	}
+	resolver := credentials.NewResolver()
+	resolve := func() (credentials.Secret, error) { return resolver.Resolve(local.Name) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// A pinned address is asked through Scan rather than surveyed directly, so
+	// that it inherits the one-attempt policy speculative probes use. A
+	// readiness report is not a request that has to succeed, and retrying a
+	// refused loopback connection four times made `manvi doctor` sit for three
+	// seconds to print a line it already knew.
+	opts := local.ScanOptions{Credential: resolve}
+	if origin != flags.OriginDefault {
+		opts.Endpoints = []local.Endpoint{{BaseURL: declared}}
+	}
+	servers := local.Scan(ctx, opts)
+	switch {
+	case len(servers) == 0 && origin != flags.OriginDefault:
+		return fmt.Sprintf("unavailable — nothing answered %s (%s)", declared, origin)
+	case len(servers) == 0:
+		return "unavailable — no local server answered; run 'manvi local'"
+	case len(servers) == 1:
+		return fmt.Sprintf("ready — %s, %d model(s)", servers[0].Describe(), len(servers[0].Models))
+	default:
+		return fmt.Sprintf("ready — %d servers found; run 'manvi local'", len(servers))
+	}
+}

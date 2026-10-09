@@ -6,7 +6,7 @@ use block2::RcBlock;
 use desktop_core::{
     Action, ActionKind, Attach, Bounds, Delivery, DesktopError, InputStamp, MAX_DEPTH,
     MAX_IMAGE_PIXELS, MAX_NODES, MAX_TEXT_BYTES, Node, Observation, Receipt, ResolvedTarget,
-    Result, Screenshot, VisualAnchor, VisualMatch, Window, WorkerRequest, now_ms,
+    Result, Screenshot, VisualAnchor, VisualMatch, Window, WorkerRequest, err, now_ms,
     revalidate_visual, same_target, state_difference, state_fingerprint, validate_state,
 };
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
@@ -24,10 +24,6 @@ use objc2_screen_capture_kit::{
 };
 use serde_json::{Value, json};
 use std::{ptr::NonNull, sync::mpsc, time::Duration};
-
-fn err(code: &str, message: &str) -> DesktopError {
-    DesktopError::new(code, message)
-}
 
 fn attr(element: &AXUIElement, name: &str) -> Result<Option<CFRetained<CFType>>> {
     let mut raw = std::ptr::null();

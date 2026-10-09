@@ -107,6 +107,25 @@ impl std::fmt::Display for DesktopError {
 impl std::error::Error for DesktopError {}
 pub type Result<T> = std::result::Result<T, DesktopError>;
 
+/// The error constructor every platform backend calls. One owner, so the
+/// backends cannot drift on what a refusal carries.
+pub fn err(code: &str, message: impl Into<String>) -> DesktopError {
+    DesktopError::new(code, message)
+}
+
+/// Accessibility text from a platform API, refused rather than truncated when
+/// it exceeds [`MAX_TEXT_BYTES`]: a cut string would be reported as the value.
+pub fn bounded_text(text: String) -> Result<String> {
+    if text.len() > MAX_TEXT_BYTES {
+        Err(err(
+            "attribute_limit",
+            "Accessibility text exceeds byte limit",
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 pub struct Bounds {
     pub x: f64,
@@ -576,6 +595,14 @@ pub fn same_target(expected: &Node, actual: &Node) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_text_refuses_past_the_limit_and_keeps_text_at_it() {
+        let at = "a".repeat(MAX_TEXT_BYTES);
+        assert_eq!(bounded_text(at.clone()).unwrap(), at);
+        let over = bounded_text("a".repeat(MAX_TEXT_BYTES + 1)).unwrap_err();
+        assert_eq!(over.code, "attribute_limit");
+        assert_eq!(over.delivery, Delivery::NotSent);
+    }
     fn node(id: &str, name: &str) -> Node {
         Node {
             id: id.into(),

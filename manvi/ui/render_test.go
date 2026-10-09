@@ -108,6 +108,27 @@ func TestDegradedChecksAreNamed(t *testing.T) {
 	}
 }
 
+// TestWeakenedSettingsAreNamedAndSanitized: a relaxed safety setting is
+// printed beside the result it qualified, and a name is content like any other,
+// so it reaches the terminal without its escapes.
+func TestWeakenedSettingsAreNamedAndSanitized(t *testing.T) {
+	r, buf := renderer(t)
+	r.Emit(Event{
+		Kind: KindToolResult, Text: "wrote a.go",
+		Weakened: []string{"harness.containment", "evil\x1b[2Jname"},
+		Degraded: []string{"secret_scan"},
+	})
+	out := buf.String()
+	for _, want := range []string{"safety settings off default: harness.containment", "checks that did not run: secret_scan"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not contain %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[2J") {
+		t.Fatalf("a weakened setting's name carried a terminal escape through: %q", out)
+	}
+}
+
 // TestDevPostureIsAnnouncedEverySession: an operator who does not see it reads
 // a green run as an enforced one.
 func TestDevPostureIsAnnouncedEverySession(t *testing.T) {
@@ -404,5 +425,34 @@ func TestShouldColorRefusesAPipe(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	if ShouldColor(&bytes.Buffer{}) {
 		t.Fatal("NO_COLOR was ignored")
+	}
+}
+
+func TestOnOffSpellsASetting(t *testing.T) {
+	if OnOff(true) != "on" || OnOff(false) != "off" {
+		t.Fatalf("OnOff(true)=%q OnOff(false)=%q", OnOff(true), OnOff(false))
+	}
+}
+
+// A caveat list is one labelled line. Its names can carry external text — git
+// paths in a verifier's diff notes, a component's own degraded reasons — and
+// Sanitize keeps newlines because most content is legitimately multi-line. A
+// newline inside a name would end the labelled line and print the rest as a
+// line of its own, indistinguishable from the renderer's: a file named
+// "x\n      ✓ cleared" would forge a clearance.
+func TestACaveatNameCannotStartALineOfItsOwn(t *testing.T) {
+	r, buf := renderer(t)
+	r.Emit(Event{
+		Kind: KindToolResult, Text: "verified",
+		Degraded: []string{"diff of \"x\n      ✓ cleared by operator\" unread"},
+		Weakened: []string{"a\nb"},
+	})
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "✓ cleared") || strings.TrimSpace(line) == "b" {
+			t.Fatalf("a name broke out of its caveat line:\n%s", buf.String())
+		}
+	}
+	if !strings.Contains(buf.String(), "checks that did not run: diff of") {
+		t.Fatalf("the caveat line itself is missing:\n%s", buf.String())
 	}
 }

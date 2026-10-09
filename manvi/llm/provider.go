@@ -103,6 +103,40 @@ func (c Capability) Validate(req Request) error {
 	return nil
 }
 
+// Catalogue is the fixed set of models a hosted adapter serves, by name. The
+// adapters answer Capability, Models and the unknown-model refusal from it
+// rather than each carrying its own copy of the lookup.
+type Catalogue map[string]Capability
+
+// Lookup returns the descriptor for a model, or false when the catalogue does
+// not serve it. An unknown model is never given a permissive default.
+func (c Catalogue) Lookup(model string) (Capability, bool) {
+	m, ok := c[model]
+	return m, ok
+}
+
+// Models lists every model in the catalogue, sorted, so a listing or a
+// refusal that names them reads the same on every run.
+func (c Catalogue) Models() []string {
+	out := make([]string, 0, len(c))
+	for model := range c {
+		out = append(out, model)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Validate refuses a request for a model the catalogue does not serve, naming
+// the adapter and what it does serve, and otherwise checks the request against
+// that model's Capability.
+func (c Catalogue) Validate(adapter string, req Request) error {
+	m, ok := c.Lookup(req.Model)
+	if !ok {
+		return fmt.Errorf("%s: unknown model %q (serves %v)", adapter, req.Model, c.Models())
+	}
+	return m.Validate(req)
+}
+
 func hasImage(content []ContentBlock) bool {
 	for _, block := range content {
 		switch b := block.(type) {

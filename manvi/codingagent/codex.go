@@ -66,6 +66,14 @@ type Effective struct {
 		Ephemeral bool   `json:"ephemeral"`
 	} `json:"thread"`
 }
+
+// clone is the copy both adapters hand out from Effective, so a caller holding
+// it cannot reach the session's own slices.
+func (e Effective) clone() Effective {
+	e.Sandbox.WritableRoots = append([]string(nil), e.Sandbox.WritableRoots...)
+	return e
+}
+
 type Request struct {
 	ID, ThreadID, TurnID, Kind, Payload, Digest string
 	Questions                                   []Question
@@ -267,9 +275,7 @@ func (s *Codex) Effective() Effective {
 	if !s.ready {
 		return Effective{}
 	}
-	e := s.effective
-	e.Sandbox.WritableRoots = append([]string(nil), e.Sandbox.WritableRoots...)
-	return e
+	return s.effective.clone()
 }
 func (s *Codex) Close() (Exit, error) { return s.wire.close() }
 

@@ -582,3 +582,59 @@ func (a *Approver) Approve(ctx context.Context, req ui.Request) (ui.Decision, er
 		return ui.Decision{Allow: false, Reason: "cancelled while awaiting an operator"}, nil
 	}
 }
+
+func (a *App) acceptApproval() []Effect {
+	v := a.Current()
+	if v == nil || v.Approval() == nil {
+		return nil
+	}
+	card := v.Approval()
+	// The stage before the keypress, so the warning below fires for an empty
+	// submission and not merely for arriving at the field. Warning on arrival
+	// reads as a complaint about something the operator has not done yet.
+	was := card.stage
+	needed := card.NeedsSelection()
+	decision, done := card.Accept()
+	if !done {
+		switch {
+		case was == stageReason && card.isQuestion() && trimSpace(card.reason.Value()) == "":
+			a.setNotice("an empty answer is not an answer — type one, or press esc to leave it unanswered", StatusWarn)
+		case was == stageReason && trimSpace(card.reason.Value()) == "":
+			a.setNotice("a reason is required — a grant nobody can review later is not issued", StatusWarn)
+		case needed:
+			// Enter did nothing, and silence would read as a broken key rather
+			// than as a question still waiting on an answer.
+			a.setNotice("tick at least one option with space — the cursor is not a selection", StatusWarn)
+		}
+		return nil
+	}
+	v.PopApproval()
+	v.Apply(ui.Event{
+		Kind: ui.KindApprovalDone, At: time.Now().UTC(),
+		ApprovalID: card.Request.ID, Rule: card.Request.Rule, Path: card.Request.Path,
+		Text: decisionText(decision),
+	})
+	if card.Reply != nil {
+		select {
+		case card.Reply <- decision:
+		default:
+		}
+	}
+	return []Effect{EffectDecide{Reply: card.Reply, Decision: decision}}
+}
+
+func decisionText(d ui.Decision) string {
+	// An answered question is not a grant, and the transcript must not read as
+	// though the operator permitted something. Answered rather than Allow,
+	// because a decision carrying no choice is not an answer whatever Allow says.
+	if d.Answered() {
+		if d.WriteIn != "" {
+			return "answered: " + d.WriteIn
+		}
+		return "answered: " + strings.Join(d.Chosen, ", ")
+	}
+	if d.Allow {
+		return "allowed: " + d.Reason
+	}
+	return "denied: " + d.Reason
+}
