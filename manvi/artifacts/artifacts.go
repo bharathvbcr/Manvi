@@ -41,13 +41,16 @@ type Store struct {
 	dir string
 }
 
-// NewStore creates a new artifact store.
+// NewStore returns an artifact store over dir. The directory is created on the
+// first write, not here: the store is built for every tool surface, 'manvi
+// tools' listing included, and a surface that never writes an artifact must
+// not leave a directory behind in the checkout it was built over.
 func NewStore(dir string) (*Store, error) {
 	if dir == "" {
 		dir = ".devcouncil/artifacts"
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("artifacts: creating store dir %s: %w", dir, err)
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("artifacts: store dir %s is not a directory", dir)
 	}
 	return &Store{dir: dir}, nil
 }
@@ -282,12 +285,17 @@ func (s *Store) List() ([]*Artifact, error) {
 // than resolving it.
 
 // containedPath returns the physical path for a cleaned artifact name,
-// creating the directories beneath it, and refuses if any component is a
-// symbolic link or is not a directory.
+// creating the store directory and the directories beneath it, and refuses if
+// any component below the store directory is a symbolic link or is not a
+// directory. Only the two writes call it, which is what keeps a store that is
+// never written from ever touching the disk.
 func (s *Store) containedPath(clean string) (string, error) {
 	root, err := filepath.Abs(s.dir)
 	if err != nil {
 		return "", fmt.Errorf("artifacts: resolving store dir %s: %w", s.dir, err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("artifacts: creating store dir %s: %w", s.dir, err)
 	}
 	current := root
 	parts := strings.Split(filepath.ToSlash(clean), "/")

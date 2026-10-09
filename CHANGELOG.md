@@ -138,6 +138,30 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- **Read-only commands no longer write to the repository, and the managed
+  `.gitignore` rules no longer reach past the harness's own state.** Every
+  command except `help` and `version` created `.devcouncil/` and appended
+  about fifty ignore rules to `.gitignore`. That included `logo`, `flags`,
+  `providers`, `tools`, an unknown command and a usage error, and outside a
+  git repository it created a new `.gitignore`. The rules included
+  repository-wide `*.sqlite`, `*.db`, `.claude*`, `.cursor/` and `logs/`, which
+  hid tracked fixtures and checked-in agent settings. Now:
+  - Only commands that keep state prepare the repository: the face, `tui`,
+    `run`, `serve`, `watch`, `doctor`, `tool`, `allow`, `lease
+    list|acquire|release` and `map build|rebuild`. `manvi tools` also stopped
+    creating `.devcouncil/artifacts/`, which it did even with
+    `MANVI_HARNESS_INIT_ENABLED=false`, because the artifact store now creates
+    its directory on its first write.
+  - The managed rules are `.devcouncil/*`, `!/.devcouncil/` and
+    `!.devcouncil/config.yaml`, plus the anchored path of anything relocated
+    inside the repository with `MANVI_STATE_DIR`, `MANVI_STORE_DB` or
+    `MANVI_GRAPH`.
+  - A rule that would ignore a tracked file is not written, and stderr names
+    the file. Git decides which files match.
+  - No `.gitignore` is written outside a git working tree.
+
+  A repository that already received the old rules keeps them; delete any you
+  do not want.
 - **Manvi no longer re-includes nested `.devcouncil/` caches in a repository's
   `.gitignore`.** Its managed rules carried an unanchored `!.devcouncil/`.
   Rules are matched by text and appended last, so in a repository that

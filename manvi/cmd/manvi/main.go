@@ -58,12 +58,18 @@ Usage:
   manvi version, --version          Print which build this is: version, revision, toolchain
   manvi help, -h, --help            Show this help
 
-Every command first prepares the repository it is standing in: the state
-directory the harness writes into, and the managed rules in .gitignore. It is
-idempotent, it only ever adds, and it reports on stderr what it changed. 'manvi
-tui' also brings the navigation index up to date, in the background, so the
-first frame does not wait on a build whose cost scales with the repository.
-Set MANVI_HARNESS_INIT_ENABLED=false to leave the working tree untouched.
+Commands that keep state — the face, run, serve, watch, doctor, tool, allow,
+lease, and map build/rebuild — first prepare the repository they are standing
+in: the state directory the harness writes into and, inside a git working tree,
+the .gitignore rules that keep that directory out of a commit. It is
+idempotent, it only ever adds, it never adds a rule that would ignore a tracked
+file, and it reports on stderr what it changed. Every other command — help,
+version, flags, logo, providers, budget, tools, check, an unknown command, a
+missing or unknown subcommand, or '--help' after any command — leaves the
+working tree as it found it. 'manvi tui' also brings the navigation index up to date, in the
+background, so the first frame does not wait on a build whose cost scales with
+the repository. Set MANVI_HARNESS_INIT_ENABLED=false to leave the working tree
+untouched by those too.
 
 Exit status:
   'manvi run' documents its own — see 'manvi run --help'. 'manvi check' reports
@@ -331,21 +337,23 @@ func run(out, notes io.Writer, args []string) error {
 	// "hard rules cannot be switched off mid-run" a fact rather than a comment.
 	reg.Seal()
 
-	// Before the command runs, and for every command, because both failures
-	// this prevents are silent ones. Without the state directory the store
-	// cannot be opened, so lease checks refuse for a reason that has nothing to
-	// do with the lease; without the ignore rules the index, the grant ledger,
-	// and the code graph go into the next commit.
+	// Before the command runs, for every command that keeps state, because
+	// both failures this prevents are silent ones. Without the state directory
+	// the store cannot be opened, so lease checks refuse for a reason that has
+	// nothing to do with the lease; without the ignore rules the index, the
+	// grant ledger, and the code graph go into the next commit.
 	//
 	// It reports rather than returns: scaffolding is not a gate, and a harness
 	// that refused to run 'manvi doctor' because it could not write .gitignore
 	// would be failing at the diagnosis the operator asked for.
-	report, err := scaffold(reg)
-	if err != nil {
-		return err
-	}
-	for _, line := range report.Lines() {
-		fmt.Fprintf(notes, "manvi: %s\n", line)
+	if preparesRepository(args) {
+		report, err := scaffold(reg)
+		if err != nil {
+			return err
+		}
+		for _, line := range report.Lines() {
+			fmt.Fprintf(notes, "manvi: %s\n", line)
+		}
 	}
 
 	if len(args) == 0 {
@@ -417,6 +425,44 @@ func mapClient(root string) *devmap.Client {
 // grepClient builds the repository-search client.
 func grepClient(root string) *dcgrep.Client {
 	return dcgrep.New(toolBinary(dcgrep.BinaryEnv, "dcgrep"), root)
+}
+
+// preparesRepository reports whether the command in args keeps state — opens
+// the store, writes the grant ledger or the index, or drives a session that
+// does — and so needs the repository prepared before it runs.
+//
+// Everything else is left exactly as it was found: help and the version, which
+// return before this is asked; the flag table, the logo, the provider and tool
+// listings, 'check' (it reads the ledger and the graph, and writes neither); an
+// unknown command; and a subcommand that is missing or unknown. Scaffolding
+// used to run for all of them, so an agent probing a checkout with 'manvi
+// logo' or a typo appended ignore rules to a .gitignore that was not the
+// harness's to edit.
+//
+// The default is to leave the tree alone. A command added later writes nothing
+// until it is listed here, which fails toward a store that says it cannot open
+// rather than toward a file nobody asked to have changed.
+func preparesRepository(args []string) bool {
+	if len(args) == 0 {
+		return true // the bare command is the full-screen face
+	}
+	if len(args) > 1 && (args[1] == "-h" || args[1] == "--help") {
+		return false
+	}
+	switch args[0] {
+	case "tui", "run", "serve", "watch", "doctor":
+		return true
+	case "tool", "allow":
+		// Each needs an argument to do anything; without one it is a usage
+		// error, and a usage error has nothing to keep.
+		return len(args) > 1
+	case "lease":
+		return len(args) > 1 && (args[1] == "list" || args[1] == "acquire" || args[1] == "release")
+	case "map":
+		// 'map status' reads the index; only a build writes one.
+		return len(args) > 1 && (args[1] == "build" || args[1] == "rebuild")
+	}
+	return false
 }
 
 // scaffold prepares the repository this invocation is standing in.

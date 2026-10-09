@@ -2,13 +2,26 @@
 // the harness writes into, and the ignore rules that keep that state out of a
 // commit.
 //
-// It runs on every invocation rather than behind an init subcommand, because
-// both failures it prevents are silent ones. A missing state directory makes
-// the store unopenable, so every lease check refuses and every write that needs
-// one is blocked for a reason that has nothing to do with policy. An unignored
-// state directory puts a multi-megabyte index, a grant ledger, and a code graph
-// into someone's next commit. Neither announces itself at the moment it starts
-// being true.
+// It runs ahead of every command that opens the store or writes state, rather
+// than behind an init subcommand, because both failures it prevents are silent
+// ones. A missing state directory makes the store unopenable, so every lease
+// check refuses and every write that needs one is blocked for a reason that has
+// nothing to do with policy. An unignored state directory puts a multi-megabyte
+// index, a grant ledger, and a code graph into someone's next commit. Neither
+// announces itself at the moment it starts being true.
+//
+// It does not run for anything else. A command that only reads — help, a
+// version, the flag table, the logo, a typo — has no state to protect, and an
+// agent probing someone's checkout with one must leave that checkout exactly as
+// it found it. Which commands those are is decided where they are dispatched,
+// in cmd/manvi.
+//
+// What it writes is held to two limits. The ignore rules are about the
+// harness's own files and nothing wider, and none of them may ignore a file the
+// repository tracks: the .gitignore is the operator's, and a rule that hides
+// their checked-in settings or fixtures is the harness deciding something about
+// files it does not own. Outside a git working tree it writes no .gitignore at
+// all, because there is nothing for one to govern.
 //
 // Nothing here is a gate, and nothing here is allowed to stop the command the
 // operator actually typed. Scaffolding that refused to let the harness start
@@ -19,10 +32,16 @@
 package bootstrap
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
+	"time"
 )
 
 // Section is one heading in the managed part of .gitignore, with the rules
@@ -32,21 +51,35 @@ type Section struct {
 	Rules   []string
 }
 
-// Sections are the rules the harness maintains.
+// Sections are the rules the harness maintains: its own state directory, and
+// nothing else.
 //
-// They were transcribed from DevCouncil's Python ensure_gitignore rather than
-// invented. That writer has since been removed, so nothing keeps the two in
-// step any more: DevCouncil's own .gitignore is now the reference, and a rule
-// that differs from it by a character is a rule Ensure reads as missing and
+// They were transcribed from DevCouncil's Python ensure_gitignore, which also
+// carried four repository-wide sections — local AI agent directories (.claude*,
+// .cursor/, …), *.sqlite and *.db, logs and temporary files, and environment and
+// cache directories. Those were dropped, not made opt-in, and the decision is
+// recorded here because it is the one a reader will want to reverse:
+//
+//   - They are hygiene for a repository, not protection for this harness. The
+//     harness's databases, index, graph and ledger all live in the state
+//     directory, which the rules below cover; an artifact moved elsewhere is
+//     covered by its own path (see sectionsFor). Nothing the harness writes
+//     needed *.sqlite.
+//   - They were wrong for the repositories they landed in. ".claude*" and
+//     ".cursor/" hid checked-in agent settings, "*.sqlite" and "*.db" hid test
+//     fixtures, "logs/" hid a documented directory — and they landed from any
+//     command, a help probe included, in checkouts that never asked.
+//   - Opt-in would need a setting, and the settings catalogue belongs to
+//     DevCouncil. A repository that wants those rules can write them; they are
+//     one line each, and they are the operator's decision to make.
+//
+// DevCouncil's own .gitignore is the reference for the rules that remain, and a
+// rule that differs from it by a character is a rule Ensure reads as missing and
 // appends — where, being last, it wins.
 //
-// Two entries are deliberately not carried over:
-//
-//   - DevCouncil ignores AGENTS.md and CLAUDE.md because `devmap` regenerates
-//     them. This harness generates neither, so ignoring them here would hide a
-//     hand-written file rather than a derived one.
-//   - DevCouncil's agent list carries ".conducor/" beside ".conductor/". It is
-//     a typo, and writing it into an operator's file would propagate it.
+// DevCouncil also ignores AGENTS.md and CLAUDE.md because `devmap` regenerates
+// them. This harness generates neither, so ignoring them here would hide a
+// hand-written file rather than a derived one.
 var Sections = []Section{
 	{
 		// The negations are what keep DevCouncil's committable config
@@ -68,75 +101,6 @@ var Sections = []Section{
 			"!.devcouncil/config.yaml",
 		},
 	},
-	{
-		Heading: "Local AI coding agents",
-		Rules: []string{
-			".agents/",
-			".codex/",
-			".aider*",
-			".gemini/",
-			".claude*",
-			".cursor/",
-			".openhands/",
-			".opencode/",
-			".conductor/",
-			".antigravity/",
-			".warp/",
-			".grok/",
-		},
-	},
-	{
-		Heading: "Secrets and local databases",
-		Rules: []string{
-			"*.sqlite",
-			"*.sqlite-wal",
-			"*.sqlite-shm",
-			"*.db",
-		},
-	},
-	{
-		Heading: "Temporary, log, and dump artifacts",
-		Rules: []string{
-			"logs/",
-			"log/",
-			"tmp/",
-			"temp/",
-			".tmp/",
-			".temp/",
-			"scratch/",
-			"dumps/",
-			"dump/",
-			"*.tmp",
-			"*.temp",
-			"*.log",
-			"*.dmp",
-			"*.dump",
-			"*.bak",
-			"*.swp",
-			"*_results.txt",
-			"*_log.txt",
-			"*_output.txt",
-		},
-	},
-	{
-		Heading: "Environment, dependency, and cache directories",
-		Rules: []string{
-			"__pycache__/",
-			"*.py[cod]",
-			".venv/",
-			"venv/",
-			"node_modules/",
-			".env",
-			".env.local",
-			".env.*",
-			"!.env.example",
-			".pytest_cache/",
-			".mypy_cache/",
-			".ruff_cache/",
-			".DS_Store",
-			"Thumbs.db",
-		},
-	},
 }
 
 // Options configures one Ensure.
@@ -148,7 +112,9 @@ type Options struct {
 	// ArtifactPaths are files the harness will write. Their parent directories
 	// are created, so an operator who pointed MANVI_STORE_DB or MANVI_GRAPH at
 	// a path outside the state directory does not get a failure from sqlite
-	// about a directory the harness could have made.
+	// about a directory the harness could have made — and one that lands
+	// inside the repository but outside the state directory is ignored by its
+	// own path.
 	ArtifactPaths []string
 	// Gitignore, when false, leaves .gitignore untouched.
 	Gitignore bool
@@ -172,11 +138,21 @@ type Report struct {
 	// AddedRules holds the ignore rules appended by this call. An empty slice
 	// after a successful run means the file already carried all of them.
 	AddedRules []string
-	// Untracked reports that Root is not a git working tree, so the ignore
-	// rules are written but currently govern nothing.
+	// Untracked reports that Root is not inside a git working tree, so
+	// .gitignore was left alone: there is nothing for it to govern.
 	Untracked bool
 	// Failures holds every step that could not run.
 	Failures []Failure
+	// Withheld holds the managed rules left out of .gitignore because they
+	// would have ignored a file the repository tracks.
+	Withheld []Withheld
+}
+
+// Withheld is one managed rule that was not written, and the tracked files it
+// would have hidden.
+type Withheld struct {
+	Rule    string
+	Tracked []string
 }
 
 // Lines renders the report for a human, one fact per line, and returns nothing
@@ -188,14 +164,21 @@ func (r Report) Lines() []string {
 	for _, dir := range r.CreatedDirs {
 		lines = append(lines, "created "+dir)
 	}
+	if r.Untracked && len(r.CreatedDirs) > 0 {
+		// Said only beside the directory this run created, so the note lands
+		// once, next to the change it explains, rather than on every later run.
+		lines = append(lines, "not a git working tree — .gitignore left alone")
+	}
 	if n := len(r.AddedRules); n > 0 {
 		lines = append(lines, fmt.Sprintf("added %d ignore rule(s) to .gitignore: %s",
 			n, summarise(r.AddedRules, 6)))
-		if r.Untracked {
-			// Said only when something was actually written, so the note lands
-			// next to the file it is about rather than on every later run.
-			lines = append(lines, "no .git here — those rules take effect when this becomes a repository")
-		}
+	}
+	for _, w := range r.Withheld {
+		// Said on every run that would have written it, because the state it
+		// describes persists: the harness's files are not being kept out of a
+		// commit, and only the operator can decide how they should be.
+		lines = append(lines, fmt.Sprintf("left %s out of .gitignore: it would ignore tracked %s",
+			w.Rule, summarise(w.Tracked, 3)))
 	}
 	for _, f := range r.Failures {
 		lines = append(lines, f.String())
@@ -235,53 +218,52 @@ func Ensure(root string, opts Options) Report {
 	}
 
 	if opts.Gitignore {
-		added, err := ensureGitignore(root, sectionsFor(root, opts.StateDir))
+		result, err := ensureGitignore(root, sectionsFor(root, opts))
 		if err != nil {
 			report.Failures = append(report.Failures, Failure{".gitignore could not be updated", err})
 		}
-		report.AddedRules = added
-		if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-			report.Untracked = true
-		}
+		report.AddedRules = result.added
+		report.Withheld = result.withheld
+		report.Untracked = result.untracked
 	}
 	return report
 }
 
 // sectionsFor is the managed rule set for one repository: the fixed sections,
-// plus the state directory when it is somewhere the fixed ones do not cover.
+// plus the harness's own files wherever the fixed ones do not cover them.
 //
-// The added rule is the whole point of the exercise for an operator who moved
-// MANVI_STATE_DIR. Without it the harness creates a directory, fills it with an
-// index and a grant ledger, and leaves it for the next commit — the exact
-// failure the fixed ".devcouncil/*" rule exists to prevent, reintroduced by the
-// setting that was supposed to relocate it.
-func sectionsFor(root, stateDir string) []Section {
-	rule := stateDirRule(root, stateDir)
-	if rule == "" {
+// The added rules are the whole point of the exercise for an operator who
+// moved MANVI_STATE_DIR, MANVI_STORE_DB or MANVI_GRAPH. Without them the
+// harness creates a database or a graph, and leaves it for the next commit —
+// the exact failure the fixed ".devcouncil/*" rule exists to prevent,
+// reintroduced by the setting that was supposed to relocate it. Each is named by
+// its own path, which is what replaced the repository-wide "*.sqlite".
+func sectionsFor(root string, opts Options) []Section {
+	var rules []string
+	if rule := stateDirRule(root, opts.StateDir); rule != "" {
+		rules = append(rules, rule)
+	}
+	for _, path := range opts.ArtifactPaths {
+		rules = append(rules, artifactRules(root, opts.StateDir, path)...)
+	}
+	if len(rules) == 0 {
 		return Sections
 	}
 	// A fresh slice: appending to the package-level one would let a repository
 	// with a moved state directory mutate what every later caller maintains.
 	return append(append([]Section{}, Sections...),
-		Section{Heading: "Harness state directory", Rules: []string{rule}})
+		Section{Heading: "Harness state outside .devcouncil", Rules: dedupe(rules)})
 }
 
 // stateDirRule is the ignore rule for a relocated state directory, or empty
 // when there is nothing to add: a directory outside the repository cannot be
 // ignored from inside it, and the default is already covered.
 func stateDirRule(root, stateDir string) string {
-	if stateDir == "" {
+	rel, ok := under(root, stateDir)
+	if !ok {
 		return ""
 	}
-	abs := stateDir
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, abs)
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return ""
-	}
-	rule := filepath.ToSlash(rel) + "/"
+	rule := rel + "/"
 	for _, section := range Sections {
 		for _, existing := range section.Rules {
 			// The default state directory is covered by the DevCouncil rules,
@@ -292,6 +274,72 @@ func stateDirRule(root, stateDir string) string {
 		}
 	}
 	return rule
+}
+
+// sqliteJournals are the files SQLite writes beside a database, which go
+// wherever the database goes.
+var sqliteJournals = []string{"-wal", "-shm", "-journal"}
+
+// artifactRules are the ignore rules for one artifact the harness writes, or
+// none when the state directory's rules already cover it or the path is outside
+// the repository. They are anchored, so a file of the same name anywhere else in
+// the tree — a fixture, say — is not swept up with it.
+func artifactRules(root, stateDir, path string) []string {
+	rel, ok := under(root, path)
+	if !ok {
+		return nil
+	}
+	if stateDir != "" {
+		if _, inState := under(stateDirAbs(root, stateDir), path); inState {
+			return nil
+		}
+	}
+	rules := []string{"/" + rel}
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".sqlite", ".sqlite3", ".db":
+		for _, suffix := range sqliteJournals {
+			rules = append(rules, "/"+rel+suffix)
+		}
+	}
+	return rules
+}
+
+// stateDirAbs resolves the state directory against the root.
+func stateDirAbs(root, stateDir string) string {
+	if filepath.IsAbs(stateDir) {
+		return filepath.Clean(stateDir)
+	}
+	return filepath.Join(root, stateDir)
+}
+
+// under reports path relative to dir, slash-separated, when path is strictly
+// below dir. Relative paths are resolved against dir.
+func under(dir, path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	abs := path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(dir, abs)
+	}
+	rel, err := filepath.Rel(dir, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// dedupe drops repeated rules, keeping the first of each.
+func dedupe(rules []string) []string {
+	seen := map[string]bool{}
+	out := rules[:0:0]
+	for _, rule := range rules {
+		if !seen[rule] {
+			seen[rule] = true
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 // directories collects the directories to ensure, in a stable order and
@@ -334,29 +382,50 @@ func display(root, path string) string {
 	return rel
 }
 
-// ensureGitignore appends whatever managed rules are missing, and returns them.
+// gitignoreResult is what ensureGitignore did.
+type gitignoreResult struct {
+	added     []string
+	withheld  []Withheld
+	untracked bool
+}
+
+// gitTimeout bounds every git call one Ensure makes, together. Scaffolding
+// runs before the command the operator typed, and a git that hangs — a lock, a
+// network filesystem — must not hang that command with it.
+const gitTimeout = 10 * time.Second
+
+// ensureGitignore appends whatever managed rules are missing, and reports them.
 //
 // Missing is decided against every non-empty line already in the file, not
 // against a marker block, so a rule an operator wrote themselves is never
 // duplicated and a block they edited is never rewritten. Nothing is removed and
 // nothing is reordered: this file is the operator's, and the harness only ever
 // adds to the end of it.
-func ensureGitignore(root string, sections []Section) ([]string, error) {
+//
+// Git is consulted only when something is missing, which after the first run
+// in a repository is never: whether this is a working tree at all, and which
+// tracked files the additions would hide. A rule that would hide one is
+// withheld rather than written.
+func ensureGitignore(root string, sections []Section) (gitignoreResult, error) {
+	var result gitignoreResult
 	path := filepath.Join(root, ".gitignore")
 
 	var content string
+	// An existing file keeps its mode; the harness only adds to it.
+	mode := os.FileMode(0o644)
 	info, statErr := os.Stat(path)
 	if statErr == nil {
 		if info.IsDir() {
-			return nil, fmt.Errorf("%s is a directory", path)
+			return result, fmt.Errorf("%s is a directory", path)
 		}
+		mode = info.Mode().Perm()
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
 		content = string(data)
 	} else if !os.IsNotExist(statErr) {
-		return nil, statErr
+		return result, statErr
 	}
 
 	present := map[string]bool{}
@@ -365,26 +434,69 @@ func ensureGitignore(root string, sections []Section) ([]string, error) {
 			present[trimmed] = true
 		}
 	}
+	write := map[string]bool{}
+	for _, section := range sections {
+		for _, rule := range section.Rules {
+			if !present[rule] {
+				write[rule] = true
+			}
+		}
+	}
+	if len(write) == 0 {
+		return result, nil
+	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	inTree, err := inWorkTree(ctx, root)
+	if err != nil {
+		return result, err
+	}
+	if !inTree {
+		result.untracked = true
+		return result, nil
+	}
+
+	withheld, err := withholdTracked(ctx, root, content, sections, present, write)
+	if err != nil {
+		return result, err
+	}
+	result.withheld = withheld
+
+	text, added := render(content, sections, write)
+	if len(added) == 0 {
+		return result, nil
+	}
+	if err := writeAtomic(path, text, mode); err != nil {
+		return result, err
+	}
+	result.added = added
+	return result, nil
+}
+
+// render is content with the rules in write appended under their headings, and
+// the rules it appended.
+func render(content string, sections []Section, write map[string]bool) (string, []string) {
 	var (
 		chunks []string
 		added  []string
 	)
 	for _, section := range sections {
-		var missing []string
+		var rules []string
 		for _, rule := range section.Rules {
-			if !present[rule] {
-				missing = append(missing, rule)
+			if write[rule] {
+				rules = append(rules, rule)
 			}
 		}
-		if len(missing) == 0 {
+		if len(rules) == 0 {
 			continue
 		}
-		chunks = append(chunks, "# "+section.Heading+"\n"+strings.Join(missing, "\n"))
-		added = append(added, missing...)
+		chunks = append(chunks, "# "+section.Heading+"\n"+strings.Join(rules, "\n"))
+		added = append(added, rules...)
 	}
 	if len(chunks) == 0 {
-		return nil, nil
+		return content, nil
 	}
 
 	var b strings.Builder
@@ -399,15 +511,174 @@ func ensureGitignore(root string, sections []Section) ([]string, error) {
 	}
 	b.WriteString(strings.Join(chunks, "\n\n"))
 	b.WriteString("\n")
+	return b.String(), added
+}
 
-	mode := os.FileMode(0o644)
-	if statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := writeAtomic(path, b.String(), mode); err != nil {
+// withholdTracked removes from write every rule that would make git ignore a
+// file the repository tracks, and reports what each one would have hidden.
+//
+// Git decides, not a reimplementation of its matching: what a rule means
+// depends on its anchoring, on the negations after it, and on where the file
+// sits relative to the top level, and a matcher that disagreed with git about
+// any of those would pass the rule it exists to stop. The candidate file is
+// evaluated whole, against the files tracked below root, and compared with the
+// operator's file as it stands — a tracked file their own rules already ignore
+// is theirs, not something this call did.
+//
+// Rules are tried one at a time, in order, and a rule is withheld only when
+// leaving it out hides fewer tracked files. If anything is still hidden after
+// every rule has been tried, the whole addition is refused: writing it would
+// break the one promise this function exists to keep.
+func withholdTracked(ctx context.Context, root, content string, sections []Section, present, write map[string]bool) ([]Withheld, error) {
+	baseline, err := trackedIgnored(ctx, root, content)
+	if err != nil {
 		return nil, err
 	}
-	return added, nil
+	hidden := func() ([]string, error) {
+		text, _ := render(content, sections, write)
+		ignored, err := trackedIgnored(ctx, root, text)
+		if err != nil {
+			return nil, err
+		}
+		var newly []string
+		for _, file := range ignored {
+			if !slices.Contains(baseline, file) {
+				newly = append(newly, file)
+			}
+		}
+		return newly, nil
+	}
+
+	newly, err := hidden()
+	if err != nil || len(newly) == 0 {
+		return nil, err
+	}
+
+	var withheld []Withheld
+	for _, section := range sections {
+		for _, rule := range section.Rules {
+			if len(newly) == 0 {
+				break
+			}
+			if !write[rule] || strings.HasPrefix(rule, "!") {
+				continue
+			}
+			delete(write, rule)
+			after, err := hidden()
+			if err != nil {
+				return nil, err
+			}
+			if len(after) >= len(newly) {
+				write[rule] = true
+				continue
+			}
+			var stopped []string
+			for _, file := range newly {
+				if !slices.Contains(after, file) {
+					stopped = append(stopped, file)
+				}
+			}
+			withheld = append(withheld, Withheld{Rule: rule, Tracked: stopped})
+			newly = after
+		}
+	}
+	if len(newly) > 0 {
+		return nil, fmt.Errorf("the managed rules would ignore tracked %s, and no single rule could be left out to prevent it", summarise(newly, 3))
+	}
+
+	// A negation re-includes what a rule beside it excluded. With every
+	// exclusion in its section withheld and none already in the file, it
+	// re-includes nothing, and writing it would leave a line in the operator's
+	// file that explains a rule that is not there.
+	for _, section := range sections {
+		active := false
+		for _, rule := range section.Rules {
+			if !strings.HasPrefix(rule, "!") && (present[rule] || write[rule]) {
+				active = true
+				break
+			}
+		}
+		if active {
+			continue
+		}
+		for _, rule := range section.Rules {
+			delete(write, rule)
+		}
+	}
+	return withheld, nil
+}
+
+// trackedIgnored lists the files tracked below root that a .gitignore holding
+// content, placed at root, would ignore.
+//
+// The content goes into a temporary file beside the real one and git is told
+// to read that name in place of .gitignore, so the rules are evaluated exactly
+// as they would be once written — anchored at root, negations included —
+// without the operator's file being touched to find out.
+func trackedIgnored(ctx context.Context, root, content string) ([]string, error) {
+	if strings.TrimSpace(content) == "" {
+		return nil, nil
+	}
+	tmp, err := os.CreateTemp(root, ".gitignore-check-*")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close() // the write failed; that is the error worth returning
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+
+	out, err := git(ctx, root, "ls-files", "-z", "--cached", "--ignored",
+		"--exclude-per-directory="+filepath.Base(name))
+	if err != nil {
+		return nil, fmt.Errorf("listing the tracked files the rules would ignore: %w", err)
+	}
+	var files []string
+	for _, file := range strings.Split(string(out), "\x00") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// inWorkTree reports whether root is inside a git working tree.
+//
+// Git answers rather than a stat of root/.git: the project root can sit below
+// the top level, and an empty .git directory is not a repository. "Not a
+// repository" is the one failure that is an answer; any other — no git on PATH,
+// an ownership refusal, a timeout — is returned, because a check that could not
+// run must not read as one that said no.
+func inWorkTree(ctx context.Context, root string) (bool, error) {
+	out, err := git(ctx, root, "rev-parse", "--is-inside-work-tree")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && strings.Contains(string(exit.Stderr), "not a git repository") {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not tell whether %s is a git working tree: %w", root, err)
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+// git runs one git command in dir and returns its stdout. The C locale is
+// forced so the one message inWorkTree reads is the one it looks for.
+func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	// #nosec G204 -- the binary is the literal "git"; every argument is a literal, the project root, or a file name this package created.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		return out, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+	}
+	return out, err
 }
 
 // writeAtomic replaces path in one step.
@@ -426,12 +697,15 @@ func writeAtomic(path, content string, mode os.FileMode) error {
 	name := tmp.Name()
 	defer os.Remove(name)
 
+	// On each failure below, the step that failed is the error worth
+	// returning; the close that follows it is cleanup, and the deferred
+	// remove takes the half-written file either way.
 	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	// Sync before publish: without this a crash right after the rename can
@@ -439,7 +713,7 @@ func writeAtomic(path, content string, mode os.FileMode) error {
 	// that silently disables the rules it carries. The session store's
 	// link-and-sync protocol is the reference here.
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

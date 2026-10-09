@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -145,17 +146,67 @@ func TestWrapNoticeKeepsWholeWordsAndDropsEmpty(t *testing.T) {
 	}
 }
 
-// TestEveryCommandPreparesTheRepository covers the promise the usage text
-// makes: it is the command the operator typed that scaffolds, not a separate
-// init they have to remember. 'flags' is the least repository-shaped command
-// there is, which is the point — if that one prepares the directory, all of
-// them do.
-func TestEveryCommandPreparesTheRepository(t *testing.T) {
+// gitWorkTree is a committed git repository with a .gitignore of its own, so a
+// test can ask git whether a command left it exactly as it was.
+func gitWorkTree(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH; .gitignore is only managed inside a git working tree")
+	}
 	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	gitIn(t, root, "init", "-q")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("# notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-qm", "baseline")
+	return root
+}
+
+// gitIn runs one git command in dir and fails the test if it does.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	// #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
+	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid"}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// readGitignore returns root's .gitignore, which every gitWorkTree has.
+func readGitignore(t *testing.T, root string) []byte {
+	t.Helper()
+	// #nosec G304 -- a path under this test's own t.TempDir.
+	data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// TestCommandsThatKeepStatePrepareTheRepository covers the promise the usage
+// text makes: it is the command the operator typed that scaffolds, not a
+// separate init they have to remember. 'doctor' is the exemplar because it
+// opens the store, and a store that cannot be opened for want of a directory
+// is the failure scaffolding exists to prevent.
+//
+// This test used 'flags' until the audit of 2026-10-09: the premise was that
+// if the least repository-shaped command prepared the directory, all of them
+// did. That premise was the defect — 'flags' keeps no state, and an agent
+// reading the flag table dirtied someone else's tree with it.
+func TestCommandsThatKeepStatePrepareTheRepository(t *testing.T) {
+	root := gitWorkTree(t)
 	t.Chdir(root)
 
 	var out, notes bytes.Buffer
-	if err := run(&out, &notes, []string{"flags"}); err != nil {
+	if err := run(&out, &notes, []string{"doctor"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,7 +232,7 @@ func TestEveryCommandPreparesTheRepository(t *testing.T) {
 
 	// And the second command through says nothing, because it changed nothing.
 	var second, secondNotes bytes.Buffer
-	if err := run(&second, &secondNotes, []string{"flags"}); err != nil {
+	if err := run(&second, &secondNotes, []string{"doctor"}); err != nil {
 		t.Fatal(err)
 	}
 	if secondNotes.Len() != 0 {
@@ -189,21 +240,89 @@ func TestEveryCommandPreparesTheRepository(t *testing.T) {
 	}
 }
 
+// TestNoGitignoreIsCreatedOutsideAGitWorkingTree: a command that keeps state
+// still gets its state directory in a directory git does not manage, but no
+// .gitignore appears there — there is nothing for one to govern, and the
+// directory may not be the operator's to add files to.
+func TestNoGitignoreIsCreatedOutsideAGitWorkingTree(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	var out, notes bytes.Buffer
+	if err := run(&out, &notes, []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(root, ".devcouncil")); err != nil || !info.IsDir() {
+		t.Fatalf("the state directory was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatalf("a .gitignore was created outside a git working tree (stat error: %v)", err)
+	}
+	if !strings.Contains(notes.String(), ".gitignore left alone") {
+		t.Fatalf("the report does not say why .gitignore was not written:\n%s", notes.String())
+	}
+}
+
+// TestCommandsThatOnlyReadLeaveTheTreeUntouched: help, the version, the flag
+// table, the logo, the provider and tool listings, the budget, a typo, and a
+// usage error keep no state, so they prepare nothing. Each runs in a clean, committed
+// repository, and afterwards git must see no change at all — ignored files
+// included — and there must be no state directory.
+func TestCommandsThatOnlyReadLeaveTheTreeUntouched(t *testing.T) {
+	for _, args := range [][]string{
+		{"--help"}, {"-h"}, {"help"}, {"version"}, {"--version"},
+		{"logo"}, {"flags"}, {"providers"}, {"budget"}, {"tools"},
+		{"no-such-command"},
+		{"lease"}, {"lease", "no-such-subcommand"},
+		{"map", "status"}, {"map", "no-such-subcommand"},
+		{"check", "--cmd", "git status"},
+		{"run", "--help"}, {"serve", "--help"},
+		{"tool"}, {"allow"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := gitWorkTree(t)
+			t.Chdir(root)
+			before := readGitignore(t, root)
+
+			var out, notes bytes.Buffer
+			// An unknown command and a usage error fail, which is their answer;
+			// what is under test is that the failure wrote nothing.
+			_ = run(&out, &notes, args)
+
+			if _, err := os.Stat(filepath.Join(root, ".devcouncil")); !os.IsNotExist(err) {
+				t.Errorf("manvi %s created .devcouncil (stat error: %v)", strings.Join(args, " "), err)
+			}
+			after := readGitignore(t, root)
+			if !bytes.Equal(before, after) {
+				t.Errorf("manvi %s changed .gitignore:\n%s", strings.Join(args, " "), after)
+			}
+			if status := gitIn(t, root, "status", "--porcelain", "--ignored", "--untracked-files=all"); status != "" {
+				t.Errorf("manvi %s left the tree dirty:\n%s", strings.Join(args, " "), status)
+			}
+			if strings.Contains(notes.String(), ".gitignore") || strings.Contains(notes.String(), "created") {
+				t.Errorf("manvi %s reported scaffolding:\n%s", strings.Join(args, " "), notes.String())
+			}
+		})
+	}
+}
+
 // TestInitCanBeDeclined: a repository the operator does not want written to is
 // a repository the harness still runs in.
 func TestInitCanBeDeclined(t *testing.T) {
-	root := t.TempDir()
+	root := gitWorkTree(t)
 	t.Chdir(root)
 	t.Setenv(flags.EnvKey(flags.HarnessInitEnabled), "false")
+	before := readGitignore(t, root)
 
 	var out, notes bytes.Buffer
-	if err := run(&out, &notes, []string{"flags"}); err != nil {
+	if err := run(&out, &notes, []string{"doctor"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{".devcouncil", ".gitignore"} {
-		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
-			t.Errorf("%s was written with the setting off (stat error: %v)", name, err)
-		}
+	if _, err := os.Stat(filepath.Join(root, ".devcouncil")); !os.IsNotExist(err) {
+		t.Errorf(".devcouncil was written with the setting off (stat error: %v)", err)
+	}
+	if after := readGitignore(t, root); !bytes.Equal(before, after) {
+		t.Errorf(".gitignore was changed with the setting off:\n%s", after)
 	}
 	if notes.Len() != 0 {
 		t.Fatalf("nothing was scaffolded but something was reported:\n%s", notes.String())

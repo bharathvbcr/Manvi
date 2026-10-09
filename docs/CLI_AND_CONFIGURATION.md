@@ -110,7 +110,7 @@ MANVI_FETCH_HOSTS="go.dev,pkg.go.dev" \
 | Flag Key | Environment Variable | Default | Safety Critical | Mutability | Description |
 |---|---|---|---|---|---|
 | `harness.posture` | `MANVI_HARNESS_POSTURE` | `dev` | **Yes** | `human` | Security posture: `dev` (advisory scope), `strict` (enforce all), `yolo` (all gates off). |
-| `harness.init.enabled` | `MANVI_HARNESS_INIT_ENABLED` | `true` | No | `startup` | Auto-create state directory and `.gitignore` managed rules on startup. |
+| `harness.init.enabled` | `MANVI_HARNESS_INIT_ENABLED` | `true` | No | `startup` | Auto-create the state directory and its `.gitignore` rules before commands that keep state. |
 | `policy.file.mode` | `MANVI_POLICY_FILE_MODE` | `enforce` | **Yes** | `human` | File write gate mode (`enforce`, `advisory`, `off`). |
 | `policy.command.mode` | `MANVI_POLICY_COMMAND_MODE` | `enforce` | **Yes** | `human` | Shell command gate mode (`enforce`, `advisory`, `off`). |
 | `policy.hard_rules.enabled` | `MANVI_POLICY_HARD_RULES_ENABLED` | `true` | **Yes** | `startup` | Hard safety rules (outside-root, secret paths, restricted paths, git safety). Off under `yolo`, and off under **any** posture when this flag is set to `false` explicitly — from the environment or from a committed `.devcouncil/config.yaml`. See the note under the posture matrix. |
@@ -279,12 +279,16 @@ or by listing it in MANVI_MCP_TRUST. Read the command above before you do: autho
 
 ## Repository Auto-Preparation Lifecycle
 
-Every invocation of MANVI automatically prepares the repository in which it runs, eliminating manual initialization:
+Commands that keep state prepare the repository in which they run, so there is no separate init step: the bare `manvi` face, `tui`, `run`, `serve`, `watch`, `doctor`, `tool`, `allow`, `lease list|acquire|release`, and `map build|rebuild`.
+
+Every other command leaves the working tree exactly as it found it: `help`, `version`, `flags`, `logo`, `providers`, `tools`, `local`, `probe`, `check`, `map status`, `pull`/`push`/`issues`, `gusset-check`, `<command> --help`, an unknown command, and a missing or unknown subcommand. An agent can probe a checkout with any of them without dirtying it.
 
 | Step | Behavior |
 |---|---|
 | **State Directory** | `.devcouncil/` is created, along with the parent directories of any artifact paths (`MANVI_STORE_DB`, `MANVI_GRAPH`). Setting `MANVI_STATE_DIR` relocates all state directories uniformly. |
-| **`.gitignore` Integration** | Managed ignore rules are appended if missing—transcribed byte-for-byte from DevCouncil's canonical `ensure_gitignore`, avoiding duplicate entries. |
+| **`.gitignore` Integration** | Only inside a git working tree. The managed rules cover the harness's own state and nothing wider: `.devcouncil/*` with `config.yaml` re-included, plus the anchored path of a state directory or artifact relocated inside the repository (a relocated SQLite store brings its `-wal`, `-shm` and `-journal` files). Missing rules are appended, never duplicated. A rule that would ignore a file the repository tracks is left out, and stderr names the file. Outside a git working tree no `.gitignore` is created. |
 | **AST Navigation Index** | In `manvi` / `manvi tui`, code graph indexing runs asynchronously in the background so the initial UI frame renders instantaneously without waiting on large repository analysis. |
+
+The repository-wide rules earlier releases appended (`*.sqlite`, `*.db`, `.claude*`, `.cursor/`, `logs/`, `node_modules/`, `.env*`, and so on) are no longer written. A repository that already received them keeps them, and can delete any it does not want. The reasoning is recorded beside `Sections` in `manvi/bootstrap/bootstrap.go`.
 
 To disable automatic working-tree modifications, set `MANVI_HARNESS_INIT_ENABLED=false`.
