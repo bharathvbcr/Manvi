@@ -376,7 +376,7 @@ func TestARepositoryThatAlreadyKeepsItsStateIgnoredIsLeftAlone(t *testing.T) {
 		}
 	}
 	before := b.String()
-	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -400,18 +400,20 @@ func TestNestedStateDirectoriesStayIgnored(t *testing.T) {
 		t.Skip("git is not on PATH; the ignore semantics cannot be checked")
 	}
 	root := t.TempDir()
-	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+	// #nosec G204 -- the binary is the literal "git"; root is this test's own.
+	if out, err := exec.CommandContext(t.Context(), "git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	// An operator who ignores every generated .devcouncil/, at any depth.
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".devcouncil/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".devcouncil/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	Ensure(root, options())
 
 	ignored := func(rel string) bool {
 		t.Helper()
-		err := exec.Command("git", "-C", root, "check-ignore", "-q", "--no-index", rel).Run()
+		// #nosec G204 -- the binary is the literal "git"; root and rel are this test's own.
+		err := exec.CommandContext(t.Context(), "git", "-C", root, "check-ignore", "-q", "--no-index", rel).Run()
 		var exit *exec.ExitError
 		switch {
 		case err == nil:
