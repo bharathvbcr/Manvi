@@ -187,6 +187,10 @@ type harnessHost struct {
 	// about concurrent turns that is never exercised by a test. Nil means ask
 	// the runner, which is what every production path does.
 	busyTurns func(exclude string) []string
+	// sinks is injected in tests, for the same reason: without a runner every
+	// event a command or a turn reports goes nowhere, so what the transcript
+	// would have said could not be asserted at all. Nil means ask the runner.
+	sinks func(sessionID string) ui.Sink
 
 	// credOnce guards the two fields below, which are built on first use rather
 	// than in a constructor: a harnessHost assembled by a test sets only the
@@ -620,6 +624,9 @@ func (h *harnessHost) refuseFlagMoveDuringATurn(sessionID string, fields []strin
 // nil channel, and a harness that hangs on its first event is worse than one
 // that reports into nothing.
 func (h *harnessHost) sinkFor(sessionID string) ui.Sink {
+	if h.sinks != nil {
+		return h.sinks(sessionID)
+	}
 	if h.runner == nil {
 		return ui.SinkFunc(func(ui.Event) {})
 	}
