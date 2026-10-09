@@ -108,6 +108,27 @@ func TestDegradedChecksAreNamed(t *testing.T) {
 	}
 }
 
+// TestWeakenedSettingsAreNamedAndSanitized: a relaxed safety setting is
+// printed beside the result it qualified, and a name is content like any other,
+// so it reaches the terminal without its escapes.
+func TestWeakenedSettingsAreNamedAndSanitized(t *testing.T) {
+	r, buf := renderer(t)
+	r.Emit(Event{
+		Kind: KindToolResult, Text: "wrote a.go",
+		Weakened: []string{"harness.containment", "evil\x1b[2Jname"},
+		Degraded: []string{"secret_scan"},
+	})
+	out := buf.String()
+	for _, want := range []string{"safety settings off default: harness.containment", "checks that did not run: secret_scan"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not contain %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[2J") {
+		t.Fatalf("a weakened setting's name carried a terminal escape through: %q", out)
+	}
+}
+
 // TestDevPostureIsAnnouncedEverySession: an operator who does not see it reads
 // a green run as an enforced one.
 func TestDevPostureIsAnnouncedEverySession(t *testing.T) {

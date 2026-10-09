@@ -468,8 +468,7 @@ func (r *Renderer) writePolicy(e Event) {
 		r.write("%s  ⚠ %s%s %s%s%s\n", p.Yellow, r.safe(e.Text), p.Reset,
 			p.Dim, r.safe(e.Rule), p.Reset)
 	}
-	r.writeDegraded(e)
-	r.writeWeakened(e)
+	r.writeCaveats(e)
 }
 
 func (r *Renderer) writeQualification(e Event) {
@@ -484,35 +483,28 @@ func (r *Renderer) writeQualification(e Event) {
 	if e.GrantID != "" {
 		r.write("      %scleared by %s (%s)%s\n", p.Dim, r.safe(e.GrantID), r.safe(e.GrantedBy), p.Reset)
 	}
-	r.writeDegraded(e)
-	r.writeWeakened(e)
+	r.writeCaveats(e)
 }
 
-// writeDegraded names checks that did not run. Printing nothing here is what
-// would make an unexamined result look examined.
-func (r *Renderer) writeDegraded(e Event) {
-	if len(e.Degraded) == 0 {
-		return
-	}
-	p := r.palette
-	safe := make([]string, len(e.Degraded))
-	for i, d := range e.Degraded {
-		safe[i] = r.safe(d)
-	}
-	r.write("      %schecks that did not run: %s%s\n", p.Dim, strings.Join(safe, ", "), p.Reset)
+// writeCaveats names checks that did not run and safety settings relaxed for
+// this run. Printing nothing here is what would make an unexamined result look
+// examined.
+func (r *Renderer) writeCaveats(e Event) {
+	r.writeNames(r.palette.Dim, "checks that did not run", e.Degraded)
+	r.writeNames(r.palette.Yellow, "safety settings off default", e.Weakened)
 }
 
-// writeWeakened names safety settings that were relaxed for this run.
-func (r *Renderer) writeWeakened(e Event) {
-	if len(e.Weakened) == 0 {
+// writeNames prints one labelled list of sanitized names, and nothing for an
+// empty one.
+func (r *Renderer) writeNames(colour, label string, names []string) {
+	if len(names) == 0 {
 		return
 	}
-	p := r.palette
-	safe := make([]string, len(e.Weakened))
-	for i, w := range e.Weakened {
-		safe[i] = r.safe(w)
+	safe := make([]string, len(names))
+	for i, n := range names {
+		safe[i] = r.safe(n)
 	}
-	r.write("      %ssafety settings off default: %s%s\n", p.Yellow, strings.Join(safe, ", "), p.Reset)
+	r.write("      %s%s: %s%s\n", colour, label, strings.Join(safe, ", "), r.palette.Reset)
 }
 
 func indent(text, prefix string) string {
