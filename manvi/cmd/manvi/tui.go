@@ -847,59 +847,9 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return errors.New("no model provider is attached to this session")
 	}
 
-	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
-	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
-	if dynamic {
-		s.pipeline.EnableDynamic()
-	}
-	subRunner, caps := harnessFor(s.pipeline)
-	promptOpts := PromptOptions{
-		Provider:           at.provider.Name(),
-		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
-		DynamicTools:       dynamic,
-		ActiveGroups:       s.pipeline.ActiveGroups(),
-		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
-		DocLookupAvailable: caps.DocLookup,
-		Areas:              caps.Areas,
-	}
-	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
-	// Surfaced in the transcript rather than on stderr. Under the alternate
-	// screen stderr goes nowhere a person can read, which is how a prompt
-	// missing four of its sections came to look identical to a whole one.
-	promptSink := h.sinkFor(sessionID)
-	for _, fault := range promptFaults {
-		promptSink.Emit(ui.Event{
-			Kind: ui.KindNotice, At: time.Now().UTC(),
-			Text: "system prompt: " + fault,
-		})
-	}
-	if err := recordPromptAssembly(s.log, promptReport,
-		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(s, sessionID, at)
+	if err != nil {
 		return err
-	}
-
-	// Re-attached on every submission rather than once at session start: the
-	// provider, model and effort are all switchable mid-session from this face,
-	// and a child running under the model the user chose two turns ago would be
-	// a surprise nothing reported.
-	if runner := subRunner; runner != nil {
-		runner.attach(subAgentConfig{
-			provider:        at.provider,
-			models:          at.registry,
-			model:           at.model,
-			effort:          at.effort,
-			effortCeiling:   at.effortCeiling,
-			registry:        s.pipeline,
-			native:          s.native,
-			meter:           s.subMeter,
-			coreToolsOnly:   coreOnly,
-			assertInvariant: assertInvariant(h.reg),
-			systemPrompt:    systemPrompt,
-			// The same sink this session's own events go to, so a child's gate
-			// refusals appear in the transcript that is meant to account for
-			// the turn rather than vanishing with the child.
-			sink: h.sinkFor(sessionID),
-		})
 	}
 
 	// Taken before the turn runs, so what it spends on children can be told
@@ -954,12 +904,84 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	if err != nil {
 		return err
 	}
+	h.reportTurn(sink, s.subMeter, before, outcome)
+	return nil
+}
+
+// prepareTurn assembles what one submission's turn runs with — the system
+// prompt, recorded with any fault in its assembly, and the sub-agent runner
+// re-attached to the session's current provider, model and effort — and
+// returns the prompt, the runner and whether the turn is narrowed to the core
+// tools.
+func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
+	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
+	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
+	if dynamic {
+		s.pipeline.EnableDynamic()
+	}
+	subRunner, caps := harnessFor(s.pipeline)
+	promptOpts := PromptOptions{
+		Provider:           at.provider.Name(),
+		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
+		DynamicTools:       dynamic,
+		ActiveGroups:       s.pipeline.ActiveGroups(),
+		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
+		DocLookupAvailable: caps.DocLookup,
+		Areas:              caps.Areas,
+	}
+	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
+	// Surfaced in the transcript rather than on stderr. Under the alternate
+	// screen stderr goes nowhere a person can read, which is how a prompt
+	// missing four of its sections came to look identical to a whole one.
+	promptSink := h.sinkFor(sessionID)
+	for _, fault := range promptFaults {
+		promptSink.Emit(ui.Event{
+			Kind: ui.KindNotice, At: time.Now().UTC(),
+			Text: "system prompt: " + fault,
+		})
+	}
+	if err := recordPromptAssembly(s.log, promptReport,
+		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+		return "", nil, false, err
+	}
+
+	// Re-attached on every submission rather than once at session start: the
+	// provider, model and effort are all switchable mid-session from this face,
+	// and a child running under the model the user chose two turns ago would be
+	// a surprise nothing reported.
+	if runner := subRunner; runner != nil {
+		runner.attach(subAgentConfig{
+			provider:        at.provider,
+			models:          at.registry,
+			model:           at.model,
+			effort:          at.effort,
+			effortCeiling:   at.effortCeiling,
+			registry:        s.pipeline,
+			native:          s.native,
+			meter:           s.subMeter,
+			coreToolsOnly:   coreOnly,
+			assertInvariant: assertInvariant(h.reg),
+			systemPrompt:    systemPrompt,
+			// The same sink this session's own events go to, so a child's gate
+			// refusals appear in the transcript that is meant to account for
+			// the turn rather than vanishing with the child.
+			sink: h.sinkFor(sessionID),
+		})
+	}
+	return systemPrompt, subRunner, coreOnly, nil
+}
+
+// reportTurn puts a finished turn's spend and outcome in front of the
+// operator: one usage line covering the turn and the children it delegated to,
+// then one line per outcome notice. before is the meter's total from before
+// the turn ran.
+func (h *harnessHost) reportTurn(sink ui.Sink, meter *subAgentMeter, before devcouncil.SubAgentUsage, outcome agent.Outcome) {
 	// This turn's delegated spend, not the session's: the meter accumulates
 	// across every turn of the session, so the figure for one turn is the
 	// difference against the snapshot taken before it ran. Reporting the
 	// running total per turn would count the first turn's children again in
 	// every turn after it.
-	delegated := s.subMeter.Total()
+	delegated := meter.Total()
 	delegated.InputTokens -= before.InputTokens
 	delegated.OutputTokens -= before.OutputTokens
 	delegated.ReasoningTokens -= before.ReasoningTokens
@@ -982,7 +1004,6 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 			Text: n.Text, Degraded: n.Degraded,
 		})
 	}
-	return nil
 }
 
 // tuiMaxTokens is the output bound the TUI names for a turn: the operator's
