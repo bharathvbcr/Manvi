@@ -6,6 +6,21 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 
 ---
 
+## Documentation Index by Topic & Search Tags
+
+| Topic Domain | Key Concepts & Tags | Essential Guides |
+|---|---|---|
+| **Local LLMs & Fast Inference** | `local-llm`, `ollama`, `vllm`, `lm-studio`, `kv-prefix-cache`, `wire-recovery`, `think-sanitization` | [Local LLMs](LOCAL_LLMS.md) · [Stdio Host Plane](SERVE_HOST_PLANE.md) |
+| **Policy & Safety Invariants** | `policy-ladder`, `6-rung-ladder`, `5-outcome-states`, `grants-ledger`, `write-gate`, `command-gate` | [Policy & Safety](POLICY_AND_SAFETY.md) · [Hardening Ledger](HARDENING_LEDGER.md) · [Trade-offs](TRADE_OFFS.md) |
+| **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](01-language-decision.html) |
+| **Agent Loop & Task Leases** | `turn-loop`, `waterfalls`, `sqlite-leases`, `context-compaction`, `concurrency`, `workbench` | [Agent & Turn Lifecycle](AGENT_AND_TURN_LIFECYCLE.md) · [Workbench](WORKBENCH.md) |
+| **Native Tools, MCP & Desktop** | `native-tools`, `44-tools`, `mcp-client`, `mcp-2.0`, `computer-use`, `tool-discovery` | [Tools Reference](TOOLS_REFERENCE.md) · [Computer-Use Foundations](COMPUTER_USE_FOUNDATIONS.md) |
+| **Terminal & Developer UI** | `tui`, `elm-loop`, `damage-diffing`, `themes`, `cli`, `exit-codes`, `flag-registry` | [TUI & Events](TUI_AND_EVENT_SUBSYSTEM.md) · [CLI & Configuration](CLI_AND_CONFIGURATION.md) |
+| **Verification & Benchmarks** | `parity-fixtures`, `1031-cases`, `rigor-gates`, `diff-coverage`, `swe-bench`, `paper` | [Verification & Parity](VERIFICATION_AND_PARITY.md) · [Benchmark Paper](../bench/paper/README.md) · [v0.0.6 Release](releases/v0.0.6.md) |
+
+
+---
+
 ## Interactive Visual Guides
 
 | Document | Format | Description |

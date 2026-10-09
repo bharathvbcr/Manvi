@@ -1,4 +1,37 @@
-<title>Rust or Go for the Harness</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MANVI — Rust or Go for the Harness: Language &amp; Runtime Partition Decision</title>
+<meta name="description" content="Detailed architectural analysis of language selection (Go vs Rust) for the MANVI coding-agent harness, evaluating memory safety, cgo overhead, and dual-plane partition.">
+<meta name="keywords" content="Go, Rust, language decision, coding agent, harness architecture, cgo, memory safety, concurrency, devtools, MANVI">
+<meta name="author" content="MANVI Contributors">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://manvi.vbcr.dev/docs/01-language-decision.html">
+<meta property="og:site_name" content="MANVI">
+<meta property="og:title" content="MANVI — Rust or Go for the Harness: Language &amp; Runtime Partition Decision">
+<meta property="og:description" content="Detailed architectural analysis of language selection (Go vs Rust) for the MANVI coding-agent harness.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://manvi.vbcr.dev/docs/01-language-decision.html">
+<meta property="og:image" content="https://manvi.vbcr.dev/assets/manvi-mark.svg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="MANVI — Rust or Go for the Harness: Language &amp; Runtime Partition Decision">
+<meta name="twitter:description" content="Detailed architectural analysis of language selection (Go vs Rust) for the MANVI coding-agent harness.">
+<meta name="twitter:image" content="https://manvi.vbcr.dev/assets/manvi-mark.svg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "MANVI — Rust or Go for the Harness: Language & Runtime Partition Decision",
+  "description": "Detailed architectural analysis of language selection (Go vs Rust) for the MANVI coding-agent harness, evaluating memory safety, cgo overhead, and dual-plane partition.",
+  "url": "https://manvi.vbcr.dev/docs/01-language-decision.html",
+  "author": {
+    "@type": "Organization",
+    "name": "MANVI"
+  }
+}
+</script>
 <style>
   :root {
     --paper:        #F2F4F5;
@@ -329,6 +362,8 @@
   }
   footer a { color: var(--ink-3); }
 </style>
+</head>
+<body>
 
 <div class="wrap">
 
@@ -812,3 +847,5 @@ graph_ctx    → devmap impact &lt;files...&gt; --json
 </footer>
 
 </div>
+</body>
+</html>

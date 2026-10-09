@@ -4,11 +4,14 @@
 
 <p align="left">
   <a href="https://manvi.vbcr.dev/"><img src="https://img.shields.io/badge/website-manvi.vbcr.dev-3B82F6?style=flat&logo=safari&logoColor=white" alt="Website"></a>
+  <a href="https://github.com/bharathvbcr/Manvi/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/parity_cases-1%2C031_certified-emerald" alt="Parity Cases">
   <img src="https://img.shields.io/badge/architecture-Go_%2B_Rust_process--boundary-orange" alt="Architecture">
+  <img src="https://img.shields.io/badge/local_LLMs-Ollama_·_vLLM_·_LM_Studio-8B5CF6?style=flat" alt="Local LLMs">
+  <img src="https://img.shields.io/badge/tools-44_native_·_MCP_2.0-0EA5E9" alt="Tools">
 </p>
 
-A lightweight, high-performance coding-agent harness in pure Go and Rust — designed for local models, customizable for specialized tools and use cases, and embeddable in other applications.
+A lightweight, high-performance coding-agent harness in pure Go and Rust — purpose-built for local models, customizable for specialized tools and use cases, and embeddable in other applications with dual-plane determinism and zero-runtime overhead.
 
 <p>
   <a href="https://manvi.vbcr.dev/"><strong>Explore the Live Interactive Architecture &amp; Benchmark Showcase (manvi.vbcr.dev) &rarr;</strong></a>
@@ -466,11 +469,25 @@ Full specifications live in [`docs/`](docs/README.md):
 | [Verification & Parity](docs/VERIFICATION_AND_PARITY.md) | Parity methodology, rigor gates, coverage semantics, `./verify.sh` |
 | [Local LLMs](docs/LOCAL_LLMS.md) | Discovery, KV prefix preservation, wire recovery, server configs |
 | [Stdio Host Plane](docs/SERVE_HOST_PLANE.md) | Zero-cgo NDJSON protocol, operations reference, IDE embedding, local model discovery |
+| [Profile Workspaces & Tasks](docs/WORKBENCH.md) | Persistent repository groups, three board scopes, revision conflicts, and local work API |
+| [Computer-Use Foundations](docs/COMPUTER_USE_FOUNDATIONS.md) | Multimodal observations, image privacy, workflow compiler, native desktop protocol |
 | [Terminal UI & Events](docs/TUI_AND_EVENT_SUBSYSTEM.md) | Elm loop, tabs, themes, damage diffing, ANSI reduction |
 | [CLI & Configuration](docs/CLI_AND_CONFIGURATION.md) | Commands, flag catalogue, mutability scopes, posture matrix |
 | [Native Tool Suite](docs/TOOLS_REFERENCE.md) | All 44 native tools in Go and Rust |
 | [Comparison](docs/COMPARISON.md) | MANVI vs SWE-agent, OpenHands, Aider, Claude Code |
 | [Trade-offs](docs/TRADE_OFFS.md) | Write discipline vs shell breadth, two toolchains, zero-cgo costs |
 | [Hardening Ledger](docs/HARDENING_LEDGER.md) | 30+ hardened invariants, bug patterns, test locations |
+| [Release Notes (v0.0.6)](docs/releases/v0.0.6.md) | Linked Gusset engine, zero-cgo fallbacks, install steps |
+| [Benchmark & Paper](bench/paper/README.md) | Preregistered benchmark, audit trail, and manuscript source |
 | [Contributing](CONTRIBUTING.md) | Toolchains, reading `./verify.sh`'s verdict, what the gate refuses, commit conventions |
 | [Changelog](CHANGELOG.md) | What changed per release |
+
+---
+
+## Topics, Ecosystem & Search Tags
+
+- **GitHub Topics**: `coding-agent` · `ai-coding-agent` · `local-llm` · `autonomous-agents` · `go` · `rust` · `devcouncil` · `mcp` · `model-context-protocol` · `tui` · `developer-tools` · `ollama` · `vllm` · `lm-studio` · `swe-bench` · `code-generation` · `code-repair` · `cli` · `dual-plane` · `static-analysis`
+- **Supported Local Runners**: Ollama, LM Studio, vLLM, llama.cpp, Jan (sub-30ms auto-discovery via `manvi local`)
+- **Supported Frontier Providers**: Anthropic Claude, Google Gemini, xAI Grok (standardized across the multi-provider seam)
+- **Protocol Interop**: Model Context Protocol (MCP 2.0 client & dynamic tool bridges), NDJSON stdio host protocol (`manvi serve`)
+

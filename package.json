@@ -2,6 +2,27 @@
   "name": "manvi-devtools",
   "private": true,
   "description": "Dev-time tooling for documentation gates. Nothing here ships in the manvi binary.",
+  "homepage": "https://manvi.vbcr.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bharathvbcr/Manvi.git"
+  },
+  "keywords": [
+    "coding-agent",
+    "ai-coding-agent",
+    "local-llm",
+    "go",
+    "rust",
+    "devcouncil",
+    "mcp",
+    "model-context-protocol",
+    "tui",
+    "developer-tools",
+    "swe-bench",
+    "ollama",
+    "vllm",
+    "lm-studio"
+  ],
   "type": "module",
   "packageManager": "bun@1.4.2",
   "bin": {
