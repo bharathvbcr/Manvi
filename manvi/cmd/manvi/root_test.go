@@ -657,3 +657,33 @@ func TestAWhitespaceProjectRootOverrideIsIgnored(t *testing.T) {
 		}
 	}
 }
+
+// MANVI_STORE_DB and MANVI_GRAPH move their artifact out of the state
+// directory: an absolute value as given (cleaned), a relative one anchored at
+// the project root, so the answer does not depend on where manvi was started.
+func TestArtifactPathOverridesAreAnchoredAtTheProjectRoot(t *testing.T) {
+	tmp := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = resolved
+	}
+	cleanup := setProjectRootForTest(tmp)
+	defer cleanup()
+
+	for _, c := range []struct {
+		env  string
+		path func() string
+	}{
+		{"MANVI_STORE_DB", storeDBPath},
+		{"MANVI_GRAPH", graphArtifactPath},
+	} {
+		abs := filepath.Join(tmp, "elsewhere", "..", "abs.out")
+		t.Setenv(c.env, abs)
+		if got, want := c.path(), filepath.Join(tmp, "abs.out"); got != want {
+			t.Errorf("%s=%q: path = %q, want %q", c.env, abs, got, want)
+		}
+		t.Setenv(c.env, filepath.Join("rel", "x.out"))
+		if got, want := c.path(), filepath.Join(tmp, "rel", "x.out"); got != want {
+			t.Errorf("%s relative: path = %q, want %q", c.env, got, want)
+		}
+	}
+}
