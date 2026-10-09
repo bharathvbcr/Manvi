@@ -373,13 +373,13 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 					Leases: leaseSinkFor(holder),
 				})
 				if err != nil {
-					return nil, recordFailure(inst, err)
+					return leftBehind(out), recordFailure(inst, err)
 				}
 				// The same judgement the other dispatcher makes, from the same
 				// function rather than a second copy of it: a child that came
 				// back with nothing to say is not a completion.
 				if err := requireSummary(s.Role, out.Summary); err != nil {
-					return nil, recordFailure(inst, err)
+					return leftBehind(out), recordFailure(inst, err)
 				}
 
 				// Only now, with a result in hand, is "completed" claimed — and
@@ -389,7 +389,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 				// completed work is exactly the fabrication this file exists to
 				// prevent.
 				if err := inst.SetState(agents.StateCompleted, "done"); err != nil {
-					return nil, fmt.Errorf(
+					return leftBehind(out), fmt.Errorf(
 						"sub-agent %q was terminated before it could report its work: %w", s.Role, err)
 				}
 				outcome := map[string]any{
@@ -439,6 +439,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		if res.Err != nil {
 			outcome["status"] = "failed"
 			outcome["error"] = res.Error
+			carryLeftBehind(outcome, res.Value)
 		} else if value, isMap := res.Value.(map[string]any); isMap {
 			for k, v := range value {
 				outcome[k] = v
@@ -461,9 +462,10 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	report := agents.Summarise(results)
 	// Summed here as well as reported per child, because the dispatching model
 	// is deciding whether to delegate again and the per-child figures make it
-	// do the arithmetic. Absent rather than zero when nothing was learned: a
-	// fan-out whose children all failed spent nothing this can see, and
-	// printing 0 would read as "delegation is free".
+	// do the arithmetic. A failed child's spend is counted too (see
+	// leftBehind): it spent what it spent. Absent rather than zero when
+	// nothing was learned, because printing 0 would read as "delegation is
+	// free".
 	var spent SubAgentUsage
 	for _, res := range results {
 		if value, isMap := res.Value.(map[string]any); isMap {
@@ -495,21 +497,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 
 	// Children changed paths on their own logs, and this is the only hop that
 	// carries them to the parent's terminal checkpoint. See SubAgentResult.Wrote.
-	wrote, truncated := childWrites(results)
-
-	if report.Children > 0 && report.Failed == report.Children {
-		res := failure(payload, fmt.Sprintf(
-			"all %d sub-agent(s) failed; nothing was dispatched successfully", report.Children))
-		res.Wrote = wrote
-		return res
-	}
-	res := ok(payload)
-	res.Wrote = wrote
-	if truncated {
-		res.Degraded = append(res.Degraded,
-			"a sub-agent changed more paths than it reported; the list is incomplete")
-	}
-	return res
+	return fanoutResult(payload, report, results, "dispatched")
 }
 
 // recordFailure moves an instance to errored and returns the failure the child
@@ -1106,13 +1094,13 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 
 				out, err := runner.RunSubAgent(childCtx, req)
 				if err != nil {
-					return nil, fmt.Errorf("sub-agent %s: %w", t.Label, err)
+					return leftBehind(out), fmt.Errorf("sub-agent %s: %w", t.Label, err)
 				}
 				if strings.TrimSpace(out.Summary) == "" {
 					// A child that ran and produced nothing is a failure, not a
 					// quiet success. Counting it among the completions is how a
 					// fan-out comes to report work that did not happen.
-					return nil, fmt.Errorf("sub-agent %s returned no summary; "+
+					return leftBehind(out), fmt.Errorf("sub-agent %s returned no summary; "+
 						"it produced nothing that can be reported as its work", t.Label)
 				}
 				child := map[string]any{
@@ -1152,6 +1140,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 		if res.Err != nil {
 			outcome["status"] = "failed"
 			outcome["error"] = res.Error
+			carryLeftBehind(outcome, res.Value)
 		} else if value, isMap := res.Value.(map[string]any); isMap {
 			for k, v := range value {
 				outcome[k] = v
@@ -1174,9 +1163,10 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	report := agents.Summarise(results)
 	// Summed here as well as reported per child, because the dispatching model
 	// is deciding whether to delegate again and the per-child figures make it
-	// do the arithmetic. Absent rather than zero when nothing was learned: a
-	// fan-out whose children all failed spent nothing this can see, and
-	// printing 0 would read as "delegation is free".
+	// do the arithmetic. A failed child's spend is counted too (see
+	// leftBehind): it spent what it spent. Absent rather than zero when
+	// nothing was learned, because printing 0 would read as "delegation is
+	// free".
 	var spent SubAgentUsage
 	for _, res := range results {
 		if value, isMap := res.Value.(map[string]any); isMap {
@@ -1205,33 +1195,81 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// paths stop at the child's log: the parent's checkpoint would be told the
 	// turn mutated — a dispatch is a mutating tool — and handed no file to
 	// look at, which is a check that runs against nothing and passes.
-	wrote, truncated := childWrites(results)
-	// A fan-out in which every child failed is a failed check, and this package
-	// has one rule for those: "a failed check is an error result, never an empty
-	// success" (see unavailable). It was returning ok() regardless, so the model
-	// read a total failure as a completed delegation — and, because a non-error
-	// result from a mutating tool is credited as progress, the no-progress
-	// detector reset its streak too. A model that keeps delegating into failures
-	// was never interrupted.
-	//
-	// Partial failure stays a success result: some work did land, and the
-	// per-child status and clean=false in the payload say what did not.
+	return fanoutResult(payload, report, results, "delegated")
+}
+
+// fanoutResult is how both dispatch tools close.
+//
+// A fan-out in which every child failed is a failed check, and this package
+// has one rule for those: "a failed check is an error result, never an empty
+// success" (see unavailable). It was returning ok() regardless, so the model
+// read a total failure as a completed delegation — and, because a non-error
+// result from a mutating tool is credited as progress, the no-progress
+// detector reset its streak too. A model that keeps delegating into failures
+// was never interrupted.
+//
+// Partial failure stays a success result: some work did land, and the
+// per-child status and clean=false in the payload say what did not.
+//
+// Either way the children's changed paths are carried onto the result, and a
+// cut list says so. A child that wrote a file and then failed still changed
+// the tree, and a checkpoint told otherwise would leave those bytes
+// unexamined. The total-failure branch used to return before the truncation
+// note, so a cut list arrived looking complete exactly when every child had
+// failed; one exit for both outcomes is what keeps that from recurring.
+func fanoutResult(payload map[string]any, report agents.Report, results []agents.Result, verb string) tools.Result {
+	var res tools.Result
 	if report.Children > 0 && report.Failed == report.Children {
-		res := failure(payload, fmt.Sprintf(
-			"all %d sub-agent(s) failed; nothing was delegated successfully", report.Children))
-		// Reported even on a total failure. A child that wrote a file and then
-		// failed still changed the tree, and a checkpoint told otherwise would
-		// leave those bytes unexamined.
-		res.Wrote = wrote
-		return res
+		res = failure(payload, fmt.Sprintf(
+			"all %d sub-agent(s) failed; nothing was %s successfully", report.Children, verb))
+	} else {
+		res = ok(payload)
 	}
-	res := ok(payload)
+	wrote, truncated := childWrites(results)
 	res.Wrote = wrote
 	if truncated {
 		res.Degraded = append(res.Degraded,
 			"a sub-agent changed more paths than it reported; the list is incomplete")
 	}
 	return res
+}
+
+// leftBehind is what a child that did not complete still reports: the paths
+// it changed and what it spent. The runner returns both on its failure paths,
+// and agents.Pool keeps a task's value beside its error, so returning this with
+// the failure is what carries a failed child's writes to the parent's
+// checkpoint through childWrites. Returning nil instead dropped them: a child
+// that wrote three files and then failed was reported upward as having changed
+// nothing, and the parent verified a tree that did not include them.
+func leftBehind(out SubAgentResult) any {
+	v := map[string]any{}
+	if len(out.Wrote) > 0 {
+		v["wrote"] = out.Wrote
+	}
+	if out.WroteTruncated {
+		v["wrote_truncated"] = true
+	}
+	if out.Usage.Any() {
+		v["usage"] = out.Usage
+	}
+	if len(v) == 0 {
+		return nil
+	}
+	return v
+}
+
+// carryLeftBehind puts a failed child's changed paths on its outcome, so the
+// dispatching model reads that the failure still changed files.
+func carryLeftBehind(outcome map[string]any, value any) {
+	left, isMap := value.(map[string]any)
+	if !isMap {
+		return
+	}
+	for _, k := range []string{"wrote", "wrote_truncated"} {
+		if v, ok := left[k]; ok {
+			outcome[k] = v
+		}
+	}
 }
 
 // childWrites folds every child's changed paths into one fan-out set with
