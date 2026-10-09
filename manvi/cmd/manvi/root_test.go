@@ -676,7 +676,10 @@ func TestArtifactPathOverridesAreAnchoredAtTheProjectRoot(t *testing.T) {
 		{"MANVI_STORE_DB", storeDBPath},
 		{"MANVI_GRAPH", graphArtifactPath},
 	} {
-		abs := filepath.Join(tmp, "elsewhere", "..", "abs.out")
+		// Concatenated, not filepath.Join: Join would clean the ".." away
+		// before the code under test ever saw it.
+		abs := tmp + string(filepath.Separator) + "elsewhere" + string(filepath.Separator) +
+			".." + string(filepath.Separator) + "abs.out"
 		t.Setenv(c.env, abs)
 		if got, want := c.path(), filepath.Join(tmp, "abs.out"); got != want {
 			t.Errorf("%s=%q: path = %q, want %q", c.env, abs, got, want)
