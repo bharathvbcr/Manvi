@@ -229,9 +229,7 @@ func (s *Claude) Effective() Effective {
 	if !s.ready {
 		return Effective{}
 	}
-	e := s.effective
-	e.Sandbox.WritableRoots = append([]string(nil), e.Sandbox.WritableRoots...)
-	return e
+	return s.effective.clone()
 }
 
 func (s *Claude) Close() (Exit, error) { return s.wire.close() }
