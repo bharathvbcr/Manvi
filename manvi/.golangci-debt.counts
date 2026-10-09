@@ -58,6 +58,16 @@
 # the existing tree (errcheck's largest file is still cmd/manvi/main.go at
 # 113, the same 113 the earlier note recorded). The ratchet caught the
 # movement; this is the new measurement, not a quiet edit.
+#
+# staticcheck and wastedassign lowered by two each on 2026-10-09, by the change
+# that gave invoke_subagent and spawn_subagents one fan-out core: each copy
+# assigned maxFanout from the bounds and then overwrote it unread (SA4006 and
+# wastedassign on the same line, twice). The same change split Loop.Run, which
+# turned two `break`s on a cancelled context into `return true, nil` in
+# closeOrBounce; nilerr now reads those as a swallowed error. They are not —
+# cancellation closes the turn rather than failing it, exactly as the breaks
+# did — and nilerr stays inside its recorded 12. Measured with golangci-lint
+# 2.14.0, because 2.13.2 cannot read go1.27.2's export data at all.
 bodyclose 16
 contextcheck 28
 errcheck 419
@@ -71,5 +81,5 @@ forcetypeassert 69
 gosec 390
 nilerr 12
 noctx 24
-staticcheck 40
-wastedassign 8
+staticcheck 38
+wastedassign 6
