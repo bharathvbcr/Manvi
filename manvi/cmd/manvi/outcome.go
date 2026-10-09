@@ -6,6 +6,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // outcomeNotice is one thing worth saying about a finished turn.
@@ -101,7 +102,7 @@ func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 		out = append(out, outcomeNotice{
 			Text: fmt.Sprintf("this turn changed more than %d files, and only the first %d were "+
 				"tracked; anything checked here covers that subset, not the whole change",
-				agent.MaxTrackedWrites, agent.MaxTrackedWrites),
+				tools.MaxTrackedWrites, tools.MaxTrackedWrites),
 			Degraded: []string{"the changed-file list was truncated"},
 		})
 	}

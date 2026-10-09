@@ -3,7 +3,6 @@ package devcouncil
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,20 +495,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 
 	// Children changed paths on their own logs, and this is the only hop that
 	// carries them to the parent's terminal checkpoint. See SubAgentResult.Wrote.
-	var wrote []string
-	truncated := false
-	for _, res := range results {
-		value, isMap := res.Value.(map[string]any)
-		if !isMap {
-			continue
-		}
-		if paths, ok := value["wrote"].([]string); ok {
-			wrote, truncated = mergeWrites(wrote, truncated, paths)
-		}
-		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
-			truncated = true
-		}
-	}
+	wrote, truncated := childWrites(results)
 
 	if report.Children > 0 && report.Failed == report.Children {
 		res := failure(payload, fmt.Sprintf(
@@ -1219,20 +1205,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// paths stop at the child's log: the parent's checkpoint would be told the
 	// turn mutated — a dispatch is a mutating tool — and handed no file to
 	// look at, which is a check that runs against nothing and passes.
-	var wrote []string
-	truncated := false
-	for _, res := range results {
-		value, isMap := res.Value.(map[string]any)
-		if !isMap {
-			continue
-		}
-		if paths, ok := value["wrote"].([]string); ok {
-			wrote, truncated = mergeWrites(wrote, truncated, paths)
-		}
-		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
-			truncated = true
-		}
-	}
+	wrote, truncated := childWrites(results)
 	// A fan-out in which every child failed is a failed check, and this package
 	// has one rule for those: "a failed check is an error result, never an empty
 	// success" (see unavailable). It was returning ok() regardless, so the model
@@ -1261,29 +1234,24 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	return res
 }
 
-// mergeWrites folds one child's changed paths into a fan-out's set, ordered,
-// de-duplicated and capped. The cap reports itself for the same reason the
-// loop's does: a truncated list passed on as a complete one is how files come
-// to be recorded as checked without anything having looked at them.
-func mergeWrites(have []string, truncated bool, add []string) ([]string, bool) {
-	for _, p := range add {
-		p = strings.TrimSpace(p)
-		if p == "" {
+// childWrites folds every child's changed paths into one fan-out set with
+// tools.MergeWrites, so the set a dispatch reports upward is bounded by the
+// same cap as the parent turn's set it lands in. A child that reported its own
+// list as truncated keeps the fan-out's list marked truncated too.
+func childWrites(results []agents.Result) ([]string, bool) {
+	var wrote []string
+	truncated := false
+	for _, res := range results {
+		value, isMap := res.Value.(map[string]any)
+		if !isMap {
 			continue
 		}
-		if slices.Contains(have, p) {
-			continue
+		if paths, ok := value["wrote"].([]string); ok {
+			wrote, truncated = tools.MergeWrites(wrote, truncated, paths)
 		}
-		if len(have) >= maxReportedChildWrites {
-			return have, true
+		if flag, ok := value["wrote_truncated"].(bool); ok && flag {
+			truncated = true
 		}
-		have = append(have, p)
 	}
-	return have, truncated
+	return wrote, truncated
 }
-
-// maxReportedChildWrites bounds how many child-changed paths one fan-out
-// reports upward. Sized to the loop's own per-turn cap: carrying more than the
-// parent can track would be counted and then discarded a layer later, which is
-// a truncation nobody records.
-const maxReportedChildWrites = 256

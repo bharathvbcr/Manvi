@@ -3,8 +3,6 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"slices"
-	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -140,35 +138,6 @@ func (p *progressTracker) interrupted() {
 	if p != nil {
 		p.streak = 0
 	}
-}
-
-// trackWrites folds one call's changed paths into the turn's set.
-//
-// Ordered, de-duplicated and capped. Ordered because a checker's argument list
-// and a session event both read better in the order the work happened;
-// de-duplicated because a file edited eight times is one file to verify; capped
-// because the set is carried into both, and an unbounded one is a turn that can
-// make its own evidence unreadable.
-//
-// The cap reports itself. A truncated list handed on as though it were complete
-// is how a check that examined 256 of 900 files comes to be recorded as having
-// examined all of them, and "never present a capped sample as complete
-// coverage" is the rule that failure breaks.
-func trackWrites(have []string, truncated bool, add []string) ([]string, bool) {
-	for _, p := range add {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if slices.Contains(have, p) {
-			continue
-		}
-		if len(have) >= MaxTrackedWrites {
-			return have, true
-		}
-		have = append(have, p)
-	}
-	return have, truncated
 }
 
 // observe records the outcome of one dispatched call and reports whether it was
