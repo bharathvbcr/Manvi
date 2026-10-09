@@ -287,3 +287,371 @@ func ctxName(c Context) string {
 	}
 	return "global"
 }
+
+func (a *App) rune(t ActionRune) []Effect {
+	if len(t.Runes) == 0 {
+		return nil
+	}
+	if p := a.textTarget(); p != nil {
+		for _, r := range t.Runes {
+			p.Insert(r)
+		}
+		if a.overlay != nil && a.overlay.Searchable {
+			a.overlay.Refilter()
+		} else {
+			a.refreshCompletion()
+		}
+		return nil
+	}
+	// Outside a text field a printable key is a binding: j, k, g, y in the
+	// transcript, digits on an approval card. Space arrives here as a rune
+	// because it is printable, but the bindings table names it "space" — the
+	// same name the input decoder gives it — so it is translated rather than
+	// looked up as " " and found by nothing.
+	if len(t.Runes) == 1 && t.Runes[0] == ' ' {
+		return a.key("space")
+	}
+	return a.key(string(t.Runes))
+}
+
+func (a *App) key(binding string) []Effect {
+	ctx := a.Context()
+
+	// Digits pick an approval option directly, which is the fastest safe answer
+	// and the one an operator reaches for under time pressure.
+	if ctx == CtxApproval && len(binding) == 1 && binding[0] >= '1' && binding[0] <= '9' {
+		if v := a.Current(); v != nil && v.Approval() != nil {
+			card := v.Approval()
+			idx := int(binding[0] - '1')
+			if idx < len(card.options()) {
+				card.option = idx
+				// On a multi-select the digit ticks the row rather than
+				// answering with it. Answering on the first digit would send a
+				// one-option answer to a question that asked for several, and
+				// the result could not be told from a deliberate single pick.
+				if card.Toggle() {
+					return nil
+				}
+				return a.acceptApproval()
+			}
+		}
+	}
+
+	switch resolve(binding, ctx) {
+	case CmdQuit:
+		return a.requestQuit()
+	case CmdRedraw:
+		return []Effect{EffectRedraw{}}
+	case CmdSuspend:
+		return []Effect{EffectSuspend{}}
+	case CmdHelp:
+		a.overlay = HelpOverlay()
+		return nil
+	case CmdPalette:
+		a.openPalette()
+		return nil
+	case CmdDashboard:
+		return a.toggleDashboard()
+	case CmdRenameSession:
+		current := ""
+		if a.mode == ModeDashboard && len(a.views) > 0 {
+			idx := a.dashboard.Selected()
+			if idx >= 0 && idx < len(a.views) {
+				current = a.views[idx].Title
+			}
+		} else if v := a.Current(); v != nil {
+			current = v.Title
+		}
+		a.overlay = RenameOverlay(current)
+		return nil
+	case CmdNewSession:
+		return []Effect{EffectNewSession{}}
+	case CmdCloseSession:
+		return a.closeSelected()
+	case CmdNextSession:
+		return a.cycleSession(1)
+	case CmdPrevSession:
+		return a.cycleSession(-1)
+	case CmdFocusToggle:
+		return a.toggleFocus()
+	case CmdToggleSelect:
+		if v := a.Current(); v != nil && v.Approval() != nil {
+			v.Approval().Toggle()
+		}
+		return nil
+	case CmdCancel:
+		return a.cancel()
+	case CmdSubmit:
+		return a.submit()
+	case CmdNewline:
+		if p := a.textTarget(); p != nil {
+			p.Insert('\n')
+		}
+		return nil
+	case CmdMultiline:
+		if v := a.Current(); v != nil {
+			v.Prompt.Multiline = !v.Prompt.Multiline
+			a.setNotice("multiline "+onOff(v.Prompt.Multiline)+" — enter "+
+				map[bool]string{true: "inserts a newline", false: "sends"}[v.Prompt.Multiline], StatusInfo)
+		}
+		return nil
+	case CmdAccept:
+		return a.accept()
+	case CmdComplete:
+		return a.complete()
+	case CmdDismiss:
+		return a.dismiss()
+	case CmdNextItem:
+		a.moveSelection(1)
+		return nil
+	case CmdPrevItem:
+		a.moveSelection(-1)
+		return nil
+	case CmdClearDraft:
+		return a.clearDraft()
+	case CmdCopy:
+		if v := a.Current(); v != nil {
+			if text := v.Scroll.SelectedText(); text != "" {
+				a.setNotice("copied "+itoa(len(text))+" bytes", StatusInfo)
+				return []Effect{EffectCopy{Text: text}}
+			}
+		}
+		return nil
+	case CmdHistoryPrev:
+		return a.history(-1)
+	case CmdHistoryNext:
+		return a.history(1)
+	case CmdPageUp:
+		if a.overlay != nil {
+			a.overlay.MovePage(-1)
+			return nil
+		}
+		if ctx == CtxDashboard {
+			a.dashboard.Page(-1, len(a.views))
+			return nil
+		}
+	case CmdPageDown:
+		if a.overlay != nil {
+			a.overlay.MovePage(1)
+			return nil
+		}
+		if ctx == CtxDashboard {
+			a.dashboard.Page(1, len(a.views))
+			return nil
+		}
+	case CmdTop:
+		if ctx == CtxDashboard {
+			a.dashboard.Select(0)
+			return nil
+		}
+	case CmdBottom:
+		if ctx == CtxDashboard {
+			a.dashboard.Select(len(a.views) - 1)
+			a.dashboard.Clamp(len(a.views))
+			return nil
+		}
+		// No return outside the handled surfaces: the transcript's own
+		// pgup/pgdn/g/G resolve to the same commands and are answered by
+		// scrollbackKey below.
+	}
+
+	if v := a.Current(); v != nil {
+		if handled := a.scrollbackKey(v, binding, ctx); handled {
+			return nil
+		}
+	}
+	if p := a.textTarget(); p != nil && a.promptKey(p, binding, ctx) {
+		if a.overlay != nil && a.overlay.Searchable {
+			a.overlay.Refilter()
+		} else {
+			a.refreshCompletion()
+		}
+		return nil
+	}
+	return nil
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
+func (a *App) scrollbackKey(v *AgentView, binding string, ctx Context) bool {
+	if ctx != CtxScrollback {
+		return false
+	}
+	sb := v.Scroll
+	// The page size is the transcript's own height from the last frame, not a
+	// figure derived from the terminal's — those differ by the status bar, the
+	// strict banner, the composer, and whatever else the layout placed.
+	page := sb.Viewport()
+	switch resolve(binding, CtxScrollback) {
+	case CmdScrollUp:
+		sb.ScrollBy(-1)
+	case CmdScrollDown:
+		sb.ScrollBy(1)
+	case CmdPageUp:
+		sb.ScrollBy(-page)
+	case CmdPageDown:
+		sb.ScrollBy(page)
+	case CmdHalfPageUp:
+		sb.ScrollBy(-page / 2)
+	case CmdHalfPageDown:
+		sb.ScrollBy(page / 2)
+	case CmdTop:
+		sb.ScrollToTop()
+	case CmdBottom:
+		sb.ScrollToBottom()
+	case CmdSelectNext:
+		sb.SelectDelta(1, a.Theme)
+	case CmdSelectPrev:
+		sb.SelectDelta(-1, a.Theme)
+	case CmdToggleFold:
+		sb.ToggleFold()
+	case CmdFoldAll:
+		sb.SetFoldAll(true)
+	case CmdExpandAll:
+		sb.SetFoldAll(false)
+	case CmdSearch:
+		query := ""
+		if sb.SearchQuery() != "" {
+			query = sb.SearchQuery()
+		}
+		a.overlay = SearchOverlay(query)
+	case CmdFindNext:
+		if sb.NextMatch(a.Theme) {
+			a.setNotice(sb.SearchStatus(), StatusInfo)
+		} else if sb.SearchQuery() != "" {
+			a.setNotice("no matches for: "+sb.SearchQuery(), StatusWarn)
+		} else {
+			a.setNotice("no active search — press ctrl+f to search", StatusInfo)
+		}
+	case CmdFindPrev:
+		if sb.PrevMatch(a.Theme) {
+			a.setNotice(sb.SearchStatus(), StatusInfo)
+		} else if sb.SearchQuery() != "" {
+			a.setNotice("no matches for: "+sb.SearchQuery(), StatusWarn)
+		} else {
+			a.setNotice("no active search — press ctrl+f to search", StatusInfo)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+func (a *App) promptKey(p *Prompt, binding string, ctx Context) bool {
+	cmd := resolve(binding, ctx)
+	if cmd == CmdNone {
+		cmd = resolve(binding, CtxPrompt)
+	}
+	switch cmd {
+	case CmdCursorLeft:
+		p.MoveLeft()
+	case CmdCursorRight:
+		p.MoveRight()
+	case CmdWordLeft:
+		p.MoveWordLeft()
+	case CmdWordRight:
+		p.MoveWordRight()
+	case CmdLineStart:
+		p.MoveHome()
+	case CmdLineEnd:
+		p.MoveEnd()
+	case CmdBackspace:
+		p.Backspace()
+	case CmdDelete:
+		p.Delete()
+	case CmdDeleteWord:
+		p.DeleteWord()
+	case CmdDeleteToStart:
+		p.DeleteToStart()
+	case CmdDeleteToEnd:
+		p.DeleteToEnd()
+	case CmdYank:
+		p.Yank()
+	case CmdUndo:
+		p.Undo()
+	case CmdExpandPaste:
+		if p.ExpandPastes() {
+			a.setNotice("expanded paste", StatusInfo)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+func (a *App) history(delta int) []Effect {
+	v := a.Current()
+	if v == nil || a.overlay != nil || v.Approval() != nil || v.Focus != CtxPrompt {
+		return nil
+	}
+	if delta < 0 {
+		v.Prompt.HistoryPrev()
+	} else {
+		v.Prompt.HistoryNext()
+	}
+	return nil
+}
+
+func (a *App) toggleFocus() []Effect {
+	v := a.Current()
+	if v == nil || a.mode != ModeSession {
+		return nil
+	}
+	if v.Focus == CtxPrompt {
+		v.Focus = CtxScrollback
+		// Entering the transcript with nothing selected selects the newest
+		// entry, so the first arrow key moves rather than jumping to the top.
+		v.Scroll.SelectDelta(0, a.Theme)
+	} else {
+		v.Focus = CtxPrompt
+		v.Scroll.SelectNone()
+	}
+	return nil
+}
+
+func (a *App) toggleDashboard() []Effect {
+	if a.mode == ModeDashboard {
+		a.mode = ModeSession
+		return nil
+	}
+	a.mode = ModeDashboard
+	a.dashboard.Select(a.active)
+	a.dashboard.Clamp(len(a.views))
+	return nil
+}
+
+func (a *App) cycleSession(delta int) []Effect {
+	if len(a.views) == 0 {
+		return nil
+	}
+	a.active = (a.active + delta + len(a.views)) % len(a.views)
+	a.mode = ModeSession
+	return nil
+}
+
+func (a *App) moveSelection(delta int) {
+	if a.overlay != nil {
+		a.overlay.Move(delta)
+		return
+	}
+	if a.mode == ModeDashboard {
+		a.dashboard.Move(delta, len(a.views))
+		return
+	}
+	if v := a.Current(); v != nil && v.Approval() != nil {
+		v.Approval().Next(delta)
+	}
+}
+
+// complete is Tab inside an overlay: take the highlighted row.
+func (a *App) complete() []Effect {
+	if a.overlay == nil {
+		return nil
+	}
+	return a.acceptOverlay()
+}
