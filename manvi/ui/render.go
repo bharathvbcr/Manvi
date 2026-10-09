@@ -507,6 +507,14 @@ func (r *Renderer) writeNames(colour, label string, names []string) {
 	r.write("      %s%s: %s%s\n", colour, label, strings.Join(safe, ", "), r.palette.Reset)
 }
 
+// OnOff is how every face spells a boolean setting to a person.
+func OnOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
 func indent(text, prefix string) string {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	for i := 1; i < len(lines); i++ {

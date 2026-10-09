@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // --- doctor ---
@@ -60,7 +61,7 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  hard rules      %s (%s)\n", onOff(hard), hardOrigin)
+	fmt.Fprintf(out, "  hard rules      %s (%s)\n", ui.OnOff(hard), hardOrigin)
 	if !hard {
 		fmt.Fprintln(out, "                  credential paths, restricted paths, git safety, and the")
 		fmt.Fprintln(out, "                  repository boundary are not enforced; writes can land")
@@ -75,7 +76,7 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  agent overrides %s (max %s)\n", onOff(agentGrants), ttl)
+	fmt.Fprintf(out, "  agent overrides %s (max %s)\n", ui.OnOff(agentGrants), ttl)
 
 	// Reported as what will actually be sent, for the same reason the gate
 	// modes are reported resolved rather than raw. supports_reasoning only
@@ -203,13 +204,6 @@ func (p rigorProbe) check() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return devcouncil.VerifierAvailable(ctx, p.binary)
-}
-
-func onOff(v bool) string {
-	if v {
-		return "on"
-	}
-	return "off"
 }
 
 // wrapNotice breaks a sentence into lines of at most width columns. An empty

@@ -427,3 +427,9 @@ func TestShouldColorRefusesAPipe(t *testing.T) {
 		t.Fatal("NO_COLOR was ignored")
 	}
 }
+
+func TestOnOffSpellsASetting(t *testing.T) {
+	if OnOff(true) != "on" || OnOff(false) != "off" {
+		t.Fatalf("OnOff(true)=%q OnOff(false)=%q", OnOff(true), OnOff(false))
+	}
+}

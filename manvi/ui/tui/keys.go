@@ -1,5 +1,7 @@
 package tui
 
+import "github.com/bharathvbcr/Manvi/manvi/ui"
+
 // Cmd is a bound command: what a key means once focus and mode are known.
 type Cmd int
 
@@ -391,7 +393,7 @@ func (a *App) key(binding string) []Effect {
 	case CmdMultiline:
 		if v := a.Current(); v != nil {
 			v.Prompt.Multiline = !v.Prompt.Multiline
-			a.setNotice("multiline "+onOff(v.Prompt.Multiline)+" — enter "+
+			a.setNotice("multiline "+ui.OnOff(v.Prompt.Multiline)+" — enter "+
 				map[bool]string{true: "inserts a newline", false: "sends"}[v.Prompt.Multiline], StatusInfo)
 		}
 		return nil
@@ -469,13 +471,6 @@ func (a *App) key(binding string) []Effect {
 		return nil
 	}
 	return nil
-}
-
-func onOff(v bool) string {
-	if v {
-		return "on"
-	}
-	return "off"
 }
 
 func (a *App) scrollbackKey(v *AgentView, binding string, ctx Context) bool {
