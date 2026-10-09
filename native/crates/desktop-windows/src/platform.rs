@@ -2,8 +2,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use desktop_core::{
     Action, ActionKind, Attach, Bounds, Delivery, DesktopError, MAX_DEPTH, MAX_IMAGE_PIXELS,
-    MAX_NODES, MAX_TEXT_BYTES, Node, Observation, Receipt, ResolvedTarget, Result, Screenshot,
-    VisualAnchor, VisualMatch, Window, WorkerRequest, now_ms, revalidate_visual, same_target,
+    MAX_NODES, Node, Observation, Receipt, ResolvedTarget, Result, Screenshot, VisualAnchor,
+    VisualMatch, Window, WorkerRequest, bounded_text, err, now_ms, revalidate_visual, same_target,
     validate_state,
 };
 use image::{DynamicImage, ImageFormat, RgbaImage};
@@ -57,21 +57,8 @@ use windows::{
     core::{BOOL, BSTR, Interface},
 };
 
-fn err(code: &str, message: impl Into<String>) -> DesktopError {
-    DesktopError::new(code, message)
-}
 fn native(e: windows::core::Error) -> DesktopError {
     err("native_api", e.to_string())
-}
-fn bounded(s: String) -> Result<String> {
-    if s.len() > MAX_TEXT_BYTES {
-        Err(err(
-            "attribute_limit",
-            "Accessibility text exceeds byte limit",
-        ))
-    } else {
-        Ok(s)
-    }
 }
 fn hwnd(id: u64) -> Result<HWND> {
     let value = usize::try_from(id).map_err(|_| {
@@ -288,8 +275,9 @@ impl Automation {
             } else {
                 "group"
             };
-            let name = bounded(element.CurrentName().map_err(native)?.to_string())?;
-            let identifier = bounded(element.CurrentAutomationId().map_err(native)?.to_string())?;
+            let name = bounded_text(element.CurrentName().map_err(native)?.to_string())?;
+            let identifier =
+                bounded_text(element.CurrentAutomationId().map_err(native)?.to_string())?;
             let rect = element.CurrentBoundingRectangle().map_err(native)?;
             let value_pattern = element
                 .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
@@ -303,7 +291,7 @@ impl Automation {
                 .map(|p| {
                     p.CurrentValue()
                         .map_err(native)
-                        .and_then(|v| bounded(v.to_string()))
+                        .and_then(|v| bounded_text(v.to_string()))
                 })
                 .transpose()?;
             let mut actions = Vec::new();
