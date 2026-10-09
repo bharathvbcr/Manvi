@@ -326,11 +326,11 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 	if len(ev.Degraded) > 0 {
 		// Printing nothing here is what would make an unexamined result look
 		// examined, so it is never folded away and never truncated to a count.
-		addWrapped("checks that did not run: "+strings.Join(ev.Degraded, ", "),
+		addWrapped("checks that did not run: "+ui.OneLine(strings.Join(ev.Degraded, ", ")),
 			th.Status(StatusDegraded))
 	}
 	if len(ev.Weakened) > 0 {
-		addWrapped("safety settings off default: "+strings.Join(ev.Weakened, ", "),
+		addWrapped("safety settings off default: "+ui.OneLine(strings.Join(ev.Weakened, ", ")),
 			th.Status(StatusWarn))
 	}
 

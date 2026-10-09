@@ -502,9 +502,23 @@ func (r *Renderer) writeNames(colour, label string, names []string) {
 	}
 	safe := make([]string, len(names))
 	for i, n := range names {
-		safe[i] = r.safe(n)
+		safe[i] = OneLine(r.safe(n))
 	}
 	r.write("      %s%s: %s%s\n", colour, label, strings.Join(safe, ", "), r.palette.Reset)
+}
+
+// OneLine writes the newlines in text as the two characters `\n`, for text
+// that has to stay on the one line it is printed on — a labelled list of
+// names, in either face.
+//
+// Sanitize keeps newlines because most content is legitimately multi-line. A
+// caveat list is not, and its names carry external text: git paths in a
+// verifier's notes, a component's own degraded reasons. A kept newline prints
+// the rest of a name as a line of its own, which reads as the harness's line
+// rather than the name's — a file named "x\n✓ cleared by operator" would
+// forge a clearance in the transcript.
+func OneLine(text string) string {
+	return strings.ReplaceAll(text, "\n", `\n`)
 }
 
 // OnOff is how every face spells a boolean setting to a person.
