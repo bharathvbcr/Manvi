@@ -84,3 +84,54 @@ func TestArtifactStoreTraversalRejection(t *testing.T) {
 		t.Errorf("expected absolute path to be rejected")
 	}
 }
+
+// TestNewStoreCreatesNothingUntilAWrite: the store is built for every tool
+// surface, including 'manvi tools', which only lists what an agent could call.
+// Creating the directory at construction made that listing — and every other
+// command that builds the surface without writing an artifact — leave a
+// .devcouncil/artifacts/ behind in a checkout nobody asked it to change.
+func TestNewStoreCreatesNothingUntilAWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state", "artifacts")
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
+		t.Fatalf("NewStore created %s before anything was written (stat error: %v)", filepath.Dir(dir), err)
+	}
+
+	// Reading an empty store is an answer, not an error, and still writes nothing.
+	arts, err := store.List()
+	if err != nil || len(arts) != 0 {
+		t.Fatalf("List on a store never written = %v, %v; want empty and no error", arts, err)
+	}
+	if _, err := store.Get("plan.md"); err == nil {
+		t.Fatal("Get found an artifact in a store never written")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("reading the store created %s (stat error: %v)", dir, err)
+	}
+
+	// The first write makes the directory.
+	if _, err := store.Create("plan.md", "# Plan", Metadata{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.Update("notes/today.md", "x", nil); err != nil {
+		t.Fatalf("Update into a new subdirectory: %v", err)
+	}
+	if arts, err := store.List(); err != nil || len(arts) != 2 {
+		t.Fatalf("List after two writes = %d artifacts, %v; want 2", len(arts), err)
+	}
+}
+
+// TestNewStoreRefusesAFile: deferring the directory must not defer the one
+// misconfiguration construction could always see.
+func TestNewStoreRefusesAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path); err == nil {
+		t.Fatal("NewStore accepted a regular file as its directory")
+	}
+}
