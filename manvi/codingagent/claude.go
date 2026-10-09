@@ -179,7 +179,7 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if err != nil {
 		return nil, beforeStart(err)
 	}
-	wire, err := startConnection(ctx, program, argv(mode, session), cwd, validateClaudeFrame)
+	wire, err := startConnection(ctx, program, argv(mode, session), cwd, options.WithheldEnv, validateClaudeFrame)
 	if err != nil {
 		return nil, err
 	}

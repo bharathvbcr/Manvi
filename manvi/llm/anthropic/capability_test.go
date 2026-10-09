@@ -35,9 +35,116 @@ func TestDisabledThinkingIsCappedAtHighEffort(t *testing.T) {
 }
 
 func TestAlwaysThinkingModelRefusesDisabling(t *testing.T) {
-	err := ValidateThinking("claude-fable-5", ThinkingDisabled, EffortLow)
-	if err == nil || !strings.Contains(err.Error(), "always reasons") {
-		t.Fatalf("error = %v, want a refusal to disable reasoning", err)
+	// Each of these returns a 400 for {type: "disabled"} at every effort.
+	for _, model := range []string{"claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"} {
+		err := ValidateThinking(model, ThinkingDisabled, EffortLow)
+		if err == nil || !strings.Contains(err.Error(), "always reasons") {
+			t.Fatalf("%s: error = %v, want a refusal to disable reasoning", model, err)
+		}
+	}
+	// Haiku 5.5 accepts disabled thinking at high effort or below.
+	if err := ValidateThinking("claude-haiku-5-5", ThinkingDisabled, EffortHigh); err != nil {
+		t.Fatalf("haiku 5.5 at high: %v", err)
+	}
+}
+
+func TestCurrentGenerationIsServed(t *testing.T) {
+	for _, model := range []string{"claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"} {
+		c, ok := Capability(model)
+		if !ok {
+			t.Fatalf("%s is not in the catalogue", model)
+		}
+		if c.ContextWindow != 1_000_000 || c.MaxOutputTokens != 128_000 || !c.SupportsReasoning {
+			t.Errorf("%s = %+v", model, c)
+		}
+	}
+}
+
+// TestEveryServedModelIsPriced keeps the price table and the catalogue in
+// step: a budget refuses a model it cannot price, so an unpriced entry is a
+// model that works until someone sets a spend cap.
+func TestEveryServedModelIsPriced(t *testing.T) {
+	for _, model := range Models() {
+		p, ok := PriceOf(model)
+		if !ok {
+			t.Errorf("%s is served but has no price", model)
+			continue
+		}
+		if err := p.Validate(); err != nil {
+			t.Errorf("%s: %v", model, err)
+		}
+		if !p.ReasoningInOutput {
+			t.Errorf("%s: Anthropic's output_tokens includes thinking", model)
+		}
+		if p.CacheWrite*4 != p.Input*5 {
+			t.Errorf("%s: cache write %d is not 1.25x input %d", model, p.CacheWrite, p.Input)
+		}
+	}
+	for model := range prices {
+		if _, ok := Capability(model); !ok {
+			t.Errorf("%s is priced but not served", model)
+		}
+	}
+}
+
+// TestPublishedRates pins every rate to Anthropic's pricing page
+// (platform.claude.com/docs/en/about-claude/pricing, read 2026-10-09) as
+// {input, 5m cache write, cache read, output} in $/MTok x 1000, so a change to
+// one is a deliberate edit rather than a typo. Sonnet 5.5's cache read is
+// $0.10 (0.05x); an earlier transcription from secondary notes said $0.20.
+func TestPublishedRates(t *testing.T) {
+	for model, want := range map[string][4]int64{
+		"claude-fable-5-1":  {10_000, 12_500, 250, 50_000},
+		"claude-fable-5":    {10_000, 12_500, 1_000, 50_000},
+		"claude-opus-5-5":   {4_000, 5_000, 200, 20_000},
+		"claude-opus-5":     {5_000, 6_250, 500, 25_000},
+		"claude-opus-4-8":   {5_000, 6_250, 500, 25_000},
+		"claude-sonnet-5-5": {2_000, 2_500, 100, 10_000},
+		"claude-sonnet-5":   {2_000, 2_500, 200, 10_000},
+		"claude-haiku-5-5":  {100, 125, 10, 500},
+		"claude-haiku-4-5":  {1_000, 1_250, 100, 5_000},
+	} {
+		p, ok := PriceOf(model)
+		if !ok {
+			t.Errorf("%s has no price", model)
+			continue
+		}
+		if got := [4]int64{p.Input, p.CacheWrite, p.CacheRead, p.Output}; got != want {
+			t.Errorf("%s rates = %v, want %v", model, got, want)
+		}
+	}
+	haiku, _ := PriceOf("claude-haiku-5-5")
+	long := haiku.LongRates
+	if haiku.LongPromptAbove != 100_000 || [4]int64{long.Input, long.CacheWrite, long.CacheRead, long.Output} != [4]int64{500, 625, 50, 2_500} {
+		t.Errorf("haiku 5.5 long-prompt tier = %+v", haiku)
+	}
+}
+
+func TestModelsThatDoNotReasonAreSentNoThinkingConfiguration(t *testing.T) {
+	a := New("", nil)
+	req := llm.Request{Model: "claude-haiku-4-5", MaxTokens: 10, Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}}}
+	body, err := a.buildRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Thinking != nil {
+		t.Fatalf("thinking = %+v; Haiku 4.5 rejects adaptive thinking with a 400", body.Thinking)
+	}
+	req.Model = "claude-opus-5-5"
+	if body, err = a.buildRequest(req); err != nil || body.Thinking == nil || body.Thinking.Type != "adaptive" {
+		t.Fatalf("a reasoning model lost its thinking configuration: %+v, %v", body, err)
+	}
+}
+
+func TestOnlyRefusalsOfTheRequestItselfAreUnbilled(t *testing.T) {
+	a := New("", nil)
+	for status, want := range map[int]bool{
+		400: true, 401: true, 402: true, 403: true, 404: true, 413: true, 429: true, 529: true,
+		200: false, 408: false, 409: false, 500: false, 502: false, 503: false, 504: false, 0: false,
+	} {
+		if got := a.RejectionUnbilled(status); got != want {
+			t.Errorf("RejectionUnbilled(%d) = %v, want %v", status, got, want)
+		}
 	}
 }
 

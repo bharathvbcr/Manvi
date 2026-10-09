@@ -28,6 +28,10 @@ type Options struct {
 	Provider           string
 	Program, Cwd, Mode string
 	AcknowledgeBypass  bool
+	// WithheldEnv names environment variables the provider process must not
+	// inherit, such as a credential whose spend the host meters and the
+	// provider would not.
+	WithheldEnv []string
 }
 
 // ManagedProviders are the providers with a managed adapter in this package.
@@ -170,7 +174,7 @@ func startCodex(ctx context.Context, options Options, args []string) (*Codex, er
 	if _, _, _, err := policy(options); err != nil {
 		return nil, beforeStart(err)
 	}
-	wire, err := startConnection(ctx, program, args, cwd, validateCodexFrame)
+	wire, err := startConnection(ctx, program, args, cwd, options.WithheldEnv, validateCodexFrame)
 	if err != nil {
 		return nil, err
 	}

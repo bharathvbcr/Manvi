@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 )
 
 // Name is the adapter's stable identifier. It is what lands in
@@ -38,6 +39,36 @@ const (
 // documented figures; an unlisted model is unknown rather than assumed, so a
 // typo in a config fails at assembly instead of at the API.
 var catalogue = llm.Catalogue{
+	"claude-fable-5-1": {
+		Provider: Name, Model: "claude-fable-5-1",
+		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+	},
+	"claude-opus-5-5": {
+		Provider: Name, Model: "claude-opus-5-5",
+		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+	},
+	"claude-sonnet-5-5": {
+		Provider: Name, Model: "claude-sonnet-5-5",
+		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+	},
+	"claude-haiku-5-5": {
+		Provider: Name, Model: "claude-haiku-5-5",
+		// Unlike Haiku 4.5, the 5.5 generation has the family's 1M/128K limits
+		// and reasons; its price steps up above a 100K-token prompt (see prices).
+		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+	},
 	"claude-opus-5": {
 		Provider: Name, Model: "claude-opus-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
@@ -78,6 +109,44 @@ var catalogue = llm.Catalogue{
 	},
 }
 
+// prices are first-party API rates in nano-USD per token ($1/MTok = 1000),
+// transcribed from https://platform.claude.com/docs/en/about-claude/pricing.
+// Cache writes are the 5-minute TTL rate, 1.25x input, which is the only TTL
+// this adapter requests. Cache reads are 0.025x input on Fable 5.1, 0.05x on
+// Opus 5.5 and Sonnet 5.5, and 0.1x everywhere else, Haiku 5.5's two tiers
+// included. Haiku 5.5 is the one model priced by prompt length; the rest bill
+// the whole 1M window at one rate. Thinking is billed as output and
+// Anthropic's output_tokens already includes it.
+var prices = map[string]budget.Prices{
+	"claude-fable-5-1":  flat(10_000, 50_000, 250),
+	"claude-fable-5":    flat(10_000, 50_000, 1_000),
+	"claude-opus-5-5":   flat(4_000, 20_000, 200),
+	"claude-opus-5":     flat(5_000, 25_000, 500),
+	"claude-opus-4-8":   flat(5_000, 25_000, 500),
+	"claude-sonnet-5-5": flat(2_000, 10_000, 100),
+	"claude-sonnet-5":   flat(2_000, 10_000, 200),
+	"claude-haiku-5-5": {
+		Rates:             budget.Rates{Input: 100, Output: 500, CacheWrite: 125, CacheRead: 10},
+		LongPromptAbove:   100_000,
+		LongRates:         budget.Rates{Input: 500, Output: 2_500, CacheWrite: 625, CacheRead: 50},
+		ReasoningInOutput: true,
+	},
+	"claude-haiku-4-5": flat(1_000, 5_000, 100),
+}
+
+func flat(input, output, cacheRead int64) budget.Prices {
+	return budget.Prices{
+		Rates:             budget.Rates{Input: input, Output: output, CacheWrite: input * 5 / 4, CacheRead: cacheRead},
+		ReasoningInOutput: true,
+	}
+}
+
+// PriceOf returns what a model costs, for budget metering.
+func PriceOf(model string) (budget.Prices, bool) {
+	p, ok := prices[model]
+	return p, ok
+}
+
 // ThinkingMode is how a request configures reasoning.
 type ThinkingMode string
 
@@ -96,8 +165,14 @@ const (
 )
 
 // alwaysThinking lists models where reasoning cannot be turned off at all.
+//
+// Sonnet 5.5 belongs here too: it rejects {type: "disabled"} and turns thinking
+// off only through a separate "between_tools" mode this adapter does not send.
 var alwaysThinking = map[string]bool{
-	"claude-fable-5": true,
+	"claude-fable-5":    true,
+	"claude-fable-5-1":  true,
+	"claude-opus-5-5":   true,
+	"claude-sonnet-5-5": true,
 }
 
 // Capability returns the descriptor for a model, or false when this adapter

@@ -21,7 +21,52 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Added
+
+- An account-wide Anthropic spend cap. Set `MANVI_ANTHROPIC_BUDGET_USD=200`
+  and every Anthropic request, from any project or any concurrent session,
+  draws from one ledger. By default that ledger is
+  `<user config dir>/manvi/budget/anthropic.json`; `MANVI_ANTHROPIC_BUDGET_LEDGER`
+  overrides it. A request whose worst-case cost would pass the limit is
+  refused before it is sent. `manvi budget`, and `budget` in the TUI, show
+  spent, retained, in-flight and remaining. A cap that is set but unusable (a
+  bad amount, a relative path, a corrupt ledger) stops the provider from
+  starting rather than letting it run unmetered.
+  - While a cap is set, managed Claude agents started by `manvi serve` do not
+    inherit `ANTHROPIC_API_KEY`. They are separate processes that call the API
+    themselves, so with the key they could spend from the account without the
+    ledger recording it. They fall back to their own login instead.
+  - Rejections Anthropic documents as refusals of the request itself (400,
+    401, 402, 403, 404, 413, 429, 529) release their reservation. 500, 504 and
+    lost connections keep it.
+  - A turn cut short after `message_start` is retained at its reported prompt
+    cost plus the full output allowance. It used to keep its whole
+    byte-sized reservation.
+- Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 in the Anthropic
+  catalogue. `manvi probe anthropic` now uses Haiku 5.5.
+
 ### Changed
+
+- Anthropic requests use automatic prompt caching (top-level
+  `cache_control: ephemeral`). An agent loop now reads the history it already
+  sent instead of paying full input price for it on every turn.
+- An Anthropic stream that ends before `message_stop` is an error, not a
+  response. A connection closed mid-message used to produce a truncated
+  response that looked complete, with no output tokens in its usage.
+- Haiku 4.5 requests no longer send `thinking: {type: "adaptive"}`, which
+  that model rejects with a 400.
+- Anthropic usage reports `InputTokens` as the whole prompt, including cached
+  tokens, as the OpenAI-compatible and Gemini adapters already did. It was the
+  uncached remainder alone.
+- `llm/budget` is now an account ledger rather than a single-run campaign.
+  - Prices are per model and cache-aware.
+  - Reservations are sized from the request.
+  - Settled spend folds into totals, so the file no longer grows per request
+    (it used to stop at 4096 attempts).
+  - A per-operation `flock` replaces the exclusive lock, so many sessions can
+    share one limit.
+  - The 60-second deadline the wrapper put on every stream is gone; it would
+    have cut off long reasoning turns.
 
 - Policy decisions use Go's fnmatch in every build, not the Gusset engine.
   This covers `manvi` CLI gates and `serve`'s `policy.check.file` and

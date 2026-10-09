@@ -80,7 +80,7 @@ func (w *limitedDiscard) Write(p []byte) (int, error) {
 // startConnection spawns the provider and frames its stdout. `validate` is the
 // protocol's own frame rule and is never optional: a transport that accepted
 // any well-formed JSON would let one provider's frames be read as another's.
-func startConnection(parent context.Context, program string, args []string, cwd string, validate func([]byte) error) (*connection, error) {
+func startConnection(parent context.Context, program string, args []string, cwd string, withheld []string, validate func([]byte) error) (*connection, error) {
 	if err := parent.Err(); err != nil {
 		return nil, beforeStart(err)
 	}
@@ -89,20 +89,7 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 	cmd.Dir = cwd
 	cmd.WaitDelay = 2 * time.Second
 	proc.ConfigureGroup(cmd)
-	// Preserve authentication and ordinary provider preferences. Remove only Git
-	// repository-routing overrides and replace the inherited Manvi root for this child.
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "DEVCOUNCIL_ROOT", "PWD":
-			continue
-		}
-		if strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
-			continue
-		}
-		cmd.Env = append(cmd.Env, entry)
-	}
-	cmd.Env = append(cmd.Env, "DEVCOUNCIL_ROOT="+cwd, "PWD="+cwd)
+	cmd.Env = childEnv(os.Environ(), cwd, withheld)
 	cmd.Stderr = &limitedDiscard{remaining: 65536, cancel: cancel}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -125,6 +112,31 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 	go func() { c.waitErr = cmd.Wait(); output.Close(); close(c.done) }()
 	return c, nil
 }
+
+// childEnv is the environment a managed provider starts with. It preserves
+// authentication and ordinary provider preferences, removes Git
+// repository-routing overrides, replaces the inherited Manvi root, and drops
+// every variable the host asked to withhold.
+func childEnv(environ []string, cwd string, withheld []string) []string {
+	drop := make(map[string]bool, len(withheld))
+	for _, key := range withheld {
+		drop[key] = true
+	}
+	var env []string
+	for _, entry := range environ {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "DEVCOUNCIL_ROOT", "PWD":
+			continue
+		}
+		if strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") || drop[key] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "DEVCOUNCIL_ROOT="+cwd, "PWD="+cwd)
+}
+
 func (c *connection) read() {
 	defer close(c.frames)
 	defer c.stdout.Close()

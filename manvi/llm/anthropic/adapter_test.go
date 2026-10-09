@@ -106,7 +106,9 @@ func TestAFullTurnDecodes(t *testing.T) {
 	if resp.StopReason != llm.StopToolUse {
 		t.Errorf("stop = %q", resp.StopReason)
 	}
-	if resp.Usage.InputTokens != 42 || resp.Usage.OutputTokens != 77 {
+	// The wire says 42 uncached plus 10 read from cache; llm.Usage counts the
+	// whole prompt, so the two are summed.
+	if resp.Usage.InputTokens != 52 || resp.Usage.OutputTokens != 77 {
 		t.Errorf("usage = %+v — message_start and message_delta must be merged, not replaced", resp.Usage)
 	}
 	if resp.Usage.CacheReadTokens != 10 || resp.Usage.ReasoningTokens != 30 {
@@ -326,6 +328,57 @@ func TestRequestShapeMatchesTheDocumentedContract(t *testing.T) {
 	if _, present := body["temperature"]; present {
 		t.Error("temperature must never be sent; current models reject it")
 	}
+	// Automatic prompt caching: without it every turn of an agent loop pays
+	// full input price for the history the previous turn already sent.
+	cache, _ := body["cache_control"].(map[string]any)
+	if cache["type"] != "ephemeral" || len(cache) != 1 {
+		t.Errorf("cache_control = %v, want top-level {type: ephemeral}", body["cache_control"])
+	}
+}
+
+// TestUsageCountsTheWholePrompt pins llm.Usage's convention, which the
+// OpenAI-compatible and Gemini adapters already follow: InputTokens is the
+// whole prompt. Anthropic reports the uncached remainder alone, and passing it
+// through made a cached turn report a prompt smaller than its own cache read.
+func TestUsageCountsTheWholePrompt(t *testing.T) {
+	const cached = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":900,"cache_creation_input_tokens":95}}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	adapter, _ := adapterFor(t, cached)
+	stream, err := adapter.Stream(adaptertest.Ctx(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, resp, err := adaptertest.Drain(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := resp.Usage
+	if u.InputTokens != 1_000 || u.CacheReadTokens != 900 || u.CacheWriteTokens != 95 {
+		t.Fatalf("usage = %+v, want a 1000-token prompt with 900 read and 95 written", u)
+	}
+	if reuse := u.CacheReuse(); reuse != 0.9 {
+		t.Fatalf("CacheReuse = %v, want 0.9", reuse)
+	}
+}
+
+func TestAdapterIsMeterable(t *testing.T) {
+	adapter := New("", adaptertest.Secret("fixture-key"))
+	if !adapter.AttemptGateSupported() {
+		t.Fatal("the adapter must declare the admission gate so a budget can wrap it")
+	}
+	req := request()
+	req.MaxTokens = 0
+	if got := adapter.AppliedMaxTokens(req); got != adapter.DefaultMaxTokens {
+		t.Fatalf("AppliedMaxTokens = %d, want the default %d it sends", got, adapter.DefaultMaxTokens)
+	}
 }
 
 // TestASystemRoleMessageIsRefused: folding it into the user turn would change
@@ -447,5 +500,39 @@ func TestMidFlightFailureSettlesTheStream(t *testing.T) {
 	_, respErr := stream.Response()
 	if respErr == nil || !strings.Contains(respErr.Error(), firstErr.Error()) {
 		t.Fatalf("Response() = %v, want the stream's own failure (%v)", respErr, firstErr)
+	}
+}
+
+// TestAStreamThatEndsBeforeMessageStopIsIncomplete: a connection closed
+// cleanly mid-message reads exactly like a finished one. Before message_stop
+// was required, this produced a Response with the content so far and no
+// output count — a truncated turn presented as complete, and a charge with
+// none of its output in it.
+func TestAStreamThatEndsBeforeMessageStopIsIncomplete(t *testing.T) {
+	const cut = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":30}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half an ans"}}
+
+`
+	adapter, _ := adapterFor(t, cut)
+	stream, err := adapter.Stream(adaptertest.Ctx(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := adaptertest.Drain(stream); err == nil {
+		t.Fatal("a stream cut before message_stop settled as a complete response")
+	}
+	reporter, ok := stream.(interface{ UsageSoFar() (llm.Usage, bool) })
+	if !ok {
+		t.Fatal("the stream does not report usage so far")
+	}
+	u, seen := reporter.UsageSoFar()
+	if !seen || u.InputTokens != 42 || u.CacheReadTokens != 30 {
+		t.Fatalf("usage so far = %+v (seen %v), want the whole 42-token prompt", u, seen)
 	}
 }

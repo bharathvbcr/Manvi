@@ -1,6 +1,13 @@
-// Package budget reserves a conservative charge before every HTTP attempt.
-// Lost responses keep reservations; only authoritative usage or proven no-send
-// can reduce them. A ledger governs its own campaign, not an account balance.
+// Package budget caps what a provider account can spend, across every model and
+// every concurrent session that shares one ledger file.
+//
+// Every HTTP attempt reserves a conservative bound before it is sent. Only two
+// things reduce a reservation: proof that nothing was sent, and authoritative
+// usage from the provider. Everything else — a lost stream, a rejected or
+// unclassifiable attempt, a crash — keeps it, because the provider may have
+// billed it. The ledger therefore over-reports spend rather than under-reports
+// it, and it governs its own tally, not the account balance the provider holds:
+// spend made outside this ledger is invisible to it.
 package budget
 
 import (
@@ -10,297 +17,431 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
-type Prices struct {
-	InputNanoUSD    int64  `json:"input_nano_usd"`
-	OutputNanoUSD   int64  `json:"output_nano_usd"`
-	MaxInputTokens  int    `json:"max_input_tokens"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	Revision        string `json:"revision"`
-}
+const (
+	schemaVersion = 2
+	// maxInFlight bounds concurrent unresolved attempts, which is also the
+	// bound on what a crash can leave behind in the file.
+	maxInFlight = 256
+	// maxLedgerBytes rejects a file no valid ledger could grow to: settled
+	// attempts are folded into totals, so size tracks only what is in flight.
+	maxLedgerBytes = 1 << 20
+	// resolveTimeout bounds the ledger write that resolves an attempt. Those
+	// writes run after the request's own context may be gone, and a reservation
+	// must never be refunded merely because a deadline elapsed — a write that
+	// times out leaves the reservation in place.
+	resolveTimeout = 30 * time.Second
+)
+
+// lockWait bounds how long one ledger operation waits for another to release
+// the file. A variable so a test can shorten it.
+var lockWait = resolveTimeout
+
+const (
+	stateReserved = "reserved" // admitted, HTTP outcome not yet classified
+	stateAccepted = "accepted" // the server answered; awaiting usage
+)
+
+// ErrExhausted reports that an attempt's reservation would exceed the limit.
+var ErrExhausted = errors.New("budget exhausted")
+
+// Attempt is one in-flight HTTP attempt holding a reservation.
 type Attempt struct {
-	ID              uint64     `json:"id"`
-	State           string     `json:"state"`
-	ReservedNanoUSD int64      `json:"reserved_nano_usd"`
-	ChargedNanoUSD  int64      `json:"charged_nano_usd"`
-	Usage           *llm.Usage `json:"usage,omitempty"`
-}
-type Snapshot struct {
-	SchemaVersion int       `json:"schema_version"`
-	LimitNanoUSD  int64     `json:"limit_nano_usd"`
-	Prices        Prices    `json:"prices"`
-	Attempts      []Attempt `json:"attempts"`
-}
-type Ledger struct {
-	mu     sync.Mutex
-	path   string
-	lock   *os.File
-	data   Snapshot
-	closed bool
+	ID              uint64 `json:"id"`
+	Model           string `json:"model"`
+	State           string `json:"state"`
+	ReservedNanoUSD int64  `json:"reserved_nano_usd"`
+	PID             int    `json:"pid"`
+	StartedUnix     int64  `json:"started_unix"`
 }
 
-func Open(path string, limit int64, prices Prices) (*Ledger, error) {
-	if path == "" || limit <= 0 || limit > 1_000_000_000_000 || prices.InputNanoUSD <= 0 || prices.InputNanoUSD > 1_000_000 || prices.OutputNanoUSD <= 0 || prices.OutputNanoUSD > 1_000_000 || prices.MaxInputTokens <= 0 || prices.MaxInputTokens > 10_000_000 || prices.MaxOutputTokens <= 0 || prices.MaxOutputTokens > 1_000_000 || prices.Revision == "" {
-		return nil, errors.New("invalid campaign price bounds")
+// Snapshot is the persisted ledger.
+type Snapshot struct {
+	SchemaVersion int `json:"schema_version"`
+	// SpentNanoUSD is priced from authoritative provider usage.
+	SpentNanoUSD int64 `json:"spent_nano_usd"`
+	// RetainedNanoUSD is reservations kept because the charge could not be
+	// proven either way. It is an upper bound on real spend, not a measurement.
+	RetainedNanoUSD  int64 `json:"retained_nano_usd"`
+	Settled          int64 `json:"settled"`
+	RetainedAttempts int64 `json:"retained_attempts"`
+	// RefusedAttempts counts attempts the provider rejected with a status it
+	// declares unbilled; their reservations were released.
+	RefusedAttempts int64 `json:"refused_attempts,omitempty"`
+	// Overruns counts settled attempts whose real charge exceeded their
+	// reservation. The charge is recorded in full either way; a non-zero count
+	// means the reservation bound was too tight and the limit could have been
+	// passed by the difference.
+	Overruns int64     `json:"overruns"`
+	NextID   uint64    `json:"next_id"`
+	InFlight []Attempt `json:"in_flight"`
+}
+
+// InFlightNanoUSD totals the reservations still awaiting resolution.
+func (s Snapshot) InFlightNanoUSD() int64 {
+	var total int64
+	for _, a := range s.InFlight {
+		total += a.ReservedNanoUSD
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	return total
+}
+
+// CommittedNanoUSD is everything counted against the limit.
+func (s Snapshot) CommittedNanoUSD() int64 {
+	return s.SpentNanoUSD + s.RetainedNanoUSD + s.InFlightNanoUSD()
+}
+
+func (s Snapshot) clone() Snapshot {
+	s.InFlight = append([]Attempt(nil), s.InFlight...)
+	return s
+}
+
+func (s Snapshot) find(id uint64) int {
+	for i, a := range s.InFlight {
+		if a.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *Snapshot) remove(i int) Attempt {
+	a := s.InFlight[i]
+	s.InFlight = append(s.InFlight[:i], s.InFlight[i+1:]...)
+	return a
+}
+
+func validate(s Snapshot) error {
+	if s.SchemaVersion != schemaVersion {
+		return fmt.Errorf("budget: ledger schema %d, want %d", s.SchemaVersion, schemaVersion)
+	}
+	if s.SpentNanoUSD < 0 || s.RetainedNanoUSD < 0 || s.Settled < 0 || s.RetainedAttempts < 0 || s.RefusedAttempts < 0 || s.Overruns < 0 {
+		return errors.New("budget: negative ledger total")
+	}
+	if len(s.InFlight) > maxInFlight {
+		return fmt.Errorf("budget: %d in-flight attempts exceeds %d", len(s.InFlight), maxInFlight)
+	}
+	total := s.SpentNanoUSD
+	if total > math.MaxInt64-s.RetainedNanoUSD {
+		return errors.New("budget: ledger total overflows")
+	}
+	total += s.RetainedNanoUSD
+	seen := map[uint64]bool{}
+	for _, a := range s.InFlight {
+		if a.ID == 0 || a.ID >= s.NextID || seen[a.ID] {
+			return fmt.Errorf("budget: invalid or duplicate attempt id %d", a.ID)
+		}
+		seen[a.ID] = true
+		if a.State != stateReserved && a.State != stateAccepted {
+			return fmt.Errorf("budget: attempt %d has invalid state %q", a.ID, a.State)
+		}
+		if a.ReservedNanoUSD <= 0 || a.Model == "" {
+			return fmt.Errorf("budget: attempt %d must name its model and hold a reservation", a.ID)
+		}
+		if total > math.MaxInt64-a.ReservedNanoUSD {
+			return errors.New("budget: ledger total overflows")
+		}
+		total += a.ReservedNanoUSD
+	}
+	return nil
+}
+
+// Ledger is a handle on one ledger file. It holds no lock between operations:
+// each one locks the file, re-reads it, applies one change and writes it back,
+// so any number of processes can share a limit without overspending it.
+type Ledger struct {
+	mu    sync.Mutex
+	path  string
+	limit int64
+}
+
+// Open validates the ledger at path, creating its directory if needed. A
+// missing file is an empty ledger; a corrupt one is refused rather than reset.
+func Open(path string, limitNanoUSD int64) (*Ledger, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("budget: ledger path %q must be absolute", path)
+	}
+	if limitNanoUSD <= 0 || limitNanoUSD > 1_000_000_000_000_000 {
+		return nil, fmt.Errorf("budget: limit %d nano-USD outside (0, $1M]", limitNanoUSD)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("campaign is locked; inspect its owner before recovering a stale lock: %w", err)
-	}
-	l := &Ledger{path: path, lock: lock, data: Snapshot{1, limit, prices, []Attempt{}}}
-	b, err := readLedger(path)
-	if err == nil {
-		if len(b) > 4<<20 {
-			l.Close()
-			return nil, errors.New("campaign ledger exceeds4 MiB")
-		}
-		decoder := json.NewDecoder(bytes.NewReader(b))
-		decoder.DisallowUnknownFields()
-		if err = decoder.Decode(&l.data); err != nil {
-			l.Close()
-			return nil, err
-		}
-		if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-			l.Close()
-			return nil, errors.New("trailing campaign ledger data")
-		}
-		if l.data.SchemaVersion != 1 || l.data.LimitNanoUSD != limit || l.data.Prices != prices {
-			l.Close()
-			return nil, errors.New("campaign configuration differs from existing ledger")
-		}
-		if err := validateSnapshot(l.data); err != nil {
-			l.Close()
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		l.Close()
+	l := &Ledger{path: path, limit: limitNanoUSD}
+	if _, err := l.Snapshot(); err != nil {
 		return nil, err
 	}
 	return l, nil
 }
-func (l *Ledger) Close() error {
+
+// Limit is the cap this handle enforces.
+func (l *Ledger) Limit() int64 { return l.limit }
+
+// Path is the ledger file.
+func (l *Ledger) Path() string { return l.path }
+
+// Snapshot reads the current ledger.
+func (l *Ledger) Snapshot() (Snapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	defer cancel()
+	var out Snapshot
+	err := l.update(ctx, func(s *Snapshot) error { out = s.clone(); return errReadOnly })
+	if errors.Is(err, errReadOnly) {
+		err = nil
+	}
+	return out, err
+}
+
+// Inspect reads a ledger without enforcing a limit, for reporting.
+func Inspect(path string) (Snapshot, error) {
+	l := &Ledger{path: path, limit: 1}
+	return l.Snapshot()
+}
+
+var errReadOnly = errors.New("read only")
+
+func (l *Ledger) update(ctx context.Context, mutate func(*Snapshot) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closed {
-		return nil
-	}
-	l.closed = true
-	err := l.lock.Close()
-	remove := os.Remove(l.path + ".lock")
+	// Every operation holds the lock for one read and one write, so a wait
+	// longer than this means a holder is wedged; give up rather than hang a
+	// caller whose own context has no deadline.
+	lockCtx, cancel := context.WithTimeout(ctx, lockWait)
+	defer cancel()
+	unlock, err := lockFile(lockCtx, l.path+".lock")
 	if err != nil {
 		return err
 	}
-	return remove
+	defer unlock()
+	// The wait for the lock is where a cancelled caller would otherwise slip
+	// through and reserve after it had already given up.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, err := load(l.path)
+	if err != nil {
+		return err
+	}
+	next := current.clone()
+	if err := mutate(&next); err != nil {
+		return err
+	}
+	if err := validate(next); err != nil {
+		return err
+	}
+	return save(l.path, next)
 }
-func (l *Ledger) save(next Snapshot) error {
-	if err := validateSnapshot(next); err != nil {
-		return err
+
+func load(path string) (Snapshot, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Snapshot{SchemaVersion: schemaVersion, NextID: 1, InFlight: []Attempt{}}, nil
 	}
-	b, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxLedgerBytes+1))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if len(raw) > maxLedgerBytes {
+		return Snapshot{}, fmt.Errorf("budget: ledger %s exceeds %d bytes", path, maxLedgerBytes)
+	}
+	var s Snapshot
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&s); err != nil {
+		return Snapshot{}, fmt.Errorf("budget: ledger %s: %w", path, err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return Snapshot{}, fmt.Errorf("budget: ledger %s has trailing data", path)
+	}
+	if s.InFlight == nil {
+		s.InFlight = []Attempt{}
+	}
+	if err := validate(s); err != nil {
+		return Snapshot{}, fmt.Errorf("budget: ledger %s: %w", path, err)
+	}
+	return s, nil
+}
+
+func save(path string, s Snapshot) error {
+	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(l.path), ".campaign-*")
+	f, err := os.CreateTemp(filepath.Dir(path), ".budget-*")
 	if err != nil {
 		return err
 	}
 	name := f.Name()
 	defer os.Remove(name)
-	if _, err = f.Write(b); err != nil {
+	if _, err := f.Write(raw); err != nil {
 		f.Close()
 		return err
 	}
-	if err = f.Sync(); err != nil {
+	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
 	}
-	if err = f.Close(); err != nil {
+	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, l.path); err != nil {
+	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	l.data = next
-	return nil
-}
-func (l *Ledger) Snapshot() Snapshot {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return copySnapshot(l.data)
-}
-func (l *Ledger) reserve(ctx context.Context) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if l.closed {
-		return 0, errors.New("campaign closed")
-	}
-	if len(l.data.Attempts) >= 4096 {
-		return 0, errors.New("campaign attempt count exceeded")
-	}
-	p := l.data.Prices
-	reserve := int64(p.MaxInputTokens)*p.InputNanoUSD + int64(p.MaxOutputTokens)*p.OutputNanoUSD
-	used := int64(0)
-	for _, a := range l.data.Attempts {
-		used += a.ReservedNanoUSD + a.ChargedNanoUSD
-	}
-	if reserve > l.data.LimitNanoUSD-used {
-		return 0, errors.New("campaign budget exhausted by charges and unresolved reservations")
-	}
-	id := uint64(len(l.data.Attempts) + 1)
-	next := copySnapshot(l.data)
-	next.Attempts = append(next.Attempts, Attempt{ID: id, State: "reserved", ReservedNanoUSD: reserve})
-	if err := l.save(next); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-func (l *Ledger) transportResult(id uint64, r transport.AttemptResult) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closed {
-		return errors.New("campaign closed")
-	}
-	if id == 0 || id > uint64(len(l.data.Attempts)) {
-		return errors.New("no provider attempt for transport result")
-	}
-	next := copySnapshot(l.data)
-	a := &next.Attempts[id-1]
-	if a.State != "reserved" {
-		return errors.New("attempt already has a transport result")
-	}
-	switch r.State {
-	case transport.AttemptNotSent, transport.AttemptAccepted, transport.AttemptRejected, transport.AttemptUnknown:
-	default:
-		return errors.New("invalid transport attempt state")
-	}
-	a.State = string(r.State)
-	if r.State == transport.AttemptNotSent {
-		a.ReservedNanoUSD = 0
-	}
-	return l.save(next)
-}
-func (l *Ledger) settle(id uint64, u llm.Usage) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closed {
-		return errors.New("campaign closed")
-	}
-	if id == 0 || id > uint64(len(l.data.Attempts)) {
-		return errors.New("no provider attempt to settle")
-	}
-	charge, err := usageCharge(l.data.Prices, u)
+	// The rename is durable only once the directory entry is. Without this a
+	// crash can bring back the previous ledger, and with it lose the record of
+	// money already spent.
+	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	next := copySnapshot(l.data)
-	a := &next.Attempts[id-1]
-	if a.State != "accepted" {
-		return errors.New("only an accepted attempt can settle")
-	}
-	a.Usage = &u
-	a.ChargedNanoUSD = charge
-	a.ReservedNanoUSD = 0
-	a.State = "settled"
-	return l.save(next)
+	defer dir.Close()
+	return dir.Sync()
 }
 
-type Provider struct {
-	Inner  llm.Provider
-	Ledger *Ledger
-}
-
-func (p *Provider) Name() string                                   { return p.Inner.Name() }
-func (p *Provider) Capability(model string) (llm.Capability, bool) { return p.Inner.Capability(model) }
-func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	if ctx == nil {
-		return nil, errors.New("provider context required")
+func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint64, error) {
+	if model == "" || amount <= 0 {
+		return 0, errors.New("budget: a reservation needs a model and a positive amount")
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if p.Inner == nil {
-		return nil, errors.New("inner provider required")
-	}
-	gated, ok := p.Inner.(transport.AttemptGatedProvider)
-	if !ok || !gated.AttemptGateSupported() {
-		return nil, errors.New("provider does not support transport attempt admission")
-	}
-
-	if p.Ledger == nil {
-		return nil, errors.New("campaign ledger required")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	var mu sync.Mutex
-	var last uint64
-	gate := func(ctx context.Context, _ transport.AttemptInfo) (func(transport.AttemptResult) error, error) {
-		id, err := p.Ledger.reserve(ctx)
-		if err != nil {
-			return nil, err
+	var id uint64
+	err := l.update(ctx, func(s *Snapshot) error {
+		if len(s.InFlight) >= maxInFlight {
+			return fmt.Errorf("budget: %d attempts already in flight", maxInFlight)
 		}
-		mu.Lock()
-		last = id
-		mu.Unlock()
-		return func(r transport.AttemptResult) error { return p.Ledger.transportResult(id, r) }, nil
-	}
-	stream, err := p.Inner.Stream(transport.WithAttemptGate(ctx, gate), req)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	return &budgetStream{ctx: ctx, inner: stream, cancel: cancel, settle: func(u llm.Usage) error { mu.Lock(); id := last; mu.Unlock(); return p.Ledger.settle(id, u) }}, nil
+		committed := s.CommittedNanoUSD()
+		if amount > l.limit-committed {
+			return fmt.Errorf("%w: this request may cost up to %s, and %s of the %s limit is already spent or reserved",
+				ErrExhausted, USD(amount), USD(committed), USD(l.limit))
+		}
+		id = s.NextID
+		s.NextID++
+		s.InFlight = append(s.InFlight, Attempt{
+			ID: id, Model: model, State: stateReserved, ReservedNanoUSD: amount,
+			PID: os.Getpid(), StartedUnix: time.Now().Unix(),
+		})
+		return nil
+	})
+	return id, err
 }
 
-type budgetStream struct {
-	ctx    context.Context
-	inner  llm.Stream
-	cancel context.CancelFunc
-	settle func(llm.Usage) error
-	once   sync.Once
-	err    error
+func resolveContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), resolveTimeout)
 }
 
-func (s *budgetStream) Next() (llm.Chunk, error) {
-	if err := s.ctx.Err(); err != nil {
-		return llm.Chunk{}, err
-	}
-	chunk, err := s.inner.Next()
-	if cancelled := s.ctx.Err(); cancelled != nil {
-		return llm.Chunk{}, cancelled
-	}
-	return chunk, err
+// transportResult records how an attempt's HTTP exchange ended. refund is the
+// provider's own statement that a rejected attempt's status proves it was
+// refused before any billable work; without it a rejection keeps its
+// reservation.
+func (l *Ledger) transportResult(id uint64, r transport.AttemptResult, refund bool) error {
+	ctx, cancel := resolveContext()
+	defer cancel()
+	return l.update(ctx, func(s *Snapshot) error {
+		i := s.find(id)
+		if i < 0 {
+			return fmt.Errorf("budget: no in-flight attempt %d", id)
+		}
+		if s.InFlight[i].State != stateReserved {
+			return fmt.Errorf("budget: attempt %d already has a transport result", id)
+		}
+		switch r.State {
+		case transport.AttemptNotSent:
+			s.remove(i)
+		case transport.AttemptRejected:
+			if refund {
+				s.remove(i)
+				s.RefusedAttempts++
+				return nil
+			}
+			a := s.remove(i)
+			s.RetainedNanoUSD += a.ReservedNanoUSD
+			s.RetainedAttempts++
+		case transport.AttemptAccepted:
+			s.InFlight[i].State = stateAccepted
+		case transport.AttemptUnknown:
+			a := s.remove(i)
+			s.RetainedNanoUSD += a.ReservedNanoUSD
+			s.RetainedAttempts++
+		default:
+			return fmt.Errorf("budget: invalid transport state %q", r.State)
+		}
+		return nil
+	})
 }
-func (s *budgetStream) Response() (llm.Response, error) {
-	if err := s.ctx.Err(); err != nil {
-		return llm.Response{}, err
+
+func (l *Ledger) settle(id uint64, charge int64) error {
+	if charge < 0 {
+		return errors.New("budget: negative charge")
 	}
-	r, err := s.inner.Response()
-	if cancelled := s.ctx.Err(); cancelled != nil {
-		return llm.Response{}, cancelled
-	}
-	if err != nil {
-		return r, err
-	}
-	s.once.Do(func() { s.err = s.settle(r.Usage) })
-	if s.err != nil {
-		return r, s.err
-	}
-	return r, nil
+	ctx, cancel := resolveContext()
+	defer cancel()
+	return l.update(ctx, func(s *Snapshot) error {
+		i := s.find(id)
+		if i < 0 || s.InFlight[i].State != stateAccepted {
+			return fmt.Errorf("budget: attempt %d is not an accepted in-flight attempt", id)
+		}
+		if charge > math.MaxInt64-s.CommittedNanoUSD() {
+			return errors.New("budget: charge overflows ledger total")
+		}
+		a := s.remove(i)
+		s.SpentNanoUSD += charge
+		s.Settled++
+		if charge > a.ReservedNanoUSD {
+			s.Overruns++
+		}
+		return nil
+	})
 }
-func (s *budgetStream) Close() error { s.cancel(); return s.inner.Close() }
+
+// retain moves an attempt's reservation to the retained total. It is
+// idempotent: an attempt already resolved is left alone.
+func (l *Ledger) retain(id uint64) error { return l.retainAt(id, -1) }
+
+// retainAt retains an attempt at bound instead of its reservation, when a
+// tighter upper bound on its charge is known; a negative bound means the
+// reservation. The bound is recorded even when it exceeds the reservation,
+// because it is the better-founded of the two.
+func (l *Ledger) retainAt(id uint64, bound int64) error {
+	ctx, cancel := resolveContext()
+	defer cancel()
+	return l.update(ctx, func(s *Snapshot) error {
+		i := s.find(id)
+		if i < 0 {
+			return nil
+		}
+		a := s.remove(i)
+		amount := a.ReservedNanoUSD
+		if bound >= 0 {
+			amount = bound
+		}
+		if amount > math.MaxInt64-s.CommittedNanoUSD() {
+			return errors.New("budget: retained amount overflows ledger total")
+		}
+		s.RetainedNanoUSD += amount
+		s.RetainedAttempts++
+		return nil
+	})
+}
+
+// USD renders nano-USD as dollars.
+func USD(nano int64) string {
+	sign := ""
+	if nano < 0 {
+		sign, nano = "-", -nano
+	}
+	cents := (nano + 5_000_000) / 10_000_000
+	return fmt.Sprintf("%s$%d.%02d", sign, cents/100, cents%100)
+}

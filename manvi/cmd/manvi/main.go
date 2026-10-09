@@ -41,6 +41,7 @@ Usage:
   manvi tools                       List the native DevCouncil tools an agent can call
   manvi tool NAME [--json ARGS]     Call one natively, the same path an agent takes
   manvi providers                   Show model providers and whether a credential is present
+  manvi budget                      Show Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD
   manvi local [--resolve]           Find local model servers; --resolve prints what a run would use
   manvi pull                        Fast-forward the current branch; refuses a dirty tree
   manvi push                        Push the current branch to its configured upstream
@@ -377,6 +378,8 @@ func run(out, notes io.Writer, args []string) error {
 		return callTool(out, os.Stderr, scrubber, pipeline, args[1:])
 	case "providers":
 		return showProviders(out, reg)
+	case "budget":
+		return showBudget(out)
 	case "local":
 		return showLocal(out, reg, args[1:])
 	case "pull", "push", "issues":

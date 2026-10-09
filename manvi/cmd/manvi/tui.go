@@ -223,6 +223,7 @@ func (h *harnessHost) Commands() []tui.CommandSpec {
 		{Name: "doctor", Summary: "configuration, store reachability, and weakened gates"},
 		{Name: "flags", Args: "[--all] | set KEY VALUE", Summary: "settings, their values, where each came from, and how to move one"},
 		{Name: "providers", Summary: "model backends and whether each one is usable"},
+		{Name: "budget", Summary: "Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD"},
 		{Name: "local", Args: "[--resolve] [--timeout DURATION]", Summary: "find local model servers and what they serve"},
 		{Name: "pull", Summary: "fast-forward the current branch; refuses a dirty tree", Mutating: true},
 		{Name: "push", Summary: "push the current branch to its configured upstream", Mutating: true},
@@ -501,6 +502,8 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 			return err
 		case "providers":
 			return showProviders(&out, h.reg)
+		case "budget":
+			return showBudget(&out)
 		case "local":
 			return showLocal(&out, h.reg, fields)
 		case "pull", "push":

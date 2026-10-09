@@ -52,7 +52,7 @@ func buildProvider(name string, reg *flags.Registry, resolver *credentials.Resol
 
 	switch name {
 	case anthropic.Name:
-		return anthropic.New(env("ANTHROPIC_BASE_URL", ""), resolve), nil
+		return meterAnthropic(anthropic.New(env("ANTHROPIC_BASE_URL", ""), resolve))
 	case xai.Name:
 		base, _, err := reg.String(flags.LLMXAIBaseURL)
 		if err != nil {
@@ -279,7 +279,7 @@ func providerNames() []string {
 func probeModel(name string) string {
 	switch name {
 	case anthropic.Name:
-		return "claude-haiku-4-5"
+		return "claude-haiku-5-5"
 	case xai.Name:
 		return "grok-4.6"
 	case gemini.Name:
