@@ -10,8 +10,6 @@
 package xai
 
 import (
-	"fmt"
-
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
@@ -51,7 +49,7 @@ var reasoningEfforts = []string{EffortNone, EffortLow, EffortMedium, EffortHigh}
 // descriptor leaves MaxOutputTokens at zero, which the neutral Capability
 // treats as "no stated cap" and therefore does not enforce. A fabricated cap
 // would be worse than none: it would reject requests the provider accepts.
-var catalogue = map[string]llm.Capability{
+var catalogue = llm.Catalogue{
 	"grok-4.6": {
 		Provider: Name, Model: "grok-4.6",
 		ContextWindow: 500_000,
@@ -91,27 +89,14 @@ var catalogue = map[string]llm.Capability{
 
 // Capability returns the descriptor for a model, or false when this adapter
 // does not serve it.
-func Capability(model string) (llm.Capability, bool) {
-	c, ok := catalogue[model]
-	return c, ok
-}
+func Capability(model string) (llm.Capability, bool) { return catalogue.Lookup(model) }
 
 // Models lists every model this adapter serves.
-func Models() []string {
-	out := make([]string, 0, len(catalogue))
-	for model := range catalogue {
-		out = append(out, model)
-	}
-	return out
-}
+func Models() []string { return catalogue.Models() }
 
 // ValidateRequest checks an assembled request before it is sent.
 func ValidateRequest(req llm.Request) error {
-	c, ok := Capability(req.Model)
-	if !ok {
-		return fmt.Errorf("xai: unknown model %q (serves %v)", req.Model, Models())
-	}
-	return c.Validate(req)
+	return catalogue.Validate("xai", req)
 }
 
 // ReplayableOn reports whether adapter state produced by one model can be sent

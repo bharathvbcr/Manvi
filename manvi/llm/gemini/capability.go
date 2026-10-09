@@ -12,8 +12,6 @@
 package gemini
 
 import (
-	"fmt"
-
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
@@ -140,7 +138,7 @@ const StoreInteractions = false
 // per-model pages were not read, so those fields are left at zero — meaning
 // "not stated", which the neutral Capability does not enforce. Inventing the
 // numbers would produce a gate that rejects requests the provider accepts.
-var catalogue = map[string]llm.Capability{
+var catalogue = llm.Catalogue{
 	"gemini-3.7-flash": {
 		Provider: Name, Model: "gemini-3.7-flash",
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
@@ -192,27 +190,14 @@ var thinkingLevels = []string{"low", "medium", "high"}
 
 // Capability returns the descriptor for a model, or false when this adapter
 // does not serve it.
-func Capability(model string) (llm.Capability, bool) {
-	c, ok := catalogue[model]
-	return c, ok
-}
+func Capability(model string) (llm.Capability, bool) { return catalogue.Lookup(model) }
 
 // Models lists every model this adapter serves.
-func Models() []string {
-	out := make([]string, 0, len(catalogue))
-	for model := range catalogue {
-		out = append(out, model)
-	}
-	return out
-}
+func Models() []string { return catalogue.Models() }
 
 // ValidateRequest checks an assembled request before it is sent.
 func ValidateRequest(req llm.Request) error {
-	c, ok := Capability(req.Model)
-	if !ok {
-		return fmt.Errorf("gemini: unknown model %q (serves %v)", req.Model, Models())
-	}
-	return c.Validate(req)
+	return catalogue.Validate("gemini", req)
 }
 
 // ReplayableOn reports whether adapter state produced by one model can be sent

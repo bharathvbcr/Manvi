@@ -37,7 +37,7 @@ const (
 // catalogue is the verified model set. Context windows and output caps are the
 // documented figures; an unlisted model is unknown rather than assumed, so a
 // typo in a config fails at assembly instead of at the API.
-var catalogue = map[string]llm.Capability{
+var catalogue = llm.Catalogue{
 	"claude-opus-5": {
 		Provider: Name, Model: "claude-opus-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
@@ -102,19 +102,10 @@ var alwaysThinking = map[string]bool{
 
 // Capability returns the descriptor for a model, or false when this adapter
 // does not serve it. An unknown model is never given a permissive default.
-func Capability(model string) (llm.Capability, bool) {
-	c, ok := catalogue[model]
-	return c, ok
-}
+func Capability(model string) (llm.Capability, bool) { return catalogue.Lookup(model) }
 
 // Models lists every model this adapter serves.
-func Models() []string {
-	out := make([]string, 0, len(catalogue))
-	for model := range catalogue {
-		out = append(out, model)
-	}
-	return out
-}
+func Models() []string { return catalogue.Models() }
 
 // ValidateThinking reports why a thinking configuration is not serviceable.
 //
@@ -151,11 +142,7 @@ var RemovedParameters = []string{"temperature", "top_p", "top_k"}
 // ValidateRequest checks an assembled request against everything this adapter
 // knows will fail, before it is sent.
 func ValidateRequest(req llm.Request, mode ThinkingMode) error {
-	c, ok := Capability(req.Model)
-	if !ok {
-		return fmt.Errorf("anthropic: unknown model %q (serves %v)", req.Model, Models())
-	}
-	if err := c.Validate(req); err != nil {
+	if err := catalogue.Validate("anthropic", req); err != nil {
 		return err
 	}
 	if req.Temperature != nil {
