@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -113,6 +114,61 @@ func TestAFailedChildsSpendIsReported(t *testing.T) {
 		}
 		if payload.Usage == nil || payload.Usage.InputTokens != 1200 || payload.Usage.OutputTokens != 300 {
 			t.Errorf("%s: usage = %+v, want the failed child's 1200 in / 300 out", tool, payload.Usage)
+		}
+	}
+}
+
+// scriptedRunner answers each child by its label, so one fan-out can mix
+// children that succeed, fail after writing, fail clean and overflow the cap.
+type scriptedRunner map[string]struct {
+	out SubAgentResult
+	err error
+}
+
+func (r scriptedRunner) RunSubAgent(_ context.Context, req SubAgentRequest) (SubAgentResult, error) {
+	s := r[req.Label]
+	return s.out, s.err
+}
+
+// A mixed fan-out under concurrency: the children run in parallel, and what
+// reaches the parent must still be exactly the dispatch-order union of every
+// path any child left behind — failed or not — de-duplicated, cut at the
+// loop's cap, and saying so. Repeated so scheduling order gets a chance to
+// matter; run it under -race for the data-race half of the claim.
+func TestAMixedFanOutReportsEveryChildsWritesInDispatchOrder(t *testing.T) {
+	var flood []string
+	for i := range 300 {
+		flood = append(flood, fmt.Sprintf("flood/%03d.go", i))
+	}
+	ok := func(paths ...string) SubAgentResult {
+		return SubAgentResult{Summary: "done", Wrote: paths}
+	}
+	runner := scriptedRunner{
+		"c0": {out: ok("shared.go", "a0.go")},
+		"c1": {out: SubAgentResult{Wrote: []string{"shared.go", "a1.go"}}, err: errors.New("provider went away")},
+		"c2": {err: errors.New("could not start")},
+		"c3": {out: SubAgentResult{Wrote: []string{"a3.go", " "}}}, // ran, wrote, no summary
+		"c4": {out: ok("a4.go")},
+		"c5": {out: SubAgentResult{Summary: "done", Wrote: flood, WroteTruncated: true}},
+	}
+	want := append([]string{"shared.go", "a0.go", "a1.go", "a3.go", "a4.go"}, flood...)[:tools.MaxTrackedWrites]
+
+	var tasks []map[string]any
+	for _, label := range []string{"c0", "c1", "c2", "c3", "c4", "c5"} {
+		tasks = append(tasks, map[string]any{"label": label, "prompt": "work"})
+	}
+	for round := range 20 {
+		f, _ := fixtureWithRoles(t, runner)
+		res := f.call("devcouncil_spawn_subagents", map[string]any{"tasks": tasks})
+		if res.IsError {
+			t.Fatalf("round %d: a partly failed fan-out was reported as a total failure: %s", round, res.Text)
+		}
+		if !slices.Equal(res.Wrote, want) {
+			t.Fatalf("round %d: Wrote has %d paths, first %q; want the dispatch-order union of %d",
+				round, len(res.Wrote), res.Wrote[:min(6, len(res.Wrote))], len(want))
+		}
+		if len(res.Degraded) == 0 {
+			t.Fatalf("round %d: the list was cut at %d and nothing says so", round, tools.MaxTrackedWrites)
 		}
 	}
 }
