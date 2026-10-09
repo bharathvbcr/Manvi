@@ -68,11 +68,19 @@
 # cancellation closes the turn rather than failing it, exactly as the breaks
 # did — and nilerr stays inside its recorded 12. Measured with golangci-lint
 # 2.14.0, because 2.13.2 cannot read go1.27.2's export data at all.
+#
+# Remeasured 2026-10-09 on golangci-lint 2.14.0, now what `@latest` resolves
+# to, with GOOS=darwin and GOOS=linux giving the same count for every linter.
+# errcheck 419 -> 413 and forcetypeassert 69 -> 68 are lowered to what both
+# platforms measure. gosec and noctx are not raised to their measured 394 and
+# 26: the excess is exactly the four gosec and two noctx findings a4156f3 added
+# in bootstrap/bootstrap_test.go, which is a regression to fix rather than a
+# new baseline.
 bodyclose 16
 contextcheck 28
-errcheck 419
+errcheck 413
 errorlint 53
-forcetypeassert 69
+forcetypeassert 68
 # gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
 # calls were marked #nosec G103. Before that, pty_linux_test.go had two
 # findings and pty_darwin_test.go had one, so a count measured on darwin
