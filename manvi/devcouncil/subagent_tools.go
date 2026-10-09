@@ -47,7 +47,7 @@ var conversationCounter atomic.Int64
 // management tool would never see, so "list" answered count 0 with children
 // live and "kill" could never find anything to kill.
 //
-// Production wires both (cmd/manvi/main.go), so this map stays empty there. It
+// Production wires both (cmd/manvi/harness.go), so this map stays empty there. It
 // holds a reference to any Registry that does reach it, which is a bounded cost
 // only an embedder that leaves the fields nil pays.
 var fallbackPlanes sync.Map // *Registry -> *subagentPlane
@@ -127,10 +127,9 @@ func (r *Registry) getSubagentManager() *agents.InstanceManager {
 // did not happen.
 //
 // It is a function rather than a line inside each dispatcher because there are
-// two dispatchers and the judgement drifted between them: this one lost the
-// check entirely and reported "completed" for an empty result. The second copy
-// still stands inline in the spawn_subagents fan-out in tools.go, which is
-// owned elsewhere; it should call this instead of restating it.
+// two dispatchers and the judgement drifted between them: invoke_subagent lost
+// the check entirely and reported "completed" for an empty result. Both call
+// it now.
 func requireSummary(label, summary string) error {
 	if strings.TrimSpace(summary) != "" {
 		return nil
@@ -455,7 +454,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		outcomes = append(outcomes, outcome)
 	}
 
-	// Same shape as the fan-out in tools.go, deliberately: this was the second
+	// Same shape as the spawnSubagents fan-out, deliberately: this was the second
 	// copy, and it carried neither the report nor clean, so a caller could not
 	// tell a wholly failed dispatch from a successful one at all. "dispatched"
 	// counts what was asked for, not what ran.
@@ -1096,12 +1095,8 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 				if err != nil {
 					return leftBehind(out), fmt.Errorf("sub-agent %s: %w", t.Label, err)
 				}
-				if strings.TrimSpace(out.Summary) == "" {
-					// A child that ran and produced nothing is a failure, not a
-					// quiet success. Counting it among the completions is how a
-					// fan-out comes to report work that did not happen.
-					return leftBehind(out), fmt.Errorf("sub-agent %s returned no summary; "+
-						"it produced nothing that can be reported as its work", t.Label)
+				if err := requireSummary(t.Label, out.Summary); err != nil {
+					return leftBehind(out), err
 				}
 				child := map[string]any{
 					"status":  "completed",

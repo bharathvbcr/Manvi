@@ -22,7 +22,7 @@ import (
 // when Deps.SubagentRegistry is nil, and a definition written into a throwaway
 // cannot be asserted about in either direction — every Get would answer "not
 // defined", including the one that is supposed to prove a refusal took effect.
-// Production wires a real one (cmd/manvi/main.go), so this is the shape these
+// Production wires a real one (cmd/manvi/harness.go), so this is the shape these
 // tests have to run against.
 func roleFixture(t *testing.T, settings map[string]string, runner SubAgentRunner) (*fixture, *agents.Registry) {
 	t.Helper()
