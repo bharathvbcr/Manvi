@@ -136,7 +136,7 @@ func (r scriptedRunner) RunSubAgent(_ context.Context, req SubAgentRequest) (Sub
 // loop's cap, and saying so. Repeated so scheduling order gets a chance to
 // matter; run it under -race for the data-race half of the claim.
 func TestAMixedFanOutReportsEveryChildsWritesInDispatchOrder(t *testing.T) {
-	var flood []string
+	flood := make([]string, 0, 300)
 	for i := range 300 {
 		flood = append(flood, fmt.Sprintf("flood/%03d.go", i))
 	}
