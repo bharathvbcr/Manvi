@@ -487,76 +487,11 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 		sink.Emit(ui.Event{Kind: ui.KindError, At: time.Now().UTC(), Text: err.Error()})
 		return nil
 	}
-	// changed is the flag a `/flags set` moved, or "". Captured out here rather
-	// than returned through the closure because what a moved flag invalidates
-	// is this host's business — the gates and providers it has already built —
-	// and none of the command implementations know those exist.
-	var changed string
-	err = func() error {
-		switch name {
-		case "doctor":
-			return doctor(&out, h.reg)
-		case "flags":
-			if err := h.refuseFlagMoveDuringATurn(sessionID, fields); err != nil {
-				return err
-			}
-			key, err := flagsCommand(&out, h.reg, fields, surfaceSession)
-			changed = key
-			return err
-		case "providers":
-			return showProviders(&out, h.reg)
-		case "local":
-			return showLocal(&out, h.reg, fields)
-		case "pull", "push":
-			if h.busyTurns != nil {
-				if busy := h.busyTurns(sessionID); len(busy) > 0 {
-					return fmt.Errorf("/%s needs every session idle; active sessions: %s", name, strings.Join(busy, ", "))
-				}
-			}
-			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
-		case "issues":
-			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
-		case "tools":
-			return listTools(&out, h.reg)
-		case "leases":
-			return lease(&out, append([]string{"list"}, fields...))
-		case "lease":
-			if len(fields) == 0 {
-				return lease(&out, []string{"list"})
-			}
-			return lease(&out, fields)
-		case "check":
-			// The session's own gate, so what this reports is what will
-			// actually decide the session's next write.
-			err := check(&out, s.gate, fields)
-			if errors.Is(err, errCheckBlocked) || errors.Is(err, errCheckHardBlocked) {
-				// A block is this command's answer, not its failure. On the CLI
-				// it is a non-zero exit status because a script has nothing else
-				// to read; here the decision is already in the transcript above,
-				// and reporting it a second time as an error would tell the
-				// operator the command did not run.
-				return nil
-			}
-			return err
-		case "allow":
-			return allow(&out, s.gate, fields)
-		case "tool":
-			// The session's own pipeline: it carries this session's lease, and
-			// its approval seam, so a blocked write raises a card here rather
-			// than being refused by a registry nobody is watching.
-			_, scrubber := h.creds()
-			return callTool(&out, &out, scrubber, s.pipeline, fields)
-		case "map":
-			return mapCommand(&out, h.reg, fields)
-		case "probe":
-			return probe(&out, h.reg, fields)
-		case "logo":
-			return showLogo(&out, fields)
-		case "quit", "exit", "help", "clear", "cls":
-			return nil
-		}
-		return fmt.Errorf("unknown command %q", name)
-	}()
+	// changed is the flag a `/flags set` moved, or "". Returned rather than acted
+	// on inside runCommand because what a moved flag invalidates is this host's
+	// business — the gates and providers it has already built — and none of the
+	// command implementations know those exist.
+	changed, err := h.runCommand(ctx, s, sessionID, name, fields, &out)
 
 	text := strings.TrimRight(out.String(), "\n")
 	if err != nil {
@@ -586,6 +521,73 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 		h.applyFlagChange(changed)
 	}
 	return nil
+}
+
+// runCommand runs one harness command, writing what it prints to out. It
+// returns the flag a `/flags set` moved, or "".
+func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, name string,
+	fields []string, out *bytes.Buffer) (string, error) {
+	switch name {
+	case "doctor":
+		return "", doctor(out, h.reg)
+	case "flags":
+		if err := h.refuseFlagMoveDuringATurn(sessionID, fields); err != nil {
+			return "", err
+		}
+		return flagsCommand(out, h.reg, fields, surfaceSession)
+	case "providers":
+		return "", showProviders(out, h.reg)
+	case "local":
+		return "", showLocal(out, h.reg, fields)
+	case "pull", "push":
+		if h.busyTurns != nil {
+			if busy := h.busyTurns(sessionID); len(busy) > 0 {
+				return "", fmt.Errorf("/%s needs every session idle; active sessions: %s", name, strings.Join(busy, ", "))
+			}
+		}
+		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
+	case "issues":
+		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
+	case "tools":
+		return "", listTools(out, h.reg)
+	case "leases":
+		return "", lease(out, append([]string{"list"}, fields...))
+	case "lease":
+		if len(fields) == 0 {
+			return "", lease(out, []string{"list"})
+		}
+		return "", lease(out, fields)
+	case "check":
+		// The session's own gate, so what this reports is what will
+		// actually decide the session's next write.
+		err := check(out, s.gate, fields)
+		if errors.Is(err, errCheckBlocked) || errors.Is(err, errCheckHardBlocked) {
+			// A block is this command's answer, not its failure. On the CLI
+			// it is a non-zero exit status because a script has nothing else
+			// to read; here the decision is already in the transcript above,
+			// and reporting it a second time as an error would tell the
+			// operator the command did not run.
+			return "", nil
+		}
+		return "", err
+	case "allow":
+		return "", allow(out, s.gate, fields)
+	case "tool":
+		// The session's own pipeline: it carries this session's lease, and
+		// its approval seam, so a blocked write raises a card here rather
+		// than being refused by a registry nobody is watching.
+		_, scrubber := h.creds()
+		return "", callTool(out, out, scrubber, s.pipeline, fields)
+	case "map":
+		return "", mapCommand(out, h.reg, fields)
+	case "probe":
+		return "", probe(out, h.reg, fields)
+	case "logo":
+		return "", showLogo(out, fields)
+	case "quit", "exit", "help", "clear", "cls":
+		return "", nil
+	}
+	return "", fmt.Errorf("unknown command %q", name)
 }
 
 // refuseFlagMoveDuringATurn holds the rule the flags package states and could
