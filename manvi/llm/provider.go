@@ -115,12 +115,14 @@ func (c Catalogue) Lookup(model string) (Capability, bool) {
 	return m, ok
 }
 
-// Models lists every model in the catalogue, in no particular order.
+// Models lists every model in the catalogue, sorted, so a listing or a
+// refusal that names them reads the same on every run.
 func (c Catalogue) Models() []string {
 	out := make([]string, 0, len(c))
 	for model := range c {
 		out = append(out, model)
 	}
+	slices.Sort(out)
 	return out
 }
 

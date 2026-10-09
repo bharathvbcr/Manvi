@@ -44,3 +44,16 @@ func TestACatalogueListsEveryModel(t *testing.T) {
 		t.Fatalf("Models = %v", got)
 	}
 }
+
+// The refusal names what the adapter serves, and the same request must get the
+// same refusal: a list in map order changes from run to run, so two logs of
+// one failure do not diff and a test pinning the text passes by chance.
+func TestACatalogueRefusesInTheSameWordsEveryTime(t *testing.T) {
+	c := llm.Catalogue{"e": {}, "b": {}, "d": {}, "a": {}, "c": {}}
+	want := `acme: unknown model "z" (serves [a b c d e])`
+	for range 50 {
+		if err := c.Validate("acme", llm.Request{Model: "z"}); err == nil || err.Error() != want {
+			t.Fatalf("refusal = %v, want %q every time", err, want)
+		}
+	}
+}
