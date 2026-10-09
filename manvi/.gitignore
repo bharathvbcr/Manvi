@@ -1,6 +1,6 @@
 # DevCouncil local state
 .devcouncil/*
-!.devcouncil/
+!/.devcouncil/
 !.devcouncil/config.yaml
 
 # Local AI coding agents
@@ -60,3 +60,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 bin/
+
+# DevCouncil local state
+!/.devcouncil/

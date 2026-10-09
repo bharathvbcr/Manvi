@@ -1,8 +1,10 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -354,5 +356,80 @@ func TestAStateDirOutsideTheRepositoryAddsNoRule(t *testing.T) {
 	content := read(t, filepath.Join(root, ".gitignore"))
 	if strings.Contains(content, "..") || strings.Contains(content, outside) {
 		t.Fatalf("a rule was written for a directory outside the repository:\n%s", content)
+	}
+}
+
+// TestARepositoryThatAlreadyKeepsItsStateIgnoredIsLeftAlone: DevCouncil's own
+// .gitignore ignores a .devcouncil/ at any depth (nested ones are generated
+// caches) and re-includes only the root one, anchored. Ensure decides a rule is
+// missing by its text, so an unanchored "!.devcouncil/" read as missing there,
+// was appended last, and — the last matching rule winning — re-included every
+// nested cache directory the file had been written to keep out.
+func TestARepositoryThatAlreadyKeepsItsStateIgnoredIsLeftAlone(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".gitignore")
+	var b strings.Builder
+	b.WriteString(".devcouncil/*\n!.devcouncil/config.yaml\n.devcouncil/\n!/.devcouncil/\n")
+	for _, section := range Sections[1:] {
+		for _, rule := range section.Rules {
+			b.WriteString(rule + "\n")
+		}
+	}
+	before := b.String()
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Ensure(root, options())
+	if len(report.Failures) > 0 {
+		t.Fatalf("failures: %v", report.Failures)
+	}
+	if len(report.AddedRules) > 0 {
+		t.Fatalf("rules were appended to a file that already carries them: %v", report.AddedRules)
+	}
+	if after := read(t, path); after != before {
+		t.Fatalf(".gitignore changed:\n%s", after)
+	}
+}
+
+// TestNestedStateDirectoriesStayIgnored asks git itself, because what a rule
+// means depends on its anchoring and on its place in the file, and a test that
+// only compared text would pass with the rule that broke this.
+func TestNestedStateDirectoriesStayIgnored(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH; the ignore semantics cannot be checked")
+	}
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	// An operator who ignores every generated .devcouncil/, at any depth.
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".devcouncil/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	Ensure(root, options())
+
+	ignored := func(rel string) bool {
+		t.Helper()
+		err := exec.Command("git", "-C", root, "check-ignore", "-q", "--no-index", rel).Run()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return true
+		case errors.As(err, &exit) && exit.ExitCode() == 1:
+			return false
+		default:
+			t.Fatalf("git check-ignore %s: %v", rel, err)
+			return false
+		}
+	}
+	if !ignored("rust/dc-grep/.devcouncil/dcgrep/index.bin") {
+		t.Errorf("a nested .devcouncil/ cache is no longer ignored:\n%s", read(t, filepath.Join(root, ".gitignore")))
+	}
+	if !ignored(".devcouncil/codeintel/graph.bin") {
+		t.Error("the repository's own state is not ignored")
+	}
+	if ignored(".devcouncil/config.yaml") {
+		t.Error("the committable config is ignored")
 	}
 }

@@ -91,6 +91,18 @@ under **Unreleased** in the same commit as the code.
   link. The visual architecture guide is rewritten with fuller descriptions of
   each plane, ladder rung, posture and lifecycle stage.
 
+### Fixed
+
+- **Manvi no longer re-includes nested `.devcouncil/` caches in a repository's
+  `.gitignore`.** Its managed rules carried an unanchored `!.devcouncil/`.
+  Rules are matched by text and appended last, so in a repository that
+  already re-includes only its own state directory with `!/.devcouncil/`
+  (DevCouncil does), any command — `manvi gusset-check` included — appended
+  the unanchored form, and, being last, it re-included every nested
+  `.devcouncil/` index cache the file had been written to keep out. The rule
+  is now `!/.devcouncil/`. A repository that already received the old line
+  keeps it; replace it with `!/.devcouncil/` by hand.
+
 ## [0.0.6] — 2026-09-30
 
 ### Changed

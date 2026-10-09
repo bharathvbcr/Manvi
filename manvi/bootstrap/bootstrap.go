@@ -34,11 +34,11 @@ type Section struct {
 
 // Sections are the rules the harness maintains.
 //
-// They are transcribed from DevCouncil's own ensure_gitignore rather than
-// invented, and the wording of each rule is kept identical on purpose: the two
-// tools share one .devcouncil/ directory, and a rule that differs by a
-// character is a rule each tool re-adds after the other has run, so a
-// repository used with both would grow a duplicate block per invocation.
+// They were transcribed from DevCouncil's Python ensure_gitignore rather than
+// invented. That writer has since been removed, so nothing keeps the two in
+// step any more: DevCouncil's own .gitignore is now the reference, and a rule
+// that differs from it by a character is a rule Ensure reads as missing and
+// appends — where, being last, it wins.
 //
 // Two entries are deliberately not carried over:
 //
@@ -52,10 +52,19 @@ var Sections = []Section{
 		// The negations are what keep DevCouncil's committable config
 		// committable while the rest of the directory — the store, the index,
 		// the grant ledger, the code graph — stays out of the history.
+		//
+		// The directory negation is anchored to the root. It exists so that
+		// config.yaml stays reachable when something ignores .devcouncil/
+		// wholesale, but an unanchored "!.devcouncil/" re-includes a
+		// .devcouncil/ at every depth — the index caches the tools leave
+		// beside a subdirectory they were pointed at — and, appended after an
+		// operator's own ".devcouncil/", it overrode exactly the rule written
+		// to keep those out. DevCouncil's own .gitignore anchors it the same
+		// way, which is also what lets Ensure recognise it there.
 		Heading: "DevCouncil local state",
 		Rules: []string{
 			".devcouncil/*",
-			"!.devcouncil/",
+			"!/.devcouncil/",
 			"!.devcouncil/config.yaml",
 		},
 	},
