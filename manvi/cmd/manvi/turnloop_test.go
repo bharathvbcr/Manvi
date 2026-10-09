@@ -27,7 +27,8 @@ import (
 // indistinguishable from no sensor, which is the drift this guards.
 
 // truncatedThenDone is a model whose first answer hits the output cap and whose
-// second finishes.
+// second finishes. Each answer reports a distinct spend, so a face that sums
+// the turn's usage can be checked against 300 in / 30 out.
 func truncatedThenDone() *replay.Provider {
 	return replay.New(replay.Fixture{
 		Provider: "replay",
@@ -40,11 +41,13 @@ func truncatedThenDone() *replay.Provider {
 				Chunks:     []llm.Chunk{{Kind: llm.ChunkText, Text: "half an ans"}},
 				Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "half an ans"}}},
 				StopReason: llm.StopMaxTokens,
+				Usage:      llm.Usage{InputTokens: 100, OutputTokens: 10},
 			},
 			{
 				Chunks:     []llm.Chunk{{Kind: llm.ChunkText, Text: "the whole answer"}},
 				Message:    llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "the whole answer"}}},
 				StopReason: llm.StopEndTurn,
+				Usage:      llm.Usage{InputTokens: 200, OutputTokens: 20},
 			},
 		},
 	})
@@ -53,6 +56,17 @@ func truncatedThenDone() *replay.Provider {
 // tuiTurn runs one TUI submission against p with the given flag overrides and
 // returns what the provider was asked.
 func tuiTurn(t *testing.T, p *replay.Provider, set map[string]string) []llm.Request {
+	t.Helper()
+	h := tuiTurnHost(t, p, set)
+	if err := h.Submit(context.Background(), "S1", "answer me"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	return p.Requests()
+}
+
+// tuiTurnHost is a TUI host with one session, S1, attached to p, in a
+// repository of its own.
+func tuiTurnHost(t *testing.T, p *replay.Provider, set map[string]string) *harnessHost {
 	t.Helper()
 	// The sensor captures a baseline of the working tree, so the turn runs in
 	// a repository of its own, with the native surface production builds.
@@ -75,11 +89,7 @@ func tuiTurn(t *testing.T, p *replay.Provider, set map[string]string) []llm.Requ
 		subMeter: &subAgentMeter{},
 		provider: p, registry: models, model: "m",
 	}
-	h := &harnessHost{reg: reg, sessions: map[string]*tuiSession{"S1": s}}
-	if err := h.Submit(context.Background(), "S1", "answer me"); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	return p.Requests()
+	return &harnessHost{reg: reg, sessions: map[string]*tuiSession{"S1": s}}
 }
 
 // TestTheTUIBoundsOutputAtItsDefault: the TUI names an output bound of its own

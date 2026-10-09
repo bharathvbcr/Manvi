@@ -580,7 +580,7 @@ func TestARepositoryThatAlreadyKeepsItsStateIgnoredIsLeftAlone(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(".devcouncil/*\n!.devcouncil/config.yaml\n.devcouncil/\n!/.devcouncil/\n")
 	before := b.String()
-	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -602,7 +602,7 @@ func TestARepositoryThatAlreadyKeepsItsStateIgnoredIsLeftAlone(t *testing.T) {
 func TestNestedStateDirectoriesStayIgnored(t *testing.T) {
 	root := gitRepo(t)
 	// An operator who ignores every generated .devcouncil/, at any depth.
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".devcouncil/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".devcouncil/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	Ensure(root, options())

@@ -716,35 +716,18 @@ type Outcome struct {
 }
 
 // Run drives one turn to completion.
+//
+// Each step goes through the same phases, in order, and each phase is its own
+// method: enterStep projects history and runs the pre-step waterfall, which is
+// where compaction happens; step assembles the request and streams the
+// response; absorbResponse folds that response into the outcome; dispatchCalls
+// runs its tool calls; chargeStep spends the budget. A step with no tool calls
+// ends at closeOrBounce, the terminal checkpoint.
 func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
-	l.repeats = newRepeatTracker()
-	l.progress = newProgressTracker(l.tools)
-	l.overflowed = false
-	turnEvent, err := l.log.Append(session.TurnStart, nil)
+	currentTurn, err := l.openTurn(ctx, prompt)
 	if err != nil {
 		return Outcome{}, err
 	}
-	currentTurn := turnEvent.Turn
-	// Before the first step, so a listener recording the pre-turn tree records
-	// it before anything can have changed. Its failure ends the turn: a
-	// listener that could not establish a baseline would otherwise have its
-	// silence read as "nothing had changed yet", which is the same shape as the
-	// defect it exists to fix.
-	if err := bus.Serial(l.bus, ctx, &TurnStarting{Turn: currentTurn}); err != nil {
-		return Outcome{}, err
-	}
-	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.cfg.SystemPrompt {
-		if _, err := l.log.Append(session.SystemPrompt,
-			session.SystemPromptData{Text: l.cfg.SystemPrompt}); err != nil {
-			return Outcome{}, err
-		}
-	}
-	if _, err := l.log.Append(session.UserMessage,
-		session.MessageData{Message: prompt}); err != nil {
-		return Outcome{}, err
-	}
-
-	l.effort = l.cfg.Effort
 
 	var out Outcome
 	out.EffortFrom, out.EffortTo = l.cfg.Effort, l.cfg.Effort
@@ -770,24 +753,8 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// text and no tool call" printed about one that carried both.
 		out.FinalTruncated, out.FinalEmpty = false, false
 
-		// History is always projected from the log. There is no other source.
-		messages, err := l.log.DeriveMessages()
+		messages, err := l.enterStep(ctx, currentTurn, step)
 		if err != nil {
-			return out, err
-		}
-
-		pre, err := bus.Waterfall(l.bus, PreStep{
-			Ctx: ctx, Turn: currentTurn, Step: step, Messages: messages,
-		})
-		if err != nil {
-			return out, err
-		}
-		if pre.Reject != nil {
-			return out, fmt.Errorf("agent: step %d rejected: %w", step, pre.Reject)
-		}
-		messages = pre.Messages
-
-		if _, err := l.log.Append(session.StepStart, nil); err != nil {
 			return out, err
 		}
 
@@ -795,43 +762,8 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		if err != nil {
 			return out, err
 		}
-		out.Steps = step
-		out.StopReason = response.StopReason
-		out.Usage.InputTokens += response.Usage.InputTokens
-		out.Usage.OutputTokens += response.Usage.OutputTokens
-		out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
-		out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
-		// Throughput is a rate, not a total: the last step's is what an
-		// operator wants to see, and summing them would be meaningless.
-		if response.Usage.OutputTokensPerSecond > 0 {
-			out.Usage.OutputTokensPerSecond = response.Usage.OutputTokensPerSecond
-		}
-		if response.Usage.PromptTokensPerSecond > 0 {
-			out.Usage.PromptTokensPerSecond = response.Usage.PromptTokensPerSecond
-		}
-		out.Final = response.Message
-
-		if !response.Decoding.Clean() {
-			// Merged, not assigned. Outcome.Decoding is documented as reporting
-			// compensations "across the turn", and plain assignment made it
-			// report the last non-clean step only. A turn whose first step
-			// disproved a declared prefill and whose sixth recovered a tool
-			// call from text ended with the prefill flag erased — so the notice
-			// that exists to get llm.local.assume_reasoning_prefill turned off
-			// never printed, on exactly the turns where it was needed, and the
-			// same condition recurred on the next turn.
-			out.Decoding = mergeDecoding(out.Decoding, response.Decoding)
-			if _, err := l.log.Append(session.DecodingCompensated, session.DecodingData{
-				FallbackFormat:        response.Decoding.FallbackFormat,
-				ReasoningReclassified: response.Decoding.ReasoningReclassified,
-				PrefillDisproved:      response.Decoding.PrefillDisproved,
-			}); err != nil {
-				return out, err
-			}
-		}
-
-		if l.hitOutputCap(response) {
-			out.TruncatedByTokens = true
+		if err := l.absorbResponse(&out, step, response); err != nil {
+			return out, err
 		}
 
 		// A response that carried nothing at all is asked for again, a bounded
@@ -853,235 +785,18 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		// null response that survives the budget still ends the turn as empty.
 		if isNullResponse(response) && nullRetries < maxNullRetries {
 			nullRetries++
-			// An empty response still consumed a provider attempt and one step.
-			out.BudgetSpent++
-			if _, err := l.log.Append(session.NullResponseRetried, session.NullResponseData{
-				Step: step, Attempt: nullRetries, Of: maxNullRetries,
-			}); err != nil {
-				return out, err
-			}
-			// The step is over even though the turn continues: leaving its
-			// start unclosed made every retried response dangle a step/start
-			// in the durable log for the TUI projector, the invariant check,
-			// and resume to trip over.
-			if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+			if err := l.retryNullResponse(&out, step, nullRetries); err != nil {
 				return out, err
 			}
 			continue
 		}
 
 		calls := response.Message.ToolCalls()
-		// ran counts the calls that actually reached the pipeline, so a step
-		// whose every call was refused is not mistaken for one that worked.
-		ran := 0
-		progressed := false
-		// circling records that this step refused at least one call because the
-		// turn was going round — as a verbatim repeat or for making no
-		// observable progress. It is per step rather than per call so a step
-		// that refused three calls climbs one rung, not three.
-		circling := false
-		for _, call := range calls {
-			if _, err := l.log.Append(session.ToolCall, session.ToolCallData{
-				ID: call.ID, Name: call.Name, Arguments: call.Arguments,
-			}); err != nil {
-				return out, err
-			}
-
-			var result tools.Result
-			repeat := l.repeats.seen(call.Name, call.Arguments)
-			switch {
-			case repeat > RepeatLimit:
-				// Refused rather than run, and said out loud.
-				//
-				// A model that repeats one call verbatim is not making
-				// progress, and re-running it cannot produce a different
-				// answer: the arguments are identical and nothing between the
-				// two calls changed the world. Left alone this consumes the
-				// entire step budget — observed on a one-file edit, where
-				// twelve identical greps ran and the turn ended with the file
-				// untouched and 84k tokens of context spent.
-				//
-				// The refusal carries the repeat count and names what would
-				// actually move: it is a fact the model can act on, not a
-				// silent skip that would look to it like the tool returning
-				// nothing.
-				out.Repeated++
-				circling = true
-				// Deliberately carries no Rule. A result with one is recorded
-				// as session.PolicyDenied, and this refusal did not come from
-				// the gate — the gate never saw the call. Tagging it would put
-				// a denial in the evidence trail that no policy made, and the
-				// trail is the thing the whole system reasons from. The model
-				// gets a plain error result, which is what it can act on
-				// anyway; the count is reported separately in Outcome.Repeated.
-				result = tools.Result{
-					IsError: true,
-					Text: fmt.Sprintf(
-						"this exact call to %s was already made %d times in this turn with the same "+
-							"arguments, so it was not run again — an identical call cannot return a "+
-							"different answer. Use what the earlier result told you, call it with "+
-							"different arguments, or take the next action the task actually needs.",
-						call.Name, repeat-1),
-				}
-
-			case l.progress.stalled():
-				// The same lack of progress, wearing different arguments.
-				//
-				// Varying one character of a pattern walks straight around the
-				// verbatim ledger above while telling the model nothing it did
-				// not already know — five distinct greps, five identical empty
-				// results, the file untouched. This refusal keys on what came
-				// back rather than what was asked for, so the disguise does not
-				// work; see agent/progress.go.
-				//
-				// It carries no Rule, for the same reason the repeat refusal
-				// does not: a result with one is recorded as
-				// session.PolicyDenied, and no policy made this decision — the
-				// gate never saw the call. A denial the gate never made in the
-				// evidence trail would be a lie told to the thing the whole
-				// system reasons from. The count is reported separately in
-				// Outcome.Stalled, and the model gets a plain error result,
-				// which is what it can act on anyway.
-				out.Stalled++
-				circling = true
-				l.progress.interrupted()
-				result = tools.Result{
-					IsError: true,
-					Text: fmt.Sprintf(
-						"the last %d steps changed nothing and returned nothing this turn had not "+
-							"already been told, so %s was not run. Varying the arguments of a search "+
-							"that keeps coming back the same is not progress. Act on what you already "+
-							"have: make the edit, run the command that would change something, or say "+
-							"what is blocking you.",
-						NoProgressLimit, call.Name),
-				}
-
-			default:
-				result = l.tools.Run(ctx, tools.Call{
-					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
-				})
-				ran++
-				if l.progress.observe(call.Name, result) {
-					progressed = true
-				}
-				// Recorded here rather than derived later, and only for calls
-				// that actually ran: a refused call changed nothing, and a
-				// repeat or stall refusal above never reached a handler.
-				if l.progress.mutated(call.Name, result) {
-					out.Mutated = true
-					// A call that changed something and named no path leaves
-					// effects nothing downstream can enumerate. Recorded here,
-					// beside Mutated, because this is the only place that knows
-					// both facts about the same call: by the time the paths are
-					// merged into out.Wrote, a shell command that wrote nothing
-					// is indistinguishable from a native write that reported.
-					if len(result.Wrote) == 0 {
-						out.UnenumeratedEffects = true
-					}
-				}
-				out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
-			}
-			out.ToolCalls++
-
-			// A gate decision is recorded as its own event *in addition to*
-			// the tool result, so the evidence trail explains the outcome
-			// without the model-facing result having to carry policy detail.
-			//
-			// Blocked is the gate's own verdict, and the only thing that says
-			// a call was refused. The loop used to infer it, first from Rule
-			// alone and then from Rule with IsError, and both readings were
-			// wrong in the same direction. A Rule means policy decided, not
-			// which way — devcouncil.annotate puts one on *allowed* results
-			// too, naming the rule that would have blocked a write the posture
-			// or a grant let through. Adding IsError narrowed the misread
-			// without closing it: a command the gate allowed under a demotion
-			// and which then failed on its own exit code has both, and a yolo
-			// run — in which nothing can be refused by construction — reported
-			// it as "refused by the gate".
-			//
-			// Blocked first, because a refusal is a refusal however many other
-			// qualifications it also carries; under a disabled hard-rule set an
-			// enforcing soft rule can refuse a call whose Degraded list is not
-			// empty, and that is still a denial.
-			switch {
-			case result.PipelinePanic != "":
-				// Ahead of Qualified: a stage that could not finish did not
-				// allow anything, and "allowed but not on the rules alone" is
-				// the opposite of what happened.
-				out.Panicked++
-				// Still recorded, and deliberately as a qualification. Taking
-				// this case away from Qualified() also took its log entry, and
-				// that entry was the only durable trace — Outcome.Panicked is
-				// in memory and the stack goes to stderr, so a resumed or
-				// replayed session showed nothing at all. tools.stagePanic's
-				// own comment asserts the log records this; the record is what
-				// keeps that true. The claim it makes is exactly right here:
-				// this outcome was not reached by the rules running cleanly.
-				if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-					ToolCallID: call.ID, Tool: call.Name,
-					Reason: result.Text, Degraded: result.Degraded,
-				}); err != nil {
-					return out, err
-				}
-			case result.Blocked:
-				out.Denied++
-				if _, err := l.log.Append(session.PolicyDenied, session.DenialData{
-					ToolCallID: call.ID, Tool: call.Name,
-					Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
-				}); err != nil {
-					return out, err
-				}
-			case result.Qualified():
-				out.Qualified++
-				if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
-					ToolCallID: call.ID, Tool: call.Name,
-					Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
-					Demoted: result.Demoted, Widened: result.Widened, Degraded: result.Degraded,
-				}); err != nil {
-					return out, err
-				}
-			}
-			if result.GrantID != "" {
-				if _, err := l.log.Append(session.GrantApplied, session.GrantData{
-					GrantID: result.GrantID, GrantedBy: result.GrantedBy,
-					Rule: result.Rule, Target: call.Name, Reason: result.Text,
-				}); err != nil {
-					return out, err
-				}
-			}
-
-			if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
-				ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
-			}); err != nil {
-				return out, err
-			}
+		tally, err := l.dispatchCalls(ctx, &out, calls)
+		if err != nil {
+			return out, err
 		}
-
-		// The step is charged here, before any path that leaves the iteration,
-		// so no route through the loop can take a step without paying for it.
-		cost, noProgress := l.progress.endStep(len(calls), ran, progressed)
-		out.BudgetSpent += cost
-		if noProgress {
-			out.NoProgressSteps++
-		}
-
-		// The turn has demonstrated that the tier it is running at is not
-		// getting it anywhere, so the next request buys one rung more thinking.
-		// Charged against the same evidence the refusal above was made on, and
-		// never on a turn that is still getting somewhere: see agent/effort.go.
-		//
-		// Both halves are required. A refusal says the model asked for
-		// something it had already been given; the absence of progress says
-		// nothing else in the step made up for it. A step that refused a repeat
-		// and still moved the work forward is a model correcting itself, which
-		// is the behaviour this must not tax.
-		if circling && !progressed {
-			if next, ok := l.effortPlan.Next(l.effort); ok {
-				l.effort = next
-				out.EffortTo = next
-				out.EffortRaised++
-			}
-		}
+		l.chargeStep(&out, len(calls), tally)
 
 		// A call the adapter could not reconstruct is told to the model rather
 		// than ending the turn. The step is not wasted: the model learns that
@@ -1104,95 +819,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		}
 
 		if len(calls) == 0 {
-			// Not always a natural stop. A response with no tool calls that
-			// stopped on the output cap did not finish — it ran out of room
-			// mid-sentence — and the break below would end the turn as though
-			// it had. Recorded before the checkpoint, which may yet keep the
-			// turn open and let a later step finish the answer properly.
-			out.FinalTruncated = l.hitOutputCap(response)
-			// Asked of the response itself rather than of the stop reason, so
-			// a server that mislabels why it stopped cannot turn a dead end
-			// into a clean finish. Reasoning does not count as an answer: it is
-			// stripped before the caller ever sees the message.
-			out.FinalEmpty = strings.TrimSpace(response.Message.Text()) == ""
-
-			// Natural stop. The terminal checkpoint may keep the turn open —
-			// a verification gate that wants one more step, for instance.
-			//
-			// Cancellation short-circuits it. A cancelled turn is the operator
-			// saying stop, and a bounce fired on the way out would spend
-			// another model call on work nobody is waiting for. Checked before
-			// the listeners run rather than after, so a sensor that shells out
-			// is not started either.
-			if ctx.Err() != nil {
-				break
-			}
-			checkpoint := &TurnStopping{
-				Turn: currentTurn, Steps: out.Steps, Response: response,
-				Mutated: out.Mutated, Wrote: out.Wrote,
-				WroteTruncated:      out.WroteTruncated,
-				UnenumeratedEffects: out.UnenumeratedEffects,
-				Truncated:           out.FinalTruncated, Empty: out.FinalEmpty,
-				Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
-			}
-			if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {
-				// The listener failed. It did not ask for another step, and
-				// re-sending an identical history is not a recovery — it is
-				// the same request with the same answer, charged again. So the
-				// turn closes, and closes loudly: a check that was owed and
-				// could not be completed is degraded, never a pass.
-				out.Sensor = SensorDegraded
-				if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
-					Verdict: string(SensorDegraded),
-					Source:  "checkpoint",
-					Paths:   out.Wrote,
-					Degraded: []string{
-						"the terminal checkpoint failed: " + err.Error(),
-					},
-					Bounce: out.Bounces,
-				}); appendErr != nil {
-					return out, appendErr
-				}
-				break
-			}
-			if checkpoint.Verdict != "" {
-				out.Sensor = checkpoint.Verdict
-			}
-			inject := strings.TrimSpace(checkpoint.Inject)
-			if inject == "" {
-				break
-			}
-			// Asked again after the listeners rather than only before them. A
-			// sensor that shells out is exactly the place a turn gets
-			// cancelled, and honouring an inject decided before the cancel
-			// would spend the model call the cancel was meant to stop.
-			if ctx.Err() != nil {
-				break
-			}
-			if out.Bounces >= MaxCheckpointBounces {
-				// Still asking, out of budget. The turn ends, and the outcome
-				// says the check was not satisfied — the alternative is a turn
-				// that looks complete because the thing objecting to it ran out
-				// of ways to object.
-				out.BouncesExhausted = true
-				break
-			}
-			// The loop appends, not the listener. A user-role message is the
-			// only model-visible slot a natural stop leaves — there is no tool
-			// call to answer, so an orphan tool result would break projection —
-			// and the origin marks it as the harness's own words so no face
-			// attributes it to the operator.
-			if _, err := l.log.Append(session.UserMessage, session.MessageData{
-				Message: llm.Message{
-					Role:    llm.RoleUser,
-					Content: []llm.ContentBlock{llm.TextBlock{Text: inject}},
-				},
-				Origin: session.OriginHarness,
-			}); err != nil {
+			stop, err := l.closeOrBounce(ctx, &out, currentTurn, response)
+			if err != nil {
 				return out, err
 			}
-			out.Bounces++
-			continue
+			if stop {
+				break
+			}
 		}
 	}
 
@@ -1202,6 +835,467 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// openTurn resets the per-turn state, opens the turn in the log and records
+// the prompt that starts it. It returns the turn's number.
+func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
+	l.repeats = newRepeatTracker()
+	l.progress = newProgressTracker(l.tools)
+	l.overflowed = false
+	turnEvent, err := l.log.Append(session.TurnStart, nil)
+	if err != nil {
+		return 0, err
+	}
+	currentTurn := turnEvent.Turn
+	// Before the first step, so a listener recording the pre-turn tree records
+	// it before anything can have changed. Its failure ends the turn: a
+	// listener that could not establish a baseline would otherwise have its
+	// silence read as "nothing had changed yet", which is the same shape as the
+	// defect it exists to fix.
+	if err := bus.Serial(l.bus, ctx, &TurnStarting{Turn: currentTurn}); err != nil {
+		return 0, err
+	}
+	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.cfg.SystemPrompt {
+		if _, err := l.log.Append(session.SystemPrompt,
+			session.SystemPromptData{Text: l.cfg.SystemPrompt}); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := l.log.Append(session.UserMessage,
+		session.MessageData{Message: prompt}); err != nil {
+		return 0, err
+	}
+
+	l.effort = l.cfg.Effort
+	return currentTurn, nil
+}
+
+// enterStep projects the history the step will send and runs the pre-step
+// waterfall over it — which is where compaction, and the overflow record when
+// compaction cannot make history fit, happen. It opens the step in the log.
+func (l *Loop) enterStep(ctx context.Context, turn, step int) ([]llm.Message, error) {
+	// History is always projected from the log. There is no other source.
+	messages, err := l.log.DeriveMessages()
+	if err != nil {
+		return nil, err
+	}
+
+	pre, err := bus.Waterfall(l.bus, PreStep{
+		Ctx: ctx, Turn: turn, Step: step, Messages: messages,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if pre.Reject != nil {
+		return nil, fmt.Errorf("agent: step %d rejected: %w", step, pre.Reject)
+	}
+	messages = pre.Messages
+
+	if _, err := l.log.Append(session.StepStart, nil); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// absorbResponse folds one step's response into the outcome: its usage, its
+// message, the decoding compensations it needed and whether it hit the output
+// cap.
+func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) error {
+	out.Steps = step
+	out.StopReason = response.StopReason
+	out.Usage.InputTokens += response.Usage.InputTokens
+	out.Usage.OutputTokens += response.Usage.OutputTokens
+	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
+	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
+	// Throughput is a rate, not a total: the last step's is what an
+	// operator wants to see, and summing them would be meaningless.
+	if response.Usage.OutputTokensPerSecond > 0 {
+		out.Usage.OutputTokensPerSecond = response.Usage.OutputTokensPerSecond
+	}
+	if response.Usage.PromptTokensPerSecond > 0 {
+		out.Usage.PromptTokensPerSecond = response.Usage.PromptTokensPerSecond
+	}
+	out.Final = response.Message
+
+	if !response.Decoding.Clean() {
+		// Merged, not assigned. Outcome.Decoding is documented as reporting
+		// compensations "across the turn", and plain assignment made it
+		// report the last non-clean step only. A turn whose first step
+		// disproved a declared prefill and whose sixth recovered a tool
+		// call from text ended with the prefill flag erased — so the notice
+		// that exists to get llm.local.assume_reasoning_prefill turned off
+		// never printed, on exactly the turns where it was needed, and the
+		// same condition recurred on the next turn.
+		out.Decoding = mergeDecoding(out.Decoding, response.Decoding)
+		if _, err := l.log.Append(session.DecodingCompensated, session.DecodingData{
+			FallbackFormat:        response.Decoding.FallbackFormat,
+			ReasoningReclassified: response.Decoding.ReasoningReclassified,
+			PrefillDisproved:      response.Decoding.PrefillDisproved,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if l.hitOutputCap(response) {
+		out.TruncatedByTokens = true
+	}
+	return nil
+}
+
+// retryNullResponse charges and records one retry of a response that carried
+// nothing, and closes the step it spent. attempt is this retry's number within
+// the turn.
+func (l *Loop) retryNullResponse(out *Outcome, step, attempt int) error {
+	// An empty response still consumed a provider attempt and one step.
+	out.BudgetSpent++
+	if _, err := l.log.Append(session.NullResponseRetried, session.NullResponseData{
+		Step: step, Attempt: attempt, Of: maxNullRetries,
+	}); err != nil {
+		return err
+	}
+	// The step is over even though the turn continues: leaving its
+	// start unclosed made every retried response dangle a step/start
+	// in the durable log for the TUI projector, the invariant check,
+	// and resume to trip over.
+	_, err := l.log.Append(session.StepEnd, nil)
+	return err
+}
+
+// stepTally is what one step's tool calls amounted to, for charging the step.
+type stepTally struct {
+	// ran counts the calls that actually reached the pipeline, so a step
+	// whose every call was refused is not mistaken for one that worked.
+	ran        int
+	progressed bool
+	// circling records that this step refused at least one call because the
+	// turn was going round — as a verbatim repeat or for making no
+	// observable progress. It is per step rather than per call so a step
+	// that refused three calls climbs one rung, not three.
+	circling bool
+}
+
+// dispatchCalls runs one response's tool calls in order, recording each call,
+// what the gate made of it, and its result.
+func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.ToolCallBlock) (stepTally, error) {
+	var tally stepTally
+	for _, call := range calls {
+		if _, err := l.log.Append(session.ToolCall, session.ToolCallData{
+			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+		}); err != nil {
+			return tally, err
+		}
+
+		result := l.runCall(ctx, out, &tally, call)
+		out.ToolCalls++
+
+		if err := l.recordCall(out, call, result); err != nil {
+			return tally, err
+		}
+	}
+	return tally, nil
+}
+
+// runCall runs one tool call, or refuses it because the turn is going in
+// circles, and returns the result the model will be shown.
+func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call llm.ToolCallBlock) tools.Result {
+	var result tools.Result
+	repeat := l.repeats.seen(call.Name, call.Arguments)
+	switch {
+	case repeat > RepeatLimit:
+		// Refused rather than run, and said out loud.
+		//
+		// A model that repeats one call verbatim is not making
+		// progress, and re-running it cannot produce a different
+		// answer: the arguments are identical and nothing between the
+		// two calls changed the world. Left alone this consumes the
+		// entire step budget — observed on a one-file edit, where
+		// twelve identical greps ran and the turn ended with the file
+		// untouched and 84k tokens of context spent.
+		//
+		// The refusal carries the repeat count and names what would
+		// actually move: it is a fact the model can act on, not a
+		// silent skip that would look to it like the tool returning
+		// nothing.
+		out.Repeated++
+		tally.circling = true
+		// Deliberately carries no Rule. A result with one is recorded
+		// as session.PolicyDenied, and this refusal did not come from
+		// the gate — the gate never saw the call. Tagging it would put
+		// a denial in the evidence trail that no policy made, and the
+		// trail is the thing the whole system reasons from. The model
+		// gets a plain error result, which is what it can act on
+		// anyway; the count is reported separately in Outcome.Repeated.
+		result = tools.Result{
+			IsError: true,
+			Text: fmt.Sprintf(
+				"this exact call to %s was already made %d times in this turn with the same "+
+					"arguments, so it was not run again — an identical call cannot return a "+
+					"different answer. Use what the earlier result told you, call it with "+
+					"different arguments, or take the next action the task actually needs.",
+				call.Name, repeat-1),
+		}
+
+	case l.progress.stalled():
+		// The same lack of progress, wearing different arguments.
+		//
+		// Varying one character of a pattern walks straight around the
+		// verbatim ledger above while telling the model nothing it did
+		// not already know — five distinct greps, five identical empty
+		// results, the file untouched. This refusal keys on what came
+		// back rather than what was asked for, so the disguise does not
+		// work; see agent/progress.go.
+		//
+		// It carries no Rule, for the same reason the repeat refusal
+		// does not: a result with one is recorded as
+		// session.PolicyDenied, and no policy made this decision — the
+		// gate never saw the call. A denial the gate never made in the
+		// evidence trail would be a lie told to the thing the whole
+		// system reasons from. The count is reported separately in
+		// Outcome.Stalled, and the model gets a plain error result,
+		// which is what it can act on anyway.
+		out.Stalled++
+		tally.circling = true
+		l.progress.interrupted()
+		result = tools.Result{
+			IsError: true,
+			Text: fmt.Sprintf(
+				"the last %d steps changed nothing and returned nothing this turn had not "+
+					"already been told, so %s was not run. Varying the arguments of a search "+
+					"that keeps coming back the same is not progress. Act on what you already "+
+					"have: make the edit, run the command that would change something, or say "+
+					"what is blocking you.",
+				NoProgressLimit, call.Name),
+		}
+
+	default:
+		result = l.tools.Run(ctx, tools.Call{
+			ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+		})
+		tally.ran++
+		if l.progress.observe(call.Name, result) {
+			tally.progressed = true
+		}
+		// Recorded here rather than derived later, and only for calls
+		// that actually ran: a refused call changed nothing, and a
+		// repeat or stall refusal above never reached a handler.
+		if l.progress.mutated(call.Name, result) {
+			out.Mutated = true
+			// A call that changed something and named no path leaves
+			// effects nothing downstream can enumerate. Recorded here,
+			// beside Mutated, because this is the only place that knows
+			// both facts about the same call: by the time the paths are
+			// merged into out.Wrote, a shell command that wrote nothing
+			// is indistinguishable from a native write that reported.
+			if len(result.Wrote) == 0 {
+				out.UnenumeratedEffects = true
+			}
+		}
+		out.Wrote, out.WroteTruncated = tools.MergeWrites(out.Wrote, out.WroteTruncated, result.Wrote)
+	}
+	return result
+}
+
+// recordCall records what the gate made of one call, any grant it applied,
+// and the result the model is shown.
+func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Result) error {
+	// A gate decision is recorded as its own event *in addition to*
+	// the tool result, so the evidence trail explains the outcome
+	// without the model-facing result having to carry policy detail.
+	//
+	// Blocked is the gate's own verdict, and the only thing that says
+	// a call was refused. The loop used to infer it, first from Rule
+	// alone and then from Rule with IsError, and both readings were
+	// wrong in the same direction. A Rule means policy decided, not
+	// which way — devcouncil.annotate puts one on *allowed* results
+	// too, naming the rule that would have blocked a write the posture
+	// or a grant let through. Adding IsError narrowed the misread
+	// without closing it: a command the gate allowed under a demotion
+	// and which then failed on its own exit code has both, and a yolo
+	// run — in which nothing can be refused by construction — reported
+	// it as "refused by the gate".
+	//
+	// Blocked first, because a refusal is a refusal however many other
+	// qualifications it also carries; under a disabled hard-rule set an
+	// enforcing soft rule can refuse a call whose Degraded list is not
+	// empty, and that is still a denial.
+	switch {
+	case result.PipelinePanic != "":
+		// Ahead of Qualified: a stage that could not finish did not
+		// allow anything, and "allowed but not on the rules alone" is
+		// the opposite of what happened.
+		out.Panicked++
+		// Still recorded, and deliberately as a qualification. Taking
+		// this case away from Qualified() also took its log entry, and
+		// that entry was the only durable trace — Outcome.Panicked is
+		// in memory and the stack goes to stderr, so a resumed or
+		// replayed session showed nothing at all. tools.stagePanic's
+		// own comment asserts the log records this; the record is what
+		// keeps that true. The claim it makes is exactly right here:
+		// this outcome was not reached by the rules running cleanly.
+		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
+			ToolCallID: call.ID, Tool: call.Name,
+			Reason: result.Text, Degraded: result.Degraded,
+		}); err != nil {
+			return err
+		}
+	case result.Blocked:
+		out.Denied++
+		if _, err := l.log.Append(session.PolicyDenied, session.DenialData{
+			ToolCallID: call.ID, Tool: call.Name,
+			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
+		}); err != nil {
+			return err
+		}
+	case result.Qualified():
+		out.Qualified++
+		if _, err := l.log.Append(session.PolicyQualified, session.QualificationData{
+			ToolCallID: call.ID, Tool: call.Name,
+			Rule: result.Rule, Severity: result.Severity, Reason: result.Text,
+			Demoted: result.Demoted, Widened: result.Widened, Degraded: result.Degraded,
+		}); err != nil {
+			return err
+		}
+	}
+	if result.GrantID != "" {
+		if _, err := l.log.Append(session.GrantApplied, session.GrantData{
+			GrantID: result.GrantID, GrantedBy: result.GrantedBy,
+			Rule: result.Rule, Target: call.Name, Reason: result.Text,
+		}); err != nil {
+			return err
+		}
+	}
+
+	_, err := l.log.Append(session.ToolResult, session.ToolResultData{
+		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
+	})
+	return err
+}
+
+// chargeStep spends the step's cost from the turn's budget, and raises the
+// reasoning tier when the step showed the turn going in circles.
+func (l *Loop) chargeStep(out *Outcome, calls int, tally stepTally) {
+	// The step is charged here, before any path that leaves the iteration,
+	// so no route through the loop can take a step without paying for it.
+	cost, noProgress := l.progress.endStep(calls, tally.ran, tally.progressed)
+	out.BudgetSpent += cost
+	if noProgress {
+		out.NoProgressSteps++
+	}
+
+	// The turn has demonstrated that the tier it is running at is not
+	// getting it anywhere, so the next request buys one rung more thinking.
+	// Charged against the same evidence the refusal above was made on, and
+	// never on a turn that is still getting somewhere: see agent/effort.go.
+	//
+	// Both halves are required. A refusal says the model asked for
+	// something it had already been given; the absence of progress says
+	// nothing else in the step made up for it. A step that refused a repeat
+	// and still moved the work forward is a model correcting itself, which
+	// is the behaviour this must not tax.
+	if tally.circling && !tally.progressed {
+		if next, ok := l.effortPlan.Next(l.effort); ok {
+			l.effort = next
+			out.EffortTo = next
+			out.EffortRaised++
+		}
+	}
+}
+
+// closeOrBounce handles a step whose response made no tool calls: the turn
+// looks finished, and the terminal checkpoint decides whether it is. It
+// reports stop when the turn ends here, and false when the checkpoint sent it
+// back for another step.
+func (l *Loop) closeOrBounce(ctx context.Context, out *Outcome, turn int, response llm.Response) (bool, error) {
+	// Not always a natural stop. A response with no tool calls that
+	// stopped on the output cap did not finish — it ran out of room
+	// mid-sentence — and the break below would end the turn as though
+	// it had. Recorded before the checkpoint, which may yet keep the
+	// turn open and let a later step finish the answer properly.
+	out.FinalTruncated = l.hitOutputCap(response)
+	// Asked of the response itself rather than of the stop reason, so
+	// a server that mislabels why it stopped cannot turn a dead end
+	// into a clean finish. Reasoning does not count as an answer: it is
+	// stripped before the caller ever sees the message.
+	out.FinalEmpty = strings.TrimSpace(response.Message.Text()) == ""
+
+	// Natural stop. The terminal checkpoint may keep the turn open —
+	// a verification gate that wants one more step, for instance.
+	//
+	// Cancellation short-circuits it. A cancelled turn is the operator
+	// saying stop, and a bounce fired on the way out would spend
+	// another model call on work nobody is waiting for. Checked before
+	// the listeners run rather than after, so a sensor that shells out
+	// is not started either.
+	if ctx.Err() != nil {
+		return true, nil
+	}
+	checkpoint := &TurnStopping{
+		Turn: turn, Steps: out.Steps, Response: response,
+		Mutated: out.Mutated, Wrote: out.Wrote,
+		WroteTruncated:      out.WroteTruncated,
+		UnenumeratedEffects: out.UnenumeratedEffects,
+		Truncated:           out.FinalTruncated, Empty: out.FinalEmpty,
+		Bounce: out.Bounces, Circling: out.Repeated + out.Stalled,
+	}
+	if err := bus.Serial(l.bus, ctx, checkpoint); err != nil {
+		// The listener failed. It did not ask for another step, and
+		// re-sending an identical history is not a recovery — it is
+		// the same request with the same answer, charged again. So the
+		// turn closes, and closes loudly: a check that was owed and
+		// could not be completed is degraded, never a pass.
+		out.Sensor = SensorDegraded
+		if _, appendErr := l.log.Append(session.VerifyReport, session.VerifyReportData{
+			Verdict: string(SensorDegraded),
+			Source:  "checkpoint",
+			Paths:   out.Wrote,
+			Degraded: []string{
+				"the terminal checkpoint failed: " + err.Error(),
+			},
+			Bounce: out.Bounces,
+		}); appendErr != nil {
+			return false, appendErr
+		}
+		return true, nil
+	}
+	if checkpoint.Verdict != "" {
+		out.Sensor = checkpoint.Verdict
+	}
+	inject := strings.TrimSpace(checkpoint.Inject)
+	if inject == "" {
+		return true, nil
+	}
+	// Asked again after the listeners rather than only before them. A
+	// sensor that shells out is exactly the place a turn gets
+	// cancelled, and honouring an inject decided before the cancel
+	// would spend the model call the cancel was meant to stop.
+	if ctx.Err() != nil {
+		return true, nil
+	}
+	if out.Bounces >= MaxCheckpointBounces {
+		// Still asking, out of budget. The turn ends, and the outcome
+		// says the check was not satisfied — the alternative is a turn
+		// that looks complete because the thing objecting to it ran out
+		// of ways to object.
+		out.BouncesExhausted = true
+		return true, nil
+	}
+	// The loop appends, not the listener. A user-role message is the
+	// only model-visible slot a natural stop leaves — there is no tool
+	// call to answer, so an orphan tool result would break projection —
+	// and the origin marks it as the harness's own words so no face
+	// attributes it to the operator.
+	if _, err := l.log.Append(session.UserMessage, session.MessageData{
+		Message: llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{llm.TextBlock{Text: inject}},
+		},
+		Origin: session.OriginHarness,
+	}); err != nil {
+		return false, err
+	}
+	out.Bounces++
+	return false, nil
 }
 
 // maxNullRetries bounds how many times a turn will re-ask for a response that
@@ -1238,6 +1332,16 @@ func isNullResponse(r llm.Response) bool {
 
 // step runs one model call and records it.
 func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, error) {
+	request, err := l.assembleRequest(ctx, messages)
+	if err != nil {
+		return llm.Response{}, err
+	}
+	return l.streamResponse(ctx, request)
+}
+
+// assembleRequest builds the request one step sends, shaped by the llm/request
+// waterfall and checked before anything goes on the wire.
+func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm.Request, error) {
 	schemas := l.schemas()
 
 	// Provider-private state that this target cannot replay is stripped here,
@@ -1246,7 +1350,7 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 	if len(drops) > 0 {
 		if _, err := l.log.Append(session.ProvenanceDropped,
 			session.DropData{Drops: drops}); err != nil {
-			return llm.Response{}, err
+			return llm.Request{}, err
 		}
 	}
 
@@ -1261,7 +1365,7 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 
 	shaped, err := bus.Waterfall(l.bus, LLMRequest{Ctx: ctx, Request: request})
 	if err != nil {
-		return llm.Response{}, err
+		return llm.Request{}, err
 	}
 	request = shaped.Request
 
@@ -1269,16 +1373,21 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 	// impossible request fails here rather than as a 400 mid-turn.
 	if l.cfg.Registry != nil {
 		if _, _, err := l.cfg.Registry.Resolve(l.cfg.Provider.Name(), request); err != nil {
-			return llm.Response{}, err
+			return llm.Request{}, err
 		}
 	}
 
 	if l.cfg.AssertInvariant {
 		if err := session.AssertModelVisible(l.log, request.Messages); err != nil {
-			return llm.Response{}, err
+			return llm.Request{}, err
 		}
 	}
+	return request, nil
+}
 
+// streamResponse sends the request, records every chunk as it arrives and
+// then the assistant message the stream assembled.
+func (l *Loop) streamResponse(ctx context.Context, request llm.Request) (llm.Response, error) {
 	// Held so the server's own prompt_tokens can be compared against it below.
 	// The estimate is over the request as finally shaped, after every waterfall
 	// — comparing against anything else would be measuring a prompt that was

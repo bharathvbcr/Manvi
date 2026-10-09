@@ -187,6 +187,10 @@ type harnessHost struct {
 	// about concurrent turns that is never exercised by a test. Nil means ask
 	// the runner, which is what every production path does.
 	busyTurns func(exclude string) []string
+	// sinks is injected in tests, for the same reason: without a runner every
+	// event a command or a turn reports goes nowhere, so what the transcript
+	// would have said could not be asserted at all. Nil means ask the runner.
+	sinks func(sessionID string) ui.Sink
 
 	// credOnce guards the two fields below, which are built on first use rather
 	// than in a constructor: a harnessHost assembled by a test sets only the
@@ -484,78 +488,11 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 		sink.Emit(ui.Event{Kind: ui.KindError, At: time.Now().UTC(), Text: err.Error()})
 		return nil
 	}
-	// changed is the flag a `/flags set` moved, or "". Captured out here rather
-	// than returned through the closure because what a moved flag invalidates
-	// is this host's business — the gates and providers it has already built —
-	// and none of the command implementations know those exist.
-	var changed string
-	err = func() error {
-		switch name {
-		case "doctor":
-			return doctor(&out, h.reg)
-		case "flags":
-			if err := h.refuseFlagMoveDuringATurn(sessionID, fields); err != nil {
-				return err
-			}
-			key, err := flagsCommand(&out, h.reg, fields, surfaceSession)
-			changed = key
-			return err
-		case "providers":
-			return showProviders(&out, h.reg)
-		case "budget":
-			return showBudget(&out)
-		case "local":
-			return showLocal(&out, h.reg, fields)
-		case "pull", "push":
-			if h.busyTurns != nil {
-				if busy := h.busyTurns(sessionID); len(busy) > 0 {
-					return fmt.Errorf("/%s needs every session idle; active sessions: %s", name, strings.Join(busy, ", "))
-				}
-			}
-			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
-		case "issues":
-			return runQuickAction(ctx, &out, projectRoot(), name, fields, osQuickCommandRunner{})
-		case "tools":
-			return listTools(&out, h.reg)
-		case "leases":
-			return lease(&out, append([]string{"list"}, fields...))
-		case "lease":
-			if len(fields) == 0 {
-				return lease(&out, []string{"list"})
-			}
-			return lease(&out, fields)
-		case "check":
-			// The session's own gate, so what this reports is what will
-			// actually decide the session's next write.
-			err := check(&out, s.gate, fields)
-			if errors.Is(err, errCheckBlocked) || errors.Is(err, errCheckHardBlocked) {
-				// A block is this command's answer, not its failure. On the CLI
-				// it is a non-zero exit status because a script has nothing else
-				// to read; here the decision is already in the transcript above,
-				// and reporting it a second time as an error would tell the
-				// operator the command did not run.
-				return nil
-			}
-			return err
-		case "allow":
-			return allow(&out, s.gate, fields)
-		case "tool":
-			// The session's own pipeline: it carries this session's lease, and
-			// its approval seam, so a blocked write raises a card here rather
-			// than being refused by a registry nobody is watching.
-			_, scrubber := h.creds()
-			return callTool(&out, &out, scrubber, s.pipeline, fields)
-		case "map":
-			return mapCommand(&out, h.reg, fields)
-		case "probe":
-			return probe(&out, h.reg, fields)
-		case "logo":
-			return showLogo(&out, fields)
-		case "quit", "exit", "help", "clear", "cls":
-			return nil
-		}
-		return fmt.Errorf("unknown command %q", name)
-	}()
+	// changed is the flag a `/flags set` moved, or "". Returned rather than acted
+	// on inside runCommand because what a moved flag invalidates is this host's
+	// business — the gates and providers it has already built — and none of the
+	// command implementations know those exist.
+	changed, err := h.runCommand(ctx, s, sessionID, name, fields, &out)
 
 	text := strings.TrimRight(out.String(), "\n")
 	if err != nil {
@@ -585,6 +522,75 @@ func (h *harnessHost) Command(ctx context.Context, sessionID, name, args string)
 		h.applyFlagChange(changed)
 	}
 	return nil
+}
+
+// runCommand runs one harness command, writing what it prints to out. It
+// returns the flag a `/flags set` moved, or "".
+func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, name string,
+	fields []string, out *bytes.Buffer) (string, error) {
+	switch name {
+	case "doctor":
+		return "", doctor(out, h.reg)
+	case "flags":
+		if err := h.refuseFlagMoveDuringATurn(sessionID, fields); err != nil {
+			return "", err
+		}
+		return flagsCommand(out, h.reg, fields, surfaceSession)
+	case "providers":
+		return "", showProviders(out, h.reg)
+	case "budget":
+		return "", showBudget(out)
+	case "local":
+		return "", showLocal(out, h.reg, fields)
+	case "pull", "push":
+		if h.busyTurns != nil {
+			if busy := h.busyTurns(sessionID); len(busy) > 0 {
+				return "", fmt.Errorf("/%s needs every session idle; active sessions: %s", name, strings.Join(busy, ", "))
+			}
+		}
+		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
+	case "issues":
+		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
+	case "tools":
+		return "", listTools(out, h.reg)
+	case "leases":
+		return "", lease(out, append([]string{"list"}, fields...))
+	case "lease":
+		if len(fields) == 0 {
+			return "", lease(out, []string{"list"})
+		}
+		return "", lease(out, fields)
+	case "check":
+		// The session's own gate, so what this reports is what will
+		// actually decide the session's next write.
+		err := check(out, s.gate, fields)
+		if errors.Is(err, errCheckBlocked) || errors.Is(err, errCheckHardBlocked) {
+			// A block is this command's answer, not its failure. On the CLI
+			// it is a non-zero exit status because a script has nothing else
+			// to read; here the decision is already in the transcript above,
+			// and reporting it a second time as an error would tell the
+			// operator the command did not run.
+			return "", nil
+		}
+		return "", err
+	case "allow":
+		return "", allow(out, s.gate, fields)
+	case "tool":
+		// The session's own pipeline: it carries this session's lease, and
+		// its approval seam, so a blocked write raises a card here rather
+		// than being refused by a registry nobody is watching.
+		_, scrubber := h.creds()
+		return "", callTool(out, out, scrubber, s.pipeline, fields)
+	case "map":
+		return "", mapCommand(out, h.reg, fields)
+	case "probe":
+		return "", probe(out, h.reg, fields)
+	case "logo":
+		return "", showLogo(out, fields)
+	case "quit", "exit", "help", "clear", "cls":
+		return "", nil
+	}
+	return "", fmt.Errorf("unknown command %q", name)
 }
 
 // refuseFlagMoveDuringATurn holds the rule the flags package states and could
@@ -623,6 +629,9 @@ func (h *harnessHost) refuseFlagMoveDuringATurn(sessionID string, fields []strin
 // nil channel, and a harness that hangs on its first event is worse than one
 // that reports into nothing.
 func (h *harnessHost) sinkFor(sessionID string) ui.Sink {
+	if h.sinks != nil {
+		return h.sinks(sessionID)
+	}
 	if h.runner == nil {
 		return ui.SinkFunc(func(ui.Event) {})
 	}
@@ -841,59 +850,9 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return errors.New("no model provider is attached to this session")
 	}
 
-	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
-	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
-	if dynamic {
-		s.pipeline.EnableDynamic()
-	}
-	subRunner, caps := harnessFor(s.pipeline)
-	promptOpts := PromptOptions{
-		Provider:           at.provider.Name(),
-		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
-		DynamicTools:       dynamic,
-		ActiveGroups:       s.pipeline.ActiveGroups(),
-		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
-		DocLookupAvailable: caps.DocLookup,
-		Areas:              caps.Areas,
-	}
-	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
-	// Surfaced in the transcript rather than on stderr. Under the alternate
-	// screen stderr goes nowhere a person can read, which is how a prompt
-	// missing four of its sections came to look identical to a whole one.
-	promptSink := h.sinkFor(sessionID)
-	for _, fault := range promptFaults {
-		promptSink.Emit(ui.Event{
-			Kind: ui.KindNotice, At: time.Now().UTC(),
-			Text: "system prompt: " + fault,
-		})
-	}
-	if err := recordPromptAssembly(s.log, promptReport,
-		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(s, sessionID, at)
+	if err != nil {
 		return err
-	}
-
-	// Re-attached on every submission rather than once at session start: the
-	// provider, model and effort are all switchable mid-session from this face,
-	// and a child running under the model the user chose two turns ago would be
-	// a surprise nothing reported.
-	if runner := subRunner; runner != nil {
-		runner.attach(subAgentConfig{
-			provider:        at.provider,
-			models:          at.registry,
-			model:           at.model,
-			effort:          at.effort,
-			effortCeiling:   at.effortCeiling,
-			registry:        s.pipeline,
-			native:          s.native,
-			meter:           s.subMeter,
-			coreToolsOnly:   coreOnly,
-			assertInvariant: assertInvariant(h.reg),
-			systemPrompt:    systemPrompt,
-			// The same sink this session's own events go to, so a child's gate
-			// refusals appear in the transcript that is meant to account for
-			// the turn rather than vanishing with the child.
-			sink: h.sinkFor(sessionID),
-		})
 	}
 
 	// Taken before the turn runs, so what it spends on children can be told
@@ -948,12 +907,84 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	if err != nil {
 		return err
 	}
+	h.reportTurn(sink, s.subMeter, before, outcome)
+	return nil
+}
+
+// prepareTurn assembles what one submission's turn runs with — the system
+// prompt, recorded with any fault in its assembly, and the sub-agent runner
+// re-attached to the session's current provider, model and effort — and
+// returns the prompt, the runner and whether the turn is narrowed to the core
+// tools.
+func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
+	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
+	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
+	if dynamic {
+		s.pipeline.EnableDynamic()
+	}
+	subRunner, caps := harnessFor(s.pipeline)
+	promptOpts := PromptOptions{
+		Provider:           at.provider.Name(),
+		TaskToolsOffered:   taskToolsOffered(s.pipeline, coreOnly),
+		DynamicTools:       dynamic,
+		ActiveGroups:       s.pipeline.ActiveGroups(),
+		CodeMapAvailable:   codeMapAvailable(caps, s.pipeline, dynamic, coreOnly),
+		DocLookupAvailable: caps.DocLookup,
+		Areas:              caps.Areas,
+	}
+	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
+	// Surfaced in the transcript rather than on stderr. Under the alternate
+	// screen stderr goes nowhere a person can read, which is how a prompt
+	// missing four of its sections came to look identical to a whole one.
+	promptSink := h.sinkFor(sessionID)
+	for _, fault := range promptFaults {
+		promptSink.Emit(ui.Event{
+			Kind: ui.KindNotice, At: time.Now().UTC(),
+			Text: "system prompt: " + fault,
+		})
+	}
+	if err := recordPromptAssembly(s.log, promptReport,
+		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+		return "", nil, false, err
+	}
+
+	// Re-attached on every submission rather than once at session start: the
+	// provider, model and effort are all switchable mid-session from this face,
+	// and a child running under the model the user chose two turns ago would be
+	// a surprise nothing reported.
+	if runner := subRunner; runner != nil {
+		runner.attach(subAgentConfig{
+			provider:        at.provider,
+			models:          at.registry,
+			model:           at.model,
+			effort:          at.effort,
+			effortCeiling:   at.effortCeiling,
+			registry:        s.pipeline,
+			native:          s.native,
+			meter:           s.subMeter,
+			coreToolsOnly:   coreOnly,
+			assertInvariant: assertInvariant(h.reg),
+			systemPrompt:    systemPrompt,
+			// The same sink this session's own events go to, so a child's gate
+			// refusals appear in the transcript that is meant to account for
+			// the turn rather than vanishing with the child.
+			sink: h.sinkFor(sessionID),
+		})
+	}
+	return systemPrompt, subRunner, coreOnly, nil
+}
+
+// reportTurn puts a finished turn's spend and outcome in front of the
+// operator: one usage line covering the turn and the children it delegated to,
+// then one line per outcome notice. before is the meter's total from before
+// the turn ran.
+func (h *harnessHost) reportTurn(sink ui.Sink, meter *subAgentMeter, before devcouncil.SubAgentUsage, outcome agent.Outcome) {
 	// This turn's delegated spend, not the session's: the meter accumulates
 	// across every turn of the session, so the figure for one turn is the
 	// difference against the snapshot taken before it ran. Reporting the
 	// running total per turn would count the first turn's children again in
 	// every turn after it.
-	delegated := s.subMeter.Total()
+	delegated := meter.Total()
 	delegated.InputTokens -= before.InputTokens
 	delegated.OutputTokens -= before.OutputTokens
 	delegated.ReasoningTokens -= before.ReasoningTokens
@@ -976,7 +1007,6 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 			Text: n.Text, Degraded: n.Degraded,
 		})
 	}
-	return nil
 }
 
 // tuiMaxTokens is the output bound the TUI names for a turn: the operator's
