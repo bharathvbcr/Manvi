@@ -291,13 +291,13 @@ Credential protection operates in multiple layers to prevent API keys and secret
 ```mermaid
 flowchart LR
     Source["Raw Text Output<br/>(Tool results, Errors, HTTP responses)"] --> Scrubber["credentials.Scrubber"]
-    Scrubber --> PatternMatch["Detect Key Formats:<br/>sk-*, ghp_*, AKIA*, AIza*, Bearer tokens"]
+    Scrubber --> PatternMatch["Match Watched Values:<br/>exact credential values the process holds"]
     PatternMatch --> Redact["Redact to [REDACTED_SECRET]"]
     Redact --> Sanitize["ui.Sanitize:<br/>Strip ANSI escape injections & Bidi controls"]
     Sanitize --> Sink["Terminal / TUI / session log"]
 ```
 
-- **`credentials.Scrubber`**: Regex-based token hunter that matches provider API keys, GitHub tokens, AWS credentials, and arbitrary high-entropy strings.
+- **`credentials.Scrubber`**: Exact-value scrubber: it replaces the credential values the process was given to watch (provider keys resolved from the environment and keychain) and recognises no key formats or high-entropy strings. A value split across stream fragments therefore matches nothing, which is why the session file does not persist `AssistantChunk` events at all.
 - **`credentials.Secret` type**: Prevents in-memory strings from printing via `fmt.Sprintf` `%v` or `%s`.
 - **`ui.Sanitize`**: Cleans bi-directional override characters (Bidi), terminal control codes, and malformed UTF-8 sequences.
 

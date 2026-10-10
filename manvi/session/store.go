@@ -189,6 +189,12 @@ type Store struct {
 	// number alone would not, because that run's prune makes its newer file
 	// look like the one this run loaded.
 	seen map[string]string
+
+	// Seams for the tests of the windows between a directory listing and the
+	// act it justifies, which are too narrow to hit by chance. Nil in
+	// production.
+	afterList  func()
+	beforeRead func()
 }
 
 // NewStore returns a store over dir. The directory is created on first save.
@@ -329,17 +335,12 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 	if !validID(id) {
 		return nil, LoadReport{}, &NotFoundError{Ref: id}
 	}
-	generation, path, err := s.current(id)
+	generation, path, raw, err := s.readCurrent(id)
 	if err != nil {
 		return nil, LoadReport{}, err
 	}
 	if generation == 0 {
 		return nil, LoadReport{}, &NotFoundError{Ref: id}
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, LoadReport{}, fmt.Errorf("session: reading %s: %w", path, err)
 	}
 	if len(raw) == 0 {
 		// An empty file is corruption, not an empty session. The distinction
@@ -400,7 +401,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	}
 	// Not Events(): that deep-copies every payload for a caller that may keep
 	// it, and this one only encodes them. An appended event is never mutated.
-	events := log.snapshot()
+	events := persistable(log.snapshot())
 	if len(events) == 0 {
 		// Refused rather than written. An empty file is what Load treats as
 		// corruption, and a session with no events is nothing to continue.
@@ -414,17 +415,13 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, fmt.Errorf("session: creating %s: %w", s.dir, err)
 	}
 
-	generation, path, err := s.current(id)
+	generation, path, existing, err := s.readCurrent(id)
 	if err != nil {
 		return SaveReport{}, err
 	}
 	createdAt := time.Now().UTC()
 	trimmedBefore := 0
 	if generation > 0 {
-		existing, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return SaveReport{}, fmt.Errorf("session: reading %s: %w", path, readErr)
-		}
 		if want, ok := s.seen[id]; !ok || want != digest(existing) {
 			return SaveReport{}, &ConflictError{ID: id,
 				Detail: fmt.Sprintf("%s no longer holds the contents this run loaded", path)}
@@ -537,6 +534,59 @@ func syncDir(dir string) error {
 	return d.Close()
 }
 
+// persistable drops the events a session file has no use for.
+//
+// AssistantChunk is the stream of a reply the AssistantMessage that follows it
+// already holds whole, and the projection ignores it. Persisting it costs the
+// byte budget that bounds real history — a long streamed session evicted whole
+// turns to keep fragments no resume reads — and it writes a credential that the
+// scrubber redacted from the message back to disk in pieces, because an
+// exact-value scrubber cannot match a value split across fragments. Observers
+// still see every chunk live; only the file omits them.
+func persistable(events []Event) []Event {
+	kept := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Type != AssistantChunk {
+			kept = append(kept, event)
+		}
+	}
+	return kept
+}
+
+// readAttempts bounds how often readCurrent re-lists after the generation it
+// picked was removed by a concurrent save.
+const readAttempts = 5
+
+// readCurrent returns the newest generation of a session and its bytes, or
+// generation zero when there is none.
+//
+// Choosing a generation and reading it are two steps over a directory another
+// run is free to change: a save publishes the next generation and prunes the
+// one this picked. That is a retry over the new listing, not a failure, and
+// not a raw "no such file" for an operator whose session exists.
+func (s *Store) readCurrent(id string) (int, string, []byte, error) {
+	for attempt := 0; ; attempt++ {
+		generation, path, err := s.current(id)
+		if err != nil || generation == 0 {
+			return 0, "", nil, err
+		}
+		if s.beforeRead != nil {
+			s.beforeRead()
+		}
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			return generation, path, raw, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return 0, "", nil, fmt.Errorf("session: reading %s: %w", path, err)
+		}
+		if attempt+1 >= readAttempts {
+			return 0, "", nil, &ConflictError{ID: id,
+				Detail: fmt.Sprintf("%s keeps being replaced by another run", path)}
+		}
+	}
+}
+
 // current reports the newest generation stored for a session, or zero.
 func (s *Store) current(id string) (int, string, error) {
 	entries, err := os.ReadDir(s.dir)
@@ -586,23 +636,33 @@ func (s *Store) prune(id string, keepGeneration int) {
 	}
 
 	sessions, err := s.List()
+	if s.afterList != nil {
+		s.afterList()
+	}
 	if err != nil || len(sessions) <= s.maxSessions {
 		return
 	}
 	for _, stale := range sessions[s.maxSessions:] {
-		s.removeSession(stale.ID)
+		s.removeSession(stale.ID, stale.Generation)
 		delete(s.seen, stale.ID)
 	}
 }
 
-func (s *Store) removeSession(id string) {
+// removeSession unlinks the generations of a session up to and including
+// through, the newest the retention listing saw.
+//
+// Not every generation on disk now: another run may have resumed this session
+// and published a newer one after the listing declared it stale, and that
+// generation is a save that was reported to its operator as durable. Left
+// alone, it also makes the session current again rather than lost.
+func (s *Store) removeSession(id string, through int) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		gotID, _, ok := parseName(entry.Name())
-		if ok && gotID == id {
+		gotID, generation, ok := parseName(entry.Name())
+		if ok && gotID == id && generation <= through {
 			_ = os.Remove(filepath.Join(s.dir, entry.Name()))
 		}
 	}
@@ -715,26 +775,44 @@ func trimToBudget(events []Event, maxBytes int) (int, int, bool, []json.RawMessa
 		return 0, 0, false, perEvent, nil
 	}
 
-	// Turn boundaries, as index ranges over the event slice. Events recorded
-	// before the first turn/start form the leading group and are dropped
-	// first.
+	// Turn boundaries, as index ranges over the event slice. A turn starts at
+	// its turn/start, pulled back over the prompt-assembly records that sit
+	// directly before it: both faces record how a turn's prompt was assembled
+	// before the loop opens the turn, so that record belongs to the turn it
+	// describes and must be kept or dropped with it, not with the turn before.
+	// Events ahead of the first turn form a leading group that is dropped first
+	// and is not a turn, so it is never counted as one.
 	var starts []int
 	for i, event := range events {
-		if event.Type == TurnStart {
-			starts = append(starts, i)
+		if event.Type != TurnStart {
+			continue
 		}
+		start := i
+		for start > 0 && events[start-1].Type == PromptAssembled &&
+			(len(starts) == 0 || start-1 >= starts[len(starts)-1]+1) {
+			start--
+		}
+		starts = append(starts, start)
 	}
-	if len(starts) == 0 || starts[0] > 0 {
+	leading := len(starts) > 0 && starts[0] > 0
+	if leading {
 		starts = append([]int{0}, starts...)
 	}
+	if len(starts) == 0 {
+		return 0, 0, total > maxBytes, perEvent, nil
+	}
 
-	dropped, from := 0, 0
-	for total > maxBytes && dropped < len(starts)-1 {
-		for i := starts[dropped]; i < starts[dropped+1]; i++ {
+	groups, from := 0, 0
+	for total > maxBytes && groups < len(starts)-1 {
+		for i := starts[groups]; i < starts[groups+1]; i++ {
 			total -= len(perEvent[i]) + 1
 		}
-		dropped++
-		from = starts[dropped]
+		groups++
+		from = starts[groups]
+	}
+	dropped := groups
+	if leading && groups > 0 {
+		dropped--
 	}
 	return from, dropped, total > maxBytes, perEvent, nil
 }
