@@ -356,3 +356,73 @@ func TestAStepThatRefusesARepeatAndStillGetsSomewhereIsNotTaxed(t *testing.T) {
 			out.EffortTo, out.EffortRaised)
 	}
 }
+
+// TestATierRefusesAnEffortItsModelCannotHonour. A tier's effort is the base
+// every request on that tier carries, so one the model does not accept is a
+// configuration mistake that would otherwise surface as a refused request in
+// the middle of a delegated turn. PlanEffort cannot catch it: with no ceiling it
+// deliberately checks nothing.
+func TestATierRefusesAnEffortItsModelCannotHonour(t *testing.T) {
+	cases := []struct {
+		name       string
+		capability llm.Capability
+		base       string
+		ceiling    string
+		want       string
+	}{
+		{name: "an effort on a model that does not reason", capability: caps("test-model"),
+			base: "low", want: "does not support reasoning"},
+		{name: "an effort the model does not serve", capability: localLadder(),
+			base: "extreme", want: "extreme"},
+		{name: "a session ceiling the tier's model has no rung for", capability: reasoningCaps("low", "medium"),
+			base: "low", ceiling: "high", want: "high"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := PlanTierEffort(c.capability, c.base, c.ceiling); err == nil {
+				t.Fatalf("PlanTierEffort(%q, ceiling %q) was accepted", c.base, c.ceiling)
+			} else if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("refusal was %q, which does not mention %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestATierInheritsTheCeilingOnlyWhereItCanClimb is D3. The session's ceiling
+// was checked against the main model; a tier on another model takes it only
+// where that model reasons, the tier starts somewhere, and the ceiling is above
+// that start. Anywhere else the tier runs at its own effort throughout — a
+// non-reasoning tier handed the parent's ceiling would otherwise be refused by
+// PlanEffort, turning a working profile into an error.
+func TestATierInheritsTheCeilingOnlyWhereItCanClimb(t *testing.T) {
+	cases := []struct {
+		name       string
+		capability llm.Capability
+		base       string
+		ceiling    string
+		escalates  bool
+	}{
+		{name: "a model that does not reason", capability: caps("test-model"), base: "", ceiling: "high"},
+		{name: "a tier that sets no effort", capability: localLadder(), base: "", ceiling: "high"},
+		{name: "a tier already at the ceiling", capability: localLadder(), base: "high", ceiling: "high"},
+		{name: "a tier above the ceiling", capability: localLadder(), base: "high", ceiling: "medium"},
+		{name: "no ceiling at all", capability: localLadder(), base: "low", ceiling: ""},
+		{name: "a tier below the ceiling", capability: localLadder(), base: "low", ceiling: "high", escalates: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := PlanTierEffort(c.capability, c.base, c.ceiling)
+			if err != nil {
+				t.Fatalf("PlanTierEffort(%q, ceiling %q) was refused: %v", c.base, c.ceiling, err)
+			}
+			if plan.Escalates() != c.escalates {
+				t.Fatalf("Escalates() = %v, want %v", plan.Escalates(), c.escalates)
+			}
+			if c.escalates {
+				if next, ok := plan.Next(c.base); !ok || next != "medium" {
+					t.Fatalf("Next(%q) = %q, %v; want medium", c.base, next, ok)
+				}
+			}
+		})
+	}
+}

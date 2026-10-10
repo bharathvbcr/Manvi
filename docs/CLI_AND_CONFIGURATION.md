@@ -26,6 +26,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
+| **Tier Profile** | `manvi tiers` | Print the model and effort each tier runs at — `advisor`, `main`, `heavy`, `lite`, `basic` — the setting and layer each value came from, and the effort ceiling each tier inherits. Runs the same check a session runs at startup, prints the table either way, and exits 1 on a profile a session would refuse. See [Tier profile](#tier-profile). |
 | **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. `manvi budget reconcile` moves attempts left in flight by an exited process into retained spend (still counted against the limit); every reservation does the same before it is admitted. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |
 | **Code Graph Build** | `manvi map build` | Index repository symbols and AST relationships into `.devcouncil/code_graph.json`. |
@@ -84,7 +85,7 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 > The model/agent execution plane has **no access** to the flag registry. An agent cannot alter its own gates.
 
 > [!NOTE]
-> `startup` bounds *when* a value may move, not *who* may supply it. Every flag, `startup` ones included, can be set before boot from `MANVI_<KEY>` or from `.devcouncil/config.yaml` — which the managed `.gitignore` rules deliberately keep committable (`.devcouncil/*` followed by `!.devcouncil/config.yaml`), so it arrives with a `git clone`. Settings resolve lowest-first: catalogue default, then `.devcouncil/config.yaml`, then `MANVI_<KEY>`. Run `manvi flags` to see which layer supplied each value in force.
+> `startup` bounds *when* a value may move, not *who* may supply it. Every flag, `startup` ones included, can be set before boot from `MANVI_<KEY>` or from `.devcouncil/config.yaml` — which the managed `.gitignore` rules deliberately keep committable (`.devcouncil/*` followed by `!.devcouncil/config.yaml`), so it arrives with a `git clone`. Settings resolve lowest-first: catalogue default, then `.devcouncil/config.yaml`, then `MANVI_<KEY>`. Run `manvi flags` to see which layer supplied each value in force. The `llm.tier.*` keys are the exception: they are refused in `.devcouncil/config.yaml` and read from the user config instead — see [Tier profile](#tier-profile).
 
 ### Full Flag Catalogue
 
@@ -128,7 +129,7 @@ MANVI_FETCH_HOSTS="go.dev,pkg.go.dev" \
 | `verify.rigor.enabled` | `MANVI_VERIFY_RIGOR_ENABLED` | `true` | **Yes** | `human` | Detect stubs, TODOs, and unimplemented markers in added diff lines. |
 | `log.model_visible_assert` | `MANVI_LOG_MODEL_VISIBLE_ASSERT` | `true` | **Yes** | `startup` | Assert model-visible context matches append-only session log before LLM calls. |
 | `llm.provider.default` | `MANVI_LLM_PROVIDER_DEFAULT` | `anthropic`| No | `human` | Default LLM provider (`anthropic`, `gemini`, `xai`, `local`). |
-| `llm.effort` | `MANVI_LLM_EFFORT` | `""` | No | `human` | Reasoning effort level passed to provider (`low`, `medium`, `high`). |
+| `llm.effort` | `MANVI_LLM_EFFORT` | `""` | No | `human` | Reasoning effort level passed to provider (`low`, `medium`, `high`). On `anthropic`, when empty, the main tier's effort (`llm.tier.main.effort`) applies instead. |
 | `llm.local.base_url` | `MANVI_LLM_LOCAL_BASE_URL` | `http://127.0.0.1:8000/v1` | No | `human` | Local OpenAI-compatible server URL. |
 | `llm.local.model` | `MANVI_LLM_LOCAL_MODEL` | `""` | No | `human` | Local model ID. If empty, falls back to `MANVI_MODEL`. |
 | `llm.local.context_window` | `MANVI_LLM_LOCAL_CONTEXT_WINDOW` | `32768` | No | `human` | Fallback token budget when server publishes no window. |
@@ -178,6 +179,88 @@ carries no origin, and cannot be moved with `manvi flags set`. An unrecognised v
 is not an error: it falls back silently to `dark` (or to `plain` when the terminal has
 no colour). That is a deliberate exception to the registry's rule that an unknown key
 is an error and never a no-op.
+
+---
+
+## Tier profile
+
+MANVI runs a tiered harness: each class of work names a **tier**, and the
+operator's profile says which model serves it. Tiers are ordered cheapest
+first — `basic`, `lite`, `heavy`, `main`, `advisor` — and defined in
+`manvi/agents/tier.go` with no provider knowledge; the shipped ids below are
+checked against the provider catalogue when a session starts.
+
+| Tier | Serves | Model key | Default | Effort key | Default |
+|---|---|---|---|---|---|
+| `advisor` | The reviewer the main agent consults | `llm.tier.advisor` | `claude-fable-5-1` | `llm.tier.advisor.effort` | `""` |
+| `main` | The session's own agent | `llm.tier.main` | `claude-opus-5-5` | `llm.tier.main.effort` | `""` |
+| `heavy` | Sub-agents that write | `llm.tier.heavy` | `claude-opus-5-5` | `llm.tier.heavy.effort` | `""` |
+| `lite` | Read-only sub-agents | `llm.tier.lite` | `claude-sonnet-5-5` | `llm.tier.lite.effort` | `""` |
+| `basic` | Wide, simple fan-out | `llm.tier.basic` | `claude-haiku-5-5` | `llm.tier.basic.effort` | `""` |
+
+Every key is a string, mutability `human`, not a safety flag, and set from the
+environment as `MANVI_LLM_TIER_<TIER>` and `MANVI_LLM_TIER_<TIER>_EFFORT`. An
+empty effort means the tier sets none of its own: the main tier then uses
+`llm.effort` (and omits the field when that is empty too), and a sub-agent
+carries its parent's effort, as sub-agents always have.
+
+**Operator scope only.** Tier keys decide spend, so they are read from three
+places, lowest first:
+
+1. The **user config**: `<user config dir>/manvi/config.yaml` (on macOS
+   `~/Library/Application Support/manvi/config.yaml`, on Linux
+   `~/.config/manvi/config.yaml`), or the absolute path in `MANVI_USER_CONFIG`.
+   It uses the same format as `.devcouncil/config.yaml`, carries `llm.tier.*`
+   keys only — any other key is refused, naming it — and is refused outright if
+   it resolves, through the variable or a symlink, to a path inside the
+   repository. Values from it show as origin `config` in `manvi flags` and as
+   `user config <path>` in `manvi tiers`. A process with no user config
+   directory (no `HOME`) and no `MANVI_USER_CONFIG` has no user config, as if
+   the file were absent; a relative `MANVI_USER_CONFIG` is refused.
+2. The environment, `MANVI_LLM_TIER_*`.
+3. `manvi flags set llm.tier.<tier> MODEL` (or `/flags set` in the TUI), on human
+   authority.
+
+A `.devcouncil/config.yaml` that sets any `llm.tier.*` key is **refused at
+startup, in every posture** — every command that loads settings, `manvi flags`
+included, exits 1 naming the file and the keys. That file ships with a clone
+and an agent can write it under a relaxed posture, so it must not be able to
+choose a dearer model; refusing rather than ignoring it keeps a line that would
+not apply from looking applied. A model's tool call cannot move a tier either:
+the keys are `human`, and the registry refuses agent authority.
+
+```yaml
+# ~/.config/manvi/config.yaml
+llm.tier.lite: claude-haiku-5-5
+llm.tier.advisor.effort: max
+```
+
+**The main tier and the existing settings.** On `anthropic`, `llm.tier.main`
+supplies the session's model when `MANVI_MODEL` is unset; `MANVI_MODEL` still
+wins when set. Likewise `llm.effort` wins over `llm.tier.main.effort` when it is
+non-empty. `manvi tiers` reports the main row as the session will run it,
+naming `MANVI_MODEL` or `llm.effort` when one of them supplied the value.
+
+**Startup checks.** `manvi run` exits 1 before contacting the provider, and a
+TUI session refuses its first prompt when it attaches the provider, naming the
+tier and the setting to change, when any tier:
+
+- names a model the provider's catalogue does not serve;
+- names a model with no price while `MANVI_ANTHROPIC_BUDGET_USD` caps spend,
+  since the metered provider refuses a request it cannot price;
+- sets an effort its model cannot honour: an effort on a model that does not
+  reason, or one outside the model's effort ladder.
+
+A tier inherits the session's `llm.effort.max` only where its model reasons,
+the tier sets an effort, and the ceiling is above it. Otherwise the tier runs
+at its own effort throughout rather than being refused for a ceiling it never
+set. A ceiling the tier's model has no rung for at all is refused. `manvi tiers`
+prints each tier's inherited ceiling.
+
+**Providers.** The profile is catalogued against `anthropic` only, because a
+session's sub-agents can be placed only on its own provider. Under any other
+`llm.provider.default` the profile is reported by `manvi tiers` as inactive and
+not applied, and `manvi run` notes any tier key that was set but does not apply.
 
 ---
 

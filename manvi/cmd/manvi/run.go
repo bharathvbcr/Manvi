@@ -16,6 +16,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -160,6 +161,19 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	if err != nil {
 		return err
 	}
+	// Before the model is contacted: a tier the provider cannot serve, price or
+	// run at its effort is a configuration mistake, and found here it names the
+	// tier instead of arriving as a refused request mid-way through a fan-out.
+	tiers, err := checkTiers(reg, providerName)
+	if err != nil {
+		return err
+	}
+	if set := tiers.inactiveOverrides(); len(set) > 0 {
+		if _, err := fmt.Fprintf(notes, "manvi: %s set, but the tier profile applies on %s only and this run is on %s\n",
+			strings.Join(set, ", "), anthropic.Name, providerName); err != nil {
+			return err
+		}
+	}
 	registry, err := registerSessionLLM(pipeline, provider)
 	if err != nil {
 		return err
@@ -186,7 +200,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	if err != nil {
 		return err
 	}
-	effort, _, err := reg.String(flags.LLMEffort)
+	effort, _, _, err := mainEffort(reg, providerName)
 	if err != nil {
 		return err
 	}
