@@ -317,6 +317,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 			model:           model,
 			effort:          effort,
 			effortCeiling:   effortCeiling,
+			tiers:           sessionTierProfile(provider.Name()),
 			registry:        pipeline,
 			native:          native,
 			meter:           meter,
@@ -332,6 +333,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		check: &sensor{
 			native: native, log: log, flags: reg,
 			runner:  subRunner,
+			roles:   native.Roles(),
 			command: operatorVerifyCommand(),
 		},
 	}, turnDeps{

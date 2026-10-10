@@ -26,6 +26,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
+| **Sub-agent Roles** | `manvi agents` | Show each sub-agent role, the tier it runs on, and the model that tier resolves to for the default provider (role → tier → model). |
 | **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |
 | **Code Graph Build** | `manvi map build` | Index repository symbols and AST relationships into `.devcouncil/code_graph.json`. |

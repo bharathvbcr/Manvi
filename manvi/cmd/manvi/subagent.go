@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -42,7 +44,11 @@ type subAgentConfig struct {
 	// runs the same loop against the same model and gets stuck the same way, so
 	// leaving it empty here opted every fan-out out of a mechanism its parent
 	// was deliberately configured for.
-	effortCeiling   string
+	effortCeiling string
+	// tiers is where each tier runs on this session's provider. Nil, or a tier
+	// missing from it, means a child on that tier inherits the parent's model:
+	// tiers are only resolved where a profile has been set for the provider.
+	tiers           agents.TierProfile
 	registry        *tools.Registry
 	coreToolsOnly   bool
 	assertInvariant bool
@@ -64,6 +70,19 @@ type subAgentConfig struct {
 	// reaches the faces and the NDJSON stream without touching what the parent
 	// replays to the model.
 	sink ui.Sink
+}
+
+// sessionTierProfile is where each tier runs for a session on the named
+// provider.
+//
+// Tiers name Anthropic models, so a session on any other provider has no
+// profile and its children inherit the parent's model, as they did before
+// tiers existed. A nil profile is that answer, not an error: see placeOnTier.
+func sessionTierProfile(provider string) agents.TierProfile {
+	if provider != anthropic.Name {
+		return nil
+	}
+	return agents.DefaultTierProfile()
 }
 
 // maxSubAgentSteps bounds a child's turn independently of its parent's ceiling.
@@ -88,13 +107,29 @@ func (r *subAgentRunner) attach(cfg subAgentConfig) {
 	r.cfg = &cfg
 }
 
-// place resolves where one child is to run: the provider that will serve it and
-// the model that provider is asked for.
+// childPlacement is where one child runs and the reasoning effort it runs at.
+type childPlacement struct {
+	provider      llm.Provider
+	model         string
+	effort        string
+	effortCeiling string
+	// notes are what the placement changed about the parent's configuration
+	// that the dispatching model should hear about.
+	notes []string
+}
+
+// place resolves where one child is to run: the provider that will serve it,
+// the model that provider is asked for, and the effort it runs at.
 //
 // The spec arrives unparsed because only this side holds the provider registry
-// — devcouncil describes the role, this resolves it. A spec that inherits, or a
-// runner with no registry to resolve against, yields the parent's pair
-// unchanged, which is what every child did before roles could name a model.
+// — devcouncil describes the role, this resolves it. Three sources, in order of
+// authority:
+//
+//   - A ModelSpec that names a placement. Only an operator can write one: a
+//     role registered in-process. It wins over the tier.
+//   - The request's tier, resolved against the session's tier profile.
+//   - The parent's own provider and model, when neither applies — no tier, or
+//     a profile that does not hold it.
 //
 // It fails rather than falling back. A role that asks for a provider this
 // invocation never enabled, or a model that provider does not serve, is a
@@ -102,14 +137,14 @@ func (r *subAgentRunner) attach(cfg subAgentConfig) {
 // parent's frontier model instead would answer the prompt, bill the wrong
 // budget, and report nothing — and the whole point of naming a local worker is
 // that the work does *not* go to the expensive model.
+//
 // The config is passed in rather than re-read. RunSubAgent already takes a
 // snapshot under RLock and nil-checks it; re-reading r.cfg here was both an
 // unsynchronised read racing attach — which the TUI calls on every submission,
 // because provider, model and effort are switchable mid-session — and a second
 // answer to "which config is this child running under", so a child could be
 // placed against a different one than the registry and floor were built from.
-func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (llm.Provider, string, error) {
-
+func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childPlacement, error) {
 	known := func(name string) bool {
 		if cfg.models == nil {
 			return false
@@ -120,19 +155,19 @@ func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentReque
 
 	spec := agents.ParsePlacement(req.ModelSpec, known)
 	if spec.Inherits() {
-		return cfg.provider, cfg.model, nil
+		return r.placeOnTier(cfg, req)
 	}
 
 	provider, model := cfg.provider, cfg.model
 	if spec.Provider != "" {
 		if cfg.models == nil {
-			return nil, "", fmt.Errorf(
+			return childPlacement{}, fmt.Errorf(
 				"sub-agent %q asks to run on provider %q, but this invocation resolved no provider registry",
 				req.Label, spec.Provider)
 		}
 		p, ok := cfg.models.Get(spec.Provider)
 		if !ok {
-			return nil, "", fmt.Errorf(
+			return childPlacement{}, fmt.Errorf(
 				"sub-agent %q asks to run on provider %q, which is not enabled here (have %v)",
 				req.Label, spec.Provider, cfg.models.Names())
 		}
@@ -148,12 +183,78 @@ func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentReque
 	// name to a local server — and the loop's own resolve would report that as
 	// an unserved model without saying which role asked or what to write
 	// instead.
-	if _, ok := provider.Capability(model); !ok {
-		return nil, "", fmt.Errorf(
+	capability, ok := provider.Capability(model)
+	if !ok {
+		return childPlacement{}, fmt.Errorf(
 			"sub-agent %q cannot run: provider %q does not serve model %q; name the placement as \"provider/model\"",
 			req.Label, provider.Name(), model)
 	}
-	return provider, model, nil
+	placed := childPlacement{provider: provider, model: model, effort: cfg.effort, effortCeiling: cfg.effortCeiling}
+	if provider.Name() != cfg.provider.Name() || model != cfg.model {
+		placed.carryEffort(capability)
+	}
+	return placed, nil
+}
+
+// placeOnTier resolves a child with no operator placement: onto its tier's
+// model when the session's profile holds one, onto the parent's otherwise.
+//
+// A child on its tier runs at that tier's own effort and with no ceiling. The
+// parent's effort was chosen for the parent's model, and carrying it across
+// put a child on a model that does not reason with an effort ceiling it can
+// never climb, which the loop refuses before the child takes a step.
+// Escalation for a child is decided per tier, not inherited.
+func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childPlacement, error) {
+	inherit := childPlacement{
+		provider: cfg.provider, model: cfg.model,
+		effort: cfg.effort, effortCeiling: cfg.effortCeiling,
+	}
+	if req.Tier == "" {
+		return inherit, nil
+	}
+	spec, ok := cfg.tiers[req.Tier]
+	if !ok || strings.TrimSpace(spec.Model) == "" {
+		return inherit, nil
+	}
+	if _, served := cfg.provider.Capability(spec.Model); !served {
+		return childPlacement{}, fmt.Errorf(
+			"sub-agent %q cannot run: tier %s is %q, which provider %q does not serve",
+			req.Label, req.Tier, spec.Model, cfg.provider.Name())
+	}
+	if spec.Model == cfg.model && spec.Effort == cfg.effort {
+		// The parent's own model at the parent's own effort: the parent's
+		// ceiling was checked against exactly this, so it still applies.
+		return inherit, nil
+	}
+	return childPlacement{provider: cfg.provider, model: spec.Model, effort: spec.Effort}, nil
+}
+
+// carryEffort keeps the parent's effort and ceiling on a child an operator
+// placed on another model only as far as that model can honour them.
+//
+// The parent's values were checked against the parent's model. On a model
+// that does not reason, an effort is refused by the request check and a
+// ceiling by the loop before the first step, so carrying them unchanged turned
+// an operator's placement into a child that could not start. What is dropped
+// is said, on the child's result, rather than dropped quietly.
+func (p *childPlacement) carryEffort(capability llm.Capability) {
+	// The request check is the authority on what effort a model accepts; an
+	// effort-only request asks it exactly that and nothing else.
+	if p.effort != "" {
+		if err := capability.Validate(llm.Request{Effort: p.effort}); err != nil {
+			p.notes = append(p.notes, fmt.Sprintf("ran without the parent's effort %q: %v", p.effort, err))
+			p.effort, p.effortCeiling = "", ""
+			return
+		}
+	}
+	if p.effortCeiling == "" {
+		return
+	}
+	if _, err := agent.PlanEffort(capability, p.effort, p.effortCeiling); err != nil {
+		p.notes = append(p.notes, fmt.Sprintf(
+			"ran without the parent's effort ceiling %q: %v", p.effortCeiling, err))
+		p.effortCeiling = ""
+	}
 }
 
 // RunSubAgent carries out one delegated instruction and reports what came back.
@@ -270,7 +371,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		})
 	}
 
-	provider, model, err := r.place(cfg, req)
+	placed, err := r.place(cfg, req)
 	if err != nil {
 		return devcouncil.SubAgentResult{}, err
 	}
@@ -301,14 +402,14 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		// No end-of-turn check: the child's written paths come back through
 		// SubAgentResult.Wrote and the parent's check covers them.
 	}, turnDeps{
-		provider: provider,
+		provider: placed.provider,
 		// The same model registry the parent uses, so a child's request gets the
 		// same assembly-time capability check. Without it an impossible request
 		// surfaces as a 400 mid-turn instead of a refusal before the wire.
 		models:          cfg.models,
-		model:           model,
-		effort:          cfg.effort,
-		effortCeiling:   cfg.effortCeiling,
+		model:           placed.model,
+		effort:          placed.effort,
+		effortCeiling:   placed.effortCeiling,
 		systemPrompt:    systemPrompt,
 		coreToolsOnly:   cfg.coreToolsOnly,
 		assertInvariant: cfg.assertInvariant,
@@ -385,6 +486,9 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	// is this turn's only reader: the child's own session log is not persisted.
 	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
 		summary += "\n\n[this sub-agent: " + n.Text + "]"
+	}
+	for _, n := range placed.notes {
+		summary += "\n\n[this sub-agent: " + n + "]"
 	}
 
 	result.Summary = summary

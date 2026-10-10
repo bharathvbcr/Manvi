@@ -99,8 +99,15 @@ type Definition struct {
 	Description  string `json:"description"`
 	SystemPrompt string `json:"system_prompt"`
 	// Model is where the child runs: "inherit", "provider/model", a bare
-	// provider, or a bare model. See ParsePlacement.
+	// provider, or a bare model. See ParsePlacement. Only an operator may name
+	// a model here; a role a model authors names a Tier instead, and
+	// devcouncil_define_subagent refuses a raw id.
 	Model string `json:"model,omitempty"`
+	// Tier is the dearest tier this role may run on, and the tier a dispatching
+	// model's own placement is checked against. Empty derives it from the
+	// role's permissions; see Ceiling. Route decides the tier a given dispatch
+	// actually gets, capped here.
+	Tier Tier `json:"tier,omitempty"`
 	// EnableMCPTools admits the MCP tool group, which reaches servers outside
 	// this process. False takes the group away from the child's registry.
 	EnableMCPTools bool `json:"enable_mcp_tools"`
@@ -154,7 +161,7 @@ func NewRegistry() *Registry {
 			"zero count is evidence about tracked source and not about the whole tree: before reporting that something " +
 			"does not exist, re-run with include_ignored, and read the files_searched and skipped fields rather than " +
 			"treating any result as full coverage.",
-		Model:            "inherit",
+		Tier:             TierLite,
 		EnableMCPTools:   true,
 		EnableWriteTools: false,
 	})
@@ -164,7 +171,7 @@ func NewRegistry() *Registry {
 		Role:             "Full-Stack Feature Builder",
 		Description:      "Full-stack implementation subagent with core reuse, minimal focused changes, and test-driven verification.",
 		SystemPrompt:     "You are a specialized feature builder subagent. Construct upon existing core functions without duplication or bloat. Characterize baseline behavior with tests first, apply maximal hardening, and verify complete gap resolution.",
-		Model:            "inherit",
+		Tier:             TierHeavy,
 		EnableMCPTools:   true,
 		EnableWriteTools: true,
 	})
@@ -178,7 +185,7 @@ func NewRegistry() *Registry {
 			"logic with stress tests before certifying done. Treat an empty search result as a claim to verify rather " +
 			"than a fact: devcouncil_grep reports files_searched and skipped, and honours ignore rules unless " +
 			"include_ignored is set, so a check that could not see a file must never be certified as a check that passed.",
-		Model:            "inherit",
+		Tier:             TierAdvisor,
 		EnableMCPTools:   false,
 		EnableWriteTools: false,
 	})
@@ -188,7 +195,7 @@ func NewRegistry() *Registry {
 		Role:             "Problem Deconstructor & Hypothesis Architect",
 		Description:      "Deconstructs complex requirements, formulates hypotheses, surveys existing features, and drafts implementation artifacts.",
 		SystemPrompt:     "You are a specialized planning subagent. Deconstruct complex problems, formulate verifiable hypotheses, identify architectural gaps, clarify decision impacts, and draft structured plans under .devcouncil/artifacts/ without making code mutations.",
-		Model:            "inherit",
+		Tier:             TierLite,
 		EnableMCPTools:   true,
 		EnableWriteTools: false,
 		// The two tools this role's own prompt tells it to use.
@@ -218,7 +225,7 @@ func NewRegistry() *Registry {
 		Role:             "Adversarial Stress Tester & Hardener",
 		Description:      "Rigorously stress-tests logic, probes edge cases (empty, nil, concurrent, timeout), and disrupts assumptions prior to deployment.",
 		SystemPrompt:     "You are a specialized adversarial stress tester. Attack solutions with boundary conditions, concurrent races, malformed inputs, and timeouts. Disrupt existing logic with tests to prove resilience and maximal hardening.",
-		Model:            "inherit",
+		Tier:             TierHeavy,
 		EnableMCPTools:   true,
 		EnableWriteTools: true,
 	})
@@ -228,7 +235,7 @@ func NewRegistry() *Registry {
 		Role:             "Autonomous Pair Subagent",
 		Description:      "Subagent that inherits parent configuration, tools, and system prompt for delegated concurrent work.",
 		SystemPrompt:     "",
-		Model:            "inherit",
+		Tier:             TierHeavy,
 		EnableMCPTools:   true,
 		EnableWriteTools: true,
 	})

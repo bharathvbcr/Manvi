@@ -1,6 +1,7 @@
 package devcouncil
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bharathvbcr/Manvi/manvi/agents"
@@ -61,20 +62,17 @@ func TestInvokeSubagentCarriesTheRolePlacement(t *testing.T) {
 	}
 }
 
-// The invoke schema has advertised a per-call `model` since it shipped, and the
-// handler decoded it into a field it never read. A schema field that is parsed
-// and dropped tells the model it has control it does not have.
-func TestInvokeSubagentPerCallModelOverridesTheRole(t *testing.T) {
+// The invoke schema has advertised a per-call `model` since it shipped. It was
+// once honoured as any placement at all, which let the dispatching model put a
+// child on whatever id it knew; it now names a tier within the role's ceiling,
+// and that tier replaces the router's choice.
+func TestInvokeSubagentPerCallTierOverridesTheRouting(t *testing.T) {
 	runner := &recordingRunner{}
-	f, _ := fixtureWithRoles(t, runner, agents.Definition{
-		Name:  "planner",
-		Role:  "Planner",
-		Model: "anthropic/claude-opus-4-5",
-	})
+	f, _ := fixtureWithRoles(t, runner)
 
 	res := f.call("devcouncil_invoke_subagent", map[string]any{
 		"subagents": []map[string]any{
-			{"type_name": "planner", "role": "p", "prompt": "plan it", "model": "local"},
+			{"type_name": "research", "role": "r", "prompt": "survey it", "model": "basic"},
 		},
 	})
 	if res.IsError {
@@ -83,8 +81,34 @@ func TestInvokeSubagentPerCallModelOverridesTheRole(t *testing.T) {
 	if len(runner.seen) != 1 {
 		t.Fatalf("the runner was asked for %d children, want 1", len(runner.seen))
 	}
-	if got := runner.seen[0].ModelSpec; got != "local" {
-		t.Fatalf("ModelSpec = %q, want the per-call override %q to win over the role", got, "local")
+	if got := runner.seen[0].Tier; got != agents.TierBasic {
+		t.Fatalf("Tier = %q, want the per-call tier to replace the routed lite", got)
+	}
+}
+
+// A role the operator pinned to a model stays there: a per-call tier is
+// refused rather than silently ignored or allowed to move it.
+func TestInvokeSubagentPerCallTierCannotMoveAnOperatorPinnedRole(t *testing.T) {
+	runner := &recordingRunner{}
+	f, _ := fixtureWithRoles(t, runner, agents.Definition{
+		Name:  "local_reader",
+		Role:  "Local Reader",
+		Model: "local/qwen3-27b-mlx",
+	})
+
+	res := f.call("devcouncil_invoke_subagent", map[string]any{
+		"subagents": []map[string]any{
+			{"type_name": "local_reader", "role": "p", "prompt": "read it", "model": "lite"},
+		},
+	})
+	if !res.IsError {
+		t.Fatalf("a per-call tier moved an operator-pinned role: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "local/qwen3-27b-mlx") {
+		t.Errorf("the refusal does not name the operator's placement: %s", res.Text)
+	}
+	if len(runner.seen) != 0 {
+		t.Fatalf("the runner was asked for %d children after a refusal", len(runner.seen))
 	}
 }
 

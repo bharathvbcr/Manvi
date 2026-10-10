@@ -15,6 +15,11 @@ import (
 // fan-out silently opted out of the mechanism its parent was configured for.
 // That is the shape of bug the notice consolidation already removed once: one
 // behaviour, wired at one call site out of two.
+//
+// The ceiling travels through the child's placement, because it is only the
+// parent's to give where the child runs on the parent's model: a child on a
+// tier runs at that tier's effort (TestAChildOnANonReasoningTierStartsWithItsOwnEffort),
+// and one an operator placed elsewhere keeps only what its model can honour.
 func TestSubAgentsInheritTheEffortCeiling(t *testing.T) {
 	src, err := readSource("cmd/manvi/subagent.go")
 	if err != nil {
@@ -27,7 +32,8 @@ func TestSubAgentsInheritTheEffortCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`effortCeiling:\s+cfg\.effortCeiling`).MatchString(src) ||
+	if !regexp.MustCompile(`effortCeiling:\s+placed\.effortCeiling`).MatchString(src) ||
+		!regexp.MustCompile(`effortCeiling:\s+cfg\.effortCeiling`).MatchString(src) ||
 		!regexp.MustCompile(`EffortCeiling:\s+deps\.effortCeiling`).MatchString(ctor) {
 		t.Fatal("the child loop is built without EffortCeiling: a sub-agent that " +
 			"starts going in circles can never raise its effort, however the " +

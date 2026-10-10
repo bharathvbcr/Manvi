@@ -67,6 +67,10 @@ type sensor struct {
 	// runner attached, which is a reason to skip the escalation and say so —
 	// never a reason to report a turn as checked.
 	runner devcouncil.SubAgentRunner
+	// roles is the catalogue the critic's role is read from, so the critic is
+	// the shipped read-only reviewer rather than a child described here. Nil
+	// reads the shipped catalogue.
+	roles *agents.Registry
 	// command is the operator's own verification command. See
 	// operatorVerifyCommand for why it may only come from operator scope.
 	command string
@@ -373,11 +377,20 @@ func (s *sensor) dispatchCritic(ctx context.Context, e *agent.TurnStopping, repo
 		}
 	}
 
-	result, err := s.runner.RunSubAgent(ctx, devcouncil.SubAgentRequest{
+	// The critic runs as the critic role, read-only whatever that role says,
+	// on the tier a verdict routes to. It was dispatched with a label, a
+	// prompt and a verdict marker and nothing else, which left it the parent's
+	// whole write surface and the parent's model: a reviewer that could edit
+	// the change it was asked to judge.
+	critic := s.criticRole()
+	req := devcouncil.SubAgentRequest{
 		Label:   "checkpoint-critic",
 		Prompt:  b.String(),
 		Verdict: verdictMarker,
-	})
+	}
+	devcouncil.ApplyRole(&req, critic, true)
+	req.Tier = agents.Route(critic, true, true, 1)
+	result, err := s.runner.RunSubAgent(ctx, req)
 	if err != nil {
 		// Named, not swallowed. A critic that could not run is a check that did
 		// not happen, and the model is told that rather than being left to read
@@ -398,6 +411,22 @@ func (s *sensor) dispatchCritic(ctx context.Context, e *agent.TurnStopping, repo
 		return verdict, "A reviewer looked at the same change and agrees it is not ready:"
 	}
 }
+
+// criticRole is the role the checkpoint critic runs under: the catalogue's
+// critic, or the shipped one when this sensor holds no catalogue or the
+// catalogue has none.
+func (s *sensor) criticRole() agents.Definition {
+	if s.roles != nil {
+		if def, ok := s.roles.Get(criticRoleName); ok {
+			return def
+		}
+	}
+	def, _ := agents.NewRegistry().Get(criticRoleName)
+	return def
+}
+
+// criticRoleName is the shipped role the checkpoint critic runs as.
+const criticRoleName = "critic"
 
 // record writes the check's own account into the session log.
 func (s *sensor) record(e *agent.TurnStopping, data session.VerifyReportData) error {

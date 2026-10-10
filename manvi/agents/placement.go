@@ -1,6 +1,9 @@
 package agents
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // InheritSpec is the Model value meaning "run this child wherever the parent
 // is running". It is the default Register applies to a definition that does
@@ -67,4 +70,60 @@ func ParsePlacement(spec string, isProvider func(string) bool) Placement {
 		return Placement{Provider: spec}
 	}
 	return Placement{Model: spec}
+}
+
+// ModelPlacement reads a placement a dispatching model wrote — a per-call
+// `model`, or the model or tier of a role it is defining — and accepts only a
+// tier at or below ceiling.
+//
+// It exists because ParsePlacement answers a different question. That parser
+// serves the operator, who may put a role on any model they have enabled; a
+// model given the same parser could put a child on whatever id it knew,
+// including one billed at several times the rate of the tier the role was
+// meant for, and nothing would have said no. So a model names tiers, never ids,
+// and the tiers it may name stop at the role's ceiling.
+//
+// Empty and "inherit" return the empty tier and no error: the model asked for
+// no placement of its own, and the role's routing stands.
+func ModelPlacement(spec string, ceiling Tier) (Tier, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" || strings.EqualFold(spec, InheritSpec) {
+		return "", nil
+	}
+	allowed := TiersAtOrBelow(ceiling)
+	tier, ok := ParseTier(spec)
+	if !ok {
+		return "", fmt.Errorf(
+			"%q is not a tier: a sub-agent's placement may name only a tier, never a model id or provider; "+
+				"allowed here: %s", spec, joinTiers(allowed))
+	}
+	if tier.Rank() > ceiling.Rank() {
+		return "", fmt.Errorf(
+			"tier %q is above this role's ceiling (%s); allowed here: %s",
+			tier, ceiling, joinTiers(allowed))
+	}
+	return tier, nil
+}
+
+// TiersAtOrBelow lists the tiers a placement capped at ceiling may name,
+// cheapest first. An unknown ceiling allows none.
+func TiersAtOrBelow(ceiling Tier) []Tier {
+	var out []Tier
+	for _, t := range tierOrder {
+		if t.Rank() <= ceiling.Rank() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func joinTiers(ts []Tier) string {
+	if len(ts) == 0 {
+		return "none"
+	}
+	names := make([]string, len(ts))
+	for i, t := range ts {
+		names[i] = string(t)
+	}
+	return strings.Join(names, ", ")
 }
