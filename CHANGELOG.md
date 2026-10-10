@@ -264,6 +264,7 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- MCP client: a server-initiated request is now answered instead of dropped (`ping` gets an empty result, every other method, `roots/list` included, gets -32601), `initialize` no longer advertises a roots capability nothing serves, and a `Call` that times out or is cancelled sends `notifications/cancelled` with its request id so a non-idempotent tool is not left running unannounced. Spec: modelcontextprotocol.io basic/utilities/ping, basic/utilities/cancellation, client/roots.
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a
   session that obeys only the context it is handed ignored `Stop` until the
