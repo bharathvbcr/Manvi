@@ -271,11 +271,20 @@ func isLoopbackURL(rawURL string) bool {
 	return false
 }
 
+// sharedLoopback is the one loopback pool every client in the process shares.
+//
+// A transport per client meant a pool per client: a capability probe or an
+// endpoint scan builds a client, makes a request or two and drops it, so every
+// probe opened fresh connections and abandoned the old ones to idle out — with
+// their goroutines — 90 seconds later. Shared, a probe reuses a warm keep-alive
+// connection to the same server. The settings are LocalLoopbackTransport's.
+var sharedLoopback = sync.OnceValue(LocalLoopbackTransport)
+
 // New builds a client with sane defaults.
 func New(provider, baseURL string, header func() (http.Header, error)) *Client {
 	var tr http.RoundTripper = http.DefaultTransport
 	if isLoopbackURL(baseURL) {
-		tr = LocalLoopbackTransport()
+		tr = sharedLoopback()
 	}
 
 	return &Client{
@@ -1059,9 +1068,16 @@ func (s *SSE) readLine() ([]byte, error) {
 		if len(line)+len(chunk) > MaxFrameBytes {
 			return nil, &ErrOversizedFrame{Limit: MaxFrameBytes}
 		}
-		// Copied out rather than returned as-is: ReadSlice hands back a window
-		// into the buffer that the next read invalidates, and every caller here
-		// expects the stable slice ReadBytes used to give them.
+		if line == nil && err != bufio.ErrBufferFull {
+			// The whole line fit in the buffer, which is nearly every line, so
+			// it is returned as the window ReadSlice gave. That window is only
+			// valid until the next read — Next copies what it keeps (the event
+			// name, the data it accumulates) before reading again, so a copy
+			// here was one allocation per streamed line for nothing.
+			return chunk, err
+		}
+		// A line longer than the buffer is assembled from successive windows,
+		// each of which the next read overwrites, so those are copied.
 		line = append(line, chunk...)
 		if err == bufio.ErrBufferFull {
 			continue

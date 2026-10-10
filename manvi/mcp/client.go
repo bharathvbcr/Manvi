@@ -430,6 +430,14 @@ func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 		chunk, err := r.ReadSlice('\n')
 		switch {
 		case err == nil:
+			if buf == nil {
+				// The line fit in the buffer, so the window ReadSlice returned
+				// is handed back uncopied. It is valid until the next read, and
+				// both readers finish with a line before reading again:
+				// dispatch decodes into fresh values and stderr converts to a
+				// string.
+				return chunk, nil
+			}
 			return append(buf, chunk...), nil
 		case err == bufio.ErrBufferFull:
 			buf = append(buf, chunk...)
@@ -536,8 +544,12 @@ func (c *Client) readLoop() {
 //     The client stays alive; the ids it issues next are fresh, and the
 //     Manager replaces it if the stream really is dead.
 func (c *Client) dispatch(line []byte) {
-	var resp Response
-	if err := json.Unmarshal(line, &resp); err != nil {
+	resp, method, hasPayload, err := decodeFrame(line)
+	switch {
+	case errors.Is(err, errUnreadableFrame):
+		c.recordError("ignored unreadable frame: " + truncateForMessage(string(line)))
+		return
+	case err != nil:
 		if looksLikeRPCFrame(line) {
 			reason := fmt.Sprintf("server %s emitted a frame that is not valid JSON-RPC: %v",
 				c.Name(), err)
@@ -548,22 +560,10 @@ func (c *Client) dispatch(line []byte) {
 		c.recordError("ignored non-JSON output on stdout: " + truncateForMessage(string(line)))
 		return
 	}
-
-	var envelope struct {
-		Method string          `json:"method"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	// The strict decode above already succeeded, so this one cannot fail; the
-	// error is checked anyway rather than discarded.
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		c.recordError("ignored unreadable frame: " + truncateForMessage(string(line)))
+	if method != "" {
 		return
 	}
-	if envelope.Method != "" {
-		return
-	}
-	if len(envelope.Result) == 0 && len(envelope.Error) == 0 && resp.JSONRPC == "" {
+	if !hasPayload && resp.JSONRPC == "" {
 		// A JSON object that is not claiming to be a JSON-RPC reply — a server
 		// logging structured lines to stdout. Not ours to fail calls over.
 		c.recordError("ignored non-JSON-RPC object on stdout: " + truncateForMessage(string(line)))
@@ -591,6 +591,44 @@ func (c *Client) dispatch(line []byte) {
 		return
 	}
 	ch <- &resp
+}
+
+// errUnreadableFrame is a frame that decodes as a Response but whose envelope
+// does not — a "method" that is not a string.
+var errUnreadableFrame = errors.New("mcp: unreadable frame")
+
+// decodeFrame reads one stdout frame: the reply it carries, its method if it
+// is a notification or request, and whether it has a "result" or "error"
+// member at all. A non-nil error other than errUnreadableFrame is the strict
+// decode's own, which is what a violation is reported with.
+//
+// Frames can be tool results of many megabytes, so the common case is one
+// decode into the reply and its method together, taken when it succeeds and
+// the frame carries a result or an error. Everything else is small — a
+// notification, a log line, a malformed frame — and takes the original two
+// decodes: the combined one names its errors differently, and cannot tell an
+// explicit "error": null from an absent one.
+func decodeFrame(line []byte) (resp Response, method string, hasPayload bool, err error) {
+	var frame struct {
+		Response
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(line, &frame) == nil && (len(frame.Result) > 0 || frame.Error != nil) {
+		return frame.Response, frame.Method, true, nil
+	}
+
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return Response{}, "", false, err
+	}
+	var envelope struct {
+		Method string          `json:"method"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(line, &envelope); err != nil {
+		return Response{}, "", false, errUnreadableFrame
+	}
+	return resp, envelope.Method, len(envelope.Result) > 0 || len(envelope.Error) > 0, nil
 }
 
 // failAllPending fails every in-flight request with reason.

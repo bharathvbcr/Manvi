@@ -213,7 +213,14 @@ func (s *stream) Next() (llm.Chunk, error) {
 	for {
 		if len(s.pending) > 0 {
 			chunk := s.pending[0]
-			s.pending = s.pending[1:]
+			if len(s.pending) == 1 {
+				// Drained: keep the backing array for the next frame's chunks.
+				// Re-slicing past the last element left no capacity, so every
+				// frame allocated a fresh one.
+				s.pending = s.pending[:0]
+			} else {
+				s.pending = s.pending[1:]
+			}
 			return chunk, nil
 		}
 		if s.failure != nil {
