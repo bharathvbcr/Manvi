@@ -21,11 +21,23 @@ func TestAWriteThatFailsPartWayLeavesTheOriginal(t *testing.T) {
 		t.Skip("RLIMIT_FSIZE is not available on windows")
 	}
 	if dir := os.Getenv("MANVI_FSIZE_CHILD_DIR"); dir != "" {
-		var lim syscall.Rlimit
-		lim.Cur, lim.Max = 4096, 4096
+		// Only the soft limit is lowered, and only around the write: a coverage
+		// build writes its data when the child exits, and under the limit that
+		// failed the run for a reason that has nothing to do with the write
+		// under test.
+		var orig syscall.Rlimit
+		if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &orig); err != nil {
+			t.Fatalf("getrlimit: %v", err)
+		}
+		lim := syscall.Rlimit{Cur: 4096, Max: orig.Max}
 		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &lim); err != nil {
 			t.Fatalf("setrlimit: %v", err)
 		}
+		defer func() {
+			if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &orig); err != nil {
+				t.Errorf("restoring the file size limit: %v", err)
+			}
+		}()
 		pin, err := pinWriteTarget(dir, "a.txt")
 		if err != nil {
 			t.Fatal(err)
