@@ -132,7 +132,7 @@ func TestManagedClaudeAnsweredApprovalSurvivesItsExpiry(t *testing.T) {
 	var m *managedLifecycle
 	m = newManagedLifecycle(t, func(ctx context.Context, o codingagent.Options) *managedTestSession {
 		s := m.fixtureSession(ctx, o)
-		s.claudeLike, s.expires, s.finishAfter = true, 3*time.Second, 3500*time.Millisecond
+		s.claudeLike, s.expires, s.finishAfter = true, 2*time.Second, 2500*time.Millisecond
 		return s
 	})
 	m.start("launch")
@@ -155,7 +155,7 @@ func TestManagedExpiryAppliesOnlyToUnansweredCallbacks(t *testing.T) {
 	var m *managedLifecycle
 	m = newManagedLifecycle(t, func(ctx context.Context, o codingagent.Options) *managedTestSession {
 		s := m.fixtureSession(ctx, o)
-		s.claudeLike, s.expires, s.finishAfter = true, 3*time.Second, time.Hour
+		s.claudeLike, s.expires, s.finishAfter = true, 2*time.Second, time.Hour
 		s.requestIDs = []string{"c:1", "c:2"}
 		return s
 	})
