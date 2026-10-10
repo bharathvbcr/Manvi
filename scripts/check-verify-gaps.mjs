@@ -9,7 +9,7 @@
  * tool, so a gate that began skipping for any other reason — a new t.Skip, a
  * tool that stopped being found — rode along under a green check.
  *
- *   usage: check-verify-gaps.mjs <verify.log> <runner os label>
+ *   usage: check-verify-gaps.mjs <verify.log> <runner os label> [default|race|fuzz]
  *   exit:  0 every gap is expected · 1 an unexpected gap · 2 could not check
  */
 import { readFileSync } from "node:fs";
@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED = path.join(path.dirname(fileURLToPath(import.meta.url)), "verify-expected-gaps.json");
+export const MODES = ["default", "race", "fuzz"];
 const SKIPPED = /^(\d+) of (\d+) test\(s\) skipped, so their assertions did not run: (.*)$/;
 
 /**
@@ -48,12 +49,14 @@ export function parseVerdict(log) {
 
 /**
  * @param {{ gaps: string[], skips: string[] }} found
- * @param {{ gaps: {text: string, os: string[]}[], skips: {test: string, os: string[]}[] }} expected
+ * @param {{ gaps: {text: string, os: string[], modes?: string[]}[], skips: {test: string, os: string[], modes?: string[]}[] }} expected
  * @param {string} os
+ * @param {string} [mode] which verify.sh invocation produced the log; an entry with no `modes` holds in every one
  */
-export function compare(found, expected, os) {
-  const gapsHere = new Set(expected.gaps.filter((g) => g.os.includes(os)).map((g) => g.text));
-  const skipsHere = new Set(expected.skips.filter((s) => s.os.includes(os)).map((s) => s.test));
+export function compare(found, expected, os, mode = "default") {
+  const here = (/** @type {{os: string[], modes?: string[]}} */ e) => e.os.includes(os) && (e.modes ?? MODES).includes(mode);
+  const gapsHere = new Set(expected.gaps.filter(here).map((g) => g.text));
+  const skipsHere = new Set(expected.skips.filter(here).map((s) => s.test));
   return {
     unexpectedGaps: found.gaps.filter((g) => !gapsHere.has(g)),
     unexpectedSkips: found.skips.filter((s) => !skipsHere.has(s)),
@@ -65,9 +68,9 @@ export function compare(found, expected, os) {
 }
 
 function main() {
-  const [logPath, os] = process.argv.slice(2);
-  if (!logPath || !os) {
-    console.error("usage: check-verify-gaps.mjs <verify.log> <runner os label>");
+  const [logPath, os, mode = "default"] = process.argv.slice(2);
+  if (!logPath || !os || !MODES.includes(mode)) {
+    console.error("usage: check-verify-gaps.mjs <verify.log> <runner os label> [default|race|fuzz]");
     process.exit(2);
   }
   const found = parseVerdict(readFileSync(logPath, "utf8"));
@@ -75,16 +78,16 @@ function main() {
     console.error("verify.log has no verdict, so which gates ran is unknown.");
     process.exit(2);
   }
-  const result = compare(found, JSON.parse(readFileSync(EXPECTED, "utf8")), os);
-  for (const entry of result.stale) console.log(`::notice title=expected gap did not occur on ${os}::${entry}`);
+  const result = compare(found, JSON.parse(readFileSync(EXPECTED, "utf8")), os, mode);
+  for (const entry of result.stale) console.log(`::notice title=expected gap did not occur on ${os} (${mode})::${entry}`);
   const unexpected = [...result.unexpectedGaps, ...result.unexpectedSkips.map((s) => `skipped: ${s}`)];
   if (unexpected.length) {
-    for (const entry of unexpected) console.log(`::error title=unexpected NOT COVERED on ${os}::${entry}`);
-    console.error(`${unexpected.length} gate(s) did not run that ${path.basename(EXPECTED)} does not expect on ${os}.`);
+    for (const entry of unexpected) console.log(`::error title=unexpected NOT COVERED on ${os} (${mode})::${entry}`);
+    console.error(`${unexpected.length} gate(s) did not run that ${path.basename(EXPECTED)} does not expect on ${os} (${mode}).`);
     console.error("Make the gate run, or list it there with the reason it cannot.");
     process.exit(1);
   }
-  console.log(`Every gap on ${os} is expected (${found.gaps.length} gate(s), ${found.skips.length} skip(s)).`);
+  console.log(`Every gap on ${os} (${mode}) is expected (${found.gaps.length} gate(s), ${found.skips.length} skip(s)).`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

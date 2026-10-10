@@ -167,6 +167,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The gate certifies the build that ships. The dependency allowlist, both lint
+  sets, `govulncheck` and `nilaway` also run under DevCouncil's
+  `gusset-engine/cgo-env.sh` exports, and the cgo allowlist names the gusset
+  engine. `go mod tidy -diff` is gated, `native/` (the desktop broker) gets
+  format, clippy and tests, `GOOS=windows go vet ./...` guards the tests'
+  portability, CI gains a `windows-latest` job that builds and tests the cgo-off
+  Go plane, and CI installs golangci-lint, govulncheck, nilaway, cargo-audit,
+  Rust and node at the versions in `scripts/tool-versions.env`.
+- The local provider's credential seam returns `(Secret, present, error)`
+  instead of a `samber/mo` Option, and `samber/mo` is removed from `go.mod`.
 - Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
   read-only command allowlist now judges each command's arguments, so
   `git diff --output=`, `git diff --no-index` outside the root and pytest's
@@ -319,6 +329,17 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- `verify.sh` and CI no longer pass when a check failed or never ran. The
+  command-gate differential, the documentation contract and the cross-boundary
+  counts read their `go test` run's exit status instead of masking it with
+  `|| true`; a failed `go list` is not an empty dependency surface; the lint
+  debt ratchet refuses a report holding `typecheck` rows or a failed run; the
+  `nilaway` ceiling refuses a run in which a package dropped out of the
+  analysis; and the nightly `--race` and `--fuzz` jobs keep a log and run the
+  same missing-tool and unlisted-gap guards as the main job
+  (`scripts/check-verify-log.sh`, with a per-mode `modes` field in
+  `scripts/verify-expected-gaps.json`). The suite runs once, as `go test -json`,
+  instead of twice.
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
   `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with
