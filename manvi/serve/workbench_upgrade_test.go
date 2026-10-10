@@ -17,11 +17,14 @@ import (
 // profile and read its schema without going through the store under test.
 func sqlite(t *testing.T, db, statement string) string {
 	t.Helper()
-	path, err := exec.LookPath("sqlite3")
-	if err != nil {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 is not installed: cannot age a profile")
 	}
-	out, err := exec.Command(path, db, statement).CombinedOutput()
+	// The database and statement go in on stdin, not argv: nothing the test
+	// builds becomes an argument to the shell it starts.
+	cmd := exec.CommandContext(t.Context(), "sqlite3", "-batch")
+	cmd.Stdin = strings.NewReader(".open '" + strings.ReplaceAll(db, "'", "''") + "'\n" + statement + "\n")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sqlite3 %q: %v: %s", statement, err, out)
 	}

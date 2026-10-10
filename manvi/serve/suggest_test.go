@@ -65,7 +65,9 @@ func (f *suggestFakeStore) Workbench(_ context.Context, method string, input jso
 		}
 		start := 0
 		if in.Cursor != "" {
-			fmt.Sscanf(in.Cursor, "%d", &start)
+			if _, err := fmt.Sscanf(in.Cursor, "%d", &start); err != nil {
+				return nil, fmt.Errorf("fake board: cursor %q is not an offset: %w", in.Cursor, err)
+			}
 		}
 		end, more := len(column), false
 		if f.pageSize > 0 && start+f.pageSize < len(column) {
