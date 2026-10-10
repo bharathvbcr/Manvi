@@ -65,6 +65,10 @@ func TestServeGeneratesThroughConfiguredLocalHTTPProvider(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		var request struct {
 			Model     string            `json:"model"`
 			MaxTokens int               `json:"max_tokens"`

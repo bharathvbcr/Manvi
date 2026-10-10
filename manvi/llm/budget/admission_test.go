@@ -2,6 +2,7 @@ package budget_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,7 +24,12 @@ func TestHeadroomIsTheLimitLessEverythingCommitted(t *testing.T) {
 		t.Fatalf("Headroom of an empty ledger = %d, %v; want the whole limit", got, err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
 	defer server.Close()
 	p := &budget.Provider{Inner: anthropic.New(server.URL, adaptertest.Secret("fixture-key")), Ledger: l}
 	defer holdAttempt(p, request())()
@@ -45,7 +51,12 @@ func TestHeadroomIsTheLimitLessEverythingCommitted(t *testing.T) {
 // would approve fan-outs whose first requests the cap then refuses.
 func TestEstimateMatchesWhatTheGateReserves(t *testing.T) {
 	l := ledger(t, 1_000_000_000)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
 	defer server.Close()
 	p := &budget.Provider{Inner: anthropic.New(server.URL, adaptertest.Secret("fixture-key")), Ledger: l}
 

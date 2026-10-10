@@ -31,6 +31,10 @@ func wedgeServer(t *testing.T, frames ...string) (*httptest.Server, <-chan struc
 	t.Helper()
 	closed := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		for _, f := range frames {

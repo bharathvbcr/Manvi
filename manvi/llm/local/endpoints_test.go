@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -542,6 +543,10 @@ func TestSurveyAsksNoMoreModelsAtOnceThanItsLimit(t *testing.T) {
 func TestASlowEndpointHoldsOneWorkerNotTheScan(t *testing.T) {
 	release := make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -570,6 +575,10 @@ func TestCancellingAScanEndsItWithoutLeakingWorkers(t *testing.T) {
 	release := make(chan struct{})
 	var started atomic.Int32
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		started.Add(1)
 		select {
 		case <-release:

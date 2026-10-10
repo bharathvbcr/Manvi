@@ -238,6 +238,10 @@ func TestAMuteServerIsAbandonedAtTheHeaderTimeout(t *testing.T) {
 	release := make(chan struct{})
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		attempts.Add(1)
 		select {
 		case <-release:

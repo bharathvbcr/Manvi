@@ -287,6 +287,10 @@ func TestACancelledRequestIsNotRetryable(t *testing.T) {
 	// cancelling goroutine below.
 	entered := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		if atomic.AddInt32(&calls, 1) == 1 {
 			close(entered)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,10 @@ func TestRoundTripRefusesBinary(t *testing.T) {
 // A server that never answers must not hold the turn open past the limit.
 func TestRoundTripHonoursTheTimeout(t *testing.T) {
 	_, c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		<-r.Context().Done()
 	})
 	c.http.Timeout = 300 * time.Millisecond
