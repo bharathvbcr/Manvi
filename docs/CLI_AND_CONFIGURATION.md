@@ -92,7 +92,7 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 
 ## Operator-scope settings
 
-Four values are read from the process environment and from nowhere else. Both are
+Four values are read from the process environment and from nowhere else. All four are
 deliberately absent from the settings table below, because settings load from
 `.devcouncil/config.yaml` — a file inside the repository, protected by a rung
 that a relaxed posture switches off. A value the agent can write into the
@@ -110,6 +110,95 @@ MANVI_VERIFY_COMMAND="go test ./..." \
 MANVI_FETCH_HOSTS="go.dev,pkg.go.dev" \
   manvi run -p "update the retry helper for the new API"
 ```
+
+## Other environment variables the process reads
+
+Beyond `MANVI_<KEY>` for every setting and the operator-scope values above, the
+binary reads the names below. They are not settings: none is in the flag
+catalogue, `manvi flags set` cannot change them, and each is read directly from the
+environment. `manvi/internal/contract` (`TestEveryEnvironmentVariableTheHarnessReadsIsDocumented`)
+parses the production source for every name the code reads and fails when one is
+missing from this section, so a new read cannot land undocumented. It also reports
+how many reads it could not resolve to a literal name, and refuses a new one unless
+it is listed with the reason.
+
+**Credentials.** For each provider the first variable listed that is set and not blank
+wins; a variable that is set but blank is skipped, not treated as a credential. A value
+held in the harness's credential store ahead of the environment outranks all of them.
+
+| Variable | Provider | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `anthropic` | |
+| `XAI_API_KEY`, `GROK_API_KEY` | `xai` | In that order. |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `gemini` | In that order. A Google Cloud console API key; the same `x-goog-api-key` header either way. |
+| `LOCAL_API_KEY`, `OPENAI_API_KEY` | `local` | Optional: a local server that checks no key needs none. `OPENAI_API_KEY` is honoured only for a base URL on this machine, so a key set for another vendor's service is never sent to an arbitrary host. |
+| `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` | none | Never sent anywhere by the harness. They are read so the output scrubber of the quick-action commands can redact their values from what a command prints. |
+
+**Endpoints.**
+
+| Variable | Effect |
+|---|---|
+| `ANTHROPIC_BASE_URL` | Base URL for the `anthropic` provider. Unset means Anthropic's own endpoint. The other providers' base URLs are settings (`llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url`), not variables of this kind. |
+
+**Binaries.** Each names a path and is used as given when set; it is never second-guessed.
+Unset, the harness looks the program up on `PATH`, then in this repository's own
+`crates/target` builds, and otherwise reports it missing by its bare name.
+
+| Variable | Program | Used by |
+|---|---|---|
+| `MANVI_MAP_BINARY` | `devmap` | code graph, neighbour rule, `manvi map` |
+| `MANVI_STORE_BINARY` | `dcstore` | task and lease store, workbench store |
+| `MANVI_VERIFY_BINARY` | `dcverify` | the end-of-turn check, `manvi serve` verification, `manvi doctor` |
+| `MANVI_GREP_BINARY` | `dcgrep` | repository search |
+| `MANVI_CLAUDE_BINARY` | `claude` | managed Claude coding-agent runs in `manvi serve` |
+| `MANVI_CODEX_BINARY` | `codex` | managed Codex coding-agent runs in `manvi serve` |
+| `MANVI_DEVCOUNCIL_BINARY` | DevCouncil inspect CLI | `devcouncil_dev_inspect` only. An explicit pin, never a `PATH` guess: unset, the tool reports itself unavailable. |
+
+**Project root.** `MANVI_PROJECT_ROOT`, then `MANVI_ROOT`, then `DEVCOUNCIL_ROOT`: the
+first that is set and not blank after trimming whitespace is the project root, ahead
+of the nearest ancestor holding `.devcouncil` or `.git`. A path that does not exist
+is still honoured, because naming a root is a deliberate act.
+
+**Verification and coverage.**
+
+| Variable | Effect |
+|---|---|
+| `MANVI_COVERAGE` | A Go coverprofile or LCOV report for the diff-coverage gate. Unset, every changed file is reported unmeasured and the run says so, rather than reading as covered. `--coverage` is the per-invocation form. |
+
+**Terminal and display.** Conventions of the terminal, not of this harness, except
+`MANVI_FX`.
+
+| Variable | Effect |
+|---|---|
+| `MANVI_FX` | `off`, `0`, `false`, `no` or `disabled` turns ambient animation off. Anything else leaves it on. |
+| `NO_COLOR` | Any value, set at all, turns colour off. It outranks every capability check. |
+| `TERM` | `dumb` or empty turns colour off; a name containing `256`, `truecolor` or `direct` selects the colour depth. |
+| `COLORTERM` | `truecolor` or `24bit` selects 24-bit colour. |
+| `COLUMNS`, `LINES` | Fallback terminal size when the terminal cannot report one, and the width `manvi logo` draws at (default 80 by 24). |
+| `LC_ALL`, `LC_CTYPE`, `LANG` | The first of these that is non-empty decides whether box-drawing and block characters are used: a value naming UTF-8 turns them on. |
+
+**Platform conventions.** `HOME`, `TMPDIR`, `USER` and `PATH` are read for names the
+operating system defines, and carry no harness meaning: `HOME` and `TMPDIR` are two of
+the directories the project-root search stops at instead of adopting (a stray
+`.devcouncil` or `.git` there is debris, not a project), `USER` is the operator name
+recorded on a grant issued from the CLI, and `PATH` is program lookup.
+
+**Child processes.** A command the agent runs, and an MCP server it starts, receive
+a scrubbed environment, not this process's: only the names on an allowlist are
+copied across, and no credential is among them. The lists are `childEnvAllowlist`
+(`manvi/devcouncil/exec_tools.go`, for commands) and `baseEnvAllowlist`
+(`manvi/mcp/client.go`, for MCP servers, plus the names a server's own manifest
+declares in `EnvPassthrough`). They are policy, so the exact names live in those
+two lists and nowhere else.
+
+**Development only.** `manvi/cmd/geminiproxy` is a wire-capture proxy for
+developing the Gemini adapter and is not part of the shipped binary.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PROXY_ADDR` | `127.0.0.1:8899` | Address the proxy listens on. |
+| `PROXY_CAPTURE` | `gemini-wire.log` | File the captured traffic is written to. |
+| `PROXY_UPSTREAM` | the real Gemini API | Where requests are forwarded; point it at a stand-in to smoke-test without a live request. |
 
 | Flag Key | Environment Variable | Default | Safety Critical | Mutability | Description |
 |---|---|---|---|---|---|

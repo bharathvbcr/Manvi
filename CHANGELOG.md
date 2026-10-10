@@ -23,6 +23,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- Every environment variable the binary reads is documented in
+  `docs/CLI_AND_CONFIGURATION.md` (credentials, `ANTHROPIC_BASE_URL`, the
+  `MANVI_*_BINARY` overrides, root resolution, terminal conventions), and
+  `internal/contract` now parses the production source for the names it reads
+  and fails when one is missing from that document, reporting the reads whose
+  name it could not resolve to a literal. Documentation and tests only; no
+  behaviour changes.
 - `manvi serve` binds every repository read to an explicit root. `devmap.status`
   and `devmap.query` require `root`, `work.enhancements.refine` requires
   `repo_root`, and `work.verify.task` validates its `worktree`, all through one
