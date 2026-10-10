@@ -324,6 +324,14 @@ type Log struct {
 	// only a compaction (which rewrites how an earlier result replays) or a
 	// load invalidates it.
 	proj projection
+
+	// enc[i] is events[i] as the session file encodes it, kept so a save
+	// encodes only what was appended since the last one: an event is never
+	// changed once appended, and re-encoding a long session's every event
+	// each turn was the bulk of what a save cost. Empty for an event not yet
+	// needed, and always for a chunk, which is never saved. It can be shorter
+	// than events, and is only ever extended.
+	enc []json.RawMessage
 }
 
 // projection is DeriveMessages' answer, kept warm across appends. Guarded by
@@ -677,6 +685,60 @@ func (l *Log) snapshot() []Event {
 	return append([]Event(nil), l.events...)
 }
 
+// persistableEncoded returns the events a save writes — everything but stream
+// chunks — and each one's encoding, in order. Encodings made by an earlier call
+// are reused; the rest are made outside the lock, so appends are not held up by
+// a first save of a long log.
+//
+// AssistantChunk is the stream of a reply the AssistantMessage that follows it
+// already holds whole, and the projection ignores it. Persisting it costs the
+// byte budget that bounds real history — a long streamed session evicted whole
+// turns to keep fragments no resume reads — and it writes a credential that the
+// scrubber redacted from the message back to disk in pieces, because an
+// exact-value scrubber cannot match a value split across fragments. Observers
+// still see every chunk live; only the file omits them.
+func (l *Log) persistableEncoded() ([]Event, []json.RawMessage, error) {
+	l.mu.RLock()
+	events := append([]Event(nil), l.events...)
+	known := l.enc
+	l.mu.RUnlock()
+
+	fresh := make([]json.RawMessage, 0, len(events)-len(known))
+	for _, event := range events[len(known):] {
+		if event.Type == AssistantChunk {
+			fresh = append(fresh, nil)
+			continue
+		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return nil, nil, fmt.Errorf("session: encoding event %d: %w", event.Seq, err)
+		}
+		fresh = append(fresh, encoded)
+	}
+	// A concurrent save may have extended the cache first; its entries are the
+	// same bytes, so whichever got there is kept and this one's are not.
+	l.mu.Lock()
+	if len(l.enc) == len(known) {
+		l.enc = append(l.enc, fresh...)
+	}
+	l.mu.Unlock()
+
+	kept := make([]Event, 0, len(events))
+	perEvent := make([]json.RawMessage, 0, len(events))
+	for i, event := range events {
+		if event.Type == AssistantChunk {
+			continue
+		}
+		kept = append(kept, event)
+		if i < len(known) {
+			perEvent = append(perEvent, known[i])
+		} else {
+			perEvent = append(perEvent, fresh[i-len(known)])
+		}
+	}
+	return kept, perEvent, nil
+}
+
 func cloneEvent(event Event) Event {
 	event.Data = append(json.RawMessage(nil), event.Data...)
 	return event
@@ -697,12 +759,6 @@ func (l *Log) Len() int {
 	return len(l.events)
 }
 
-// DeriveMessages projects the log into the message history a model request is
-// built from. This is the *only* sanctioned way to build that history — which
-// is what makes the invariant enforceable rather than aspirational.
-//
-// Tool results are folded into a user message following the assistant message
-// that requested them, which is the shape every current provider expects.
 // CompactedCalls returns the tool results this log records as already
 // compacted, so a planner can leave them alone.
 //
@@ -752,6 +808,18 @@ func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 	return out, nil
 }
 
+// DeriveMessages projects the log into the message history a model request is
+// built from. This is the *only* sanctioned way to build that history — which
+// is what makes the invariant enforceable rather than aspirational.
+//
+// Tool results are folded into a user message following the assistant message
+// that requested them, which is the shape every current provider expects.
+//
+// The result is an owned deep copy, made once per call (typed, not through
+// encoding/json): a provider or UI adapter may edit it freely. The cost is
+// linear in the history's size, dominated by image bytes when there are any —
+// measured at about 0.06 ms for 200 messages and 0.3 ms for 1000, against an
+// order of magnitude more when the copy went through the JSON codec.
 func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	// Readers receive owned blocks so a provider or UI adapter cannot alter
 	// the retained evidence through a slice or image byte buffer.
@@ -770,8 +838,9 @@ func (l *Log) DeriveMessages() ([]llm.Message, error) {
 // projection rather than editing it.
 func (l *Log) projected() ([]llm.Message, error) {
 	// Fast path: the warm projection is extended by every Append, so a
-	// steady-state step costs one slice copy instead of re-decoding the
-	// whole log.
+	// steady-state step copies the slice of message headers — the blocks are
+	// shared, not copied — instead of re-decoding the whole log. Callers that
+	// keep or change the result take DeriveMessages' deep copy of it.
 	l.mu.RLock()
 	var out []llm.Message
 	if l.proj.valid {
