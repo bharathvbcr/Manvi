@@ -33,6 +33,9 @@ var contractTypes = map[string]reflect.Type{
 	"HostScope":          reflect.TypeFor[HostScope](),
 	"ManagedPrepared":    reflect.TypeFor[ManagedPrepared](),
 	"ManagedRun":         reflect.TypeFor[managedRun](),
+	"GapScanParams":      reflect.TypeFor[GapScanParams](),
+	"GapScanReadParams":  reflect.TypeFor[GapScanReadParams](),
+	"ScanView":           reflect.TypeFor[ScanView](),
 }
 
 type contractField struct {
@@ -132,8 +135,17 @@ func currentContract(t *testing.T) serveContract {
 	t.Cleanup(func() { _ = runner.Close() })
 
 	always := opsOf(t, Options{})
+	scan, err := NewScanRunner(ScanDeps{
+		Devmap: func(string) ScanDevmap { return &scanFakeDevmap{} },
+		Text:   func(string) ScanText { return &scanFakeText{} },
+		Board:  &scanFakeBoard{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scan.Close() })
 	full := opsOf(t, Options{Modules: []Module{
-		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Configuration: &EnhancementConfiguration{}},
+		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{Client: &fakeDevmap{}},
 	}})
 	var optional []string

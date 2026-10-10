@@ -133,6 +133,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	modules := []serve.Module{serve.DevmapModule{Client: mapClient(projectRoot())}}
 	var runner *serve.EnhancementRunner
 	var managed *serve.ManagedRunner
+	var scan *serve.ScanRunner
 	if workbenchDB != "" {
 		client := store.New(toolBinary("MANVI_STORE_BINARY", "dcstore"), workbenchDB)
 		defer client.Close()
@@ -187,7 +188,18 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
-		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed})
+		scan, err = serve.NewScanRunner(serve.ScanDeps{
+			// Every client is built for the root the scan validated, never for
+			// this process's working directory.
+			Devmap: func(root string) serve.ScanDevmap { return mapClient(root) },
+			Text:   func(root string) serve.ScanText { return grepClient(root) },
+			Gaps:   scanGapSource,
+			Board:  client,
+		})
+		if err != nil {
+			return err
+		}
+		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Scan: scan})
 	}
 	srv := serve.New(os.Stdout, serve.Options{
 		HardRules:      hardRules,
@@ -202,6 +214,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 	if runner != nil {
 		err = errors.Join(err, runner.Close())
+	}
+	if scan != nil {
+		err = errors.Join(err, scan.Close())
 	}
 	// The policy plane's engine handle, if this build links one. Bounded: a
 	// stuck engine is reported as a shutdown error and left to process exit,
@@ -231,3 +246,17 @@ func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementCo
 	}
 	return configuration, nil
 }
+
+// scanGapSource opens the verification store a repository keeps under its own
+// state directory, or reports none when it has never recorded a gap there.
+func scanGapSource(root string) serve.ScanGaps {
+	db := filepath.Join(root, ".devcouncil", "state.sqlite")
+	if _, err := os.Stat(db); err != nil {
+		return nil
+	}
+	return closingGaps{store.New(toolBinary("MANVI_STORE_BINARY", "dcstore"), db)}
+}
+
+type closingGaps struct{ *store.Client }
+
+func (g closingGaps) Close() error { g.Client.Close(); return nil }

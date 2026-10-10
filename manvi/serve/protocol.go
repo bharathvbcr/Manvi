@@ -167,6 +167,11 @@ const (
 	OpChatForget   = "chat.forget"
 	OpDevmapStatus = "devmap.status"
 	OpDevmapQuery  = "devmap.query"
+	// OpScanGaps claims a repository gap scan and answers at once; OpScanGet
+	// reads its proposals and coverage; OpScanCancel stops it.
+	OpScanGaps   = "work.scan.gaps"
+	OpScanGet    = "work.scan.get"
+	OpScanCancel = "work.scan.cancel"
 )
 
 // HelloParams is what the host declares about itself.

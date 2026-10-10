@@ -17,6 +17,9 @@ type WorkbenchModule struct {
 	Runner        *EnhancementRunner
 	Configuration *EnhancementConfiguration
 	Managed       *ManagedRunner
+	// Scan enables work.scan.gaps, .get and .cancel: a deterministic repository
+	// audit that proposes inbox tasks and never writes the board itself.
+	Scan *ScanRunner
 }
 
 // EnhancementConfiguration describes the host's selection, not provider health.
@@ -97,6 +100,17 @@ func (m WorkbenchModule) Configure(r *Router) error {
 			}{true}, nil
 		}); err != nil {
 			return err
+		}
+	}
+	if m.Scan != nil {
+		for op, handler := range map[string]func(context.Context, json.RawMessage) (any, *Error){
+			OpScanGaps:   m.Scan.Start,
+			OpScanGet:    func(_ context.Context, raw json.RawMessage) (any, *Error) { return m.Scan.Get(raw) },
+			OpScanCancel: func(_ context.Context, raw json.RawMessage) (any, *Error) { return m.Scan.Cancel(raw) },
+		} {
+			if err := r.Register(op, handler); err != nil {
+				return err
+			}
 		}
 	}
 	if m.Runner != nil {
