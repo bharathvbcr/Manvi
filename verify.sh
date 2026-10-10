@@ -1330,6 +1330,19 @@ printf '    covered: %s checks — bootstrap CIs, paired deltas, seed pinning, c
 printf '             sandbox containment, provider wire shapes (Gemini, Cerebras),\n'
 printf '             and 19 tasks that start broken and reject tampering\n'
 
+# The bench and scripts/*.py are Python with no linter anywhere: a dead import
+# or a shadowed name (a test redefining the function it imported, so the import
+# was never what it exercised) went unseen. ruff's F and E9 rules (ruff.toml)
+# are the ones whose findings are defects; a missing ruff is NOT COVERED, never
+# a pass.
+step "Bench — Python lint"
+if command -v ruff >/dev/null 2>&1; then
+  ruff check --no-cache bench scripts/*.py || fail "ruff found F-class findings in bench/ or scripts/*.py"
+  printf '    covered: ruff F and E9 over bench/ (minus tasks/ fixtures) and scripts/*.py\n'
+else
+  notcovered 'ruff is not installed — bench/ and scripts/*.py are unlinted here'
+fi
+
 VERDICT_REACHED=1
 # "PASS all gates" is only true when all of them ran. Every NOT COVERED above
 # is collected rather than left to scroll past, and the verdict names them,
@@ -1343,6 +1356,7 @@ if [[ -n "$NOT_COVERED" ]]; then
     printf '  go install golang.org/x/vuln/cmd/govulncheck@latest\n'
     printf '  go install go.uber.org/nilaway/cmd/nilaway@latest\n'
     printf '  cargo install cargo-audit\n'
+    printf '  uv tool install ruff\n'
   fi
 else
   printf '\n\033[32mPASS\033[0m all gates\n'

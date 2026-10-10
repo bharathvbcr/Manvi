@@ -8,7 +8,7 @@ from mh.stats import (aligned_deltas, bootstrap_ci, capability_arms, interaction
                       pass_rates_by_repeat, role_of, usable_rows)
 from run import seed_for_repeat
 
-PASS, FAIL = [], []
+from mh.checks import FAIL, PASS, check  # noqa: E402
 
 
 def _raises(fn, exc):
@@ -19,12 +19,6 @@ def _raises(fn, exc):
         return True
     return False
 
-
-
-def check(name, cond, detail=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  {'ok  ' if cond else 'FAIL'} {name}"
-          + (f"  {detail}" if not cond and detail else ""))
 
 
 print("seed pinning")
@@ -113,7 +107,6 @@ check("ornith mid", role_of("hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q8_0") == "
 check("mean", abs(mean([1, 2, 3]) - 2) < 1e-12)
 
 print("empirical capability arms")
-from mh.stats import capability_arms
 pair = capability_arms({"gemma": 0.2, "qwen": 0.9})
 check("weaker first", pair == ("gemma", "qwen"))
 triple = capability_arms({"gemma": 0.1, "qwen": 0.9, "ornith": 0.5})
@@ -691,7 +684,6 @@ probe("a ladder that all crosses zero is rendered as such",
 
 def _render_pass_rates(report):
     with _tf.TemporaryDirectory() as d:
-        path = os.path.join(d, "p.svg")
         figures.from_report(report, d)
         return open(os.path.join(d, "pass_rates.generated.svg")).read()
 
@@ -1017,6 +1009,41 @@ probe("and the arm mean reported is the cell mean",
       == _L6R["cells"]["A|full"]["mean"])
 
 print()
+print("inlined bootstrap draws are bit-identical to the randrange form")
+import random as _random
+from mh.stats_reference import ref_bootstrap_ci as _ref_bootstrap_ci
+from mh.stats_reference import ref_interaction as _ref_interaction
+
+
+_gen = _random.Random(20261010)
+_same_ci = _same_inter = 0
+_cases = 0
+for _n in (2, 3, 4, 5, 7, 8, 9, 16, 17, 31, 33, 40):
+    for _seed in (0, 1, 7, 12345):
+        for _weighted in (False, True):
+            _xs = [_gen.choice((0.0, 0.25, 1 / 3, 0.5, 0.9, 1.0)) for _ in range(_n)]
+            _ys = [_gen.random() - 0.5 for _ in range(_n)]
+            _w = [float(_gen.randint(1, 9)) for _ in range(_n)] if _weighted else None
+            _cases += 1
+            _got = bootstrap_ci(_xs, n_boot=300, rng_seed=_seed, weights=_w)
+            _same_ci += _got == _ref_bootstrap_ci(_xs, 300, 0.05, _seed, _w)
+            for _paired in (False, True):
+                if _weighted and not _paired:
+                    continue
+                _r = interaction(_xs, _ys, n_boot=300, rng_seed=_seed,
+                                 paired=_paired, weights=_w)
+                _same_inter += ((_r["delta_weak_minus_strong"], _r["lo"], _r["hi"])
+                                == _ref_interaction(_xs, _ys, 300, _seed, _paired, _w))
+check("bootstrap_ci equals the randrange form over the grid",
+      _same_ci == _cases, f"{_same_ci}/{_cases}")
+check("interaction (paired and unpaired) equals the randrange form over the grid",
+      _same_inter == _cases * 2 - _cases // 2, f"{_same_inter}")
+_a, _b = [0.1, 0.4, 0.2], [0.0, 0.3, 0.1, 0.2, 0.5]
+_ri = interaction(_a, _b, n_boot=300, rng_seed=3)
+check("unequal arm lengths (unpaired) equal the randrange form",
+      (_ri["delta_weak_minus_strong"], _ri["lo"], _ri["hi"])
+      == _ref_interaction(_a, _b, 300, 3, False, None))
+
 if FAIL:
     print(f"FAIL {len(FAIL)}/{len(PASS)+len(FAIL)}")
     sys.exit(1)

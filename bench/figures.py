@@ -384,7 +384,7 @@ def repeat_deltas_svg(report, path, ablation="baseline", source=None):
         f'Each point is one pinned seed. {_source_note(source)}</text>',
         f'<line x1="{left}" y1="{zero}" x2="{right}" y2="{zero}" stroke="#222"/>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bot}" stroke="#222"/>',
-        f'<text x="28" y="185" transform="rotate(-90 28 185)" font-size="11" fill="#333">&#916; pass rate</text>',
+        '<text x="28" y="185" transform="rotate(-90 28 185)" font-size="11" fill="#333">&#916; pass rate</text>',
         '<g font-size="10" fill="#444">',
     ]
     for t in ticks:
@@ -551,7 +551,7 @@ def graphical_abstract_svg(report, path, source=None):
                          f'stroke="#8a97a8" stroke-width="1.5" fill="none"/>')
 
     # one paired bar group per arm, full against baseline
-    lab_w, bar_l, bar_r = 150, 250, W - 150
+    bar_l, bar_r = 250, W - 150
     y = by + bh + 46
     for name, full, base, colour in arms:
         for k, (tag, val, fill) in enumerate((("full", full, colour),

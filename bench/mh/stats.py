@@ -144,13 +144,23 @@ def bootstrap_ci(xs, n_boot=10000, alpha=0.05, rng_seed=0, weights=None):
     if n == 1:
         return (m, m, m)
     rng = random.Random(rng_seed)
+    # `rng.randrange(n)` is, for an int n, exactly `k = n.bit_length(); i =
+    # getrandbits(k)` redrawn while i >= n (CPython's _randbelow). Inlining it
+    # keeps the RNG stream -- and so every committed paper/stats-*.json --
+    # bit-identical at ~3x the speed; test_stats.py pins that against the
+    # randrange form.
+    getrandbits = rng.getrandbits
+    k = n.bit_length()
+    wx = [w * x for w, x in zip(ws, xs)]
     boots = [0.0] * n_boot
     for b in range(n_boot):
         num = 0.0
         den = 0.0
         for _ in range(n):
-            i = rng.randrange(n)
-            num += ws[i] * xs[i]
+            i = getrandbits(k)
+            while i >= n:
+                i = getrandbits(k)
+            num += wx[i]
             den += ws[i]
         boots[b] = num / den if den else float("nan")
     boots.sort()
@@ -334,19 +344,41 @@ def interaction(delta_weak, delta_strong, n_boot=10000, rng_seed=0,
     mw, sw = weighted_mean(dw, ww), weighted_mean(ds, ww if paired else None)
     diff = mw - sw
     n_boot = int(n_boot)
+    # randrange(n) inlined as in bootstrap_ci: same stream, ~3x faster.
+    getrandbits = rng.getrandbits
+    kw, ks = nw.bit_length(), ns.bit_length()
+    if paired:
+        wdw = [w * x for w, x in zip(ww, dw)]
+        wds = [w * x for w, x in zip(ww, ds)]
     boots = []
     for _ in range(n_boot):
         if paired:
             num_w = num_s = den = 0.0
             for _ in range(nw):
-                i = rng.randrange(nw)
-                num_w += ww[i] * dw[i]
-                num_s += ww[i] * ds[i]
+                i = getrandbits(kw)
+                while i >= nw:
+                    i = getrandbits(kw)
+                num_w += wdw[i]
+                num_s += wds[i]
                 den += ww[i]
             mw_b, ms_b = num_w / den, num_s / den
         else:
-            mw_b = sum(dw[rng.randrange(nw)] for _ in range(nw)) / nw
-            ms_b = sum(ds[rng.randrange(ns)] for _ in range(ns)) / ns
+            # sum() over the drawn values, not +=: sum() is compensated on
+            # 3.12+, and the stream of results must not depend on that.
+            vals = []
+            for _ in range(nw):
+                i = getrandbits(kw)
+                while i >= nw:
+                    i = getrandbits(kw)
+                vals.append(dw[i])
+            mw_b = sum(vals) / nw
+            vals = []
+            for _ in range(ns):
+                i = getrandbits(ks)
+                while i >= ns:
+                    i = getrandbits(ks)
+                vals.append(ds[i])
+            ms_b = sum(vals) / ns
         boots.append(mw_b - ms_b)
     boots.sort()
     lo = boots[int(0.025 * n_boot)]

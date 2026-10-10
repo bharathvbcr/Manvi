@@ -19,15 +19,11 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
 
 import build_supplement as B  # noqa: E402
 
-PASS, FAIL = [], []
-
-
-def check(name, cond, detail=""):
-    (PASS if cond else FAIL).append(name)
-    print(("  ok   " if cond else "  FAIL ") + name + ("" if cond else f"  -- {detail}"))
+from mh.checks import FAIL, PASS, check  # noqa: E402
 
 
 def raises(fn, exc=B.BuildError):

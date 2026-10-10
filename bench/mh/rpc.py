@@ -951,7 +951,11 @@ def _temp_roots():
 
 
 def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dirs=()):
-    lines = ["(version 1)", "(allow default)", '(deny file-write* (subpath "/"))']
+    # (deny network*) is the seatbelt counterpart of bwrap's --unshare-net, so a
+    # candidate that touches the network behaves the same on both platforms.
+    # Already-open descriptors (the checker/worker socketpair) are unaffected.
+    lines = ["(version 1)", "(allow default)", "(deny network*)",
+             '(deny file-write* (subpath "/"))']
     for p in _temp_roots():
         if os.path.exists(p):
             lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
@@ -1063,7 +1067,6 @@ def verify_python(hidden_src, sandbox, guard_roots, timeout, output_cap):
     checker_stdin = rpc_src + SEP + isrc
     worker_stdin = rpc_src + SEP
 
-    caps = {}
     threads = []
 
     def pump(stream, cap):
