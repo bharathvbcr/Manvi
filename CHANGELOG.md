@@ -41,6 +41,21 @@ under **Unreleased** in the same commit as the code.
   splits (the board growth), and is refused, not truncated, over a cap. The
   same `request_id` replays its result without a second model call, and a
   second refine of the same task while one runs is refused as busy.
+- A refinement is now stored, not only returned. `work.enhancements.refine`
+  reserves the profile's one generation slot (a `refine` enhancement, dc-store
+  schema 12) before it spends the model call, so another generation in flight is
+  refused as `busy` up front; the finished proposal is stored with its full
+  source snapshot and grounding, and the reply carries `enhancement_id`. A run
+  that fails or is cancelled records the failure and releases the slot at once.
+  Apply it with the existing `work.enhancements.accept` (`fields` among
+  `acceptance_criteria`, `split_into`, `duplicate_of`; `split_ids` names the new
+  tasks) and reject it with `work.enhancements.dismiss`; accepting only adds:
+  criteria are appended, duplicate links merged, and each split becomes a task
+  with a `parent` link. A refinement cannot be revised or undone, and
+  `work.enhancements.generate` refuses one. **Schema 12 is a hard fence:** a
+  Manvi built against dc-store schema 11 refuses an upgraded profile, so move
+  every host that shares a profile together; this build needs DevCouncil with
+  schema 12 (the pin in `scripts/module-pins.txt` moves after that lands).
 - `work.scan.gaps`, `work.scan.get` and `work.scan.cancel` on the `manvi serve`
   workbench plane: a deterministic audit (no model call) of an explicitly named
   repository root, which must be an absolute, symlink-free git work-tree top. It
