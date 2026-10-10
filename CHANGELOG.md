@@ -23,6 +23,12 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `contracts/serve.ops.schema.json`: the `manvi serve` ops and the shapes of
+  hello, file and command checks, host scope and managed-run results, generated
+  from the Go types. A Go test fails when the file and the types disagree
+  (`MANVI_UPDATE_CONTRACT=1` regenerates it), so a host that mirrors the file
+  can fail its own build when it sends a field Manvi does not read.
+
 - An account-wide Anthropic spend cap. Set `MANVI_ANTHROPIC_BUDGET_USD=200`
   and every Anthropic request, from any project or any concurrent session,
   draws from one ledger. By default that ledger is

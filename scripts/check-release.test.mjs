@@ -453,6 +453,18 @@ describe("contract mirror", () => {
     assert.match(problems[0], /^contract mirror could not run: /);
   });
 
+  it("lets a contract Manvi owns sit beside the vendored ones, and still records its checksum", () => {
+    // The serve seam is Manvi's own wire protocol: DevCouncil never has it.
+    const owned = { ...CONTRACTS, "serve.ops.schema.json": "{}\n" };
+    assert.deepEqual(contractMirrorProblems(manvi(owned), upstream()), []);
+
+    const unrecorded = contractMirrorProblems(manvi(owned, { recorded: CONTRACTS }), upstream());
+    assert.ok(
+      unrecorded.some((p) => p.startsWith("contracts/CHECKSUMS: serve.ops.schema.json: not recorded")),
+      unrecorded.join("\n"),
+    );
+  });
+
   it("checks that this copy's CHECKSUMS describes its own files", () => {
     // Every file matches upstream byte for byte; only the manifest is stale.
     const stale = { ...CONTRACTS, "README.md": "# old readme\n" };

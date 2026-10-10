@@ -533,6 +533,14 @@ export function pinnedDevCouncil(root) {
 const firstLine = (/** @type {unknown} */ err) => (err instanceof Error ? err.message.split("\n")[0] : String(err));
 
 /**
+ * Contracts Manvi itself owns and DevCouncil never carries: the serve seam is
+ * Manvi's wire protocol. They sit beside the vendored files, are recorded in
+ * CHECKSUMS like any other, and are held to the Go types by a test in
+ * manvi/serve rather than to an upstream copy.
+ */
+const MANVI_OWNED_CONTRACTS = new Set(["serve.ops.schema.json"]);
+
+/**
  * Manvi vendors DevCouncil's `backend/contracts/` as `contracts/`. The
  * vendored copy must be DevCouncil's at the pin byte for byte, and its
  * CHECKSUMS must describe its own files, or a contract edited here instead
@@ -608,7 +616,7 @@ export function contractMirrorProblems(root, pinnedTree) {
   }
   const upstream = new Set(upstreamNames);
   for (const name of [...localNames].sort()) {
-    if (!upstream.has(name)) errors.push(`contracts/${name} is not in DevCouncil ${UPSTREAM_DIR} at the pinned commit`);
+    if (!upstream.has(name) && !MANVI_OWNED_CONTRACTS.has(name)) errors.push(`contracts/${name} is not in DevCouncil ${UPSTREAM_DIR} at the pinned commit`);
   }
   errors.push(...checksumsProblems(dir, localNames));
   return errors;
