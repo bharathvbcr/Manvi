@@ -419,6 +419,13 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 
 	case ui.KindUsage:
 		add(render.Styled(fmt.Sprintf("%d in / %d out tokens", ev.InputTokens, ev.OutputTokens), th.Subtle()))
+		// The cost and the split by model, composed by whoever priced the
+		// usage; see ui.ModelUsage.
+		for _, line := range strings.Split(ev.Text, "\n") {
+			if line != "" {
+				addWrapped("  "+line, th.Subtle())
+			}
+		}
 
 	case ui.KindReport:
 		add(render.Styled(ev.Text, th.Strong()))

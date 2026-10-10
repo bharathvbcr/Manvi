@@ -367,13 +367,8 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// alone was reporting a fraction as a whole: on a fan-out the children are
 	// where the work happens, so the figure a benchmark records was the small
 	// part of the bill.
-	delegated := meter.Total()
-	sink.Emit(ui.Event{
-		Kind: ui.KindUsage, At: time.Now().UTC(),
-		InputTokens:  outcome.Usage.InputTokens + delegated.InputTokens,
-		OutputTokens: outcome.Usage.OutputTokens + delegated.OutputTokens,
-	})
-	if delegated.Any() {
+	sink.Emit(usageEvent(turnUsage(provider, model, outcome), meter.ByModel()))
+	if delegated := meter.Total(); delegated.Any() {
 		fmt.Fprintf(notes, "manvi: of that, %d in / %d out was spent by sub-agents\n",
 			delegated.InputTokens, delegated.OutputTokens)
 	}

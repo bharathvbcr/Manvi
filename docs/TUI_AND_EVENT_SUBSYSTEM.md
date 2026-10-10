@@ -85,8 +85,75 @@ type Event struct {
     // Usage.
     InputTokens  int `json:"input_tokens,omitempty"`
     OutputTokens int `json:"output_tokens,omitempty"`
+    // What the priced part cost, in billionths of a dollar, and how many steps
+    // no price table covered (non-zero makes the cost a lower bound).
+    CostNanoUSD   int64 `json:"cost_nano_usd,omitempty"`
+    UnpricedSteps int   `json:"unpriced_steps,omitempty"`
+    // The same usage split by the model that spent it.
+    ByModel []ModelUsage `json:"by_model,omitempty"`
+}
+
+type ModelUsage struct {
+    Model            string `json:"model"` // "provider/model"
+    InputTokens      int    `json:"input_tokens"`
+    OutputTokens     int    `json:"output_tokens"`
+    ReasoningTokens  int    `json:"reasoning_tokens,omitempty"`
+    CacheReadTokens  int    `json:"cache_read_tokens,omitempty"`
+    CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
+    CostNanoUSD      int64  `json:"cost_nano_usd,omitempty"`
+    UnpricedSteps    int    `json:"unpriced_steps,omitempty"`
 }
 ```
+
+### Reading the per-model usage line
+
+Every finished turn emits one `turn.usage` event covering the turn's own agent
+**and every sub-agent it dispatched**. Children can run on models other than
+the parent's (a role's `model` placement), and the same thousand tokens cost
+several times more on one model than another, so a token total alone cannot be
+turned into money. The event therefore carries the split.
+
+In the terminal it reads like this:
+
+```text
+  14500 in / 1450 out tokens
+    cost at least $0.09 (3 step(s) unpriced) across 3 models:
+    anthropic/claude-opus-5-5 · 1500 in / 150 out · $0.08
+    anthropic/claude-haiku-5-5 · 4000 in / 400 out · cache 0 read / 300 written · $0.01
+    local/qwen3 · 9000 in / 900 out · unpriced (3 step(s), no price table)
+```
+
+and with a single model it is one line under the token count, for example
+`cost $0.02 · anthropic/claude-opus-5-5 · cache 1000 read / 200 written`.
+
+- **The first line** is the total: every token the turn and its children
+  consumed. It is the same figure the event's `input_tokens`/`output_tokens`
+  carry.
+- **`cost`** is the sum of every step's charge. Each step is priced on its own,
+  from its model's own table (`budget.Prices`, the same table and arithmetic the
+  spend cap uses), as its response arrives. Pricing per step matters: a table can
+  switch to long-prompt rates on the size of one request, and pricing the
+  summed usage would put short requests on the long rate.
+- **`at least $X (N step(s) unpriced)`** means some steps ran on a model with no
+  price table here — a local server, or a model the table does not list. Their
+  tokens are counted; their cost is not known, so the figure is a lower bound.
+  **`unpriced`** on a row means none of that model's steps could be priced. It
+  is never shown as `$0.00`, because that would read as free.
+- **One row per model**, keyed `provider/model`. The parent's own share and any
+  children on the same model are merged into one row; what the children spent in
+  total is also written to stderr by `manvi run` as `of that, N in / M out was
+  spent by sub-agents`. A model is what a tier resolves to, so rows are the
+  per-tier split.
+- **`cache R read / W written`** is the prompt served from, and written to, the
+  provider's cache. Writes are billed above a fresh input token and reads far
+  below it, which is why two rows with similar token counts can differ in cost.
+- In the TUI the figures are per turn: the session's meter accumulates across
+  turns, and each line reports only what changed since the turn began.
+
+On the NDJSON stream the same numbers are `cost_nano_usd`, `unpriced_steps` and
+`by_model[]`; `cost_nano_usd / 1e9` is dollars. Each child's own figures, with
+its `model`, `cache_write_tokens`, `cost_nano_usd` and `unpriced_steps`, also
+travel back to the dispatching agent in the fan-out tool's per-child `usage`.
 
 ---
 
