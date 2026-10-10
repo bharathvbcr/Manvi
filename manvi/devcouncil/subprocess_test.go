@@ -3,6 +3,7 @@
 package devcouncil
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -72,7 +73,7 @@ func exited(pid int) bool {
 	}
 	// The state follows the parenthesised command name, which may itself
 	// contain spaces or parentheses, so it is found from the last ')'.
-	end := strings.LastIndexByte(string(stat), ')')
+	end := bytes.LastIndexByte(stat, ')')
 	if end < 0 || end+2 >= len(stat) {
 		return false
 	}
