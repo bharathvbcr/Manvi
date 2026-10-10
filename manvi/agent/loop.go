@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
@@ -243,6 +244,13 @@ type Config struct {
 	// AssertInvariant enables the model-visible-means-logged check before every
 	// dispatch. Mirrors flags.LogModelVisibleAssert.
 	AssertInvariant bool
+	// Price, when set, prices one response's usage in nano-USD. Nil means the
+	// model has no price table here, and every step is counted as unpriced.
+	//
+	// It is called once per step, not once per turn, because a price table can
+	// switch rates on the size of a single request's prompt: two short requests
+	// priced as their sum would be charged at the long-prompt rate.
+	Price func(llm.Usage) (int64, error)
 }
 
 // RepeatLimit is the maximum number of times an identical tool call may run
@@ -586,6 +594,11 @@ type Outcome struct {
 	StopReason llm.StopReason
 	Usage      llm.Usage
 	Final      llm.Message
+	// CostNanoUSD is what the turn's priced steps cost, from Config.Price.
+	CostNanoUSD int64
+	// UnpricedSteps counts steps whose usage could not be priced. When it is
+	// not zero, CostNanoUSD is a lower bound rather than the bill.
+	UnpricedSteps int
 	// ToolCalls is how many tool calls ran across the turn.
 	ToolCalls int
 	// Denied is how many were short-circuited by a pre-execute listener.
@@ -898,6 +911,20 @@ func (l *Loop) enterStep(ctx context.Context, turn, step int) ([]llm.Message, er
 	return messages, nil
 }
 
+// price adds one step's charge to the outcome, or counts the step as unpriced.
+func (l *Loop) price(out *Outcome, usage llm.Usage) {
+	if l.cfg.Price == nil {
+		out.UnpricedSteps++
+		return
+	}
+	charge, err := l.cfg.Price(usage)
+	if err != nil || charge < 0 || out.CostNanoUSD > math.MaxInt64-charge {
+		out.UnpricedSteps++
+		return
+	}
+	out.CostNanoUSD += charge
+}
+
 // absorbResponse folds one step's response into the outcome: its usage, its
 // message, the decoding compensations it needed and whether it hit the output
 // cap.
@@ -908,6 +935,8 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 	out.Usage.OutputTokens += response.Usage.OutputTokens
 	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
 	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
+	out.Usage.CacheWriteTokens += response.Usage.CacheWriteTokens
+	l.price(out, response.Usage)
 	// Throughput is a rate, not a total: the last step's is what an
 	// operator wants to see, and summing them would be meaningless.
 	if response.Usage.OutputTokensPerSecond > 0 {
@@ -1354,14 +1383,7 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 		}
 	}
 
-	request := llm.Request{
-		Model:     l.cfg.Model,
-		System:    l.cfg.SystemPrompt,
-		Messages:  prepared,
-		Tools:     schemas,
-		MaxTokens: l.cfg.MaxTokens,
-		Effort:    l.effort,
-	}
+	request := l.newRequest(prepared, schemas, l.effort)
 
 	shaped, err := bus.Waterfall(l.bus, LLMRequest{Ctx: ctx, Request: request})
 	if err != nil {
@@ -1383,6 +1405,31 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 		}
 	}
 	return request, nil
+}
+
+// newRequest is the one place a request's fields are assembled from the
+// loop's configuration.
+func (l *Loop) newRequest(messages []llm.Message, schemas []llm.ToolSchema, effort string) llm.Request {
+	return llm.Request{
+		Model:     l.cfg.Model,
+		System:    l.cfg.SystemPrompt,
+		Messages:  messages,
+		Tools:     schemas,
+		MaxTokens: l.cfg.MaxTokens,
+		Effort:    effort,
+	}
+}
+
+// Draft is the request a turn opened with user would send first, before the
+// waterfalls that reshape it: the same model, system prompt, tool schemas and
+// output bound. It runs nothing and records nothing.
+//
+// It exists so a request can be sized before its turn starts — a fan-out is
+// admitted against a spend cap on what its children's first requests will
+// reserve, and that has to be known while the answer can still be "start
+// none".
+func (l *Loop) Draft(user llm.Message) llm.Request {
+	return l.newRequest([]llm.Message{user}, l.schemas(), l.cfg.Effort)
 }
 
 // streamResponse sends the request, records every chunk as it arrives and

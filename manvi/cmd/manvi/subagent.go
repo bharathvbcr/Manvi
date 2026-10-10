@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -248,20 +251,124 @@ func (p *childPlacement) carryEffort(capability llm.Capability) {
 	}
 }
 
+// childTurn is one child placed and built, not yet run.
+type childTurn struct {
+	loop     *agent.Loop
+	provider llm.Provider
+	model    string
+	// notes are what placing the child dropped, said on its result.
+	notes []string
+}
+
 // RunSubAgent carries out one delegated instruction and reports what came back.
 func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgentRequest) (devcouncil.SubAgentResult, error) {
+	cfg, err := r.config(req)
+	if err != nil {
+		return devcouncil.SubAgentResult{}, err
+	}
+	child, err := r.prepare(cfg, req)
+	if err != nil {
+		return devcouncil.SubAgentResult{}, err
+	}
+	loop, provider, model := child.loop, child.provider, child.model
+
+	// The child acts under its own lease session, copied from the dispatching
+	// agent's so its writes are judged against whatever task that agent holds,
+	// and its own from then on. Attached to the context because the context is
+	// what already reaches every tool handler; the tools this child calls read
+	// their session from there and fall back to the top-level agent's only
+	// when nothing attached one.
+	//
+	// Without this, every concurrently-running child wrote through one shared
+	// TaskID and Token. Under the race detector an eight-way fan-out of
+	// children checking out eight different tasks reported four data races,
+	// and a child holding TASK-C verified itself against TASK-E.
+	childCtx := ctx
+	if cfg.native != nil {
+		childCtx = devcouncil.WithSession(ctx, cfg.native.RootSession().NewChildSession(req.Leases))
+	}
+
+	outcome, err := loop.Run(childCtx, llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentBlock{llm.TextBlock{Text: req.Prompt}},
+	})
+	// Recorded before the error is examined. A child that failed part-way
+	// still spent what it spent, and a run that only counts successful
+	// children under-reports exactly the turns an operator is investigating.
+	spent := turnUsage(provider, model, outcome)
+	cfg.meter.add(spent)
+	// Every exit returns this, so the paths travel even on the failure paths.
+	// A child that wrote three files and then died left three changed files
+	// behind, and a parent told nothing about them cannot verify what is now
+	// in its tree.
+	result := devcouncil.SubAgentResult{
+		Steps: outcome.Steps, Usage: spent,
+		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
+	}
+	if err != nil {
+		return result, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
+	}
+
+	summary := strings.TrimSpace(outcome.Final.Text())
+	if summary == "" {
+		// The dispatch treats an empty summary as a failure, and it is right
+		// to: a child that finished with nothing to say did not do the work its
+		// prompt described. Saying so here means the report names the child
+		// rather than leaving the caller to infer it from a blank field.
+		return result, fmt.Errorf(
+			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
+	}
+	// Everything worth saying about the turn, from the one function that
+	// answers that question, rather than a third hand-rolled copy.
+	//
+	// outcomeNotices was extracted because two faces had drifted apart. There
+	// were three: this one covered a truncated answer and the step ceiling and
+	// nothing else, so a child whose every write the gate refused, or which ran
+	// against a server that could not parse tool calls, or whose pipeline
+	// panicked, returned fluent prose with no hint of any of it. The parent
+	// consumes that prose as fact — silently returning a partial or unbacked
+	// answer as a complete one is the class of lie this type exists to remove.
+	//
+	// Appended to the summary rather than logged, because the dispatching model
+	// is this turn's only reader: the child's own session log is not persisted.
+	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
+		summary += "\n\n[this sub-agent: " + n.Text + "]"
+	}
+
+	for _, n := range child.notes {
+		summary += "\n\n[this sub-agent: " + n + "]"
+	}
+
+	result.Summary = summary
+	// Read out of the child's own answer against a stated contract, and
+	// reconciled to fail closed. A judging role is asked for one line in a
+	// fixed shape; anything else — a missing line, a pass that still lists
+	// objections — comes back as no judgement rather than as a pass, which
+	// is the only direction it is safe to be wrong in.
+	result.Verdict = devcouncil.ParseVerdict(req.Verdict, summary)
+	return result, nil
+}
+
+// config takes the runner's configuration for one child, refusing a child no
+// model is attached to run or that was given nothing to do.
+func (r *subAgentRunner) config(req devcouncil.SubAgentRequest) (*subAgentConfig, error) {
 	r.mu.RLock()
 	cfg := r.cfg
 	r.mu.RUnlock()
 
 	if cfg == nil {
-		return devcouncil.SubAgentResult{}, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"sub-agents are not available in this invocation: no model is attached to run one")
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
-		return devcouncil.SubAgentResult{}, fmt.Errorf("sub-agent %q was given no prompt", req.Label)
+		return nil, fmt.Errorf("sub-agent %q was given no prompt", req.Label)
 	}
+	return cfg, nil
+}
 
+// prepare builds one child's turn under cfg — its tool surface, its log, where
+// it runs and the loop it runs in — and sends nothing.
+func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childTurn, error) {
 	// The two rules no role may touch. Composed as a function so the narrowed
 	// surface below is literally this one plus more removals — a role can only
 	// ever intersect with it, never union.
@@ -317,7 +424,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 			return floor(t) && req.Surface.Permits(t.Schema.Name, t.Group)
 		})
 		if stranded := surfaceDeadEnds(cfg.registry, registry, narrowed); len(stranded) > 0 {
-			return devcouncil.SubAgentResult{}, fmt.Errorf(
+			return childTurn{}, fmt.Errorf(
 				"sub-agent %q cannot run: its role's tool surface strands a tool that can never succeed — %s; "+
 					"name the prerequisite in allowed_tools, or drop the tool that needs it",
 				req.Label, strings.Join(stranded, "; "))
@@ -364,7 +471,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 
 	placed, err := r.place(cfg, req)
 	if err != nil {
-		return devcouncil.SubAgentResult{}, err
+		return childTurn{}, err
 	}
 
 	// A role's own prompt replaces the parent's. Empty means the role had none
@@ -408,88 +515,89 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		tools:           registry,
 	})
 	if err != nil {
-		return devcouncil.SubAgentResult{}, fmt.Errorf("sub-agent %q could not be started: %w", req.Label, err)
+		return childTurn{}, fmt.Errorf("sub-agent %q could not be started: %w", req.Label, err)
 	}
+	return childTurn{loop: loop, provider: placed.provider, model: placed.model, notes: placed.notes}, nil
+}
 
-	// The child acts under its own lease session, copied from the dispatching
-	// agent's so its writes are judged against whatever task that agent holds,
-	// and its own from then on. Attached to the context because the context is
-	// what already reaches every tool handler; the tools this child calls read
-	// their session from there and fall back to the top-level agent's only
-	// when nothing attached one.
-	//
-	// Without this, every concurrently-running child wrote through one shared
-	// TaskID and Token. Under the race detector an eight-way fan-out of
-	// children checking out eight different tasks reported four data races,
-	// and a child holding TASK-C verified itself against TASK-E.
-	childCtx := ctx
-	if cfg.native != nil {
-		childCtx = devcouncil.WithSession(ctx, cfg.native.RootSession().NewChildSession(req.Leases))
+// AdmitSubAgents sizes what each child's first request will reserve against
+// the spend cap its provider is metered by, so the fan-out can be refused
+// before any child starts rather than one request at a time after they have.
+//
+// A child that cannot be prepared, or whose metered request cannot be sized,
+// reserves nothing here. That is not treating it as free: the same refusal —
+// the same placement error, the same unpriced model — ends that child on its
+// first request, before anything is sent, and it reports the reason itself.
+func (r *subAgentRunner) AdmitSubAgents(reqs []devcouncil.SubAgentRequest) (agents.Budget, []int64, error) {
+	reserves := make([]int64, len(reqs))
+	var ledger *budget.Ledger
+	for i, req := range reqs {
+		cfg, err := r.config(req)
+		if err != nil {
+			continue
+		}
+		// Placed first, because placing is cheap and preparing is not: a
+		// child on a provider the cap does not meter needs no estimate, and
+		// an unmetered session should pay nothing for admission.
+		placed, err := r.place(cfg, req)
+		if err != nil {
+			continue
+		}
+		metered, ok := placed.provider.(*budget.Provider)
+		if !ok || metered.Ledger == nil {
+			continue
+		}
+		child, err := r.prepare(cfg, req)
+		if err != nil {
+			continue
+		}
+		amount, err := metered.Estimate(child.loop.Draft(llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentBlock{llm.TextBlock{Text: req.Prompt}},
+		}))
+		if err != nil {
+			continue
+		}
+		// One ledger file is one cap, however many handles on it the
+		// providers were built with. Two files are two caps, and a fan-out
+		// admitted against one of them could overspend the other.
+		if ledger != nil && ledger.Path() != metered.Ledger.Path() {
+			return nil, nil, fmt.Errorf("the children draw on two spend caps (%s and %s), and a fan-out is admitted against one",
+				ledger.Path(), metered.Ledger.Path())
+		}
+		ledger = metered.Ledger
+		reserves[i] = amount
 	}
+	if ledger == nil {
+		return nil, reserves, nil
+	}
+	return ledgerBudget{ledger}, reserves, nil
+}
 
-	outcome, err := loop.Run(childCtx, llm.Message{
-		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{llm.TextBlock{Text: req.Prompt}},
-	})
-	// Recorded before the error is examined. A child that failed part-way
-	// still spent what it spent, and a run that only counts successful
-	// children under-reports exactly the turns an operator is investigating.
-	spent := devcouncil.SubAgentUsage{
-		InputTokens:     outcome.Usage.InputTokens,
-		OutputTokens:    outcome.Usage.OutputTokens,
-		ReasoningTokens: outcome.Usage.ReasoningTokens,
-		CacheReadTokens: outcome.Usage.CacheReadTokens,
-	}
-	cfg.meter.add(spent)
-	// Every exit returns this, so the paths travel even on the failure paths.
-	// A child that wrote three files and then died left three changed files
-	// behind, and a parent told nothing about them cannot verify what is now
-	// in its tree.
-	result := devcouncil.SubAgentResult{
-		Steps: outcome.Steps, Usage: spent,
-		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
-	}
-	if err != nil {
-		return result, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
-	}
+// The admitter is found by a type assertion in the dispatch, so a signature
+// that drifted would not fail to compile there — it would quietly turn
+// admission off. Asserted here so it fails to compile instead.
+var _ devcouncil.SubAgentAdmitter = (*subAgentRunner)(nil)
 
-	summary := strings.TrimSpace(outcome.Final.Text())
-	if summary == "" {
-		// The dispatch treats an empty summary as a failure, and it is right
-		// to: a child that finished with nothing to say did not do the work its
-		// prompt described. Saying so here means the report names the child
-		// rather than leaving the caller to infer it from a blank field.
-		return result, fmt.Errorf(
-			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
-	}
-	// Everything worth saying about the turn, from the one function that
-	// answers that question, rather than a third hand-rolled copy.
-	//
-	// outcomeNotices was extracted because two faces had drifted apart. There
-	// were three: this one covered a truncated answer and the step ceiling and
-	// nothing else, so a child whose every write the gate refused, or which ran
-	// against a server that could not parse tool calls, or whose pipeline
-	// panicked, returned fluent prose with no hint of any of it. The parent
-	// consumes that prose as fact — silently returning a partial or unbacked
-	// answer as a complete one is the class of lie this type exists to remove.
-	//
-	// Appended to the summary rather than logged, because the dispatching model
-	// is this turn's only reader: the child's own session log is not persisted.
-	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
-		summary += "\n\n[this sub-agent: " + n.Text + "]"
-	}
-	for _, n := range placed.notes {
-		summary += "\n\n[this sub-agent: " + n + "]"
-	}
+// ledgerBudget is a spend-cap ledger as the fan-out pool sees it.
+type ledgerBudget struct{ *budget.Ledger }
 
-	result.Summary = summary
-	// Read out of the child's own answer against a stated contract, and
-	// reconciled to fail closed. A judging role is asked for one line in a
-	// fixed shape; anything else — a missing line, a pass that still lists
-	// objections — comes back as no judgement rather than as a pass, which
-	// is the only direction it is safe to be wrong in.
-	result.Verdict = devcouncil.ParseVerdict(req.Verdict, summary)
-	return result, nil
+func (ledgerBudget) Exhausted(err error) bool   { return errors.Is(err, budget.ErrExhausted) }
+func (ledgerBudget) Render(amount int64) string { return budget.USD(amount) }
+
+// turnUsage is what one turn spent, in the shape a usage line totals: its
+// token counts, where it ran, and what its priced steps cost.
+func turnUsage(provider llm.Provider, model string, outcome agent.Outcome) devcouncil.SubAgentUsage {
+	return devcouncil.SubAgentUsage{
+		Model:            provider.Name() + "/" + model,
+		InputTokens:      outcome.Usage.InputTokens,
+		OutputTokens:     outcome.Usage.OutputTokens,
+		ReasoningTokens:  outcome.Usage.ReasoningTokens,
+		CacheReadTokens:  outcome.Usage.CacheReadTokens,
+		CacheWriteTokens: outcome.Usage.CacheWriteTokens,
+		CostNanoUSD:      outcome.CostNanoUSD,
+		UnpricedSteps:    outcome.UnpricedSteps,
+	}
 }
 
 // spawnSubagentsTool is the dispatching tool a child must never be given.
@@ -536,12 +644,13 @@ func surfaceDeadEnds(parent *tools.Registry, floor, narrowed *tools.Registry) []
 // consumed. A cost figure that is wrong by seventeen times in the cheap
 // direction is worse than none, because it is acted on.
 //
-// It is a total rather than a per-child ledger because that is what the usage
-// line needs; per-child figures already travel back in each fan-out's own tool
-// result, where the dispatching model can read them.
+// It keeps one total per model rather than one overall, because a total that
+// has forgotten which model spent what cannot be turned into money once the
+// children run on different models. Per-child figures already travel back in
+// each fan-out's own tool result, where the dispatching model can read them.
 type subAgentMeter struct {
-	mu    sync.Mutex
-	usage devcouncil.SubAgentUsage
+	mu      sync.Mutex
+	byModel map[string]devcouncil.SubAgentUsage
 }
 
 func (m *subAgentMeter) add(u devcouncil.SubAgentUsage) {
@@ -550,15 +659,64 @@ func (m *subAgentMeter) add(u devcouncil.SubAgentUsage) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.usage.Add(u)
+	if m.byModel == nil {
+		m.byModel = map[string]devcouncil.SubAgentUsage{}
+	}
+	total := m.byModel[u.Model]
+	total.Model = u.Model
+	total.Add(u)
+	m.byModel[u.Model] = total
 }
 
-// Total returns what the children of this run have spent so far.
+// Total returns what the children of this run have spent so far, across every
+// model.
 func (m *subAgentMeter) Total() devcouncil.SubAgentUsage {
+	var total devcouncil.SubAgentUsage
+	for _, u := range m.ByModel() {
+		total.Add(u)
+	}
+	return total
+}
+
+// ByModel returns what the children of this run have spent so far, one total
+// per model, ordered by model.
+func (m *subAgentMeter) ByModel() []devcouncil.SubAgentUsage {
 	if m == nil {
-		return devcouncil.SubAgentUsage{}
+		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.usage
+	out := make([]devcouncil.SubAgentUsage, 0, len(m.byModel))
+	for _, u := range m.byModel {
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
+}
+
+// Since returns what the children spent after before was taken from ByModel,
+// one total per model, dropping models that spent nothing in between.
+func (m *subAgentMeter) Since(before []devcouncil.SubAgentUsage) []devcouncil.SubAgentUsage {
+	prior := make(map[string]devcouncil.SubAgentUsage, len(before))
+	for _, u := range before {
+		prior[u.Model] = u
+	}
+	var out []devcouncil.SubAgentUsage
+	for _, now := range m.ByModel() {
+		was := prior[now.Model]
+		delta := devcouncil.SubAgentUsage{
+			Model:            now.Model,
+			InputTokens:      now.InputTokens - was.InputTokens,
+			OutputTokens:     now.OutputTokens - was.OutputTokens,
+			ReasoningTokens:  now.ReasoningTokens - was.ReasoningTokens,
+			CacheReadTokens:  now.CacheReadTokens - was.CacheReadTokens,
+			CacheWriteTokens: now.CacheWriteTokens - was.CacheWriteTokens,
+			CostNanoUSD:      now.CostNanoUSD - was.CostNanoUSD,
+			UnpricedSteps:    now.UnpricedSteps - was.UnpricedSteps,
+		}
+		if delta.Any() {
+			out = append(out, delta)
+		}
+	}
+	return out
 }

@@ -2,6 +2,7 @@ package budget
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -56,35 +57,16 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 	if p.Ledger == nil {
 		return nil, errors.New("budget ledger required")
 	}
-	gated, ok := p.Inner.(transport.AttemptGatedProvider)
-	if !ok || !gated.AttemptGateSupported() {
-		return nil, fmt.Errorf("budget: provider %s does not route every attempt through the admission gate", p.Inner.Name())
-	}
-	pricer, ok := p.Inner.(Pricer)
-	if !ok {
-		return nil, fmt.Errorf("budget: provider %s publishes no prices", p.Inner.Name())
-	}
-	prices, ok := pricer.PriceOf(req.Model)
-	if !ok {
-		return nil, fmt.Errorf("budget: no price for %s model %q; it cannot be metered", p.Inner.Name(), req.Model)
-	}
-	capability, ok := p.Inner.Capability(req.Model)
-	if !ok || capability.ContextWindow <= 0 || capability.MaxOutputTokens <= 0 {
-		return nil, fmt.Errorf("budget: %s model %q has no known limits to bound a reservation", p.Inner.Name(), req.Model)
-	}
-	outputBound := capability.MaxOutputTokens
-	if reporter, ok := p.Inner.(MaxTokensReporter); ok {
-		outputBound = reporter.AppliedMaxTokens(req)
-	} else if req.MaxTokens > 0 {
-		outputBound = req.MaxTokens
+	limits, err := p.limits(req)
+	if err != nil {
+		return nil, err
 	}
 
 	rejector, _ := p.Inner.(UnbilledRejector)
 	var mu sync.Mutex
 	var last uint64
 	gate := func(ctx context.Context, info transport.AttemptInfo) (func(transport.AttemptResult) error, error) {
-		promptBound := min(info.RequestBytes+PromptOverheadTokens, capability.ContextWindow)
-		amount, err := prices.Reserve(promptBound, outputBound)
+		amount, err := limits.reserve(info.RequestBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +92,82 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 		}
 		return nil, err
 	}
-	return &budgetStream{ctx: ctx, inner: stream, prices: prices, outputBound: outputBound, ledger: p.Ledger, id: lastID()}, nil
+	return &budgetStream{ctx: ctx, inner: stream, prices: limits.prices, outputBound: limits.output, ledger: p.Ledger, id: lastID()}, nil
+}
+
+// requestLimits is what a request to one model is priced at and bounded by.
+type requestLimits struct {
+	prices Prices
+	window int
+	output int
+}
+
+// limits resolves the price and bounds of req, refusing a request that could
+// not be metered.
+func (p *Provider) limits(req llm.Request) (requestLimits, error) {
+	gated, ok := p.Inner.(transport.AttemptGatedProvider)
+	if !ok || !gated.AttemptGateSupported() {
+		return requestLimits{}, fmt.Errorf("budget: provider %s does not route every attempt through the admission gate", p.Inner.Name())
+	}
+	pricer, ok := p.Inner.(Pricer)
+	if !ok {
+		return requestLimits{}, fmt.Errorf("budget: provider %s publishes no prices", p.Inner.Name())
+	}
+	prices, ok := pricer.PriceOf(req.Model)
+	if !ok {
+		return requestLimits{}, fmt.Errorf("budget: no price for %s model %q; it cannot be metered", p.Inner.Name(), req.Model)
+	}
+	capability, ok := p.Inner.Capability(req.Model)
+	if !ok || capability.ContextWindow <= 0 || capability.MaxOutputTokens <= 0 {
+		return requestLimits{}, fmt.Errorf("budget: %s model %q has no known limits to bound a reservation", p.Inner.Name(), req.Model)
+	}
+	outputBound := capability.MaxOutputTokens
+	if reporter, ok := p.Inner.(MaxTokensReporter); ok {
+		outputBound = reporter.AppliedMaxTokens(req)
+	} else if req.MaxTokens > 0 {
+		outputBound = req.MaxTokens
+	}
+	return requestLimits{prices: prices, window: capability.ContextWindow, output: outputBound}, nil
+}
+
+// reserve is what one attempt whose body is requestBytes long reserves.
+func (r requestLimits) reserve(requestBytes int) (int64, error) {
+	return r.prices.Reserve(min(requestBytes+PromptOverheadTokens, r.window), r.output)
+}
+
+// Estimate is what the first attempt of req would reserve, computed as the
+// gate computes it, with the body's length taken from the request's own JSON
+// encoding rather than the adapter's wire body. The two differ by the wire
+// envelope, which PromptOverheadTokens already exceeds, so the estimate is
+// close but is not the reservation itself.
+//
+// It exists so a fan-out can be admitted before any child is started: summing
+// what the children's first requests will reserve is the only way to know
+// whether the cap can cover them all, and that question is worth asking only
+// while the answer can still be "start none".
+func (p *Provider) Estimate(req llm.Request) (int64, error) {
+	if p.Inner == nil {
+		return 0, errors.New("inner provider required")
+	}
+	limits, err := p.limits(req)
+	if err != nil {
+		return 0, err
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 0, fmt.Errorf("budget: sizing the request: %w", err)
+	}
+	return limits.reserve(len(body))
+}
+
+// PriceOf forwards the inner provider's price table, so metering a provider
+// never hides what its usage costs from anything pricing it afterwards.
+func (p *Provider) PriceOf(model string) (Prices, bool) {
+	pricer, ok := p.Inner.(Pricer)
+	if !ok {
+		return Prices{}, false
+	}
+	return pricer.PriceOf(model)
 }
 
 type budgetStream struct {

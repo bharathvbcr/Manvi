@@ -124,6 +124,19 @@ under **Unreleased** in the same commit as the code.
   crashed fan-out no longer holds in-flight slots until every later request
   fails at the 256-attempt bound. Reclaimed attempts stay counted against the
   limit.
+- Sub-agent fan-outs are admitted against the spend cap. Before any child
+  starts, the children's first-request reservations must fit the ledger's
+  headroom together, or the dispatch is refused with each child's figure and
+  the headroom in the message. After that, once a started child is refused by
+  the cap or the headroom no longer covers the next child, no further child is
+  started; each one held back is reported with status `not_started` and reason
+  `budget`, carries no writes, and is counted apart from failures.
+- The usage line is priced and split by model. Each step is priced from its
+  model's own table as it arrives, and the `turn.usage` event carries
+  `cost_nano_usd`, `unpriced_steps` and `by_model[]`; the terminal prints the
+  cost and a row per model. Steps no price table covers make the cost a lower
+  bound ("at least $X") and are never shown as `$0.00`. See
+  [Reading the per-model usage line](docs/TUI_AND_EVENT_SUBSYSTEM.md#reading-the-per-model-usage-line).
 
 ### Changed
 
@@ -309,7 +322,10 @@ under **Unreleased** in the same commit as the code.
   lane holds at most 32 waiting requests; past that a request is answered
   `E_BUSY` (retryable) at once. Responses on different lanes can arrive in
   either order; as before, hosts correlate by id.
-
+- Cache writes were dropped when a turn's usage was summed, for the parent and
+  for every sub-agent, so the dearest input tokens a turn bought were reported
+  as never having been bought. Each child's usage now also names its model and
+  carries its cost.
 - Wrapping text no longer hangs when a character is wider than the line
   (a double-width character at width 1); it is placed on a line of its own.
 - **The TUI saves every turn of a session, not only the first.** Each save

@@ -9,6 +9,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -73,6 +74,7 @@ func newTurnLoop(face turnFace, deps turnDeps) (*agent.Loop, error) {
 		ReadOnly:        face.readOnly,
 		CoreToolsOnly:   deps.coreToolsOnly,
 		AssertInvariant: deps.assertInvariant,
+		Price:           stepPrice(deps.provider, deps.model),
 	}, loopBus, deps.log, deps.tools)
 	if err != nil {
 		return nil, err
@@ -81,6 +83,25 @@ func newTurnLoop(face turnFace, deps turnDeps) (*agent.Loop, error) {
 		return nil, fmt.Errorf("the end-of-turn check could not be attached: %w", err)
 	}
 	return loop, nil
+}
+
+// stepPrice prices one response's usage from the table the provider publishes
+// for model, or is nil when it publishes none — a local server, or a model the
+// table does not list — so the loop counts those steps as unpriced rather than
+// as free.
+//
+// Every face builds its loop here, so the parent's turn and every child's are
+// priced by the same function from the same table the spend cap uses.
+func stepPrice(provider llm.Provider, model string) func(llm.Usage) (int64, error) {
+	pricer, ok := provider.(budget.Pricer)
+	if !ok {
+		return nil
+	}
+	prices, ok := pricer.PriceOf(model)
+	if !ok {
+		return nil
+	}
+	return prices.Charge
 }
 
 // maxSteps bounds a turn. A ceiling in code, not a prompt instruction.
