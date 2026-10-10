@@ -499,8 +499,7 @@ When a DevCouncil subsystem lands in Rust/Go, it is done when:
 - [ ] Cross-language interop is tested against the incumbent while both exist, and
       the test **fails** rather than skips when it cannot run
       (the pattern is an explicit opt-in that turns a skip into a failure; the
-      former `DC_STORE_REQUIRE_INTEROP` is no longer read by anything, see
-      `PORTING_TASKS.md` C1).
+      one that existed for `dc-store` is retired, see `PORTING_TASKS.md` C1).
 - [ ] MANVI resolves it through `toolBinary` with an env override, and degrades
       visibly when it is absent.
 - [ ] It does not import, reference, or assume MANVI.
