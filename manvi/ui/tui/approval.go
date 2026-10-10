@@ -559,6 +559,9 @@ type Approver struct {
 	SessionID string
 	// Actions is the loop's inbox.
 	Actions chan<- Action
+	// Done, when set, is closed when the loop stops; a request then returns a
+	// refusal instead of waiting on an inbox nobody drains.
+	Done <-chan struct{}
 }
 
 // Approve puts the request to the operator and waits.
@@ -570,11 +573,15 @@ func (a *Approver) Approve(ctx context.Context, req ui.Request) (ui.Decision, er
 	case a.Actions <- ActionApprovalRequest{SessionID: a.SessionID, Request: req, Reply: reply}:
 	case <-ctx.Done():
 		return ui.Decision{Allow: false, Reason: "cancelled before it could be put to an operator"}, nil
+	case <-a.Done:
+		return ui.Decision{Allow: false, Reason: "the interface closed before it could be put to an operator"}, nil
 	}
 
 	select {
 	case d := <-reply:
 		return d, nil
+	case <-a.Done:
+		return ui.Decision{Allow: false, Reason: "the interface closed while awaiting an operator"}, nil
 	case <-ctx.Done():
 		// A question that could not be answered is a refusal, never an allow.
 		// Treating an unanswerable prompt as consent is the one failure mode an

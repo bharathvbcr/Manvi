@@ -46,14 +46,22 @@ type Runner struct {
 	reader  *input.Reader
 	app     *App
 
+	// actions is the loop's inbox. The loop is its only consumer, so the loop
+	// never sends to it with a blocking send: see loopPost.
 	actions chan Action
+	// local holds actions the loop raised for itself that found actions full.
+	// Only the loop goroutine touches it; apply drains it before returning.
+	local []Action
+	// turns counts live turn goroutines, so shutdown can wait for them.
+	turns sync.WaitGroup
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	// savedStderr and stderrWriter hold the capture installed for the run.
 	savedStderr  *os.File
 	stderrWriter *os.File
-	// done closes when the runner stops, retiring the stderr reader.
+	// done closes when the runner stops. Every producer outside the loop
+	// selects on it (see post), because after the stop nothing drains actions.
 	done chan struct{}
 
 	focused bool
@@ -105,21 +113,102 @@ func (r *Runner) Sink(sessionID string) ui.Sink {
 		if e.At.IsZero() {
 			e.At = time.Now().UTC()
 		}
-		// A blocking send is deliberate. Dropping an event would leave a
-		// transcript that is missing something that happened, and the loop
-		// never waits on the harness — every effect runs on its own goroutine —
-		// so this cannot deadlock.
-		r.actions <- ActionEvent{SessionID: sessionID, Event: e}
+		// A blocking send is deliberate while the runner is live: dropping an
+		// event would leave a transcript that is missing something that
+		// happened. It cannot deadlock the loop, because the loop never blocks
+		// on this queue itself (its own sends go through loopPost) and drains
+		// it continuously; and once the runner stops it returns rather than
+		// parking its goroutine on a queue nobody will ever read.
+		r.post(ActionEvent{SessionID: sessionID, Event: e})
 	})
 }
 
 // Approver returns an approval seam bound to a session.
 func (r *Runner) Approver(sessionID string) ui.Approver {
-	return &Approver{SessionID: sessionID, Actions: r.actions}
+	return &Approver{SessionID: sessionID, Actions: r.actions, Done: r.done}
 }
 
 // Send injects an action from outside the loop.
-func (r *Runner) Send(a Action) { r.actions <- a }
+func (r *Runner) Send(a Action) { r.post(a) }
+
+// post queues an action from a goroutine other than the loop's. It blocks
+// while the runner is live, so nothing a producer reports is lost, and gives
+// up when the runner stops.
+func (r *Runner) post(a Action) {
+	select {
+	case r.actions <- a:
+	case <-r.done:
+	}
+}
+
+// loopPost queues an action the loop raises for itself. The loop is the only
+// consumer of actions, so a blocking send here deadlocks the whole UI as soon
+// as other sessions' streams have filled the queue. It sends without blocking
+// and keeps the overflow in r.local, which apply drains before it returns.
+// Loop goroutine only.
+func (r *Runner) loopPost(a Action) {
+	select {
+	case r.actions <- a:
+	default:
+		r.local = append(r.local, a)
+	}
+}
+
+// localQueued reports how many loop-raised actions are waiting in r.local.
+func (r *Runner) localQueued() int { return len(r.local) }
+
+// drainLocal applies the actions the loop queued for itself.
+func (r *Runner) drainLocal(ctx context.Context) {
+	for len(r.local) > 0 {
+		a := r.local[0]
+		r.local = r.local[1:]
+		r.apply(ctx, a)
+	}
+}
+
+// turnDrainTimeout bounds how long quitting waits for cancelled turns to
+// finish saving their logs.
+const turnDrainTimeout = 15 * time.Second
+
+// shutdownTurns cancels every running turn and waits, up to d, for their
+// goroutines. A turn's own tail persists its session, so waiting is what
+// gets the cancelled turn's log onto disk before the caller releases the
+// session's lease. A turn that outlives d is reported, not waited on forever.
+func (r *Runner) shutdownTurns(d time.Duration) error {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.cancels))
+	for id, cancel := range r.cancels {
+		ids = append(ids, id)
+		cancel()
+	}
+	r.mu.Unlock()
+	sort.Strings(ids)
+	for _, id := range ids {
+		r.cfg.Host.Cancel(id)
+	}
+	if !r.waitTurns(d) {
+		r.mu.Lock()
+		n := len(r.cancels)
+		r.mu.Unlock()
+		return fmt.Errorf("tui: %d turn(s) still running %s after quit; their logs may not be saved", n, d)
+	}
+	return nil
+}
+
+// waitTurns waits up to d for every turn goroutine and reports whether they
+// all finished.
+func (r *Runner) waitTurns(d time.Duration) bool {
+	finished := make(chan struct{})
+	go func() { r.turns.Wait(); close(finished) }()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-finished:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // Busy lists the sessions with a turn in flight, excluding one.
 //
@@ -158,6 +247,15 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 	}); err != nil {
 		return err
 	}
+	// Registered first so it runs last: the producers are released (done is
+	// closed) and the terminal is back before the wait, and a turn cancelled by
+	// quitting finishes persisting before Run returns, which is before the
+	// caller releases the sessions' leases.
+	defer func() {
+		if drainErr := r.shutdownTurns(turnDrainTimeout); drainErr != nil && err == nil {
+			err = drainErr
+		}
+	}()
 	// Three registrations for one teardown. A panic here leaves the terminal in
 	// raw mode on the alternate screen, where the shell that regains it shows
 	// nothing the user types.
@@ -344,6 +442,7 @@ func (r *Runner) apply(ctx context.Context, act Action) {
 	for _, e := range r.app.Dispatch(cleanAction(act, r.clean)) {
 		r.runEffect(ctx, e)
 	}
+	r.drainLocal(ctx)
 }
 
 // cleanAction returns act with every untrusted string passed through clean.
@@ -603,10 +702,10 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 		go func() {
 			id, title, err := r.cfg.Host.NewSession(ctx)
 			if err != nil {
-				r.actions <- ActionNotice{Text: "could not start a session: " + err.Error(), Status: StatusBlock}
+				r.post(ActionNotice{Text: "could not start a session: " + err.Error(), Status: StatusBlock})
 				return
 			}
-			r.actions <- ActionSessionAdded{ID: id, Title: title}
+			r.post(ActionSessionAdded{ID: id, Title: title})
 		}()
 
 	case EffectCloseSession:
@@ -618,13 +717,13 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := r.cfg.Host.CloseSession(releaseCtx, t.SessionID); err != nil {
-				r.actions <- ActionNotice{
+				r.post(ActionNotice{
 					SessionID: t.SessionID,
 					Text:      "session closed, but its cleanup failed: " + err.Error(),
 					Status:    StatusBlock,
-				}
+				})
 			}
-			r.actions <- actionRemoveSession{ID: t.SessionID}
+			r.post(actionRemoveSession{ID: t.SessionID})
 		}()
 
 	case EffectCopy:
@@ -632,7 +731,7 @@ func (r *Runner) runEffect(ctx context.Context, e Effect) {
 
 	case EffectSuspend:
 		if err := r.term.Suspend(); err != nil {
-			r.actions <- ActionNotice{Text: "suspend failed: " + err.Error(), Status: StatusWarn}
+			r.loopPost(ActionNotice{Text: "suspend failed: " + err.Error(), Status: StatusWarn})
 		}
 		r.painter.Invalidate()
 
@@ -664,18 +763,20 @@ func (r *Runner) startTurn(parent context.Context, sessionID string, work func(c
 		// different path, arrived here, and vanished — the operator saw the
 		// command echo into the transcript and no result ever follow, which
 		// reads as the harness having hung rather than having refused.
-		r.actions <- ActionNotice{
+		r.loopPost(ActionNotice{
 			SessionID: sessionID,
 			Text:      "a turn is already running in this session — ctrl+c cancels it",
 			Status:    StatusWarn,
-		}
+		})
 		return
 	}
 	r.cancels[sessionID] = cancel
 	r.mu.Unlock()
 
-	r.actions <- ActionTurnStarted{SessionID: sessionID}
+	r.loopPost(ActionTurnStarted{SessionID: sessionID})
+	r.turns.Add(1)
 	go func() {
+		defer r.turns.Done()
 		defer func() {
 			r.mu.Lock()
 			delete(r.cancels, sessionID)
@@ -687,7 +788,7 @@ func (r *Runner) startTurn(parent context.Context, sessionID string, work func(c
 			// A cancel the operator asked for is not a failure to report as one.
 			err = nil
 		}
-		r.actions <- ActionTurnEnded{SessionID: sessionID, Err: err}
+		r.post(ActionTurnEnded{SessionID: sessionID, Err: err})
 	}()
 }
 
@@ -711,10 +812,10 @@ func (r *Runner) copyToClipboard(text string) {
 	// The painter believes it owns the screen, and this wrote past it.
 	r.painter.Invalidate()
 	if truncated {
-		r.actions <- ActionNotice{
+		r.loopPost(ActionNotice{
 			Text:   "copied the first 96KB — the selection was larger",
 			Status: StatusWarn,
-		}
+		})
 	}
 }
 
