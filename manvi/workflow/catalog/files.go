@@ -3,8 +3,10 @@ package catalog
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
@@ -129,7 +131,37 @@ func publish(root *os.Root, name string, raw []byte, replace bool) error {
 		return err
 	}
 	if replace {
-		return root.Rename(staged, name)
+		err = root.Rename(staged, name)
+	} else {
+		err = root.Link(staged, name)
 	}
-	return root.Link(staged, name)
+	if err != nil {
+		return err
+	}
+	// Syncing the staged file put the bytes on the disk; syncing the directory
+	// is what puts the name there. Without it a power loss can leave the
+	// revision (or the current pointer) published as an unreferenced inode.
+	if err := syncDir(root); err != nil {
+		return fmt.Errorf("catalog: syncing directory after publishing %s: %w", name, err)
+	}
+	return nil
+}
+
+// syncDir flushes a catalog directory's own entries. It is a variable so a
+// test can prove publish calls it and fails when it fails; a crash cannot be
+// reproduced in a test.
+var syncDir = func(root *os.Root) error {
+	if runtime.GOOS == "windows" {
+		// A directory handle cannot be flushed there (see llm/budget/lock_windows.go).
+		return nil
+	}
+	d, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }

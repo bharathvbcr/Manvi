@@ -603,7 +603,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					continue
 				}
 				session = updated
-				if _, fenceErr = apply(workflow.Event{Kind: "pause", NextEpoch: updated.Epoch, Reason: s.Reason}); fenceErr != nil {
+				if _, fenceErr = apply(workflow.Event{Kind: "pause", NextEpoch: updated.Epoch, Reason: s.Reason, FailureCode: string(s.Cause)}); fenceErr != nil {
 					executionErr = fenceErr
 					continue
 				}
@@ -651,11 +651,8 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				}
 				pending = false
 				session = updated
-				reason := "human takeover"
-				if control.Kind == "pause" {
-					reason = "human takeover"
-				}
-				e := interruption("pause", reason)
+				e := interruption("pause", "human takeover")
+				e.FailureCode = string(workflow.FailureHumanTakeover)
 				e.NextEpoch = updated.Epoch
 				_, err = apply(e)
 				if err != nil {
@@ -851,7 +848,7 @@ func (r *Run) emitStuckIntervention(p *workflow.Program, s workflow.State) {
 		Run:           s.RunID,
 		Capability:    capID,
 		Step:          step,
-		ReasonCode:    StuckReasonCode(s.Phase, s.Reason),
+		ReasonCode:    StuckReasonCode(s),
 		ObservationID: s.Observation.ID,
 		FrameID:       frame,
 		Controller:    ControllerAutomation,

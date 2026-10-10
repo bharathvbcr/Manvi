@@ -36,6 +36,7 @@ const (
 	FailureActionLimit         FailureCode = "action_limit"
 	FailureDeadline            FailureCode = "deadline_exceeded"
 	FailureHumanDenied         FailureCode = "human_denied"
+	FailureHumanTakeover       FailureCode = "human_takeover"
 )
 
 type ResultKind string
@@ -81,17 +82,20 @@ func ResultFromState(p *Program, s State) Result {
 		out.Kind = ResultBusinessOutcome
 	case Failed:
 		out.Kind = ResultHardFailure
-		out.Failure = &ResultFailure{Observed: s.Reason, Code: FailureCheckpoint}
+		out.Failure = &ResultFailure{Observed: s.Reason, Code: s.failureCode(FailureCheckpoint)}
 		if p != nil && s.StepIndex >= 0 && s.StepIndex < len(p.spec.Steps) {
 			out.Failure.Step = p.spec.Steps[s.StepIndex].ID
 		}
 	case Cancelled:
 		out.Kind = ResultCancelled
+		if s.Cause == FailureHumanDenied {
+			out.Failure = &ResultFailure{Observed: s.Reason, Code: FailureHumanDenied}
+		}
 	case Unknown:
 		out.Kind = ResultOutcomeUnknown
 	case Paused:
 		out.Kind = ResultRecoverableExhausted
-		out.Failure = &ResultFailure{Observed: s.Reason, Code: FailureAmbiguousTarget}
+		out.Failure = &ResultFailure{Observed: s.Reason, Code: s.failureCode(FailureAmbiguousTarget)}
 	default:
 		out.Kind = ResultOutcomeUnknown
 	}
@@ -157,6 +161,42 @@ type State struct {
 	LastRecovery   string           `json:"last_recovery,omitempty"`
 	ActiveRecovery string           `json:"active_recovery,omitempty"`
 	Reason         string           `json:"reason,omitempty"`
+	// Cause is why Reason was set, as a code. Reason is prose for people; the
+	// result code and the intervention reason code come from Cause, because
+	// reading them back out of the prose misfiles any run whose native text
+	// happens to mention a deadline or a takeover. Empty means no code was
+	// recorded (traces written before it existed), and readers fall back to
+	// the phase's default.
+	Cause FailureCode `json:"cause,omitempty"`
+}
+
+// knownFailure is code when it is in the taxonomy and empty otherwise, so an
+// event from a caller cannot plant a code the result contract never defined.
+func knownFailure(code string) FailureCode {
+	switch c := FailureCode(code); c {
+	case FailureExternalInteraction, FailureWindowChanged, FailureStateChanged, FailureAmbiguousTarget,
+		FailureIncompleteObserve, FailureNotActionable, FailureCheckpoint, FailureActionLimit,
+		FailureDeadline, FailureHumanDenied, FailureHumanTakeover:
+		return c
+	}
+	return ""
+}
+
+// failureCode is the code this state reports: the recorded cause, or fallback
+// when none was recorded.
+func (s State) failureCode(fallback FailureCode) FailureCode {
+	if s.Cause != "" {
+		return s.Cause
+	}
+	return fallback
+}
+
+// settle records why the run is in its present phase. Every site that writes
+// Reason goes through it, so a stale cause cannot outlive the reason it
+// described.
+func (s *State) settle(cause FailureCode, reason string) {
+	s.Cause = cause
+	s.Reason = reason
 }
 
 type Command struct {
@@ -267,16 +307,16 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		} else {
 			s.Phase = Failed
 		}
-		s.Reason = "active execution deadline exceeded"
+		s.settle(FailureDeadline, "active execution deadline exceeded")
 		return s, nil, nil
 	}
 	if event.Kind == "cancel" {
 		if s.Phase == Acting || event.Delivery == "unknown" {
 			s.Phase = Unknown
-			s.Reason = "cancelled while action delivery was unresolved"
+			s.settle("", "cancelled while action delivery was unresolved")
 		} else {
 			s.Phase = Cancelled
-			s.Reason = "cancelled"
+			s.settle("", "cancelled")
 		}
 		return s, nil, nil
 	}
@@ -293,10 +333,10 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		if s.Phase == Acting || event.Delivery == "unknown" {
 			s.Phase = Unknown
-			s.Reason = "takeover after possible dispatch requires outcome reconciliation"
+			s.settle(FailureHumanTakeover, "takeover after possible dispatch requires outcome reconciliation")
 		} else {
 			s.Phase = Paused
-			s.Reason = event.Reason
+			s.settle(knownFailure(event.FailureCode), event.Reason)
 		}
 		return s, nil, nil
 	}
@@ -340,13 +380,13 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		s.ResumePhase = ""
 		s.Attempts = 0
-		s.Reason = ""
+		s.settle("", "")
 		return s, []Command{command(kind)}, nil
 	case "observe_failed":
 		if (s.Phase != Observing && s.Phase != PostAction) || event.ActionID != s.ActionID(p) {
 			return previous, nil, errors.New("capture failure does not match an observation command")
 		}
-		return retryObservation(p, s, command("observe"), event.Reason)
+		return retryObservation(p, s, command("observe"), FailureIncompleteObserve, event.Reason)
 	case "observed":
 		if s.Phase != Observing && s.Phase != PostAction {
 			return previous, nil, errors.New("unsolicited observation")
@@ -360,7 +400,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 					return next, cmds, err
 				}
 			}
-			return retryObservation(p, s, command("observe"), "incomplete observation: "+event.Observation.Reason)
+			return retryObservation(p, s, command("observe"), FailureIncompleteObserve, "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
 			return advance(p, s, step.Next)
@@ -369,7 +409,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
 				return next, cmds, err
 			}
-			return retryObservation(p, s, command("observe"), fmt.Sprintf("target resolves to %d elements", event.Observation.Matches))
+			return retryObservation(p, s, command("observe"), FailureAmbiguousTarget, fmt.Sprintf("target resolves to %d elements", event.Observation.Matches))
 		}
 		ladder := p.spec.Targets[step.Target].Ladder()
 		if event.Observation.StrategyIndex < 0 || event.Observation.StrategyIndex >= len(ladder) {
@@ -391,10 +431,10 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		switch step.Kind {
 		case "extract":
 			if event.Observation.Value.Type != step.OutputType || event.Observation.Value.Validate() != nil {
-				return fail(s, "observed output has wrong type")
+				return fail(s, FailureCheckpoint, "observed output has wrong type")
 			}
 			if step.OutputType == "money" && event.Observation.Value.Currency != step.Currency {
-				return fail(s, "observed currency differs")
+				return fail(s, FailureCheckpoint, "observed currency differs")
 			}
 			s.Outputs[step.Output] = event.Observation.Value
 			return advance(p, s, step.Next)
@@ -404,7 +444,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				var err error
 				expected, err = Resolve(step.Predicate.Expected, inputs, s.Outputs)
 				if err != nil {
-					return fail(s, err.Error())
+					return fail(s, FailureCheckpoint, err.Error())
 				}
 			}
 			passed := Compare(event.Observation.Value, step.Predicate.Op, expected)
@@ -416,9 +456,9 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			}
 			if !passed {
 				if step.Kind == "wait" {
-					return retryObservation(p, s, command("observe"), "wait predicate not yet satisfied")
+					return retryObservation(p, s, command("observe"), FailureCheckpoint, "wait predicate not yet satisfied")
 				}
-				return fail(s, "checkpoint predicate failed")
+				return fail(s, FailureCheckpoint, "checkpoint predicate failed")
 			}
 			return advance(p, s, step.Next)
 		default:
@@ -427,7 +467,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 					return next, cmds, err
 				}
 				s.Phase = Paused
-				s.Reason = "target is not actionable: " + event.Observation.Reason
+				s.settle(FailureNotActionable, "target is not actionable: "+event.Observation.Reason)
 				return s, nil, nil
 			}
 			if step.Effect == "change" {
@@ -448,7 +488,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return previous, nil, errors.New("denial does not match pending action")
 		}
 		s.Phase = Cancelled
-		s.Reason = "human denied action"
+		s.settle(FailureHumanDenied, "human denied action")
 		return s, nil, nil
 	case "receipt":
 		if s.Phase != Acting || event.ActionID != s.ActionID(p) {
@@ -471,14 +511,14 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				s.ActionAttempt++
 				s.Actions++
 				if s.Actions > p.spec.Limits.MaxActions {
-					return fail(s, "action limit exceeded")
+					return fail(s, FailureActionLimit, "action limit exceeded")
 				}
 				s.Phase = Paused
 				s.ResumePhase = Observing
 				s.Observation = Observation{}
 				s.Attempts = 0
 				s.ActiveRecovery = ""
-				s.Reason = "external interaction requires human reconciliation: " + event.Reason
+				s.settle(FailureExternalInteraction, "external interaction requires human reconciliation: "+event.Reason)
 				return s, nil, nil
 			}
 			if event.FailureCode == string(FailureWindowChanged) || event.FailureCode == string(FailureStateChanged) {
@@ -486,26 +526,26 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				s.Observation = Observation{}
 				s.Attempts = 0
 				s.ActiveRecovery = ""
-				s.Reason = "pre-dispatch application change: " + event.Reason
+				s.settle(FailureCode(event.FailureCode), "pre-dispatch application change: "+event.Reason)
 				if s.ActionAttempt >= p.spec.Limits.ObservationAttempts {
 					s.Phase = Paused
 					s.ResumePhase = Observing
-					s.Reason = "pre-dispatch action attempt budget exhausted: " + event.Reason
+					s.settle(FailureCode(event.FailureCode), "pre-dispatch action attempt budget exhausted: "+event.Reason)
 					return s, nil, nil
 				}
 				s.Actions++
 				if s.Actions > p.spec.Limits.MaxActions {
-					return fail(s, "action limit exceeded")
+					return fail(s, FailureActionLimit, "action limit exceeded")
 				}
 				s.Phase = Observing
 				cmd := command("observe")
 				cmd.DelayMillis = 200
 				return s, []Command{cmd}, nil
 			}
-			return fail(s, "action not dispatched: "+event.Reason)
+			return fail(s, "", "action not dispatched: "+event.Reason)
 		case "unknown":
 			s.Phase = Unknown
-			s.Reason = event.Reason
+			s.settle("", event.Reason)
 			return s, nil, nil
 		default:
 			return previous, nil, errors.New("unsupported action disposition")
@@ -516,7 +556,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		s.Phase = Observing
 		s.Observation = Observation{}
-		s.Reason = event.Reason
+		s.settle("", event.Reason)
 		return s, []Command{command("observe")}, nil
 	case "external_interaction":
 		if s.Phase != Observing && s.Phase != PostAction {
@@ -525,30 +565,30 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		s.ResumePhase = s.Phase
 		s.Phase = Paused
 		s.Observation = Observation{}
-		s.Reason = "external interaction requires human reconciliation: " + event.Reason
+		s.settle(FailureExternalInteraction, "external interaction requires human reconciliation: "+event.Reason)
 		return s, nil, nil
 	case "human_unknown":
 		if s.Phase != Paused {
 			return previous, nil, errors.New("human outcome requires paused run")
 		}
 		s.Phase = Unknown
-		s.Reason = event.Reason
+		s.settle("", event.Reason)
 		return s, nil, nil
 	case "error":
 		if s.Phase == Acting || s.Phase == PostAction || event.Delivery == "unknown" {
 			s.Phase = Unknown
-			s.Reason = event.Reason
+			s.settle("", event.Reason)
 			return s, nil, nil
 		}
-		return fail(s, event.Reason)
+		return fail(s, "", event.Reason)
 	default:
 		return previous, nil, fmt.Errorf("unsupported event %q", event.Kind)
 	}
 }
 
-func fail(s State, reason string) (State, []Command, error) {
+func fail(s State, cause FailureCode, reason string) (State, []Command, error) {
 	s.Phase = Failed
-	s.Reason = reason
+	s.settle(cause, reason)
 	return s, nil, nil
 }
 
@@ -581,10 +621,10 @@ func consultRecovery(p *Program, s State, step Step, obs Observation, inputs map
 		s.LastRecovery = r.ID
 		s.ActiveRecovery = r.ID
 		s.Observation = obs
-		s.Reason = "recovery applied: " + r.ID
+		s.settle("", "recovery applied: "+r.ID)
 		s.Actions++
 		if s.Actions > p.spec.Limits.MaxActions {
-			next, _, err := fail(s, "action limit exceeded")
+			next, _, err := fail(s, FailureActionLimit, "action limit exceeded")
 			return next, nil, true, err
 		}
 		s.Phase = Acting
@@ -606,7 +646,7 @@ func finishConclude(p *Program, s State, step Step) (State, []Command, error) {
 	s.Observation = Observation{}
 	s.Attempts = 0
 	s.ActionAttempt = 0
-	s.Reason = ""
+	s.settle("", "")
 	kind := "success"
 	for _, o := range p.spec.Outcomes {
 		if o.ID == step.Outcome {
@@ -622,9 +662,9 @@ func finishConclude(p *Program, s State, step Step) (State, []Command, error) {
 	return s, nil, nil
 }
 
-func retryObservation(p *Program, s State, cmd Command, reason string) (State, []Command, error) {
+func retryObservation(p *Program, s State, cmd Command, cause FailureCode, reason string) (State, []Command, error) {
 	s.Attempts++
-	s.Reason = reason
+	s.settle(cause, reason)
 	if s.Attempts >= p.spec.Limits.ObservationAttempts {
 		if s.Phase == PostAction {
 			s.ResumePhase = PostAction
@@ -649,14 +689,14 @@ func advance(p *Program, s State, next string) (State, []Command, error) {
 	s.Observation = Observation{}
 	s.Attempts = 0
 	s.ActionAttempt = 0
-	s.Reason = ""
+	s.settle("", "")
 	if i == len(p.spec.Steps) {
 		s.Phase = Completed
 		return s, nil, nil
 	}
 	s.Actions++
 	if s.Actions > p.spec.Limits.MaxActions {
-		return fail(s, "action limit exceeded")
+		return fail(s, FailureActionLimit, "action limit exceeded")
 	}
 	step := p.spec.Steps[i]
 	if step.Kind == "conclude" {

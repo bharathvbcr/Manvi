@@ -193,6 +193,45 @@ are bounded. Rooted filesystem handles prevent path escape. Publication is
 atomic to readers; power-loss durability of directory metadata is not guaranteed
 without a platform-specific directory-sync contract.
 
+## Consumer: Jarvis
+
+`workflow`, `workflow/catalog`, `computer`, `llm/budget` and the `session`
+privacy API have no importer inside this repository. Their consumer is
+**Jarvis** (`github.com/bharathvbcr/Jarvis`), which builds the desktop product
+on them. That is why `deadcode` and `devmap dead` report them unreachable, and
+why removing an exported symbol from them breaks Jarvis without failing
+anything here (cab5166 and 995027c did). `scripts/check-consumers.sh` builds
+and vets Jarvis against this checkout; run it before removing or changing an
+exported symbol in these packages.
+
+Contracts Jarvis relies on:
+
+- **Failure codes come from a typed cause.** `workflow.State.Cause` records why
+  `Reason` was set. `ResultFromState` reports `deadline_exceeded`,
+  `action_limit`, `external_interaction`, `human_takeover`, `human_denied`,
+  `not_actionable`, `ambiguous_target` or `checkpoint_failed` from it, and
+  `computer.StuckReasonCode(state)` maps it onto the intervention reason codes
+  (`external_interaction` and `human_takeover` are new). Neither reads the prose
+  of `Reason`. A state recorded without a cause falls back to `checkpoint_failed`
+  for a failure and `ambiguous_target` for a pause, as before. A cancel after a
+  denied approval now carries `human_denied` in `Result.Failure`; a plain cancel
+  still carries none. `ReasonLadderExhausted` is produced for an ambiguous target
+  and `ReasonRecoveriesExhausted` has no producer yet.
+- **Images are priced in request estimates.** `agent.CountRequestTokens` and
+  `agent.ImageTokens` price an `llm.ImageBlock`, at top level or inside a tool
+  result, with Anthropic's documented patch rule: `ceil(width/28) *
+  ceil(height/28)` visual tokens, capped at the high-resolution tier's 4,784
+  (<https://platform.claude.com/docs/en/build-with-claude/vision>, "Resolution
+  and token cost", read 2026-10-10). The standard tier's cap is 1,568 and
+  Gemini prices lower, so the estimate is an upper bound for every provider; an
+  image whose size cannot be read (WebP, truncated, empty) costs the cap.
+- **Catalog publication is crash-durable.** `catalog` publishes through a synced
+  staged file and then syncs the directory, so a power loss cannot lose the name.
+- `session.RestoreSensitiveLog` rebuilds a resumed log with its events scrubbed
+  before the first projection. Jarvis resumes discovery sessions through it.
+- `gemini-3.8-flash` is served with its stated limits (1,048,576 input,
+  65,536 output), which `llm/budget` needs to bound a reservation.
+
 ## Local checks
 
 From `manvi/`:
