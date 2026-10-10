@@ -149,12 +149,12 @@ executable and links none of them. Resolution is explicit-beats-PATH-beats-local
 3. a build in the local `crates/target`, so a compiled-but-not-installed artifact
    is found rather than reported missing.
 
-| Component | Env override | Go client |
+| Component | Env override | Go client (in `DevCouncil/backend/go_orchestrator/`) |
 |---|---|---|
-| `devmap` | `MANVI_MAP_BINARY` | `manvi/dc/devmap` |
-| `dcstore` | `MANVI_STORE_BINARY` | `manvi/dc/store` |
+| `devmap` | `MANVI_MAP_BINARY` | `dc/devmap` |
+| `dcstore` | `MANVI_STORE_BINARY` | `dc/store` |
 | `dcverify` | `MANVI_VERIFY_BINARY` | — (invoked from `devcouncil/verify.go`) |
-| `dcgrep` | `MANVI_GREP_BINARY` | `manvi/dc/dcgrep` |
+| `dcgrep` | `MANVI_GREP_BINARY` | `dc/dcgrep` |
 | Optional inspect pin | `MANVI_DEVCOUNCIL_BINARY` | `manvi/devcouncil/devbridge.go` (never PATH `dev`) |
 
 The Go clients transport answers; they do not compute them and must never cache
@@ -259,11 +259,14 @@ ran and passed reports.
 | `dcgrep` | `rust/dc-grep` | What is in this repository (ripgrep's engine, linked) |
 | `dc-glob` | `rust/dc-glob` | CPython `fnmatch` semantics — a library, not a binary; the one exception, shared by source between the components |
 
-**Not yet ported — still Python in DevCouncil.** The full inventory, sizes and
-sequencing are in [`DEVCOUNCIL_PORT_ROADMAP.md`](DEVCOUNCIL_PORT_ROADMAP.md).
-The three that matter most: the MCP server surface (29 `devcouncil_*` handlers —
-this is literally what "MCP layer for coding agents" means), the council
-(plan → critique → rebuttal → arbitrate), and verification.
+**The Python is gone.** DevCouncil's Python package was deleted in Phase 7, and
+the port's status is a per-row decision table in
+[`DEVCOUNCIL_PORT_ROADMAP.md`](DEVCOUNCIL_PORT_ROADMAP.md), measured against
+DevCouncil's own `docs/PHASE7_LONG_TAIL.md`. The three things that once mattered
+most have different outcomes: the MCP server is the Go host's 8 tools plus
+MANVI's native registry as the thick surface; the council has no code in either
+repository and its placement (decision D2) is still open; verification's
+AST stub detection landed in `dc-verify`.
 
 ---
 
@@ -348,7 +351,7 @@ doing the work.
 
 | Subsystem | Python LOC | Language | Why | Confidence |
 |---|---|---|---|---|
-| `integrations` (MCP server) | 11,284 | **Go** | Rule 4, decisively. JSON-RPC over stdio with 29 handlers and concurrent tool calls is goroutine work; there is no CPU-bound step anywhere in it. Rust would buy nothing and cost an async runtime. MANVI's 4,492-line MCP **client** is also the closest existing reference for the wire format. | High |
+| `integrations` (MCP server) | 11,284 | **Go** | Rule 4, decisively. JSON-RPC over stdio with 29 handlers (the Python server's count; the Go host now serves 8 and MANVI's native registry the rest) and concurrent tool calls is goroutine work; there is no CPU-bound step anywhere in it. Rust would buy nothing and cost an async runtime. MANVI's 4,492-line MCP **client** is also the closest existing reference for the wire format. | High |
 | `council` + `planning` | 1,470 | **Go** | Rule 4. Streaming HTTP, retries, schema-validated round trips. Per D2 the prompts and schemas are data that lives in DevCouncil; the execution is harness-side. | High |
 | `storage` (14 remaining tables) | 1,574 | **Rust** | Extends `dcstore`, same file, same schema, same connection. Splitting one SQLite database across two languages means two writers with different assumptions — which this system's own docs name as how "compatible" drifts apart. | High |
 | `verification` | 9,800 | **Split — see below** | The one subsystem that genuinely divides. | High |
@@ -376,17 +379,15 @@ Three parts, three answers, and the middle one is the interesting call.
   `sandbox` and `coverage_measurement` spawn processes, bound timeouts, stream
   output and clean up process groups. Rule 4, and MANVI's `internal/proc` already
   does exactly this shape of work.
-- **AST-based stub detection → Rust, and specifically inside `devmap`.** This is
-  the recommendation that is not obvious. `dc-verify`'s `detect_stubs` is
-  substring matching, and §4 of the port ledger records that DevCouncil's Python
-  is genuinely ahead here because it parses the file. Reaching parity needs an AST
-  — and `devmap` already links 32 tree-sitter grammars and records byte spans per
-  symbol. Writing a second AST parser in Go, or a third in `dc-verify`, is rule 3
-  in its purest form: a second engine to keep in step with the first. The stub
-  question is better asked as a `devmap` query over spans it already has.
-  **Inferred, not verified** — no `devmap` surface for "is this body a stub"
-  exists yet, and whether the extraction retains enough of the body to answer is
-  unchecked.
+- **AST-based stub detection → Rust.** This was written as a recommendation to
+  build it inside `devmap`; it landed instead in `dc-verify`
+  (`rust/dc-verify/src/stub_ast.rs`, DevCouncil `c6b48a28`, with Java and C# in
+  `9b0b9e5c`), which parses the changed file with the same tree-sitter grammars
+  `devmap-extract` builds. A file that does not parse falls back to the older
+  per-line substring gate, whose findings are labelled `Derived` rather than
+  `Proven`. `tests/false_accept.rs` pins false accepts and false positives at
+  zero. **Verified** by reading the source and the commit ancestry at the pin;
+  the tests were not re-run for this edit.
 
 ### Shared schemas need a parity gate, not a language
 
@@ -442,10 +443,10 @@ Ask what the change is *about*, not which repository is convenient.
 | How a turn is driven, a stream cancelled, a tool dispatched | MANVI |
 | Whether a write is allowed, how a grant is recorded | MANVI (`gate`, `policy`, `grants`) |
 | How a result is rendered, logged, or replayed | MANVI (`ui`, `session`) |
-| What the harness *asks* a component for | MANVI's client (`manvi/dc/...`) |
+| What the harness *asks* a component for | DevCouncil's Go client (`DevCouncil/backend/go_orchestrator/dc/...`), which MANVI imports |
 
-The last row is the one that is easy to get wrong. `manvi/dc/store`,
-`manvi/dc/devmap` and `manvi/dc/dcgrep` are **clients** — they transport
+The last row is the one that is easy to get wrong. `dc/store`,
+`dc/devmap`, `dc/dcgrep` and `dc/dcverify` (in `DevCouncil/backend/go_orchestrator/`) are **clients** — they transport
 answers, they do not compute them. A client that started deciding whether a
 lease is valid, or caching one, would be re-implementing the component badly and
 on the wrong side of the boundary. A cached lease is a lease that has already
@@ -497,7 +498,9 @@ When a DevCouncil subsystem lands in Rust/Go, it is done when:
 - [ ] Every call is bounded: timeout, payload ceiling, own process group.
 - [ ] Cross-language interop is tested against the incumbent while both exist, and
       the test **fails** rather than skips when it cannot run
-      (`DC_STORE_REQUIRE_INTEROP=1` is the pattern).
+      (the pattern is an explicit opt-in that turns a skip into a failure; the
+      former `DC_STORE_REQUIRE_INTEROP` is no longer read by anything, see
+      `PORTING_TASKS.md` C1).
 - [ ] MANVI resolves it through `toolBinary` with an env override, and degrades
       visibly when it is absent.
 - [ ] It does not import, reference, or assume MANVI.
@@ -522,7 +525,7 @@ when it does. A component is ready to be depended on when all of these hold:
 6. **A live-contract test on the MANVI side** that drives the real binary rather
    than a fake. A fake asserts only that the test and the code were written by
    the same hand; the field names are a contract with a producer built from
-   another repository. `manvi/dc/devmap`'s `TestTheLive*` tests are the pattern:
+   another repository. `DevCouncil/backend/go_orchestrator/dc/devmap`'s `TestTheLive*` tests are the pattern:
    they skip visibly when the binary is absent, and a skip must never read as a
    pass.
 7. **Resolution wired into `toolBinary`** with a `MANVI_<NAME>_BINARY` override,

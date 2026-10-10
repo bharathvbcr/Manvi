@@ -883,8 +883,10 @@ cargo test --manifest-path crates/Cargo.toml -p dc-store
 cargo clippy --manifest-path crates/Cargo.toml -p dc-store --all-targets -- -D warnings
 ```
 
-From `manvi/`, run `go test ./dc/store ./serve ./cmd/manvi` and
-`go test -race ./dc/store ./serve`. Real binaries exercise persistence across
+From `manvi/`, run `go test ./serve ./cmd/manvi` and `go test -race ./serve`; the
+`dc/store` client lives in DevCouncil, so from
+`DevCouncil/backend/go_orchestrator/` run `go test ./dc/store` and
+`go test -race ./dc/store`. Real binaries exercise persistence across
 restart, three board scopes, process reuse, lease isolation, idempotency, stale
 edits, an eight-writer race, grouping, page byte bounds and logical refusal
 recovery. `FuzzWorkbenchNeverAcceptsPartialOrFailedChildOutput` attacks the Go/Rust
@@ -896,7 +898,8 @@ spreads the same 100,000 task mutations across 100,000 distinct tasks with one
 revision each. Both measure global/workspace/repository/history reads, broad and
 rare search, scoped search, empty status and committed text edits. Read cases
 check exact totals and page sizes before timing; edit cases verify one additional
-event per mutation afterward. Run explicitly from `manvi/`:
+event per mutation afterward. Run explicitly from
+`DevCouncil/backend/go_orchestrator/`:
 
 ```sh
 go test ./dc/store -run '^$' -bench '^BenchmarkWorkbenchProfile(Stress)?$' -benchtime=100x -count=1 -timeout=20m

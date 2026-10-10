@@ -649,7 +649,7 @@
         <div class="step-num">1</div>
         <div>
           <div class="step-title">Workspace Boundary</div>
-          <p class="step-desc">Refuses any file write or command target that escapes the repository root: <code>../</code> traversal and absolute paths outside the workspace. This is the one rung that holds under every posture, including <code>yolo</code>.</p>
+          <p class="step-desc">Refuses any file write or command target that escapes the repository root: <code>../</code> traversal and absolute paths outside the workspace. It holds under <code>strict</code> and <code>dev</code>. Under <code>yolo</code> it is off, because <code>yolo</code> turns the hard rules off, and a run that skipped it is recorded as degraded (<code>policy.hard_rules.disabled</code>).</p>
           <div class="step-rules"><span class="rule-pill hard">path.outside_root</span></div>
         </div>
       </div>
@@ -746,7 +746,7 @@
     <table class="matrix">
       <thead><tr><th>Behaviour</th><th><code>strict</code></th><th><code>dev</code> (default)</th><th><code>yolo</code></th></tr></thead>
       <tbody>
-        <tr><td>Root containment</td><td>Enforced</td><td>Enforced</td><td>Enforced</td></tr>
+        <tr><td>Root containment</td><td>Enforced</td><td>Enforced</td><td>Off (recorded as degraded)</td></tr>
         <tr><td>Credential &amp; git hard rules</td><td>Enforced</td><td>Enforced</td><td>Off (recorded as degraded)</td></tr>
         <tr><td>Task-scope soft rules</td><td>Enforced</td><td>Advisory (demoted)</td><td>Off</td></tr>
         <tr><td>Operator escalation (TUI)</td><td>Prompts a modal</td><td>No prompts</td><td>No prompts</td></tr>
@@ -1047,10 +1047,15 @@ function runSim() {
   if (!path) { out.textContent = 'Enter a target path.'; return; }
   const p = path.replace(/^\.\//, '');
 
-  // Rung 1: root containment holds under every posture
+  // Rung 1: root containment holds under strict and dev; yolo turns it off
   if (p.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(p)) {
-    set(0, 'stop', 'Path leaves the repository root. Holds under every posture, including yolo.');
-    finish('blocked', 'Blocked (hard refusal)', 'path.outside_root', 'The path escapes the workspace. No posture or grant can change this.');
+    if (posture === 'yolo') {
+      set(0, 'fire', 'Path leaves the repository root, but root containment is off under yolo.');
+      finish('degraded', 'Allowed (degraded)', 'path.outside_root', 'Under <code>yolo</code> the hard rules are off, root containment included. The write lands outside the workspace, the run is classified as weakened, and the skipped rule is recorded as <code>policy.hard_rules.disabled</code> rather than hidden.');
+      return;
+    }
+    set(0, 'stop', 'Path leaves the repository root. Holds under strict and dev; yolo turns it off.');
+    finish('blocked', 'Blocked (hard refusal)', 'path.outside_root', 'The path escapes the workspace. No grant can change this, and only <code>yolo</code> (which turns every hard rule off) lets it through.');
     return;
   }
   set(0, 'pass', 'Path stays inside the repository root.');
@@ -1063,7 +1068,7 @@ function runSim() {
   if (hard) {
     if (posture === 'yolo') {
       set(1, 'fire', hard + ' would fire, but hard rules are off under yolo.');
-      finish('degraded', 'Allowed (degraded)', hard, 'Hard rules are disabled under <code>yolo</code>. The write proceeds, the run is classified as weakened, and the skipped hard rule is recorded rather than hidden. Root containment still held.');
+      finish('degraded', 'Allowed (degraded)', hard, 'Hard rules are disabled under <code>yolo</code>. The write proceeds, the run is classified as weakened, and the skipped hard rule is recorded rather than hidden.');
       return;
     }
     set(1, 'stop', hard + ' matched. Ungrantable: grants and posture cannot clear it.');

@@ -153,10 +153,10 @@ upstream for all of them. GitPulse consumes both and vendors selected crates.
 | Driving a turn, cancelling a stream, dispatching a tool | MANVI |
 | Whether a write is allowed; how a grant is recorded | MANVI — `gate`, `policy`, `grants` |
 | Rendering, logging, replay | MANVI — `ui`, `session` |
-| What the harness *asks* a component for | MANVI — `manvi/dc/…` |
+| What the harness *asks* a component for | DevCouncil's Go clients (`DevCouncil/backend/go_orchestrator/dc/…`), consumed by MANVI |
 
-The last row is the one that goes wrong. `manvi/dc/store`, `manvi/dc/devmap` and
-`manvi/dc/dcgrep` are **clients**: they transport answers, they do not compute
+The last row is the one that goes wrong. `dc/store`, `dc/devmap`, `dc/dcgrep` and
+`dc/dcverify` (under `DevCouncil/backend/go_orchestrator/`) are **clients**: they transport answers, they do not compute
 them. A client that starts deciding whether a lease is valid — or caching one —
 is reimplementing a component badly and on the wrong side of the boundary. A
 cached lease is a lease that has already expired somewhere else.
