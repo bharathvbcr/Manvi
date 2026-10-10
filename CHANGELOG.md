@@ -23,6 +23,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- A task scope now fences every command that writes a file, not only the
+  redirect and `sed -i`, `tee`, `cp`, `mv`. `policy.check.command` (and the
+  harness's own shell tool) judges the files `rm`, `truncate`, `touch`,
+  `dd of=`, `perl -i`, `install`, `ln`, `rsync` and `patch FILE` write against
+  the same decision `policy.check.file` gives: outside the plan is
+  `scope.unplanned`, a credential `path.secret`, outside the root
+  `path.outside_root`. Under a declared scope, `git apply`, `patch` with no file
+  operand, `xargs`/`find -exec`/`-delete` running a writer, and a recursive `rm`
+  of a pattern write files the command text does not name and are refused as
+  `command.substitution`; with no scope they are unchanged. DevCouncil pin
+  `ec26e906`.
 - Subprocess cost per tool call. The turn-start baseline seeds its scratch
   index from a copy of the repository's own index instead of `read-tree HEAD`,
   so `git add -A` reuses git's stat cache and re-hashes only changed files; the
