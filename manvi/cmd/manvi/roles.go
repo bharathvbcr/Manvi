@@ -23,8 +23,11 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	}
 	profile := sessionTierProfile(provider)
 
-	fmt.Fprintf(out, "agents — role → tier → model on provider %s\n\n", provider)
-	fmt.Fprintf(out, "  %-16s %-8s %-28s %s\n", "ROLE", "TIER", "MODEL", "WRITES")
+	// Composed whole and written once, so a failed write is one error to
+	// report rather than six to drop.
+	var b strings.Builder
+	fmt.Fprintf(&b, "agents — role → tier → model on provider %s\n\n", provider)
+	fmt.Fprintf(&b, "  %-16s %-8s %-28s %s\n", "ROLE", "TIER", "MODEL", "WRITES")
 	// The main agent's model is the session's own — MANVI_MODEL, or the
 	// provider's default — and not read from the profile here, so this row
 	// never names a model the session is not running.
@@ -32,7 +35,7 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	if m := strings.TrimSpace(os.Getenv("MANVI_MODEL")); m != "" {
 		mainModel = m
 	}
-	fmt.Fprintf(out, "  %-16s %-8s %-28s %s\n", "(main agent)", agents.TierMain, mainModel, "yes")
+	fmt.Fprintf(&b, "  %-16s %-8s %-28s %s\n", "(main agent)", agents.TierMain, mainModel, "yes")
 	for _, def := range agents.NewRegistry().List() {
 		model := tierModel(profile, def.Ceiling())
 		if !agents.ParsePlacement(def.Model, nil).Inherits() {
@@ -42,15 +45,16 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 		if def.EnableWriteTools {
 			writes = "yes"
 		}
-		fmt.Fprintf(out, "  %-16s %-8s %-28s %s\n", def.Name, def.Ceiling(), model, writes)
+		fmt.Fprintf(&b, "  %-16s %-8s %-28s %s\n", def.Name, def.Ceiling(), model, writes)
 	}
-	fmt.Fprintf(out, "\nA role's tier is the dearest it runs on. A dispatch may route it lower: a read-only "+
+	fmt.Fprintf(&b, "\nA role's tier is the dearest it runs on. A dispatch may route it lower: a read-only "+
 		"child goes to lite, or to basic in a fan-out of %d or more, and only a verdict reaches advisor.\n",
 		agents.BasicFanoutWidth)
 	if profile == nil {
-		fmt.Fprintf(out, "Tiers resolve on anthropic only; on %s every child runs on the session's model.\n", provider)
+		fmt.Fprintf(&b, "Tiers resolve on anthropic only; on %s every child runs on the session's model.\n", provider)
 	}
-	return nil
+	_, err = io.WriteString(out, b.String())
+	return err
 }
 
 // tierModel is the model a tier resolves to, or what a child on it inherits.
