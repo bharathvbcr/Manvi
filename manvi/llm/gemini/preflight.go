@@ -1,25 +1,12 @@
 package gemini
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
-
-// preflightLimit bounds how much of a stream is read looking for an opening
-// error frame. The frames that precede one are small and few —
-// interaction.created and interaction.status_update, a few hundred bytes — so
-// this is generous by an order of magnitude and exists only so a server that
-// never sends a content frame cannot make the inspection unbounded.
-const preflightLimit = 64 << 10
-
-// preflightFrames bounds the same thing by count, for a server that sends many
-// tiny preamble frames rather than one large one.
-const preflightFrames = 16
 
 // preflight inspects the opening of a stream and decides whether the request
 // actually succeeded.
@@ -47,86 +34,13 @@ const preflightFrames = 16
 // has begun producing output is never reported as a retryable failure — that
 // would re-issue a request whose first half the caller has already read.
 func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error) {
-	var seen bytes.Buffer
-	reader := io.LimitReader(resp.Body, preflightLimit)
-	buf := make([]byte, 4096)
-
-	// consumed is how much of seen has already been split into whole frames.
-	// Without it each read re-scans the buffer from the start, so the first
-	// frame is judged again on every pass and the frame budget is spent before
-	// the scan ever reaches the frame that matters.
-	consumed := 0
-	frames := 0
-	for frames < preflightFrames {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			seen.Write(buf[:n])
-		}
-
-		for frames < preflightFrames {
-			rest := seen.String()[consumed:]
-			frame, size, ok := splitFrame(rest)
-			if !ok {
-				break
-			}
-			consumed += size
-			frames++
-
+	return transport.PreflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout),
+		func(frame string) (bool, *transport.Error) {
 			if failure := errorInFrame(frame); failure != nil {
-				return transport.StreamAccepted{}, failure
+				return false, failure
 			}
-			if !isPreamble(frame) {
-				// Content has started. Nothing after this point is safe to
-				// retry from, so inspection ends here.
-				return replay(&seen, resp.Body), nil
-			}
-		}
-
-		if err != nil {
-			// EOF or a read failure: hand back what there is and let the
-			// decoder report it. A truncated stream is its problem to describe,
-			// not this function's to guess at.
-			return replay(&seen, resp.Body), nil
-		}
-	}
-	return replay(&seen, resp.Body), nil
-}
-
-// frameTerminators are the byte sequences that end an SSE frame: a blank line,
-// whose line ending may be CRLF or LF, after a line whose ending may likewise
-// be either.
-//
-// This scanner split on "\n\n" alone, which never occurs in a CRLF-framed
-// stream — so a retryable error frame delivered with CRLF endings was invisible
-// here and the four-attempt retry policy this whole file exists to reach was
-// skipped, on nothing but a line ending. Measured on the same body from the
-// same server: the LF form got three requests, the CRLF form got one.
-// transport.SSE, which reads the very same stream immediately afterwards,
-// accepts both (it trims "\r\n" off every line), and two parsers disagreeing
-// about where a frame ends is a defect whether or not a live endpoint currently
-// exercises it.
-//
-// Ordered longest-first so a boundary is consumed whole rather than leaving a
-// stray terminator at the head of the next frame.
-var frameTerminators = [...]string{"\r\n\r\n", "\r\n\n", "\n\r\n", "\n\n"}
-
-// splitFrame returns the first whole frame in rest and how many bytes it
-// occupied, terminator included.
-func splitFrame(rest string) (frame string, size int, ok bool) {
-	at, width := -1, 0
-	for _, sep := range frameTerminators {
-		i := strings.Index(rest, sep)
-		if i < 0 {
-			continue
-		}
-		if at < 0 || i < at || (i == at && len(sep) > width) {
-			at, width = i, len(sep)
-		}
-	}
-	if at < 0 {
-		return "", 0, false
-	}
-	return rest[:at], at + width, true
+			return isPreamble(frame), nil
+		})
 }
 
 // isPreamble reports whether a frame is one of the opening frames that carry no
@@ -216,18 +130,4 @@ func retryableMessage(message, reason string) bool {
 		}
 	}
 	return true
-}
-
-// replay returns a reader that yields the inspected bytes and then the rest of
-// the response, so nothing is lost to having looked.
-func replay(seen *bytes.Buffer, rest io.ReadCloser) transport.StreamAccepted {
-	return transport.StreamAccepted{
-		Body: struct {
-			io.Reader
-			io.Closer
-		}{
-			Reader: io.MultiReader(bytes.NewReader(seen.Bytes()), rest),
-			Closer: rest,
-		},
-	}
 }

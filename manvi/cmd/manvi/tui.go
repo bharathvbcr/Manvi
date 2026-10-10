@@ -125,10 +125,11 @@ type tuiSession struct {
 	// are only serviceable together and a ceiling found to be wrong after a
 	// prompt has been typed reads as the harness losing the turn.
 	effortCeiling string
-	// tiers is where each tier runs for this session's provider, resolved and
-	// checked at attach beside the model, and nil where tiers do not apply.
-	tiers    agents.TierProfile
-	registry *llm.Registry
+	registry      *llm.Registry
+	// tiers is the checked tier profile children of this session are placed
+	// on, resolved at attach with the provider it was checked against; nil off
+	// anthropic.
+	tiers agents.TierProfile
 }
 
 // persist writes a session's log to the same store the headless face resumes
@@ -179,7 +180,8 @@ func (s *tuiSession) attachment() attached {
 func (s *tuiSession) detach() {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
-	s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers = nil, nil, "", "", "", nil
+	s.provider, s.registry, s.model, s.effort, s.effortCeiling = nil, nil, "", "", ""
+	s.tiers = nil
 }
 
 type harnessHost struct {
@@ -1105,7 +1107,8 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	}
 	s.attachMu.Lock()
 	s.provider, s.registry, s.model, s.effort = provider, registry, model, effort
-	s.effortCeiling, s.tiers = ceiling, tiers.Profile()
+	s.effortCeiling = ceiling
+	s.tiers = tiers.Profile()
 	s.attachMu.Unlock()
 	return nil
 }

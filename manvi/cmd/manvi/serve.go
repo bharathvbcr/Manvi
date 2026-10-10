@@ -130,8 +130,11 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	devmapClient := mapClient(projectRoot())
-	modules := []serve.Module{serve.DevmapModule{Client: devmapClient}}
+	// Every devmap client is built for a root the request named and the server
+	// validated, never for this process's working directory: GitPulse launches
+	// the sidecar in a scratch directory.
+	forRoot := func(root string) serve.DevmapClient { return mapClient(root) }
+	modules := []serve.Module{serve.DevmapModule{ForRoot: forRoot}}
 	var runner *serve.EnhancementRunner
 	var managed *serve.ManagedRunner
 	var scan *serve.ScanRunner
@@ -215,7 +218,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
-		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Devmap: devmapClient, Scan: scan, Verify: verify})
+		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Devmap: forRoot, Scan: scan, Verify: verify})
 	}
 	srv := serve.New(os.Stdout, serve.Options{
 		HardRules:      hardRules,

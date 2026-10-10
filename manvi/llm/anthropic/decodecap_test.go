@@ -58,7 +58,12 @@ func TestAnOrdinaryResponseIsNotChargedIntoRefusal(t *testing.T) {
 		fmt.Fprintf(&body,
 			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"/etc/hosts\\\"}\"}}\n\n",
 			i)
+		fmt.Fprintf(&body,
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", i)
 	}
+	// The documented flow ends with message_stop; a stream without it is a
+	// truncated one and is refused at EOF, which is not what this test is about.
+	body.WriteString("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 
 	s := newStream(io.NopCloser(strings.NewReader(body.String())), "m", 0)
 	defer s.Close()

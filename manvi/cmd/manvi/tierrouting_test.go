@@ -243,6 +243,8 @@ func TestATierWithNoProfileInheritsTheParent(t *testing.T) {
 	r := &subAgentRunner{}
 	r.attach(subAgentConfig{
 		provider: p, models: models, model: "parent-model", effort: "low",
+		// Off anthropic the checked table is inactive, so its Profile is nil.
+		tiers:    tierTable{Provider: p.Name()}.Profile(),
 		registry: surfaceRegistry(t), systemPrompt: "PARENT PROMPT",
 	})
 	if _, err := r.RunSubAgent(context.Background(), devcouncil.SubAgentRequest{
@@ -300,6 +302,39 @@ func TestShowAgentsPrintsRoleTierAndModel(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "(main agent)") {
 		t.Errorf("the main agent's row is missing:\n%s", out.String())
+	}
+}
+
+// `manvi agents` reads the operator's tier profile, not the shipped one: a
+// role capped at a tier the operator moved shows the moved model, because that
+// is where a child of that role would be sent.
+func TestShowAgentsReadsTheConfiguredTierProfile(t *testing.T) {
+	t.Setenv("MANVI_MODEL", "")
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "claude-haiku-5-5")
+	reg, err := newRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Set(flags.Human, flags.LLMDefaultProvider, "anthropic"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := showAgents(&out, reg); err != nil {
+		t.Fatal(err)
+	}
+	var lite int
+	for _, def := range agents.NewRegistry().List() {
+		if def.Tier != agents.TierLite {
+			continue
+		}
+		lite++
+		want := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(def.Name) + `\s+lite\s+claude-haiku-5-5\s`)
+		if !want.MatchString(out.String()) {
+			t.Errorf("role %s on the moved lite tier does not show the configured model:\n%s", def.Name, out.String())
+		}
+	}
+	if lite == 0 {
+		t.Fatal("no shipped role is capped at lite, so this test asserts nothing")
 	}
 }
 

@@ -28,6 +28,10 @@ const contractPath = "../../contracts/serve.ops.schema.json"
 var contractTypes = map[string]reflect.Type{
 	"HelloParams":        reflect.TypeFor[HelloParams](),
 	"HelloResult":        reflect.TypeFor[HelloResult](),
+	"OpLimit":            reflect.TypeFor[OpLimit](),
+	"DevmapStatusParams": reflect.TypeFor[devmapStatusParams](),
+	"DevmapQueryParams":  reflect.TypeFor[devmapQueryParams](),
+	"RefineParams":       reflect.TypeFor[refineRequest](),
 	"FileCheckParams":    reflect.TypeFor[FileCheckParams](),
 	"CommandCheckParams": reflect.TypeFor[CommandCheckParams](),
 	"HostScope":          reflect.TypeFor[HostScope](),
@@ -77,8 +81,13 @@ func describeType(t reflect.Type) *contractField {
 		out.Type = "string"
 	case t.Kind() == reflect.Bool:
 		out.Type = "boolean"
+	case t.Kind() >= reflect.Float32 && t.Kind() <= reflect.Float64:
+		out.Type = "number"
 	case t.Kind() >= reflect.Int && t.Kind() <= reflect.Uint64:
 		out.Type = "integer"
+	case t.Kind() == reflect.Map:
+		out.Type = "map"
+		out.Items = describeType(t.Elem())
 	case t.Kind() == reflect.Slice:
 		out.Type = "array"
 		out.Items = describeType(t.Elem())
@@ -157,7 +166,7 @@ func currentContract(t *testing.T) serveContract {
 	t.Cleanup(func() { _ = scan.Close() })
 	full := opsOf(t, Options{Modules: []Module{
 		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Verify: verify, Configuration: &EnhancementConfiguration{}},
-		DevmapModule{Client: &fakeDevmap{}},
+		DevmapModule{ForRoot: func(string) DevmapClient { return &fakeDevmap{} }},
 	}})
 	var optional []string
 	for _, op := range full {

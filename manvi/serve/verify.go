@@ -302,6 +302,11 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 	if err := params.validate(); err != nil {
 		return VerifyResult{}, &store.WorkbenchError{Code: "invalid_input", Message: err.Error()}
 	}
+	// The worktree is the only root this job reads. It must exist and be the
+	// top of a git work tree; nothing falls back to the process's directory.
+	if _, e := canonicalRepoRoot(ctx, "worktree", params.Worktree); e != nil {
+		return VerifyResult{}, &store.WorkbenchError{Code: e.Code, Message: e.Message}
+	}
 
 	// One claim at a time. The check-then-write below is not atomic in storage,
 	// so two identical requests must not both find nothing and both claim.

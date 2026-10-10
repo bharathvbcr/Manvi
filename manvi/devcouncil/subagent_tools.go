@@ -1089,7 +1089,8 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 }
 
 // spawnChildRequest is what one devcouncil_spawn_subagents child is asked to
-// do, under the role it names, if any. Built before the fan-out runs so the
+// do, under the role it names, if any. width is how many children this
+// dispatch holds, which the router reads. Built before the fan-out runs so the
 // runner can admit every child against a spend cap before any of them starts.
 func spawnChildRequest(t spawnRequest, roles *agents.Registry, width int) SubAgentRequest {
 	// A task may name a role, which is what lets one fan-out put a planner on

@@ -21,7 +21,9 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", flags.LLMDefaultProvider, err)
 	}
-	table, err := checkTiers(reg, provider)
+	// Resolved, not checked: this is a diagnostic, and a profile a session
+	// would refuse is reported by 'manvi tiers', which names the line to fix.
+	table, err := resolveTiers(reg, provider)
 	if err != nil {
 		return err
 	}
@@ -32,11 +34,14 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "agents — role → tier → model on provider %s\n\n", provider)
 	fmt.Fprintf(&b, "  %-16s %-8s %-28s %s\n", "ROLE", "TIER", "MODEL", "WRITES")
-	// The main agent's model is the session's own — MANVI_MODEL, or the
-	// provider's default — and not read from the profile here, so this row
-	// never names a model the session is not running.
+	// The main agent's model is the session's own. On anthropic the table's
+	// main row is what resolveModelFor sends — MANVI_MODEL, else llm.tier.main;
+	// elsewhere only MANVI_MODEL is known without asking the provider, so this
+	// row never names a model the session is not running.
 	mainModel := "the session's model"
-	if m := strings.TrimSpace(os.Getenv("MANVI_MODEL")); m != "" {
+	if table.Active {
+		mainModel = table.row(agents.TierMain).Model
+	} else if m := strings.TrimSpace(os.Getenv("MANVI_MODEL")); m != "" {
 		mainModel = m
 	}
 	fmt.Fprintf(&b, "  %-16s %-8s %-28s %s\n", "(main agent)", agents.TierMain, mainModel, "yes")

@@ -78,27 +78,86 @@ func replaceWordLiteral(text, oldWord, newWord string) string {
 	return sb.String()
 }
 
-func repairJSONLiterals(s string) string {
-	repaired := strings.ReplaceAll(s, ",\n}", "\n}")
-	repaired = strings.ReplaceAll(repaired, ", }", "}")
-	repaired = strings.ReplaceAll(repaired, ",}", "}")
-	repaired = strings.ReplaceAll(repaired, ",\n]", "\n]")
-	repaired = strings.ReplaceAll(repaired, ", ]", "]")
-	repaired = strings.ReplaceAll(repaired, ",]", "]")
+// stripTrailingCommas removes a comma that is followed, past any whitespace, by
+// a closing brace or bracket, outside string values.
+//
+// It walks the payload with the same string awareness as replaceWordLiteral. It
+// used to apply strings.ReplaceAll for ",}" and ",]" to the whole payload, which
+// rewrote the contents of string values: a regex "a,]" became "a]" and a
+// separator ",}" became "}", and because the repaired payload then parsed, the
+// corruption was accepted and a patch or shell tool received text the model
+// never wrote. Only the bytes the walk is certain are structure are touched.
+func stripTrailingCommas(text string) string {
+	if !strings.Contains(text, ",") {
+		return text
+	}
+	var sb strings.Builder
+	sb.Grow(len(text))
+	inString := false
+	var quoteChar byte
+	escaped := false
+	n := len(text)
+	for i := 0; i < n; i++ {
+		c := text[i]
+		if inString {
+			sb.WriteByte(c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == quoteChar {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			inString = true
+			quoteChar = c
+		case ',':
+			j := i + 1
+			for j < n && (text[j] == ' ' || text[j] == '\t' || text[j] == '\n' || text[j] == '\r') {
+				j++
+			}
+			if j < n && (text[j] == '}' || text[j] == ']') {
+				continue // drop the comma, keep the whitespace
+			}
+		}
+		sb.WriteByte(c)
+	}
+	return sb.String()
+}
 
+func repairJSONLiterals(s string) string {
+	repaired := stripTrailingCommas(s)
 	repaired = replaceWordLiteral(repaired, "True", "true")
 	repaired = replaceWordLiteral(repaired, "False", "false")
 	repaired = replaceWordLiteral(repaired, "None", "null")
 	return repaired
 }
 
+// sanitizeJSONArguments returns arguments valid as JSON where they can be
+// made so. See sanitizeJSONArgumentsReport.
 func sanitizeJSONArguments(raw string) json.RawMessage {
+	args, _ := sanitizeJSONArgumentsReport(raw)
+	return args
+}
+
+// sanitizeJSONArgumentsReport is sanitizeJSONArguments plus whether the payload
+// was rewritten to get there — a fence stripped, a substring extracted, a
+// literal or trailing comma repaired. The caller records it, because a tool
+// receiving arguments the model did not literally send is something an operator
+// needs to be able to see. Empty arguments are `{}`, which is a claim about the
+// absence of arguments rather than a rewrite; whether an empty payload may be
+// believed is the caller's decision, because only the caller knows if the call
+// was framed as complete.
+func sanitizeJSONArgumentsReport(raw string) (json.RawMessage, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return json.RawMessage("{}")
+		return json.RawMessage("{}"), false
 	}
 	if json.Valid([]byte(trimmed)) {
-		return json.RawMessage(trimmed)
+		return json.RawMessage(trimmed), false
 	}
 	// Strip markdown code fences: ```json ... ``` or ``` ... ```
 	if strings.HasPrefix(trimmed, "```") {
@@ -110,7 +169,7 @@ func sanitizeJSONArguments(raw string) json.RawMessage {
 			}
 			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
 			if json.Valid([]byte(trimmed)) {
-				return json.RawMessage(trimmed)
+				return json.RawMessage(trimmed), true
 			}
 		}
 	}
@@ -120,11 +179,11 @@ func sanitizeJSONArguments(raw string) json.RawMessage {
 	if startObj >= 0 && endObj > startObj {
 		candidate := trimmed[startObj : endObj+1]
 		if json.Valid([]byte(candidate)) {
-			return json.RawMessage(candidate)
+			return json.RawMessage(candidate), true
 		}
 		repaired := repairJSONLiterals(candidate)
 		if json.Valid([]byte(repaired)) {
-			return json.RawMessage(repaired)
+			return json.RawMessage(repaired), true
 		}
 	}
 
@@ -133,18 +192,18 @@ func sanitizeJSONArguments(raw string) json.RawMessage {
 	if startArr >= 0 && endArr > startArr {
 		candidate := trimmed[startArr : endArr+1]
 		if json.Valid([]byte(candidate)) {
-			return json.RawMessage(candidate)
+			return json.RawMessage(candidate), true
 		}
 		repaired := repairJSONLiterals(candidate)
 		if json.Valid([]byte(repaired)) {
-			return json.RawMessage(repaired)
+			return json.RawMessage(repaired), true
 		}
 	}
 
 	repairedDirect := repairJSONLiterals(trimmed)
 	if json.Valid([]byte(repairedDirect)) {
-		return json.RawMessage(repairedDirect)
+		return json.RawMessage(repairedDirect), true
 	}
 
-	return json.RawMessage(raw)
+	return json.RawMessage(raw), false
 }

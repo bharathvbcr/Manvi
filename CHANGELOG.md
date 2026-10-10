@@ -23,6 +23,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `manvi serve` binds every repository read to an explicit root. `devmap.status`
+  and `devmap.query` require `root`, `work.enhancements.refine` requires
+  `repo_root`, and `work.verify.task` validates its `worktree`, all through one
+  check (absolute, existing, not a symlink, the top of a git work tree). A
+  missing or unusable root is refused with the new `E_BAD_ROOT`; the sidecar's
+  working directory is never substituted, and a devmap answer whose envelope
+  names another repository is refused. This is a breaking change for hosts that
+  called `devmap.*` or refine without a root.
+- `hello` reports `op_limits`: each served op's `lane` and `deadline_ms` as
+  enforced by the server (`"inline"` and 0 for ops answered inline), so a host
+  sizes its client timeouts from the server. Additive; an older host ignores it.
+
 - `work.enhancements.refine`: a host-only operation that proposes acceptance
   criteria, `split_into` parts and `duplicate_of` links for one task, grounded
   in DevMap answers for the symbols the task names and in the open board. It
@@ -82,6 +94,21 @@ under **Unreleased** in the same commit as the code.
   from the Go types. A Go test fails when the file and the types disagree
   (`MANVI_UPDATE_CONTRACT=1` regenerates it), so a host that mirrors the file
   can fail its own build when it sends a field Manvi does not read.
+- Model tiers: `basic`, `lite`, `heavy`, `main` and `advisor`, cheapest
+  first, each with a model and an effort (`llm.tier.<tier>`,
+  `llm.tier.<tier>.effort`; defaults Haiku 5.5, Sonnet 5.5, Opus 5.5, Opus
+  5.5, Fable 5.1, every effort unset). They are operator-scope settings, read
+  from `MANVI_LLM_TIER_*`, `manvi flags set`, or the user config
+  `<user config dir>/manvi/config.yaml` (moved with `MANVI_USER_CONFIG`; a path
+  inside the repository is refused). A repository `config.yaml` that sets a
+  tier key is refused outright, naming the lines, rather than ignored. A
+  headless run or a TUI attach refuses to start, naming the tier, when a model
+  is not in the provider's catalogue, is unpriced while
+  `MANVI_ANTHROPIC_BUDGET_USD` is set, or has an effort it cannot honour.
+  `manvi tiers` prints the resolved table with each value's source and exits 1
+  on a profile a session would refuse. With the Anthropic provider and
+  `MANVI_MODEL` unset, the session runs the main tier's model; `MANVI_MODEL`
+  still wins.
 
 - An account-wide Anthropic spend cap. Set `MANVI_ANTHROPIC_BUDGET_USD=200`
   and every Anthropic request, from any project or any concurrent session,
@@ -306,6 +333,33 @@ under **Unreleased** in the same commit as the code.
   resize, fold and theme switch. The entry keeps the whole result: search
   still finds text past the cut.
 ### Fixed
+
+- Provider streams that end without their terminal event no longer settle as
+  success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
+  `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with
+  a retryable `transport.TruncatedStream` error instead of running half-received
+  tool calls as `{}` and recording zero usage; the budget ledger settles such an
+  attempt at the prompt usage the stream reported or at its worst-case
+  reservation. A gemini interaction that ends `failed` or `cancelled` is an error
+  naming the status, and a tool call that was never closed (`content_block_stop`,
+  `step.stop`) and carries no arguments is never surfaced as `{}`. A final
+  `data: [DONE]` with no trailing blank line is a clean end (`SSE.Terminated`).
+- Every provider client now bounds the wait for response headers
+  (`Client.ResponseHeaderTimeout`: 2 minutes hosted, the 15-minute first-token
+  budget on loopback; `openaicompat.Options.HeaderTimeout`,
+  `SetResponseHeaderTimeout` on anthropic and gemini). It is a time-to-first-byte
+  bound and never cuts off a stream already flowing; a timeout is a typed,
+  retryable `transport.ErrHeaderTimeout`. The stream preflight that gemini had is
+  now `transport.PreflightStream`, bounded by the first-token budget, and
+  anthropic and openaicompat use it: an `overloaded_error`/`api_error` (or a
+  transient openaicompat `error` chunk) that arrives before any content is
+  retried like the 529/5xx it stands for, never after content has been emitted.
+- openaicompat no longer rewrites string arguments (`,]` and `,}` inside string
+  values were stripped by the JSON repair) and no longer runs prose as tool calls:
+  text-channel tool-call recovery is `Options.TextToolFallback`, on for `local`
+  and off for hosted xAI, and a fenced-JSON call is recovered only when nothing
+  follows it. A call whose arguments were rewritten is reported as
+  `Decoding.ArgumentsRepaired`.
 
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a

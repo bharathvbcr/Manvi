@@ -374,6 +374,10 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 		summary += "\n\n[this sub-agent: " + n + "]"
 	}
 
+	for _, n := range child.notes {
+		summary += "\n\n[this sub-agent: " + n + "]"
+	}
+
 	result.Summary = summary
 	// Read out of the child's own answer against a stated contract, and
 	// reconciled to fail closed. A judging role is asked for one line in a
