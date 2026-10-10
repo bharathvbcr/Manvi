@@ -375,7 +375,23 @@ func (s *Server) hello(raw json.RawMessage) (any, *Error) {
 		Ops:              s.router.operations(),
 		Posture:          string(s.posture),
 		ManagedProviders: s.router.managed(),
+		OpLimits:         s.opLimits(),
 	}, nil
+}
+
+// opLimits reports the lane and deadline each served op runs under, read from
+// the same functions that enforce them so the advertisement cannot drift.
+func (s *Server) opLimits() map[string]OpLimit {
+	limits := make(map[string]OpLimit, len(s.router.handlers))
+	for op := range s.router.handlers {
+		lane := s.laneOf(op)
+		if lane == "" {
+			limits[op] = OpLimit{Lane: "inline"}
+			continue
+		}
+		limits[op] = OpLimit{Lane: lane, DeadlineMS: deadlineFor(op).Milliseconds()}
+	}
+	return limits
 }
 
 // writeResponse writes one terminal line for a request.

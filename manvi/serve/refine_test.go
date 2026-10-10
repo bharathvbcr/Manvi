@@ -541,10 +541,11 @@ func TestRefineIsAHostOperationOnItsOwnLane(t *testing.T) {
 	}
 	env := refineFixture(t, &refineDevmap{status: builtIndex(), known: map[string]bool{"EnhancementRunner": true}})
 	env.answer(`{"acceptance_criteria":["E42 is fixed"],"split_into":[],"duplicate_of":[]}`)
-	module := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig, Devmap: env.devmap}
+	module := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig, Devmap: func(string) DevmapClient { return env.devmap }}
+	root := devmapRoot(t)
 	responses := roundTrip(t, Options{Modules: []Module{module}},
 		Request{ID: "hello", Op: OpHello},
-		Request{ID: "refine", Op: OpWorkRefine, Params: json.RawMessage(`{"id":"t","request_id":"w","expected_revision":2}`)})
+		Request{ID: "refine", Op: OpWorkRefine, Params: json.RawMessage(`{"id":"t","request_id":"w","expected_revision":2,"repo_root":` + quote(root) + `}`)})
 	responses = byID(t, responses, "hello", "refine")
 	if !strings.Contains(string(responses[0].Result), `"`+OpWorkRefine+`"`) {
 		t.Fatalf("hello does not negotiate refine: %s", responses[0].Result)
@@ -555,8 +556,40 @@ func TestRefineIsAHostOperationOnItsOwnLane(t *testing.T) {
 	}
 	// Without a devmap client the op still serves, ungrounded.
 	bare := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig}
-	r := roundTrip(t, Options{Modules: []Module{bare}}, Request{ID: "refine", Op: OpWorkRefine, Params: json.RawMessage(`{"id":"t","request_id":"w2","expected_revision":2}`)})
+	r := roundTrip(t, Options{Modules: []Module{bare}}, Request{ID: "refine", Op: OpWorkRefine, Params: json.RawMessage(`{"id":"t","request_id":"w2","expected_revision":2,"repo_root":` + quote(root) + `}`)})
 	if err := json.Unmarshal(r[0].Result, &got); err != nil || got.Grounding.Status != "unavailable" {
 		t.Fatalf("no client: %+v %v", r[0], got.Grounding)
+	}
+}
+
+// Grounding is read from the repository the request names. The sidecar's own
+// working directory is never consulted, and a request that names no usable
+// root is refused before any model call or index lookup.
+func TestRefineGroundsInTheRequestedRootAndRefusesWithoutOne(t *testing.T) {
+	env := refineFixture(t, &refineDevmap{status: builtIndex(), known: map[string]bool{"EnhancementRunner": true}})
+	env.answer(`{"acceptance_criteria":["E42 is fixed"],"split_into":[],"duplicate_of":[]}`)
+	var roots []string
+	module := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig,
+		Devmap: func(root string) DevmapClient { roots = append(roots, root); return env.devmap }}
+	root := devmapRoot(t)
+	refuse := map[string]string{
+		"missing":     `{"id":"t","request_id":"a","expected_revision":2}`,
+		"relative":    `{"id":"t","request_id":"b","expected_revision":2,"repo_root":"."}`,
+		"nonexistent": `{"id":"t","request_id":"c","expected_revision":2,"repo_root":"/nonexistent/root"}`,
+		"not git":     `{"id":"t","request_id":"d","expected_revision":2,"repo_root":` + quote(t.TempDir()) + `}`,
+	}
+	for name, params := range refuse {
+		r := roundTrip(t, Options{Modules: []Module{module}}, Request{ID: "r", Op: OpWorkRefine, Params: json.RawMessage(params)})[0]
+		if r.OK || r.Error == nil || r.Error.Code != ErrBadRoot {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	if len(roots) != 0 || env.calls.Load() != 0 {
+		t.Fatalf("a refused root reached the index (%v) or the model (%d calls)", roots, env.calls.Load())
+	}
+	r := roundTrip(t, Options{Modules: []Module{module}}, Request{ID: "ok", Op: OpWorkRefine,
+		Params: json.RawMessage(`{"id":"t","request_id":"e","expected_revision":2,"repo_root":` + quote(root) + `}`)})[0]
+	if !r.OK || len(roots) != 1 || roots[0] != root {
+		t.Fatalf("refine = %+v, roots = %v", r, roots)
 	}
 }

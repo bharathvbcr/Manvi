@@ -23,6 +23,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `manvi serve` binds every repository read to an explicit root. `devmap.status`
+  and `devmap.query` require `root`, `work.enhancements.refine` requires
+  `repo_root`, and `work.verify.task` validates its `worktree`, all through one
+  check (absolute, existing, not a symlink, the top of a git work tree). A
+  missing or unusable root is refused with the new `E_BAD_ROOT`; the sidecar's
+  working directory is never substituted, and a devmap answer whose envelope
+  names another repository is refused. This is a breaking change for hosts that
+  called `devmap.*` or refine without a root.
+- `hello` reports `op_limits`: each served op's `lane` and `deadline_ms` as
+  enforced by the server (`"inline"` and 0 for ops answered inline), so a host
+  sizes its client timeouts from the server. Additive; an older host ignores it.
+
 - `work.enhancements.refine`: a host-only operation that proposes acceptance
   criteria, `split_into` parts and `duplicate_of` links for one task, grounded
   in DevMap answers for the symbols the task names and in the open board. It

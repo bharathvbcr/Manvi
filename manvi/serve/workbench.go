@@ -17,9 +17,10 @@ type WorkbenchModule struct {
 	Runner        *EnhancementRunner
 	Configuration *EnhancementConfiguration
 	Managed       *ManagedRunner
-	// Devmap grounds refinements in the code index. Optional: without it a
-	// refinement is served ungrounded and says so.
-	Devmap DevmapClient
+	// Devmap builds the code-index client for a validated repository root that
+	// grounds refinements. Optional: without it a refinement is served
+	// ungrounded and says so.
+	Devmap func(root string) DevmapClient
 	// Scan enables work.scan.gaps, .get and .cancel: a deterministic repository
 	// audit that proposes inbox tasks and never writes the board itself.
 	Scan *ScanRunner
@@ -165,7 +166,24 @@ func (m WorkbenchModule) Configure(r *Router) error {
 				}
 			}
 			if err := r.Register(OpWorkRefine, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
-				result, err := m.Runner.Refine(ctx, raw, configuration, m.Devmap)
+				// The grounding lookups run in the repository the request names,
+				// never this process's working directory. A task record carries
+				// repository ids, not paths, so the host supplies the root.
+				var p struct {
+					RepoRoot string `json:"repo_root"`
+				}
+				if err := json.Unmarshal(raw, &p); err != nil {
+					return nil, badRequest("refinement params: %v", err)
+				}
+				root, e := canonicalRepoRoot(ctx, "repo_root", p.RepoRoot)
+				if e != nil {
+					return nil, e
+				}
+				var devmap DevmapClient
+				if m.Devmap != nil {
+					devmap = m.Devmap(root)
+				}
+				result, err := m.Runner.Refine(ctx, raw, configuration, devmap)
 				if err != nil {
 					return nil, workbenchHostError("refinement", err)
 				}

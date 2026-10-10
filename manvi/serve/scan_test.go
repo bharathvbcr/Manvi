@@ -480,7 +480,7 @@ func TestScanRootIsValidatedAndNeverTheSidecarCwd(t *testing.T) {
 			}
 			raw, _ := json.Marshal(GapScanParams{RepoRoot: root})
 			_, e := h.runner.Start(context.Background(), raw)
-			if e == nil || e.Code != ErrBadRequest {
+			if e == nil || e.Code != ErrBadRoot {
 				t.Fatalf("root %q: %+v", root, e)
 			}
 		})
@@ -668,7 +668,11 @@ func TestScanOpsAreServedOnTheirOwnLaneAndRefuseBadRoots(t *testing.T) {
 		}
 	}
 	for _, r := range responses[1:] {
-		if r.OK || r.Error == nil || r.Error.Code != ErrBadRequest {
+		want := ErrBadRequest
+		if r.ID == "rel" {
+			want = ErrBadRoot
+		}
+		if r.OK || r.Error == nil || r.Error.Code != want {
 			t.Errorf("%s: %+v", r.ID, r)
 		}
 	}

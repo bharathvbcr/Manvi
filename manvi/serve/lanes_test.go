@@ -308,3 +308,34 @@ func TestAnUnknownOpIsRefusedWithoutWaitingOnALane(t *testing.T) {
 		t.Fatalf("an unknown op waited %v behind a busy lane", elapsed)
 	}
 }
+
+// hello tells a host how long each op may take and on which lane, read from the
+// same functions that enforce them, so a host's client timeout cannot drift
+// from the server's deadline.
+func TestHelloAdvertisesEachOpsLaneAndDeadline(t *testing.T) {
+	m := newBlockingModule()
+	resp := roundTrip(t, Options{Modules: []Module{m}}, Request{ID: "h", Op: OpHello, Params: json.RawMessage(`{"protocol":1}`)})[0]
+	var hello HelloResult
+	if err := json.Unmarshal(resp.Result, &hello); err != nil {
+		t.Fatal(err)
+	}
+	if len(hello.OpLimits) != len(hello.Ops) {
+		t.Fatalf("op_limits covers %d of %d ops", len(hello.OpLimits), len(hello.Ops))
+	}
+	for _, op := range hello.Ops {
+		got, ok := hello.OpLimits[op]
+		if !ok {
+			t.Fatalf("op_limits omits %s", op)
+		}
+		lane := laneFor(op)
+		switch {
+		case lane == "" && (got.Lane != "inline" || got.DeadlineMS != 0):
+			t.Errorf("%s is inline but advertised %+v", op, got)
+		case lane != "" && (got.Lane != lane || got.DeadlineMS != opDeadline(op).Milliseconds()):
+			t.Errorf("%s advertised %+v, enforced lane %q deadline %v", op, got, lane, opDeadline(op))
+		}
+	}
+	if got := hello.OpLimits["work.runs.managed.prepare"]; got.Lane != "managed" || got.DeadlineMS != 180000 {
+		t.Fatalf("prepare = %+v", got)
+	}
+}

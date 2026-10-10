@@ -148,6 +148,7 @@ type refineRequest struct {
 	ID               string `json:"id"`
 	RequestID        string `json:"request_id"`
 	ExpectedRevision int64  `json:"expected_revision"`
+	RepoRoot         string `json:"repo_root"`
 }
 
 type refineTask struct {
@@ -182,7 +183,7 @@ func (t refineTask) open() bool { return !t.Archived && t.CompletedAt == nil }
 // reply costs one repeated request, and a repeated request with the same
 // request_id replays the finished result instead of calling the model again.
 func (r *EnhancementRunner) Refine(ctx context.Context, raw json.RawMessage, selection EnhancementConfiguration, devmap DevmapClient) (*RefineResult, error) {
-	if _, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision"); err != nil {
+	if _, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "repo_root"); err != nil {
 		return nil, err
 	}
 	var request refineRequest
@@ -195,7 +196,7 @@ func (r *EnhancementRunner) Refine(ctx context.Context, raw json.RawMessage, sel
 	if !selection.OK || selection.Provider == "" || selection.Model == "" {
 		return nil, errors.New("refinement requires a selected enhancement provider and model")
 	}
-	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", request.ID, request.RequestID, request.ExpectedRevision, selection.Provider, selection.Model)
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%s", request.ID, request.RequestID, request.ExpectedRevision, selection.Provider, selection.Model, request.RepoRoot)
 	jobCtx, cancel := context.WithTimeout(ctx, enhancementJobTimeout)
 	defer cancel()
 	replayed, err := r.refines.begin(r, request.ID, key, cancel)
