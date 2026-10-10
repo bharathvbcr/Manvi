@@ -149,6 +149,7 @@ func TestAChildOnANonReasoningTierStartsWithItsOwnEffort(t *testing.T) {
 			"parent-model": reasoningLevels,
 			"basic-model":  nil,
 			"lite-model":   reasoningLevels,
+			"heavy-model":  reasoningLevels,
 		},
 	}
 	models := llm.NewRegistry()
@@ -162,6 +163,8 @@ func TestAChildOnANonReasoningTierStartsWithItsOwnEffort(t *testing.T) {
 		tiers: agents.TierProfile{
 			agents.TierBasic: {Model: "basic-model"},
 			agents.TierLite:  {Model: "lite-model", Effort: "medium"},
+			agents.TierHeavy: {Model: "heavy-model"},
+			agents.TierMain:  {Model: "parent-model"},
 		},
 		registry:     surfaceRegistry(t),
 		systemPrompt: "PARENT PROMPT",
@@ -172,8 +175,14 @@ func TestAChildOnANonReasoningTierStartsWithItsOwnEffort(t *testing.T) {
 		wantModel  string
 		wantEffort string
 	}{
+		// Does not reason: no effort, and no ceiling to refuse it with.
 		{tier: agents.TierBasic, wantModel: "basic-model", wantEffort: ""},
+		// The tier sets its own effort.
 		{tier: agents.TierLite, wantModel: "lite-model", wantEffort: "medium"},
+		// The tier sets none and its model reasons: the parent's effort.
+		{tier: agents.TierHeavy, wantModel: "heavy-model", wantEffort: "low"},
+		// A tier on the parent's own model is the parent's placement.
+		{tier: agents.TierMain, wantModel: "parent-model", wantEffort: "low"},
 	} {
 		before := len(p.requests())
 		if _, err := r.RunSubAgent(context.Background(), devcouncil.SubAgentRequest{
@@ -292,5 +301,63 @@ func TestShowAgentsPrintsRoleTierAndModel(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "(main agent)") {
 		t.Errorf("the main agent's row is missing:\n%s", out.String())
+	}
+}
+
+// The critic's role narrows the real native surface — read-only and without
+// the MCP group — and that narrowing must not strand a tool, or every
+// escalation would be refused before the critic ran. The fakes above cannot
+// show that; this runs it over the surface a session actually has.
+func TestTheCheckpointCriticRunsOverTheNativeSurface(t *testing.T) {
+	flagReg, err := flags.NewHarnessRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, pipeline, err := nativeTools(flagReg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, _ := harnessFor(pipeline)
+	if runner == nil {
+		t.Fatal("the native surface has no sub-agent runner attached")
+	}
+	p := &tierProvider{
+		name:    "anthropic",
+		reasons: map[string][]string{"parent-model": reasoningLevels, "advisor-model": reasoningLevels},
+		script:  []llm.Response{endTurn("reviewed\n" + verdictMarker + " PASS")},
+	}
+	models := llm.NewRegistry()
+	if err := models.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	runner.attach(subAgentConfig{
+		provider: p, models: models, model: "parent-model",
+		tiers:    agents.TierProfile{agents.TierAdvisor: {Model: "advisor-model"}},
+		registry: pipeline, systemPrompt: "PARENT PROMPT",
+	})
+
+	s, _ := newSensor(t, &fakeVerifier{report: devcouncil.PathReport{
+		Verdict: devcouncil.VerdictFailed, Findings: []string{"still broken"},
+	}})
+	s.runner, s.roles = runner, native.Roles()
+	e := &agent.TurnStopping{Turn: 1, Mutated: true, Wrote: []string{"a.go"}, Bounce: 1}
+	if err := s.check(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(e.Inject, "could not complete") {
+		t.Fatalf("the critic could not run over the native surface: %q", e.Inject)
+	}
+	seen := p.requests()
+	if len(seen) == 0 || seen[0].Model != "advisor-model" {
+		t.Fatalf("the critic did not reach the advisor tier's model: %d request(s)", len(seen))
+	}
+	readOnly := map[string]bool{}
+	for _, schema := range pipeline.ReadOnlySchemas() {
+		readOnly[schema.Name] = true
+	}
+	for _, schema := range seen[0].Tools {
+		if !readOnly[schema.Name] {
+			t.Errorf("the critic was offered the mutating tool %s", schema.Name)
+		}
 	}
 }

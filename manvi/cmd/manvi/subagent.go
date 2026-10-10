@@ -199,11 +199,13 @@ func (r *subAgentRunner) place(cfg *subAgentConfig, req devcouncil.SubAgentReque
 // placeOnTier resolves a child with no operator placement: onto its tier's
 // model when the session's profile holds one, onto the parent's otherwise.
 //
-// A child on its tier runs at that tier's own effort and with no ceiling. The
-// parent's effort was chosen for the parent's model, and carrying it across
-// put a child on a model that does not reason with an effort ceiling it can
-// never climb, which the loop refuses before the child takes a step.
-// Escalation for a child is decided per tier, not inherited.
+// A child on its tier starts at the tier's own effort when the profile sets
+// one, and otherwise at the parent's where the tier's model accepts it. It
+// inherits the parent's ceiling only when it runs on the parent's model at the
+// parent's effort, which is the one configuration that ceiling was checked
+// against. Carrying the ceiling anywhere else put a child on a model that does
+// not reason with a ceiling it can never climb, which the loop refuses before
+// the child takes a step.
 func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childPlacement, error) {
 	inherit := childPlacement{
 		provider: cfg.provider, model: cfg.model,
@@ -216,17 +218,20 @@ func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgen
 	if !ok || strings.TrimSpace(spec.Model) == "" {
 		return inherit, nil
 	}
-	if _, served := cfg.provider.Capability(spec.Model); !served {
+	capability, served := cfg.provider.Capability(spec.Model)
+	if !served {
 		return childPlacement{}, fmt.Errorf(
 			"sub-agent %q cannot run: tier %s is %q, which provider %q does not serve",
 			req.Label, req.Tier, spec.Model, cfg.provider.Name())
 	}
-	if spec.Model == cfg.model && spec.Effort == cfg.effort {
-		// The parent's own model at the parent's own effort: the parent's
-		// ceiling was checked against exactly this, so it still applies.
+	effort := spec.Effort
+	if effort == "" && cfg.effort != "" && capability.Validate(llm.Request{Effort: cfg.effort}) == nil {
+		effort = cfg.effort
+	}
+	if spec.Model == cfg.model && effort == cfg.effort {
 		return inherit, nil
 	}
-	return childPlacement{provider: cfg.provider, model: spec.Model, effort: spec.Effort}, nil
+	return childPlacement{provider: cfg.provider, model: spec.Model, effort: effort}, nil
 }
 
 // carryEffort keeps the parent's effort and ceiling on a child an operator
