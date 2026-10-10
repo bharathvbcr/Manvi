@@ -74,17 +74,21 @@ type managedJob struct {
 	mu                 sync.Mutex
 	id, owner, session string
 	preparation        generationRequest
-	cancel             context.CancelFunc
-	ready, done        chan struct{}
-	provider           ManagedSession
-	configuration      string
-	phase              string
-	err                error
-	activated          bool
-	activation         json.RawMessage
-	callbacks          map[string]*managedCallback
-	output             strings.Builder
-	truncated          bool
+	// ctx is the job's lifetime and cancel ends it: Stop, Close and the
+	// two-hour bound all act through it. Every provider call derives from it,
+	// so a session that owns no process still ends when the job does.
+	ctx           context.Context
+	cancel        context.CancelFunc
+	ready, done   chan struct{}
+	provider      ManagedSession
+	configuration string
+	phase         string
+	err           error
+	activated     bool
+	activation    json.RawMessage
+	callbacks     map[string]*managedCallback
+	output        strings.Builder
+	truncated     bool
 }
 type managedCallback struct {
 	request  codingagent.Request
@@ -181,7 +185,7 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			return ManagedPrepared{}, err
 		}
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), phase: "preparing", callbacks: make(map[string]*managedCallback)}
+		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), phase: "preparing", callbacks: make(map[string]*managedCallback)}
 		r.jobs[request.ID] = job
 		go r.prepare(jobCtx, job)
 	} else if job.preparation != request {
@@ -257,6 +261,12 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 			outcome, providerState := "unresolved", "unresolved"
 			if codingagent.NoProcessStarted(err) {
 				outcome, providerState = "failed", "failed"
+			} else if errors.Is(err, context.Canceled) {
+				// Stop or Close ended the preparation. The factory owns its
+				// cleanup, so a started process still cannot be ruled out and
+				// the outcome stays unresolved, but the provider's state is
+				// known to be an interruption rather than a failure.
+				providerState = "interrupted"
 			}
 			r.finish(job, outcome, nil, err, providerState)
 		}
@@ -456,10 +466,13 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	defer close(job.done)
 	defer job.cancel()
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	// Derived from the job's context, never from Background: Stop and Close
+	// cancel the job, and that must end Initialize, StartTurn, Next and the
+	// decision round-trips for any ManagedSession, not only one whose reads die
+	// with its child process. The 45-minute bound is the model turn's
+	// active-time budget on top of that.
+	ctx, cancel := context.WithTimeout(job.ctx, 45*time.Minute)
 	defer cancel()
-	// Session lifetime belongs to the preparation context; closing the runner
-	// cancels it. The model turn additionally has a bounded active-time budget.
 	err := job.provider.Initialize(ctx)
 	status := "failed"
 	thread := ""

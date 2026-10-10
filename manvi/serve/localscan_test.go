@@ -3,6 +3,11 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -64,14 +69,14 @@ func TestTheResultRecordsWhetherCapabilitiesWereAsked(t *testing.T) {
 	}
 }
 
-// Serial dispatch makes a timeout everyone else's problem.
+// A scan holds the local lane, so its timeout is every later local call's problem.
 func TestTheTimeoutIsBoundedInBothDirections(t *testing.T) {
 	if _, opErr := scan(t, ScanParams{TimeoutMS: -1}); opErr == nil {
 		t.Error("a negative timeout was accepted")
 	}
 	if _, opErr := scan(t, ScanParams{TimeoutMS: maxScanTimeoutMS + 1}); opErr == nil {
-		t.Error("a timeout past the ceiling was accepted; dispatch is serial, so " +
-			"this is how long one scan holds every other call behind it")
+		t.Error("a timeout past the ceiling was accepted; a scan holds the local lane, so " +
+			"this is how long it delays every other local call")
 	}
 	if _, opErr := scan(t, ScanParams{TimeoutMS: 50}); opErr != nil {
 		t.Errorf("a reasonable timeout was refused: %+v", opErr)
@@ -104,5 +109,37 @@ func TestLocalScanIsAnnouncedInTheServedSet(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("%q is dispatched but not in ops, so hello never mentions it", OpLocalScan)
+	}
+}
+
+// A host that names more endpoints than the cap is refused before any probe
+// leaves the process, and the refusal names the cap.
+func TestAScanPastTheEndpointCapIsRefusedBeforeAnyProbe(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	var eps []string
+	for i := range 10_000 {
+		eps = append(eps, fmt.Sprintf("%s/e%d/v1", srv.URL, i))
+	}
+	_, opErr := scan(t, ScanParams{Endpoints: eps, TimeoutMS: 200})
+	if opErr == nil {
+		t.Fatal("10,000 endpoints were accepted")
+	}
+	if opErr.Code != ErrBadRequest {
+		t.Errorf("code = %q, want %q", opErr.Code, ErrBadRequest)
+	}
+	if want := fmt.Sprint(maxScanEndpoints); !strings.Contains(opErr.Message, want) {
+		t.Errorf("message %q does not name the cap %s", opErr.Message, want)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("%d probes were sent for a refused scan", n)
+	}
+	// Exactly the cap is still a scan.
+	if _, opErr := scan(t, ScanParams{Endpoints: eps[:maxScanEndpoints], TimeoutMS: 200}); opErr != nil {
+		t.Errorf("a scan of exactly the cap was refused: %+v", opErr)
 	}
 }

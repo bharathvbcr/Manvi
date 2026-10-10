@@ -709,8 +709,8 @@ func TestRecoverIDReadsTheEnvelopeRatherThanScanningForAnID(t *testing.T) {
 
 // --- bounds on the numbers a host states ---
 
-// Dispatch is serial, so timeout_ms is how long one probe may hold every other
-// call behind it. 1<<31 ms is 596 hours: a sidecar that accepted it would be
+// A probe holds the local lane, so timeout_ms is how long one probe may delay
+// every other local call. 1<<31 ms is 596 hours: a sidecar that accepted it would be
 // indistinguishable from one that hung, and the refusal has to happen before
 // any I/O rather than after the deadline it was handed.
 func TestProbeRefusesATimeoutThatWouldWedgeTheDispatcher(t *testing.T) {

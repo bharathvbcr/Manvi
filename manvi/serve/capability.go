@@ -17,8 +17,8 @@ import (
 //
 // A probe is one or two HTTP round trips against a server on loopback, so ten
 // minutes is already far past generous. The ceiling is not about the network:
-// dispatch is serial by design (see Serve), so a host's timeout_ms is the
-// length of time one probe can wedge every other call on this sidecar. The
+// a probe holds the local lane (see lanes.go), so a host's timeout_ms is the
+// length of time one probe can delay every other local call on this sidecar. The
 // unbounded field turned a single 1<<31 into a 596-hour stall that no host
 // could distinguish from a crashed harness — and that outcome is reachable by
 // a host typo, not only by a hostile caller.
@@ -119,8 +119,8 @@ func (s *Server) probe(ctx context.Context, raw json.RawMessage) (any, *Error) {
 	}
 	if p.TimeoutMS > maxProbeTimeoutMS {
 		return nil, badRequest(
-			"timeout_ms is %d, past the %d ms ceiling; dispatch is serial by design, "+
-				"so this value is how long one probe may hold every other call behind it, "+
+			"timeout_ms is %d, past the %d ms ceiling; a probe holds the local lane, "+
+				"so this value is how long one probe may delay every other local call, "+
 				"and a sidecar that accepted 1<<31 would spend 596 hours indistinguishable "+
 				"from one that hung", p.TimeoutMS, maxProbeTimeoutMS)
 	}
@@ -235,7 +235,7 @@ const maxProbeAdapters = 16
 //
 // Building one per probe threw away exactly the caching the adapter exists to
 // do: every probe re-fetched the model listing and re-ran the dimension probe
-// chain, serially, on the one dispatch loop every other call on this sidecar
+// chain, one after another, on the local lane every other probe and scan
 // waits behind. A host that probes on the path to each request it assembles
 // paid those round trips on every request.
 //

@@ -21,15 +21,26 @@ type ScanParams struct {
 	// TimeoutMS bounds each endpoint's probe. Zero means the scanner's own
 	// default.
 	//
-	// Bounded above for the reason every timeout on this plane is: dispatch is
-	// serial, so this is how long one scan may hold every other call behind it.
+	// Bounded above for the reason every timeout on this plane is: a scan holds
+	// the local lane, so this is how long it may delay every other local call.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 	// Capabilities asks each server about each model it serves. It costs one
 	// request per model on Ollama, so a host that only needs to know which
 	// servers answered leaves it off.
 	Capabilities bool `json:"capabilities,omitempty"`
 	// Endpoints overrides the well-known list, for an operator whose server is
-	// somewhere this harness ships no guess for.
+	// somewhere this harness ships no guess for. At most maxScanEndpoints.
+	//
+	// Addresses are deliberately not restricted to loopback or private ranges.
+	// This plane is host-owned: the only peer that can send it is the trusted
+	// stdio host that launched this process, which already decides what the
+	// process runs and which provider URLs it talks to, and an operator's model
+	// server is as often a GPU box on the LAN or a tailnet as it is local. A
+	// probe sends no credential (see localScan) and reads only the model
+	// listing, so naming a remote host exposes nothing a host-configured
+	// provider URL does not. The risk this plane does carry — fan-out — is
+	// bounded instead: the endpoint cap above, local.ScanConcurrency probes in
+	// flight, and the per-request deadline.
 	Endpoints []string `json:"endpoints,omitempty"`
 }
 
@@ -92,8 +103,13 @@ type ScanResult struct {
 	Capabilities bool `json:"capabilities"`
 }
 
-// maxScanTimeoutMS bounds one endpoint probe. Serial dispatch means this is
-// also how long every other request waits.
+// maxScanEndpoints caps how many endpoints one local.scan may name. A scan
+// probes each over HTTP, so the list is the work; the 8 MiB request line would
+// otherwise allow hundreds of thousands.
+const maxScanEndpoints = 64
+
+// maxScanTimeoutMS bounds one endpoint probe. A scan holds the local lane,
+// so this is also how long a later local call can wait.
 const maxScanTimeoutMS = 30_000
 
 func (s *Server) localScan(ctx context.Context, raw json.RawMessage) (any, *Error) {
@@ -110,9 +126,15 @@ func (s *Server) localScan(ctx context.Context, raw json.RawMessage) (any, *Erro
 	}
 	if p.TimeoutMS > maxScanTimeoutMS {
 		return nil, badRequest(
-			"timeout_ms is %d, past the %d ms ceiling; dispatch is serial by design, "+
-				"so this value is how long one scan may hold every other call behind it",
+			"timeout_ms is %d, past the %d ms ceiling; a scan holds the local lane, "+
+				"so this value is how long it may delay every other local call",
 			p.TimeoutMS, maxScanTimeoutMS)
+	}
+
+	if len(p.Endpoints) > maxScanEndpoints {
+		return nil, badRequest(
+			"endpoints names %d addresses, past the cap of %d per scan; split the list "+
+				"across scans", len(p.Endpoints), maxScanEndpoints)
 	}
 
 	opts := local.ScanOptions{

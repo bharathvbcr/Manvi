@@ -117,8 +117,8 @@ func (r *EnhancementRunner) record(ctx context.Context, id string) (enhancementR
 	return result.Item, raw, nil
 }
 
-// Generate returns after claiming the attempt. Inference never occupies the
-// serial host dispatcher, so questions, cancellation and board reads can proceed.
+// Generate returns after claiming the attempt. Inference never occupies a
+// dispatch lane, so questions, cancellation and board reads can proceed.
 func (r *EnhancementRunner) Generate(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	if _, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision"); err != nil {
 		return nil, err

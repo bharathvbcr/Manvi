@@ -200,6 +200,20 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- `manvi serve`: stopping a managed run now ends it for every session, not only
+  process-backed ones. `drive` ran on its own `Background` context, so a
+  session that obeys only the context it is handed ignored `Stop` until the
+  45-minute bound; it now derives from the job's context (the bound is kept).
+  A run stopped while its provider was still starting is recorded
+  `interrupted` rather than `unresolved`. `ManagedRunner.Stop` has tests for
+  preparing, awaiting activation and running, double stop, stop after done and
+  stop racing activation.
+- `local.scan` no longer fans out without bound: more than 64 `endpoints` is
+  refused `E_BAD_REQUEST` naming the cap, and endpoint probes and per-model
+  capability questions run on worker pools of 8 each instead of one goroutine
+  apiece (cancelling the scan skips the unstarted ones). Endpoints are still
+  not restricted to loopback, because this plane is host-owned and a model
+  server on the LAN is a legitimate target; the doc comment says so.
 - `policy.check.command` honours the `allowed_commands` a host's `scope`
   declares, and names that scope's task on the decision. `serve.HostScope` had
   no field for them, so GitPulse's bound-task commands were dropped in decoding
