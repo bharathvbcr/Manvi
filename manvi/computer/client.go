@@ -467,13 +467,21 @@ func (c *Client) Resolve(ctx context.Context, s Session, observationID string, s
 	}
 	return reply.Node, nil
 }
+
+// Act dispatches one action and returns the broker's receipt for it.
 func (c *Client) Act(ctx context.Context, s Session, a Action) (Receipt, error) {
+	return c.dispatch(ctx, "act", s, a, "action receipt identity mismatch")
+}
+
+// dispatch sends an action over op and checks the receipt answers it. Act and
+// HumanAct differ only in the operation and in how a mismatch is described.
+func (c *Client) dispatch(ctx context.Context, op string, s Session, a Action, mismatch string) (Receipt, error) {
 	var receipt Receipt
 	p, err := json.Marshal(a)
 	if err != nil {
 		return receipt, err
 	}
-	raw, err := c.Call(ctx, "act", &s, p)
+	raw, err := c.Call(ctx, op, &s, p)
 	if err != nil {
 		return receipt, err
 	}
@@ -481,7 +489,7 @@ func (c *Client) Act(ctx context.Context, s Session, a Action) (Receipt, error) 
 		return receipt, err
 	}
 	if receipt.ActionID != a.ActionID {
-		return Receipt{}, errors.New("action receipt identity mismatch")
+		return Receipt{}, errors.New(mismatch)
 	}
 	return receipt, nil
 }
@@ -553,21 +561,8 @@ func (c *Client) Resume(ctx context.Context, s Session, observationID string) (S
 	return s, nil
 }
 
+// HumanAct records an action a person took, over the broker's human_act
+// operation.
 func (c *Client) HumanAct(ctx context.Context, s Session, a Action) (Receipt, error) {
-	var receipt Receipt
-	p, err := json.Marshal(a)
-	if err != nil {
-		return receipt, err
-	}
-	raw, err := c.Call(ctx, "human_act", &s, p)
-	if err != nil {
-		return receipt, err
-	}
-	if err := json.Unmarshal(raw, &receipt); err != nil {
-		return receipt, err
-	}
-	if receipt.ActionID != a.ActionID {
-		return Receipt{}, errors.New("human receipt identity mismatch")
-	}
-	return receipt, nil
+	return c.dispatch(ctx, "human_act", s, a, "human receipt identity mismatch")
 }

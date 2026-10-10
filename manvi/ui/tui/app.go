@@ -45,9 +45,11 @@ type App struct {
 	quitArmed time.Time
 	quit      bool
 
-	tick   int
-	width  int
-	height int
+	tick int
+	// tickMoved is set by each ActionTick; see TickMoved.
+	tickMoved bool
+	width     int
+	height    int
 
 	// fx is the ambient-animation gate, checked through fxOn. Set from the
 	// environment by the runner; left on in tests, where every effect is a
@@ -247,7 +249,16 @@ func (a *App) textTarget() *Prompt {
 func (a *App) Dispatch(act Action) []Effect {
 	switch t := act.(type) {
 	case ActionTick:
+		// Decided before the tick mutates anything, so the tick that clears a
+		// notice still counts: the frame has to lose it.
+		a.tickMoved = a.animating()
 		a.tick++
+		if tip := a.tick / 50; tip != (a.tick-1)/50 {
+			// The composer's placeholder tip rotates every fifty ticks.
+			if v := a.Current(); v != nil && v.Prompt.Empty() {
+				a.tickMoved = true
+			}
+		}
 		if a.notice != "" && time.Since(a.noticeAt) > 6*time.Second {
 			a.notice = ""
 		}
@@ -580,6 +591,30 @@ func (a *App) submit() []Effect {
 	}
 	return []Effect{EffectSubmit{SessionID: v.ID, Text: text}}
 }
+
+// animating reports whether a frame drawn one tick later would differ from
+// the one on screen for any reason but a tick: a running turn's spinner and
+// sweep, an approval's pulse and waiting time, the dashboard's sweep and
+// relative times, a notice counting down, the empty screen's rain.
+func (a *App) animating() bool {
+	if a.mode == ModeDashboard || a.notice != "" {
+		return true
+	}
+	if len(a.views) == 0 {
+		return a.fxOn()
+	}
+	for _, v := range a.views {
+		if v.Status.Busy || v.Approval() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// TickMoved reports whether the last ActionTick changed what a frame shows.
+// The runner repaints on a tick only then; an idle terminal otherwise
+// repainted ten times a second to show the same cells.
+func (a *App) TickMoved() bool { return a.tickMoved }
 
 func (a *App) setNotice(text string, kind StatusKind) {
 	a.notice, a.noticeAt, a.noticeKind = text, time.Now(), kind

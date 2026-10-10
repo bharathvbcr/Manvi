@@ -15,6 +15,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
+	"github.com/bharathvbcr/Manvi/manvi/llm/transport/transporttest"
 )
 
 // The stall watchdog is the harness's only answer to a real failure: the server
@@ -31,6 +32,10 @@ func wedgeServer(t *testing.T, frames ...string) (*httptest.Server, <-chan struc
 	t.Helper()
 	closed := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		for _, f := range frames {
@@ -167,7 +172,7 @@ func TestASettledStallIsReportedByResponseToo(t *testing.T) {
 // busy machine — and a wider window only moves the load at which that recurs,
 // because the ambiguity is in what is being measured, not in how much of it.
 // With the gaps stated, the watchdog can only trip by moving its deadline
-// wrongly. See manualClock.
+// wrongly. See transporttest.Clock.
 //
 // The server no longer paces itself either, for the same reason: what the
 // watchdog measures is the time between the payload lines it reads, and that
@@ -193,7 +198,7 @@ func TestASlowButLiveStreamOutlivesTheStallTimeout(t *testing.T) {
 
 	// Total stream duration is well past the limit; every individual gap is
 	// under it. Only a bound on the gap survives this.
-	clock := newManualClock()
+	clock := transporttest.NewClock()
 	start := clock.Now()
 	a := stallAdapterOn(t, srv.URL, limit, clock)
 	s, err := a.Stream(context.Background(), llm.Request{Model: "qwen"})
@@ -201,7 +206,7 @@ func TestASlowButLiveStreamOutlivesTheStallTimeout(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer func() { _ = s.Close() }()
-	if n := clock.scheduled(); n != 1 {
+	if n := clock.Scheduled(); n != 1 {
 		t.Fatalf("the stream scheduled %d timers on this test's clock, want 1; the "+
 			"watchdog is not running on the clock this test drives, so the gaps "+
 			"below prove nothing about it", n)

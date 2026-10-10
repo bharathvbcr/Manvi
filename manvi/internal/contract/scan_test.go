@@ -28,11 +28,11 @@ func TestScanReport(t *testing.T) {
 	//
 	// It reports rather than fails, like every other line in this function. It
 	// is not a gate yet and should not be turned into one by allowlisting its
-	// current output wholesale: it stands at 157 findings, of which six are
-	// the checker's own documented blind spot rather than defects — the
-	// exported helpers in llm/adaptertest exist to be called from tests, and
-	// test files are deliberately not counted as callers. The remaining 151
-	// need reading one at a time, and an allowlist
+	// current output wholesale: the total printed below is the count (go test
+	// -run TestScanReport -v), of which the exported helpers in llm/adaptertest
+	// are the checker's own documented blind spot rather than defects — they
+	// exist to be called from tests, and test files are deliberately not
+	// counted as callers. The rest need reading one at a time, and an allowlist
 	// filled in without that reading would be a gate that certifies whatever
 	// was true the day somebody stopped looking.
 	unused := m.UnusedExports(nil)

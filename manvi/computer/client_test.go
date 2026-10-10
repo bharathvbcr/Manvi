@@ -1,7 +1,9 @@
 package computer
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"os/exec"
 	"sync"
@@ -40,5 +42,57 @@ func TestBlockedNativeWriteCannotIgnoreCancellation(t *testing.T) {
 		p.Close()
 		<-returned
 		t.Fatal("blocked write ignored cancellation")
+	}
+}
+
+// pipedClient is a Client wired to an in-process broker that answers every
+// request with reply(op) and records the operations it saw.
+func pipedClient(t *testing.T, reply func(op string) string) (*Client, *[]string) {
+	t.Helper()
+	reqR, reqW := io.Pipe()
+	respR, respW := io.Pipe()
+	c := &Client{cmd: &exec.Cmd{}, in: reqW, write: make(chan struct{}, 1), pending: map[string]chan pendingResult{}, done: make(chan struct{})}
+	go c.read(respR)
+	var ops []string
+	go func() {
+		sc := bufio.NewScanner(reqR)
+		for sc.Scan() {
+			var req request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				return
+			}
+			ops = append(ops, req.Op)
+			out, _ := json.Marshal(response{ID: req.ID, OK: true, Result: json.RawMessage(reply(req.Op))})
+			if _, err := respW.Write(append(out, '\n')); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { respW.Close(); reqR.Close() })
+	return c, &ops
+}
+
+func TestActAndHumanActShareOneDispatch(t *testing.T) {
+	c, ops := pipedClient(t, func(string) string { return `{"action_id":"a1","delivery":"sent"}` })
+	ctx := context.Background()
+	for name, call := range map[string]func(context.Context, Session, Action) (Receipt, error){"act": c.Act, "human_act": c.HumanAct} {
+		r, err := call(ctx, Session{ID: "s"}, Action{ActionID: "a1"})
+		if err != nil || r.ActionID != "a1" {
+			t.Fatalf("%s: receipt=%+v err=%v", name, r, err)
+		}
+	}
+	if len(*ops) != 2 || (*ops)[0] != "act" || (*ops)[1] != "human_act" {
+		t.Fatalf("operations = %v", *ops)
+	}
+}
+
+func TestReceiptForAnotherActionIsRefused(t *testing.T) {
+	c, _ := pipedClient(t, func(string) string { return `{"action_id":"someone-else"}` })
+	ctx := context.Background()
+	if _, err := c.Act(ctx, Session{ID: "s"}, Action{ActionID: "a1"}); err == nil || err.Error() != "action receipt identity mismatch" {
+		t.Fatalf("Act err = %v", err)
+	}
+	if r, err := c.HumanAct(ctx, Session{ID: "s"}, Action{ActionID: "a1"}); err == nil || err.Error() != "human receipt identity mismatch" || r.ActionID != "" {
+		t.Fatalf("HumanAct receipt=%+v err=%v", r, err)
 	}
 }

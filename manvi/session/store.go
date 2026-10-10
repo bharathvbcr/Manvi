@@ -125,6 +125,13 @@ func (e *ConflictError) Error() string {
 // Events is a raw message on both encode and decode so the checksum covers the
 // exact bytes the file carries, rather than a re-encoding of them that could
 // differ while the events did not.
+// headerMeta is the part of a header that precedes its events, for a reader
+// that wants the dates and counts and not the events.
+type headerMeta struct {
+	CreatedAt    time.Time `json:"created_at"`
+	TrimmedTurns int       `json:"trimmed_turns,omitempty"`
+}
+
 type header struct {
 	Version   int       `json:"manvi_session"`
 	ID        string    `json:"id"`
@@ -189,6 +196,10 @@ type Store struct {
 	// number alone would not, because that run's prune makes its newer file
 	// look like the one this run loaded.
 	seen map[string]string
+	// meta is the dates and counts of the file seen holds the digest of, so a
+	// save need not parse the previous generation to read them. Present only
+	// when that file carried a creation date.
+	meta map[string]headerMeta
 
 	// Seams for the tests of the windows between a directory listing and the
 	// act it justifies, which are too narrow to hit by chance. Nil in
@@ -204,6 +215,7 @@ func NewStore(dir string) *Store {
 		maxBytes:    DefaultMaxBytes,
 		maxSessions: DefaultMaxSessions,
 		seen:        map[string]string{},
+		meta:        map[string]headerMeta{},
 	}
 }
 
@@ -381,6 +393,7 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 
 	s.mu.Lock()
 	s.seen[id] = digest(raw)
+	s.rememberMeta(id, headerMeta{CreatedAt: doc.CreatedAt, TrimmedTurns: doc.TrimmedTurns})
 	s.mu.Unlock()
 
 	return log, LoadReport{
@@ -401,7 +414,10 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	}
 	// Not Events(): that deep-copies every payload for a caller that may keep
 	// it, and this one only encodes them. An appended event is never mutated.
-	events := persistable(log.snapshot())
+	events, perEvent, err := log.persistableEncoded()
+	if err != nil {
+		return SaveReport{}, err
+	}
 	if len(events) == 0 {
 		// Refused rather than written. An empty file is what Load treats as
 		// corruption, and a session with no events is nothing to continue.
@@ -426,17 +442,19 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 			return SaveReport{}, &ConflictError{ID: id,
 				Detail: fmt.Sprintf("%s no longer holds the contents this run loaded", path)}
 		}
-		var doc header
-		if json.Unmarshal(existing, &doc) == nil && !doc.CreatedAt.IsZero() {
+		// Only the fields before the events: decoding into the whole header
+		// copied every event of the previous generation to read two numbers.
+		doc, ok := s.meta[id]
+		if !ok {
+			ok = json.Unmarshal(existing, &doc) == nil
+		}
+		if ok && !doc.CreatedAt.IsZero() {
 			createdAt = doc.CreatedAt
 			trimmedBefore = doc.TrimmedTurns
 		}
 	}
 
-	from, droppedTurns, oversize, perEvent, err := trimToBudget(events, s.maxBytes)
-	if err != nil {
-		return SaveReport{}, err
-	}
+	from, droppedTurns, oversize := trimEncoded(events, perEvent, s.maxBytes)
 	kept := events[from:]
 	// The events were each encoded to be measured; joined, those encodings
 	// are byte-for-byte what marshalling the kept slice produces.
@@ -462,6 +480,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, err
 	}
 	s.seen[id] = digest(body)
+	s.rememberMeta(id, headerMeta{CreatedAt: createdAt, TrimmedTurns: trimmedBefore + droppedTurns})
 
 	// Pruning is best-effort on purpose: the session is already durable, and
 	// failing the run because an old generation could not be unlinked would
@@ -475,6 +494,17 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		ID: id, Path: target, Generation: generation + 1,
 		Events: len(kept), TrimmedTurns: droppedTurns, Oversize: oversize,
 	}, nil
+}
+
+// rememberMeta records what the file just read or written says about itself.
+// A file without a creation date is not remembered, so the next save parses it
+// as it always did.
+func (s *Store) rememberMeta(id string, m headerMeta) {
+	if m.CreatedAt.IsZero() {
+		delete(s.meta, id)
+		return
+	}
+	s.meta[id] = m
 }
 
 // writeNew materialises body at target, which must not already exist.
@@ -532,25 +562,6 @@ func syncDir(dir string) error {
 		return err
 	}
 	return d.Close()
-}
-
-// persistable drops the events a session file has no use for.
-//
-// AssistantChunk is the stream of a reply the AssistantMessage that follows it
-// already holds whole, and the projection ignores it. Persisting it costs the
-// byte budget that bounds real history — a long streamed session evicted whole
-// turns to keep fragments no resume reads — and it writes a credential that the
-// scrubber redacted from the message back to disk in pieces, because an
-// exact-value scrubber cannot match a value split across fragments. Observers
-// still see every chunk live; only the file omits them.
-func persistable(events []Event) []Event {
-	kept := make([]Event, 0, len(events))
-	for _, event := range events {
-		if event.Type != AssistantChunk {
-			kept = append(kept, event)
-		}
-	}
-	return kept
 }
 
 // readAttempts bounds how often readCurrent re-lists after the generation it
@@ -645,6 +656,7 @@ func (s *Store) prune(id string, keepGeneration int) {
 	for _, stale := range sessions[s.maxSessions:] {
 		s.removeSession(stale.ID, stale.Generation)
 		delete(s.seen, stale.ID)
+		delete(s.meta, stale.ID)
 	}
 }
 
@@ -761,18 +773,36 @@ func countTurns(events []Event) int {
 // this whole file exists to rule out — so an outsized final turn is written
 // and flagged instead.
 func trimToBudget(events []Event, maxBytes int) (int, int, bool, []json.RawMessage, error) {
+	perEvent, err := encodeEvents(events)
+	if err != nil {
+		return 0, 0, false, nil, err
+	}
+	from, dropped, oversize := trimEncoded(events, perEvent, maxBytes)
+	return from, dropped, oversize, perEvent, nil
+}
+
+// encodeEvents is each event's encoding, as the file holds it.
+func encodeEvents(events []Event) ([]json.RawMessage, error) {
 	perEvent := make([]json.RawMessage, len(events))
-	total := len("[]")
 	for i, event := range events {
 		encoded, err := json.Marshal(event)
 		if err != nil {
-			return 0, 0, false, nil, fmt.Errorf("session: encoding event %d: %w", event.Seq, err)
+			return nil, fmt.Errorf("session: encoding event %d: %w", event.Seq, err)
 		}
 		perEvent[i] = encoded
+	}
+	return perEvent, nil
+}
+
+// trimEncoded is trimToBudget over events already encoded, which is what lets
+// a save reuse the encodings an earlier save made.
+func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int, int, bool) {
+	total := len("[]")
+	for _, encoded := range perEvent {
 		total += len(encoded) + 1 // the separating comma
 	}
 	if total <= maxBytes {
-		return 0, 0, false, perEvent, nil
+		return 0, 0, false
 	}
 
 	// Turn boundaries, as index ranges over the event slice. A turn starts at
@@ -799,7 +829,7 @@ func trimToBudget(events []Event, maxBytes int) (int, int, bool, []json.RawMessa
 		starts = append([]int{0}, starts...)
 	}
 	if len(starts) == 0 {
-		return 0, 0, total > maxBytes, perEvent, nil
+		return 0, 0, total > maxBytes
 	}
 
 	groups, from := 0, 0
@@ -814,7 +844,7 @@ func trimToBudget(events []Event, maxBytes int) (int, int, bool, []json.RawMessa
 	if leading && groups > 0 {
 		dropped--
 	}
-	return from, dropped, total > maxBytes, perEvent, nil
+	return from, dropped, total > maxBytes
 }
 
 // joinArray assembles already-encoded elements into a JSON array.

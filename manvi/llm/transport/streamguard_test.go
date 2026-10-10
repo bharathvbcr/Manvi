@@ -117,8 +117,11 @@ func TestAMuteServerIsBoundedByTheResponseHeaderTimeout(t *testing.T) {
 	if !errors.As(err, &te) || !te.Retryable() || te.Attempts != 3 {
 		t.Fatalf("err = %#v, want a retryable failure after 3 attempts", err)
 	}
-	if hits.Load() != 3 {
-		t.Fatalf("server saw %d attempts, want 3", hits.Load())
+	// The client's own count is the contract. The server's can be lower: an
+	// attempt that times out at 40ms before a loaded server has accepted and
+	// parsed it never reaches the handler. It can never be higher.
+	if n := hits.Load(); n > 3 {
+		t.Fatalf("server saw %d attempts, want at most the policy's 3", n)
 	}
 }
 
@@ -142,7 +145,7 @@ func TestTheHeaderTimeoutDoesNotCutOffAHealthyStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 	if err != nil || strings.Count(string(body), "data: x") != 8 {
 		t.Fatalf("body=%q err=%v; a stream five times the header timeout long was cut off", body, err)
@@ -169,7 +172,7 @@ func TestAHeaderTimeoutIsRetriedAndTheNextAttemptSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if b, _ := io.ReadAll(resp.Body); string(b) != "ok" || hits.Load() != 2 {
+	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); string(b) != "ok" || hits.Load() != 2 {
 		t.Fatalf("body=%q hits=%d", b, hits.Load())
 	}
 }
@@ -220,7 +223,7 @@ func TestPreflightStreamJudgesOnlyThePreamble(t *testing.T) {
 	if failure != nil {
 		t.Fatalf("an error after content was judged: %v", failure)
 	}
-	got, _ := io.ReadAll(accepted.Body)
+	got, _ := io.ReadAll(io.LimitReader(accepted.Body, 1<<20))
 	if !strings.Contains(string(got), "event: ping") || !strings.HasSuffix(string(got), "data: b\n\n") {
 		t.Fatalf("replay lost bytes: %q", got)
 	}

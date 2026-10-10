@@ -238,6 +238,10 @@ func TestAMuteServerIsAbandonedAtTheHeaderTimeout(t *testing.T) {
 	release := make(chan struct{})
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		attempts.Add(1)
 		select {
 		case <-release:
@@ -327,7 +331,7 @@ func FuzzRepairNeverRewritesAStringValue(f *testing.F) {
 	f.Fuzz(func(t *testing.T, value string) {
 		enc, err := json.Marshal(value)
 		if err != nil {
-			t.Skip()
+			t.Skip("a string the encoder refuses is not a case this contract covers")
 		}
 		// A payload that is invalid for an unrelated reason (a Python literal
 		// and a trailing comma), so the repair path always runs.

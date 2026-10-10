@@ -441,7 +441,7 @@ func TestManagedMissingExecutableEndsTheAttemptAndReleasesItsRepository(t *testi
 	prepare("run")
 	runner, err := NewManagedRunner(client, func(ctx context.Context, options codingagent.Options) (ManagedSession, error) {
 		options.Program = filepath.Join(root, "missing-codex")
-		_, err := codingagent.OpenCodex(ctx, options)
+		_, err := codingagent.StartCodex(ctx, options)
 		return nil, err
 	}, func(err error) string { return err.Error() })
 	if err != nil {

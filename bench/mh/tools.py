@@ -227,6 +227,73 @@ def shell_body(out, err, limit):
 
 # --- OS containment ----------------------------------------------------------
 
+
+def _read_git_pointer(path):
+    """The directory a `.git` file or `gitdir`/`commondir` file points at."""
+    with open(path, encoding="utf-8") as f:
+        line = f.read().strip()
+    if line.startswith("gitdir:"):
+        line = line[len("gitdir:"):].strip()
+    return os.path.realpath(os.path.join(os.path.dirname(path), line))
+
+
+def git_guard_roots(*starts):
+    """Every git object store and sibling checkout reachable from `starts`.
+
+    The benchmark tree normally sits inside a git checkout, and that checkout
+    tracks tasks/*/hidden_test.py and tasks/*/reference/. Denying the tree
+    itself does nothing about `git show HEAD:bench/tasks/x/hidden_test.py`,
+    which reads the same bytes out of <repo>/.git/objects, nor about another
+    worktree or the main checkout of this repository. So each enclosing git
+    dir, its common dir, and every other worktree registered in that common
+    dir are protected too. A worktree that CONTAINS a start is skipped: it is
+    the one the benchmark runs in, and masking it would mask the benchmark's
+    own toolchain. Only paths that exist are returned (a bwrap tmpfs mask needs
+    a mount point). A `.git` pointer that cannot be parsed protects its whole
+    worktree rather than none of it.
+    """
+    starts = [os.path.realpath(p) for p in starts if p]
+
+    def contains_start(path):
+        return any(s == path or s.startswith(path + os.sep) for s in starts)
+
+    roots = set()
+    for start in starts:
+        cur = start
+        while True:
+            dotgit = os.path.join(cur, ".git")
+            if os.path.lexists(dotgit):
+                try:
+                    if os.path.isdir(dotgit):
+                        gitdir = common = os.path.realpath(dotgit)
+                    else:
+                        gitdir = common = _read_git_pointer(dotgit)
+                        cdir = os.path.join(gitdir, "commondir")
+                        if os.path.exists(cdir):
+                            common = _read_git_pointer(cdir)
+                    roots.update((gitdir, common))
+                    wtroot = os.path.join(common, "worktrees")
+                    if os.path.isdir(wtroot):
+                        for name in os.listdir(wtroot):
+                            ptr = os.path.join(wtroot, name, "gitdir")
+                            if os.path.exists(ptr):
+                                roots.add(os.path.dirname(_read_git_pointer(ptr)))
+                    if os.path.basename(common) == ".git":
+                        roots.add(os.path.dirname(common))
+                except (OSError, UnicodeDecodeError):
+                    roots.add(cur)
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+    return tuple(sorted(r for r in roots
+                        if os.path.exists(r) and not contains_start(r)))
+
+
+def default_protected_roots():
+    """What a shell must not touch when the caller names nothing narrower."""
+    return (BENCH_ROOT,) + git_guard_roots(BENCH_ROOT)
+
 def _sbpl(path):
     """Quote a path for a Seatbelt profile literal."""
     return path.replace("\\", "\\\\").replace('"', '\\"')
@@ -381,8 +448,13 @@ def containment_proves_itself(sandbox=None):
     # live. (The first version of this probe used TMPDIR and reported the real
     # macOS backend as broken -- the probe was wrong, not the backend.)
     outside = os.path.join(BENCH_ROOT, "mh-probe-escape.txt")
-    script = (
-        f'if cat {shlex.quote(canary)} >/dev/null 2>&1; then echo READ_OK; fi; '
+    # The enclosing repository's git dirs hold every tracked hidden test and
+    # reference solution; a shell that can read one has read them all.
+    canaries = [canary] + [os.path.join(r, "HEAD") for r in git_guard_roots(BENCH_ROOT)
+                           if os.path.isfile(os.path.join(r, "HEAD"))]
+    script = "".join(
+        f'if cat {shlex.quote(c)} >/dev/null 2>&1; then echo "READ_OK {c}"; fi; '
+        for c in canaries) + (
         f'if echo x > {shlex.quote(outside)} 2>/dev/null; then echo WRITE_OK; fi; '
         f'echo PROBE_RAN')
     escaped = False
@@ -415,7 +487,10 @@ def containment_proves_itself(sandbox=None):
     if "PROBE_RAN" not in out:
         res = (False, backend, f"probe did not run under {backend}: {out.strip()[:200]}")
     elif "READ_OK" in out:
-        res = (False, backend, f"{backend} did not stop a read of {canary}")
+        leaked = [ln.split(" ", 1)[1] for ln in out.splitlines()
+                  if ln.startswith("READ_OK ")]
+        res = (False, backend,
+               f"{backend} did not stop a read of {', '.join(leaked) or canary}")
     elif escaped:
         res = (False, backend,
                f"{backend} let a write reach {outside} on the host filesystem")
@@ -429,7 +504,7 @@ def containment_proves_itself(sandbox=None):
     return res
 
 
-def contained_argv(argv, allow_write=(), protected_roots=(BENCH_ROOT,)):
+def contained_argv(argv, allow_write=(), protected_roots=None):
     """Wrap argv so the process is confined for the two things that matter.
 
     Writes: only inside allow_write (plus /dev and the temp directories a
@@ -441,6 +516,8 @@ def contained_argv(argv, allow_write=(), protected_roots=(BENCH_ROOT,)):
     no backend and the operator has not opted out: a subprocess that could not be
     contained must never look like one that was.
     """
+    if protected_roots is None:
+        protected_roots = default_protected_roots()
     backend = containment_backend()
     if backend == "sandbox-exec":
         profile = _seatbelt_profile(list(allow_write), list(protected_roots))
@@ -634,7 +711,9 @@ def run_bounded(argv, cwd=None, env=None, input_text=None, timeout=None):
 
 class Sandbox:
     def __init__(self, root, output_cap=MAX_OUTPUT_BYTES,
-                 protected_roots=(BENCH_ROOT,)):
+                 protected_roots=None):
+        if protected_roots is None:
+            protected_roots = default_protected_roots()
         self.root = os.path.realpath(root)
         self.output_cap = output_cap
         self.protected_roots = tuple(p for p in protected_roots if p)

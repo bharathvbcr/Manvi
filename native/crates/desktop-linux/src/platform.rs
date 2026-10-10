@@ -441,82 +441,36 @@ impl Display {
     }
 }
 
-async fn component<'a>(
-    connection: &'a AccessibilityConnection,
-    object: &'a ObjectRefOwned,
-) -> Result<ComponentProxy<'a>> {
-    ComponentProxy::builder(connection.connection())
-        .destination(
-            object
-                .name()
-                .ok_or_else(|| err("target_missing", "Missing accessibility bus identity"))?
-                .clone(),
-        )
-        .map_err(native)?
-        .path(object.path())
-        .map_err(native)?
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-        .map_err(native)
+/// One accessibility proxy for `object`, built the same way for every
+/// interface: the bus identity as destination, the object path, and no
+/// property cache (a cached value would answer for a stale tree).
+macro_rules! proxy_builder {
+    ($name:ident, $proxy:ident) => {
+        async fn $name<'a>(
+            connection: &'a AccessibilityConnection,
+            object: &'a ObjectRefOwned,
+        ) -> Result<$proxy<'a>> {
+            $proxy::builder(connection.connection())
+                .destination(
+                    object
+                        .name()
+                        .ok_or_else(|| err("target_missing", "Missing accessibility bus identity"))?
+                        .clone(),
+                )
+                .map_err(native)?
+                .path(object.path())
+                .map_err(native)?
+                .cache_properties(CacheProperties::No)
+                .build()
+                .await
+                .map_err(native)
+        }
+    };
 }
-async fn action_proxy<'a>(
-    connection: &'a AccessibilityConnection,
-    object: &'a ObjectRefOwned,
-) -> Result<ActionProxy<'a>> {
-    ActionProxy::builder(connection.connection())
-        .destination(
-            object
-                .name()
-                .ok_or_else(|| err("target_missing", "Missing accessibility bus identity"))?
-                .clone(),
-        )
-        .map_err(native)?
-        .path(object.path())
-        .map_err(native)?
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-        .map_err(native)
-}
-async fn text_proxy<'a>(
-    connection: &'a AccessibilityConnection,
-    object: &'a ObjectRefOwned,
-) -> Result<TextProxy<'a>> {
-    TextProxy::builder(connection.connection())
-        .destination(
-            object
-                .name()
-                .ok_or_else(|| err("target_missing", "Missing accessibility bus identity"))?
-                .clone(),
-        )
-        .map_err(native)?
-        .path(object.path())
-        .map_err(native)?
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-        .map_err(native)
-}
-async fn editable_proxy<'a>(
-    connection: &'a AccessibilityConnection,
-    object: &'a ObjectRefOwned,
-) -> Result<EditableTextProxy<'a>> {
-    EditableTextProxy::builder(connection.connection())
-        .destination(
-            object
-                .name()
-                .ok_or_else(|| err("target_missing", "Missing accessibility bus identity"))?
-                .clone(),
-        )
-        .map_err(native)?
-        .path(object.path())
-        .map_err(native)?
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-        .map_err(native)
-}
+proxy_builder!(component, ComponentProxy);
+proxy_builder!(action_proxy, ActionProxy);
+proxy_builder!(text_proxy, TextProxy);
+proxy_builder!(editable_proxy, EditableTextProxy);
 async fn extents(connection: &AccessibilityConnection, object: &ObjectRefOwned) -> Result<Bounds> {
     let (x, y, w, h) = component(connection, object)
         .await?

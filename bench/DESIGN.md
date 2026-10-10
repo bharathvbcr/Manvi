@@ -92,9 +92,13 @@ extra checklist round trip, and verifier runs. On easy tasks that overhead makes
 *slower* -- median per-task speedup is 0.56x (Qwen) and 0.80x (Ornith). It pays for
 itself only where the baseline would otherwise fail or run away.
 
-### Known limitation: single-sample variance
+### Known limitation: single-sample variance (exploratory runs only)
 
-Every (model, config, task) cell is n=1. Two identical Qwen `full` runs on
+This section describes the exploratory runs reported above, where every
+(model, config, task) cell is n=1. The registered v2 grid does not share the
+limitation: it runs 20 seeded repeats per cell (`paper/preregistration.md` §3,
+`--seed 0 --repeat 20`), reports per-repeat pass rates, and puts bootstrap 95%
+intervals over those repeats (`mh/stats.py`, §4). For the exploratory runs, two identical Qwen `full` runs on
 `binsearch` produced 5 steps/47s and 9 steps/111s — a 2.4x spread on the same
 model, config and task at temperature 0.6. Per-task numbers therefore carry little
 weight individually. The claims that survive this are the aggregate ones, where 11

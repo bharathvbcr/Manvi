@@ -17,7 +17,7 @@ MANVI is the harness that wraps them into a working coding agent: it drives the 
 The host plane is assembled from immutable per-server modules. Built-in policy,
 local-model, and chat handlers use the same router as optional services; the
 stock command adds deep devmap status and bounded graph queries through the
-existing `manvi/dc/devmap` client. Hosts negotiate the final operation set in
+existing `dc/devmap` client (DevCouncil's `backend/go_orchestrator/dc/devmap`). Hosts negotiate the final operation set in
 `hello.ops`, and Go embedders can add or explicitly replace one handler through
 `serve.Options.Modules` without editing the dispatch loop. The router is frozen
 before input is read, so the negotiated contract cannot drift mid-run.
@@ -142,7 +142,7 @@ flowchart TB
 1. **Process Boundary, Not CGO**: Go and Rust communicate strictly over child process boundaries, exchanging JSON objects over `stdin`/`stdout`. Linking components via `cgo` would sacrifice instantaneous cross-compilation, static binary portability, and process isolation. The one exception is the **Gusset policy engine**: since v0.0.6 release binaries link a single Rust archive whose dc-glob engine answers every policy pattern question (Linux releases stay static against musl). `CGO_ENABLED=0` still builds, is still gated in `verify.sh`, and decides with Go's fnmatch. What the axiom fixes is the *process*, not a fork per call: `dcstore` is additionally reachable as a `serve` session that answers many requests over one process, holding one SQLite connection across them, and gives up none of the four.
 2. **Mutual Exclusion in Storage, Not Application Code**: Multi-agent task concurrency is guaranteed by SQLite's partial unique index (`ON task_leases (task_id) WHERE status = 'active'`), not by an in-memory lock in Go.
 3. **Session Log Invariant**: The history provided to LLMs is *always* projected on demand from the append-only session log, never accumulated in volatile local memory.
-4. **Restricted Third-Party Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines and custom damage-diffed terminal painting. The only non-standard-library packages are the allowlisted ones in [section 7](#7-restricted-dependency-design) (`memguard`, `samber/mo`) plus the sibling DevCouncil and Gusset modules pinned in `scripts/module-pins.txt`.
+4. **Restricted Third-Party Dependencies in Go**: The Go execution plane uses standard library `syscall` termios, pure Unicode width routines and custom damage-diffed terminal painting. The only non-standard-library packages are the allowlisted ones in [section 7](#7-restricted-dependency-design) (`memguard`) plus the sibling DevCouncil and Gusset modules pinned in `scripts/module-pins.txt`.
 
 ---
 
@@ -343,7 +343,7 @@ the allowlist being edited and reviewed alongside it.
 
 | Plane | Direct dependencies | Rationale |
 |---|---|---|
-| **Go (`manvi/go.mod`)** | `awnumar/memguard`, `samber/mo`, and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; `mo.Option` gives absence one spelling at the local provider's credential seam; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. All three are pure Go; the cgo-off gate (`CGO_ENABLED=0`) still builds and tests them, while release builds additionally link the Gusset archive. |
+| **Go (`manvi/go.mod`)** | `awnumar/memguard` and `quasilyte/go-ruleguard/dsl` (lint-only) | memguard seals credentials at rest, bringing `memcall`, `x/crypto` and `x/sys`; the ruleguard DSL is excluded from every build by its `ruleguard` tag and must never appear in the build graph. Everything else is standard library: direct `syscall` for raw terminal mode, pure Go UTF-8 / ANSI renderers, standard-library HTTP. Both are pure Go; the cgo-off gate (`CGO_ENABLED=0`) still builds and tests them, while release builds additionally link the Gusset archive. |
 | **Rust (`crates/Cargo.toml`)** | `rusqlite` (with `bundled`) and ripgrep's engine (`grep-regex`, `grep-searcher`, `ignore`) | Compiles SQLite from source so the store's partial unique index does not depend on the host's libsqlite3 (22 transitive crates), and embeds ripgrep's ignore-rule resolution and regex matching engine for repository search in `dc-grep` (31 transitive crates). `cargo audit` checks all dependencies on every run. `dc-glob` and `dc-verify` have no external dependencies. |
 
 `valyala/fastjson` was measured for this list and refused; see the hardening
@@ -411,9 +411,9 @@ Dev_Harness/
 └── verify.sh                  # Comprehensive cross-plane verification gate
 ```
 
-`crates/` holds four members and no more. `devmap` is deliberately absent from
+`crates/` holds seven members (`dc-glob`, `dc-grep`, `dc-store`, `dc-verify`, `dc-evidence`, `dc-proc`, `dc-redact`), each a symlink into DevCouncil's `rust/`, and no more. `devmap` is deliberately absent from
 that list: it is a separate tool this repository does not build, resolved at run
-time from `PATH` or `MANVI_MAP_BINARY`, and `manvi/dc/devmap` is only the client
+time from `PATH` or `MANVI_MAP_BINARY`, and DevCouncil's `dc/devmap` is only the client
 that execs it. That is why the client probes capability rather than comparing
 versions — every build of it reports the same `devmap 0.1.0` — and why its
 absence is not fatal. Without it the neighbour rule answers

@@ -43,6 +43,21 @@ component resolved to and whether it answered — read it before assuming which
 one you are testing, because an installed component can be older than the
 contract the harness expects, and `doctor` is where that shows up.
 
+**Sibling modules and worktrees.** `manvi/go.mod` replaces DevCouncil and
+gusset with `../../DevCouncil` and `../../gusset`, and `crates/dc-*` link into
+`../DevCouncil/rust`, so both modules must sit beside the checkout, at the
+commits in `scripts/module-pins.txt`. The release gate
+(`scripts/check-release.mjs`, run by `./verify.sh`) **fails** when a sibling is
+at another commit or has uncommitted edits, and names its HEAD, the pin and the
+commit distance. To test against unpinned siblings on purpose, run with
+`MANVI_ALLOW_UNPINNED_MODULES=1`; the run then prints `NOT COVERED` lines and
+does not count as covering the pins (CI and `--tag` runs ignore the opt-out).
+`scripts/fetch-modules.sh` clones the pins beside a checkout. A worktree nested
+under the main checkout (`.claude/worktrees/x`, `.gitpulse/worktrees/x`) has no
+siblings of its own: run `scripts/fetch-modules.sh --link-main` there to link
+the main checkout's pinned siblings, after which `cd manvi && go build ./...`
+works. It refuses to replace anything that already exists.
+
 ---
 
 ## 2. Running the gate
@@ -153,10 +168,10 @@ upstream for all of them. GitPulse consumes both and vendors selected crates.
 | Driving a turn, cancelling a stream, dispatching a tool | MANVI |
 | Whether a write is allowed; how a grant is recorded | MANVI — `gate`, `policy`, `grants` |
 | Rendering, logging, replay | MANVI — `ui`, `session` |
-| What the harness *asks* a component for | MANVI — `manvi/dc/…` |
+| What the harness *asks* a component for | DevCouncil's Go clients (`DevCouncil/backend/go_orchestrator/dc/…`), consumed by MANVI |
 
-The last row is the one that goes wrong. `manvi/dc/store`, `manvi/dc/devmap` and
-`manvi/dc/dcgrep` are **clients**: they transport answers, they do not compute
+The last row is the one that goes wrong. `dc/store`, `dc/devmap`, `dc/dcgrep` and
+`dc/dcverify` (under `DevCouncil/backend/go_orchestrator/`) are **clients**: they transport answers, they do not compute
 them. A client that starts deciding whether a lease is valid — or caching one —
 is reimplementing a component badly and on the wrong side of the boundary. A
 cached lease is a lease that has already expired somewhere else.
@@ -222,14 +237,20 @@ all four optional analysis tools first and then fails the run if any of them
 turned out to be missing, because a CI job that quietly skipped the linter and
 the vulnerability scan prints the same green check as one that ran them.
 
-A third job compiles the Go and Rust planes on `windows-latest`. That is all it
-claims: `verify.sh` is bash and does not run there, and the Go suite is not run
-there either — many of its tests fork shells and drive the Rust binaries across
-a process boundary, and nothing has established that they pass on Windows. The
-job exists because `procgroup_other.go` and `mkfifo_other.go` are compiled by
-nothing else in the matrix, so a break in them would otherwise reach a user
-before it reached CI. Windows *testing* is an open gap, named rather than
-covered.
+A third job builds the Go plane on `windows-latest` with cgo off and runs `go test
+./...` there. `verify.sh` is bash and does not run on Windows, so the Rust planes
+and the bash-driven gates are not part of it. The job exists because
+`procgroup_other.go` and `mkfifo_other.go` are compiled by nothing else in the
+matrix, and because the cross-build alone never ran one of their tests.
+`GOOS=windows go vet ./...` is also a `verify.sh` step, so every test file is
+known to compile for Windows before it reaches CI. Whether the whole suite
+passes on a Windows runner is established by that job's results, not by this
+paragraph.
+
+The nightly `--race` and `--fuzz` jobs keep a `verify.log` and run the same log
+guards as the main job (`scripts/check-verify-log.sh`), so a gate that degraded
+to NOT COVERED there fails the run. Tool and toolchain versions are pinned in
+`scripts/tool-versions.env`.
 
 `--race` and `--fuzz` run nightly, and on demand through **Run workflow**.
 

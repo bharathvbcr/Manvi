@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
@@ -19,6 +20,12 @@ import (
 // hook, a credential helper, a command the agent backgrounded — still holds
 // open, so a bounded context still produces an unbounded wait.
 const procWaitDelay = 5 * time.Second
+
+// procSpawns counts the child processes started through runProc, which every
+// git invocation here goes through. It exists so a test can state a spawn
+// bound for a tool call and fail when a change quietly adds one: a subprocess
+// is the dominant cost of most tools here and is invisible in a diff.
+var procSpawns atomic.Int64
 
 // procSpec is one child process this package runs.
 type procSpec struct {
@@ -85,6 +92,7 @@ func runProc(ctx context.Context, spec procSpec) procResult {
 	if len(spec.argv) == 0 {
 		return procResult{err: errors.New("no command to run")}
 	}
+	procSpawns.Add(1)
 	if spec.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, spec.timeout)

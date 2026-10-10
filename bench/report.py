@@ -1,5 +1,5 @@
 """Build the head-to-head report from results/, including paired per-task deltas."""
-import json, glob, os, sys, statistics
+import json, os, sys, statistics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 R = os.environ.get("MH_RESULTS") or os.path.join(HERE, "results")
@@ -49,7 +49,7 @@ def main():
     tasks = sorted({r["task"] for s in runs.values() for r in s["rows"]})
 
     print("## Pass rate\n")
-    hdr = f"| task | " + " | ".join(f"{m} {c}" for m, c in sorted(runs)) + " |"
+    hdr = "| task | " + " | ".join(f"{m} {c}" for m, c in sorted(runs)) + " |"
     print(hdr)
     print("|" + "---|" * (len(runs) + 1))
     for t in tasks:

@@ -60,7 +60,7 @@ The boundary stays a clean process boundary: stdio, JSON objects, zero cgo.
 
 ### The Process Is Kept; The Fork Per Call Is Not
 
-A store call used to be a whole process. Measured from `manvi/dc/store` against the release binary on an idle machine, that was **~3.9ms per call, of which ~2.1ms was `fork`/`exec`** (the floor, measured against `/usr/bin/true`) and most of the rest was opening SQLite and verifying its schema — paid on the path *every* write-gate `Diagnose` and every `Acquire` goes through.
+A store call used to be a whole process. Measured from the `dc/store` client (now in DevCouncil's `backend/go_orchestrator/`) against the release binary on an idle machine, that was **~3.9ms per call, of which ~2.1ms was `fork`/`exec`** (the floor, measured against `/usr/bin/true`) and most of the rest was opening SQLite and verifying its schema — paid on the path *every* write-gate `Diagnose` and every `Acquire` goes through.
 
 The client now keeps a small pool of long-lived `dcstore serve` processes, each holding one SQLite connection across many requests: **~3.9ms → ~0.03ms p50 on an idle machine, about 100x.** Both paths inflate under load and the ratio narrows with it — repeated back-to-back trials on a busy machine measured 19x–104x — so the honest claim is one to two orders of magnitude, not a fixed number. A binary that predates `serve` refuses it from argv before reading any request, so the client falls back to one process per call — the command provably did not run, which is what makes retrying it safe.
 

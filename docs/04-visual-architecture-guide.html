@@ -580,7 +580,7 @@
       <div class="plane-card go-card">
         <span class="plane-tag go-tag">Go Execution Plane</span>
         <h3 class="plane-title">Concurrency &amp; Interaction</h3>
-        <p class="plane-desc">The <code>manvi</code> binary. Static on Linux (musl); release builds link exactly one Rust archive, the Gusset policy engine. Beyond the standard library, the Go module takes only an allowlisted few packages (<code>memguard</code>, <code>samber/mo</code>) plus the pinned DevCouncil and Gusset modules.</p>
+        <p class="plane-desc">The <code>manvi</code> binary. Static on Linux (musl); release builds link exactly one Rust archive, the Gusset policy engine. Beyond the standard library, the Go module takes only an allowlisted few packages (<code>memguard</code>) plus the pinned DevCouncil and Gusset modules.</p>
         <ul class="component-list">
           <li><span class="pkg">manvi/agent</span> <span class="role">Turn/step state machine</span></li>
           <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI, local models</span></li>
@@ -649,7 +649,7 @@
         <div class="step-num">1</div>
         <div>
           <div class="step-title">Workspace Boundary</div>
-          <p class="step-desc">Refuses any file write or command target that escapes the repository root: <code>../</code> traversal and absolute paths outside the workspace. This is the one rung that holds under every posture, including <code>yolo</code>.</p>
+          <p class="step-desc">Refuses any file write or command target that escapes the repository root: <code>../</code> traversal and absolute paths outside the workspace. It holds under <code>strict</code> and <code>dev</code>. Under <code>yolo</code> it is off, because <code>yolo</code> turns the hard rules off, and a run that skipped it is recorded as degraded (<code>policy.hard_rules.disabled</code>).</p>
           <div class="step-rules"><span class="rule-pill hard">path.outside_root</span></div>
         </div>
       </div>
@@ -746,7 +746,7 @@
     <table class="matrix">
       <thead><tr><th>Behaviour</th><th><code>strict</code></th><th><code>dev</code> (default)</th><th><code>yolo</code></th></tr></thead>
       <tbody>
-        <tr><td>Root containment</td><td>Enforced</td><td>Enforced</td><td>Enforced</td></tr>
+        <tr><td>Root containment</td><td>Enforced</td><td>Enforced</td><td>Off (recorded as degraded)</td></tr>
         <tr><td>Credential &amp; git hard rules</td><td>Enforced</td><td>Enforced</td><td>Off (recorded as degraded)</td></tr>
         <tr><td>Task-scope soft rules</td><td>Enforced</td><td>Advisory (demoted)</td><td>Off</td></tr>
         <tr><td>Operator escalation (TUI)</td><td>Prompts a modal</td><td>No prompts</td><td>No prompts</td></tr>
@@ -866,7 +866,7 @@
     <p class="lead">A full source build needs Go 1.26, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
 
     <div class="cards">
-      <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, <code>samber/mo</code> gives optional values one spelling, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
+      <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
       <div class="card"><span class="tag">Rust crates</span><h4>Two external families</h4><p><code>rusqlite</code> (bundled) for the store, and ripgrep's engine crates for <code>dc-grep</code>. <code>dc-glob</code> and <code>dc-verify</code> have no external dependencies, and <code>cargo audit</code> runs on every gate.</p></div>
       <div class="card"><span class="tag">Docs tooling</span><h4>Dev-time only</h4><p>Mermaid diagrams are parsed with the real grammar on node, provisioned by bun from <code>bun.lock</code>, and <code>bun audit</code> checks the lockfile. Nothing here reaches the <code>manvi</code> binary.</p></div>
     </div>
@@ -1047,10 +1047,15 @@ function runSim() {
   if (!path) { out.textContent = 'Enter a target path.'; return; }
   const p = path.replace(/^\.\//, '');
 
-  // Rung 1: root containment holds under every posture
+  // Rung 1: root containment holds under strict and dev; yolo turns it off
   if (p.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(p)) {
-    set(0, 'stop', 'Path leaves the repository root. Holds under every posture, including yolo.');
-    finish('blocked', 'Blocked (hard refusal)', 'path.outside_root', 'The path escapes the workspace. No posture or grant can change this.');
+    if (posture === 'yolo') {
+      set(0, 'fire', 'Path leaves the repository root, but root containment is off under yolo.');
+      finish('degraded', 'Allowed (degraded)', 'path.outside_root', 'Under <code>yolo</code> the hard rules are off, root containment included. The write lands outside the workspace, the run is classified as weakened, and the skipped rule is recorded as <code>policy.hard_rules.disabled</code> rather than hidden.');
+      return;
+    }
+    set(0, 'stop', 'Path leaves the repository root. Holds under strict and dev; yolo turns it off.');
+    finish('blocked', 'Blocked (hard refusal)', 'path.outside_root', 'The path escapes the workspace. No grant can change this, and only <code>yolo</code> (which turns every hard rule off) lets it through.');
     return;
   }
   set(0, 'pass', 'Path stays inside the repository root.');
@@ -1063,7 +1068,7 @@ function runSim() {
   if (hard) {
     if (posture === 'yolo') {
       set(1, 'fire', hard + ' would fire, but hard rules are off under yolo.');
-      finish('degraded', 'Allowed (degraded)', hard, 'Hard rules are disabled under <code>yolo</code>. The write proceeds, the run is classified as weakened, and the skipped hard rule is recorded rather than hidden. Root containment still held.');
+      finish('degraded', 'Allowed (degraded)', hard, 'Hard rules are disabled under <code>yolo</code>. The write proceeds, the run is classified as weakened, and the skipped hard rule is recorded rather than hidden.');
       return;
     }
     set(1, 'stop', hard + ' matched. Ungrantable: grants and posture cannot clear it.');

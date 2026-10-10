@@ -360,7 +360,9 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 
 		case <-ticker.C:
 			r.apply(ctx, ActionTick{})
-			dirty = true
+			if r.app.TickMoved() {
+				dirty = true
+			}
 
 		case <-r.term.Resized():
 			w, h := r.term.Size()

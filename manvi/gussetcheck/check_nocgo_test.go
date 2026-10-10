@@ -9,13 +9,6 @@ import (
 	"time"
 )
 
-func TestRunReportsEngineNotLinked(t *testing.T) {
-	err := Run(context.Background())
-	if !errors.Is(err, ErrNotLinked) {
-		t.Fatalf("Run() = %v, want ErrNotLinked", err)
-	}
-}
-
 func TestSelfTestAndShutdownWithoutTheEngine(t *testing.T) {
 	if err := SelfTest(context.Background()); !errors.Is(err, ErrNotLinked) {
 		t.Fatalf("SelfTest() = %v, want ErrNotLinked", err)
@@ -25,11 +18,11 @@ func TestSelfTestAndShutdownWithoutTheEngine(t *testing.T) {
 	}
 }
 
-func TestRunPreservesCancellation(t *testing.T) {
+func TestSelfTestPreservesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := Run(ctx)
+	err := SelfTest(ctx)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run() = %v, want context.Canceled", err)
+		t.Fatalf("SelfTest() = %v, want context.Canceled", err)
 	}
 }

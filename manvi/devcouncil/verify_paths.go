@@ -406,7 +406,11 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 	// The same renderer gitDiff uses, so the two diffs of one new file cannot
 	// differ in anything but which files they were asked about.
 	renders, unrendered := renderUntracked(ctx, r.deps.Root, untracked, budget)
+	rendered := 0
 	for _, u := range renders {
+		if u.err == nil {
+			rendered++
+		}
 		if u.err != nil {
 			// --no-index exits non-zero whenever it finds a difference, which
 			// is every time here, so an error with output is the ordinary
@@ -424,9 +428,9 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"scoped_diff: the %d-byte capture budget ran out with %d new file(s) still unrendered; "+
+			"scoped_diff: the %d-byte capture budget ran out; rendered %d of %d new file(s), %d still unrendered; "+
 				"they are not in this diff and the gates did not see them",
-			maxGitCaptureBytes, unrendered))
+			maxGitCaptureBytes, rendered, len(untracked), unrendered))
 	}
 	return b.String(), notes, nil
 }

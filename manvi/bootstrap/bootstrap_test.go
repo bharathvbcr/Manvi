@@ -132,7 +132,7 @@ func TestEnsureAddsOnlyWhatIsMissingAndKeepsWhatIsThere(t *testing.T) {
 	path := filepath.Join(root, ".gitignore")
 	// No trailing newline, and one rule the harness would otherwise add.
 	existing := "# mine\nbuild/\n.devcouncil/*"
-	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,7 +170,7 @@ func TestEnsureAddsOnlyWhatIsMissingAndKeepsWhatIsThere(t *testing.T) {
 func TestEnsureRecognisesARuleUnderAnyHeading(t *testing.T) {
 	root := gitRepo(t)
 	path := filepath.Join(root, ".gitignore")
-	if err := os.WriteFile(path, []byte("# whatever I call it\n  .devcouncil/*  \n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("# whatever I call it\n  .devcouncil/*  \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

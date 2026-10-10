@@ -800,7 +800,8 @@ fn act(
     let dispatch = now_ms();
     match action.kind {
         ActionKind::Press => {
-            pointer_motion |= input_guard::check_semantic(expected_input)? == input_guard::Interference::PointerMotion;
+            pointer_motion |= input_guard::check_semantic(expected_input)?
+                == input_guard::Interference::PointerMotion;
             let status = unsafe { element.perform_action(&CFString::from_str("AXPress")) };
             if status != AXError::Success {
                 return Err(DesktopError::new(
@@ -821,7 +822,8 @@ fn act(
                     .ok_or_else(|| err("invalid_action", "Text required"))?,
             );
             let status = unsafe {
-                pointer_motion |= input_guard::check_semantic(expected_input)? == input_guard::Interference::PointerMotion;
+                pointer_motion |= input_guard::check_semantic(expected_input)?
+                    == input_guard::Interference::PointerMotion;
                 element.set_attribute_value(&CFString::from_str("AXValue"), text.as_ref())
             };
             if status != AXError::Success {
@@ -991,7 +993,8 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
             // motion is recorded on the observation rather than refused.
             let mut pointer_motion = false;
             if let Some(expected) = request.expected_input.as_ref() {
-                pointer_motion = input_guard::classify(expected, &input_stamp)? == input_guard::Interference::PointerMotion;
+                pointer_motion = input_guard::classify(expected, &input_stamp)?
+                    == input_guard::Interference::PointerMotion;
             }
             let expected = request
                 .window
@@ -1089,7 +1092,8 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
                 ));
             }
             window.foreground = stable_foreground;
-            pointer_motion |= input_guard::check_semantic(&input_stamp)? == input_guard::Interference::PointerMotion;
+            pointer_motion |= input_guard::check_semantic(&input_stamp)?
+                == input_guard::Interference::PointerMotion;
             let observation = Observation {
                 observation_id: String::new(),
                 epoch: 0,

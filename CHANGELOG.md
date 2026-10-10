@@ -21,7 +21,43 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Changed
+
+- Subprocess cost per tool call. The turn-start baseline seeds its scratch
+  index from a copy of the repository's own index instead of `read-tree HEAD`,
+  so `git add -A` reuses git's stat cache and re-hashes only changed files; the
+  tree id is unchanged and a seed git refuses falls back to the old route.
+  Untracked files in a diff are rendered by one `git diff` over an
+  intent-to-add scratch index instead of one process each (258 git processes
+  for 256 files became 5), and anything the batch cannot attribute exactly
+  falls back to the per-file route. `graph_query`, `code_dead`, `graph_context`
+  and the new-file reuse check read `devmap status` once per call instead of
+  two or three times, and `graph_context` runs its per-file `devmap deps`
+  queries five at a time, in input order, stopping on cancel. Measured numbers
+  and the items closed without a change (dcgrep index, task cache, secret
+  pattern fold, concurrent tool dispatch) are on the card ft-9bff2fd4.
+- `docs/WORKBENCH.md` documents the bounded retention policy `store.compact`
+  enforces (DevCouncil `docs/workbench-retention.md`).
+
 ### Added
+
+- Every environment variable the binary reads is documented in
+  `docs/CLI_AND_CONFIGURATION.md` (credentials, `ANTHROPIC_BASE_URL`, the
+  `MANVI_*_BINARY` overrides, root resolution, terminal conventions), and
+  `internal/contract` now parses the production source for the names it reads
+  and fails when one is missing from that document, reporting the reads whose
+  name it could not resolve to a literal. Documentation and tests only; no
+  behaviour changes.
+- `scripts/check-consumers.sh` builds and vets Jarvis against this checkout, so
+  an exported symbol cannot be removed while a consumer still calls it. It exits
+  2, not 0, when the consumer checkout is missing.
+- `session.RestoreSensitiveLog` is back (cab5166 removed it as unreferenced; its
+  consumer is Jarvis, in another repository), with its test. `gemini-3.8-flash`
+  is a served model with its stated context and output limits.
+- `workflow.State.Cause` (omitted when empty), the `human_takeover` failure
+  code, and the `external_interaction` and `human_takeover` intervention reason
+  codes.
+- `agent.ImageTokens`.
 
 - `manvi serve` binds every repository read to an explicit root. `devmap.status`
   and `devmap.query` require `root`, `work.enhancements.refine` requires
@@ -197,6 +233,29 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The crate-pin mirror check has one owner, `manvi/devcouncil/crate_pins_test.go`,
+  and it compares against DevCouncil at the pinned commit, not the sibling
+  working tree. The hand-rolled TOML check in `check-release.mjs` is deleted.
+- A TUI repaints on the 100ms tick only while something animates (a running
+  turn, a pending approval, the dashboard, a notice, the empty screen's rain,
+  the composer's rotating tip); an idle terminal no longer redraws ten times a
+  second.
+- Session saves encode only the events appended since the previous save, and
+  read the previous generation's dates from memory rather than parsing it:
+  allocations per save of a 5000-event log fall from about 15,300 to about 230
+  and the save is about a fifth faster. The file format, generation numbering,
+  conflict rules and crash safety are unchanged.
+
+- The gate certifies the build that ships. The dependency allowlist, both lint
+  sets, `govulncheck` and `nilaway` also run under DevCouncil's
+  `gusset-engine/cgo-env.sh` exports, and the cgo allowlist names the gusset
+  engine. `go mod tidy -diff` is gated, `native/` (the desktop broker) gets
+  format, clippy and tests, `GOOS=windows go vet ./...` guards the tests'
+  portability, CI gains a `windows-latest` job that builds and tests the cgo-off
+  Go plane, and CI installs golangci-lint, govulncheck, nilaway, cargo-audit,
+  Rust and node at the versions in `scripts/tool-versions.env`.
+- The local provider's credential seam returns `(Secret, present, error)`
+  instead of a `samber/mo` Option, and `samber/mo` is removed from `go.mod`.
 - Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
   read-only command allowlist now judges each command's arguments, so
   `git diff --output=`, `git diff --no-index` outside the root and pytest's
@@ -349,6 +408,75 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- A file the agent rewrites is replaced, not truncated: the new content goes to
+  a temporary sibling, is fsynced, and is renamed over the original, so a write
+  that fails part-way (disk full, quota, I/O error) leaves the original intact.
+  A failed fsync or close now fails the write, and a write that fails after the
+  file may have changed still names the path so the end-of-turn check looks at
+  it. The same applies to targets outside the repository.
+- Artifact store: names ending in `.meta.json` are refused (they collided with
+  another artifact's metadata), `Create` is exclusive, writes are atomic,
+  `Update` no longer creates an artifact or resets its revision history over a
+  missing or corrupt metadata file, and a failed write keeps the previous
+  revision. `Update` on an artifact that does not exist is now an error.
+- An untracked file that cannot be rendered into the verification diff (an
+  unreadable file, a deadline that ran out mid-fan-out) is named in the diff
+  notes with the reason (and "rendered N of M") instead of being dropped
+  silently, and any diff shortfall makes `devcouncil_verify_task` report
+  `verdict: "degraded"` with `passed: false`: never a pass, and never a failure
+  on that account alone. A blocking gap still gives `failed`.
+- The release workflow can publish. The publish job now fetches the pinned
+  DevCouncil before `scripts/check-release.mjs` reads it, a tag no longer builds
+  or publishes unless `verify.yml` passed at that commit
+  (`scripts/release-verify-gate.sh`), every checkout drops its credentials, and
+  Rust and Node are pinned (`1.99.0`, `22.22`). Releases carry `PROVENANCE.json`
+  beside `SHA256SUMS`; neither is a signature (see the v0.0.6 notes). A
+  `workflow_dispatch` run is a dry run that stops at `gh release create`.
+- `check-release.mjs` fails by default when a sibling DevCouncil or gusset is
+  not exactly at its pin, naming its HEAD, the pin, the commit distance and
+  whether it is dirty. `--allow-unpinned` or `MANVI_ALLOW_UNPINNED_MODULES=1`
+  turns that into a `NOT COVERED` line on a developer machine; CI, `--tag` and
+  `--require-pins` ignore it.
+- `scripts/fetch-modules.sh --link-main` lets a worktree nested under the main
+  checkout build: it links the main worktree's pinned siblings instead of
+  cloning, and refuses to replace anything that exists.
+- Bench containment no longer leaks hidden tests and reference solutions through
+  git. The shell and the verifier's checker and worker now also cannot read the
+  git dir and common dir enclosing the benchmark (or a task), nor any other
+  worktree registered in that repository (`git_guard_roots`), so
+  `git show HEAD:bench/tasks/<t>/hidden_test.py`, `git cat-file` and
+  `git -C .. log` are refused. The verifier's worker on macOS now denies
+  network, as bwrap's `--unshare-net` already did on Linux. `containment_proves_itself`
+  probes the git dirs. The shell's own network is unchanged on both platforms.
+- Bench: the bootstrap draw is inlined (about 2.5x to 3x faster, bit-identical
+  RNG stream, pinned by a randrange oracle in `test_stats.py`); the nine copied
+  `check()` helpers are one `mh/checks.py`; `verify.sh` lints `bench/` and
+  `scripts/*.py` with ruff's F and E9 rules (NOT COVERED when ruff is absent).
+- `agent.CountRequestTokens` priced an image at zero tokens, so a computer-use
+  session of screenshots never compacted. Images, top level or inside a tool
+  result, now cost `ceil(w/28) * ceil(h/28)` visual tokens, capped at 4,784.
+- `workflow.ResultFromState` and `computer.StuckReasonCode` guessed the failure
+  code from the phase and from substrings of free text: a deadline or action
+  limit reported `checkpoint_failed`, an external-interaction pause or human
+  takeover reported `ambiguous_target` or `observation_budget`, and native text
+  mentioning a "deadline" reported `deadline_near`. Both now read a typed
+  `State.Cause`; `human_denied` is produced for a denied approval.
+- Catalog publication never synced the directory after linking or renaming the
+  published name, so a power loss could lose a revision.
+- `Client.Act` and `Client.HumanAct` were one 193-node clone; they share
+  `dispatch`.
+
+- `verify.sh` and CI no longer pass when a check failed or never ran. The
+  command-gate differential, the documentation contract and the cross-boundary
+  counts read their `go test` run's exit status instead of masking it with
+  `|| true`; a failed `go list` is not an empty dependency surface; the lint
+  debt ratchet refuses a report holding `typecheck` rows or a failed run; the
+  `nilaway` ceiling refuses a run in which a package dropped out of the
+  analysis; and the nightly `--race` and `--fuzz` jobs keep a log and run the
+  same missing-tool and unlisted-gap guards as the main job
+  (`scripts/check-verify-log.sh`, with a per-mode `modes` field in
+  `scripts/verify-expected-gaps.json`). The suite runs once, as `go test -json`,
+  instead of twice.
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
   `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with
@@ -375,12 +503,6 @@ under **Unreleased** in the same commit as the code.
   and off for hosted xAI, and a fenced-JSON call is recovered only when nothing
   follows it. A call whose arguments were rewritten is reported as
   `Decoding.ArgumentsRepaired`.
-- TUI: the loop no longer deadlocks on its own queue (its own notices and turn-start bookkeeping are sent without blocking and drained in the same iteration), every producer outside the loop (event sink, `Send`, session effects, a turn's final report, the approval seam) returns once the runner stops instead of parking forever, and quitting now cancels every running turn and waits (bounded, 15s) for it to finish saving its log before `Run` returns, so session leases are released only after the turns have ended.
-- Managed runs: an approval whose decision was delivered no longer fails a Claude run at the callback's expiry (expiry applies only to callbacks still awaiting a person) and its decision row now ends `resolved` ("Decision delivered to the provider") rather than `cancelled`, "delivery may be uncertain"; a Claude `control_cancel_request` withdraws the pending callback (row `cancelled`) and an answer racing it no longer fails the run; a `Prepare` that failed before `runs.claim` no longer locks the run id in the process; the 32 MiB stdout cap is documented as per session and its failure reason says so.
-- The end-of-turn check no longer loses the turn's pre-turn baseline after its first read: a bounced turn's re-check now runs against the same captured tree instead of being forced to `degraded` with a false "no pre-turn baseline was recorded".
-- `Loop.Run` closes the turn and step it opened on every exit, so a provider failure, a cancel or a refused pre-step no longer leaves a `turn.start` with no `turn.end` (or a dangling `step/start`) in the log and the NDJSON stream; `NewLoop` refuses a nil bus instead of letting `Run` panic.
-- `kill_all` no longer reports finished or already-terminating sub-agents as termination failures, a second kill of a `canceling` child is refused instead of reported as success, a child whose completion is refused after a kill ends `errored` rather than `canceling` forever, and the instance manager keeps at most 128 finished instances.
-- MCP client: a server-initiated request is now answered instead of dropped (`ping` gets an empty result, every other method, `roots/list` included, gets -32601), `initialize` no longer advertises a roots capability nothing serves, and a `Call` that times out or is cancelled sends `notifications/cancelled` with its request id so a non-idempotent tool is not left running unannounced. Spec: modelcontextprotocol.io basic/utilities/ping, basic/utilities/cancellation, client/roots.
 - A shell command whose operand or input redirection names a secret path
   (`cat .env`, `cp secrets/x y`, `base64 < .env`) is refused by a new hard rule,
   `command.secret_read`, in every posture except `yolo`. Under the default dev
@@ -429,6 +551,12 @@ under **Unreleased** in the same commit as the code.
   the turn reported `Mutated=false` and the sensor answered "no change".
   Only `Blocked` now means refused.
 
+- TUI: the loop no longer deadlocks on its own queue (its own notices and turn-start bookkeeping are sent without blocking and drained in the same iteration), every producer outside the loop (event sink, `Send`, session effects, a turn's final report, the approval seam) returns once the runner stops instead of parking forever, and quitting now cancels every running turn and waits (bounded, 15s) for it to finish saving its log before `Run` returns, so session leases are released only after the turns have ended.
+- Managed runs: an approval whose decision was delivered no longer fails a Claude run at the callback's expiry (expiry applies only to callbacks still awaiting a person) and its decision row now ends `resolved` ("Decision delivered to the provider") rather than `cancelled`, "delivery may be uncertain"; a Claude `control_cancel_request` withdraws the pending callback (row `cancelled`) and an answer racing it no longer fails the run; a `Prepare` that failed before `runs.claim` no longer locks the run id in the process; the 32 MiB stdout cap is documented as per session and its failure reason says so.
+- The end-of-turn check no longer loses the turn's pre-turn baseline after its first read: a bounced turn's re-check now runs against the same captured tree instead of being forced to `degraded` with a false "no pre-turn baseline was recorded".
+- `Loop.Run` closes the turn and step it opened on every exit, so a provider failure, a cancel or a refused pre-step no longer leaves a `turn.start` with no `turn.end` (or a dangling `step/start`) in the log and the NDJSON stream; `NewLoop` refuses a nil bus instead of letting `Run` panic.
+- `kill_all` no longer reports finished or already-terminating sub-agents as termination failures, a second kill of a `canceling` child is refused instead of reported as success, a child whose completion is refused after a kill ends `errored` rather than `canceling` forever, and the instance manager keeps at most 128 finished instances.
+- MCP client: a server-initiated request is now answered instead of dropped (`ping` gets an empty result, every other method, `roots/list` included, gets -32601), `initialize` no longer advertises a roots capability nothing serves, and a `Call` that times out or is cancelled sends `notifications/cancelled` with its request id so a non-idempotent tool is not left running unannounced. Spec: modelcontextprotocol.io basic/utilities/ping, basic/utilities/cancellation, client/roots.
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a
   session that obeys only the context it is handed ignored `Stop` until the

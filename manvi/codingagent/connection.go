@@ -323,3 +323,61 @@ func (c *connection) close() (Exit, error) {
 		return Exit{}, errors.New("managed provider did not confirm process reaping before shutdown deadline")
 	}
 }
+
+// maxDeferredEvents bounds both the events one response preflight may drain
+// and the backlog it may leave deferred, for every managed adapter: the same
+// run is being protected, so one number.
+const maxDeferredEvents = 128
+
+// drainBacklog is the one bounded preflight drain shared by the managed
+// adapters. It consumes already-buffered handshake-queue items and wire frames
+// (never blocking), decodes each through event, and parks the meaningful ones
+// in deferred so Next still delivers them in order.
+func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[]Event,
+	item func(wireRead) T, event func(T) (Event, bool, error)) error {
+	for i := 0; i < maxDeferredEvents; i++ {
+		var next T
+		if len(*queue) > 0 {
+			next = (*queue)[0]
+			*queue = (*queue)[1:]
+		} else {
+			select {
+			case frame, ok := <-wire.frames:
+				if !ok {
+					return errors.New(agent + " connection ended before response validation")
+				}
+				if frame.err != nil {
+					return frame.err
+				}
+				next = item(frame)
+			default:
+				return wire.ctx.Err()
+			}
+		}
+		e, meaningful, err := event(next)
+		if err != nil {
+			return err
+		}
+		if meaningful {
+			if len(*deferred) >= maxDeferredEvents {
+				return errors.New(agent + " response preflight exceeded its event budget")
+			}
+			*deferred = append(*deferred, e)
+		}
+	}
+	return errors.New(agent + " response preflight could not drain its bounded event backlog")
+}
+
+// callbackStale reports whether a host's copy of a callback no longer matches
+// the one the adapter retained when the provider asked: already sent, run
+// finished, expired, or any of payload, digest (stored and recomputed),
+// thread, turn or kind changed. It is the single predicate that gates approval
+// delivery, so a field added here protects every adapter at once.
+func callbackStale(request, source Request, sent, finished bool) bool {
+	return sent || finished || !time.Now().Before(source.ExpiresAt) ||
+		request.ID != source.ID ||
+		request.Payload != source.Payload || request.Digest != source.Digest ||
+		payloadDigest(request.Payload) != source.Digest ||
+		request.ThreadID != source.ThreadID || request.TurnID != source.TurnID ||
+		request.Kind != source.Kind
+}

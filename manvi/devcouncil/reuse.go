@@ -138,7 +138,8 @@ func (r *Registry) checkReuse(ctx context.Context, normalized string) reuseRepor
 	queryCtx, cancel := context.WithTimeout(ctx, reuseQueryTimeout)
 	defer cancel()
 
-	if _, err := client.Available(queryCtx); err != nil {
+	queryCtx, err = graphReady(queryCtx, client)
+	if err != nil {
 		report.Degraded = append(report.Degraded, fmt.Sprintf("the code index is unavailable (%v)", err))
 		return report
 	}

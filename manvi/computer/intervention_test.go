@@ -38,10 +38,10 @@ func TestInterventionEmittedOnPause(t *testing.T) {
 	if req.Controller != ControllerAutomation {
 		t.Fatalf("controller=%s", req.Controller)
 	}
-	if StuckReasonCode(workflow.Paused, "target resolves to 0 elements") != ReasonLadderExhausted {
+	if StuckReasonCode(workflow.State{Phase: workflow.Paused, Cause: workflow.FailureAmbiguousTarget, Reason: "target resolves to 0 elements"}) != ReasonLadderExhausted {
 		t.Fatal("stuck reason mapping")
 	}
-	if StuckReasonCode(workflow.AwaitingApproval, "") != ReasonApprovalPending {
+	if StuckReasonCode(workflow.State{Phase: workflow.AwaitingApproval}) != ReasonApprovalPending {
 		t.Fatal("approval reason mapping")
 	}
 }
@@ -72,5 +72,29 @@ func TestTakeoverSetsHumanController(t *testing.T) {
 	}
 	if len(run.Interventions()) == 0 || run.Interventions()[0].Status != InterventionRequested {
 		t.Fatalf("interventions=%+v", run.Interventions())
+	}
+}
+
+// The reason code comes from the cause the reducer recorded, so native text
+// that mentions another cause cannot change it.
+func TestStuckReasonCodeComesFromTheCauseNotTheText(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state workflow.State
+		want  string
+	}{
+		{"deadline", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureDeadline}, ReasonDeadlineNear},
+		{"native text mentioning a deadline", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureIncompleteObserve, Reason: "incomplete observation: deadline banner visible"}, ReasonObservationBudget},
+		{"native text mentioning recovery or a ladder", workflow.State{Phase: workflow.Paused, Reason: "recovery ladder dialog"}, ReasonObservationBudget},
+		{"not actionable", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureNotActionable}, ReasonNotActionable},
+		{"ambiguous target", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureAmbiguousTarget}, ReasonLadderExhausted},
+		{"external interaction", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureExternalInteraction, Reason: "external interaction requires human reconciliation: system dialog"}, ReasonExternalInteraction},
+		{"human takeover", workflow.State{Phase: workflow.Paused, Cause: workflow.FailureHumanTakeover, Reason: "human takeover"}, ReasonHumanTakeover},
+		{"approval wins over any cause", workflow.State{Phase: workflow.AwaitingApproval, Cause: workflow.FailureDeadline}, ReasonApprovalPending},
+		{"no cause recorded", workflow.State{Phase: workflow.Paused, Reason: "anything"}, ReasonObservationBudget},
+	} {
+		if got := StuckReasonCode(tc.state); got != tc.want {
+			t.Errorf("%s: StuckReasonCode = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

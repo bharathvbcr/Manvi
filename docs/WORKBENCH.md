@@ -869,9 +869,18 @@ by changing this board status; their separate models remain to be implemented.
   alternate escaped spellings), malformed types and oversized integers are
   rejected. A future schema version returns `schema_unsupported`.
 
-Events, revisions and receipts currently retain all accepted changes. Retention,
-quota enforcement and compaction need explicit policy before large-scale rollout;
-unresolved decisions must never be pruned by a generic history cleanup.
+Events, revisions and receipts are bounded by `store.compact`, a workbench
+method (`work.store.compact` through `manvi serve`) that needs no schema change.
+Nothing calls it automatically: a host schedules it. It deletes idempotency
+receipts only past a replay window (default 7 days, never under an hour), never
+deletes a launch-claim receipt, keeps the newest `keep_revisions` (default 50)
+revisions of every record so `expected_revision` checks stay answerable, keeps
+every revision of an open decision or a live run, and keeps any event a
+surviving receipt or attention row points at. A pass is bounded per table and
+reports `deleted`, `eligible` and `truncated`, so a capped pass is never read as
+a complete one. The full policy, its consequences for retries and `events.list`
+cursors, and its tests are in DevCouncil's `docs/workbench-retention.md`.
+Quota enforcement is still unspecified. Unresolved decisions are never pruned.
 
 ## Verification
 
@@ -883,8 +892,10 @@ cargo test --manifest-path crates/Cargo.toml -p dc-store
 cargo clippy --manifest-path crates/Cargo.toml -p dc-store --all-targets -- -D warnings
 ```
 
-From `manvi/`, run `go test ./dc/store ./serve ./cmd/manvi` and
-`go test -race ./dc/store ./serve`. Real binaries exercise persistence across
+From `manvi/`, run `go test ./serve ./cmd/manvi` and `go test -race ./serve`; the
+`dc/store` client lives in DevCouncil, so from
+`DevCouncil/backend/go_orchestrator/` run `go test ./dc/store` and
+`go test -race ./dc/store`. Real binaries exercise persistence across
 restart, three board scopes, process reuse, lease isolation, idempotency, stale
 edits, an eight-writer race, grouping, page byte bounds and logical refusal
 recovery. `FuzzWorkbenchNeverAcceptsPartialOrFailedChildOutput` attacks the Go/Rust
@@ -896,7 +907,8 @@ spreads the same 100,000 task mutations across 100,000 distinct tasks with one
 revision each. Both measure global/workspace/repository/history reads, broad and
 rare search, scoped search, empty status and committed text edits. Read cases
 check exact totals and page sizes before timing; edit cases verify one additional
-event per mutation afterward. Run explicitly from `manvi/`:
+event per mutation afterward. Run explicitly from
+`DevCouncil/backend/go_orchestrator/`:
 
 ```sh
 go test ./dc/store -run '^$' -bench '^BenchmarkWorkbenchProfile(Stress)?$' -benchtime=100x -count=1 -timeout=20m

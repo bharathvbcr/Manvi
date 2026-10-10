@@ -1,4 +1,6 @@
-package openaicompat
+// Package transporttest holds test doubles for the transport seams, shared by
+// every package whose tests drive a stream.
+package transporttest
 
 import (
 	"sync"
@@ -7,7 +9,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
-// manualClock is the stall watchdog's clock, driven by the test rather than by
+// Clock is the stall watchdog's clock, driven by the test rather than by
 // the machine.
 //
 // It exists because the assertion "a slow but live stream is not abandoned"
@@ -21,43 +23,39 @@ import (
 // Advancing a clock the test owns removes the ambiguity rather than making it
 // less likely: the gap between frames becomes a number the test states, so the
 // only way the watchdog can trip is by moving its deadline wrongly.
-//
-// transport has its own copy of this, because that package cannot import
-// anything that imports it. The two are test scaffolding for the same seam,
-// not two implementations of a behaviour.
-type manualClock struct {
+type Clock struct {
 	mu     sync.Mutex
 	now    time.Time
-	timers []*manualTimer
+	timers []*timer
 }
 
-// newManualClock starts at a real instant rather than the zero time, so a
+// NewClock starts at a real instant rather than the zero time, so a
 // deadline computed before the first advance is an ordinary time.Time.
-func newManualClock() *manualClock {
-	return &manualClock{now: time.Unix(1<<30, 0)}
+func NewClock() *Clock {
+	return &Clock{now: time.Unix(1<<30, 0)}
 }
 
-func (c *manualClock) Now() time.Time {
+func (c *Clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
 }
 
-func (c *manualClock) AfterFunc(d time.Duration, f func()) transport.StallTimer {
+func (c *Clock) AfterFunc(d time.Duration, f func()) transport.StallTimer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &manualTimer{clock: c, fn: f, deadline: c.now.Add(d), active: true}
+	t := &timer{clock: c, fn: f, deadline: c.now.Add(d), active: true}
 	c.timers = append(c.timers, t)
 	return t
 }
 
-// scheduled reports how many timers this clock has been asked to run, which is
+// Scheduled reports how many timers this clock has been asked to run, which is
 // what tells a test that the watchdog is on this clock and not on the wall.
 // Without the check the driven tests pass whether or not the seam is wired:
 // with the frames sent as fast as the socket takes them there is no real gap
 // for a real watchdog to trip on, so a stated gap that never reached the
 // watchdog would read exactly like one it tolerated.
-func (c *manualClock) scheduled() int {
+func (c *Clock) Scheduled() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.timers)
@@ -68,10 +66,10 @@ func (c *manualClock) scheduled() int {
 // The callbacks run with this lock released: the watchdog's callback takes the
 // watchdog's own mutex and may re-arm the timer from under it, which comes
 // back here for the lock.
-func (c *manualClock) Advance(d time.Duration) {
+func (c *Clock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
-	var due []*manualTimer
+	var due []*timer
 	for _, t := range c.timers {
 		if t.active && !t.deadline.After(c.now) {
 			t.active = false
@@ -84,16 +82,16 @@ func (c *manualClock) Advance(d time.Duration) {
 	}
 }
 
-// manualTimer is one scheduled callback. Its fields are guarded by the clock's
+// timer is one scheduled callback. Its fields are guarded by the clock's
 // mutex, because Advance walks them while the watchdog re-arms them.
-type manualTimer struct {
-	clock    *manualClock
+type timer struct {
+	clock    *Clock
 	fn       func()
 	deadline time.Time
 	active   bool
 }
 
-func (t *manualTimer) Reset(d time.Duration) bool {
+func (t *timer) Reset(d time.Duration) bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
 	was := t.active
@@ -102,7 +100,7 @@ func (t *manualTimer) Reset(d time.Duration) bool {
 	return was
 }
 
-func (t *manualTimer) Stop() bool {
+func (t *timer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
 	was := t.active
