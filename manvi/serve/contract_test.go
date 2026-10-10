@@ -43,6 +43,8 @@ var contractTypes = map[string]reflect.Type{
 	"VerifyTaskParams":   reflect.TypeFor[VerifyTaskParams](),
 	"VerifyGetParams":    reflect.TypeFor[VerifyGetParams](),
 	"VerifyResult":       reflect.TypeFor[VerifyResult](),
+	"SuggestParams":      reflect.TypeFor[SuggestParams](),
+	"SuggestResult":      reflect.TypeFor[SuggestResult](),
 }
 
 type contractField struct {

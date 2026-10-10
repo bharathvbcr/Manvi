@@ -41,6 +41,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `work.tasks.suggest` (host plane, enabled with `--workbench-db`): ranks the
+  open board for what to work on next and returns a short list with a reason
+  each. It is deterministic and makes no model call: a fixed point table over
+  priority, severity, due date, idle age, the open tasks a task blocks, a
+  `ready` status, a repository gap-scan origin and the newest stored
+  verification, every point named in the answer. Done, archived, in-progress,
+  review, duplicate and blocked tasks are left out and counted. Reads are
+  bounded and the answer says when the board or the verification probes were
+  capped.
+
 - Every environment variable the binary reads is documented in
   `docs/CLI_AND_CONFIGURATION.md` (credentials, `ANTHROPIC_BASE_URL`, the
   `MANVI_*_BINARY` overrides, root resolution, terminal conventions), and
