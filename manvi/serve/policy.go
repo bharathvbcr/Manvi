@@ -121,6 +121,15 @@ type HostScope struct {
 	// Worktree is the checkout the host is acting in. Carried for the record
 	// rather than for the ladder, which judges paths against Root.
 	Worktree string `json:"worktree,omitempty"`
+	// AllowedCommands are the commands the task authorises, in fnmatch form.
+	// policy.check.command honours them alongside the request's own
+	// AllowedCommands; a file check has no use for them.
+	//
+	// This field was missing while GitPulse sent it, so decoding dropped it and
+	// every command a bound task authorised came back command.not_allowed. Like
+	// the top-level list it is a statement of intent: the hard rules run before
+	// any allowlist, so naming a command here never admits one they refuse.
+	AllowedCommands []string `json:"allowed_commands,omitempty"`
 }
 
 // task renders the declared scope as the task the gate measures against.
@@ -319,10 +328,22 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	// runs. An empty AllowedCommands is a real value here: it means the host
 	// declared nothing, and the ladder ends at RuleCommandNotAllowed — Soft,
 	// and therefore demoted below unless the host asked for enforcement.
+	//
+	// A declared task contributes its own allowlist and its id, so a command
+	// the task authorises is judged as authorised and the decision names the
+	// task it was measured against.
+	allowed := p.AllowedCommands
+	id := hostScopeID
+	if p.Scope != nil {
+		allowed = append(append([]string(nil), p.AllowedCommands...), p.Scope.AllowedCommands...)
+		if p.Scope.TaskID != "" {
+			id = p.Scope.TaskID
+		}
+	}
 	scope := &dc.Task{
-		ID:              hostScopeID,
+		ID:              id,
 		Title:           "embedding host scope",
-		AllowedCommands: p.AllowedCommands,
+		AllowedCommands: allowed,
 	}
 	d := cmdGate.EvaluateCommand(p.Command, scope)
 
@@ -352,7 +373,7 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	// runs it after settle: the demotion is one of the ways a command that the
 	// ladder refused ends up permitted, and a rung placed before it never sees
 	// those.
-	refusal, err := gate.EvaluateRedirects(p.Command, hostScopeID, func(target string) (policy.Decision, error) {
+	refusal, err := gate.EvaluateRedirects(p.Command, id, func(target string) (policy.Decision, error) {
 		if p.Root == "" {
 			return policy.Decision{}, errCommandRootMissing
 		}
