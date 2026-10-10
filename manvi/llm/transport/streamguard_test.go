@@ -34,7 +34,7 @@ func TestDoneSentinelWithoutATrailingBlankLine(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := NewSSE(io.NopCloser(strings.NewReader("data: {\"a\":1}\n\n"+tail)), "[DONE]")
 			events, err := readAll(t, s)
-			if err != io.EOF || events != 1 {
+			if !errors.Is(err, io.EOF) || events != 1 {
 				t.Fatalf("events=%d err=%v, want the one real event then a clean EOF", events, err)
 			}
 			if !s.Terminated() {
@@ -102,8 +102,9 @@ func TestAMuteServerIsBoundedByTheResponseHeaderTimeout(t *testing.T) {
 	c.Retry = RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond}
 
 	start := time.Now()
-	_, err := c.Post(context.Background(), "/x", map[string]string{"a": "b"})
+	resp, err := c.Post(context.Background(), "/x", map[string]string{"a": "b"})
 	if err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("a mute server answered")
 	}
 	if d := time.Since(start); d > 5*time.Second {
@@ -128,7 +129,11 @@ func TestTheHeaderTimeoutDoesNotCutOffAHealthyStream(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		f := w.(http.Flusher)
+		f, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "the test server cannot flush", http.StatusInternalServerError)
+			return
+		}
 		for i := 0; i < 8; i++ {
 			_, _ = io.WriteString(w, "data: x\n\n")
 			f.Flush()
@@ -142,7 +147,7 @@ func TestTheHeaderTimeoutDoesNotCutOffAHealthyStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 	if err != nil || strings.Count(string(body), "data: x") != 8 {
 		t.Fatalf("body=%q err=%v; a stream five times the header timeout long was cut off", body, err)
@@ -168,8 +173,8 @@ func TestAHeaderTimeoutIsRetriedAndTheNextAttemptSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if b, _ := io.ReadAll(resp.Body); string(b) != "ok" || hits.Load() != 2 {
+	defer func() { _ = resp.Body.Close() }()
+	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); string(b) != "ok" || hits.Load() != 2 {
 		t.Fatalf("body=%q hits=%d", b, hits.Load())
 	}
 }
@@ -182,7 +187,10 @@ func TestTheCallersCancellationIsNotAHeaderTimeout(t *testing.T) {
 	c.ResponseHeaderTimeout = time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := c.Post(ctx, "/x", nil)
+	resp, err := c.Post(ctx, "/x", nil)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
 	var te *Error
 	if !errors.As(err, &te) || te.Retryable() || hits.Load() != 1 {
 		t.Fatalf("err=%#v hits=%d, want one attempt and a non-retryable cancellation", err, hits.Load())
@@ -216,16 +224,25 @@ func TestPreflightStreamJudgesOnlyThePreamble(t *testing.T) {
 		return &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	}
 
-	accepted, failure := PreflightStream(resp("event: ping\ndata: {}\n\nevent: text\ndata: a\n\nevent: error\ndata: b\n\n"), "p", time.Second, judge)
+	healthy := resp("event: ping\ndata: {}\n\nevent: text\ndata: a\n\nevent: error\ndata: b\n\n")
+	defer func() { _ = healthy.Body.Close() }()
+	accepted, failure := PreflightStream(healthy, "p", time.Second, judge)
 	if failure != nil {
 		t.Fatalf("an error after content was judged: %v", failure)
 	}
-	got, _ := io.ReadAll(accepted.Body)
+	defer func() { _ = accepted.Body.Close() }()
+	got, _ := io.ReadAll(io.LimitReader(accepted.Body, 1<<20))
 	if !strings.Contains(string(got), "event: ping") || !strings.HasSuffix(string(got), "data: b\n\n") {
 		t.Fatalf("replay lost bytes: %q", got)
 	}
 
-	if _, failure := PreflightStream(resp("event: ping\ndata: {}\n\nevent: error\ndata: b\n\n"), "p", time.Second, judge); failure == nil || !failure.Retryable() {
+	failing := resp("event: ping\ndata: {}\n\nevent: error\ndata: b\n\n")
+	defer func() { _ = failing.Body.Close() }()
+	rejected, failure := PreflightStream(failing, "p", time.Second, judge)
+	if rejected.Body != nil {
+		_ = rejected.Body.Close()
+	}
+	if failure == nil || !failure.Retryable() {
 		t.Fatalf("an error in the preamble was not rejected: %v", failure)
 	}
 }
@@ -233,7 +250,7 @@ func TestPreflightStreamJudgesOnlyThePreamble(t *testing.T) {
 // TestPreflightStreamIsBoundedWhenTheServerGoesMute: headers sent, then silence.
 func TestPreflightStreamIsBoundedWhenTheServerGoesMute(t *testing.T) {
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	start := time.Now()
 	_, failure := PreflightStream(&http.Response{Body: pr}, "p", 40*time.Millisecond,
 		func(string) (bool, *Error) { return true, nil })

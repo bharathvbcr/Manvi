@@ -115,14 +115,19 @@ func (m DevmapModule) query(ctx context.Context, raw json.RawMessage) (any, *Err
 
 // envelopeRootMatches refuses an answer whose envelope names a different
 // repository than the one asked about. An envelope that names none is not
-// refused: not every query kind carries repository.root.
+// refused: not every query kind carries repository.root. One whose repository
+// field is present but unreadable is refused, because "could not read the
+// root" must not pass as "no root to check".
 func envelopeRootMatches(data json.RawMessage, root string) error {
 	var env struct {
 		Repository *struct {
 			Root string `json:"root"`
 		} `json:"repository"`
 	}
-	if json.Unmarshal(data, &env) != nil || env.Repository == nil || env.Repository.Root == "" {
+	if err := json.Unmarshal(data, &env); err != nil {
+		return fmt.Errorf("the answer's repository field cannot be read: %w", err)
+	}
+	if env.Repository == nil || env.Repository.Root == "" {
 		return nil
 	}
 	got := env.Repository.Root

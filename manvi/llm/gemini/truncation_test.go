@@ -27,10 +27,10 @@ func drainFor(t *testing.T, body string) error {
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		if _, err := stream.Next(); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				_, err = stream.Response()
 			}
 			return err
@@ -42,7 +42,7 @@ func drainFor(t *testing.T, body string) error {
 // or done the content is a prefix and the usage was never reported.
 func TestEOFBeforeInteractionCompletedIsNotASuccess(t *testing.T) {
 	err := drainFor(t, createdFrame+textFrame)
-	if err == nil || err == io.EOF {
+	if err == nil || errors.Is(err, io.EOF) {
 		t.Fatalf("truncated stream settled as a success (err=%v)", err)
 	}
 	var te *transport.Error
@@ -136,7 +136,7 @@ data: {"event_type":"interaction.completed","interaction":{"status":"completed"}
 		for name, body := range map[string]string{"completed": completed, "status_update": update} {
 			t.Run(status+"/"+name, func(t *testing.T) {
 				err := drainFor(t, body)
-				if err == nil || err == io.EOF {
+				if err == nil || errors.Is(err, io.EOF) {
 					t.Fatalf("a %s interaction settled as a success", status)
 				}
 				if !strings.Contains(err.Error(), status) {

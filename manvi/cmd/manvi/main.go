@@ -394,9 +394,9 @@ func run(out, notes io.Writer, args []string) error {
 	case "agents":
 		return showAgents(out, reg)
 	case "budget":
-		return budgetCommand(out, args[1:])
+		return budgetCommand(context.Background(), out, args[1:])
 	case "local":
-		return showLocal(out, reg, args[1:])
+		return showLocal(context.Background(), out, reg, args[1:])
 	case "pull", "push", "issues":
 		return runQuickAction(context.Background(), out, projectRoot(), args[0], args[1:], osQuickCommandRunner{})
 	case "watch":
@@ -408,7 +408,7 @@ func run(out, notes io.Writer, args []string) error {
 	case "map":
 		return mapCommand(out, reg, args[1:])
 	case "probe":
-		return probe(out, reg, args[1:])
+		return probe(context.Background(), out, reg, args[1:])
 	case "serve":
 		return serveCommand(out, reg, args[1:])
 	case "logo":

@@ -21,7 +21,8 @@ import (
 // leaves behind. It returns the dead worker's pid.
 func exitedPID(t *testing.T, path string, count int) int {
 	t.Helper()
-	cmd := exec.Command(os.Args[0])
+	// #nosec G204 G702 -- re-execs this test binary as the ledger helper; the environment selects the role.
+	cmd := exec.CommandContext(t.Context(), os.Args[0])
 	cmd.Env = append(os.Environ(), "BUDGET_HELPER_LEDGER="+path, "BUDGET_HELPER_COUNT="+strconv.Itoa(count))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worker: %v: %s", err, out)
@@ -33,7 +34,7 @@ func TestReserveReclaimsAttemptsOfAnExitedProcess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	dead := exitedPID(t, path, 3)
 
-	l, err := Open(path, 50)
+	l, err := Open(context.Background(), path, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestALedgerFullOfDeadAttemptsStillAdmits(t *testing.T) {
 	if err := save(path, s); err != nil {
 		t.Fatal(err)
 	}
-	l, err := Open(path, 1_000)
+	l, err := Open(context.Background(), path, 1_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,8 @@ func TestALedgerFullOfDeadAttemptsStillAdmits(t *testing.T) {
 // running. Its reservation belongs to code that will still settle it.
 func TestReclaimLeavesLiveOwnersAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.json")
-	cmd := exec.Command(os.Args[0])
+	// #nosec G204 G702 -- re-execs this test binary as the ledger helper; the environment selects the role.
+	cmd := exec.CommandContext(t.Context(), os.Args[0])
 	cmd.Env = append(os.Environ(), "BUDGET_HELPER_LEDGER="+path, "BUDGET_HELPER_COUNT=1", "BUDGET_HELPER_HOLD=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -100,19 +102,19 @@ func TestReclaimLeavesLiveOwnersAlone(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { stdin.Close(); _ = cmd.Wait() })
+	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "held" {
 		t.Fatalf("worker did not report its reservation: %q %v", line, err)
 	}
 
-	l, err := Open(path, 50)
+	l, err := Open(context.Background(), path, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := l.reserve(context.Background(), "m", 1); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := l.Reconcile()
+	reclaimed, err := l.Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +142,11 @@ func TestReclaimTreatsANonPositivePIDAsGone(t *testing.T) {
 	if err := save(path, s); err != nil {
 		t.Fatal(err)
 	}
-	l, err := Open(path, 1_000)
+	l, err := Open(context.Background(), path, 1_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := l.Reconcile()
+	reclaimed, err := l.Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +199,7 @@ func TestCancellationAfterTheResponseFinishedSettlesItsUsage(t *testing.T) {
 // the largest fan-out agents.max_fanout allows. Each operation takes the file
 // lock and fsyncs twice, so this is the price of metering a wide fan-out.
 func BenchmarkContendedReserveSettle(b *testing.B) {
-	l, err := Open(filepath.Join(b.TempDir(), "ledger.json"), 1_000_000_000_000_000)
+	l, err := Open(context.Background(), filepath.Join(b.TempDir(), "ledger.json"), 1_000_000_000_000_000)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -209,11 +211,11 @@ func BenchmarkContendedReserveSettle(b *testing.B) {
 				b.Error(err)
 				return
 			}
-			if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err != nil {
+			if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err != nil {
 				b.Error(err)
 				return
 			}
-			if err := l.settle(id, 5); err != nil {
+			if err := l.settle(context.Background(), id, 5); err != nil {
 				b.Error(err)
 				return
 			}

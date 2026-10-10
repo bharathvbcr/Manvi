@@ -348,7 +348,7 @@ func (h *harnessHost) NewSession(ctx context.Context) (string, string, error) {
 	id := fmt.Sprintf("S%d", h.seq)
 	h.mu.Unlock()
 
-	s, err := newSessionState(h.reg, id, h.runner.Approver(id))
+	s, err := newSessionState(h.reg, id, h.runner.Approver(id)) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
 	if err != nil {
 		return "", "", err
 	}
@@ -568,9 +568,9 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 	case "agents":
 		return "", showAgents(out, h.reg)
 	case "budget":
-		return "", budgetCommand(out, fields)
+		return "", budgetCommand(ctx, out, fields)
 	case "local":
-		return "", showLocal(out, h.reg, fields)
+		return "", showLocal(ctx, out, h.reg, fields)
 	case "pull", "push":
 		if h.busyTurns != nil {
 			if busy := h.busyTurns(sessionID); len(busy) > 0 {
@@ -581,7 +581,7 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 	case "issues":
 		return "", runQuickAction(ctx, out, projectRoot(), name, fields, osQuickCommandRunner{})
 	case "tools":
-		return "", listTools(out, h.reg)
+		return "", listTools(out, h.reg) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
 	case "leases":
 		return "", lease(out, append([]string{"list"}, fields...))
 	case "lease":
@@ -613,7 +613,7 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 	case "map":
 		return "", mapCommand(out, h.reg, fields)
 	case "probe":
-		return "", probe(out, h.reg, fields)
+		return "", probe(ctx, out, h.reg, fields)
 	case "logo":
 		return "", showLogo(out, fields)
 	case "quit", "exit", "help", "clear", "cls":
@@ -863,7 +863,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return err
 	}
 	if s.attachment().provider == nil {
-		if err := h.attachProvider(s); err != nil {
+		if err := h.attachProvider(ctx, s); err != nil {
 			// Returned rather than swallowed. A harness that accepts a prompt
 			// and quietly does nothing because it has no credential is worse
 			// than one that refuses: the operator waits for a reply that was
@@ -1066,13 +1066,13 @@ func (h *harnessHost) creds() (*credentials.Resolver, *credentials.Scrubber) {
 }
 
 // attachProvider resolves the provider, credential, and model for a session.
-func (h *harnessHost) attachProvider(s *tuiSession) error {
+func (h *harnessHost) attachProvider(ctx context.Context, s *tuiSession) error {
 	name, _, err := h.reg.String(flags.LLMDefaultProvider)
 	if err != nil {
 		return err
 	}
 	resolver, _ := h.creds()
-	provider, err := buildProvider(name, h.reg, resolver, io.Discard, "")
+	provider, err := buildProvider(ctx, name, h.reg, resolver, io.Discard, "")
 	if err != nil {
 		return err
 	}
@@ -1093,7 +1093,7 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 		return err
 	}
 
-	model, _, err := resolveModelFor(context.Background(), name, provider, h.reg)
+	model, _, err := resolveModelFor(ctx, name, provider, h.reg)
 	if err != nil {
 		return err
 	}

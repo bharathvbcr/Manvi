@@ -26,7 +26,7 @@ type scriptedBudget struct {
 	before   map[int]func()
 }
 
-func (b *scriptedBudget) Headroom() (int64, error) {
+func (b *scriptedBudget) Headroom(context.Context) (int64, error) {
 	b.mu.Lock()
 	n := b.calls
 	b.calls++

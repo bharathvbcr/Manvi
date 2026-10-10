@@ -654,7 +654,7 @@ func decodeFrame(line []byte) (resp Response, method string, hasPayload bool, er
 		Method string `json:"method"`
 	}
 	if json.Unmarshal(line, &frame) == nil && (len(frame.Result) > 0 || frame.Error != nil) {
-		return frame.Response, frame.Method, true, nil
+		return frame.Response, frame.Method, true, nil //nolint:nilerr // reached only when the decode succeeded
 	}
 
 	if err := json.Unmarshal(line, &resp); err != nil {

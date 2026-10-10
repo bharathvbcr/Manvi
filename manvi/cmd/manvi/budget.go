@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -74,7 +75,7 @@ func anthropicLedgerPath() (string, error) {
 // meterAnthropic wraps the adapter in the spend cap when one is configured.
 // A cap that is set but unusable fails construction: silently running
 // unmetered is the one outcome an operator who set a cap did not ask for.
-func meterAnthropic(p llm.Provider) (llm.Provider, error) {
+func meterAnthropic(ctx context.Context, p llm.Provider) (llm.Provider, error) {
 	raw := strings.TrimSpace(os.Getenv(envAnthropicBudget))
 	if raw == "" {
 		return p, nil
@@ -87,7 +88,7 @@ func meterAnthropic(p llm.Provider) (llm.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	ledger, err := budget.Open(path, limit)
+	ledger, err := budget.Open(ctx, path, limit)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envAnthropicBudget, err)
 	}
@@ -112,21 +113,29 @@ func meteredAnthropicEnv() []string {
 }
 
 // budgetCommand is `manvi budget [reconcile]`.
-func budgetCommand(out io.Writer, args []string) error {
+func budgetCommand(ctx context.Context, out io.Writer, args []string) error {
+	var b strings.Builder
+	var err error
 	switch {
 	case len(args) == 0:
-		return showBudget(out)
+		err = showBudget(ctx, &b)
 	case len(args) == 1 && args[0] == "reconcile":
-		return reconcileBudget(out)
+		err = reconcileBudget(ctx, &b)
 	default:
 		return fmt.Errorf("usage: budget [reconcile]")
 	}
+	// Rendered whole and written once, so a write that does not land is this
+	// command's error rather than a line silently missing from its answer.
+	// What was rendered before a failure is still written, as it was when
+	// each line went straight out.
+	_, werr := io.WriteString(out, b.String())
+	return errors.Join(err, werr)
 }
 
 // reconcileBudget retains the reservations of attempts whose process exited
 // before resolving them. They stay counted against the limit — they may have
 // been billed — but they stop occupying in-flight slots.
-func reconcileBudget(out io.Writer) error {
+func reconcileBudget(ctx context.Context, out *strings.Builder) error {
 	path, err := anthropicLedgerPath()
 	if err != nil {
 		return err
@@ -135,7 +144,7 @@ func reconcileBudget(out io.Writer) error {
 		fmt.Fprintf(out, "no ledger at %s; nothing to reconcile\n", path)
 		return nil
 	}
-	reclaimed, err := budget.ReconcileAt(path)
+	reclaimed, err := budget.ReconcileAt(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -153,7 +162,7 @@ func reconcileBudget(out io.Writer) error {
 }
 
 // showBudget reports the Anthropic ledger.
-func showBudget(out io.Writer) error {
+func showBudget(ctx context.Context, out *strings.Builder) error {
 	path, err := anthropicLedgerPath()
 	if err != nil {
 		return err
@@ -174,7 +183,7 @@ func showBudget(out io.Writer) error {
 		fmt.Fprintln(out, "  spent      $0.00 — no metered request yet")
 		return nil
 	}
-	s, err := budget.Inspect(path)
+	s, err := budget.Inspect(ctx, path)
 	if err != nil {
 		return err
 	}

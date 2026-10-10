@@ -2,6 +2,7 @@ package local
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +22,7 @@ func TestLocalRecoversATextToolCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", frame)
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", frame)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -33,9 +34,9 @@ func TestLocalRecoversATextToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			t.Fatal(err)

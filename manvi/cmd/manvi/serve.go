@@ -149,7 +149,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			}
 			resolver := credentials.NewResolver()
 			scrubber.WatchAll(resolver)
-			provider, err := buildProvider(name, reg, resolver, io.Discard, model)
+			provider, err := buildProvider(ctx, name, reg, resolver, io.Discard, model)
 			scrubber.WatchAll(resolver)
 			if err != nil {
 				return nil, err

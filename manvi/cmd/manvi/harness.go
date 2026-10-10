@@ -139,6 +139,10 @@ func buildMCP(reg *flags.Registry, root string) (*mcp.Manager, error) {
 		return nil, err
 	}
 	mgr := mcp.NewManager(root)
+	// Discover reads declaration files and plugin manifests and never consults
+	// its ctx; servers connect lazily, later, on their own contexts. The three
+	// callers that reach here holding a ctx say so with a nolint:contextcheck
+	// that is only true while that stays the case.
 	if err := mgr.Discover(context.Background(), mcp.ConfigSource{
 		Path:     path,
 		Declared: pathOrigin != flags.OriginDefault,

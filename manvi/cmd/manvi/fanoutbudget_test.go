@@ -190,7 +190,7 @@ func meteredRunner(t *testing.T, limit int64) (*subAgentRunner, *budget.Ledger) 
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(server.Close)
-	ledger, err := budget.Open(filepath.Join(t.TempDir(), "ledger.json"), limit)
+	ledger, err := budget.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.json"), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestAdmissionSizesEachMeteredChildFromTheCapItDrawsOn(t *testing.T) {
 	if reserves[0] <= 0 || reserves[1] <= reserves[0] || reserves[2] != 0 {
 		t.Errorf("reserves = %v; want a, then a dearer b for its longer prompt, then nothing for c", reserves)
 	}
-	headroom, err := capb.Headroom()
+	headroom, err := capb.Headroom(context.Background())
 	if err != nil || headroom != ledger.Limit() {
 		t.Errorf("Headroom = %d, %v; want the untouched limit %d", headroom, err, ledger.Limit())
 	}

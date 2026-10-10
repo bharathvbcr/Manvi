@@ -24,11 +24,11 @@ func BenchmarkProbeRepeated(b *testing.B) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		fmt.Fprint(w, `{"data":[{"id":"qwen3:8b"}]}`)
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"qwen3:8b"}]}`)
 	})
 	mux.HandleFunc("/api/show", func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		fmt.Fprint(w, `{"model_info":{"qwen3.context_length":40960},"capabilities":["tools","completion"]}`)
+		_, _ = fmt.Fprint(w, `{"model_info":{"qwen3.context_length":40960},"capabilities":["tools","completion"]}`)
 	})
 	stub := httptest.NewServer(mux)
 	b.Cleanup(stub.Close)
@@ -68,7 +68,7 @@ func newCountingStub(t *testing.T, model string) *countingStub {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		c.hits.Add(1)
-		fmt.Fprint(w, *c.listing.Load())
+		_, _ = fmt.Fprint(w, *c.listing.Load())
 	})
 	mux.HandleFunc("/api/show", func(w http.ResponseWriter, r *http.Request) {
 		c.hits.Add(1)
@@ -76,7 +76,7 @@ func newCountingStub(t *testing.T, model string) *countingStub {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"model_info":{"qwen3.context_length":40960},"capabilities":["tools","completion"]}`)
+		_, _ = fmt.Fprint(w, `{"model_info":{"qwen3.context_length":40960},"capabilities":["tools","completion"]}`)
 	})
 	c.Server = httptest.NewServer(mux)
 	t.Cleanup(c.Close)
@@ -95,7 +95,11 @@ func probeOnce(t *testing.T, s *Server, p ProbeParams) (ProbeResult, *Error) {
 	if perr != nil {
 		return ProbeResult{}, perr
 	}
-	return got.(ProbeResult), nil
+	res, ok := got.(ProbeResult)
+	if !ok {
+		t.Fatalf("probe answered %T, want ProbeResult", got)
+	}
+	return res, nil
 }
 
 // fakeClock is a probe-cache clock a test moves by hand.

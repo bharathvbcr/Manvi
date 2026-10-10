@@ -312,7 +312,7 @@ func TestPricesMatchThePublishedTable(t *testing.T) {
 			t.Errorf("%s: no price", model)
 			continue
 		}
-		got := row{p.Rates.Input, p.Rates.CacheWrite, p.Rates.CacheRead, p.Rates.Output}
+		got := row{p.Input, p.CacheWrite, p.CacheRead, p.Output}
 		if got != want.short {
 			t.Errorf("%s rates = %+v, published %+v", model, got, want.short)
 		}

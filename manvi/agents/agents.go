@@ -56,7 +56,7 @@ type Budget interface {
 	// Headroom is what may still be reserved against the cap. An error means
 	// the cap could not be read, and the pool then starts nothing rather than
 	// guessing that there is room.
-	Headroom() (int64, error)
+	Headroom(ctx context.Context) (int64, error)
 	// Exhausted reports whether err is the cap refusing a reservation.
 	Exhausted(err error) bool
 	// Render shows an amount the way the cap's own messages do.
@@ -385,7 +385,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 		return nil, fmt.Errorf("%w: %d tasks requested, limit is %d",
 			ErrFanoutExceeded, len(tasks), p.MaxFanout)
 	}
-	if err := p.admitAll(tasks); err != nil {
+	if err := p.admitAll(ctx, tasks); err != nil {
 		return nil, err
 	}
 
@@ -395,7 +395,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 	var exhausted atomic.Bool
 	var wg sync.WaitGroup
 	for i, task := range tasks {
-		if why := p.admitOne(task, &exhausted); why != "" {
+		if why := p.admitOne(ctx, task, &exhausted); why != "" {
 			// One held back means every later one is too. Starting a cheaper
 			// child after refusing a dearer one would make which children ran
 			// depend on their prices rather than on the order they were asked
@@ -423,7 +423,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 
 // admitAll refuses a fan-out whose children's first requests cannot all be
 // reserved against the cap's current headroom.
-func (p *Pool) admitAll(tasks []Task) error {
+func (p *Pool) admitAll(ctx context.Context, tasks []Task) error {
 	if p.Budget == nil {
 		return nil
 	}
@@ -445,7 +445,7 @@ func (p *Pool) admitAll(tasks []Task) error {
 	if total == 0 {
 		return nil
 	}
-	headroom, err := p.Budget.Headroom()
+	headroom, err := p.Budget.Headroom(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: the spend cap could not be read, so nothing was started: %w", ErrBudget, err)
 	}
@@ -464,14 +464,14 @@ func (p *Pool) admitAll(tasks []Task) error {
 // have not reserved anything; admitAll, which counted every child together, is
 // what covers them. This check answers the question that one cannot: whether
 // the cap has moved since.
-func (p *Pool) admitOne(task Task, exhausted *atomic.Bool) string {
+func (p *Pool) admitOne(ctx context.Context, task Task, exhausted *atomic.Bool) string {
 	if p.Budget == nil {
 		return ""
 	}
 	var headroom int64
 	var err error
 	if task.Reserve > 0 {
-		headroom, err = p.Budget.Headroom()
+		headroom, err = p.Budget.Headroom(ctx)
 	}
 	// Read after the headroom, so a sibling that finished while it was being
 	// read is seen.

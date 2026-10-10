@@ -51,7 +51,7 @@ func registry(t *testing.T) *flags.Registry {
 func TestAnthropicIsUnmeteredUntilACapIsSet(t *testing.T) {
 	anthropicFixture(t, "")
 	t.Setenv(envAnthropicBudget, "")
-	p, err := buildProvider(anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, "")
+	p, err := buildProvider(context.Background(), anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ data: {"type":"message_stop"}
 	t.Setenv(envAnthropicLedger, ledgerPath)
 	t.Setenv(envAnthropicBudget, "200")
 
-	p, err := buildProvider(anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, "")
+	p, err := buildProvider(context.Background(), anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,10 +101,12 @@ data: {"type":"message_stop"}
 	if _, err := stream.Response(); err != nil {
 		t.Fatal(err)
 	}
-	stream.Close()
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	var out strings.Builder
-	if err := showBudget(&out); err != nil {
+	if err := showBudget(context.Background(), &out); err != nil {
 		t.Fatal(err)
 	}
 	// 1000 input at $0.10/MTok plus 100 output at $0.50/MTok is $0.00015.
@@ -113,7 +115,7 @@ data: {"type":"message_stop"}
 			t.Errorf("budget report missing %q:\n%s", want, out.String())
 		}
 	}
-	s, err := budget.Inspect(ledgerPath)
+	s, err := budget.Inspect(context.Background(), ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func TestAnUnusableCapRefusesToRunUnmetered(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(envAnthropicBudget, env[0])
 			t.Setenv(envAnthropicLedger, env[1])
-			if p, err := buildProvider(anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, ""); err == nil {
+			if p, err := buildProvider(context.Background(), anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, ""); err == nil {
 				t.Fatalf("built %T from an unusable cap", p)
 			}
 		})
@@ -143,7 +145,7 @@ func TestAnUnusableCapRefusesToRunUnmetered(t *testing.T) {
 		}
 		t.Setenv(envAnthropicBudget, "200")
 		t.Setenv(envAnthropicLedger, path)
-		if p, err := buildProvider(anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, ""); err == nil {
+		if p, err := buildProvider(context.Background(), anthropic.Name, registry(t), credentials.NewResolver(), io.Discard, ""); err == nil {
 			t.Fatalf("built %T over a corrupt ledger", p)
 		}
 	})
@@ -153,11 +155,23 @@ func TestBudgetReportWithoutALedgerOrLimit(t *testing.T) {
 	t.Setenv(envAnthropicBudget, "")
 	t.Setenv(envAnthropicLedger, filepath.Join(t.TempDir(), "none.json"))
 	var out strings.Builder
-	if err := showBudget(&out); err != nil {
+	if err := showBudget(context.Background(), &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "limit      none") || !strings.Contains(out.String(), "no metered request yet") {
 		t.Fatalf("report:\n%s", out.String())
+	}
+}
+
+// A report that could not be written is a failed command, not a successful
+// one with its lines missing.
+func TestBudgetReportThatCannotBeWrittenFails(t *testing.T) {
+	t.Setenv(envAnthropicBudget, "")
+	t.Setenv(envAnthropicLedger, filepath.Join(t.TempDir(), "none.json"))
+	for _, args := range [][]string{nil, {"reconcile"}} {
+		if err := budgetCommand(context.Background(), brokenWriter{}, args); err == nil || !strings.Contains(err.Error(), "no space left on device") {
+			t.Fatalf("budget %v to a refusing writer = %v, want the write failure", args, err)
+		}
 	}
 }
 
@@ -200,13 +214,13 @@ func TestBudgetReconcileRetainsAttemptsNoProcessOwns(t *testing.T) {
 	t.Setenv(envAnthropicLedger, path)
 
 	var out strings.Builder
-	if err := budgetCommand(&out, []string{"reconcile"}); err != nil {
+	if err := budgetCommand(context.Background(), &out, []string{"reconcile"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "retained #1 claude-opus-5-5 $2.00") {
 		t.Fatalf("report:\n%s", out.String())
 	}
-	s, err := budget.Inspect(path)
+	s, err := budget.Inspect(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +233,11 @@ func TestBudgetCommandArguments(t *testing.T) {
 	t.Setenv(envAnthropicBudget, "")
 	t.Setenv(envAnthropicLedger, filepath.Join(t.TempDir(), "none.json"))
 	var out strings.Builder
-	if err := budgetCommand(&out, []string{"reconcile"}); err != nil || !strings.Contains(out.String(), "nothing to reconcile") {
+	if err := budgetCommand(context.Background(), &out, []string{"reconcile"}); err != nil || !strings.Contains(out.String(), "nothing to reconcile") {
 		t.Fatalf("reconcile without a ledger: %v\n%s", err, out.String())
 	}
 	for _, args := range [][]string{{"reset"}, {"reconcile", "now"}} {
-		if err := budgetCommand(io.Discard, args); err == nil {
+		if err := budgetCommand(context.Background(), io.Discard, args); err == nil {
 			t.Errorf("budget %v was accepted", args)
 		}
 	}

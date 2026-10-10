@@ -348,7 +348,7 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		return VerifyResult{}, err
 	}
 
-	jobCtx, cancel := context.WithTimeout(context.Background(), r.deps.Timeout)
+	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.deps.Timeout)
 	job := &verifyJob{cancel: cancel, done: make(chan struct{})}
 	r.jobs[params.RequestID] = job
 	r.wg.Add(1)
@@ -360,7 +360,7 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 		// Settled on a context of its own: the job context is exactly what ended
 		// when the deadline fired or the host shut down, and the verdict that
 		// says so still has to be recorded.
-		settleCtx, settleCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(jobCtx), 10*time.Second)
 		defer settleCancel()
 		if err := r.persist(settleCtx, settled); err != nil {
 			// The running claim stays in storage. It is unresolved work, never an

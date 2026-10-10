@@ -44,7 +44,7 @@ func judgeFrame(name, frame string) (preamble bool, failure *transport.Error) {
 	// Undecodable and [DONE] frames are the decoder's to report; inspection
 	// stops because it cannot say whether output has begun.
 	if json.Unmarshal([]byte(data), &chunk) != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // the decoder reports it; see above
 	}
 	if chunk.Error != nil {
 		message := fmt.Sprintf("%s: stream error: %s", name, chunk.Error.Message)

@@ -36,6 +36,7 @@ func matchCandidatesUnskipped(pattern string, paths []string, maxResults int) ([
 // classes that can hold a '/', negation, ranges, unterminated brackets — so the
 // skip rule is tried where it would be wrong if it were wrong anywhere.
 func fnmatchCorpus(seed int64) (patterns, paths []string) {
+	// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 	rng := rand.New(rand.NewSource(seed))
 	patternAlphabet := []string{"a", "b", "/", "*", "?", "[", "]", "!", "-", ".", "^", `\`, "é"}
 	pathAlphabet := []string{"a", "b", "/", ".", "-", "]", "[", "!", "*", "é", " "}
