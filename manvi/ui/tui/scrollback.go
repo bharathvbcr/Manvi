@@ -158,6 +158,10 @@ func (s *Scrollback) Append(ev ui.Event) {
 		}
 	}
 
+	if n := len(s.entries); n > 0 {
+		// Only the last entry grows, so whatever was last has stopped.
+		s.entries[n-1].settle()
+	}
 	e := &Entry{Event: ev}
 	if ev.Kind == ui.KindText {
 		e.Body.WriteString(ev.Text)
@@ -496,8 +500,11 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 		return false
 	}
 	qLower := strings.ToLower(s.searchQuery)
+	// Each entry's lowered text is kept between searches. Typing a query runs
+	// this once per keystroke, and lowering every entry's whole text each time
+	// copied the transcript per key — a large tool result alone is megabytes.
 	for i, e := range s.entries {
-		if strings.Contains(strings.ToLower(e.text()), qLower) {
+		if strings.Contains(e.lowerText(), qLower) {
 			s.matches = append(s.matches, i)
 		}
 	}

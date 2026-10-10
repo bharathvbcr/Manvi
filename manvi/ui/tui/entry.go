@@ -31,6 +31,43 @@ type Entry struct {
 	cacheFolded bool
 	cacheTheme  string
 	cacheLines  []render.Line
+
+	// stream keeps a growing reply's finished rows, so a delta re-renders the
+	// line it extended rather than the whole reply. Two slots, because a frame
+	// over a transcript shorter than the pane lays the entry out at two widths;
+	// see streamRows.
+	stream     [2]streamSlot
+	streamLast int
+
+	// lower is the text lowercased for search, and lowerOf the text it was
+	// made from. Comparing against the text rather than clearing on every
+	// delta keeps the copy correct whatever changed the text; the comparison
+	// costs nothing in the usual case, as an unchanged body is the same
+	// string and a grown one is a longer one.
+	lowerOf, lower string
+
+	// whole renders a reply in one pass, without the stream slots. Only tests
+	// set it: it is the reference the slots are checked against, and a
+	// reference that went through the slots' code would share their bugs.
+	whole bool
+}
+
+// streamSlot is a reply's finished rows at one body width and theme.
+type streamSlot struct {
+	body  int
+	theme string
+	used  bool
+	// src is the prefix of the text that rows describes. It ends just past a
+	// line break, or is empty: text after the last break is the line still
+	// arriving, and is never cached.
+	src string
+	// rows are src's rows in their final form, gutter and attribution
+	// applied, so a delta copies them rather than rebuilding each. The marker
+	// and attribution come from the event, which an entry never changes once
+	// appended; only its body grows.
+	rows []render.Line
+	// md is the markdown state at the end of src.
+	md mdState
 }
 
 // text is the entry's body: streamed text if it accumulated any, otherwise the
@@ -177,9 +214,29 @@ func (e *Entry) Lines(th Theme, width int) []render.Line {
 }
 
 // Invalidate drops the cached rendering, for an entry whose body grew.
+//
+// The stream slots survive it. They are checked against the text itself on
+// every use, and keeping them across a delta is their entire purpose.
 func (e *Entry) Invalidate() { e.cacheLines = nil }
 
+// settle releases the stream slots, for a reply that has stopped growing. They
+// only pay for themselves while deltas arrive; afterwards they would hold a
+// second index of the reply's rows, and a slot at a width the pane has left,
+// for nothing — a later fold or resize renders the whole reply once either way.
+func (e *Entry) settle() { e.stream = [2]streamSlot{} }
+
+// lowerText is the text lowercased, as search compares it.
+func (e *Entry) lowerText() string {
+	if t := e.text(); t != e.lowerOf {
+		e.lowerOf, e.lower = t, strings.ToLower(t)
+	}
+	return e.lower
+}
+
 const gutter = 3
+
+// gutterPad indents a continuation row under the marker.
+var gutterPad = strings.Repeat(" ", gutter)
 
 func (e *Entry) build(th Theme, width int) []render.Line {
 	g := th.Glyphs()
@@ -194,6 +251,9 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 	}
 
 	var out []render.Line
+	// ready counts the leading rows of out already in their final form, which
+	// only a streamed reply's cached rows are.
+	ready := 0
 	add := func(l render.Line) { out = append(out, l) }
 	addWrapped := func(text string, s render.Style) {
 		for _, l := range render.WrapText(text, body, s) {
@@ -254,12 +314,20 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		addWrapped("harness: "+ev.Text, th.Status(StatusWarn))
 
 	case ui.KindText:
-		for _, l := range renderMarkdown(e.text(), th, body, false) {
-			add(l)
+		if e.whole {
+			out = renderMarkdown(e.text(), th, body, false)
+		} else {
+			out, ready = e.streamRows(th, body, g)
 		}
 
 	case ui.KindReasoning:
-		addWrapped(e.text(), th.Subtle().With(render.Italic))
+		// Capped as a tool result is, and for the same reason: a model's
+		// thinking can run to megabytes, and unfolding it rendered every byte.
+		shown, rest := capRendered(e.text())
+		addWrapped(shown, th.Subtle().With(render.Italic))
+		if rest != "" {
+			addWrapped(omittedMarker(rest), th.Subtle())
+		}
 
 	case ui.KindToolStart:
 		head := render.Styled(ev.Tool, th.Status(StatusInfo).With(render.Bold))
@@ -272,7 +340,7 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		add(head.Truncate(body))
 
 	case ui.KindToolResult:
-		shown, rest := capToolResult(e.text())
+		shown, rest := capRendered(e.text())
 		for _, l := range renderMarkdown(shown, th, body, true) {
 			add(l)
 		}
@@ -342,22 +410,94 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 	if len(out) == 0 {
 		out = append(out, render.Line{})
 	}
-	// The same attribution the folded summary carries. Expanding a child's
-	// entry is how a reader looks at what the child did, so the expanded form
-	// is the last place it can be dropped.
-	if ev.Agent != "" {
-		out[0] = render.Styled("["+ev.Agent+"] ", th.Subtle()).Concat(out[0]).Truncate(body)
-	}
-	// The gutter marker goes on the first row; continuation rows are indented
-	// to line up under it.
-	out[0] = e.gutterLine(th, out[0], g)
-	for i := 1; i < len(out); i++ {
-		out[i] = render.Styled(strings.Repeat(" ", gutter), th.Base()).Concat(out[i])
+	for i := ready; i < len(out); i++ {
+		out[i] = e.finishRow(th, g, body, i, out[i])
 	}
 	return out
 }
 
-// The share of a tool result the transcript renders.
+// finishRow puts row i of an entry's body into its final form.
+func (e *Entry) finishRow(th Theme, g Glyphs, body, i int, l render.Line) render.Line {
+	// Continuation rows are indented to line up under the marker.
+	if i > 0 {
+		return render.Styled(gutterPad, th.Base()).Concat(l)
+	}
+	// The same attribution the folded summary carries. Expanding a child's
+	// entry is how a reader looks at what the child did, so the expanded form
+	// is the last place it can be dropped.
+	if e.Event.Agent != "" {
+		l = render.Styled("["+e.Event.Agent+"] ", th.Subtle()).Concat(l).Truncate(body)
+	}
+	// The gutter marker goes on the first row.
+	return e.gutterLine(th, l, g)
+}
+
+// streamRows renders an assistant reply as renderMarkdown would, reusing the
+// rows of every line that has already ended.
+//
+// A reply arrives as hundreds of deltas and was re-rendered whole for each:
+// split, highlighted and wrapped from its first byte, so a long reply cost the
+// square of its length. Only the last line can still change. A line's rows are
+// decided by that line and the fence state before it (see mdState), and text
+// is only ever added after the last break, so every row of every finished line
+// is final once its break arrives: an open backtick or an unpaired "**" on the
+// last line is resolved by text on that same line or not at all, and a "#" or
+// "-" that may yet become a heading or a list item is on the last line too. The
+// rows from the last break onward are rendered fresh each time; the boundary is
+// a break and never a point inside a line, since a line's inline spans and its
+// wrapping can both change as it grows.
+//
+// The returned rows are final up to ready, unfinished after it.
+func (e *Entry) streamRows(th Theme, body int, g Glyphs) (out []render.Line, ready int) {
+	text := e.text()
+	if text == "" {
+		return nil, 0
+	}
+	sl := e.streamSlot(th.Name, body)
+	// The rows describe src; text that does not still begin with it is not
+	// the text they were made from. An unchanged prefix of a builder's buffer
+	// is the same memory, which the comparison notices before reading a byte.
+	if !strings.HasPrefix(text, sl.src) {
+		*sl = streamSlot{body: body, theme: th.Name, used: true}
+	}
+	if done := strings.LastIndexByte(text, '\n') + 1; done > len(sl.src) {
+		// Split(a+"\n"+b) is Split(a) followed by Split(b), which is why
+		// rendering the newly finished lines on from the cached state yields
+		// the rows a render of the whole text would.
+		var rows []render.Line
+		for _, raw := range strings.Split(text[len(sl.src):done-1], "\n") {
+			rows = sl.md.line(rows, raw, th, body)
+		}
+		for _, l := range rows {
+			sl.rows = append(sl.rows, e.finishRow(th, g, body, len(sl.rows), l))
+		}
+		sl.src = text[:done]
+	}
+	// A copy, because build appends to what it returns and the entry's cache
+	// keeps it; sl.rows grows in place on the next delta.
+	out = make([]render.Line, len(sl.rows), len(sl.rows)+4)
+	copy(out, sl.rows)
+	md := sl.md
+	return md.line(out, text[len(sl.src):], th, body), len(sl.rows)
+}
+
+// streamSlot finds the stream slot for a body width and theme, replacing the
+// one not used last when neither matches.
+func (e *Entry) streamSlot(theme string, body int) *streamSlot {
+	for i := range e.stream {
+		if sl := &e.stream[i]; sl.used && sl.body == body && sl.theme == theme {
+			e.streamLast = i
+			return sl
+		}
+	}
+	i := 1 - e.streamLast
+	e.stream[i] = streamSlot{body: body, theme: theme, used: true}
+	e.streamLast = i
+	return &e.stream[i]
+}
+
+// The share of a tool result, or of a model's reasoning, the transcript
+// renders.
 //
 // A read_file of a large file or a chatty exec hands back megabytes, and every
 // byte of it used to be split, highlighted and wrapped — tens of thousands of
@@ -367,22 +507,22 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 // finds a match past the cut, and a copy is taken from the result rather than
 // from the rows that happened to be drawn.
 const (
-	toolResultMaxLines = 2000
-	toolResultMaxBytes = 64 << 10
+	renderedMaxLines = 2000
+	renderedMaxBytes = 64 << 10
 )
 
-// capToolResult splits a tool result into the part rendered and the part not.
-// rest is empty when the whole result fits, and shown is then the text itself,
-// so a result under the cap renders exactly as it always did.
+// capRendered splits a tool result or reasoning into the part rendered and the
+// part not. rest is empty when the whole text fits, and shown is then the text
+// itself, so text under the cap renders exactly as it always did.
 //
 // The cut falls at a line break where there is one inside the budget, so the
 // last row drawn is a whole line rather than half of one; only a single line
 // longer than the entire budget is cut mid-line, and then on a rune boundary,
 // never through a multi-byte character.
-func capToolResult(text string) (shown, rest string) {
+func capRendered(text string) (shown, rest string) {
 	limit := len(text)
-	if limit > toolResultMaxBytes {
-		limit = toolResultMaxBytes
+	if limit > renderedMaxBytes {
+		limit = renderedMaxBytes
 	}
 	cut := -1
 	for i, n := 0, 0; i < limit; i++ {
@@ -391,13 +531,13 @@ func capToolResult(text string) (shown, rest string) {
 			break
 		}
 		i += j
-		if n++; n == toolResultMaxLines {
+		if n++; n == renderedMaxLines {
 			cut = i
 			break
 		}
 	}
 	if cut < 0 {
-		if len(text) <= toolResultMaxBytes {
+		if len(text) <= renderedMaxBytes {
 			return text, ""
 		}
 		cut = strings.LastIndexByte(text[:limit], '\n')
@@ -681,95 +821,93 @@ func renderMarkdown(text string, th Theme, width int, isToolResult bool) []rende
 	if text == "" {
 		return nil
 	}
-	rawLines := strings.Split(text, "\n")
 	var out []render.Line
-	inCodeBlock := false
-	codeLang := ""
-
-	for _, raw := range rawLines {
-		trimmed := strings.TrimSpace(raw)
-
-		if strings.HasPrefix(trimmed, "```") {
-			if !inCodeBlock {
-				inCodeBlock = true
-				codeLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
-				if codeLang == "" {
-					codeLang = "code"
-				}
-				hdr := "┌─ " + codeLang + " "
-				topLine := render.Styled(hdr, render.Style{Fg: th.BorderFocus, Bg: th.BgInset, Attrs: render.Bold})
-				if topLine.Width() < width {
-					topLine = topLine.Append(strings.Repeat("─", width-topLine.Width()), render.Style{Fg: th.Border, Bg: th.BgInset})
-				}
-				out = append(out, topLine.Truncate(width))
-			} else {
-				inCodeBlock = false
-				botLine := render.Styled("└"+strings.Repeat("─", width-1), render.Style{Fg: th.Border, Bg: th.BgInset})
-				out = append(out, botLine.Truncate(width))
-			}
-			continue
-		}
-
-		if inCodeBlock {
-			codeLine := highlightCodeLine(raw, th, codeLang)
-			if codeLine.Width() < width {
-				codeLine = codeLine.Pad(width, render.Style{Bg: th.BgInset})
-			}
-			out = append(out, codeLine.Truncate(width))
-			continue
-		}
-
-		if strings.HasPrefix(raw, "diff --git ") || strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ ") {
-			out = append(out, render.Styled(raw, render.Style{Fg: th.FgMuted, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
-			continue
-		}
-		if strings.HasPrefix(raw, "@@") {
-			out = append(out, render.Styled(raw, render.Style{Fg: th.Info, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
-			continue
-		}
-		if strings.HasPrefix(raw, "+") && len(raw) > 1 && raw[1] != '+' {
-			diffLine := render.Styled("+ ", render.Style{Fg: th.Success, Bg: th.BgInset, Attrs: render.Bold}).
-				Append(raw[1:], render.Style{Fg: th.Success, Bg: th.BgInset})
-			out = append(out, diffLine.Truncate(width))
-			continue
-		}
-		if strings.HasPrefix(raw, "-") && len(raw) > 1 && raw[1] != '-' {
-			diffLine := render.Styled("- ", render.Style{Fg: th.Danger, Bg: th.BgInset, Attrs: render.Bold}).
-				Append(raw[1:], render.Style{Fg: th.Danger, Bg: th.BgInset})
-			out = append(out, diffLine.Truncate(width))
-			continue
-		}
-
-		if strings.HasPrefix(raw, "# ") {
-			heading := strings.TrimPrefix(raw, "# ")
-			out = append(out, render.Styled("■ "+heading, render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-			continue
-		}
-		if strings.HasPrefix(raw, "## ") {
-			heading := strings.TrimPrefix(raw, "## ")
-			out = append(out, render.Styled("◆ "+heading, render.Style{Fg: th.Fg, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-			continue
-		}
-		if strings.HasPrefix(raw, "### ") {
-			heading := strings.TrimPrefix(raw, "### ")
-			out = append(out, render.Styled("▸ "+heading, render.Style{Fg: th.FgMuted, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-			continue
-		}
-
-		if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
-			itemText := strings.TrimSpace(trimmed[2:])
-			bullet := render.Styled("  "+th.Glyphs().Bullet+" ", th.Status(StatusInfo))
-			itemLine := bullet.Concat(parseInlineSpans(itemText, th, th.Base()))
-			for _, wl := range itemLine.Wrap(width) {
-				out = append(out, wl)
-			}
-			continue
-		}
-
-		styledLine := parseInlineSpans(raw, th, th.Base())
-		for _, wl := range styledLine.Wrap(width) {
-			out = append(out, wl)
-		}
+	var st mdState
+	for _, raw := range strings.Split(text, "\n") {
+		out = st.line(out, raw, th, width)
 	}
 	return out
+}
+
+// mdState is everything renderMarkdown carries from one line to the next:
+// whether a fence is open, and its language. Every other construct here is
+// decided by its own line alone — nothing looks ahead to the next line or back
+// past the previous break — and that is the property a growing reply's
+// incremental render (Entry.streamRows) is built on. A construct that did look
+// across lines, a table sized to its widest row or a list renumbered by its
+// successors, would have to be carried here or end that reuse.
+type mdState struct {
+	inCode bool
+	lang   string
+}
+
+// line renders one raw line, without its break, appending its rows to out.
+func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []render.Line {
+	trimmed := strings.TrimSpace(raw)
+
+	if strings.HasPrefix(trimmed, "```") {
+		if !st.inCode {
+			st.inCode = true
+			st.lang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+			if st.lang == "" {
+				st.lang = "code"
+			}
+			hdr := "┌─ " + st.lang + " "
+			topLine := render.Styled(hdr, render.Style{Fg: th.BorderFocus, Bg: th.BgInset, Attrs: render.Bold})
+			if topLine.Width() < width {
+				topLine = topLine.Append(strings.Repeat("─", width-topLine.Width()), render.Style{Fg: th.Border, Bg: th.BgInset})
+			}
+			return append(out, topLine.Truncate(width))
+		}
+		st.inCode = false
+		botLine := render.Styled("└"+strings.Repeat("─", width-1), render.Style{Fg: th.Border, Bg: th.BgInset})
+		return append(out, botLine.Truncate(width))
+	}
+
+	if st.inCode {
+		codeLine := highlightCodeLine(raw, th, st.lang)
+		if codeLine.Width() < width {
+			codeLine = codeLine.Pad(width, render.Style{Bg: th.BgInset})
+		}
+		return append(out, codeLine.Truncate(width))
+	}
+
+	if strings.HasPrefix(raw, "diff --git ") || strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ ") {
+		return append(out, render.Styled(raw, render.Style{Fg: th.FgMuted, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
+	}
+	if strings.HasPrefix(raw, "@@") {
+		return append(out, render.Styled(raw, render.Style{Fg: th.Info, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
+	}
+	if strings.HasPrefix(raw, "+") && len(raw) > 1 && raw[1] != '+' {
+		diffLine := render.Styled("+ ", render.Style{Fg: th.Success, Bg: th.BgInset, Attrs: render.Bold}).
+			Append(raw[1:], render.Style{Fg: th.Success, Bg: th.BgInset})
+		return append(out, diffLine.Truncate(width))
+	}
+	if strings.HasPrefix(raw, "-") && len(raw) > 1 && raw[1] != '-' {
+		diffLine := render.Styled("- ", render.Style{Fg: th.Danger, Bg: th.BgInset, Attrs: render.Bold}).
+			Append(raw[1:], render.Style{Fg: th.Danger, Bg: th.BgInset})
+		return append(out, diffLine.Truncate(width))
+	}
+
+	if strings.HasPrefix(raw, "# ") {
+		heading := strings.TrimPrefix(raw, "# ")
+		return append(out, render.Styled("■ "+heading, render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
+	}
+	if strings.HasPrefix(raw, "## ") {
+		heading := strings.TrimPrefix(raw, "## ")
+		return append(out, render.Styled("◆ "+heading, render.Style{Fg: th.Fg, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
+	}
+	if strings.HasPrefix(raw, "### ") {
+		heading := strings.TrimPrefix(raw, "### ")
+		return append(out, render.Styled("▸ "+heading, render.Style{Fg: th.FgMuted, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
+	}
+
+	if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
+		itemText := strings.TrimSpace(trimmed[2:])
+		bullet := render.Styled("  "+th.Glyphs().Bullet+" ", th.Status(StatusInfo))
+		itemLine := bullet.Concat(parseInlineSpans(itemText, th, th.Base()))
+		return append(out, itemLine.Wrap(width)...)
+	}
+
+	return append(out, parseInlineSpans(raw, th, th.Base()).Wrap(width)...)
 }
