@@ -52,6 +52,26 @@ func runLines(t *testing.T, opts Options, stdin string) []Response {
 	return responses
 }
 
+// byID indexes responses by request id. Requests on different lanes can be
+// answered in either order (lanes.go); the protocol has always correlated by
+// id, never by position.
+func byID(t *testing.T, responses []Response, ids ...string) []Response {
+	t.Helper()
+	index := map[string]Response{}
+	for _, r := range responses {
+		index[r.ID] = r
+	}
+	out := make([]Response, len(ids))
+	for i, id := range ids {
+		r, ok := index[id]
+		if !ok {
+			t.Fatalf("no response for %q among %d responses", id, len(responses))
+		}
+		out[i] = r
+	}
+	return out
+}
+
 func hostOpts() Options {
 	return Options{HardRules: true, AllowNeighbors: true, Posture: PostureHost}
 }

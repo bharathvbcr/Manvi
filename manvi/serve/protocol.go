@@ -137,6 +137,9 @@ const (
 	// ErrDependency means a configured local service was unavailable or its
 	// advertised contract was incompatible with this build.
 	ErrDependency = "E_DEPENDENCY"
+	// ErrBusy means the request's lane already holds as many requests as it
+	// queues. Always retryable: nothing about the request was wrong.
+	ErrBusy = "E_BUSY"
 )
 
 // Operations.
