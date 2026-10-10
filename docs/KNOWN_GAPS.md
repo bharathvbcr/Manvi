@@ -133,65 +133,37 @@ Verified in source this session: `extract_node`'s `match lang`
 falls to a generic arm emitting declarations only. The C family is served by a
 separate `extract_c_family_call`, which is the template for the fix.
 
-### GAP-2 — `dcstore` covers 2 of DevCouncil's 16 tables
+### GAP-2 to GAP-6 — re-checked 2026-10-10, now closed or narrowed
 
-**VERIFIED** this session. `tasks` and `task_leases` only. Absent: requirements,
-critique findings, gaps, evidence, assumptions, artifact graph, planning state,
-shell sessions and commands, file-change events, semantic diffs, handoffs,
-correction manifests, verification runs, project state.
-→ **P1.3**.
-
-### GAP-3 — No MCP server in Rust/Go
-
-**VERIFIED** this session — all 29 `devcouncil_*` handlers are still Python. This
-is the front door of the component layer; without it no other coding agent can
-use any of the ported work.
-→ **P2.1–P2.6**.
-
-### GAP-4 — `dc-verify` stub detection is weaker than the Python it replaces
-
-**VERIFIED** by reading both. `dc-verify`'s `detect_stubs` is substring matching
-over added diff lines. DevCouncil's `stub_detector.py` parses the AST, handles
-per-language idioms, the `devcouncil: allow-stub` escape hatch gated on the task
-mentioning scaffolding, assert-free test detection, and a separate
-stub-declaration audit. **Cutting over today would weaken the gate.** This is
-caution **C3**.
-→ **P4.1** (measure), then **P4.3** (reach parity via `devmap`'s grammars).
-
-### GAP-5 — Nothing detects drift between the two source copies
-
-**VERIFIED** — `.github/workflows/analysis-plane.yml` has `rust`, `interop` and
-`go` jobs and **zero** drift-check lines. The component sources exist in
-DevCouncil and MANVI with no build-time relationship. Two files differ
-deliberately (`dc-store/tests/interop.rs`, `dc-glob/src/lib.rs`'s `include_str!`
-path) and four paths exist only in DevCouncil, so a naive `diff` is not the gate
-— it has to know the exceptions.
-→ **P0.1**, decision **D1**.
-
-### GAP-6 — No Go component home in DevCouncil
-
-**VERIFIED.** `backend/go_orchestrator/` holds harness-side *client* code
-mirrored from MANVI. Most remaining work is Go and has nowhere to land.
-→ **P0.3**, decision **D3**.
+GAP-2 (`dcstore` table coverage), GAP-3 (no Go MCP server), GAP-4 (substring
+stub detection), GAP-5 (no drift check) and GAP-6 (no Go component home) were
+all contradicted by the code at the pinned DevCouncil commit and moved to
+[§3](#3-recorded-open-but-actually-closed--do-not-spend-time-here), each with
+its file:line evidence. The one residue, GAP-2's unreferenced tables, is the
+single open row there and is tracked on this repository's board as `ft-46ab2b`.
 
 ---
 
-## 2. Recorded open — leads to verify before acting
+## 2. Recorded open — moved to DevCouncil
 
-From `DevCouncil/docs/devmap/STATUS.md`'s "Not complete" line (2026-08-17) and
-`CONSUMERS.md`. **RECORDED**, not re-checked here.
+GAP-7 to GAP-13 and GAP-21 were copied here from `DevCouncil/docs/devmap/STATUS.md`
+and `INTEGRITY.md`. DevCouncil archived both as historical on 2026-09-11
+(`DevCouncil/docs/archive/README.md`, files under `docs/archive/devmap/`), so
+this file no longer keeps a copy. They were re-checked against DevCouncil source
+on 2026-10-10; the outcome of each is in the table. The ones that survived are
+filed on DevCouncil's board; a gap that DevCouncil's ledgers no longer carry is
+DevCouncil's to track, not this file's.
 
-| ID | Gap | Notes | Task |
+| ID | Outcome (2026-10-10) | Evidence | Owner now |
 |---|---|---|---|
-| GAP-7 | **VB.NET has no grammar.** Of 35 frozen `LANGUAGE_SPECS`, 34 reach a real grammar; `vb` returns `ParseOutcome::Failed`. | Adding a grammar dependency needs explicit approval under repo policy. | P2.4 |
-| GAP-8 | **SC14 — nested-symbol identity collisions** inside anonymous callbacks and nested types. **741 duplicate identities** on the 12,821-file corpus. | Duplicate identities mean edges can attach to the wrong symbol. | P2.4 |
-| GAP-9 | **SC29 — an unexplained per-file memory increase.** ~210 → ~278 KiB/file after SC26, cause withdrawn and reopened. The Σ N² model this was once explained by was **refuted by measurement**; peak memory is linear in edges at ~410 B/edge. | Reopened deliberately rather than left with a wrong explanation. | — |
-| GAP-10 | **SC2 — B3 write-amplification redesign and genuinely incremental resolve.** `build --affected` still extracts the whole tree. | Every small edit pays a full rebuild. | — |
-| GAP-11 | **Audit-property suite incomplete** — the 117-property spec is not fully covered. | | P0.2 |
-| GAP-12 | **Mutation coverage** does not extend beyond the retention surface. | Mutation testing is what keeps the strengthened tests honest. | P0.2 |
-| GAP-13 | **Freshness soak never run** — no two-week shadow soak, no production deployment, no platform publication. | `STATUS.md` is explicit that passing tests are "local/mechanical evidence only". | — |
-| GAP-14 | **Consumer cutover incomplete.** `CONSUMERS.md` lists as pending: `orphan_diff.py` (path heuristic only), `subsystem_boundary.py`, `semantic_diff.py`, `acceptance_corpus.py`, `verify_orchestration.py` / `verifier.py`, MCP adjuncts (`ast_lsp`, `debug`), and remaining CLI/reporting/execution consumers. `cli/commands/map.py` is frozen. | These are the Python call sites still on the Python path. | P2.3, P2.4 |
-| GAP-15 | **~42 mypy errors** in `llm/provider`, `executors`, `semantic_layer` and others (down from ~82). | `IMPROVEMENTS.md` 2026-07-08. Ported code should not inherit the untyped shapes. | — |
+| GAP-7 | **Verified open.** VB.NET has no grammar; declarations are recovered by pattern only. | `rust/devmap-extract/src/cache.rs` has a test asserting `grammar_version_for("vb")` starts with `unavailable:`; `fallback.rs` lists `vb` among pattern-recovered languages | DevCouncil board (grouped task `dc-devmap-recorded-gaps-reverify`) |
+| GAP-8 | **Unverified.** Needs a measurement run on DevCouncil's corpus (741 duplicate identities was a 2026-08 figure), not a code read. | — | DevCouncil board (same task) |
+| GAP-9 | **Unverified.** Needs a memory measurement run. | — | DevCouncil board (same task) |
+| GAP-10 | **Partly closed, cost unmeasured.** `--affected` now narrows what a generation *writes* (the store carries unaffected edges forward) while resolution stays global by design (`devmap-cli/src/commands/build.rs`, the "B3/SC2" comment above the affected-closure step). Whether extraction still reads the whole tree needs a timing run: one-file `--affected` against a full build. | `build.rs`, "B3/SC2" comment | DevCouncil board (same task) |
+| GAP-11, GAP-12, GAP-13 | **Unverified.** Property-suite coverage, mutation coverage and the freshness soak are measurement runs. | — | DevCouncil board (same task) |
+| GAP-14 | **Superseded.** It listed Python consumers (`orphan_diff.py`, `semantic_diff.py`, ...) of a Python tree that has been deleted. | `PHASE7_LONG_TAIL.md` retirement table | — |
+| GAP-15 | **Superseded.** The ~42 mypy errors were in the deleted Python package. | `PHASE7_LONG_TAIL.md` | — |
+| GAP-21 | **Mostly closed; two leftovers.** `regex`/`rayon`/`tracing`/`ignore` declared under `[dependencies]` in `devmap-*` each have a `src` use (rg, 2026-10-10) and `thiserror` is no longer declared. Left: `devmap-cli` lists `rayon` under `[dev-dependencies]` (`Cargo.toml:51`) with no `rayon::` use in `src/` or `tests/` (only the `RAYON_NUM_THREADS` env string in `tests/state_discovery_contract.rs`; `cargo udeps` not run), and `devmap-extract/src/treesitter.rs` still matches `"async_function_definition"` in six places; tree-sitter-python's grammar has no such node type, so the arm is probably dead for Python (other grammars not checked). Whether CLI `manifest` uses its `path` argument was not checked. | `treesitter.rs`, `devmap-cli/src/cli.rs` | DevCouncil board (same task) |
 
 ---
 
@@ -208,6 +180,11 @@ The code says otherwise. Verified this session; the notice should be corrected.
 | INTEGRITY: "29 of 35 languages return `ParseOutcome::Failed`" | **Superseded.** 34 of 35 reach a real grammar (only VB.NET does not). Note this is *parsing* — GAP-1 is about *call extraction*, which is a different and still-open question. |
 | IMPROVEMENTS: `fail_under = 18` | **Superseded.** `pyproject.toml` now sets `fail_under = 90`. |
 | `rust/STATUS.md`: "one file differs from MANVI's copy" | **Corrected in commit `a48c423`.** Two do. |
+| **GAP-2** — "`dcstore` covers 2 of 16 tables" | **Stale.** `crates/dc-store/src/schema.rs` (DevCouncil `rust/dc-store/src/schema.rs`) creates 18 tables, `schema_version` included, and the workbench adds 19 `work_*` tables (`rust/dc-store/src/workbench/*.sql`). **Residue, open:** six of the 18 (`project_state`, `critique_findings`, `shell_sessions`, `shell_command_events`, `file_change_events`, `semantic_diffs`) are named by no source outside `schema.rs` and tests, and `correction_manifests` appears only in a comment (`devcouncil/correction/manifest.go:3`) and is never inserted. Tracked as `ft-46ab2b`. |
+| **GAP-3** — "all 29 `devcouncil_*` handlers still Python" | **Stale.** The Go host serves MCP (`backend/go_orchestrator/cmd/devcouncil/main.go:70`, `"mcp"`) with 8 tools (`devcouncil/registry.go`). The thick surface is Manvi's native registry (40 `devcouncil_*` tools listed in `TOOLS_REFERENCE.md`); DevCouncil `docs/TODO.md` records this as `GAP-P7-MCP-HOST-THIN`. |
+| **GAP-4** — "`dc-verify` stub detection is substring matching" | **Stale.** AST detection landed in DevCouncil `c6b48a28` and Java/C# in `9b0b9e5c`, both ancestors of the pin. `rust/dc-verify/src/stub_ast.rs:1-27`; the `allow-stub` marker is `rigor.rs` `ALLOW_STUB_MARKER`; `tests/false_accept.rs` and `tests/stub_ast.rs` are the gates. Assert-free and skipped-test checks cover Rust, Go, Python and TypeScript, not Java or C#; a file that does not parse falls back to the substring gate, labelled `Derived`. |
+| **GAP-5** — "nothing detects drift between the two source copies" | **Superseded.** `crates/dc-*` are symlinks into `../../DevCouncil/rust/` (`ls -la crates`), so there is one copy. `scripts/check-release.mjs` `crateMirrorProblems` checks inherited manifest values at the pin in `scripts/module-pins.txt`, and `manvi/devcouncil/crate_pins_test.go` checks resolved dependencies. |
+| **GAP-6** — "no Go component home in DevCouncil" | **Stale.** Go components live in `DevCouncil/backend/go_orchestrator/` (`gate/`, `policy/`, `grants/`, `devcouncil/{gating,verify,stopgate,correction,mcp,skills}`, `dc/`). `DevCouncil/go/` does not exist. |
 
 **Also closed:** the entire `IMPROVEMENTS.md` P0–P3 backlog (#1–#20) — git
 subprocess timeouts, atomic writes, LLM retry, swallowed exceptions, test
@@ -270,11 +247,11 @@ important thing not to carry across.
 | ID | Gap | Status | Task |
 |---|---|---|---|
 | GAP-16 | **Nothing in `src/devcouncil/` calls the ported components.** | SUPERSEDED (2026-09) — that Python tree is deleted; live engines are `devmap` and Go/Rust components | All of Wave 2 |
-| GAP-17 | **No differential measurement** of Rust vs Python gates over real diffs. §4 of `rust/STATUS.md` records that Python leads on stub detection; **nothing else is measured** — the secrets scanner and orphan-diff comparisons are explicitly unverified. | VERIFIED | **P4.1** |
-| GAP-18 | **Linux and Windows coverage is new and thin.** Everything before 2026-09-01 was verified on darwin/arm64 only. CI now runs ubuntu/macos/windows for the components, but `dc-store` on Windows compiles SQLite from source and was not confirmed locally. | VERIFIED | P0.2 |
+| GAP-17 | **No differential measurement** of Rust vs Python gates over real diffs. | SUPERSEDED (2026-10) — the Python tree is deleted, so there is nothing left to diff against. The premise that Python leads on stub detection is false (GAP-4, §3): the AST detector is in `dc-verify`. | P4.1 (done, see `PORTING_TASKS.md`) |
+| GAP-18 | **Linux and Windows coverage is thin.** Everything before 2026-09-01 was verified on darwin/arm64 only. `.github/workflows/verify.yml` runs the `verify.sh` gate on `[ubuntu-latest, macos-latest]` and has no Windows job; its own comment says why (this tree does not build for `GOOS=windows`). Whether to add a Windows leg is `ft-7fb7af56`. | VERIFIED 2026-10-10 against `verify.yml` | P0.2 |
 | GAP-19 | **`MANVI_*` naming leaked into DevCouncil components.** `testsupport.AllowSkipEnv` was `MANVI_TEST_ALLOW_SKIP`; the build lock was `.manvi-testbin.lock` beside copies in `target/manvi-testbin/`. Decided and renamed in both repositories together: `DEVCOUNCIL_TEST_ALLOW_SKIP`, `.devcouncil-testbin.lock`, `target/devcouncil-testbin/`. No deprecation window in which the old name still opts a run into skipping — that would let a stale config keep seams uncovered. Instead the old name is a tombstone: `testsupport.Unavailable` fails naming its replacement whenever it is set, and `verify.sh` refuses both names. No CI workflow in either repository referenced the old names (`rg -uu` over both trees). | CLOSED (2026-10) — pinned by `TestTheOnDiskAndEnvironmentNamesAreDevCouncils` and `TestTheRetiredOptInFailsNamingItsReplacement` in DevCouncil `testsupport` | P0.3 |
 | GAP-20 | **`dc-glob` is duplicated by design** — Rust `dc-glob` and Go `manvi/internal/fnmatch`, held together by a 775-case parity fixture. This is correct, but it is a standing obligation: a change to one must change the other. | VERIFIED | — |
-| GAP-21 | **Unused dependencies** recorded in `INTEGRITY.md`: `regex`/`rayon` in resolve and analyze, `tracing` in 5 crates, `ignore` in cli; `thiserror` declared 7× and used 0×. Also a dead `"async_function_definition"` arm and CLI `manifest` ignoring its `path` arg. | RECORDED — some may have been pruned since | — |
+| GAP-21 | **Unused dependencies and a dead match arm** in `devmap-*` crates, recorded in `INTEGRITY.md`. | MOVED to DevCouncil — see §2 | — |
 
 ---
 

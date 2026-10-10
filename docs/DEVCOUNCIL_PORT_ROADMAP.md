@@ -4,6 +4,15 @@
 > deleted. Inventory paths under that tree are historical. Do not install or
 > `import devcouncil` as a Python package. Live map/query is `devmap`.
 
+> **Re-baselined 2026-10-10 against DevCouncil's Phase 7 decisions** —
+> `DevCouncil/docs/PHASE7_LONG_TAIL.md` (the retirement table), `docs/TODO.md`
+> (the follow-ups) — with DevCouncil at the pin in `scripts/module-pins.txt`
+> (`acb5e3b9`). Every row below says which of **done**, **retired by Phase 7**,
+> **superseded** or **open** it is, with the evidence. Rows keep their
+> pre-Phase-7 wording only where it is the record of a decision; where the code
+> disagreed, the code won and the row was rewritten. Where a statement was
+> checked by reading rather than running, it says so.
+
 **Goal:** port every DevCouncil capability to Rust/Go **inside DevCouncil**, so
 that DevCouncil becomes a set of building blocks — binaries with a JSON-on-stdio
 contract, plus an MCP server — usable by any coding agent. MANVI is the harness
@@ -40,121 +49,64 @@ Claims below are labelled **verified** (a command was run and its output read),
 
 ---
 
-## 1. Open decisions
+## 1. Decisions
 
-Two. The architecture correction above changes the answer to both.
+D1 and D3 are settled by what the repositories now are. D2 is the one that still
+needs the owner.
 
-### D1 — MANVI's copy of the component sources
+### D1 — MANVI's copy of the component sources: **settled, option 3**
 
-The `dc-*` crate sources exist in DevCouncil (`rust/`) and in MANVI (`crates/`),
-with no mechanism keeping them equal. Not hypothetical: the first change after
-the port — carrying `requirement_ids` across the boundary — had to be applied
-**twice by hand**, and stayed consistent only because one person did both halves
-in one sitting.
+The options were delete the copy, keep it with a digest, or consume by path. The
+repository did the third, not the recommended second. `crates/dc-*` are symlinks
+into `../../DevCouncil/rust/dc-*` (`ls -la crates`; `crates/README.md`), so there
+is one copy of the sources. `manvi/go.mod` replaces DevCouncil by path, and the
+release builds the commit pinned in `scripts/module-pins.txt`. Drift is no longer
+possible between copies, and drift between the working checkout and the pin is
+caught by `scripts/check-release.mjs` `crateMirrorProblems` (inherited manifest
+values compared at the pin) and `manvi/devcouncil/crate_pins_test.go` (resolved
+dependencies). The two-commit "edit in DevCouncil, mirror to MANVI" rule is gone.
+**Verified** by `ls -la crates` and by reading both checks; the checks themselves
+were not re-run for this edit. **P0.1 is done.**
 
-**What the correction settles:** these are DevCouncil components, so **DevCouncil
-is upstream**. Authorship in MANVI is history, not ownership. That reverses the
-earlier recommendation, which had MANVI as the destination and treated
-DevCouncil's copy as the temporary one.
+What the original reasoning still gets right: only *sources* were ever shared.
+MANVI resolves `devmap`, `dcstore`, `dcverify` and `dcgrep` as executables
+(`cmd/manvi/toolbinary.go`) and links none of them, except the Gusset archive.
 
-**What it also settles:** only *sources* are duplicated. **Verified**
-(`cmd/manvi/toolbinary.go`): MANVI resolves `devmap`, `dcstore`, `dcverify` and
-`dcgrep` as executables and links none of them. The deployed arrangement is
-already right — one set of component binaries, one harness consuming them. So
-this is a development-convenience question, not an architectural one.
+### D2 — Where the council lives: **open, and now narrower**
 
-That leaves how MANVI's copy should end:
+Phase 7 hard-cut DevCouncil's `planning/` and `council/` with the successor
+"Manvi `llm/` + agents" (`PHASE7_LONG_TAIL.md:22`), and states that "LLM provider
+routing, agent profiles, TUI/`watch`, campaign-like multi-agent runs: stay in
+Manvi — do not reimplement in DevCouncil Go" (`:56-57`). That removes options 1
+and 2 below as written: DevCouncil will not own council schemas or prompts in Go.
 
-1. **Delete it; require installed components.** The honest expression of
-   "DevCouncil owns the components". `toolBinary`'s local-build fallback stops
-   being reachable and MANVI's suite needs the binaries on `PATH` — which its
-   `devmap` live-contract tests already assume.
-2. **Keep it, with a checked-in digest.** MANVI stays buildable without a
-   DevCouncil checkout, and a stale copy becomes a test failure rather than a
-   surprise.
-3. **Consume by path or git dependency.** Removes the source duplication at the
-   cost of coupling release cycles — and buys nothing at runtime, since nothing
-   links.
+No council code exists in either repository. The only `planner`, `critic` and
+`arbiter` hits are the `dc.Source` enum (`dc/requirement.go:86-88`) and the
+agent definitions (`manvi/agents/definition.go:173,187`). **Verified** by
+search.
 
-**Recommendation: 2 now, 1 once installing DevCouncil's components is routine.**
-Option 2 is the cheapest thing that makes drift *detectable*, which is the actual
-failure mode. **Not yet chosen.** Until then: **edit in DevCouncil, mirror to
-MANVI.**
+The owner must record one of two outcomes, and this file does not choose:
 
-### D2 — Where the council lives
+1. **Retired, no successor.** The debate protocol is dropped. P3.1 to P3.3
+   become retired rows.
+2. **Council in MANVI.** MANVI owns schemas, prompts and the protocol. Then P3.1
+   to P3.3 are filed as feature tasks, under the correction below.
 
-The council is DevCouncil's identity and has no counterpart in MANVI. It is
-unblocked: tasks carry `RequirementIDs` and `AcceptanceCriterionIDs`, and
-`dc.Requirement` / `dc.AcceptanceCriterion` exist and are checked against
-DevCouncil's own pydantic models.
+**Correction to the earlier plan, which this file used to state as fact:** "forcing
+a single tool call whose input schema *is* the output schema … works across all
+four providers without touching the provider seam" is wrong. `llm.Request`
+(`manvi/llm/provider.go`, the struct at line 17) has no tool-choice field, and
+`rg -uu -i 'toolchoice|tool_choice' manvi` finds nothing. Forced tool choice
+needs a new `Request` field and an implementation in each of the four adapters.
+The `fallback=` caution survives either way: an empty critique and a critique
+that could not run must not read the same to the arbiter.
 
-**What it is** (verified, from `src/devcouncil/planning/` and
-`src/devcouncil/council/prompts/`): a structured debate, not one planning call.
+### D3 — The Go component home in DevCouncil: **settled de facto**
 
-```
-planner_a ─┐                    ┌─ critic_b reviews A ─┐
-           ├─ two rival plans ──┤                      ├─ rebuttal ─ arbiter ─ final plan
-planner_b ─┘                    └─ critic_a reviews B ─┘
-```
-
-- **planner_a** is the pragmatic tech lead (simplicity, minimal dependencies);
-  **planner_b** the production-readiness architect (security, performance, edge
-  cases). Two different objective functions, not two samples.
-- **critics** are prompted as hostile staff engineers reviewing *the other team's*
-  plan. Every finding carries a `falsifiable_check`.
-- **rebuttal** returns each finding to its planner, who may reject it only with
-  evidence.
-- **arbiter** merges into the final plan.
-- `backfill_acceptance_criteria` then guarantees every acceptance criterion is
-  owned by exactly one task — the gap `dc.UnownedCriteria` now detects.
-
-**The question the correction opens.** The council needs LLM calls, and the two
-repositories split on exactly that line: DevCouncil is deterministic building
-blocks, MANVI is the dynamic layer that talks to models. So the council does not
-sit cleanly on one side.
-
-Three ways to place it:
-
-1. **Split on the determinism line.** DevCouncil owns the schemas
-   (`PlanOutput` / `CritiqueOutput` / `RebuttalOutput`), the eight prompts,
-   `backfill_acceptance_criteria`, and validation — all deterministic, all
-   testable without a model. MANVI owns running the debate, because it already
-   has the provider seam, the subagent machinery, and roles named `planner` and
-   `critic`.
-2. **Wholly in DevCouncil**, which means porting DevCouncil's `llm/` router
-   (2,586 lines) too, so the component can call models itself.
-3. **Wholly in MANVI**, which makes the council unavailable to any other agent —
-   contradicting the point of the component layer.
-
-**Recommendation: 1.** It matches the stated split exactly, keeps the valuable
-and hard-to-reproduce part (the prompts and schemas that encode *how to run a
-council*) reusable by other agents, and avoids giving a component its own model
-credentials. Option 3 is the one to avoid. **Not yet chosen.**
-
-**What the work is, under option 1:**
-
-1. **Schema-constrained completion in MANVI.** DevCouncil's
-   `router.complete_structured(schema=…, fallback=…)` is what makes the debate
-   machine-readable. MANVI has no equivalent, but it is **closer than it looks**:
-   `llm.ToolSchema` already carries `InputSchema json.RawMessage` (verified,
-   `llm/provider.go:11-14`) — JSON Schema on the tool-call path. Forcing a single
-   tool call whose input schema *is* the output schema is the standard way to get
-   structured output, and works across all four providers without touching the
-   provider seam. Likely a wrapper over existing machinery. **Unmeasured.**
-2. **The `fallback=` semantics, carefully.** DevCouncil degrades an unparseable
-   critique to "no findings" so a weak model cannot crash a planning run.
-   Defensible for a critique and **dangerous as a default**: an empty critique and
-   a critique that could not run must not read the same to the arbiter. Port the
-   degradation *and* make the difference visible, or this reproduces the
-   silent-pass shape the rest of the system refuses.
-3. **The debate protocol** — role pairing, cross-assignment, rebuttal routing,
-   arbitration.
-4. **Eight prompt files and the output schemas**, as DevCouncil components.
-5. **`backfill_acceptance_criteria`** — ~50 lines of pure logic, no LLM, trivially
-   testable. The natural first commit, and it belongs in DevCouncil.
-
-**Estimate: ~1,500–2,000 lines plus tests, split across both repositories.
-Unmeasured** — from reading the Python, not from an attempt.
+Go components live in `DevCouncil/backend/go_orchestrator/` (`gate/`, `policy/`,
+`grants/`, `devcouncil/{gating,verify,stopgate,correction,mcp,skills}`, `dc/`).
+`DevCouncil/go/` was proposed and does not exist. **P0.3 is done.** The directory
+also holds the Go clients MANVI imports (`dc/{store,devmap,dcgrep,dcverify}`).
 
 ## 2. What is already done
 
@@ -166,10 +118,10 @@ same-named subsystem, because they serve different consumers.
 
 | Component | Replaces | Status |
 |---|---|---|
-| `devmap` | `indexing` 18,068 + `codeintel` 8,405 = **26,473** | **Done, as Rust** — `rust/`, 49,675 lines. The single largest subsystem, and it needs consuming rather than porting. **Verified**: MANVI's three `TestTheLive*` tests build a fixture repository and drive the real binary, against DevCouncil's current `rust/` build. |
-| `dcstore` — leases | part of `storage` | **Done and proven interoperable.** `dc-store` and DevCouncil's `TaskLeaseRepository` agree on schema, token and expiry against one `state.sqlite`, with the interop test failing rather than skipping when it cannot run. |
-| `dcstore` — task requirements | part of `domain` | **Done 2026-09-01.** `requirement_ids` / `acceptance_criterion_ids` cross the boundary; `dc.Requirement` and `dc.AcceptanceCriterion` are checked against DevCouncil's own pydantic models, including under `exclude_defaults=True`. |
-| `dcverify` | part of `verification` | **Partial.** Diff parsing, scope classification, coverage intersection and rigor gates exist. See §3 — Python still leads on stub detection. |
+| `devmap` | `indexing` 18,068 + `codeintel` 8,405 = **26,473** | **Done, as Rust** — `rust/`, 49,675 lines. The single largest subsystem, and it needs consuming rather than porting. **Verified** at the time: three `TestTheLive*` tests drive the real binary; they now live with the client in DevCouncil (`backend/go_orchestrator/dc/devmap`). |
+| `dcstore` — leases | part of `storage` | **Done.** The Python `TaskLeaseRepository` it was proven against is deleted; the Python-driven interop check is retired (`dc/requirement_interop_test.go` now holds one empty marker test), and lease behaviour is covered by the Rust suite (`dc-store/tests/leases.rs`). |
+| `dcstore` — task requirements | part of `domain` | **Done 2026-09-01.** `requirement_ids` / `acceptance_criterion_ids` cross the boundary. The pydantic parity check is dropped with the Python it compared against; wire shape is owned by `dc/requirement_test.go`. |
+| `dcverify` | part of `verification` | **Done for the gates.** Diff parsing, scope classification, coverage intersection, rigor gates and AST stub detection (`rust/dc-verify/src/stub_ast.rs`, P4.1/P4.3). The Go side (`devcouncil/verify/`) spawns it. |
 | `dcgrep` | — | **Done.** Ignore-aware search on ripgrep's linked engine; no Python predecessor. |
 
 ### 2b. Harness capabilities MANVI owns — *not* DevCouncil ports
@@ -179,105 +131,77 @@ its consumers; MANVI's serve the harness. Porting one does not remove the other.
 
 | MANVI capability | Size | Relationship to DevCouncil's subsystem |
 |---|---|---|
-| `gate` + `policy` + `grants` | 9,513 | A 6-rung ladder with 5 outcome states, for the harness's own tool calls. DevCouncil's `gating` (692) is the **component-side** write gate — already an MCP tool (`policy`) — and still needs its Rust/Go port. Two gates, two consumers. |
+| `gate` + `policy` + `grants` | 9,513 | A 6-rung ladder with 5 outcome states, for the harness's own tool calls. DevCouncil's `gating` is the **component-side** write gate and is ported (`devcouncil/gating/policy.go`, served as the `devcouncil_policy_check_write` MCP tool). Two gates, two consumers. |
 | `ui` | 22,567 | The harness's TUI. DevCouncil's `ui` (753) is CLI presentation and is most likely **obsolete** rather than portable: components emit JSON, they do not render. Confirm before deleting. |
-| `llm` | 20,379 | Four providers with local-model support. DevCouncil's `llm` (2,586) is a router the council needs; whether it ports depends on D2. |
+| `llm` | 20,379 | Four providers with local-model support. DevCouncil's `llm` router was hard-cut (`PHASE7_LONG_TAIL.md`, successor "Manvi `llm/`"), so this is the only one. |
 | `mcp` (client) | 4,492 | **Correct as-is.** Consumes MCP servers, including the one DevCouncil is becoming. This is not a missing server — the server belongs on the component side. |
 
-## 3. What is left
+## 3. Status of every subsystem (2026-10-10)
 
-Every row is a DevCouncil subsystem awaiting its Rust/Go port **in DevCouncil**.
-The question for each is *what shape does it take as a component* — a binary, an
-MCP tool, or a schema — not "what is MANVI's counterpart". Where MANVI already
-has something, that is noted as a consumer or an overlap, not as the destination.
+The original table listed each DevCouncil Python subsystem as "awaiting its Rust/Go
+port". The Python is deleted, and Phase 7 decided each row. Sizes are the
+2026-09 Python line counts, kept as the record. "Row" cites
+`DevCouncil/docs/PHASE7_LONG_TAIL.md` line numbers where it decides the row.
 
-Subsystem sizes are **verified** (`wc -l`); shape and status judgements are
-**inferred** from reading both sides. An inventory, not a burn-down: a Go port is
-not line-for-line with the Python it replaces.
+| DevCouncil subsystem | Python LOC | Status | Evidence |
+|---|---|---|---|
+| `integrations` (MCP server) | 11,284 | **Superseded.** The Go host serves MCP with **8 tools**; the thick surface is MANVI's native registry (40 `devcouncil_*` tools listed in `TOOLS_REFERENCE.md`). The "29 tools, headline deliverable" framing is gone. | `backend/go_orchestrator/cmd/devcouncil/main.go:70`, `devcouncil/registry.go`; `docs/TODO.md` `GAP-P7-MCP-HOST-THIN`; `PHASE7_LONG_TAIL.md` "Thick MCP" |
+| `cli` | 16,547 | **Done (P5.12).** The Go host's `commands` map is the CLI: `mcp`, `integrate`, `skills`, `verify`, `grep`, `install`, `gate`, `hook`, `map`/`graph`/`ast`, and more. Commands that were application glue were dropped (exit 2). | `main.go:69-93`; `PHASE7_LONG_TAIL.md` "dev / devcouncil is the Go binary" |
+| `verification` | 9,800 | **Done, in four parts.** AST stub detection and test-rigor in `dc-verify` (P4.1, P4.3); test execution, acceptance compiler, gap ids and next actions in Go (P4.2, P4.4, partly audited, see `PORTING_TASKS.md`). | `rust/dc-verify/src/stub_ast.rs`; `devcouncil/verify/{commands,criteria,gapid,next_actions}.go` |
+| `execution` | 5,881 | **Split, as predicted.** Lease and scope are `dcstore` and `devcouncil/{lease,gating}`; stop-gate and correction manifests are `devcouncil/{stopgate,correction}`; turn-driving is MANVI's. Not audited line by line. | `backend/go_orchestrator/devcouncil/` listing |
+| `executors` | 3,765 | **Retired.** "OpenHands / mini-SWE / Claude SDK executors: Retire; MANVI loop / hero-loop skill." | `PHASE7_LONG_TAIL.md:30` |
+| `knowledge` | 2,338 | **Retired** (P5.1). Agent guides come from `devmap build --guides`. | `:11` |
+| `reporting` | 1,947 | **Retired** (P5.2). Successor: `devcouncil verify --json`, `devcouncil_get_gaps`, MANVI session logs. | `:12` |
+| `campaign` | 1,700 | **Retired** (P5.3). Successor: MANVI multi-agent profiles. | `:14` |
+| `storage` | 1,574 | **Done as a transcription, with a residue.** `dc-store` creates 18 tables and the workbench adds 19 `work_*` tables. Six of the 18 are referenced by no code, and `correction_manifests` is never written; that is `ft-46ab2b`. Task creation has no product command: `TASK-P7-11`. | `rust/dc-store/src/schema.rs`; `PHASE7_LONG_TAIL.md:26`; `docs/TODO.md:26` |
+| `planning` + `council` | 1,470 | **Hard-cut, successor "Manvi `llm/` + agents"; no council code exists.** See D2. | `PHASE7_LONG_TAIL.md:22,56-57` |
+| `app` | 1,472 | **Unaudited** (P5.9). MANVI has `flags`, `bootstrap`, `core`. | — |
+| `live` | 1,212 | **Retired** (P5.4). | `:15` |
+| `optimization` | 998 | **Retired** (P5.7), no successor. | `:17` |
+| `telemetry` | 918 | **Retired** (P5.6). Successor: MANVI session NDJSON and `devmap session-report`. | `:13` |
+| `repo` | 870 | **Retired** (P5.5). SCA has no DevCouncil successor; GitPulse runs the audit tools as a related job. GitHub Checks were handed to GitPulse. | `:28`, "Successor corrections" |
+| `skills` | 487 | **Done** (P5.10): embedded skill library with `devcouncil skills` (`list`, `scaffold`). | `devcouncil/skills/` |
+| `utils` | 529 | Unaudited; internal. | — |
+| `domain` | 305 | **Partial.** Only `Gap` has a Go type in the component module (`devcouncil/verify/types.go:17`). There are no `Evidence`, `Assumption`, `CritiqueFinding` or `CheckpointRefs` types. The pydantic-parity part is dropped with the Python. | `rg '^type (Gap\|Evidence\|Assumption\|CritiqueFinding\|CheckpointRefs)\b'` over both repositories |
 
-The **Lang** column is the recommendation from
-[`COMPONENTS_AND_HARNESS.md` §4](COMPONENTS_AND_HARNESS.md#4-which-language-each-component-belongs-in),
-which carries the decision rule and the reasoning per component. The short
-version: **1,574 lines of the 64,828 remaining are Rust work** (`storage`,
-extending `dcstore`) plus targeted extensions to `dcverify` and `devmap`.
-Everything else is Go, because the parsing-heavy, memory-sensitive half of
-DevCouncil is already done as `devmap`.
+### What decides the schedule now
 
-| DevCouncil subsystem | Python LOC | Shape as a component | Lang | Status |
-|---|---|---|---|---|
-| `integrations` | 11,284 | **MCP server, 29 `devcouncil_*` tools** | Go | **The headline deliverable.** This *is* "MCP layer for coding agents" — the surface Claude Code, Cursor and MANVI all drive it through. MANVI's `mcp/` is already a client, so it consumes this the day it exists. Highest priority. |
-| `cli` | 16,547 | Per-component CLIs | per component | **Partial, and not a like-for-like port.** DevCouncil's 54 commands are one application's surface; as components they split across `devmap`, `dcstore`, `dcverify` and new binaries. MANVI's 17 commands are the *harness's* own and are not meant to match. Port the commands that are component operations; drop the ones that were only application glue. |
-| `verification` | 9,800 | Extend `dcverify` | **split** | **Partial, and Python leads.** `stub_detector.py` does AST analysis where `dc-verify` does substring matching; Python also has the acceptance compiler, diff-coverage instrumentation, gap ids and next-actions. Do not cut over without a differential run. |
-| `execution` | 5,881 | Split | Go | **Needs an audit.** Lease/scope operations are component work (`dcstore`). The turn-driving parts are harness work MANVI already owns. Checkpoints, handoff, stop-gate history and correction manifests have no counterpart on either side. |
-| `executors` | 3,765 | Probably nothing | Go | **Likely obsolete.** Adapters that shell out to Claude Code / OpenHands / Aider. Under this architecture those agents consume DevCouncil's MCP server directly instead of being driven by it. **Confirm before deleting** — inverting a dependency is not the same as removing a feature. |
-| `knowledge` | 2,338 | Binary or MCP tools | Go | Absent. OKF knowledge base / wiki. |
-| `reporting` | 1,947 | Binary | Go | Absent. Evidence bundles, HTML reports. |
-| `campaign` | 1,700 | Binary or MCP tools | Go | Absent. Multi-task campaign orchestration. |
-| `storage` | 1,574 | Extend `dcstore` | **Rust** | **Partial: 2 of 16 tables.** `tasks` and `task_leases` only. Absent: requirements, critique findings, gaps, evidence, assumptions, artifact graph, planning state, shell sessions/commands, file-change events, semantic diffs, handoffs, correction manifests, verification runs, project state. |
-| `planning` + `council` | 1,470 | Schemas + prompts here, execution in MANVI | Go | **Absent — see D2**, which is about where the split falls. |
-| `app` | 1,472 | Mostly harness | Go | Config and bootstrap; MANVI has `flags`, `bootstrap`, `core`. Unaudited. |
-| `live` | 1,212 | MCP tools | Go | Absent. Live review cards, repair prompts. |
-| `optimization` | 998 | Binary | Go | Absent. |
-| `telemetry` | 918 | Split | Go | Partial. Component-side counters vs the harness's event bus. |
-| `repo` | 870 | Binary | Go | Absent. CI scaffold, gitignore, SCA. |
-| `skills` | 487 | Assets | Go | Absent. |
-| `utils` | 529 | Internal | Go | Partial. |
-| `domain` | 305 | **Shared schemas** | both | **Partial.** Task and requirement done and cross-checked against pydantic. Gap, evidence, assumption, critique and checkpoint refs remain. These are the contract every other component reads, so they lead. |
+The three items this section used to name no longer decide anything: the MCP
+server exists at the size Phase 7 chose, `domain` + `storage` is transcribed, and
+verification is ported. What remains open:
 
-### The three that decide the schedule
-
-1. **`integrations` (the MCP server).** Nothing else changes what DevCouncil *is*.
-   Until the `devcouncil_*` tools exist in Rust/Go, the component layer has no
-   front door, no other agent can use it, and the port cannot be dogfooded.
-2. **`domain` + `storage` (14 of 16 tables).** Requirements, gaps, evidence and
-   critique findings are what the council and the verifier read and write. Most
-   remaining subsystems are blocked behind these schemas and tables.
-3. **`verification`.** The largest subsystem where **Python is genuinely ahead**.
-   A real port, not a move. Measure a differential run first, then port what wins.
-
-### Suggested order
-
-Each step chosen so the next one is testable.
-
-1. **`backfill_acceptance_criteria`** into DevCouncil — pure logic, no model, and
-   it completes the requirements work already landed.
-2. **`domain` schemas** — gap, evidence, critique finding — with the same
-   pydantic cross-checks used for `Requirement`.
-3. **`storage`**: the tables those schemas need.
-4. **Schema-constrained completion in MANVI** (D2's prerequisite; useful well
-   beyond the council).
-5. **The council**, split per D2.
-6. **The MCP server surface**, so the whole thing is drivable by any agent and
-   can finally be dogfooded. Arguably belongs earlier — bring it forward if
-   dogfooding matters more than depth.
-7. **Verification**, differential-measured before anything is replaced.
-8. Everything else, by whatever dogfooding says hurts most.
+1. **D2** (above): retire the council or build it in MANVI, including forced
+   tool choice in four adapters.
+2. **`TASK-P7-11` / `GAP-P7-NO-TASK-CREATE`** (`DevCouncil/docs/TODO.md:26`): no
+   production code writes `tasks` or `requirements` rows. Every hit for `INTO tasks`
+   and `INTO requirements` across DevCouncil, MANVI and GitPulse is a test. P1.2
+   (`backfill_acceptance_criteria`) has no input until this lands, so it is linked
+   to that task here rather than filed alone.
+3. **The `domain` types** that no consumer has yet asked for. Do not port them
+   speculatively.
 
 ## 4. Standing risks
 
-- **A skipped check that reports `ok`.** Already found twice in this port: the
-  `dc-store` interop tests reported `ok` in 0.00s for three checks that never ran,
-  in both repositories, for different path reasons. Assume more exist. When
-  porting a gate, port its failure mode first.
-- **Python defaults versus Go zero values.** `required: bool = True` decoded with
-  a plain struct tag turns every criterion whose producer omitted the key into an
-  optional one — still listed, still looking checked. Every pydantic field with a
-  default is this hazard. Check each one against
-  `model_dump_json(exclude_defaults=True)`.
-- **Porting a weaker implementation and calling it a port.** `dc-verify`'s
-  `detect_stubs` is substring matching; DevCouncil's is AST-based. The Rust name
-  matching the Python name is not evidence the behaviour does.
-- **Nothing is on Linux.** Everything verified here ran on darwin/arm64 only.
-- **No CI.** Neither the Rust workspace nor the Go module is wired into
-  `.github/`. `DC_STORE_REQUIRE_INTEROP=1` exists so CI can demand the interop
-  evidence, and nothing sets it.
-- **A component quietly becoming harness-only.** The failure this document's own
-  correction was heading for: absorbing a DevCouncil subsystem into MANVI reads
-  as progress — tests pass, the capability works — while removing the thing that
-  made it a building block. The check is §5 of
-  [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md), and the sharpest
-  question in it is the last: *can an agent that is not MANVI use this?* If the
-  answer is no, it was not ported, it was consumed.
-- **Two sources of truth for one component.** D1. Sources are duplicated between
-  the repositories with nothing detecting drift, and one change has already been
-  mirrored by hand.
+- **A skipped check that reports `ok`.** Found twice in this port and still the
+  rule: when porting a gate, port its failure mode first. The specific gate it
+  was found in, the `dc-store` Python interop test and its opt-in environment switch, is
+  retired: nothing reads that switch any more (`DevCouncil/rust/README.md:245`,
+  and no source in either repository, ignored files included), so setting it
+  changes nothing.
+- **Python defaults versus Go zero values.** Still a hazard for any wire type that
+  decodes optional keys with a plain struct tag; `dc/requirement.go` is the worked
+  example. The `exclude_defaults=True` check against pydantic is retired with
+  pydantic; `dc/requirement_test.go` owns it.
+- **Porting a weaker implementation and calling it a port.** Resolved for stub
+  detection: the AST detector is in `dc-verify`, with a false-accept and
+  false-positive corpus at zero (`tests/false_accept.rs`). The principle stands for
+  whatever is ported next.
+- ~~**Nothing is on Linux. No CI.**~~ **Closed.** `.github/workflows/verify.yml`
+  runs `verify.sh` on `ubuntu-latest` and `macos-latest`. Windows is not covered
+  and the workflow says why; that is `ft-7fb7af56` and `KNOWN_GAPS.md` GAP-18.
+- **A component quietly becoming harness-only.** Unchanged. The check is §5 of
+  [`COMPONENTS_AND_HARNESS.md`](COMPONENTS_AND_HARNESS.md): *can an agent that is
+  not MANVI use this?* The Go host's MCP server, `devmap`, `dcverify` and `dcstore`
+  can be used without MANVI; MANVI's native registry cannot, by design.
+- ~~**Two sources of truth for one component.**~~ **Closed by D1.** One copy,
+  consumed by path and pinned.

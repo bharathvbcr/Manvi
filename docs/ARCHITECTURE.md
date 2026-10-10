@@ -17,7 +17,7 @@ MANVI is the harness that wraps them into a working coding agent: it drives the 
 The host plane is assembled from immutable per-server modules. Built-in policy,
 local-model, and chat handlers use the same router as optional services; the
 stock command adds deep devmap status and bounded graph queries through the
-existing `manvi/dc/devmap` client. Hosts negotiate the final operation set in
+existing `dc/devmap` client (DevCouncil's `backend/go_orchestrator/dc/devmap`). Hosts negotiate the final operation set in
 `hello.ops`, and Go embedders can add or explicitly replace one handler through
 `serve.Options.Modules` without editing the dispatch loop. The router is frozen
 before input is read, so the negotiated contract cannot drift mid-run.
@@ -411,9 +411,9 @@ Dev_Harness/
 └── verify.sh                  # Comprehensive cross-plane verification gate
 ```
 
-`crates/` holds four members and no more. `devmap` is deliberately absent from
+`crates/` holds seven members (`dc-glob`, `dc-grep`, `dc-store`, `dc-verify`, `dc-evidence`, `dc-proc`, `dc-redact`), each a symlink into DevCouncil's `rust/`, and no more. `devmap` is deliberately absent from
 that list: it is a separate tool this repository does not build, resolved at run
-time from `PATH` or `MANVI_MAP_BINARY`, and `manvi/dc/devmap` is only the client
+time from `PATH` or `MANVI_MAP_BINARY`, and DevCouncil's `dc/devmap` is only the client
 that execs it. That is why the client probes capability rather than comparing
 versions — every build of it reports the same `devmap 0.1.0` — and why its
 absence is not fatal. Without it the neighbour rule answers
