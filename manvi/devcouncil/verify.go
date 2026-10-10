@@ -468,6 +468,14 @@ func summariseList(items []string, limit int) string {
 // every get_diff and every verify — for no reason but the shape of a loop.
 const untrackedWorkers = 8
 
+// untrackedBatchMin is the fewest untracked files worth the batch route. The
+// batch is a fixed three git processes (about 33 ms) whatever the count; the
+// per-file route is one process per file, eight at a time, about 1.8 ms a file
+// once the pool is busy and one 8 ms process for a single file. They cross
+// near 16 files, so below 16 the per-file route is the faster of the two. A
+// variable only so the tests can reach the batch with a small tree.
+var untrackedBatchMin = 16
+
 // untrackedSpeculativeCap bounds what one render captures before its place in
 // the budget is known.
 //
@@ -519,6 +527,25 @@ func untrackedDiffArgs(path string) []string {
 // read: a degradation note that depended on scheduling would make the same
 // tree verify differently twice.
 func renderUntracked(ctx context.Context, root string, paths []string, budget int) ([]untrackedRender, int) {
+	if len(paths) == 0 {
+		return nil, 0
+	}
+	if budget <= 0 {
+		return nil, len(paths)
+	}
+	if len(paths) >= untrackedBatchMin {
+		if renders, unrendered, ok := renderUntrackedBatch(ctx, root, paths, budget); ok {
+			return renders, unrendered
+		}
+	}
+	return renderUntrackedPerFile(ctx, root, paths, budget)
+}
+
+// renderUntrackedPerFile is renderUntracked's answer by the route that is
+// always available: one `git diff --no-index` per file, eight at a time. It
+// is what the batch declines to, and the A side of the benchmark that compares
+// the two.
+func renderUntrackedPerFile(ctx context.Context, root string, paths []string, budget int) ([]untrackedRender, int) {
 	if len(paths) == 0 {
 		return nil, 0
 	}
