@@ -167,6 +167,10 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The crate-pin mirror check has one owner, `manvi/devcouncil/crate_pins_test.go`,
+  and it compares against DevCouncil at the pinned commit, not the sibling
+  working tree. The hand-rolled TOML check in `check-release.mjs` is deleted.
+
 - Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
   read-only command allowlist now judges each command's arguments, so
   `git diff --output=`, `git diff --no-index` outside the root and pytest's
@@ -318,6 +322,22 @@ under **Unreleased** in the same commit as the code.
   resize, fold and theme switch. The entry keeps the whole result: search
   still finds text past the cut.
 ### Fixed
+
+- The release workflow can publish. The publish job now fetches the pinned
+  DevCouncil before `scripts/check-release.mjs` reads it, a tag no longer builds
+  or publishes unless `verify.yml` passed at that commit
+  (`scripts/release-verify-gate.sh`), every checkout drops its credentials, and
+  Rust and Node are pinned (`1.99.0`, `22.22`). Releases carry `PROVENANCE.json`
+  beside `SHA256SUMS`; neither is a signature (see the v0.0.6 notes). A
+  `workflow_dispatch` run is a dry run that stops at `gh release create`.
+- `check-release.mjs` fails by default when a sibling DevCouncil or gusset is
+  not exactly at its pin, naming its HEAD, the pin, the commit distance and
+  whether it is dirty. `--allow-unpinned` or `MANVI_ALLOW_UNPINNED_MODULES=1`
+  turns that into a `NOT COVERED` line on a developer machine; CI, `--tag` and
+  `--require-pins` ignore it.
+- `scripts/fetch-modules.sh --link-main` lets a worktree nested under the main
+  checkout build: it links the main worktree's pinned siblings instead of
+  cloning, and refuses to replace anything that exists.
 
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no

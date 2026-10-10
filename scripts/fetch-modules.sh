@@ -7,7 +7,25 @@
 # siblings land in /home/runner/work/Manvi/. A checkout already at the pin is
 # left alone. Any other commit is a refusal: this script will not move a
 # working tree.
+#
+# A linked worktree that is not itself a sibling of DevCouncil and gusset (one
+# nested under the main checkout, such as .claude/worktrees/<name> or
+# .gitpulse/worktrees/<name>) resolves ../DevCouncil to a directory that does
+# not exist. `fetch-modules.sh --link-main` fixes that without a second clone:
+# it symlinks <worktree>/../<name> to the sibling of the main worktree, which
+# must itself be at the pin. It never replaces or moves anything that exists.
+# Run plain `fetch-modules.sh` in the main checkout first if it has none.
 set -euo pipefail
+
+link_main=0
+case "${1:-}" in
+  "") ;;
+  --link-main) link_main=1 ;;
+  *)
+    echo "usage: fetch-modules.sh [--link-main]" >&2
+    exit 2
+    ;;
+esac
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 pins="$root/scripts/module-pins.txt"
@@ -58,6 +76,43 @@ fetch_one() {
   echo "fetched $name at ${sha:0:12}"
 }
 
+# The main worktree's directory: the parent of the shared git dir.
+main_worktree() {
+  local common
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+  dirname "$common"
+}
+
+link_one() {
+  local name="$1" sha="$3"
+  local dest="$root/../$name" main source have
+  main="$(main_worktree)"
+  if [[ "$(cd "$main" && pwd -P)" == "$(cd "$root" && pwd -P)" ]]; then
+    echo "$root is the main worktree; run scripts/fetch-modules.sh without --link-main" >&2
+    exit 1
+  fi
+  source="$(cd "$main/.." && pwd -P)/$name"
+  if [[ ! -d "$source/.git" ]]; then
+    echo "no $name checkout beside the main worktree at $source; run scripts/fetch-modules.sh there first" >&2
+    exit 1
+  fi
+  have="$(git -C "$source" rev-parse HEAD)"
+  if [[ "$have" != "$sha" ]]; then
+    echo "refusing to link $source: it is at ${have}, pin is ${sha}" >&2
+    exit 1
+  fi
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if [[ "$(cd "$dest" 2>/dev/null && pwd -P)" == "$(cd "$source" && pwd -P)" ]]; then
+      echo "$name already resolves to ${sha:0:12} at $dest"
+      return 0
+    fi
+    echo "refusing to replace $dest: it exists and is not $source" >&2
+    exit 1
+  fi
+  ln -s "$source" "$dest"
+  echo "linked $dest -> $source at ${sha:0:12}"
+}
+
 count=0
 while IFS=$'\t' read -r name url sha || [[ -n "${name:-}" ]]; do
   [[ -z "${name//[[:space:]]/}" ]] && continue
@@ -74,7 +129,11 @@ while IFS=$'\t' read -r name url sha || [[ -n "${name:-}" ]]; do
     echo "bad module sha for $name: $sha" >&2
     exit 1
   fi
-  fetch_one "$name" "$url" "$sha"
+  if [[ "$link_main" == 1 ]]; then
+    link_one "$name" "$url" "$sha"
+  else
+    fetch_one "$name" "$url" "$sha"
+  fi
   count=$((count + 1))
 done < "$pins"
 
