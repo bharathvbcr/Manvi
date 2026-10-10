@@ -130,7 +130,8 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	modules := []serve.Module{serve.DevmapModule{Client: mapClient(projectRoot())}}
+	devmapClient := mapClient(projectRoot())
+	modules := []serve.Module{serve.DevmapModule{Client: devmapClient}}
 	var runner *serve.EnhancementRunner
 	var managed *serve.ManagedRunner
 	if workbenchDB != "" {
@@ -187,7 +188,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
-		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed})
+		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Devmap: devmapClient})
 	}
 	srv := serve.New(os.Stdout, serve.Options{
 		HardRules:      hardRules,

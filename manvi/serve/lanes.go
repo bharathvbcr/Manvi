@@ -52,6 +52,10 @@ func laneFor(op string) string {
 		return "local"
 	}
 	switch {
+	case op == OpWorkRefine:
+		// One model call that outlives the work lane's minute: on its own lane it
+		// cannot hold the board reads and writes queued behind it.
+		return "refine"
 	case strings.HasPrefix(op, "devmap."):
 		return "devmap"
 	case strings.HasPrefix(op, "work.runs.managed."):
@@ -91,6 +95,9 @@ func opDeadline(op string) time.Duration {
 		// Claim and provider start: two bounded store calls, a version probe
 		// and a handshake of up to 30s. The job itself outlives this.
 		return 3 * time.Minute
+	case op == OpWorkRefine:
+		// The model call (enhancementJobTimeout) plus the grounding and board reads around it.
+		return enhancementJobTimeout + 30*time.Second
 	case strings.HasPrefix(op, "devmap."), strings.HasPrefix(op, "work."):
 		return time.Minute
 	default:
