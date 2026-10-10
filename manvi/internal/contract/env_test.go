@@ -32,6 +32,7 @@ var envExempt = map[string]bool{
 // quietly went up. The key is the file and the argument as written.
 var knownDynamicEnvReads = map[string]string{
 	"mcp/client.go k":                    "the loop over an MCP server's EnvPassthrough list: names the operator wrote in that server's own manifest, forwarded to that server and never interpreted by the harness (documented under child processes)",
+	"mcp/manager.go k":                   "the same EnvPassthrough names, read by Manager.SecretValues only to hand their values to the scrubber so a server echoing its token is redacted; nothing is configured by them",
 	"cmd/manvi/main.go dcgrep.BinaryEnv": "a constant in DevCouncil's dc/dcgrep package (MANVI_GREP_BINARY), outside this module, so the scan cannot read it; documented in the binaries table",
 }
 

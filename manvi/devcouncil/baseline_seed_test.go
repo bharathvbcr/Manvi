@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -13,17 +12,6 @@ import (
 // `add -A` reuses git's stat cache instead of hashing the whole tree every
 // turn. What must not change is the answer: the same tree id the cold route
 // (read-tree HEAD, then add -A) gives, on every shape of working tree.
-
-func gitIn(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-	return string(out)
-}
 
 // messyRepo leaves root with every state a baseline has to flatten: a staged
 // edit, an unstaged edit, a staged-then-deleted file, a deletion, an
