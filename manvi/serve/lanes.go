@@ -63,6 +63,15 @@ func laneFor(op string) string {
 	}
 }
 
+// laneOf is laneFor for an op this server serves, and inline for one it does
+// not, whose answer is the immediate unknown-op refusal.
+func (s *Server) laneOf(op string) string {
+	if _, ok := s.router.handlers[op]; !ok {
+		return ""
+	}
+	return laneFor(op)
+}
+
 // opManagedStop is answered inline: it is an instant cancel, and the request it
 // exists to interrupt may be the one occupying the managed lane.
 const opManagedStop = "work.runs.managed.stop"

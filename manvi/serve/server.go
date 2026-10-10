@@ -265,7 +265,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) (err error) {
 
 		// Cheap operations are answered here; anything that can block goes to
 		// its lane (lanes.go), so a slow call never holds the read loop.
-		if lane := laneFor(req.Op); lane != "" {
+		// An op this build does not serve is a cheap refusal, answered here: on
+		// a lane it could be overtaken by a later request and wait behind a
+		// slow one, for an answer that needs no work at all.
+		if lane := s.laneOf(req.Op); lane != "" {
 			if !pool.submit(ctx, lane, req) {
 				s.writeResponse(busy(req, lane))
 			} else {
