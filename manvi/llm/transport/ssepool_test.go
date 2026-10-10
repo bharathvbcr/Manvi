@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -115,8 +114,8 @@ func TestASettledStreamReleasesItsBufferOnce(t *testing.T) {
 			}
 			_ = s.Close()
 			_ = s.Close()
-			a := sseReaders.Get().(*bufio.Reader)
-			b := sseReaders.Get().(*bufio.Reader)
+			a := getSSEReader()
+			b := getSSEReader()
 			if a == b {
 				t.Fatal("the pool handed out one buffer twice")
 			}

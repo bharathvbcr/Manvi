@@ -1064,7 +1064,7 @@ func NewSSE(body io.ReadCloser, done string) *SSE {
 	//
 	// A large buffer because a single data: line can carry a whole content
 	// block; the default 4KB limit would fail on ordinary traffic.
-	s.reader = sseReaders.Get().(*bufio.Reader)
+	s.reader = getSSEReader()
 	s.reader.Reset(&payloadReader{src: body, sse: s})
 	return s
 }
@@ -1080,6 +1080,15 @@ const sseReaderSize = 1 << 20
 // returned only by release, at the one point a stream provably never reads
 // again; see there.
 var sseReaders = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, sseReaderSize) }}
+
+// getSSEReader takes a buffer from the pool, building a fresh one if the pool
+// ever yields anything else.
+func getSSEReader() *bufio.Reader {
+	if r, ok := sseReaders.Get().(*bufio.Reader); ok {
+		return r
+	}
+	return bufio.NewReaderSize(nil, sseReaderSize)
+}
 
 // release hands the read buffer back once this stream has settled.
 //

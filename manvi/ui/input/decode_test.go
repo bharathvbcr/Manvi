@@ -36,6 +36,24 @@ func single(t *testing.T, in string) Event {
 	return got[0]
 }
 
+// singleAs is single plus a checked assertion to the event type the test
+// expects, so a wrong type is a test failure that names both types rather than
+// an "interface conversion" panic.
+func singleAs[T Event](t *testing.T, in string) T {
+	t.Helper()
+	return expect[T](t, single(t, in))
+}
+
+// expect asserts ev is a T, failing the test with both types when it is not.
+func expect[T Event](t *testing.T, ev Event) T {
+	t.Helper()
+	v, ok := ev.(T)
+	if !ok {
+		t.Fatalf("event is %T, want %T", ev, v)
+	}
+	return v
+}
+
 func TestPrintableAndControlBytes(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -55,7 +73,7 @@ func TestPrintableAndControlBytes(t *testing.T) {
 		{"\x00", "ctrl+space", ""},
 	}
 	for _, c := range cases {
-		if got := single(t, c.in).(Key).String(); got != c.want {
+		if got := singleAs[Key](t, c.in).String(); got != c.want {
 			t.Errorf("decode(%q) = %q, want %q (%s)", c.in, got, c.want, c.why)
 		}
 	}
@@ -65,12 +83,12 @@ func TestArrowsInBothEncodings(t *testing.T) {
 	// Terminals switch into application-cursor mode without asking. An
 	// application that decodes only CSI loses its arrow keys when they do.
 	for _, in := range []string{"\x1b[A", "\x1bOA"} {
-		if got := single(t, in).(Key).String(); got != "up" {
+		if got := singleAs[Key](t, in).String(); got != "up" {
 			t.Errorf("decode(%q) = %q, want up", in, got)
 		}
 	}
 	for _, in := range []string{"\x1b[D", "\x1bOD"} {
-		if got := single(t, in).(Key).String(); got != "left" {
+		if got := singleAs[Key](t, in).String(); got != "left" {
 			t.Errorf("decode(%q) = %q, want left", in, got)
 		}
 	}
@@ -87,7 +105,7 @@ func TestModifiedKeys(t *testing.T) {
 		{"\x1b[Z", "shift+tab"},
 	}
 	for _, c := range cases {
-		if got := single(t, c.in).(Key).String(); got != c.want {
+		if got := singleAs[Key](t, c.in).String(); got != c.want {
 			t.Errorf("decode(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -103,23 +121,23 @@ func TestFunctionAndNavigationKeys(t *testing.T) {
 		{"\x1b[15~", "f5"}, {"\x1b[24~", "f12"},
 	}
 	for _, c := range cases {
-		if got := single(t, c.in).(Key).String(); got != c.want {
+		if got := singleAs[Key](t, c.in).String(); got != c.want {
 			t.Errorf("decode(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
 
 func TestAltPrefix(t *testing.T) {
-	if got := single(t, "\x1bb").(Key).String(); got != "alt+b" {
+	if got := singleAs[Key](t, "\x1bb").String(); got != "alt+b" {
 		t.Errorf("ESC b = %q, want alt+b", got)
 	}
-	if got := single(t, "\x1b\x7f").(Key).String(); got != "alt+backspace" {
+	if got := singleAs[Key](t, "\x1b\x7f").String(); got != "alt+backspace" {
 		t.Errorf("ESC DEL = %q, want alt+backspace", got)
 	}
 }
 
 func TestLoneEscapeAndDoubleEscape(t *testing.T) {
-	if got := single(t, "\x1b").(Key).Type; got != KeyEscape {
+	if got := singleAs[Key](t, "\x1b").Type; got != KeyEscape {
 		t.Errorf("a flushed lone ESC = %v, want KeyEscape", got)
 	}
 	// Double Escape is a binding — clear the draft, open the rewind picker —
@@ -158,7 +176,7 @@ func TestSplitSequenceReassembles(t *testing.T) {
 		if n != len(full) {
 			t.Fatalf("reassembled %q consumed %d bytes, want %d", full, n, len(full))
 		}
-		if got := ev.(Key).String(); got != "ctrl+right" {
+		if got := expect[Key](t, ev).String(); got != "ctrl+right" {
 			t.Fatalf("reassembled %q = %q, want ctrl+right", full, got)
 		}
 	}
@@ -172,7 +190,7 @@ func TestSplitUTF8RuneIsNotCorrupted(t *testing.T) {
 		t.Fatalf("a partial rune decoded to %#v; it must ask for more bytes", ev)
 	}
 	ev, n := decode(full, false)
-	if n != len(full) || ev.(Key).Rune() != '漢' {
+	if n != len(full) || expect[Key](t, ev).Rune() != '漢' {
 		t.Fatalf("complete rune decoded to %#v consuming %d", ev, n)
 	}
 }
@@ -202,7 +220,7 @@ func TestPasteStripsEscapesAndNormalisesCRLF(t *testing.T) {
 	// Pasted content is the most direct route untrusted bytes have into the
 	// process. Escapes in it must never reach the terminal.
 	ev := single(t, "\x1b[200~a\x1b[31mred\x07\r\nb\x1b[201~")
-	p := ev.(Paste)
+	p := expect[Paste](t, ev)
 	if strings.ContainsRune(p.Text, 0x1b) || strings.ContainsRune(p.Text, 0x07) {
 		t.Fatalf("paste retained control characters: %q", p.Text)
 	}
@@ -258,17 +276,17 @@ func TestMouseBeyondColumn223(t *testing.T) {
 	// The pre-SGR encoding packs coordinates into single bytes and cannot
 	// address a column past 223, which any wide terminal has. This is why SGR
 	// mode is the one enabled.
-	m := single(t, "\x1b[<0;250;80M").(Mouse)
+	m := singleAs[Mouse](t, "\x1b[<0;250;80M")
 	if m.X != 249 || m.Y != 79 {
 		t.Fatalf("wide-terminal click landed at %d,%d, want 249,79", m.X, m.Y)
 	}
 }
 
 func TestFocusEvents(t *testing.T) {
-	if got := single(t, "\x1b[I").(Focus); !got.In {
+	if got := singleAs[Focus](t, "\x1b[I"); !got.In {
 		t.Error("ESC [ I should report focus gained")
 	}
-	if got := single(t, "\x1b[O").(Focus); got.In {
+	if got := singleAs[Focus](t, "\x1b[O"); got.In {
 		t.Error("ESC [ O should report focus lost")
 	}
 }
@@ -282,7 +300,7 @@ func TestUnknownCSIIsSwallowedNotTyped(t *testing.T) {
 	}
 	// And it must not swallow what follows it.
 	got = decodeAll(t, "\x1b[?1;2cx")
-	if len(got) != 1 || got[0].(Key).Rune() != 'x' {
+	if len(got) != 1 || expect[Key](t, got[0]).Rune() != 'x' {
 		t.Fatalf("the key after an unknown CSI was lost: %#v", got)
 	}
 }
@@ -301,13 +319,13 @@ func TestMalformedCSIDoesNotConsumeUnboundedInput(t *testing.T) {
 func TestKittyProtocolKeys(t *testing.T) {
 	// Terminals that negotiate the kitty protocol send Ctrl+letter here instead
 	// of as a control byte; ignoring it silently loses those bindings.
-	if got := single(t, "\x1b[99;5u").(Key).String(); got != "ctrl+c" {
+	if got := singleAs[Key](t, "\x1b[99;5u").String(); got != "ctrl+c" {
 		t.Errorf("kitty ctrl+c = %q", got)
 	}
-	if got := single(t, "\x1b[13;5u").(Key).String(); got != "ctrl+enter" {
+	if got := singleAs[Key](t, "\x1b[13;5u").String(); got != "ctrl+enter" {
 		t.Errorf("kitty ctrl+enter = %q", got)
 	}
-	if got := single(t, "\x1b[9;2u").(Key).String(); got != "shift+tab" {
+	if got := singleAs[Key](t, "\x1b[9;2u").String(); got != "shift+tab" {
 		t.Errorf("kitty shift+tab = %q", got)
 	}
 }
