@@ -75,10 +75,14 @@ func pipedClient(t *testing.T, reply func(op string) string) (*Client, *[]string
 func TestActAndHumanActShareOneDispatch(t *testing.T) {
 	c, ops := pipedClient(t, func(string) string { return `{"action_id":"a1","delivery":"sent"}` })
 	ctx := context.Background()
-	for name, call := range map[string]func(context.Context, Session, Action) (Receipt, error){"act": c.Act, "human_act": c.HumanAct} {
-		r, err := call(ctx, Session{ID: "s"}, Action{ActionID: "a1"})
+	// A slice, not a map: the order of the calls is what the check below reads.
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, Session, Action) (Receipt, error)
+	}{{"act", c.Act}, {"human_act", c.HumanAct}} {
+		r, err := tc.call(ctx, Session{ID: "s"}, Action{ActionID: "a1"})
 		if err != nil || r.ActionID != "a1" {
-			t.Fatalf("%s: receipt=%+v err=%v", name, r, err)
+			t.Fatalf("%s: receipt=%+v err=%v", tc.name, r, err)
 		}
 	}
 	if len(*ops) != 2 || (*ops)[0] != "act" || (*ops)[1] != "human_act" {
