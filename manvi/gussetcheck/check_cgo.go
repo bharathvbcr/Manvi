@@ -37,13 +37,3 @@ func classify(err error) error {
 	}
 	return err
 }
-
-func check(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if gusset.MaxPoolSize < 4 {
-		return fmt.Errorf("gusset: MaxPoolSize %d is below the bridge pool of 4", gusset.MaxPoolSize)
-	}
-	return classify(gussetfn.Check(ctx))
-}

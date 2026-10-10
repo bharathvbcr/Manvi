@@ -153,9 +153,6 @@ func codexArgs() []string { return []string{"app-server"} }
 func StartCodex(ctx context.Context, options Options) (*Codex, error) {
 	return startCodex(ctx, options, codexArgs())
 }
-func OpenCodex(ctx context.Context, options Options) (*Codex, error) {
-	return openCodex(ctx, options, codexArgs())
-}
 func openCodex(ctx context.Context, options Options, args []string) (*Codex, error) {
 	s, err := startCodex(ctx, options, args)
 	if err != nil {

@@ -436,7 +436,7 @@ func TestInstalledCodexHandshakeWithoutModelTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	s, err := OpenCodex(ctx, Options{Program: program, Cwd: root, Mode: "inspect"})
+	s, err := openCodex(ctx, Options{Program: program, Cwd: root, Mode: "inspect"}, codexArgs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestInstalledCodexReadOnlyTurn(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	s, err := OpenCodex(ctx, Options{Program: program, Cwd: t.TempDir(), Mode: "inspect"})
+	s, err := openCodex(ctx, Options{Program: program, Cwd: t.TempDir(), Mode: "inspect"}, codexArgs())
 	if err != nil {
 		t.Fatal(err)
 	}
