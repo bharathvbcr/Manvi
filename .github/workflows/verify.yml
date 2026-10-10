@@ -8,6 +8,12 @@
 # nil analysis would print a green check indistinguishable from one that ran
 # them. So the analysis tools are installed before the gate, and the run is
 # rejected afterwards if any of them turned out to be missing.
+#
+# Every tool and toolchain is pinned, and the versions live in one file,
+# scripts/tool-versions.env, which each install step sources. The lint debt
+# ratchet and the nilaway ceiling are counts, and a count taken with whichever
+# release `@latest` resolved to that day is a measurement of the release. A pin
+# moves in a change that also re-measures those two numbers.
 name: verify
 
 on:
@@ -42,6 +48,10 @@ jobs:
   gate:
     name: verify.sh (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # An explicit bound, because the default is six hours and a wedged step
+    # would hold the runner for all of them. The run is measured in tens of
+    # minutes; this is above that by a wide margin and exists to bound a wedge.
+    timeout-minutes: 90
     env:
       # fetch-modules.sh checks the pins out first. This fails the job when
       # the checkout is any other commit, which is a different product than
@@ -72,18 +82,23 @@ jobs:
 
       # No third-party action for Rust: both runner images ship rustup, and a
       # marketplace action here would be a supply-chain dependency bought for
-      # two lines of shell. Edition 2024 in crates/Cargo.toml needs >= 1.85.
+      # two lines of shell. The toolchain is the pinned one, not `stable`: a
+      # new release adds clippy lints, and -D warnings turns each into a red
+      # build on a day nothing in this repository changed. Edition 2024 in
+      # crates/Cargo.toml needs >= 1.85.
       - name: Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --no-self-update
-          rustup default stable
+          . scripts/tool-versions.env
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
           rustc --version
           cargo --version
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+.
-          node-version: 22.22
+          # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+. Kept equal to
+          # NODE_VERSION in scripts/tool-versions.env by scripts/verify-lib.test.mjs.
+          node-version: 22.22.2
       # Installs the docs tooling and audits bun.lock; the version comes from
       # package.json's packageManager field.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -95,7 +110,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
+          key: cargo-audit-${{ matrix.os }}-${{ hashFiles('scripts/tool-versions.env') }}
 
       - name: Cache Rust build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -107,16 +122,20 @@ jobs:
           key: cargo-${{ matrix.os }}-${{ hashFiles('crates/Cargo.lock') }}
           restore-keys: cargo-${{ matrix.os }}-
 
-      # Every tool verify.sh will otherwise report as NOT COVERED. The versions
-      # float on purpose: this gate is meant to catch a new linter's new rule
-      # while the change that trips it is still in review.
+      # Every tool verify.sh will otherwise report as NOT COVERED, at the
+      # versions in scripts/tool-versions.env. They used to float so the gate
+      # would catch a new linter's new rule while the change that trips it was
+      # in review; what that caught instead was a red main on days nothing
+      # changed, and a debt ratchet whose numbers belonged to the release.
+      # Upgrading is a pull request that moves the pin and the counts together.
       - name: Analysis tools
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install go.uber.org/nilaway/cmd/nilaway@latest
-          if [ ! -x "$HOME/.cargo/bin/cargo-audit" ]; then
-            cargo install cargo-audit --locked
+          . scripts/tool-versions.env
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
+          go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+          go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
+          if [ ! -x "$HOME/.cargo/bin/cargo-audit" ] || ! cargo audit --version | grep -qF "$CARGO_AUDIT_VERSION"; then
+            cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" --force
           fi
           # bench/stress_test.py refuses an uncontained Linux shell; macOS
           # already has sandbox-exec on the runner image.
@@ -142,33 +161,15 @@ jobs:
       # verify.sh always ends with gates it could not run — the hosted provider
       # adapters are checked against scripted servers, devmap is not built by
       # this repository, and no local model server is listening here. Those are
-      # expected. A missing *analysis tool* is not: it means the step above
-      # failed to provision and the gate that did not run would have been read
-      # as a gate that passed.
-      - name: Every installable gate actually ran
+      # expected and listed, with reasons, in scripts/verify-expected-gaps.json.
+      # A missing *analysis tool* is not: it means the step above failed to
+      # provision and the gate that did not run would have been read as a gate
+      # that passed. Any other NOT COVERED line, and any skipped test that is
+      # not listed for this runner, fails here instead of passing as green. The
+      # same script guards the deep jobs below.
+      - name: Every gate ran and every gap is named
         if: always()
-        run: |
-          if [ ! -s verify.log ]; then
-            echo "verify.sh produced no output; there is no verdict to check." >&2
-            exit 1
-          fi
-          if grep -n 'is not installed' verify.log; then
-            echo >&2
-            echo "An analysis tool was missing, so its gate did not run." >&2
-            echo "This is a provisioning failure in the 'Analysis tools' step," >&2
-            echo "not a property of the code under test." >&2
-            exit 1
-          fi
-          echo "No analysis tool was missing."
-
-      # The step above catches one kind of gate that did not run. This catches
-      # every other: each NOT COVERED line and each skipped test must be listed
-      # for this runner, with its reason, in scripts/verify-expected-gaps.json.
-      # A gate that starts skipping for a new reason fails here instead of
-      # passing as green.
-      - name: Every expected gap is named
-        if: always()
-        run: node scripts/check-verify-gaps.mjs verify.log ${{ matrix.os }}
+        run: scripts/check-verify-log.sh verify.log ${{ matrix.os }} default
 
       # The colour codes are stripped first, and the pattern deliberately does
       # not start at "PASS". verify.sh writes that verdict as
@@ -198,27 +199,41 @@ jobs:
           path: verify.log
           retention-days: 14
 
-  # There is no Windows job, and the reason is a fact rather than a policy.
+  # Windows. verify.sh is bash and its gates drive Unix tools — the Rust
+  # workspaces, a pty, bwrap — so it does not run here. What does run is the
+  # Go plane in the configuration it ships without cgo: it builds, and the Go
+  # suite runs. That is a claim worth a job because `procgroup_other.go`,
+  # `mkfifo_other.go` and the Windows halves of `artifacts` and `devcouncil`
+  # are compiled by nothing else in this matrix, and a build that only
+  # cross-compiles has never run one of their tests.
   #
-  # This tree does not build for Windows. `GOOS=windows go build ./...` fails
-  # in manvi/artifacts on syscall.O_NOFOLLOW, and behind that failure
-  # manvi/devcouncil fails again on syscall.Stat_t, which Windows does not
-  # define. Three packages are affected — artifacts, devcouncil, and cmd/manvi
-  # through them; everything else, procgroup_other.go included, compiles
-  # already.
-  #
-  # Both are load-bearing rather than incidental. O_NOFOLLOW is how the
-  # artifact store refuses to follow a symlink out of itself, and Stat_t is
-  # both the inode identity pin and the st_nlink hard-link check that stops
-  # `ln .env notes.txt` from carrying a write into a file the ladder never
-  # judged. A Windows build needs real equivalents — reparse-point handling and
-  # GetFileInformationByHandle — not a stub, because a platform where those
-  # checks silently do nothing is worse than a platform this does not run on.
-  #
-  # A job that ran `go build` here would fail on its first run. A job narrowed
-  # to the packages that do compile would report a green check for a port that
-  # does not exist. So there is no job, and docs/TRADE_OFFS.md says Unix-only
-  # in prose where a reader will find it.
+  # Every test compiles for Windows (`GOOS=windows go vet ./...` is a step of
+  # verify.sh, so a Unix-only call in a test file cannot return). Whether they
+  # all pass here has not been established: this job's first result is that
+  # evidence, and a failing test is a finding about the Windows port, not noise
+  # to be excluded.
+  windows:
+    name: go test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CGO_ENABLED: "0"
+      MANVI_REQUIRE_MODULE_PINS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Module replacements
+        shell: bash
+        run: bash scripts/fetch-modules.sh
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: manvi/go.mod
+          cache-dependency-path: manvi/go.sum
+      - name: go build
+        working-directory: manvi
+        run: go build ./...
+      - name: go test
+        working-directory: manvi
+        run: go test -count=1 -timeout 20m ./...
 
   # The two opt-in gates. They take a flag each and cost real time, which is
   # why verify.sh keeps them out of the default run and why they are not on
@@ -244,21 +259,25 @@ jobs:
           cache-dependency-path: manvi/go.sum
       - name: Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --no-self-update
-          rustup default stable
+          . scripts/tool-versions.env
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+.
-          node-version: 22.22
+          # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+. Kept equal to
+          # NODE_VERSION in scripts/tool-versions.env by scripts/verify-lib.test.mjs.
+          node-version: 22.22.2
       # Installs the docs tooling and audits bun.lock; the version comes from
       # package.json's packageManager field.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - name: Analysis tools
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install go.uber.org/nilaway/cmd/nilaway@latest
-          cargo install cargo-audit --locked
+          . scripts/tool-versions.env
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
+          go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+          go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
+          cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
           # bench/stress_test.py refuses an uncontained Linux shell; macOS
           # already has sandbox-exec on the runner image.
           if [ "$(uname -s)" = Linux ]; then
@@ -280,6 +299,21 @@ jobs:
       # without the umbrella archive the detector dies on -lgusset.
       # 90 minutes is above the serialised race run's measured 4.4 minutes by
       # a wide margin and exists to bound a wedge, not to accommodate one.
+      # Tee rather than pipe, for the reason the gate job gives. The log is what
+      # the guards below read: before this job kept one, a fuzz or race run in
+      # which a tool failed to provision, or a leg degraded to NOT COVERED, was
+      # green, because verify.sh exits 0 on those.
       - name: verify.sh --${{ matrix.mode }}
         timeout-minutes: 90
-        run: ./verify.sh --${{ matrix.mode }}
+        run: ./verify.sh --${{ matrix.mode }} 2>&1 | tee verify.log; exit "${PIPESTATUS[0]}"
+
+      - name: Every gate ran and every gap is named
+        if: always()
+        run: scripts/check-verify-log.sh verify.log ubuntu-latest ${{ matrix.mode }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: verify-log-${{ matrix.mode }}
+          path: verify.log
+          retention-days: 14

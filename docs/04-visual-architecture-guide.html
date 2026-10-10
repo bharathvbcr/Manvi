@@ -580,7 +580,7 @@
       <div class="plane-card go-card">
         <span class="plane-tag go-tag">Go Execution Plane</span>
         <h3 class="plane-title">Concurrency &amp; Interaction</h3>
-        <p class="plane-desc">The <code>manvi</code> binary. Static on Linux (musl); release builds link exactly one Rust archive, the Gusset policy engine. Beyond the standard library, the Go module takes only an allowlisted few packages (<code>memguard</code>, <code>samber/mo</code>) plus the pinned DevCouncil and Gusset modules.</p>
+        <p class="plane-desc">The <code>manvi</code> binary. Static on Linux (musl); release builds link exactly one Rust archive, the Gusset policy engine. Beyond the standard library, the Go module takes only an allowlisted few packages (<code>memguard</code>) plus the pinned DevCouncil and Gusset modules.</p>
         <ul class="component-list">
           <li><span class="pkg">manvi/agent</span> <span class="role">Turn/step state machine</span></li>
           <li><span class="pkg">manvi/llm</span> <span class="role">Anthropic, Gemini, xAI, local models</span></li>
@@ -866,7 +866,7 @@
     <p class="lead">A full source build needs Go 1.26, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
 
     <div class="cards">
-      <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, <code>samber/mo</code> gives optional values one spelling, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
+      <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>
       <div class="card"><span class="tag">Rust crates</span><h4>Two external families</h4><p><code>rusqlite</code> (bundled) for the store, and ripgrep's engine crates for <code>dc-grep</code>. <code>dc-glob</code> and <code>dc-verify</code> have no external dependencies, and <code>cargo audit</code> runs on every gate.</p></div>
       <div class="card"><span class="tag">Docs tooling</span><h4>Dev-time only</h4><p>Mermaid diagrams are parsed with the real grammar on node, provisioned by bun from <code>bun.lock</code>, and <code>bun audit</code> checks the lockfile. Nothing here reaches the <code>manvi</code> binary.</p></div>
     </div>

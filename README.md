@@ -329,8 +329,8 @@ Coverage has three semantic states — **covered**, **uncovered** (ran tests, li
 
 The prompt used to tell every run to "verify current documentation" while nothing
 here could fetch anything. `manvi/fetch` is the capability behind that instruction,
-built on the standard library alone. The module carries three direct dependencies
-in total — `memguard`, `samber/mo` and a lint-only ruleguard DSL — and `verify.sh`
+built on the standard library alone. The module carries two direct dependencies
+in total — `memguard` and a lint-only ruleguard DSL — and `verify.sh`
 holds the build graph to that allowlist on every run; nothing in `fetch` is among
 them.
 

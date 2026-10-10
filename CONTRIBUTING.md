@@ -237,14 +237,20 @@ all four optional analysis tools first and then fails the run if any of them
 turned out to be missing, because a CI job that quietly skipped the linter and
 the vulnerability scan prints the same green check as one that ran them.
 
-A third job compiles the Go and Rust planes on `windows-latest`. That is all it
-claims: `verify.sh` is bash and does not run there, and the Go suite is not run
-there either — many of its tests fork shells and drive the Rust binaries across
-a process boundary, and nothing has established that they pass on Windows. The
-job exists because `procgroup_other.go` and `mkfifo_other.go` are compiled by
-nothing else in the matrix, so a break in them would otherwise reach a user
-before it reached CI. Windows *testing* is an open gap, named rather than
-covered.
+A third job builds the Go plane on `windows-latest` with cgo off and runs `go test
+./...` there. `verify.sh` is bash and does not run on Windows, so the Rust planes
+and the bash-driven gates are not part of it. The job exists because
+`procgroup_other.go` and `mkfifo_other.go` are compiled by nothing else in the
+matrix, and because the cross-build alone never ran one of their tests.
+`GOOS=windows go vet ./...` is also a `verify.sh` step, so every test file is
+known to compile for Windows before it reaches CI. Whether the whole suite
+passes on a Windows runner is established by that job's results, not by this
+paragraph.
+
+The nightly `--race` and `--fuzz` jobs keep a `verify.log` and run the same log
+guards as the main job (`scripts/check-verify-log.sh`), so a gate that degraded
+to NOT COVERED there fails the run. Tool and toolchain versions are pinned in
+`scripts/tool-versions.env`.
 
 `--race` and `--fuzz` run nightly, and on demand through **Run workflow**.
 

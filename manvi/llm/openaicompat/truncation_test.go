@@ -331,7 +331,7 @@ func FuzzRepairNeverRewritesAStringValue(f *testing.F) {
 	f.Fuzz(func(t *testing.T, value string) {
 		enc, err := json.Marshal(value)
 		if err != nil {
-			t.Skip()
+			t.Skip("a string the encoder refuses is not a case this contract covers")
 		}
 		// A payload that is invalid for an unrelated reason (a Python literal
 		// and a trailing comma), so the repair path always runs.

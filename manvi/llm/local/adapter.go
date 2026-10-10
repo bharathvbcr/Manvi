@@ -77,11 +77,10 @@ func New(cfg Config, resolve func() (credentials.Secret, error)) *Adapter {
 		TextToolFallback: true,
 		Header: func() (http.Header, error) {
 			h := http.Header{}
-			held, err := credential(resolve)
+			secret, present, err := credential(resolve)
 			if err != nil {
 				return nil, err
 			}
-			secret, present := held.Get()
 			if !present {
 				// No credential, and none is required on loopback. Send no
 				// Authorization header at all rather than an empty bearer,

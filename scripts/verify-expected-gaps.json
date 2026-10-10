@@ -1,5 +1,5 @@
 {
-  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every expected gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed.",
+  "note": "Every gate verify.sh reports as NOT COVERED on a CI runner, and why. The 'Every expected gap is named' step in verify.yml fails on any gap or skipped test not listed here for that runner, so a gate that starts skipping for a new reason cannot pass as green. A skip listed here that stops happening is reported, not failed. An entry may carry `modes` (default, race, fuzz) to hold only for that verify.sh invocation; without it the entry holds in all three, which is right for the gaps of the default gate that --race and --fuzz re-run first.",
   "gaps": [
     {
       "text": "devmap not found — repo navigation is unverified here",

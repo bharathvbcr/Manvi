@@ -93,7 +93,7 @@ flowchart TD
     G1 --> G2["Go: go vet static analysis"]
     G2 --> G3["Go: go test with real subprocesses"]
     G3 --> G4["Go: Cross-boundary test assertion (>= 5 real calls)"]
-    G4 --> G5["Go: Dependency surface — build graph held to the allowlist"]
+    G4 --> G5["Go: go mod tidy -diff, then the dependency surface for the cgo-off and the cgo graphs"]
     G5 --> G6["Go: golangci-lint enforced set — 20 linters at zero, plus ruleguard"]
     G6 --> G7["Go: golangci-lint debt ratchet — 11 linters, counts may only fall"]
     G7 --> G8["Go: govulncheck — reachable standard-library advisories"]
@@ -101,7 +101,8 @@ flowchart TD
 
     G9 --> R1["Rust: cargo fmt --check"]
     R1 --> R2["Rust: cargo clippy -D warnings"]
-    R2 --> R2a["Rust: cargo audit — Cargo.lock against the RustSec database"]
+    R2 --> R2n["Rust: native/ broker — fmt, clippy, test"]
+    R2n --> R2a["Rust: cargo audit — Cargo.lock against the RustSec database"]
     R2a --> R3["Rust: cargo test (unit & integration)"]
     
     R3 --> P1["Parity: fnmatch-parity.tsv >= 500 cases"]
@@ -137,8 +138,8 @@ flowchart TD
 
 `--race` and `--fuzz` take one flag at a time; run the script twice for both.
 
-Both are opt-in, for opposite reasons. `--race` needs cgo, and the default run
-has to be the shipped `CGO_ENABLED=0` configuration. `--fuzz` spends a budget
+Both are opt-in, for opposite reasons. `--race` is the whole Go suite again,
+serialised, under the race runtime; `--fuzz` spends a budget
 rather than answering a fixed question, so a green unattended run would mean
 less each time the machine got busier.
 
@@ -196,12 +197,78 @@ past mid-run, because a gate that could not run must not be indistinguishable
 from a gate that ran and passed — the run then ends in `PASS with gates that
 did not run`, naming each.
 
+The versions are pinned in `scripts/tool-versions.env`, which `verify.sh`, the
+workflows and `scripts/verify-lib.test.mjs` all read (see
+[Pinned toolchain](#pinned-toolchain) below):
+
 ```bash
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-go install golang.org/x/vuln/cmd/govulncheck@latest
-go install go.uber.org/nilaway/cmd/nilaway@latest
-cargo install cargo-audit
+. scripts/tool-versions.env
+go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
+go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+go install "go.uber.org/nilaway/cmd/nilaway@$NILAWAY_VERSION"
+cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
 ```
+
+### Two build configurations, both certified
+
+The default run is the `CGO_ENABLED=0` build, because "no cgo" is a claim the
+architecture makes. Releases are the other configuration: they link
+DevCouncil's Rust gusset engine in-process, with cgo on. The dependency
+allowlist, both lint sets, `govulncheck` and `nilaway` therefore run twice, the
+second time under DevCouncil's `rust/gusset-engine/cgo-env.sh` exports, the same
+environment the `--race` leg and the engine step use. The cgo allowlist differs
+from the cgo-off one by exactly `github.com/bharathvbcr/gusset`: its appearance
+in the cgo-off graph still means a cgo file was compiled into that
+configuration. Lint counts are compared as the larger of the two runs against
+one recorded number per linter.
+
+### A check that could not run is a failure
+
+The helpers in `scripts/verify-lib.sh` give the steps above one shape: a tool
+that exited abnormally, produced nothing, or reported its own failure to load a
+package is an error and never a count. A `golangci-lint` report holding
+`typecheck` rows, a `nilaway` run that printed `analysis skipped due to errors
+in package`, a `go list` that failed and a `go test` whose subtest failed after
+sixty others passed were each once read as a pass. `scripts/verify-lib.test.mjs`
+runs every helper against stub binaries that behave that way, and scans
+`verify.sh` for a `| grep -c … || true` over a test or analysis command.
+
+The suite runs once, as `go test -json`, and the skip report and the
+cross-boundary counts read that run's events rather than running it again.
+
+In CI, `scripts/check-verify-log.sh` runs after `verify.sh` in every job that
+runs it, including the nightly `--race` and `--fuzz` jobs, and fails the job on
+a missing analysis tool or on any NOT COVERED line or skipped test that
+`scripts/verify-expected-gaps.json` does not list for that runner and mode.
+
+### Windows
+
+`verify.sh` is bash and drives Unix tools, so it does not run on Windows. Two
+things cover the Go plane there. `GOOS=windows go vet ./...` is a verify step and
+compiles every test file, so a Unix-only call cannot enter one. The
+`windows-latest` job in `verify.yml` builds the cgo-off plane and runs
+`go test ./...`; that job's first result is the first evidence about the
+Windows port, and no run of it has been recorded here.
+
+### Pinned toolchain
+
+CI installs exactly these, from `scripts/tool-versions.env`. `release.yml` pins
+the same values.
+
+| Tool | Pinned version |
+| --- | --- |
+| golangci-lint | `v2.14.0` |
+| govulncheck | `v1.8.0` |
+| nilaway | `v0.0.0-20260918162853-acb8859b9031` |
+| cargo-audit | `0.22.2` |
+| Rust toolchain | `1.99.0` (components clippy, rustfmt) |
+| node | `22.22.2` |
+| Go | `go.mod`'s `go 1.26.6`, through `go-version-file` |
+
+Each is the version that was resolving when it was pinned (2026-10-10). A
+floating reference made the debt ratchet and the `nilaway` ceiling a measurement
+of whichever release a run fetched. Move a pin in a change that also re-measures
+`manvi/.golangci-debt.counts` and `nilaway_max` in `verify.sh`.
 
 ### Why the lint gate is two files
 

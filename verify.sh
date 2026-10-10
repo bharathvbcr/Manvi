@@ -9,8 +9,8 @@
 #
 # The last two are opt-in and take one flag at a time; run the script twice to
 # get both. They are separate from the default run for opposite reasons: --race
-# needs cgo, which the shipped configuration turns off, and --fuzz spends a
-# budget per target rather than answering a fixed question.
+# needs cgo, and --fuzz spends a budget per target rather than answering a fixed
+# question.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -77,6 +77,9 @@ VERDICT_REACHED=0
 # this step actually asks: how much of the tree does the suite reach, from
 # wherever it is reached. It costs one build of the tree, not one test run.
 GO_COVER_PROFILE="$(mktemp -t manvi-cover.XXXXXX)"
+# The same run's event stream. The skip report and the cross-boundary counts
+# below read it rather than running the suite again.
+GO_TEST_JSON="$(mktemp -t manvi-gotest.XXXXXX)"
 
 # The floor the measured number must clear. It is 78 because the suite measured
 # 81.7% when this gate was written; the gap is churn headroom, not aspiration.
@@ -94,6 +97,9 @@ on_exit() {
   # to print.
   if [[ -n "${GO_COVER_PROFILE:-}" ]]; then
     rm -f "$GO_COVER_PROFILE"
+  fi
+  if [[ -n "${GO_TEST_JSON:-}" ]]; then
+    rm -f "$GO_TEST_JSON"
   fi
   if (( VERDICT_REACHED == 0 )); then
     printf '\n\033[31mINCOMPLETE\033[0m verify.sh exited (status %d) before reaching a verdict.\n' "$code" >&2
@@ -134,14 +140,23 @@ fuzz_seconds() {
   printf '%s' "$raw"
 }
 
-# The Go plane is built and tested with cgo off, because "no cgo" is a claim
-# this repository makes in four source comments and in its own architecture
-# diagram, and a claim no build asserts is a claim that stops being true
-# quietly. The process boundary to Rust exists so that it can stay true: a
+# Two configurations are certified, and they are not the same program.
+#
+# The Go plane is first built and tested with cgo off, because "no cgo" is a
+# claim this repository makes in four source comments and in its own
+# architecture diagram, and a claim no build asserts is a claim that stops being
+# true quietly. The process boundary to Rust exists so that it can stay true: a
 # store linked in-process would forfeit CGO_ENABLED=0, cross-compilation, and
 # the single static binary in one step. Setting it here rather than on the
-# individual builds means vet, the test suites, and every binary this gate
-# produces are all the configuration that ships.
+# individual builds means vet, the test suites and the binaries this gate
+# builds are the cgo-off configuration unless a step says otherwise.
+#
+# Releases are the other one: scripts/release-build.sh links DevCouncil's Rust
+# gusset engine in-process, with cgo on. A gate that analysed only the first
+# configuration never looked at the files, the packages or the dependency
+# graph that ship, so the dependency allowlist, the lint sets, govulncheck and
+# nilaway also run under DevCouncil's gusset-engine/cgo-env.sh exports (see
+# cgo_on below), the same environment the --race leg and the engine step use.
 export CGO_ENABLED=0
 
 fail() { printf '\n\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
@@ -159,9 +174,38 @@ notcovered() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# shellcheck source=scripts/verify-lib.sh
+source scripts/verify-lib.sh
+# shellcheck source=scripts/tool-versions.env
+source scripts/tool-versions.env
+
+# The shipped configuration's cgo environment. cgo-env.sh always runs the
+# incremental build (building only when the archive was missing linked whatever
+# an older checkout left) and keys Go's caches on the archive's hash, without
+# which a rebuilt archive is not relinked and a cached "ok" is replayed against
+# the old one. Computed once, by the first leg that needs it.
+ENGINE_ENV_SCRIPT="../DevCouncil/rust/gusset-engine/cgo-env.sh"
+ENGINE_EXPORTS=""
+load_engine_env() {
+  [[ -z "$ENGINE_EXPORTS" ]] || return 0
+  [[ -x "$ENGINE_ENV_SCRIPT" ]] \
+    || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $ENGINE_ENV_SCRIPT; the DevCouncil pin predates it"
+  ENGINE_EXPORTS="$("$ENGINE_ENV_SCRIPT" --export)" \
+    || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
+}
+
+# cgo_on <command…> runs a command under the shipped configuration. A subshell,
+# because the exports turn cgo on and everything after the leg is the cgo-off
+# configuration this gate certifies first.
+cgo_on() {
+  load_engine_env
+  ( eval "$ENGINE_EXPORTS" && "$@" )
+}
+in_manvi() { (cd manvi && "$@"); }
+
 step "Release — notes, assets and workflow"
 if have node; then
-  node --test scripts/check-release.test.mjs scripts/check-verify-gaps.test.mjs || fail "release checks"
+  node --test scripts/check-release.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs || fail "release checks"
   # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
   # is an unbound variable that fails the gate before it checks anything.
   if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then
@@ -183,6 +227,11 @@ fi
 
 step "Go — vet"
 (cd manvi && go vet ./...) || fail "go vet"
+# Vet compiles every test file, so this is also the check that a Unix-only call
+# (Setpgid, syscall.Kill, a Stat_t field) has not slipped into a test the
+# windows-latest job in verify.yml has to build. Cross-vetting costs seconds and
+# needs no Windows machine; running the tests there is that job's work.
+(cd manvi && GOOS=windows go vet ./...) || fail "go vet for GOOS=windows"
 
 # Tests that drive a real binary across the Go/Rust boundary fail rather than
 # skip when the toolchain is missing, unless an operator opts out explicitly.
@@ -199,7 +248,12 @@ for allow_skip in DEVCOUNCIL_TEST_ALLOW_SKIP MANVI_TEST_ALLOW_SKIP; do
     fail "$allow_skip is set; this gate will not certify a run that is permitted to skip seams"
   fi
 done
-(cd manvi && go test -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./...) || fail "go test"
+# One run, as a JSON event stream: its exit status is the verdict, and the skip
+# report and cross-boundary counts below read the same execution. The suite used
+# to run a second time for the skip report, a cache hit its comment claimed and
+# the coverage flags it did not match.
+gate_go_test_json manvi "$GO_TEST_JSON" -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./... \
+  || fail "go test"
 
 # A package whose tests all skip still prints "ok". Count what actually ran in
 # the packages that cross the process boundary, so a silent skip cannot pass.
@@ -227,11 +281,7 @@ if (( RACE )); then
   # needs the same captured cgo environment as the engine step below. It ran
   # with bare CGO_ENABLED=1 and failed every scheduled run: cannot find
   # -lgusset, for cmd/manvi, gussetcheck and serve.
-  race_engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
-  [[ -x "$race_engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $race_engine_env"
-  race_exports="$("$race_engine_env" --export)" \
-    || fail "DevCouncil gusset-engine staticlib for the race leg"
-  (eval "$race_exports" && cd manvi && go test -race -count=1 -p 1 -timeout 900s ./...) || fail "go test -race"
+  cgo_on in_manvi go test -race -count=1 -p 1 -timeout 900s ./... || fail "go test -race"
   printf '    covered: every package under the race detector, with cgo on\n'
 fi
 
@@ -250,42 +300,17 @@ fi
 # honest middle, and a skip that appears without a reason a reader accepts is
 # then visible in the diff of this gate's own output.
 #
-# The run is all cache hits — `go test ./...` above has just populated it — so
-# this re-reads the same results rather than re-running the suite.
+# This reads the events of the run above rather than running the suite again.
 step "Go — coverage that did not run"
-skip_json="$(mktemp)"
-# The run's own exit code is not this step's verdict — `go test ./...` above
-# already decided that — but its *output* is, and an empty one must not read as
-# "nothing skipped". A compile error, a killed run, or a `go` that is not there
-# all produce no test events at all, and a parser handed none of them finds no
-# skips and would report the clean answer. So the events are counted, and no
-# events is its own answer.
-(cd manvi && go test -json -coverpkg=./... -coverprofile="$GO_COVER_PROFILE" -covermode=set ./... > "$skip_json" 2>/dev/null) || true
-skip_report="$(python3 -c '
-import json, sys
-observed = 0
-names = []
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    try:
-        e = json.loads(line)
-    except ValueError:
-        continue
-    if not e.get("Test"):
-        continue
-    action = e.get("Action")
-    if action in ("pass", "fail", "skip"):
-        observed += 1
-    if action == "skip":
-        names.append(e["Package"] + "." + e["Test"])
-print(observed)
-print("\n".join(names))
-' "$skip_json")"
-rm -f "$skip_json"
-skip_observed="$(head -1 <<<"$skip_report")"
-skip_names="$(tail -n +2 <<<"$skip_report" | sed '/^$/d')"
+# No test events at all is its own answer, not "nothing skipped": a parser handed
+# none of them finds no skips and would report the clean one.
+cross_pkgs=(devcouncil serve)
+cross_suffixes=()
+for pkg in "${cross_pkgs[@]}"; do cross_suffixes+=("/manvi/$pkg"); done
+go_report="$(gate_go_json_report "$GO_TEST_JSON" "${cross_suffixes[@]}")" \
+  || fail "the Go test event stream could not be read"
+skip_observed="$(awk '$1 == "observed" { print $2 }' <<<"$go_report")"
+skip_names="$(awk '$1 == "skip" { print $2 }' <<<"$go_report")"
 if [[ -z "$skip_observed" ]] || (( skip_observed == 0 )); then
   notcovered 'the instrumented run produced no test results, so whether anything skipped is unknown'
 elif [[ -z "$skip_names" ]]; then
@@ -303,10 +328,10 @@ step "Go — cross-boundary coverage"
 # ./devcouncil and ./serve. A missing directory counted as zero tests and
 # failed the gate after the migration, which is a path that no longer
 # exists rather than a boundary that was not exercised.
-for pkg in ./devcouncil ./serve; do
-  ran="$( (cd manvi && go test -count=1 -v "$pkg" 2>/dev/null) | grep -c '^--- PASS' || true )"
-  (( ran >= 5 )) || fail "$pkg ran only ${ran} tests; the process boundary is not being exercised"
-  printf '    %s: %s tests against the real binaries\n' "$pkg" "$ran"
+for pkg in "${cross_pkgs[@]}"; do
+  ran="$(awk -v s="/manvi/$pkg" '$1 == "ran" && $2 == s { print $3 }' <<<"$go_report")"
+  [[ -n "$ran" ]] && (( ran >= 5 )) || fail "./$pkg ran only ${ran:-0} tests; the process boundary is not being exercised"
+  printf '    ./%s: %s tests against the real binaries\n' "$pkg" "$ran"
 done
 
 # Two steps above count tests that ran and tests that skipped. Neither answers
@@ -360,8 +385,10 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # and a lint dependency has entered a shipped binary.
 # DevCouncil's go_orchestrator is the component module this harness imports.
 # It arrives through the replace in manvi/go.mod, not through a proxy. gusset
-# is cgo and is not part of the CGO_ENABLED=0 build this gate certifies; if
-# it shows up here, a cgo file was compiled into the shipped configuration.
+# is cgo: it is not part of the CGO_ENABLED=0 build and must not appear in that
+# graph (if it does, a cgo file was compiled into the cgo-off configuration),
+# but it is exactly what releases link, so the second allowlist below names it
+# and is checked against the cgo graph under the shipped environment.
 #
 # valyala/fastjson was measured for this list and refused. On the streaming path
 # it saves ~900ns per chunk against a ~16ms gap between tokens. On the code
@@ -371,26 +398,54 @@ printf '    covered: %s%% of statements across the tree (floor %s%%); weakest pa
 # encoding/json once the parser was made to refuse everything the struct decoder
 # refused. The first measurement was not wrong, it was measuring the wrong
 # condition.
+step "Go — module files are tidy"
+# `go mod tidy -diff` exits 1 on a difference and 0 on none, and the diff is the
+# message. It needs the replaced sibling modules to resolve, which the steps
+# before this one already require. A go.mod carrying a requirement nothing
+# imports, or listing a direct one as indirect, is a dependency review that
+# reads a file that does not say what the build uses.
+tidy_out="$(mktemp)"
+if ! (cd manvi && go mod tidy -diff) >"$tidy_out" 2>&1; then
+  head -n 60 "$tidy_out" >&2
+  rm -f "$tidy_out"
+  fail "go mod tidy would change go.mod or go.sum (run go mod tidy in manvi/)"
+fi
+rm -f "$tidy_out"
+printf '    covered: go.mod and go.sum are exactly what go mod tidy writes\n'
+
 step "Go — dependency surface"
 # The module itself is now a dotted path (github.com/bharathvbcr/Manvi/manvi),
 # so the domain-path filter below would report every package in this tree as an
 # unexpected dependency. Exclude it; the allowlist is for *external* packages.
-allowed='^(github\.com/awnumar/(memguard|memcall)|github\.com/samber/mo|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator)(/|$)'
-unexpected="$( (cd manvi && go list -deps ./... 2>/dev/null) \
-  | grep -E '^[a-z0-9-]+\.[a-z]+/' \
-  | grep -v '^crypto/internal' \
-  | grep -v '^github\.com/bharathvbcr/Manvi/manvi\(/\|$\)' \
-  | grep -Ev "$allowed" || true )"
-[[ -z "$unexpected" ]] || fail "packages outside the allowed dependency surface reached the build graph:
+allowed_base='github\.com/awnumar/(memguard|memcall)|golang\.org/x/(crypto|sys)|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator'
+allowed_nocgo="^(${allowed_base})(/|$)"
+# The shipped configuration adds the Gusset engine's Go side: the cgo wrapper
+# and its FFI package. Nothing else may arrive with cgo.
+allowed_cgo="^(${allowed_base}|github\.com/bharathvbcr/gusset)(/|$)"
+deps_file="$(mktemp)"
+gate_deps_list manvi "$deps_file" || { rm -f "$deps_file"; fail "go list -deps could not list the cgo-off build graph"; }
+unexpected="$(gate_deps_unexpected "$deps_file" "$allowed_nocgo")"
+[[ -z "$unexpected" ]] || { rm -f "$deps_file"; fail "packages outside the allowed dependency surface reached the build graph:
 $unexpected
-  add them to the allowlist in verify.sh, with the reason, or take them back out of the module"
-direct="$( (cd manvi && go list -deps ./... 2>/dev/null) | grep -cE '^(github\.com/awnumar|github\.com/samber|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator|golang\.org/x/(crypto|sys))' || true )"
-printf '    covered: the build graph holds nothing outside the standard library and %s allowed packages\n' "$direct"
+  add them to the allowlist in verify.sh, with the reason, or take them back out of the module"; }
+direct="$(grep -cE '^(github\.com/awnumar|github\.com/bharathvbcr/DevCouncil/backend/go_orchestrator|golang\.org/x/(crypto|sys))' "$deps_file")" || direct=0
+(( direct > 0 )) || { rm -f "$deps_file"; fail "the cgo-off build graph names no allowed package at all; the listing is not the graph"; }
+printf '    covered: the cgo-off build graph holds nothing outside the standard library and %s allowed packages\n' "$direct"
+cgo_on gate_deps_list manvi "$deps_file" || { rm -f "$deps_file"; fail "go list -deps could not list the cgo build graph"; }
+unexpected="$(gate_deps_unexpected "$deps_file" "$allowed_cgo")"
+[[ -z "$unexpected" ]] || { rm -f "$deps_file"; fail "packages outside the allowed dependency surface reached the shipped (cgo) build graph:
+$unexpected
+  add them to allowed_cgo in verify.sh, with the reason, or take them back out of the module"; }
+grep -q '^github\.com/bharathvbcr/gusset$' "$deps_file" \
+  || { rm -f "$deps_file"; fail "the cgo build graph does not contain the gusset engine, so this leg is not the shipped configuration"; }
+rm -f "$deps_file"
+printf '    covered: the shipped (cgo) build graph adds only the gusset engine to that surface\n'
 
 step "Go — lint (enforced set)"
 if have golangci-lint; then
-  (cd manvi && golangci-lint run --config .golangci.yml ./...) || fail "golangci-lint (enforced set)"
-  printf '    covered: 21 linters at zero tolerance, plus this repository'"'"'s own ruleguard rules\n'
+  in_manvi golangci-lint run --config .golangci.yml ./... || fail "golangci-lint (enforced set)"
+  cgo_on in_manvi golangci-lint run --config .golangci.yml ./... || fail "golangci-lint (enforced set, cgo build)"
+  printf '    covered: 21 linters at zero tolerance, plus this repository'"'"'s own ruleguard rules, with cgo off and on\n'
 else
   notcovered "golangci-lint is not installed — the enforced lint set did not run"
 fi
@@ -406,31 +461,29 @@ fi
 # off, which is why the numbers here are larger than any default run reports.
 step "Go — lint (debt ratchet)"
 if have golangci-lint; then
-  debt_json="$(mktemp)"
-  (cd manvi && golangci-lint run --config .golangci-debt.yml \
-      --output.json.path="$debt_json" --output.text.path= ./... >/dev/null 2>&1) || true
-  [[ -s "$debt_json" ]] || fail "the debt lint run produced no report; the ratchet has nothing to compare"
-  regressed=""
-  improved=""
-  while read -r linter recorded; do
-    [[ -n "$linter" ]] || continue
-    now="$(python3 -c "
-import json,sys
-d=json.load(open('$debt_json'))
-print(sum(1 for i in (d.get('Issues') or []) if i['FromLinter']=='$linter'))")"
-    if (( now > recorded )); then
-      regressed="${regressed} ${linter}: ${recorded} -> ${now}"
-    elif (( now < recorded )); then
-      improved="${improved} ${linter}: ${recorded} -> ${now}"
+  # Both configurations, against one recorded count per linter: a finding that
+  # only exists in a cgo-tagged file is still debt, and a file only the cgo-off
+  # build compiles is still debt. The larger of the two is what is compared.
+  # A run that could not load packages is an error, not a count: its report
+  # holds typecheck rows and no findings, which reads as every linter at zero.
+  debt_counts="$PWD/manvi/.golangci-debt.counts"
+  for leg in nocgo cgo; do
+    if [[ "$leg" == cgo ]]; then
+      debt_verdict="$(cgo_on gate_debt_ratchet manvi .golangci-debt.yml "$debt_counts")" \
+        || fail "the cgo debt lint run could not be trusted"
+    else
+      debt_verdict="$(gate_debt_ratchet manvi .golangci-debt.yml "$debt_counts")" \
+        || fail "the debt lint run could not be trusted"
     fi
-  done < <(grep -E '^[a-z]+ [0-9]+$' manvi/.golangci-debt.counts)
-  rm -f "$debt_json"
-  [[ -z "$regressed" ]] || fail "lint debt increased:${regressed}
+    regressed="$(sed -n 's/^REGRESSED//p' <<<"$debt_verdict")"
+    improved="$(sed -n 's/^IMPROVED//p' <<<"$debt_verdict")"
+    [[ -z "$regressed" ]] || fail "lint debt increased (${leg}):${regressed}
   every one of these is a finding this change introduced — fix it, or say why it is not a defect in .golangci.yml"
-  if [[ -n "$improved" ]]; then
-    printf '    \033[32mimproved\033[0m:%s — lower the numbers in manvi/.golangci-debt.counts\n' "$improved"
-  fi
-  printf '    covered: 10 linters held at or below their recorded counts\n'
+    if [[ -n "$improved" ]]; then
+      printf '    \033[32mimproved\033[0m (%s):%s — lower the numbers in manvi/.golangci-debt.counts\n' "$leg" "$improved"
+    fi
+  done
+  printf '    covered: 10 linters held at or below their recorded counts, with cgo off and on\n'
 else
   notcovered "golangci-lint is not installed — the lint debt ratchet did not run"
 fi
@@ -443,8 +496,9 @@ fi
 # level is the only place to say which one.
 step "Go — known vulnerabilities"
 if have govulncheck; then
-  (cd manvi && govulncheck ./...) || fail "govulncheck found reachable vulnerabilities"
-  printf '    covered: every standard-library advisory reachable from this code\n'
+  in_manvi govulncheck ./... || fail "govulncheck found reachable vulnerabilities"
+  cgo_on in_manvi govulncheck ./... || fail "govulncheck found reachable vulnerabilities in the cgo build"
+  printf '    covered: every advisory reachable from this code, with cgo off and on\n'
 else
   notcovered "govulncheck is not installed — reachable vulnerabilities are unchecked"
 fi
@@ -465,18 +519,16 @@ if have nilaway; then
   # because nilaway writes the verb in red and the ANSI reset sits between
   # 'error: ' and 'Potential'. A gate that reports zero because its pattern
   # stopped matching is the failure this repository exists to refuse, so the
-  # run is also required to produce output at all.
-  nilaway_out="$(mktemp)"
-  (cd manvi && nilaway -include-pkgs=github.com/bharathvbcr/Manvi/manvi ./... 2>&1) | sed -E 's/\x1b\[[0-9;]*m//g' > "$nilaway_out" || true
-  [[ -s "$nilaway_out" ]] || { rm -f "$nilaway_out"; fail "nilaway produced no output at all; the ceiling has nothing to compare"; }
-  grep -qE 'Potential nil panic detected|^# ' "$nilaway_out" || {
-    head -5 "$nilaway_out" >&2; rm -f "$nilaway_out"
-    fail "nilaway output matched no known shape; the count below would be meaningless"
-  }
-  found="$(grep -c 'Potential nil panic detected' "$nilaway_out" || true)"
-  rm -f "$nilaway_out"
+  # run is also required to produce output at all — and to produce nothing but
+  # findings: a package that failed to load is skipped by every analyzer, so
+  # its findings leave the count, and the ceiling is only ever a `<=`.
+  nilaway_pkgs=github.com/bharathvbcr/Manvi/manvi
+  found="$(gate_nilaway_count manvi "$nilaway_pkgs")" || fail "nilaway could not analyse the cgo-off build"
   (( found <= nilaway_max )) || fail "nilaway reports ${found} potential nil panics, above the recorded ceiling of ${nilaway_max}"
-  printf '    covered: %s potential nil panics, ceiling %s\n' "$found" "$nilaway_max"
+  printf '    covered: %s potential nil panics, ceiling %s (cgo off)\n' "$found" "$nilaway_max"
+  found="$(cgo_on gate_nilaway_count manvi "$nilaway_pkgs")" || fail "nilaway could not analyse the cgo build"
+  (( found <= nilaway_max )) || fail "nilaway reports ${found} potential nil panics under cgo, above the recorded ceiling of ${nilaway_max}"
+  printf '    covered: %s potential nil panics, ceiling %s (cgo on)\n' "$found" "$nilaway_max"
 else
   notcovered "nilaway is not installed — cross-package nil analysis did not run"
 fi
@@ -491,6 +543,24 @@ fi
 
 step "Rust — clippy"
 (cd crates && cargo clippy --all-targets -- -D warnings) || fail "cargo clippy"
+
+# native/ is its own Cargo workspace (the desktop broker), so nothing above
+# reaches it: `cargo` in crates/ does not see it, and for a long time neither
+# did any gate — its formatting had drifted without a red check. It builds on
+# every platform (each OS's backend is cfg-gated), so the same three checks as
+# the crates workspace run here, and its tests are counted for the same reason
+# theirs are: a suite that stopped being compiled in exits 0.
+step "Rust — native broker (format, clippy, test)"
+if (( FIX )); then
+  (cd native && cargo fmt --all)
+else
+  (cd native && cargo fmt --all -- --check) || fail "cargo fmt in native/ (run ./verify.sh --fix)"
+fi
+(cd native && cargo clippy --locked --workspace --all-targets -- -D warnings) || fail "cargo clippy in native/"
+native_out="$( (cd native && cargo test --locked --workspace) 2>&1 )" || { printf '%s\n' "$native_out" >&2; fail "cargo test in native/"; }
+native_ran="$(grep -oE '^test result: ok\. [0-9]+ passed' <<<"$native_out" | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')"
+(( native_ran >= 30 )) || { printf '%s\n' "$native_out" >&2; fail "the native suite ran only ${native_ran} tests; a suite that stopped being compiled in reports the same exit code as one that passed"; }
+printf '    covered: %s native broker tests, formatted and clippy-clean\n' "$native_ran"
 
 # The Go plane's supply chain is the standard library and govulncheck covers it.
 # The Rust plane's is not: dc-store carries rusqlite with `bundled`, which
@@ -525,15 +595,12 @@ step "Rust — DevCouncil host"
 # archive was missing linked whatever an older checkout left) and keys Go's
 # caches on the archive's hash, without which a rebuilt archive is not
 # relinked and a cached "ok" is replayed against the old one.
-engine_env="../DevCouncil/rust/gusset-engine/cgo-env.sh"
-[[ -x "$engine_env" ]] || fail "DevCouncil gusset-engine/cgo-env.sh is missing at $engine_env; the DevCouncil pin predates it"
-engine_exports="$("$engine_env" --export)" \
-  || fail "DevCouncil gusset-engine staticlib, which exports devcouncil_gusset_init"
+load_engine_env
 host_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$host_mod" ]] || fail "DevCouncil go_orchestrator is not at $host_mod"
 # In a subshell: the exports turn cgo on, and everything after this step is
 # the CGO_ENABLED=0 configuration this gate certifies.
-(eval "$engine_exports" && cd "$host_mod" && go build -o bin/devcouncil ./cmd/devcouncil) \
+(eval "$ENGINE_EXPORTS" && cd "$host_mod" && go build -o bin/devcouncil ./cmd/devcouncil) \
   || fail "DevCouncil host binary for the Rust json contract"
 
 export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
@@ -546,7 +613,7 @@ export DEVCOUNCIL_BIN="$(cd "$host_mod" && pwd)/bin/devcouncil"
 step "Go — gusset engine (cgo)"
 # Release binaries are this configuration, so cmd/manvi (buildGate hands its
 # gate the engine matcher) runs here too.
-(eval "$engine_exports" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
+(eval "$ENGINE_EXPORTS" && cd manvi && go test -count=1 ./gussetcheck ./serve ./cmd/manvi \
   && go run ./cmd/manvi gusset-check) || fail "gusset engine with cgo on"
 
 step "Rust — test"
@@ -1122,9 +1189,9 @@ fi
 step "Command gate — verdicts match what the shell actually writes"
 gate_mod="../DevCouncil/backend/go_orchestrator"
 [[ -d "$gate_mod/gate" ]] || fail "the command-gate tests are not at $gate_mod/gate"
-diff_ran="$( (cd "$gate_mod" && go test -count=1 -v ./gate/ \
-  -run 'TestCommandVerdictIsNeverLooserThanTheWritesItPerforms|TestHiddenWritesAreRefusedOutrightUnderEveryPosture' 2>/dev/null) \
-  | grep -c '^    --- PASS' || true )"
+diff_ran="$(gate_count_passes "$gate_mod" '^    --- PASS' ./gate/ \
+  -run 'TestCommandVerdictIsNeverLooserThanTheWritesItPerforms|TestHiddenWritesAreRefusedOutrightUnderEveryPosture')" \
+  || fail "the command/filesystem differential failed or did not run"
 (( diff_ran >= 60 )) || fail "the command/filesystem differential ran only ${diff_ran} cases; the corpus is not being exercised"
 printf '    covered: %s command lines executed under sh and reconciled against the gate\n' "$diff_ran"
 
@@ -1139,12 +1206,14 @@ printf '    covered: %s command lines executed under sh and reconciled against t
 # test fails on its own if that happens; this step surfaces the numbers.
 step "Command gate — generated command lines hold the same invariant"
 gen_out="$( (cd "$gate_mod" && MANVI_GATE_SOAK="${MANVI_GATE_SOAK:-400}" go test -count=1 -v ./gate/ \
-  -run 'TestGeneratedCommandsNeverOutrunTheirOwnWriteVerdict' 2>&1) )"
+  -run 'TestGeneratedCommandsNeverOutrunTheirOwnWriteVerdict' 2>&1) )" \
+  || { printf '%s\n' "$gen_out" >&2; fail "the generated differential failed"; }
 grep -q '^--- PASS' <<<"$gen_out" || { printf '%s\n' "$gen_out" >&2; fail "the generated differential did not pass"; }
 printf '    %s\n' "$(grep -o '[0-9]* generated command lines: .*' <<<"$gen_out" | head -1)"
 
 step "Docs — every stated count is the measured count"
-docs_ran="$( (cd manvi && go test -count=1 -v ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented|TestDocumentedEventFieldsMatchTheStruct|TestDocumentedExitCodesMatchTheDispatch' 2>/dev/null) | grep -c '^--- PASS' || true )"
+docs_ran="$(gate_count_passes manvi '^--- PASS' ./internal/contract/ -run 'TestParityCountsInProseMatchTheFixtures|TestMermaidDiagramsAreWellFormed|TestPolicyLadderRungCountIsConsistent|TestOutcomeStateCountIsConsistent|TestEveryRelativeDocLinkResolves|TestEveryCLISubcommandIsDocumented|TestDocumentedEventFieldsMatchTheStruct|TestDocumentedExitCodesMatchTheDispatch')" \
+  || fail "the documentation contract failed or did not run"
 (( docs_ran == 8 )) || fail "the documentation contract ran only ${docs_ran} of 8 checks"
 printf '    covered: parity counts, mermaid syntax, ladder rungs, outcome states, links, subcommands, the event wire and the exit codes all agree with the code\n'
 
@@ -1352,11 +1421,11 @@ if [[ -n "$NOT_COVERED" ]]; then
   printf '\n\033[33mPASS\033[0m with gates that did not run:%s\n' "$NOT_COVERED"
   if [[ "$NOT_COVERED" == *"is not installed"* ]]; then
     printf '\ninstall the missing analysis tools with:\n'
-    printf '  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest\n'
-    printf '  go install golang.org/x/vuln/cmd/govulncheck@latest\n'
-    printf '  go install go.uber.org/nilaway/cmd/nilaway@latest\n'
-    printf '  cargo install cargo-audit\n'
-    printf '  uv tool install ruff\n'
+    printf '  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s\n' "$GOLANGCI_LINT_VERSION"
+    printf '  go install golang.org/x/vuln/cmd/govulncheck@%s\n' "$GOVULNCHECK_VERSION"
+    printf '  go install go.uber.org/nilaway/cmd/nilaway@%s\n' "$NILAWAY_VERSION"
+    printf '  cargo install cargo-audit --locked --version %s\n' "$CARGO_AUDIT_VERSION"
+    printf '  uv tool install ruff==%s\n' "$RUFF_VERSION"
   fi
 else
   printf '\n\033[32mPASS\033[0m all gates\n'
