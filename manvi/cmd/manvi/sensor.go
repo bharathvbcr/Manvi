@@ -74,11 +74,14 @@ type sensor struct {
 	// command is the operator's own verification command. See
 	// operatorVerifyCommand for why it may only come from operator scope.
 	command string
-	// baseline is the tree recorded when the turn began, consumed when the
-	// turn's check runs. Guarded because the two events reach this listener on
-	// the bus and nothing promises they arrive on one goroutine.
-	baselineMu sync.Mutex
-	baseline   devcouncil.Baseline
+	// baseline is the tree recorded when baselineTurn began. It is read by
+	// every end-of-turn check of that turn (a bounce re-checks inside the same
+	// turn with no new start event) and replaced by the next turn's start.
+	// Guarded because the two events reach this listener on the bus and
+	// nothing promises they arrive on one goroutine.
+	baselineMu   sync.Mutex
+	baseline     devcouncil.Baseline
+	baselineTurn int
 	// criticDispatched bounds the escalation to one critic per turn. A second
 	// critic on the same turn would be asked the same question about the same
 	// tree, and would cost a full child turn to produce the answer already in
@@ -226,20 +229,24 @@ func (s *sensor) begin(ctx context.Context, e *agent.TurnStarting) error {
 	}
 	b := s.native.CaptureBaseline(ctx)
 	s.baselineMu.Lock()
-	s.baseline = b
+	s.baseline, s.baselineTurn = b, e.Turn
 	s.baselineMu.Unlock()
 	return nil
 }
 
-// takeBaseline consumes the recorded baseline, so a turn that somehow ran
-// without a start event gets an uncaptured one — and is told so — rather than
-// silently inheriting the previous turn's tree, which would attribute this
-// turn's changes to a state two turns old.
-func (s *sensor) takeBaseline() devcouncil.Baseline {
+// baselineFor returns the baseline recorded when turn began. It is keyed by
+// turn and not consumed on read: a failed check bounces and the loop re-checks
+// inside the same turn, and that re-check, the one whose result matters, must
+// see the same tree. A turn whose start event never arrived gets an uncaptured
+// baseline, and is told so, rather than inheriting an earlier turn's tree,
+// which would attribute this turn's changes to a state two turns old.
+func (s *sensor) baselineFor(turn int) devcouncil.Baseline {
 	s.baselineMu.Lock()
 	defer s.baselineMu.Unlock()
-	b := s.baseline
-	s.baseline = devcouncil.Baseline{}
+	var b devcouncil.Baseline
+	if s.baselineTurn == turn {
+		b = s.baseline
+	}
 	if !b.Captured() && b.Note == "" {
 		b.Note = "no pre-turn baseline was recorded, so this turn's changes are attributed " +
 			"against the last commit and may include work that was already in the tree"
@@ -256,7 +263,7 @@ func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.Path
 		}
 	}
 
-	report := devcouncil.VerifyPresent(ctx, s.native, e.Wrote, s.command, s.takeBaseline())
+	report := devcouncil.VerifyPresent(ctx, s.native, e.Wrote, s.command, s.baselineFor(e.Turn))
 
 	// A turn that changed something through a command is a turn whose effects no
 	// handler could enumerate. The operator's own command still covers it;

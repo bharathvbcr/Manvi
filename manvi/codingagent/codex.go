@@ -100,7 +100,17 @@ type Event struct {
 	Request                  *Request
 	ResolvedID, Text, Status string
 	TurnID                   string
+	// CancelledID names a callback the provider withdrew before any answer was
+	// delivered. Only Claude reports it (control_cancel_request); the host
+	// resolves the decision row as cancelled and stops awaiting a person.
+	CancelledID string
 }
+
+// ErrCallbackWithdrawn is returned for an answer to a callback the provider
+// had already withdrawn. It is not a stale or tampered answer: the host drops
+// the callback and carries on instead of failing the run.
+var ErrCallbackWithdrawn = errors.New("the provider withdrew this callback before it was answered")
+
 type pendingRequest struct {
 	source Request
 	wireID json.RawMessage

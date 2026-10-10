@@ -75,6 +75,7 @@ type Claude struct {
 	queue        [][]byte
 	deferred     []Event
 	pending      map[string]*claudePending
+	withdrawn    map[string]bool
 	seen         map[string]bool
 	requestCount int
 }
@@ -190,6 +191,7 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 		build:     build,
 		reported:  reported,
 		pending:   make(map[string]*claudePending),
+		withdrawn: make(map[string]bool),
 		seen:      make(map[string]bool),
 	}, nil
 }
@@ -456,7 +458,9 @@ func (s *Claude) event(raw []byte) (Event, bool, error) {
 		return s.capture(f)
 	case "result":
 		return s.result(f)
-	case "user", "stream_event", "rate_limit_event", "control_response", "control_cancel_request":
+	case "control_cancel_request":
+		return s.withdraw(f.RequestID)
+	case "user", "stream_event", "rate_limit_event", "control_response":
 		// Tool results, partial deltas, rate-limit notices and answers to our
 		// own control requests carry nothing the managed run records.
 		return Event{}, false, nil
@@ -465,6 +469,20 @@ func (s *Claude) event(raw []byte) (Event, bool, error) {
 		// newer CLI adding one must not fail a run that does not need it.
 		return Event{}, false, nil
 	}
+}
+
+// withdraw handles the CLI cancelling a permission request it offered. A
+// request still awaiting an answer is forgotten here and reported, so the host
+// can resolve its decision row instead of leaving it live; one already answered
+// (or never captured) has nothing left to withdraw.
+func (s *Claude) withdraw(id string) (Event, bool, error) {
+	p := s.pending[id]
+	if p == nil || p.sent {
+		return Event{}, false, nil
+	}
+	delete(s.pending, id)
+	s.withdrawn[id] = true
+	return Event{CancelledID: id}, true, nil
 }
 
 func (s *Claude) system(f claudeFrame) (Event, bool, error) {
@@ -681,6 +699,9 @@ func (s *Claude) drain() error {
 }
 
 func (s *Claude) response(request Request, response Response) (any, error) {
+	if s.withdrawn[request.ID] {
+		return nil, ErrCallbackWithdrawn
+	}
 	p := s.pending[request.ID]
 	if p == nil || p.sent || s.finished || !time.Now().Before(p.source.ExpiresAt) ||
 		request.Payload != p.source.Payload || request.Digest != p.source.Digest ||

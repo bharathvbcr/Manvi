@@ -304,10 +304,17 @@ type Loop struct {
 	// lastEstimate is what the harness thought the request it just sent would
 	// cost, held so the server's reply can be compared against it.
 	lastEstimate int
+	// turnOpen and stepOpen record that the log holds a turn/start or
+	// step/start with no matching end yet. Run's deferred closer reads them so
+	// every exit, including a failing one, leaves the log balanced.
+	turnOpen, stepOpen bool
 }
 
 // NewLoop builds a driver.
 func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry) (*Loop, error) {
+	if b == nil {
+		return nil, errors.New("agent: no bus")
+	}
 	if cfg.Provider == nil {
 		return nil, errors.New("agent: no provider")
 	}
@@ -738,6 +745,12 @@ type Outcome struct {
 // runs its tool calls; chargeStep spends the budget. A step with no tool calls
 // ends at closeOrBounce, the terminal checkpoint.
 func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
+	// Every exit leaves the log balanced. A failed turn used to return with
+	// turn/start and step/start still open, so the projected stream carried a
+	// turn.start with no turn.end and the next turn began inside it. The error
+	// Run returns is untouched: closing is best-effort and only runs when the
+	// normal path did not already end the turn.
+	defer l.closeOpenBoundaries()
 	currentTurn, err := l.openTurn(ctx, prompt)
 	if err != nil {
 		return Outcome{}, err
@@ -822,13 +835,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 			if err := l.reportMalformed(response); err != nil {
 				return out, err
 			}
-			if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+			if err := l.endStep(); err != nil {
 				return out, err
 			}
 			continue
 		}
 
-		if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+		if err := l.endStep(); err != nil {
 			return out, err
 		}
 
@@ -845,10 +858,40 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 
 	out.ContextOverflowed = l.overflowed
 
-	if _, err := l.log.Append(session.TurnEnd, nil); err != nil {
+	if err := l.endTurn(); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+// endStep closes the open step in the log.
+func (l *Loop) endStep() error {
+	if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+		return err
+	}
+	l.stepOpen = false
+	return nil
+}
+
+// endTurn closes the open turn in the log.
+func (l *Loop) endTurn() error {
+	if _, err := l.log.Append(session.TurnEnd, nil); err != nil {
+		return err
+	}
+	l.turnOpen = false
+	return nil
+}
+
+// closeOpenBoundaries ends whatever step and turn an early exit left open. A
+// log that refuses the append is already failing the caller with its own
+// error; there is nothing better to do with this one than leave it.
+func (l *Loop) closeOpenBoundaries() {
+	if l.stepOpen {
+		_ = l.endStep()
+	}
+	if l.turnOpen {
+		_ = l.endTurn()
+	}
 }
 
 // openTurn resets the per-turn state, opens the turn in the log and records
@@ -861,6 +904,7 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	l.turnOpen = true
 	currentTurn := turnEvent.Turn
 	// Before the first step, so a listener recording the pre-turn tree records
 	// it before anything can have changed. Its failure ends the turn: a
@@ -909,6 +953,7 @@ func (l *Loop) enterStep(ctx context.Context, turn, step int) ([]llm.Message, er
 	if _, err := l.log.Append(session.StepStart, nil); err != nil {
 		return nil, err
 	}
+	l.stepOpen = true
 	return messages, nil
 }
 
@@ -989,8 +1034,7 @@ func (l *Loop) retryNullResponse(out *Outcome, step, attempt int) error {
 	// start unclosed made every retried response dangle a step/start
 	// in the durable log for the TUI projector, the invariant check,
 	// and resume to trip over.
-	_, err := l.log.Append(session.StepEnd, nil)
-	return err
+	return l.endStep()
 }
 
 // stepTally is what one step's tool calls amounted to, for charging the step.

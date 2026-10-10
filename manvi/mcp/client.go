@@ -561,6 +561,7 @@ func (c *Client) dispatch(line []byte) {
 		return
 	}
 	if method != "" {
+		c.answerServerFrame(line, method)
 		return
 	}
 	if !hasPayload && resp.JSONRPC == "" {
@@ -591,6 +592,45 @@ func (c *Client) dispatch(line []byte) {
 		return
 	}
 	ch <- &resp
+}
+
+// answerServerFrame replies to a frame the server initiated. A notification
+// (no id) needs nothing. A request (an id, any JSON type) must be answered by
+// every party, or the server waits on it forever: "ping" gets the empty
+// result the ping utility specifies, and every other method gets -32601 —
+// roots/list included, because this client does not declare the roots
+// capability, and sampling/elicitation are not offered either. The id is
+// echoed byte for byte, so a string or large numeric id survives.
+//
+// Spec: modelcontextprotocol.io/specification/2025-11-25/basic/utilities/ping
+// (the receiver MUST respond promptly with an empty response) and
+// .../client/roots (a server may only call roots/list on a client that
+// declared the capability).
+func (c *Client) answerServerFrame(line []byte, method string) {
+	var probe struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(line, &probe) != nil || len(probe.ID) == 0 || string(probe.ID) == "null" {
+		return
+	}
+	reply := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  *struct{}       `json:"result,omitempty"`
+		Error   *RPCError       `json:"error,omitempty"`
+	}{JSONRPC: JSONRPCVersion, ID: probe.ID}
+	if method == "ping" {
+		reply.Result = &struct{}{}
+	} else {
+		reply.Error = &RPCError{Code: CodeMethodNotFound, Message: "method not supported by this client: " + truncateForMessage(method)}
+	}
+	data, err := json.Marshal(reply)
+	if err == nil {
+		err = c.writeFrame(append(data, '\n'))
+	}
+	if err != nil {
+		c.recordError(fmt.Sprintf("could not answer server request %q: %v", truncateForMessage(method), err))
+	}
 }
 
 // errUnreadableFrame is a frame that decodes as a Response but whose envelope
@@ -765,6 +805,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
+		c.cancelRequest(id, method, ctx.Err())
 		// Whatever the server said about itself travels with the timeout. A
 		// wedge whose cause was recorded on stderr and then discarded is how
 		// "the tool call hung" became the whole of an operator's evidence.
@@ -785,6 +826,28 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 			}
 		}
 		return nil
+	}
+}
+
+// cancelRequest tells the server a request this client issued is abandoned.
+// On stdio there is no per-request stream to close, so the spec requires a
+// notifications/cancelled naming the request id; without it a non-idempotent
+// tool keeps running server-side while the caller is told it failed and may
+// retry it. "initialize" is never cancelled (the spec forbids it). A failed
+// write is recorded, not returned: the caller's own timeout/cancel error is
+// the one that matters, and a late reply is already tolerated by dispatch.
+//
+// Spec: modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation
+func (c *Client) cancelRequest(id int64, method string, cause error) {
+	if method == "initialize" || c.closed.Load() {
+		return
+	}
+	params := map[string]any{"requestId": id}
+	if cause != nil {
+		params["reason"] = cause.Error()
+	}
+	if err := c.Notify("notifications/cancelled", params); err != nil {
+		c.recordError(fmt.Sprintf("could not cancel request %d (%s): %v", id, method, err))
 	}
 }
 
@@ -829,6 +892,9 @@ func (c *Client) writeFrame(data []byte) error {
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
 
+	if c.stdin == nil {
+		return errors.New("stdin is not connected")
+	}
 	if c.writeWedged.Load() {
 		return fmt.Errorf("stdin is no longer usable: an earlier write to %s did not complete "+
 			"within %s, so this connection may carry a partial frame and was retired",
@@ -926,9 +992,10 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersionLatest,
-		Capabilities: ClientCapabilities{
-			Roots: &RootsCapability{ListChanged: true},
-		},
+		// No roots capability: nothing here serves roots/list, and a server
+		// told otherwise would wait on a list that never comes. Roots is also
+		// deprecated as of protocol 2026-07-28.
+		Capabilities: ClientCapabilities{},
 		ClientInfo: Implementation{
 			Name:    "manvi",
 			Version: "1.0.0",

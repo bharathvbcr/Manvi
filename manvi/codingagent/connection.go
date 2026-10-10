@@ -149,7 +149,7 @@ func (c *connection) read() {
 		var p packet
 		err := c.validate(line)
 		if total > 32*1024*1024 {
-			err = errors.New("managed provider output exceeded 32 MiB")
+			err = errors.New("managed provider output exceeded 32 MiB for the whole session; the cap counts every frame the provider wrote, including tool results the run does not record")
 		}
 		if err == nil {
 			err = json.Unmarshal(line, &p)

@@ -29,6 +29,20 @@ type managedTestSession struct {
 	unreaped       bool
 	closed         atomic.Bool
 	sent           atomic.Value // the turn text StartTurn received
+	// claudeLike models the Claude adapter: Respond emits no ResolvedID, and the
+	// turn finishes finishAfter later rather than as part of the reply.
+	claudeLike  bool
+	finishAfter time.Duration
+	// requestIDs, when set, are the callbacks StartTurn raises (instead of the
+	// single "n:42"), each expiring after expires (default one minute).
+	requestIDs []string
+	expires    time.Duration
+	// withdraw has StartTurn withdraw each request it raised, as Claude does on
+	// control_cancel_request; validateErr is what ValidateResponse answers; and
+	// completeAfter, when set, finishes the turn that long after StartTurn.
+	withdraw      bool
+	validateErr   error
+	completeAfter time.Duration
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {
@@ -50,9 +64,26 @@ func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	s.turns.Add(1)
 	s.events <- codingagent.Event{TurnID: "turn"}
 	if s.withRequest {
-		payload := `{"command":"git status"}`
-		digest := sha256.Sum256([]byte(payload))
-		s.events <- codingagent.Event{Request: &codingagent.Request{ID: "n:42", ThreadID: "thread", TurnID: "turn", Kind: "permission", Payload: payload, Digest: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Minute)}}
+		ids, expires := s.requestIDs, s.expires
+		if len(ids) == 0 {
+			ids = []string{"n:42"}
+		}
+		if expires == 0 {
+			expires = time.Minute
+		}
+		for _, id := range ids {
+			payload := `{"command":"git status"}`
+			digest := sha256.Sum256([]byte(payload))
+			s.events <- codingagent.Event{Request: &codingagent.Request{ID: id, ThreadID: "thread", TurnID: "turn", Kind: "permission", Payload: payload, Digest: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(expires)}}
+			if s.withdraw {
+				s.events <- codingagent.Event{CancelledID: id}
+			}
+		}
+		if s.completeAfter > 0 {
+			time.AfterFunc(s.completeAfter, func() {
+				s.events <- codingagent.Event{Text: "Fixture result", Status: "completed"}
+			})
+		}
 	} else {
 		s.events <- codingagent.Event{Text: "Inspected the fixture", Status: "completed"}
 	}
@@ -69,10 +100,16 @@ func (s *managedTestSession) Next(ctx context.Context) (codingagent.Event, error
 	}
 }
 func (s *managedTestSession) ValidateResponse(_ codingagent.Request, _ codingagent.Response) error {
-	return nil
+	return s.validateErr
 }
 func (s *managedTestSession) Respond(_ context.Context, request codingagent.Request, response codingagent.Response) error {
 	s.replies.Add(1)
+	if s.claudeLike {
+		time.AfterFunc(s.finishAfter, func() {
+			s.events <- codingagent.Event{Text: "Fixture result", Status: "completed"}
+		})
+		return nil
+	}
 	s.events <- codingagent.Event{ResolvedID: request.ID}
 	s.events <- codingagent.Event{Text: "Fixture result", Status: "completed"}
 	return nil
