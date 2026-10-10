@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/fnmatch"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -263,16 +265,17 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 	}
 	if pinned != nil {
 		if err := pinned.Write([]byte(args.Content), 0o644); err != nil {
-			return tools.Errorf("writing %s: %v", args.Path, err)
+			return writeFailure(decision.Target, "writing "+args.Path, err)
 		}
 	} else {
 		// Outside-root targets are reachable only with hard rules off — an
-		// explicit operator decision. The legacy path stands there.
+		// explicit operator decision. They are replaced the same way, so a
+		// failure part-way keeps the original there too.
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return tools.Errorf("creating directory for %s: %v", args.Path, err)
 		}
-		if err := os.WriteFile(full, []byte(args.Content), 0o644); err != nil {
-			return tools.Errorf("writing %s: %v", args.Path, err)
+		if err := writeUnpinned(full, []byte(args.Content)); err != nil {
+			return writeFailure(decision.Target, "writing "+args.Path, err)
 		}
 	}
 
@@ -291,6 +294,32 @@ func (r *Registry) writeFile(ctx context.Context, call tools.Call) tools.Result 
 		result = annotateReuse(result, r.checkReuse(ctx, reusePath))
 	}
 	return result
+}
+
+// writeFailure is the result of a write that did not complete. When the failure
+// came after the target's bytes may have changed, the path is still claimed:
+// the checkpoint verifies what the turn touched, and a path withheld because
+// the call returned an error would leave the changed file unexamined.
+func writeFailure(target, what string, err error) tools.Result {
+	result := tools.Errorf("%s: %v", what, err)
+	if WriteMayHaveChanged(err) {
+		result.Wrote = []string{target}
+	}
+	return result
+}
+
+// writeUnpinned replaces a file the pin does not cover (outside the root, or no
+// pin taken) without ever truncating it in place. A symbolic link is followed
+// as os.WriteFile did, and the permission bits of an existing file are kept.
+func writeUnpinned(full string, data []byte) error {
+	mode := fs.FileMode(0o644)
+	if resolved, err := filepath.EvalSymlinks(full); err == nil {
+		full = resolved
+		if info, err := os.Stat(full); err == nil {
+			mode = info.Mode().Perm()
+		}
+	}
+	return safefile.WriteAtomic(full, data, mode)
 }
 
 func (r *Registry) deleteFile(ctx context.Context, call tools.Call) tools.Result {
@@ -820,11 +849,11 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 
 	if pinned != nil {
 		if err := pinned.Write([]byte(content), 0o644); err != nil {
-			return tools.Errorf("writing patched %s: %v", args.Path, err)
+			return writeFailure(decision.Target, "writing patched "+args.Path, err)
 		}
 	} else {
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			return tools.Errorf("writing patched %s: %v", args.Path, err)
+		if err := writeUnpinned(full, []byte(content)); err != nil {
+			return writeFailure(decision.Target, "writing patched "+args.Path, err)
 		}
 	}
 

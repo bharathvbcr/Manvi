@@ -53,6 +53,11 @@ type Report struct {
 	// tell — this is the "a check that could not run must never look like one
 	// that ran and passed" rule, in report form.
 	Degraded []string `json:"degraded,omitempty"`
+	// Verdict is failed when a gap blocks, degraded when nothing blocks but the
+	// diff the gates read did not cover the whole change, and passed otherwise.
+	// Passed is true only for the last.
+	Verdict        string `json:"verdict"`
+	diffIncomplete bool
 }
 
 // BlockingCount is how many gaps stop the task.
@@ -98,6 +103,12 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	// folded into a pass: the gates below read this diff, so what is missing
 	// from it is missing from them.
 	report.Degraded = append(report.Degraded, diffNotes...)
+	// An incomplete diff is a check that could not see everything. It is
+	// neither a pass nor a failure: the verdict is degraded, with the reasons
+	// (each carrying how many files were covered) in Degraded. Making it a
+	// blocking gap instead would send any change past the untracked-file cap
+	// back for repair forever, with nothing the agent could repair.
+	report.diffIncomplete = len(diffNotes) > 0
 
 	// The union, not the plan alone. This asks "was this file in scope", and a
 	// path an executor argued into its own scope is in scope — the fact that it
@@ -186,7 +197,15 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 		})
 	}
 
-	report.Passed = report.BlockingCount() == 0
+	report.Passed = report.BlockingCount() == 0 && !report.diffIncomplete
+	switch {
+	case report.BlockingCount() > 0:
+		report.Verdict = VerdictFailed
+	case report.diffIncomplete:
+		report.Verdict = VerdictDegraded
+	default:
+		report.Verdict = VerdictPassed
+	}
 	return report, nil
 }
 
@@ -358,9 +377,14 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	// One budget across the whole fan-out, not one cap per file: 256 files at
 	// their own ceiling is 256 ceilings, which is not a bound on anything.
 	renders, unrendered := renderUntracked(ctx, root, rendered, maxGitCaptureBytes)
-	var cutFiles []string
+	var cutFiles, failedFiles []string
 	for _, u := range renders {
 		if u.err != nil {
+			// Listed by git and then not rendered: a permission error, a file
+			// that vanished, a deadline that ran out. Skipping it silently
+			// would hand the gates a diff without it and say nothing, so it is
+			// named with its reason.
+			failedFiles = append(failedFiles, fmt.Sprintf("%s (%s)", u.path, renderFailure(u.err)))
 			continue
 		}
 		if u.note != "" {
@@ -377,11 +401,17 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 				"the gates saw only the part above the cut",
 			len(cutFiles), maxGitCaptureBytes, strings.Join(cutFiles, "; ")))
 	}
+	if len(failedFiles) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: rendered %d of %d untracked file(s); %d could not be rendered and are not in this diff: %s; "+
+				"the gates that read it did not see them",
+			len(renders)-len(failedFiles), len(paths), len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
+	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"untracked_diff: the %d-byte capture budget ran out with %d untracked file(s) still "+
+			"untracked_diff: the %d-byte capture budget ran out; rendered %d of %d untracked file(s), %d still "+
 				"unrendered; they are not in this diff and the gates did not see them",
-			maxGitCaptureBytes, unrendered))
+			maxGitCaptureBytes, len(renders)-len(failedFiles), len(paths), unrendered))
 	}
 	diff := b.String()
 	if quoted := quotedHeaderPaths(diff); len(quoted) > 0 {
@@ -396,6 +426,38 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 			len(quoted), strings.Join(quoted, ", ")))
 	}
 	return diff, notes, nil
+}
+
+// maxNamedShortfalls bounds how many files one diff note names; the count is
+// always the whole number, so a long list is never read as a complete one.
+const maxNamedShortfalls = 10
+
+// maxFailureReason bounds the reason carried per unrendered file.
+const maxFailureReason = 160
+
+// renderFailure is the reason a render failed, cut to something a note can
+// carry: git's own message names the command, which the path beside it
+// already says.
+func renderFailure(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, "--no-index -- /dev/null "); i >= 0 {
+		if j := strings.Index(msg[i:], ": "); j >= 0 {
+			msg = msg[i+j+2:]
+		}
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if runes := []rune(msg); len(runes) > maxFailureReason {
+		msg = string(runes[:maxFailureReason]) + "…"
+	}
+	return msg
+}
+
+// summariseList names the first limit entries and counts the rest.
+func summariseList(items []string, limit int) string {
+	if len(items) <= limit {
+		return strings.Join(items, "; ")
+	}
+	return fmt.Sprintf("%s; and %d more", strings.Join(items[:limit], "; "), len(items)-limit)
 }
 
 // untrackedWorkers is how many untracked-file renders run at once.

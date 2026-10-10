@@ -74,7 +74,8 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 	// One budget across the whole fan-out, not one cap per file: 256 files at
 	// their own ceiling is 256 ceilings, which is not a bound on anything.
 	budget := maxGitCaptureBytes
-	var cutFiles []string
+	var cutFiles, failedFiles []string
+	okCount := 0
 	unrendered := 0
 	for i, path := range rendered {
 		if budget <= 0 {
@@ -88,6 +89,7 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 		// filename.
 		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
 		if err != nil && added == "" {
+			failedFiles = append(failedFiles, fmt.Sprintf("%s (%s)", path, renderFailure(err)))
 			continue
 		}
 		if note != "" {
@@ -97,6 +99,7 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 			// the two numbers is how a capped sample gets read as a whole one.
 			cutFiles = append(cutFiles, fmt.Sprintf("%s %s", path, note))
 		}
+		okCount++
 		budget -= len(added)
 		b.WriteString(added)
 	}
@@ -106,11 +109,17 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 				"the gates saw only the part above the cut",
 			len(cutFiles), maxGitCaptureBytes, strings.Join(cutFiles, "; ")))
 	}
+	if len(failedFiles) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: rendered %d of %d untracked file(s); %d could not be rendered and are not in this diff: %s; "+
+				"the gates that read it did not see them",
+			okCount, len(paths), len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
+	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"untracked_diff: the %d-byte capture budget ran out with %d untracked file(s) still "+
+			"untracked_diff: the %d-byte capture budget ran out; rendered %d of %d untracked file(s), %d still "+
 				"unrendered; they are not in this diff and the gates did not see them",
-			maxGitCaptureBytes, unrendered))
+			maxGitCaptureBytes, okCount, len(paths), unrendered))
 	}
 	diff := b.String()
 	if quoted := quotedHeaderPaths(diff); len(quoted) > 0 {
@@ -199,7 +208,7 @@ func (r *Registry) scopedDiffSequential(ctx context.Context, paths []string, bas
 
 	var b strings.Builder
 	b.WriteString(out)
-	var unrendered int
+	var unrendered, rendered int
 	for i, path := range untracked {
 		if budget <= 0 {
 			unrendered = len(untracked) - i
@@ -224,14 +233,15 @@ func (r *Registry) scopedDiffSequential(ctx context.Context, paths []string, bas
 			notes = append(notes, fmt.Sprintf(
 				"scoped_diff: %s %s; the gates saw only the part above the cut", path, addNote))
 		}
+		rendered++
 		budget -= len(added)
 		b.WriteString(added)
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"scoped_diff: the %d-byte capture budget ran out with %d new file(s) still unrendered; "+
+			"scoped_diff: the %d-byte capture budget ran out; rendered %d of %d new file(s), %d still unrendered; "+
 				"they are not in this diff and the gates did not see them",
-			maxGitCaptureBytes, unrendered))
+			maxGitCaptureBytes, rendered, len(untracked), unrendered))
 	}
 	return b.String(), notes, nil
 }

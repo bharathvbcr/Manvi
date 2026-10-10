@@ -349,6 +349,23 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- A file the agent rewrites is replaced, not truncated: the new content goes to
+  a temporary sibling, is fsynced, and is renamed over the original, so a write
+  that fails part-way (disk full, quota, I/O error) leaves the original intact.
+  A failed fsync or close now fails the write, and a write that fails after the
+  file may have changed still names the path so the end-of-turn check looks at
+  it. The same applies to targets outside the repository.
+- Artifact store: names ending in `.meta.json` are refused (they collided with
+  another artifact's metadata), `Create` is exclusive, writes are atomic,
+  `Update` no longer creates an artifact or resets its revision history over a
+  missing or corrupt metadata file, and a failed write keeps the previous
+  revision. `Update` on an artifact that does not exist is now an error.
+- An untracked file that cannot be rendered into the verification diff (an
+  unreadable file, a deadline that ran out mid-fan-out) is named in the diff
+  notes with the reason (and "rendered N of M") instead of being dropped
+  silently, and any diff shortfall makes `devcouncil_verify_task` report
+  `verdict: "degraded"` with `passed: false`: never a pass, and never a failure
+  on that account alone. A blocking gap still gives `failed`.
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
   `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with

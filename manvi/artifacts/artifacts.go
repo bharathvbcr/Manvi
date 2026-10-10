@@ -4,17 +4,20 @@
 package artifacts
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 )
 
 // Metadata defines structured artifact properties.
@@ -55,6 +58,10 @@ func NewStore(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
+// syncFile is the durability step of a write, a variable so a test can make it
+// fail. Nothing else assigns it.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
 // sanitizeName ensures an artifact name contains no traversal elements.
 func (s *Store) sanitizeName(name string) (string, error) {
 	name = strings.TrimSpace(name)
@@ -65,11 +72,20 @@ func (s *Store) sanitizeName(name string) (string, error) {
 	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
 		return "", fmt.Errorf("artifacts: invalid artifact path %q", name)
 	}
+	// "<name>.meta.json" is where the metadata of <name> is kept. A name in that
+	// namespace would clobber another artifact's metadata, or have its own
+	// content read back as one, so no artifact may be called that.
+	if strings.HasSuffix(clean, metaSuffix) {
+		return "", fmt.Errorf("artifacts: invalid artifact name %q: names ending in %s are reserved for metadata", name, metaSuffix)
+	}
 	return clean, nil
 }
 
+// metaSuffix is appended to an artifact's name to give its metadata file.
+const metaSuffix = ".meta.json"
+
 func (s *Store) metaPath(cleanName string) string {
-	return filepath.Join(s.dir, cleanName+".meta.json")
+	return filepath.Join(s.dir, cleanName+metaSuffix)
 }
 
 func (s *Store) contentPath(cleanName string) string {
@@ -90,17 +106,6 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Lstat, not Stat: a name that is a symbolic link "exists" for the purpose
-	// of refusing to clobber it, and saying so plainly is better than telling
-	// the caller to use Update — which would refuse for a different reason and
-	// leave them guessing which of the two answers was the real one.
-	if info, err := os.Lstat(cPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("artifacts: refusing %q: that name is already a symbolic link", clean)
-		}
-		return nil, fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", clean)
-	}
-
 	now := time.Now()
 	art := &Artifact{
 		Name:      clean,
@@ -112,17 +117,25 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 		Revision:  1,
 	}
 
-	if err := writeContained(cPath, []byte(content), 0o644); err != nil {
+	metaBytes, err := json.MarshalIndent(art, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: encoding metadata for %q: %w", clean, err)
+	}
+	metaFull, err := s.containedPath(clean + metaSuffix)
+	if err != nil {
 		return nil, err
 	}
 
-	metaBytes, _ := json.MarshalIndent(art, "", "  ")
-	metaFull, err := s.containedPath(clean + ".meta.json")
-	if err != nil {
-		_ = os.Remove(cPath)
+	// Exclusive: the existence check and the write are one operation, so two
+	// creators (two processes over one directory) cannot both succeed and the
+	// loser cannot overwrite the winner. A name that is a symbolic link is
+	// refused outright rather than reported as merely existing.
+	if err := writeContained(cPath, []byte(content), 0o644, true); err != nil {
 		return nil, err
 	}
-	if err := writeContained(metaFull, metaBytes, 0o644); err != nil {
+	if err := writeContained(metaFull, metaBytes, 0o644, false); err != nil {
+		// This call created the content, so taking it away leaves the store as
+		// it was found.
 		_ = os.Remove(cPath)
 		return nil, err
 	}
@@ -144,24 +157,32 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if err != nil {
 		return nil, err
 	}
-	mPath, err := s.containedPath(clean + ".meta.json")
+	mPath, err := s.containedPath(clean + metaSuffix)
 	if err != nil {
 		return nil, err
 	}
 
-	var existing Artifact
+	// Update modifies an artifact that exists; it never creates one, and it
+	// never invents a history for one whose record it cannot read. Resetting
+	// to revision 1 over a damaged sidecar would be a silent loss of the real
+	// revision count and created_at.
+	if info, err := os.Lstat(cPath); err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+	}
 	metaData, err := os.ReadFile(mPath)
-	if err == nil {
-		_ = json.Unmarshal(metaData, &existing)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable, so its revision history cannot be continued: %w", clean, err)
+	}
+	var existing Artifact
+	if err := json.Unmarshal(metaData, &existing); err != nil {
+		return nil, fmt.Errorf("artifacts: the metadata of %q is corrupt, so its revision history cannot be continued: %w", clean, err)
+	}
+	if existing.Revision < 1 || existing.CreatedAt.IsZero() {
+		return nil, fmt.Errorf("artifacts: the metadata of %q has no revision history to continue", clean)
 	}
 
-	if existing.Name == "" {
-		existing.Name = clean
-		existing.Path = cPath
-		existing.CreatedAt = time.Now()
-		existing.Revision = 0
-	}
-
+	existing.Name = clean
+	existing.Path = cPath
 	existing.Content = content
 	existing.UpdatedAt = time.Now()
 	existing.Revision++
@@ -169,12 +190,18 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 		existing.Metadata = *meta
 	}
 
-	if err := writeContained(cPath, []byte(content), 0o644); err != nil {
+	metaBytes, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: encoding metadata for %q: %w", clean, err)
+	}
+	// Content first, then the record of it: a failure between the two leaves
+	// the new content under the previous revision number, which is the
+	// direction that still tells the truth about which revision was last
+	// recorded.
+	if err := writeContained(cPath, []byte(content), 0o644, false); err != nil {
 		return nil, err
 	}
-
-	metaBytes, _ := json.MarshalIndent(existing, "", "  ")
-	if err := writeContained(mPath, metaBytes, 0o644); err != nil {
+	if err := writeContained(mPath, metaBytes, 0o644, false); err != nil {
 		return nil, err
 	}
 
@@ -219,7 +246,7 @@ func (s *Store) List() ([]*Artifact, error) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(d.Name(), ".meta.json") {
+		if strings.HasSuffix(d.Name(), metaSuffix) {
 			return nil
 		}
 
@@ -323,33 +350,80 @@ func (s *Store) containedPath(clean string) (string, error) {
 	return filepath.Join(current, parts[len(parts)-1]), nil
 }
 
-// writeContained writes data at full, refusing to follow a symbolic link at the
-// final component.
+// writeContained writes data at full without ever leaving a half-written file
+// at that name: the bytes go to a temporary sibling, are synced, and are then
+// published by rename (replacing) or by link (exclusive, failing if the name is
+// taken). A symbolic link at the final component is refused, and the directory
+// is synced so the name survives a crash.
 //
-// O_NOFOLLOW is what makes this a decision the kernel enforces rather than a
-// check this code makes and then races against: an Lstat followed by an
-// ordinary open is two operations with a window between them, and the window is
-// the whole attack.
-func writeContained(full string, data []byte, perm os.FileMode) (result error) {
-	f, err := safefile.OpenNoFollow(nil, full, os.O_WRONLY|os.O_CREATE, perm)
-	if err != nil {
-		return fmt.Errorf("artifacts: opening %s: %w", filepath.Base(full), err)
+// The sibling is created with O_EXCL and O_NOFOLLOW, so nothing planted at its
+// name is followed; the final name is never opened for writing, so a link
+// swapped in at it cannot redirect a write — rename replaces the link itself.
+func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
+	base := filepath.Base(full)
+	if info, err := os.Lstat(full); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("artifacts: refusing %q: that name is a symbolic link", base)
+		}
+		if exclusive {
+			return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("artifacts: refusing to write %s: not a regular file", base)
+		}
 	}
-	defer func() { result = errors.Join(result, f.Close()) }()
 
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("artifacts: inspecting %s: %w", filepath.Base(full), err)
+	dir := filepath.Dir(full)
+	var (
+		tmp  string
+		f    *os.File
+		open error
+	)
+	for attempt := 0; attempt < 16; attempt++ {
+		var nonce [8]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return fmt.Errorf("artifacts: naming a temporary file for %s: %w", base, err)
+		}
+		tmp = filepath.Join(dir, "."+base+"."+hex.EncodeToString(nonce[:])+".tmp")
+		f, open = safefile.OpenNoFollow(nil, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if !errors.Is(open, fs.ErrExist) {
+			break
+		}
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("artifacts: refusing to write %s: not a regular file", filepath.Base(full))
+	if open != nil {
+		return fmt.Errorf("artifacts: creating a temporary file for %s: %w", base, open)
 	}
-	// Validate the opened object before destroying its existing contents.
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("artifacts: truncating %s: %w", filepath.Base(full), err)
-	}
+	defer func() {
+		// Rename consumed the temp name; after a link it is still there.
+		if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+			result = errors.Join(result, err)
+		}
+	}()
+
 	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("artifacts: writing %s: %w", filepath.Base(full), err)
+		return errors.Join(fmt.Errorf("artifacts: writing %s: %w", base, err), f.Close())
 	}
-	return nil
+	if err := syncFile(f); err != nil {
+		return errors.Join(fmt.Errorf("artifacts: syncing %s: %w", base, err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("artifacts: closing %s: %w", base, err)
+	}
+
+	if exclusive {
+		if err := os.Link(tmp, full); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+			}
+			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
+		}
+	} else if err := os.Rename(tmp, full); err != nil {
+		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
+	}
+
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("artifacts: opening the directory of %s to sync it: %w", base, err)
+	}
+	return errors.Join(d.Sync(), d.Close())
 }

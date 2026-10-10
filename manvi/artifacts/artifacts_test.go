@@ -116,8 +116,8 @@ func TestNewStoreCreatesNothingUntilAWrite(t *testing.T) {
 	if _, err := store.Create("plan.md", "# Plan", Metadata{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := store.Update("notes/today.md", "x", nil); err != nil {
-		t.Fatalf("Update into a new subdirectory: %v", err)
+	if _, err := store.Create("notes/today.md", "x", Metadata{}); err != nil {
+		t.Fatalf("Create into a new subdirectory: %v", err)
 	}
 	if arts, err := store.List(); err != nil || len(arts) != 2 {
 		t.Fatalf("List after two writes = %d artifacts, %v; want 2", len(arts), err)
