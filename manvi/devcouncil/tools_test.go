@@ -31,18 +31,18 @@ type fixture struct {
 	pipe *tools.Registry
 	root string
 	db   string
-	t    *testing.T
+	t    testing.TB
 }
 
 // newFixture builds the tool surface under the strict posture, which is what
 // almost every test here wants: they are testing what the gate does when it is
 // enforcing. The shipped default is dev posture, and it has its own test.
-func newFixture(t *testing.T) *fixture {
+func newFixture(t testing.TB) *fixture {
 	t.Helper()
 	return newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureStrict})
 }
 
-func newFixtureWith(t *testing.T, settings map[string]string) *fixture {
+func newFixtureWith(t testing.TB, settings map[string]string) *fixture {
 	t.Helper()
 	return newFixtureFull(t, settings, nil)
 }
@@ -55,7 +55,7 @@ func newFixtureRunner(t *testing.T, runner SubAgentRunner) *fixture {
 	return newFixtureFull(t, map[string]string{flags.HarnessPosture: flags.PostureStrict}, runner)
 }
 
-func newFixtureFull(t *testing.T, settings map[string]string, runner SubAgentRunner) *fixture {
+func newFixtureFull(t testing.TB, settings map[string]string, runner SubAgentRunner) *fixture {
 	t.Helper()
 
 	root := t.TempDir()
@@ -128,14 +128,14 @@ func newFixtureFull(t *testing.T, settings map[string]string, runner SubAgentRun
 	return &fixture{reg: reg, pipe: pipe, root: root, db: db, t: t}
 }
 
-func storeBinary(t *testing.T) string {
+func storeBinary(t testing.TB) string {
 	t.Helper()
 	return testsupport.DCStore(t)
 }
 
 // insertTask writes a task row with sqlite3 if available, else via the store's
 // own connection through a tiny helper invocation.
-func insertTask(t *testing.T, binary, db, id, plannedJSON string) {
+func insertTask(t testing.TB, binary, db, id, plannedJSON string) {
 	t.Helper()
 	sql := "INSERT INTO tasks (id,title,description,planned_files_json,status) VALUES ('" +
 		id + "','t','d','" + strings.ReplaceAll(plannedJSON, "'", "''") + "','ready');"

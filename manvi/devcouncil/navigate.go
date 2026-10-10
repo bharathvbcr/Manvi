@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -68,6 +69,21 @@ func (r *Registry) navigator() (*devmap.Client, error) {
 	return r.deps.Map, nil
 }
 
+// graphReady scopes the call's status reads and refuses an index that cannot
+// answer, returning the context the query must run under.
+//
+// Both halves are one function so no call site can have one without the other:
+// Available and the freshness check inside the query are then a single
+// `devmap status` process rather than two or three, and the verdict is a
+// call's own — never one taken before an edit and served after it.
+func graphReady(ctx context.Context, client *devmap.Client) (context.Context, error) {
+	ctx = devmap.WithCall(ctx)
+	if _, err := client.Available(ctx); err != nil {
+		return ctx, err
+	}
+	return ctx, nil
+}
+
 func (r *Registry) graphQuery(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Query string `json:"query"`
@@ -82,7 +98,8 @@ func (r *Registry) graphQuery(ctx context.Context, call tools.Call) tools.Result
 	if err != nil {
 		return unavailable("code graph", err)
 	}
-	if _, err := client.Available(ctx); err != nil {
+	ctx, err = graphReady(ctx, client)
+	if err != nil {
 		return unavailable("code graph", err)
 	}
 
@@ -126,7 +143,8 @@ func (r *Registry) codeDead(ctx context.Context, call tools.Call) tools.Result {
 	// Availability is checked before the query, not after an empty result. An
 	// unbuilt index returns an empty list, and "no dead code" is a conclusion
 	// somebody would act on.
-	if _, err := client.Available(ctx); err != nil {
+	ctx, err = graphReady(ctx, client)
+	if err != nil {
 		return unavailable("dead-code analysis", err)
 	}
 
@@ -198,54 +216,101 @@ func (r *Registry) graphContext(ctx context.Context, call tools.Call) tools.Resu
 	if err != nil {
 		return unavailable("graph context", err)
 	}
-	if _, err := client.Available(ctx); err != nil {
+	ctx, err = graphReady(ctx, client)
+	if err != nil {
 		return unavailable("graph context", err)
 	}
 
-	type fileContext struct {
-		Path       string   `json:"path"`
-		Area       string   `json:"area,omitempty"`
-		Neighbours []string `json:"neighbouring_areas,omitempty"`
-		DependsOn  []string `json:"depends_on,omitempty"`
-		UsedBy     []string `json:"used_by,omitempty"`
-		Error      string   `json:"error,omitempty"`
+	// One `devmap deps` process per file is most of this tool's time, so the
+	// files run graphContextWorkers at a time. Each worker writes only its own
+	// slot, which keeps the answer in input order whatever order they finish
+	// in, and a cancelled context stops the pool from starting more processes:
+	// the ones already running are killed by the context they were started with.
+	results := make([]fileResult, len(args.Files))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < min(graphContextWorkers, len(args.Files)); w++ {
+		wg.Go(func() {
+			for i := range next {
+				results[i] = r.fileContextFor(ctx, client, args.Files[i])
+			}
+		})
+	}
+feed:
+	for i := range args.Files {
+		select {
+		case next <- i:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(next)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return unavailable("graph context", err)
 	}
 
 	var degraded []string
 	stale := false
-	out := make([]fileContext, 0, len(args.Files))
-	for _, file := range args.Files {
-		fc := fileContext{Path: file}
-
-		// The area and its neighbours come from the same map the write gate
-		// consults, so what this reports and what the gate will permit are one
-		// answer rather than two that can disagree.
-		if r.deps.Subsystems != nil {
-			if area, ok := r.deps.Subsystems.AreaForPath(file); ok {
-				fc.Area = area
-				fc.Neighbours = r.deps.Subsystems.Neighbours(area)
-			}
-		}
-
-		edges, err := client.Deps(ctx, file)
-		if err != nil {
-			fc.Error = err.Error()
-			out = append(out, fc)
-			continue
-		}
-		// Direction comes from the data, not from the subcommand's name: an
-		// edge whose source is this file is something it depends on, and one
-		// whose target is this file is something that depends on it.
-		fc.DependsOn, fc.UsedBy = split(file, edges.Items)
-		stale = stale || edges.Stale
-		degraded = append(degraded, edges.Degraded...)
-		out = append(out, fc)
+	out := make([]graphFileContext, 0, len(results))
+	for _, res := range results {
+		stale = stale || res.stale
+		degraded = append(degraded, res.degraded...)
+		out = append(out, res.ctx)
 	}
 	if truncatedFiles > 0 {
 		degraded = append(degraded, fmt.Sprintf(
 			"%d file(s) beyond the first %d were not examined", truncatedFiles, maxFiles))
 	}
 	return payload(map[string]any{"files": out}, dedupe(degraded), stale)
+}
+
+// graphContextWorkers bounds how many `devmap deps` processes one graph_context
+// call runs at once. Five divides the 25-file cap into five even rounds, and
+// stays small enough that a call cannot crowd out the rest of the turn.
+const graphContextWorkers = 5
+
+// graphFileContext is one file's answer in graph_context.
+type graphFileContext struct {
+	Path       string   `json:"path"`
+	Area       string   `json:"area,omitempty"`
+	Neighbours []string `json:"neighbouring_areas,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
+	UsedBy     []string `json:"used_by,omitempty"`
+	Error      string   `json:"error,omitempty"`
+}
+
+// fileResult is a graphFileContext with the qualifications its query reported.
+type fileResult struct {
+	ctx      graphFileContext
+	degraded []string
+	stale    bool
+}
+
+// fileContextFor answers graph_context for one file.
+func (r *Registry) fileContextFor(ctx context.Context, client *devmap.Client, file string) fileResult {
+	fc := graphFileContext{Path: file}
+
+	// The area and its neighbours come from the same map the write gate
+	// consults, so what this reports and what the gate will permit are one
+	// answer rather than two that can disagree.
+	if r.deps.Subsystems != nil {
+		if area, ok := r.deps.Subsystems.AreaForPath(file); ok {
+			fc.Area = area
+			fc.Neighbours = r.deps.Subsystems.Neighbours(area)
+		}
+	}
+
+	edges, err := client.Deps(ctx, file)
+	if err != nil {
+		fc.Error = err.Error()
+		return fileResult{ctx: fc}
+	}
+	// Direction comes from the data, not from the subcommand's name: an
+	// edge whose source is this file is something it depends on, and one
+	// whose target is this file is something that depends on it.
+	fc.DependsOn, fc.UsedBy = split(file, edges.Items)
+	return fileResult{ctx: fc, degraded: edges.Degraded, stale: edges.Stale}
 }
 
 // payload renders a navigation answer, always carrying its qualifications.

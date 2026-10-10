@@ -21,6 +21,24 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Changed
+
+- Subprocess cost per tool call. The turn-start baseline seeds its scratch
+  index from a copy of the repository's own index instead of `read-tree HEAD`,
+  so `git add -A` reuses git's stat cache and re-hashes only changed files; the
+  tree id is unchanged and a seed git refuses falls back to the old route.
+  Untracked files in a diff are rendered by one `git diff` over an
+  intent-to-add scratch index instead of one process each (258 git processes
+  for 256 files became 5), and anything the batch cannot attribute exactly
+  falls back to the per-file route. `graph_query`, `code_dead`, `graph_context`
+  and the new-file reuse check read `devmap status` once per call instead of
+  two or three times, and `graph_context` runs its per-file `devmap deps`
+  queries five at a time, in input order, stopping on cancel. Measured numbers
+  and the items closed without a change (dcgrep index, task cache, secret
+  pattern fold, concurrent tool dispatch) are on the card ft-9bff2fd4.
+- `docs/WORKBENCH.md` documents the bounded retention policy `store.compact`
+  enforces (DevCouncil `docs/workbench-retention.md`).
+
 ### Added
 
 - `manvi serve` binds every repository read to an explicit root. `devmap.status`
