@@ -1073,6 +1073,12 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	if err != nil {
 		return err
 	}
+	// Checked at attach, as the effort is: a tier this provider cannot serve is
+	// a configuration mistake, and found here it names the tier rather than
+	// arriving as a refused request in the middle of a delegated turn.
+	if _, err := checkTiers(h.reg, name); err != nil {
+		return err
+	}
 	// Re-armed after the build, which is when the provider's own credential
 	// requirement became known to the resolver. Before this call the scrubber
 	// could not have been watching the key this session is about to use.
@@ -1144,7 +1150,7 @@ func (h *harnessHost) resolveEffortCeiling(provider llm.Provider, model, effort 
 // the provider's own default applies — the harness does not pick a tier on the
 // operator's behalf, for the same reason it does not pick a model.
 func (h *harnessHost) resolveEffort(registry *llm.Registry, provider, model string) (string, error) {
-	effort, _, err := h.reg.String(flags.LLMEffort)
+	effort, key, _, err := mainEffort(h.reg, provider)
 	if err != nil {
 		return "", err
 	}
@@ -1154,7 +1160,7 @@ func (h *harnessHost) resolveEffort(registry *llm.Registry, provider, model stri
 	// Resolve is the same capability gate the agent loop uses before every
 	// request, so attach cannot accept a value the turn would then refuse.
 	if _, _, err := registry.Resolve(provider, llm.Request{Model: model, Effort: effort}); err != nil {
-		return "", fmt.Errorf("%s=%s: %w", flags.EnvKey(flags.LLMEffort), effort, err)
+		return "", fmt.Errorf("%s=%s: %w", flags.EnvKey(key), effort, err)
 	}
 	return effort, nil
 }

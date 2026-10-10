@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
@@ -302,6 +303,9 @@ const (
 	SourceEnv ModelSource = "MANVI_MODEL"
 	// SourceSetting is the provider's own standing configuration.
 	SourceSetting ModelSource = "llm.local.model"
+	// SourceTierMain is the main tier of the operator's tier profile, which is
+	// the standing answer on anthropic.
+	SourceTierMain ModelSource = "llm.tier.main"
 	// SourceDiscovered is the server's own answer: it serves exactly one model
 	// that could drive a coding turn, so there was nothing to choose.
 	SourceDiscovered ModelSource = "discovered"
@@ -312,14 +316,24 @@ const (
 // resolveModelFor decides which model a run will send.
 //
 // Precedence is explicit-beats-ambient: MANVI_MODEL is what an operator typed
-// for this run, the provider's own setting is standing configuration, and
-// neither being present is an error that names what the provider serves rather
-// than a default this harness invented. No model id is defaulted anywhere in
-// this binary, for the reason the flag catalogue gives: they must be read from
-// what actually exists, not from memory.
+// for this run, the provider's own setting is standing configuration — the main
+// tier on anthropic, llm.local.model on local — and neither being present is an
+// error that names what the provider serves rather than a default this harness
+// invented. The one model id this binary defaults is the tier profile's, and
+// every id in it is checked against the transcribed catalogue before a session
+// starts (checkTiers), so it is read from what exists rather than from memory.
 func resolveModelFor(ctx context.Context, name string, provider llm.Provider, reg *flags.Registry) (string, ModelSource, error) {
 	if m := strings.TrimSpace(os.Getenv("MANVI_MODEL")); m != "" {
 		return m, SourceEnv, nil
+	}
+	if name == anthropic.Name {
+		model, _, _, err := mainModel(reg)
+		if err != nil {
+			return "", SourceNone, err
+		}
+		if model != "" {
+			return model, SourceTierMain, nil
+		}
 	}
 	if name == local.Name {
 		if m, _, err := reg.String(flags.LLMLocalModel); err == nil && strings.TrimSpace(m) != "" {
@@ -355,8 +369,12 @@ func resolveModelFor(ctx context.Context, name string, provider llm.Provider, re
 	if len(shown) > limit {
 		shown, suffix = shown[:limit], fmt.Sprintf(" and %d more", len(models)-limit)
 	}
-	return "", SourceNone, fmt.Errorf("set MANVI_MODEL — %s serves: %s%s",
-		name, strings.Join(shown, ", "), suffix)
+	remedy := "MANVI_MODEL"
+	if name == anthropic.Name {
+		remedy += " or " + flags.EnvKey(tierModelKey(agents.TierMain))
+	}
+	return "", SourceNone, fmt.Errorf("set %s — %s serves: %s%s",
+		remedy, name, strings.Join(shown, ", "), suffix)
 }
 
 // modelsFor lists what a provider serves, for an error that can name the

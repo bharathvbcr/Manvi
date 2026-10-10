@@ -42,6 +42,7 @@ Usage:
   manvi tool NAME [--json ARGS]     Call one natively, the same path an agent takes
   manvi providers                   Show model providers and whether a credential is present
   manvi budget                      Show Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD
+  manvi tiers                       Show the model and effort each tier runs at, and where each came from
   manvi local [--resolve]           Find local model servers; --resolve prints what a run would use
   manvi pull                        Fast-forward the current branch; refuses a dirty tree
   manvi push                        Push the current branch to its configured upstream
@@ -64,7 +65,7 @@ in: the state directory the harness writes into and, inside a git working tree,
 the .gitignore rules that keep that directory out of a commit. It is
 idempotent, it only ever adds, it never adds a rule that would ignore a tracked
 file, and it reports on stderr what it changed. Every other command — help,
-version, flags, logo, providers, budget, tools, check, an unknown command, a
+version, flags, logo, providers, tiers, budget, tools, check, an unknown command, a
 missing or unknown subcommand, or '--help' after any command — leaves the
 working tree as it found it. 'manvi tui' also brings the navigation index up to date, in the
 background, so the first frame does not wait on a build whose cost scales with
@@ -311,7 +312,7 @@ func run(out, notes io.Writer, args []string) error {
 		return errors.New(b.String())
 	}
 
-	reg, err := flags.NewHarnessRegistry(configPath())
+	reg, err := newRegistry(configPath())
 	if err != nil {
 		return err
 	}
@@ -386,6 +387,8 @@ func run(out, notes io.Writer, args []string) error {
 		return callTool(out, os.Stderr, scrubber, pipeline, args[1:])
 	case "providers":
 		return showProviders(out, reg)
+	case "tiers":
+		return showTiers(out, reg)
 	case "budget":
 		return showBudget(out)
 	case "local":

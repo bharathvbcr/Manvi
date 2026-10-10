@@ -161,7 +161,7 @@ func loadTrustStore(root string) trustStore {
 	}
 	store.path = path
 
-	if inside, err := pathIsInside(root, path); err != nil {
+	if inside, err := PathIsInside(root, path); err != nil {
 		store.err = fmt.Errorf("could not tell whether the authorization file %s lies inside %s: %w",
 			path, root, err)
 		return store
@@ -207,9 +207,13 @@ func trustFilePath() (string, error) {
 	return filepath.Join(dir, "manvi", trustFileName), nil
 }
 
-// pathIsInside reports whether path lies within root, comparing the two after
+// PathIsInside reports whether path lies within root, comparing the two after
 // resolving symlinks as far as each exists.
-func pathIsInside(root, path string) (bool, error) {
+//
+// Exported because it is the one answer to "could a checked-out tree have
+// written this file": the user config that carries the tier profile asks it
+// for the same reason the authorization file does.
+func PathIsInside(root, path string) (bool, error) {
 	if strings.TrimSpace(root) == "" {
 		return false, nil
 	}
