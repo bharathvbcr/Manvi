@@ -345,7 +345,7 @@ func TestHarnessHostCommandsAreComplete(t *testing.T) {
 		found[c.Name] = true
 	}
 	for _, want := range []string{
-		"doctor", "flags", "providers", "budget", "tools", "leases", "lease",
+		"doctor", "flags", "providers", "agents", "budget", "tools", "leases", "lease",
 		"check", "allow", "tool", "map", "probe", "pull", "push", "issues",
 		"logo", "help", "clear", "quit",
 	} {

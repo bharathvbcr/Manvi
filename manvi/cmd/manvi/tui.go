@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -125,6 +126,10 @@ type tuiSession struct {
 	// prompt has been typed reads as the harness losing the turn.
 	effortCeiling string
 	registry      *llm.Registry
+	// tiers is the checked tier profile children of this session are placed
+	// on, resolved at attach with the provider it was checked against; nil off
+	// anthropic.
+	tiers agents.TierProfile
 }
 
 // persist writes a session's log to the same store the headless face resumes
@@ -159,6 +164,7 @@ type attached struct {
 	model         string
 	effort        string
 	effortCeiling string
+	tiers         agents.TierProfile
 }
 
 // attachment reads the block under the lock. A caller that read the five fields
@@ -167,7 +173,7 @@ type attached struct {
 func (s *tuiSession) attachment() attached {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
-	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling}
+	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers}
 }
 
 // detach drops the resolved provider so the next turn resolves it again.
@@ -175,6 +181,7 @@ func (s *tuiSession) detach() {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
 	s.provider, s.registry, s.model, s.effort, s.effortCeiling = nil, nil, "", "", ""
+	s.tiers = nil
 }
 
 type harnessHost struct {
@@ -246,6 +253,7 @@ func (h *harnessHost) Commands() []tui.CommandSpec {
 		{Name: "doctor", Summary: "configuration, store reachability, and weakened gates"},
 		{Name: "flags", Args: "[--all] | set KEY VALUE", Summary: "settings, their values, where each came from, and how to move one"},
 		{Name: "providers", Summary: "model backends and whether each one is usable"},
+		{Name: "agents", Summary: "sub-agent roles, the tier each runs on, and that tier's model"},
 		{Name: "budget", Summary: "Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD"},
 		{Name: "local", Args: "[--resolve] [--timeout DURATION]", Summary: "find local model servers and what they serve"},
 		{Name: "pull", Summary: "fast-forward the current branch; refuses a dirty tree", Mutating: true},
@@ -557,6 +565,8 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 		return flagsCommand(out, h.reg, fields, surfaceSession)
 	case "providers":
 		return "", showProviders(out, h.reg)
+	case "agents":
+		return "", showAgents(out, h.reg)
 	case "budget":
 		return "", budgetCommand(out, fields)
 	case "local":
@@ -884,6 +894,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		check: &sensor{
 			native: s.native, log: s.log, flags: h.reg,
 			runner:  subRunner,
+			roles:   s.native.Roles(),
 			command: operatorVerifyCommand(),
 		},
 	}, turnDeps{
@@ -978,6 +989,7 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 			model:           at.model,
 			effort:          at.effort,
 			effortCeiling:   at.effortCeiling,
+			tiers:           at.tiers,
 			registry:        s.pipeline,
 			native:          s.native,
 			meter:           s.subMeter,
@@ -1076,7 +1088,8 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	// Checked at attach, as the effort is: a tier this provider cannot serve is
 	// a configuration mistake, and found here it names the tier rather than
 	// arriving as a refused request in the middle of a delegated turn.
-	if _, err := checkTiers(h.reg, name); err != nil {
+	tiers, err := checkTiers(h.reg, name)
+	if err != nil {
 		return err
 	}
 	// Re-armed after the build, which is when the provider's own credential
@@ -1104,6 +1117,7 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	s.attachMu.Lock()
 	s.provider, s.registry, s.model, s.effort = provider, registry, model, effort
 	s.effortCeiling = ceiling
+	s.tiers = tiers.Profile()
 	s.attachMu.Unlock()
 	return nil
 }

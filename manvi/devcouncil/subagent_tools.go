@@ -73,7 +73,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 		{
 			Schema: schema("devcouncil_define_subagent",
 				"Dynamically define or update a specialized subagent type with a custom role, system prompt, and tool configuration.",
-				`{"type":"object","properties":{"name":{"type":"string","description":"unique name for subagent type"},"role":{"type":"string","description":"role description"},"description":{"type":"string","description":"human-readable description"},"system_prompt":{"type":"string","description":"detailed system prompt"},"model":{"type":"string","description":"model name or inherit/flash/pro"},"enable_mcp_tools":{"type":"boolean","description":"admit the mcp tool group; false takes it away from the child"},"enable_write_tools":{"type":"boolean","description":"false makes the child read-only"},"allowed_tools":{"type":"array","items":{"type":"string"},"description":"allowlist of tool names; it only ever removes, never widens what enable_write_tools and enable_mcp_tools permit"}},"required":["name","description","system_prompt"]}`),
+				`{"type":"object","properties":{"name":{"type":"string","description":"unique name for subagent type"},"role":{"type":"string","description":"role description"},"description":{"type":"string","description":"human-readable description"},"system_prompt":{"type":"string","description":"detailed system prompt"},"model":{"type":"string","description":"a tier, not a model id: basic, lite or heavy, at or below the role's ceiling (heavy when enable_write_tools is true, lite otherwise); model ids and providers are refused"},"tier":{"type":"string","description":"the dearest tier this role may run on: basic, lite or heavy, at or below its ceiling (heavy when enable_write_tools is true, lite otherwise); omit to take the ceiling"},"enable_mcp_tools":{"type":"boolean","description":"admit the mcp tool group; false takes it away from the child"},"enable_write_tools":{"type":"boolean","description":"false makes the child read-only"},"allowed_tools":{"type":"array","items":{"type":"string"},"description":"allowlist of tool names; it only ever removes, never widens what enable_write_tools and enable_mcp_tools permit"}},"required":["name","description","system_prompt"]}`),
 			Group:    tools.GroupSubagent,
 			Handler:  r.defineSubagent,
 			Extended: true,
@@ -81,7 +81,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 		{
 			Schema: schema("devcouncil_invoke_subagent",
 				"Invoke one or more subagents concurrently by name with custom task prompts, returning their unique conversation IDs and execution outcomes.",
-				`{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`),
+				`{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`),
 			Group:    tools.GroupSubagent,
 			Handler:  r.invokeSubagents,
 			Extended: true,
@@ -111,6 +111,11 @@ func (r *Registry) getSubagentRegistry() *agents.Registry {
 	}
 	return r.fallbackPlane().roles
 }
+
+// Roles is the role catalogue this surface dispatches from, so a dispatcher
+// outside this package — the end-of-turn critic — runs a role exactly as these
+// tools would rather than describing one of its own.
+func (r *Registry) Roles() *agents.Registry { return r.getSubagentRegistry() }
 
 func (r *Registry) getSubagentManager() *agents.InstanceManager {
 	if r.deps.SubagentMgr != nil {
@@ -156,6 +161,15 @@ func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Re
 		return tools.Errorf("system_prompt is required")
 	}
 
+	// Where a model-authored role runs is a tier, never a model id. See
+	// authoredTier.
+	tier, err := authoredTier(def)
+	if err != nil {
+		return tools.Errorf("%v. Nothing was registered", err)
+	}
+	def.Model = agents.InheritSpec
+	def.Tier = tier
+
 	reg := r.getSubagentRegistry()
 	// A shipped role is not redefinable, whatever subagents.dynamic.enabled
 	// says. The two are different questions: the setting decides whether a
@@ -180,7 +194,39 @@ func (r *Registry) defineSubagent(ctx context.Context, call tools.Call) tools.Re
 		"name":        def.Name,
 		"role":        def.Role,
 		"description": def.Description,
+		"tier":        def.Ceiling(),
 	})
+}
+
+// authoredTier reads the placement of a role a model is defining, from either
+// of the two keys that can carry it, and refuses anything that is not a tier
+// within the role's permissions.
+//
+// A model used to be able to write any string into a role's model — including
+// an id billed at several times the rate of anything the operator chose — and
+// every later dispatch of that role went there. The operator's own roles may
+// still name raw models: they are registered in-process, through
+// agents.Registry.Register, and never pass through this tool.
+//
+// The ceiling is the one the role's permissions earn, not one the model
+// declares, so a model cannot raise its own limit by asking for it.
+func authoredTier(def agents.Definition) (agents.Tier, error) {
+	ceiling := def.PermissionCeiling()
+	fromModel, err := agents.ModelPlacement(def.Model, ceiling)
+	if err != nil {
+		return "", fmt.Errorf("model: %w", err)
+	}
+	fromTier, err := agents.ModelPlacement(string(def.Tier), ceiling)
+	if err != nil {
+		return "", fmt.Errorf("tier: %w", err)
+	}
+	if fromModel != "" && fromTier != "" && fromModel != fromTier {
+		return "", fmt.Errorf("model %q and tier %q disagree; name the tier once", fromModel, fromTier)
+	}
+	if fromTier != "" {
+		return fromTier, nil
+	}
+	return fromModel, nil
 }
 
 // invokeRequest is one entry of devcouncil_invoke_subagent's subagents array.
@@ -217,6 +263,34 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	reg := r.getSubagentRegistry()
 	mgr := r.getSubagentManager()
 
+	// A per-call model is the dispatching model choosing a placement, so it
+	// may name only a tier, and only one at or below the role's ceiling.
+	// Checked for every child before any runs: a fan-out half of which was
+	// refused would report the other half as the dispatch the caller asked
+	// for.
+	tiers := make([]agents.Tier, len(args.Subagents))
+	for i, s := range args.Subagents {
+		def, known := reg.Get(s.TypeName)
+		if !known {
+			def = unknownRole(s)
+		}
+		tier, err := agents.ModelPlacement(s.Model, def.Ceiling())
+		if err != nil {
+			return tools.Errorf("subagents[%d] (%s, type %q): model: %v. Nothing was dispatched",
+				i, s.Role, s.TypeName, err)
+		}
+		// An operator who pinned a role to a model decided where it runs; a
+		// tier named in the call cannot move it. Refused rather than ignored,
+		// because a field that is accepted and has no effect tells the model
+		// it has control it does not have.
+		if tier != "" && !agents.ParsePlacement(def.Model, nil).Inherits() {
+			return tools.Errorf("subagents[%d] (%s, type %q): model: the operator placed this role on %q, "+
+				"and a per-call tier cannot move it; omit model. Nothing was dispatched",
+				i, s.Role, s.TypeName, def.Model)
+		}
+		tiers[i] = tier
+	}
+
 	runner := r.deps.SubAgent
 
 	bounds, refusal := r.delegationBounds()
@@ -229,10 +303,6 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	// bound above was resolved from the session's default provider.
 	placements := make([]string, 0, len(args.Subagents))
 	for _, sub := range args.Subagents {
-		if override := strings.TrimSpace(sub.Model); override != "" {
-			placements = append(placements, override)
-			continue
-		}
 		if def, ok := reg.Get(sub.TypeName); ok {
 			placements = append(placements, def.Model)
 		}
@@ -251,12 +321,12 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		placements: placements,
 		tasks: func() []agents.Task {
 			var subTasks []agents.Task
-			for _, s := range args.Subagents {
+			for i, s := range args.Subagents {
 				def, ok := reg.Get(s.TypeName)
 				if !ok {
 					unknownTypes = append(unknownTypes, s.TypeName)
 				}
-				subTasks = append(subTasks, invokeTask(s, def, ok, mgr, runner))
+				subTasks = append(subTasks, invokeTask(s, def, ok, tiers[i], len(args.Subagents), mgr, runner))
 			}
 			return subTasks
 		},
@@ -277,32 +347,70 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	})
 }
 
+// unknownRole is the synthetic role an unregistered type_name runs under.
+//
+// Auto-fallback to self, with writes withheld. A permission nobody wrote down
+// is a permission nobody reviewed, and the direction an unverifiable permission
+// has to fail is closed: the caller named a role that does not exist, and the
+// one thing that must not follow from a misspelling is a child that can mutate
+// the working tree. Its ceiling follows from the same fact — a read-only role
+// that states no tier is capped at lite.
+func unknownRole(s invokeRequest) agents.Definition {
+	return agents.Definition{
+		Name:             s.TypeName,
+		Role:             s.Role,
+		EnableWriteTools: false,
+	}
+}
+
+// ApplyRole puts what a registered role decides onto a request: its model
+// placement, system prompt and tool surface, and whether the child may write.
+//
+// callerReadOnly is the dispatcher's own demand for a non-mutating child. It
+// is a floor, never a ceiling: a caller that asked for a read-only child is
+// not handed a writing one because the role permits writes, and the role's
+// named write exceptions do not apply to it. Both facts arrive at the runner
+// as one bool, so the distinction has to be made here, where the caller's
+// request is still separable from the role's default.
+//
+// It is one function because every dispatcher of a role — both dispatch tools
+// and the end-of-turn critic — has to reach the same answer, and three copies
+// of this block had already started to disagree about which fields a role
+// contributes.
+func ApplyRole(req *SubAgentRequest, def agents.Definition, callerReadOnly bool) {
+	req.ModelSpec = def.Model
+	req.SystemPrompt = def.SystemPrompt
+	req.Surface = def.Surface()
+	req.ReadOnly = callerReadOnly || !def.EnableWriteTools
+	if callerReadOnly {
+		req.Surface.Writes = nil
+	}
+}
+
 // invokeTask is one devcouncil_invoke_subagent child: a tracked instance the
 // control plane can list and kill, running under the role s names. known is
 // false when no role by that name is registered, and def is then the zero
-// value.
-func invokeTask(s invokeRequest, def agents.Definition, known bool,
+// value. tier is the caller's own placement, already checked against the
+// role's ceiling, or empty; width is how many children this dispatch holds.
+func invokeTask(s invokeRequest, def agents.Definition, known bool, tier agents.Tier, width int,
 	mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
-	// The surface is taken only from a role that actually exists. The
-	// fallback below is synthetic — nobody wrote it down — so it declares
-	// nothing and the child inherits the parent's tool set, which is the
-	// same reading an unknown type already gets for its placement. Building
-	// a surface out of the fallback's zero fields would instead read as a
-	// role that deliberately denied the MCP group.
-	var surface agents.ToolSurface
+	req := SubAgentRequest{Label: s.Role, Prompt: s.Prompt}
 	if known {
-		surface = def.Surface()
+		ApplyRole(&req, def, false)
 	} else {
-		// Auto-fallback to self, with writes withheld. A permission nobody
-		// wrote down is a permission nobody reviewed, and the direction an
-		// unverifiable permission has to fail is closed: the caller named a
-		// role that does not exist, and the one thing that must not follow
-		// from a misspelling is a child that can mutate the working tree.
-		def = agents.Definition{
-			Name:             s.TypeName,
-			Role:             s.Role,
-			EnableWriteTools: false,
-		}
+		// The surface is taken only from a role that actually exists. The
+		// fallback is synthetic — nobody wrote it down — so it declares
+		// nothing and the child inherits the parent's tool set. Building a
+		// surface out of the fallback's zero fields would instead read as a
+		// role that deliberately denied the MCP group.
+		def = unknownRole(s)
+		req.ReadOnly = true
+	}
+	// The router decides the tier from the role and the dispatch; a caller's
+	// own placement, already held to the role's ceiling, replaces it.
+	req.Tier = agents.Route(def, req.ReadOnly, false, width)
+	if tier != "" {
+		req.Tier = tier
 	}
 
 	convID := fmt.Sprintf("subagent-%d-%d", time.Now().UnixMilli(), conversationCounter.Add(1))
@@ -345,27 +453,10 @@ func invokeTask(s invokeRequest, def agents.Definition, known bool,
 					"sub-agent %q cannot run: no model is attached to this invocation", s.Role))
 			}
 
-			// The role decides where the child runs, and a per-call model
-			// overrides it. The override is honoured rather than ignored
-			// because the schema has advertised `model` since this tool
-			// shipped: the handler decoded it into a field it never read,
-			// which tells the model it has control it does not have.
-			modelSpec := def.Model
-			if override := strings.TrimSpace(s.Model); override != "" {
-				modelSpec = override
-			}
-
-			out, err := runner.RunSubAgent(childCtx, SubAgentRequest{
-				Label:        s.Role,
-				Prompt:       s.Prompt,
-				ReadOnly:     !def.EnableWriteTools,
-				ModelSpec:    modelSpec,
-				SystemPrompt: def.SystemPrompt,
-				Surface:      surface,
-				// So a lease this child takes for itself is released by the
-				// same cleanup that releases one the dispatch named.
-				Leases: leaseSinkFor(holder),
-			})
+			// So a lease this child takes for itself is released by the
+			// same cleanup that releases one the dispatch named.
+			req.Leases = leaseSinkFor(holder)
+			out, err := runner.RunSubAgent(childCtx, req)
 			if err != nil {
 				return leftBehind(out), recordFailure(inst, err)
 			}
@@ -657,6 +748,13 @@ type SubAgentRequest struct {
 	// parent's provider whatever its role said, so a planner on a frontier
 	// model dispatching workers to a local one was not expressible.
 	ModelSpec string
+	// Tier is the tier the child is to run on, decided by agents.Route from
+	// the role and the dispatch, or named by the dispatching model within the
+	// role's ceiling. The runner resolves it against the session's tier
+	// profile; an empty tier, or one the profile does not hold, inherits the
+	// parent's model. A ModelSpec that names a placement wins over it, because
+	// only an operator can write one.
+	Tier agents.Tier
 	// SystemPrompt is the role's own prompt. Empty means the child inherits the
 	// parent's, which is what the "self" role wants and what a fan-out with no
 	// named type gets.
@@ -913,7 +1011,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 		tasks: func() []agents.Task {
 			subTasks := make([]agents.Task, 0, len(args.Tasks))
 			for _, t := range args.Tasks {
-				subTasks = append(subTasks, r.spawnTask(t, roles, runner))
+				subTasks = append(subTasks, r.spawnTask(t, roles, len(args.Tasks), runner))
 			}
 			return subTasks
 		},
@@ -932,7 +1030,8 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 
 // spawnTask is one devcouncil_spawn_subagents child: it holds a lease on the
 // task it names, if it names one, and runs under the role it names, if any.
-func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, runner SubAgentRunner) agents.Task {
+// width is how many children this dispatch holds, which the router reads.
+func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, width int, runner SubAgentRunner) agents.Task {
 	return agents.Task{
 		Label: t.Label,
 		Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {
@@ -964,26 +1063,16 @@ func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, runner SubA
 				// same cleanup that releases one the dispatch named.
 				Leases: leaseSinkFor(holder),
 			}
+			// A task with no role routes as a generalist that may write
+			// unless the caller said otherwise, which is what it is.
+			def := agents.Definition{EnableWriteTools: true}
 			if t.Type != "" {
-				if def, ok := roles.Get(t.Type); ok {
-					req.ModelSpec = def.Model
-					req.SystemPrompt = def.SystemPrompt
-					req.Surface = def.Surface()
-					// ReadOnly is a floor, never a ceiling: a caller that
-					// asked for a non-mutating child must not be handed a
-					// writing one because the role permits writes.
-					req.ReadOnly = t.ReadOnly || !def.EnableWriteTools
-					if t.ReadOnly {
-						// The caller demanded a non-mutating child, so the
-						// role's named write exceptions do not apply. Both
-						// facts arrive as one bool at the runner, so the
-						// distinction has to be made here, where the
-						// caller's own request is still separable from the
-						// role's default.
-						req.Surface.Writes = nil
-					}
+				if known, ok := roles.Get(t.Type); ok {
+					def = known
+					ApplyRole(&req, def, t.ReadOnly)
 				}
 			}
+			req.Tier = agents.Route(def, req.ReadOnly, false, width)
 
 			out, err := runner.RunSubAgent(childCtx, req)
 			if err != nil {

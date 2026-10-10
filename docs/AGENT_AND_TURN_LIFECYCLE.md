@@ -168,17 +168,39 @@ flowchart TB
     Parent --> Builder & Stress & Self
 ```
 
-| Role Name | Declared Role | Write Tools | MCP Tools | Primary Responsibility |
-|---|---|---|---|---|
-| `research` | Codebase & Documentation Researcher | No | Yes | Explores and comprehends the codebase, navigates symbols via the dev map, verifies official documentation, identifies structural gaps without mutating. |
-| `builder` | Full-Stack Feature Builder | Yes | Yes | Builds on existing core functions without duplication, characterizes baseline behavior with tests first, verifies gap resolution. |
-| `critic` | Adversarial Code & Security Reviewer | No | **No** | Audits proposed changes against invariants, edge cases (empty, nil, concurrent, timeout), credential safety, and regression risk. |
-| `planner` | Problem Deconstructor & Hypothesis Architect | No | Yes | Deconstructs requirements, formulates verifiable hypotheses, drafts structured plans under `.devcouncil/artifacts/` without code mutations. |
-| `stress_tester` | Adversarial Stress Tester & Hardener | Yes | Yes | Attacks solutions with boundary conditions, concurrent races, malformed inputs, and timeouts. |
-| `self` | Autonomous Pair Subagent | Yes | Yes | Inherits the parent's configuration, tools, and system prompt for delegated concurrent work. |
+| Role Name | Declared Role | Tier | Write Tools | MCP Tools | Primary Responsibility |
+|---|---|---|---|---|---|
+| `research` | Codebase & Documentation Researcher | lite | No | Yes | Explores and comprehends the codebase, navigates symbols via the dev map, verifies official documentation, identifies structural gaps without mutating. |
+| `builder` | Full-Stack Feature Builder | heavy | Yes | Yes | Builds on existing core functions without duplication, characterizes baseline behavior with tests first, verifies gap resolution. |
+| `critic` | Adversarial Code & Security Reviewer | advisor | No | **No** | Audits proposed changes against invariants, edge cases (empty, nil, concurrent, timeout), credential safety, and regression risk. |
+| `planner` | Problem Deconstructor & Hypothesis Architect | lite | No | Yes | Deconstructs requirements, formulates verifiable hypotheses, drafts structured plans under `.devcouncil/artifacts/` without code mutations. |
+| `stress_tester` | Adversarial Stress Tester & Hardener | heavy | Yes | Yes | Attacks solutions with boundary conditions, concurrent races, malformed inputs, and timeouts. |
+| `self` | Autonomous Pair Subagent | heavy | Yes | Yes | Inherits the parent's configuration, tools, and system prompt for delegated concurrent work. |
 
-Every shipped role declares `Model: "inherit"` — none pins its own model tier, so
-a role runs on whatever model the parent session attached. The tool-permission
+Every shipped role states a tier (`agents.Tier`: basic < lite < heavy < main <
+advisor), and none pins a model. The tier is the dearest the role runs on; the
+tier a given dispatch gets is decided by `agents.Route` from facts known at
+dispatch time, never from the prompt: a verdict request goes to advisor, a child
+that may write to heavy, a read-only child to lite — or to basic in a fan-out of
+`agents.BasicFanoutWidth` (4) or more — capped at the role's tier. No child routes
+to main, which is the dispatching agent's own. The runner resolves the tier
+against the session's tier profile; on a provider with no profile (anything but
+`anthropic`), or for a tier the profile does not hold, the child inherits the
+parent's model as before. A child on a tier runs at that tier's own effort, not
+the parent's. `manvi agents` prints role → tier → model.
+
+A dispatching model may name only a tier, never a model id or provider, and only
+one at or below the role's tier: the per-call `model` of
+`devcouncil_invoke_subagent` and the `model`/`tier` of
+`devcouncil_define_subagent` refuse anything else, naming the tiers allowed. A
+role a model defines is capped by its permissions — heavy if it may write, lite
+if not. A role the operator registers in-process may still name a raw model, and
+a per-call tier cannot move it.
+
+The end-of-turn checkpoint critic runs as the `critic` role, read-only whatever
+that role says, on the tier a verdict routes to (advisor).
+
+The tool-permission
 columns above are the two switches a definition actually carries
 (`EnableWriteTools`, `EnableMCPTools`); finer-grained per-tool permissions are
 not part of a role definition.
