@@ -535,16 +535,24 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		raw = encoded
 	}
 
-	l.mu.Lock()
-	if t == AssistantChunk && l.withholdChunks {
+	// Everything up to the sequence number depends only on the payload and
+	// the scrubbing settings, so it runs before the write lock rather than
+	// under it. A scrubbed megabyte tool result is tens of milliseconds of
+	// re-encoding, and every reader of the log used to wait it out. The
+	// settings are installed before appending (see SetScrubber), so reading
+	// them once here sees what reading them under the write lock saw.
+	l.mu.RLock()
+	scrub, withholdChunks := l.scrub, l.withholdChunks
+	l.mu.RUnlock()
+
+	if t == AssistantChunk && withholdChunks {
 		// Even provider-assigned identifiers may contain sensitive fragments.
 		// Retain only the occurrence; complete messages carry useful content.
 		raw = json.RawMessage(`{"withheld":true}`)
 	}
-	if l.scrub != nil && len(raw) > 0 {
-		cleaned, err := rewritePayload(raw, l.scrub, false, nil, 0)
+	if scrub != nil && len(raw) > 0 {
+		cleaned, err := rewritePayload(raw, scrub, false, nil, 0)
 		if err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: scrubbing %s: %w", t, err)
 		}
 		raw = cleaned
@@ -553,7 +561,6 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	if t == UserMessage || t == AssistantMessage {
 		public, err := (Event{Type: t, Data: raw}).Public()
 		if err != nil {
-			l.mu.Unlock()
 			return Event{}, err
 		}
 		publicData = public.Data
@@ -565,22 +572,21 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	case UserMessage, AssistantMessage:
 		var data MessageData
 		if err := json.Unmarshal(raw, &data); err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
 		}
 		projected = data
 	case ToolResult:
 		var data ToolResultData
 		if err := json.Unmarshal(raw, &data); err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
 		}
 		if err := validateToolContent(data); err != nil {
-			l.mu.Unlock()
 			return Event{}, err
 		}
 		projected = data
 	}
+
+	l.mu.Lock()
 	switch t {
 	case TurnStart:
 		l.turn++
