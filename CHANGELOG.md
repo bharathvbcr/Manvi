@@ -164,7 +164,14 @@ under **Unreleased** in the same commit as the code.
     `http.DefaultTransport` is still used as it stands);
   - a stream's 1 MiB read buffer is recycled once the stream ends rather than
     allocated per model call;
-  - the Gemini adapter decodes each streamed event once instead of twice.
+  - the Gemini adapter decodes each streamed event once instead of twice;
+  - `get_diff` and verification render untracked files eight at a time
+    instead of one after another (300 new files: ~840 ms → ~390 ms), with the
+    same bytes, order, budget cuts and notes as before;
+  - `find_files` skips a base-name match that cannot succeed;
+  - the TUI renders a streaming reply incrementally (a long reply: ~5 s of
+    layout and 2.4 GB of allocation → ~1 s and 51 MB), caps reasoning like
+    tool results, and keeps each entry's lowercased text for search.
 - **`manvi serve`: `capability.probe` reuses a successful answer** for a repeat
   probe with identical parameters for up to the local adapter's discovery TTL
   (60 s — the freshness the harness already accepts on its own request path).
