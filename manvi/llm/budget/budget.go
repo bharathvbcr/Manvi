@@ -206,6 +206,13 @@ func Inspect(path string) (Snapshot, error) {
 	return l.Snapshot()
 }
 
+// ReconcileAt reclaims the dead attempts in the ledger at path without
+// enforcing a limit, for an operator command that has none to hand.
+func ReconcileAt(path string) ([]Attempt, error) {
+	l := &Ledger{path: path, limit: 1}
+	return l.Reconcile()
+}
+
 var errReadOnly = errors.New("read only")
 
 func (l *Ledger) update(ctx context.Context, mutate func(*Snapshot) error) error {
@@ -306,15 +313,51 @@ func save(path string, s Snapshot) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	// The rename is durable only once the directory entry is. Without this a
-	// crash can bring back the previous ledger, and with it lose the record of
-	// money already spent.
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
+	// The rename is durable only once the directory entry is.
+	return syncDir(filepath.Dir(path))
+}
+
+// reclaimDead retains every in-flight attempt whose owning process has exited.
+//
+// Such an attempt can never be resolved: the only code that would settle or
+// release it died with its process. It may have been billed, so it is kept as
+// retained spend, never refunded. That leaves the committed total unchanged; what
+// it frees is the in-flight slot, which a crashed fan-out would otherwise hold
+// until every later reservation failed at maxInFlight.
+//
+// The current process's own attempts are never touched, and an owner whose
+// liveness cannot be established is treated as alive. Misjudging a live owner
+// as dead costs that owner its settlement (the request errors); it never lets
+// spend escape the ledger.
+func reclaimDead(s *Snapshot, gone func(int) bool) []Attempt {
+	self := os.Getpid()
+	var reclaimed []Attempt
+	kept := s.InFlight[:0]
+	for _, a := range s.InFlight {
+		if a.PID != self && gone(a.PID) {
+			reclaimed = append(reclaimed, a)
+			s.RetainedNanoUSD += a.ReservedNanoUSD
+			s.RetainedAttempts++
+			continue
+		}
+		kept = append(kept, a)
 	}
-	defer dir.Close()
-	return dir.Sync()
+	s.InFlight = kept
+	return reclaimed
+}
+
+// Reconcile retains the reservations of attempts whose process has exited and
+// returns them. Reserve does the same before every admission; this is for an
+// operator who wants the ledger's in-flight list to be truthful now.
+func (l *Ledger) Reconcile() ([]Attempt, error) {
+	ctx, cancel := resolveContext()
+	defer cancel()
+	var reclaimed []Attempt
+	err := l.update(ctx, func(s *Snapshot) error {
+		reclaimed = reclaimDead(s, processGone)
+		return nil
+	})
+	return reclaimed, err
 }
 
 func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint64, error) {
@@ -323,6 +366,7 @@ func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint6
 	}
 	var id uint64
 	err := l.update(ctx, func(s *Snapshot) error {
+		reclaimDead(s, processGone)
 		if len(s.InFlight) >= maxInFlight {
 			return fmt.Errorf("budget: %d attempts already in flight", maxInFlight)
 		}

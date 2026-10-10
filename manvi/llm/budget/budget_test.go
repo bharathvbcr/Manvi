@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,8 +208,11 @@ func TestProcessesSharingOneFileCannotOverspend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.InFlightNanoUSD(); got != 50 || len(s.InFlight) != 50 {
-		t.Fatalf("%d processes reserved %d nano-USD over %d attempts under a limit of 50", workers, got, len(s.InFlight))
+	// A worker that finishes first has exited by the time a later one reserves,
+	// so some of its attempts are reclaimed from in flight into retained. Either
+	// way they are committed against the limit, which is the invariant here.
+	if got, attempts := s.CommittedNanoUSD(), int64(len(s.InFlight))+s.RetainedAttempts; got != 50 || attempts != 50 || s.SpentNanoUSD != 0 {
+		t.Fatalf("%d processes committed %d nano-USD over %d attempts under a limit of 50: %+v", workers, got, attempts, s)
 	}
 }
 
@@ -238,6 +242,12 @@ func reserveWorker(path string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
+	}
+	// HOLD keeps the worker alive, owning its reservations, until its stdin
+	// closes, so a test can tell a live owner from an exited one.
+	if os.Getenv("BUDGET_HELPER_HOLD") != "" {
+		fmt.Println("held")
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	}
 	return 0
 }

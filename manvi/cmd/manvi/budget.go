@@ -111,6 +111,47 @@ func meteredAnthropicEnv() []string {
 	return nil
 }
 
+// budgetCommand is `manvi budget [reconcile]`.
+func budgetCommand(out io.Writer, args []string) error {
+	switch {
+	case len(args) == 0:
+		return showBudget(out)
+	case len(args) == 1 && args[0] == "reconcile":
+		return reconcileBudget(out)
+	default:
+		return fmt.Errorf("usage: budget [reconcile]")
+	}
+}
+
+// reconcileBudget retains the reservations of attempts whose process exited
+// before resolving them. They stay counted against the limit — they may have
+// been billed — but they stop occupying in-flight slots.
+func reconcileBudget(out io.Writer) error {
+	path, err := anthropicLedgerPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(out, "no ledger at %s; nothing to reconcile\n", path)
+		return nil
+	}
+	reclaimed, err := budget.ReconcileAt(path)
+	if err != nil {
+		return err
+	}
+	if len(reclaimed) == 0 {
+		fmt.Fprintln(out, "every in-flight attempt belongs to a running process; nothing reclaimed")
+		return nil
+	}
+	var total int64
+	for _, a := range reclaimed {
+		total += a.ReservedNanoUSD
+		fmt.Fprintf(out, "retained #%d %s %s (pid %d exited)\n", a.ID, a.Model, budget.USD(a.ReservedNanoUSD), a.PID)
+	}
+	fmt.Fprintf(out, "%d attempts, %s, moved from in flight to retained; still counted against the limit\n", len(reclaimed), budget.USD(total))
+	return nil
+}
+
 // showBudget reports the Anthropic ledger.
 func showBudget(out io.Writer) error {
 	path, err := anthropicLedgerPath()

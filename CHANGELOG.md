@@ -44,6 +44,11 @@ under **Unreleased** in the same commit as the code.
     byte-sized reservation.
 - Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 in the Anthropic
   catalogue. `manvi probe anthropic` now uses Haiku 5.5.
+- `manvi budget reconcile` retains the reservations of attempts whose process
+  exited before resolving them. Every reservation does the same first, so a
+  crashed fan-out no longer holds in-flight slots until every later request
+  fails at the 256-attempt bound. Reclaimed attempts stay counted against the
+  limit.
 
 ### Changed
 
@@ -198,6 +203,13 @@ under **Unreleased** in the same commit as the code.
   being saved. Sessions from affected builds kept their first turn.
 - After a theme switch, a transcript long enough to scroll kept drawing the
   old theme's colours until the next event arrived.
+- `GOOS=windows go build ./...` compiles again; it had failed on
+  `syscall.Flock` since the spend cap landed. The ledger takes LockFileEx on
+  Windows and skips the directory fsync Windows cannot do. The Windows path
+  compiles and vets but has not been run on Windows.
+- A metered response that finished while its caller was being cancelled is
+  settled at its reported usage. It used to keep its whole worst-case
+  reservation.
 - **Read-only commands no longer write to the repository, and the managed
   `.gitignore` rules no longer reach past the harness's own state.** Every
   command except `help` and `version` created `.devcouncil/` and appended
