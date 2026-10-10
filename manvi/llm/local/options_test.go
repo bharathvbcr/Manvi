@@ -217,6 +217,10 @@ func TestTheAdapterDoesNotShareTheOperatorsStopSlice(t *testing.T) {
 func TestTheDeclaredStallTimeoutAbandonsAWedgedServer(t *testing.T) {
 	released := make(chan struct{})
 	srv := optionServer(t, "qwen-27b", func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"th\"}}]}\n\n")
 		w.(http.Flusher).Flush()
@@ -298,6 +302,10 @@ func TestAnUnsetStallTimeoutTakesThePackageDefault(t *testing.T) {
 // stream bounded only by their own deadline.
 func TestANegativeStallTimeoutDisablesTheWatchdogEntirely(t *testing.T) {
 	srv := optionServer(t, "qwen-27b", func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"th\"}}]}\n\n")
 		w.(http.Flusher).Flush()
@@ -334,6 +342,10 @@ func TestANegativeStallTimeoutDisablesTheWatchdogEntirely(t *testing.T) {
 // process that is already running and stuck.
 func TestAStallIsNotReportedAsAnUndiscoverableServer(t *testing.T) {
 	srv := optionServer(t, "qwen-27b", func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: the server notices the client hanging up only
+		// once it has, and Close waits for this handler.
+		_, _ = io.Copy(io.Discard, r.Body)
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"th\"}}]}\n\n")
 		w.(http.Flusher).Flush()
