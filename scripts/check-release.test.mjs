@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,12 +10,11 @@ import {
   NOTES_LIMIT,
   assetProblems,
   contractMirrorProblems,
-  crateMirrorProblems,
-  inheritedKeys,
-  parseManifest,
   expectedBinaries,
   notesProblems,
+  main,
   parsePins,
+  pinProblems,
   parseTag,
   tagNamesHead,
   workflowProblems,
@@ -133,6 +133,10 @@ describe("workflow", () => {
     assert.ok(problems.some((line) => line.includes("cancels")));
     assert.ok(problems.some((line) => line.includes("module replacements")));
     assert.ok(problems.some((line) => line.includes("verify.sh")));
+    assert.ok(problems.some((line) => line.includes("verify gate")));
+    assert.ok(problems.some((line) => line.includes("persist-credentials")));
+    assert.ok(problems.some((line) => line.includes("Rust toolchain")));
+    assert.ok(problems.some((line) => line.includes("both the build and the publish job")));
   });
 
   it("accepts the workflows in this tree", () => {
@@ -161,168 +165,213 @@ describe("pins", () => {
   });
 });
 
-describe("crate mirror", () => {
-  const UPSTREAM_WORKSPACE = `[workspace]
-members = ["dc-a", "dc-b"]
-
-[workspace.package]
-version = "1.3.5"
-edition = "2021"
-license = "Apache-2.0"
-
-[workspace.lints.rust]
-unsafe_code = "forbid"
-
-[workspace.dependencies]
-sha2 = "0.10.9"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
-`;
-  const MEMBER_A = `[package]
-name = "dc-a"
-version.workspace = true
-edition = "2021"
-license.workspace = true
-
-[dependencies]
-sha2.workspace = true
-
-[lints]
-workspace = true
-`;
-  const MEMBER_B = `[package]
-name = "dc-b"
-version.workspace = true
-license.workspace = true
-
-[dependencies]
-rusqlite = { workspace = true }
-dc-a = { path = "../dc-a" }
-`;
-  const LOCAL = `[workspace]
-resolver = "3"
-members = [
-  "dc-a", # the first
-  "dc-b",
-]
-
-[workspace.package]
-version = "1.3.5"
-edition = "2024"
-license = "Apache-2.0"
-
-[workspace.lints.rust]
-unsafe_code = "forbid"
-
-[workspace.dependencies]
-sha2 = "0.10.9"
-rusqlite = {version="0.40.2",features=["bundled"]}
-`;
-  /** A Manvi root whose crates/* link into a DevCouncil rust/ beside it. */
-  function layout(local = LOCAL, { copy = [] } = {}) {
-    const top = mkdtempSync(path.join(tmpdir(), "manvi-mirror-"));
+describe("sibling pins", () => {
+  const git = (cwd, ...args) =>
+    execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+  /** A Manvi root with sibling DevCouncil and gusset repositories at their pins. */
+  function siblings() {
+    const top = mkdtempSync(path.join(tmpdir(), "manvi-pins-"));
     tempDirs.push(top);
-    const rust = path.join(top, "DevCouncil", "rust");
-    for (const crate of ["dc-a", "dc-b"]) mkdirSync(path.join(rust, crate), { recursive: true });
+    const rows = [];
+    for (const name of ["DevCouncil", "gusset"]) {
+      const dir = path.join(top, name);
+      mkdirSync(dir);
+      git(dir, "init", "--quiet");
+      writeFileSync(path.join(dir, "f"), "1\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "--quiet", "-m", "pin");
+      rows.push(`${name}\thttps://github.com/x/${name}.git\t${git(dir, "rev-parse", "HEAD")}`);
+    }
     const root = path.join(top, "Manvi");
-    mkdirSync(path.join(root, "crates"), { recursive: true });
-    writeFileSync(path.join(root, "crates", "Cargo.toml"), local);
-    for (const crate of ["dc-a", "dc-b"]) {
-      if (copy.includes(crate)) mkdirSync(path.join(root, "crates", crate));
-      else symlinkSync(path.join("..", "..", "DevCouncil", "rust", crate), path.join(root, "crates", crate));
-    }
-    return root;
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    writeFileSync(path.join(root, "scripts", "module-pins.txt"), `${rows.join("\n")}\n`);
+    return { top, root };
   }
-  const pinned = (files) => (relative) => {
-    if (!(relative in files)) throw new Error(`fatal: path '${relative}' does not exist in the pin`);
-    return files[relative];
-  };
-  const UPSTREAM = {
-    "rust/Cargo.toml": UPSTREAM_WORKSPACE,
-    "rust/dc-a/Cargo.toml": MEMBER_A,
-    "rust/dc-b/Cargo.toml": MEMBER_B,
+  const advance = (dir) => {
+    writeFileSync(path.join(dir, "f"), "2\n");
+    git(dir, "commit", "--quiet", "-am", "later");
   };
 
-  it("holds when every inherited value equals DevCouncil's at the pin", () => {
-    // Whitespace inside an inline table and a multi-line members array with a
-    // comment are spellings, not differences.
-    assert.deepEqual(crateMirrorProblems(layout(), pinned(UPSTREAM)), []);
+  it("is silent when both siblings are exactly at their pins", () => {
+    assert.deepEqual(pinProblems(siblings().root), { errors: [], notCovered: [] });
   });
 
-  it("names a drifted version and licence, per member", () => {
-    const local = LOCAL.replace('version = "1.3.5"', 'version = "0.1.0"').replace('license = "Apache-2.0"', 'license = "MIT"');
-    const problems = crateMirrorProblems(layout(local), pinned(UPSTREAM));
-    assert.ok(problems.includes('dc-a inherits package field version = "0.1.0" here but "1.3.5" in DevCouncil'), problems.join("\n"));
-    assert.ok(problems.includes('dc-b inherits package field license = "MIT" here but "Apache-2.0" in DevCouncil'), problems.join("\n"));
+  it("fails by default on a sibling past its pin, naming HEAD, pin and distance", () => {
+    const { top, root } = siblings();
+    advance(path.join(top, "DevCouncil"));
+    const { errors, notCovered } = pinProblems(root);
+    assert.equal(errors.length, 1, errors.join("\n"));
+    assert.match(errors[0], /^DevCouncil is at [0-9a-f]{12}, pinned [0-9a-f]{12} \(1 ahead, 0 behind\), clean\./);
+    assert.deepEqual(notCovered, []);
   });
 
-  it("ignores fields a member declares itself", () => {
-    // Both members set or omit edition themselves; 2024 here differs from
-    // 2021 upstream and must not be reported.
-    assert.equal(crateMirrorProblems(layout(), pinned(UPSTREAM)).some((p) => p.includes("edition")), false);
+  it("reports uncommitted edits in a sibling that is at the pin", () => {
+    const { top, root } = siblings();
+    writeFileSync(path.join(top, "gusset", "f"), "edited\n");
+    const { errors } = pinProblems(root);
+    assert.match(errors[0], /^gusset is at the pin, pinned [0-9a-f]{12} \(0 ahead, 0 behind\), with uncommitted changes/);
   });
 
-  it("refuses an inherited dependency this workspace forgot or pinned differently", () => {
-    const missing = LOCAL.replace('sha2 = "0.10.9"\n', "");
-    assert.ok(
-      crateMirrorProblems(layout(missing), pinned(UPSTREAM)).includes(
-        'dc-a inherits dependency sha2; crates/Cargo.toml must declare it as DevCouncil does: "0.10.9"',
-      ),
-    );
-    const drifted = LOCAL.replace('features=["bundled"]', 'features=[]');
-    assert.ok(crateMirrorProblems(layout(drifted), pinned(UPSTREAM)).some((p) => p.startsWith("dc-b inherits dependency rusqlite =")));
+  it("moves a mismatch to NOT COVERED only when the opt-out is given", () => {
+    const { top, root } = siblings();
+    advance(path.join(top, "gusset"));
+    const out = pinProblems(root, { allowUnpinned: true });
+    assert.deepEqual(out.errors, []);
+    assert.equal(out.notCovered.length, 1);
+    assert.match(out.notCovered[0], /^gusset is at /);
   });
 
-  it("compares the lints a member inherits", () => {
-    const local = LOCAL.replace('unsafe_code = "forbid"', 'unsafe_code = "warn"');
-    assert.ok(crateMirrorProblems(layout(local), pinned(UPSTREAM)).some((p) => p.startsWith("dc-a inherits lints.rust lint unsafe_code")));
+  it("names the bootstrap when a sibling is absent", () => {
+    const { top, root } = siblings();
+    rmSync(path.join(top, "DevCouncil"), { recursive: true });
+    assert.match(pinProblems(root).errors[0], /module DevCouncil is not checked out at .*run scripts\/fetch-modules\.sh/);
   });
 
-  it("refuses a member that is a copy instead of a link", () => {
-    const problems = crateMirrorProblems(layout(LOCAL, { copy: ["dc-b"] }), pinned(UPSTREAM));
-    assert.ok(problems.some((p) => p.startsWith("crates/dc-b is a copy")), problems.join("\n"));
-  });
-
-  it("fails, rather than passing, when the pinned DevCouncil cannot be read", () => {
-    const problems = crateMirrorProblems(layout(), pinned({}));
-    assert.equal(problems.length, 1);
-    assert.match(problems[0], /cannot read DevCouncil rust\/Cargo.toml at the pinned commit/);
-  });
-
-  it("reports a member DevCouncil does not have at the pin", () => {
-    const problems = crateMirrorProblems(layout(), pinned({ ...UPSTREAM, "rust/dc-b/Cargo.toml": undefined }));
-    // An own key whose value is undefined still answers `in`; drop it.
-    const files = { ...UPSTREAM };
-    delete files["rust/dc-b/Cargo.toml"];
-    const missing = crateMirrorProblems(layout(), pinned(files));
-    assert.ok(missing.some((p) => p.startsWith("crates/dc-b: DevCouncil has no rust/dc-b/Cargo.toml")), missing.join("\n"));
-    assert.ok(Array.isArray(problems));
-  });
-
-  it("refuses a manifest line it cannot read rather than skipping a key", () => {
-    assert.throws(() => parseManifest("[package]\nname\n", "x"), /x:2: cannot read "name"/);
-    assert.throws(() => parseManifest('[workspace]\nmembers = [\n  "a",\n', "x"), /never closes/);
-  });
-
-  it("finds every way a member inherits", () => {
-    assert.deepEqual(inheritedKeys(parseManifest(MEMBER_A, "a")), { fields: ["version", "license"], dependencies: ["sha2"], lints: true });
-    assert.deepEqual(inheritedKeys(parseManifest(MEMBER_B, "b")), { fields: ["version", "license"], dependencies: ["rusqlite"], lints: false });
-  });
-
-  it("holds for this repository at its pin", () => {
-    // The real thing: crates/Cargo.toml against DevCouncil at module-pins.txt.
-    // Skipped, and said so, only when no DevCouncil checkout is beside Manvi.
-    const checkout = path.join(REPO_ROOT, "..", "DevCouncil", ".git");
-    let present = true;
+  it("main fails closed with no sibling checkout, as the publish job would see it, and prints what to run", () => {
+    const { top, root } = siblings();
+    rmSync(path.join(top, "DevCouncil"), { recursive: true });
+    const lines = [];
+    const original = console.error;
+    console.error = (line) => lines.push(String(line));
     try {
-      readFileSync(path.join(REPO_ROOT, "..", "DevCouncil", "rust", "Cargo.toml"));
-    } catch {
-      present = false;
+      assert.equal(main(["--root", root]), 1);
+    } finally {
+      console.error = original;
     }
-    if (!present) {
-      console.log(`crate mirror: no DevCouncil checkout at ${checkout}; run scripts/fetch-modules.sh`);
-      return;
+    assert.ok(lines.some((l) => l.includes("fetch-modules.sh")), lines.join("\n"));
+  });
+
+  it("main honours the opt-out locally and never for a tag run", () => {
+    const { top, root } = siblings();
+    advance(path.join(top, "DevCouncil"));
+    const lines = [];
+    const original = console.error;
+    console.error = (line) => lines.push(String(line));
+    const saved = process.env.GITHUB_ACTIONS;
+    delete process.env.GITHUB_ACTIONS;
+    try {
+      main(["--root", root, "--allow-unpinned"]);
+      assert.ok(lines.some((l) => l.startsWith("check-release: NOT COVERED: DevCouncil is at")), lines.join("\n"));
+      lines.length = 0;
+      main(["--root", root, "--allow-unpinned", "--tag", "v1.2.3"]);
+      assert.equal(lines.some((l) => l.includes("NOT COVERED")), false, lines.join("\n"));
+      assert.ok(lines.some((l) => l.startsWith("check-release: DevCouncil is at")), lines.join("\n"));
+    } finally {
+      console.error = original;
+      if (saved !== undefined) process.env.GITHUB_ACTIONS = saved;
     }
-    assert.deepEqual(crateMirrorProblems(REPO_ROOT), []);
+  });
+});
+
+describe("fetch-modules --link-main", () => {
+  const git = (cwd, ...args) =>
+    execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+  /**
+   * top/Manvi is the main worktree with the scripts committed and sibling
+   * checkouts top/DevCouncil and top/gusset at the pins; top/Manvi/.wt/x is a
+   * linked worktree nested inside it, where ../DevCouncil does not exist.
+   */
+  function nested() {
+    const top = realpathSync(mkdtempSync(path.join(tmpdir(), "manvi-link-")));
+    tempDirs.push(top);
+    const rows = [];
+    for (const name of ["DevCouncil", "gusset"]) {
+      const dir = path.join(top, name);
+      mkdirSync(dir);
+      git(dir, "init", "--quiet");
+      writeFileSync(path.join(dir, "f"), "1\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "--quiet", "-m", "pin");
+      rows.push(`${name}\thttps://github.com/x/${name}.git\t${git(dir, "rev-parse", "HEAD")}`);
+    }
+    const main = path.join(top, "Manvi");
+    mkdirSync(path.join(main, "scripts"), { recursive: true });
+    writeFileSync(path.join(main, "scripts", "module-pins.txt"), `${rows.join("\n")}\n`);
+    writeFileSync(path.join(main, "scripts", "fetch-modules.sh"), readFileSync(path.join(REPO_ROOT, "scripts", "fetch-modules.sh")));
+    git(main, "init", "--quiet");
+    git(main, "add", "-A");
+    git(main, "commit", "--quiet", "-m", "init");
+    const wt = path.join(main, ".wt", "x");
+    git(main, "worktree", "add", "--quiet", "--detach", wt);
+    return { top, main, wt };
+  }
+  const run = (cwd, ...args) => spawnSync("bash", [path.join(cwd, "scripts", "fetch-modules.sh"), ...args], { encoding: "utf8" });
+
+  it("links both siblings from the main worktree and is idempotent", () => {
+    const { top, wt } = nested();
+    const first = run(wt, "--link-main");
+    assert.equal(first.status, 0, first.stderr);
+    for (const name of ["DevCouncil", "gusset"]) {
+      assert.equal(lstatSync(path.join(wt, "..", name)).isSymbolicLink(), true);
+      assert.equal(readlinkSync(path.join(wt, "..", name)), path.join(top, name));
+    }
+    const again = run(wt, "--link-main");
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /already resolves/);
+  });
+
+  it("refuses to replace an existing directory", () => {
+    const { wt } = nested();
+    mkdirSync(path.join(wt, "..", "DevCouncil"));
+    const out = run(wt, "--link-main");
+    assert.notEqual(out.status, 0);
+    assert.match(out.stderr, /refusing to replace .*DevCouncil/);
+  });
+
+  it("refuses a main-worktree sibling that is not at the pin", () => {
+    const { top, wt } = nested();
+    writeFileSync(path.join(top, "gusset", "f"), "2\n");
+    git(path.join(top, "gusset"), "commit", "--quiet", "-am", "later");
+    const out = run(wt, "--link-main");
+    assert.notEqual(out.status, 0);
+    assert.match(out.stderr, /refusing to link .*gusset: it is at/);
+  });
+
+  it("refuses --link-main in the main worktree and an unknown argument", () => {
+    const { main, wt } = nested();
+    const inMain = run(main, "--link-main");
+    assert.notEqual(inMain.status, 0);
+    assert.match(inMain.stderr, /is the main worktree/);
+    assert.equal(run(wt, "--bogus").status, 2);
+  });
+});
+
+describe("verify gate", () => {
+  const SHA = "a".repeat(40);
+  /** Runs release-verify-gate.sh with a fake `gh` that prints rows, or fails. */
+  function gate(rows, { ghFails = false, commit = SHA } = {}) {
+    const dir = mkdtempSync(path.join(tmpdir(), "manvi-gate-"));
+    tempDirs.push(dir);
+    writeFileSync(path.join(dir, "rows"), rows.map((r) => r.join("\t")).join("\n") + (rows.length ? "\n" : ""));
+    writeFileSync(path.join(dir, "gh"), `#!/bin/sh\n${ghFails ? "exit 1" : `cat "${dir}/rows"`}\n`, { mode: 0o755 });
+    return spawnSync("bash", [path.join(REPO_ROOT, "scripts", "release-verify-gate.sh")], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RELEASE_COMMIT: commit, GH_REPO: "o/r" },
+    });
+  }
+
+  it("passes on a completed successful verify run at the commit and prints its url", () => {
+    const out = gate([["11", SHA, "completed", "failure", "u/11"], ["12", SHA, "completed", "success", "u/12"]]);
+    assert.equal(out.status, 0, out.stderr);
+    assert.equal(out.stdout.trim().split("\n").pop(), "u/12");
+  });
+
+  it("refuses a failed, unfinished, other-commit or absent run", () => {
+    for (const rows of [
+      [["1", SHA, "completed", "failure", "u"]],
+      [["1", SHA, "in_progress", "", "u"]],
+      [["1", "b".repeat(40), "completed", "success", "u"]],
+      [],
+    ]) {
+      const out = gate(rows);
+      assert.equal(out.status, 1, JSON.stringify(rows));
+      assert.match(out.stderr, /no successful verify run/);
+    }
+  });
+
+  it("refuses when gh itself fails, and a commit that is not a full id", () => {
+    assert.equal(gate([], { ghFails: true }).status, 1);
+    assert.equal(gate([["1", SHA, "completed", "success", "u"]], { commit: "main" }).status, 1);
   });
 });
 

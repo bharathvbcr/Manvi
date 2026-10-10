@@ -43,6 +43,21 @@ component resolved to and whether it answered — read it before assuming which
 one you are testing, because an installed component can be older than the
 contract the harness expects, and `doctor` is where that shows up.
 
+**Sibling modules and worktrees.** `manvi/go.mod` replaces DevCouncil and
+gusset with `../../DevCouncil` and `../../gusset`, and `crates/dc-*` link into
+`../DevCouncil/rust`, so both modules must sit beside the checkout, at the
+commits in `scripts/module-pins.txt`. The release gate
+(`scripts/check-release.mjs`, run by `./verify.sh`) **fails** when a sibling is
+at another commit or has uncommitted edits, and names its HEAD, the pin and the
+commit distance. To test against unpinned siblings on purpose, run with
+`MANVI_ALLOW_UNPINNED_MODULES=1`; the run then prints `NOT COVERED` lines and
+does not count as covering the pins (CI and `--tag` runs ignore the opt-out).
+`scripts/fetch-modules.sh` clones the pins beside a checkout. A worktree nested
+under the main checkout (`.claude/worktrees/x`, `.gitpulse/worktrees/x`) has no
+siblings of its own: run `scripts/fetch-modules.sh --link-main` there to link
+the main checkout's pinned siblings, after which `cd manvi && go build ./...`
+works. It refuses to replace anything that already exists.
+
 ---
 
 ## 2. Running the gate

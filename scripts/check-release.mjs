@@ -12,6 +12,11 @@
  * release.yml both have to fetch the pins in scripts/module-pins.txt
  * before go runs.
  *
+ * Sibling DevCouncil and gusset checkouts must be exactly at their pins. A
+ * mismatch fails by default; --allow-unpinned (or MANVI_ALLOW_UNPINNED_MODULES=1)
+ * turns it into a NOT COVERED line for a developer machine, and is ignored in
+ * CI, under --require-pins and for a --tag run.
+ *
  * Exit codes: 0 holds · 1 a check failed · 2 the check could not run.
  */
 import { createHash } from "node:crypto";
@@ -19,12 +24,10 @@ import { execFileSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
-  lstatSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
-  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -240,9 +243,32 @@ export function workflowProblems(sources) {
   if (!releaseYaml.includes("cancel-in-progress: false")) {
     errors.push("release.yml cancels an in-progress publish");
   }
-  const runBlocks = releaseYaml.split(/\n[ \t]*run:/).slice(1);
-  for (const block of runBlocks) {
-    const body = block.split(/\n[ \t]*- /)[0];
+  if (!releaseYaml.includes("scripts/release-verify-gate.sh") || !/needs:\s*\[[^\]]*\bgate\b/.test(releaseYaml)) {
+    errors.push("release.yml does not make publish depend on the verify gate (scripts/release-verify-gate.sh)");
+  }
+  const checkouts = (releaseYaml.match(/uses:\s*actions\/checkout@/g) ?? []).length;
+  const keptCredentials = (releaseYaml.match(/persist-credentials:\s*false/g) ?? []).length;
+  if (checkouts === 0 || keptCredentials < checkouts) {
+    errors.push("release.yml has a checkout that keeps its credentials; set persist-credentials: false on every one");
+  }
+  if ((releaseYaml.match(/scripts\/fetch-modules\.sh/g) ?? []).length < 2) {
+    errors.push("release.yml does not fetch module replacements in both the build and the publish job");
+  }
+  if (!/RUST_TOOLCHAIN:\s*"?\d+\.\d+/.test(releaseYaml) || /(--default-toolchain|default|install)\s+stable\b/.test(releaseYaml)) {
+    errors.push("release.yml does not pin the Rust toolchain to an exact version");
+  }
+  // A run script is its own line plus the lines indented deeper than it.
+  const lines = releaseYaml.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = /^([ \t]*)(?:- )?run:(.*)$/.exec(lines[i]);
+    if (!match) continue;
+    const indent = match[1].length;
+    let body = match[2];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = lines[j];
+      if (next.trim() !== "" && next.length - next.trimStart().length <= indent) break;
+      body += `\n${next}`;
+    }
     if (body.includes("${{")) {
       errors.push("release.yml interpolates an expression into a run script");
       break;
@@ -287,197 +313,81 @@ export function notesFileProblems(root) {
 }
 
 /**
- * @param {string} root
- * @param {boolean} requireCheckouts
- * @returns {string[]}
+ * Where a sibling checkout stands against its pin, in words an operator can
+ * act on: its HEAD, the pin, how many commits apart, and whether the working
+ * tree carries edits the pin does not. Returns null when it is exactly the pin.
+ *
+ * @param {string} dest
+ * @param {{ name: string, sha: string }} row
+ * @returns {string | null}
  */
-export function pinProblems(root, requireCheckouts) {
+function siblingDrift(dest, row) {
+  const git = (/** @type {string[]} */ ...args) => execFileSync("git", ["-C", dest, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const have = git("rev-parse", "HEAD");
+  let dirty = false;
+  try {
+    dirty = git("status", "--porcelain").length > 0;
+  } catch {
+    dirty = true;
+  }
+  if (have === row.sha && !dirty) return null;
+  let distance = "unknown";
+  try {
+    const ahead = git("rev-list", "--count", `${row.sha}..${have}`);
+    const behind = git("rev-list", "--count", `${have}..${row.sha}`);
+    distance = `${ahead} ahead, ${behind} behind`;
+  } catch {
+    distance = "the pin is not in this checkout";
+  }
+  const state = have === row.sha ? "at the pin" : `at ${have.slice(0, 12)}`;
+  return `${row.name} is ${state}, pinned ${row.sha.slice(0, 12)} (${distance}), ${dirty ? "with uncommitted changes" : "clean"}. The release builds the pin.`;
+}
+
+/**
+ * Every sibling module has to be exactly at scripts/module-pins.txt: a local
+ * run against a newer DevCouncil or gusset would report a product the tag
+ * does not build. A mismatch is an error. With allowUnpinned it is returned
+ * as a notCovered line instead, for a developer who means to test against
+ * unpinned siblings; the caller prints it and the run does not count as
+ * covering the pins.
+ *
+ * @param {string} root
+ * @param {{ allowUnpinned?: boolean }} [options]
+ * @returns {{ errors: string[], notCovered: string[] }}
+ */
+export function pinProblems(root, { allowUnpinned = false } = {}) {
   /** @type {string[]} */
   const errors = [];
+  /** @type {string[]} */
+  const notCovered = [];
   const file = path.join(root, "scripts", "module-pins.txt");
-  if (!existsSync(file)) return ["missing scripts/module-pins.txt"];
+  if (!existsSync(file)) return { errors: ["missing scripts/module-pins.txt"], notCovered };
   let rows;
   try {
     rows = parsePins(readFileSync(file, "utf8"));
   } catch (err) {
-    return [err instanceof Error ? err.message : String(err)];
+    return { errors: [err instanceof Error ? err.message : String(err)], notCovered };
   }
   const names = new Set(rows.map((row) => row.name));
   for (const required of ["DevCouncil", "gusset"]) {
     if (!names.has(required)) errors.push(`module pins do not name ${required}`);
   }
-  if (!requireCheckouts) return errors;
   for (const row of rows) {
     const dest = path.join(root, "..", row.name);
+    /** @type {string | null} */
+    let problem;
     if (!existsSync(path.join(dest, ".git"))) {
-      errors.push(`module ${row.name} is not checked out at ${dest}`);
-      continue;
-    }
-    const have = execFileSync("git", ["-C", dest, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    if (have !== row.sha) {
-      errors.push(
-        `${row.name} is at ${have.slice(0, 12)} but scripts/module-pins.txt pins ${row.sha.slice(0, 12)}. The release builds the pin.`,
-      );
-    }
-  }
-  return errors;
-}
-
-/**
- * Strips a TOML comment, leaving a `#` inside a string alone.
- * @param {string} line
- */
-function stripTomlComment(line) {
-  let quote = "";
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (quote) {
-      if (ch === "\\" && quote === '"') i += 1;
-      else if (ch === quote) quote = "";
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === "#") return line.slice(0, i);
-  }
-  return line;
-}
-
-/**
- * A value with the whitespace outside its strings removed, so two spellings of
- * one spec compare equal and any other difference does not.
- * @param {string} value
- */
-export function normalizeTomlValue(value) {
-  let out = "";
-  let quote = "";
-  for (let i = 0; i < value.length; i += 1) {
-    const ch = value[i];
-    if (quote) {
-      out += ch;
-      if (ch === "\\" && quote === '"') out += value[++i] ?? "";
-      else if (ch === quote) quote = "";
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      out += ch;
-    } else if (!/\s/.test(ch)) out += ch;
-  }
-  return out;
-}
-
-/**
- * The tables of a Cargo manifest, as `table -> key -> normalized value`.
- *
- * Only what Cargo manifests here use: `[table]` headers and `key = value`
- * lines, a value that opens a bracket or brace running until it closes. An
- * array-of-tables header (`[[bin]]`) is kept as its own table name, and a
- * line this cannot read is refused rather than skipped, because a key it
- * skipped would be a key the mirror check never compared.
- * @param {string} text
- * @param {string} label
- * @returns {Map<string, Map<string, string>>}
- */
-export function parseManifest(text, label) {
-  /** @type {Map<string, Map<string, string>>} */
-  const tables = new Map([["", new Map()]]);
-  let current = "";
-  let pendingKey = "";
-  let pending = "";
-  let depth = 0;
-  const lines = text.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = stripTomlComment(lines[index]).trim();
-    if (depth > 0) {
-      pending += ` ${line}`;
-      depth += balance(line);
-      if (depth <= 0) {
-        tables.get(current)?.set(pendingKey, normalizeTomlValue(pending));
-        depth = 0;
+      problem = `module ${row.name} is not checked out at ${dest}; run scripts/fetch-modules.sh (or scripts/fetch-modules.sh --link-main in a nested worktree)`;
+    } else {
+      try {
+        problem = siblingDrift(dest, row);
+      } catch (err) {
+        problem = `module ${row.name} at ${dest} could not be read: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`;
       }
-      continue;
     }
-    if (!line) continue;
-    const header = /^\[\[?([^[\]]+)\]\]?$/.exec(line);
-    if (header) {
-      current = header[1].trim();
-      if (!tables.has(current)) tables.set(current, new Map());
-      continue;
-    }
-    const eq = line.indexOf("=");
-    if (eq <= 0) throw new Error(`${label}:${index + 1}: cannot read "${line}"`);
-    const key = line.slice(0, eq).trim();
-    const value = line.slice(eq + 1).trim();
-    depth = balance(value);
-    if (depth > 0) {
-      pendingKey = key;
-      pending = value;
-      continue;
-    }
-    tables.get(current)?.set(key, normalizeTomlValue(value));
+    if (problem) (allowUnpinned ? notCovered : errors).push(problem);
   }
-  if (depth > 0) throw new Error(`${label}: a value for ${pendingKey} never closes`);
-  return tables;
-}
-
-/**
- * A normalized TOML array of basic strings, trailing comma allowed; null for
- * anything else, so an array this cannot read is refused rather than read as
- * empty.
- * @param {string} value
- * @returns {string[] | null}
- */
-export function parseStringArray(value) {
-  if (!value.startsWith("[") || !value.endsWith("]")) return null;
-  const body = value.slice(1, -1);
-  /** @type {string[]} */
-  const items = [];
-  const item = /^"((?:[^"\\]|\\.)*)"(,|$)/;
-  let rest = body;
-  while (rest.length > 0) {
-    const match = item.exec(rest);
-    if (!match) return null;
-    items.push(match[1]);
-    rest = rest.slice(match[0].length);
-  }
-  return items;
-}
-
-/**
- * Net opening brackets and braces outside strings.
- * @param {string} text
- */
-function balance(text) {
-  let depth = 0;
-  let quote = "";
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === "\\" && quote === '"') i += 1;
-      else if (ch === quote) quote = "";
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === "[" || ch === "{") depth += 1;
-    else if (ch === "]" || ch === "}") depth -= 1;
-  }
-  return depth;
-}
-
-/**
- * What one member manifest takes from its workspace instead of declaring.
- * @param {Map<string, Map<string, string>>} manifest
- */
-export function inheritedKeys(manifest) {
-  const fields = [];
-  const dependencies = [];
-  let lints = false;
-  for (const [table, entries] of manifest) {
-    for (const [key, value] of entries) {
-      const dotted = /^([A-Za-z0-9_-]+)\.workspace$/.exec(key);
-      const inherits = (dotted && value === "true") || /(^|[{,])workspace=true([,}]|$)/.test(value);
-      if (table === "lints" && key === "workspace" && value === "true") lints = true;
-      if (!inherits) continue;
-      const name = dotted ? dotted[1] : key;
-      if (table === "package") fields.push(name);
-      else if (/(^|\.)(dev-|build-)?dependencies$/.test(table)) dependencies.push(name);
-    }
-  }
-  return { fields, dependencies, lints };
+  return { errors, notCovered };
 }
 
 /**
@@ -665,109 +575,6 @@ function checksumsProblems(dir, names) {
 }
 
 /**
- * Manvi's `crates/` workspace builds DevCouncil's dc-* crates in place: each
- * member is a symlink into DevCouncil `rust/`, so the sources have one owner.
- * What a member inherits — its version, licence, lints and pinned
- * dependencies — it inherits from Manvi's `crates/Cargo.toml`, though, not
- * from DevCouncil's, and those values were copied by hand. They drifted: the
- * crates built here reported version 0.1.0 under MIT while DevCouncil's own
- * manifest said otherwise under Apache-2.0. This compares every value a member inherits with
- * DevCouncil's own, and refuses a member that is a copy rather than a link.
- *
- * DevCouncil's side is read at the commit scripts/module-pins.txt pins, not
- * from whatever the sibling checkout has open: the release builds the pin,
- * so a comparison against a newer checkout would pass on one machine and
- * fail in CI, or the reverse.
- * @param {string} root
- * @param {(relativePath: string) => string} [readPinned] DevCouncil file at
- *   the pinned commit; the default asks git in the sibling checkout.
- * @returns {string[]}
- */
-export function crateMirrorProblems(root, readPinned) {
-  /** @type {string[]} */
-  const errors = [];
-  const workspaceFile = path.join(root, "crates", "Cargo.toml");
-  let local;
-  try {
-    local = parseManifest(readFileSync(workspaceFile, "utf8"), "crates/Cargo.toml");
-  } catch (err) {
-    return [`crates/Cargo.toml: ${err instanceof Error ? err.message : String(err)}`];
-  }
-  const membersValue = local.get("workspace")?.get("members");
-  const members = membersValue === undefined ? null : parseStringArray(membersValue);
-  if (members === null) return [`crates/Cargo.toml: cannot read workspace members ${membersValue ?? "(absent)"}`];
-  if (members.length === 0) return ["crates/Cargo.toml names no workspace members"];
-  /** @type {(relativePath: string) => string} */
-  let read;
-  if (readPinned) read = readPinned;
-  else {
-    const pinned = pinnedDevCouncil(root);
-    if ("problem" in pinned) return [pinned.problem];
-    read = (relative) => pinned.read(relative).toString("utf8");
-  }
-  /** @type {Map<string, Map<string, string>>} */
-  let upstream;
-  try {
-    upstream = parseManifest(read("rust/Cargo.toml"), "DevCouncil rust/Cargo.toml at the pin");
-  } catch (err) {
-    return [
-      `cannot read DevCouncil rust/Cargo.toml at the pinned commit (${err instanceof Error ? err.message.split("\n")[0] : String(err)}); run scripts/fetch-modules.sh`,
-    ];
-  }
-  /** @type {string | null} */
-  let upstreamRoot = null;
-  for (const member of members) {
-    const link = path.join(root, "crates", member);
-    let target;
-    try {
-      if (!lstatSync(link).isSymbolicLink()) {
-        errors.push(`crates/${member} is a copy, not a symlink into DevCouncil rust/: two owners of one crate drift`);
-        continue;
-      }
-      target = realpathSync(link);
-    } catch {
-      errors.push(`crates/${member} does not resolve; check DevCouncil out beside Manvi (scripts/fetch-modules.sh)`);
-      continue;
-    }
-    const memberRoot = path.dirname(target);
-    if (upstreamRoot === null) upstreamRoot = memberRoot;
-    else if (memberRoot !== upstreamRoot) {
-      errors.push(`crates/${member} links into ${memberRoot}, not ${upstreamRoot}`);
-      continue;
-    }
-    const crate = path.basename(target);
-    let manifest;
-    try {
-      manifest = parseManifest(read(`rust/${crate}/Cargo.toml`), `DevCouncil rust/${crate}/Cargo.toml at the pin`);
-    } catch (err) {
-      errors.push(`crates/${member}: DevCouncil has no rust/${crate}/Cargo.toml at the pinned commit (${err instanceof Error ? err.message.split("\n")[0] : String(err)})`);
-      continue;
-    }
-    const wanted = inheritedKeys(manifest);
-    const compare = (table, key, what) => {
-      const theirs = upstream.get(table)?.get(key);
-      const ours = local.get(table)?.get(key);
-      if (theirs === undefined) {
-        errors.push(`${member} inherits ${what} ${key}, which DevCouncil's workspace does not declare`);
-      } else if (ours === undefined) {
-        errors.push(`${member} inherits ${what} ${key}; crates/Cargo.toml must declare it as DevCouncil does: ${theirs}`);
-      } else if (ours !== theirs) {
-        errors.push(`${member} inherits ${what} ${key} = ${ours} here but ${theirs} in DevCouncil`);
-      }
-    };
-    for (const field of wanted.fields) compare("workspace.package", field, "package field");
-    for (const dependency of wanted.dependencies) compare("workspace.dependencies", dependency, "dependency");
-    if (wanted.lints) {
-      for (const [table, entries] of upstream) {
-        if (!table.startsWith("workspace.lints")) continue;
-        for (const key of entries.keys()) compare(table, key, `${table.slice("workspace.".length)} lint`);
-      }
-    }
-  }
-  return [...new Set(errors)];
-}
-
-/**
  * @param {string} root
  * @param {string} tag
  * @returns {{ tagSha: string | null, headSha: string }}
@@ -789,6 +596,7 @@ function parseArgs(argv) {
     assets: "",
     requireHead: false,
     requirePins: false,
+    allowUnpinned: false,
     root: REPO_ROOT,
     help: false,
   };
@@ -799,6 +607,7 @@ function parseArgs(argv) {
     else if (arg === "--assets") out.assets = argv[++i] || "";
     else if (arg === "--require-head") out.requireHead = true;
     else if (arg === "--require-pins") out.requirePins = true;
+    else if (arg === "--allow-unpinned") out.allowUnpinned = true;
     else if (arg === "--root") out.root = argv[++i] || out.root;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -818,7 +627,7 @@ export function main(argv = process.argv.slice(2)) {
     return 2;
   }
   if (args.help) {
-    console.log("usage: check-release.mjs [--tag vX.Y.Z] [--require-head] [--require-pins] [--assets dir]");
+    console.log("usage: check-release.mjs [--tag vX.Y.Z] [--require-head] [--require-pins] [--allow-unpinned] [--assets dir]");
     return 0;
   }
   /** @type {string[]} */
@@ -837,8 +646,16 @@ export function main(argv = process.argv.slice(2)) {
     errors.push(err instanceof Error ? err.message : String(err));
   }
   errors.push(...notesFileProblems(root));
-  errors.push(...pinProblems(root, args.requirePins));
-  errors.push(...crateMirrorProblems(root));
+  // The opt-out is for a developer's machine only: CI, an explicit
+  // --require-pins, or a tag run (--tag) never honours it.
+  const allowUnpinned =
+    (args.allowUnpinned || process.env.MANVI_ALLOW_UNPINNED_MODULES === "1") &&
+    !args.requirePins &&
+    !args.tag &&
+    !process.env.GITHUB_ACTIONS;
+  const pins = pinProblems(root, { allowUnpinned });
+  errors.push(...pins.errors);
+  for (const line of pins.notCovered) console.error(`check-release: NOT COVERED: ${line}`);
   errors.push(...contractMirrorProblems(root));
 
   if (args.tag) {

@@ -7,7 +7,12 @@
 # pass its own `gusset-check` (boundary parity and the I2 panic firewall)
 # before it is uploaded; see scripts/release-build.sh. The publish job then
 # attaches every artifact plus SHA-256 checksums and the curated notes in
-# docs/releases/<tag>.md. There is no Windows target — see verify.yml for why
+# docs/releases/<tag>.md and a PROVENANCE.json that records the commit, run,
+# verify run, pinned modules and toolchain. A verify gate runs first: the tag's
+# commit must have a successful verify.yml run, or nothing is built. The
+# publish job fetches the module pins too, because scripts/check-release.mjs
+# compares the vendored contracts and the sibling checkouts with them. There is
+# no Windows target — see verify.yml for why
 # this tree does not build for GOOS=windows, and gusset is unix-only.
 #
 # The Go module replaces DevCouncil and gusset with sibling checkouts. Those
@@ -30,14 +35,43 @@ on:
 permissions:
   contents: read
 
+env:
+  # One Rust, the same on every runner and every re-run, so a release can be
+  # rebuilt. Keep in step with verify.yml (docs/VERIFICATION_AND_PARITY.md).
+  RUST_TOOLCHAIN: "1.99.0"
+
 concurrency:
   group: release-${{ github.ref }}
   # A cancelled publish can leave a release with a partial asset set.
   cancel-in-progress: false
 
 jobs:
+  # A tag builds whatever commit it names. Require that commit to have passed
+  # verify.yml before anything is built or published.
+  gate:
+    name: verify gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      verify_run: ${{ steps.gate.outputs.run_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require a passing verify run at this commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: bash scripts/release-verify-gate.sh
+
   build:
     name: manvi (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: gate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -65,9 +99,17 @@ jobs:
             rust_target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Module replacements
         run: bash scripts/fetch-modules.sh
+
+      # Node runs scripts/check-release.mjs. The same version as verify.yml,
+      # not whatever the runner image ships today.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -81,12 +123,12 @@ jobs:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
           rustup target add "$RUST_TARGET"
           rustc --version
 
@@ -112,14 +154,27 @@ jobs:
 
   publish:
     name: publish release
-    needs: build
-    # Only real tag pushes publish. workflow_dispatch is a build-only dry run.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, build]
+    # A tag push publishes. workflow_dispatch runs the same job as a dry run:
+    # every check, the checksums and the provenance, then it prints the
+    # `gh release create` it would have run.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # check-release.mjs compares contracts/ with DevCouncil at the pin and
+      # requires the siblings to be at their pins; only the build jobs had them.
+      - name: Module replacements
+        run: bash scripts/fetch-modules.sh
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -129,6 +184,9 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          VERIFY_RUN_URL: ${{ needs.gate.outputs.verify_run }}
         run: bash scripts/release-publish.sh

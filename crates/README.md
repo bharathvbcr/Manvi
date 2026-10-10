@@ -15,18 +15,17 @@ The sources have one owner, but a symlinked member inherits its `version`,
 `license`, lints and `foo.workspace = true` dependency pins from `Cargo.toml`
 here, not from DevCouncil's, and those values are copied by hand. When
 DevCouncil adds or changes one, copy it here. A missing dependency key fails
-the workspace load. Two checks catch the rest:
+the workspace load. One check catches the rest:
 
-- `scripts/check-release.mjs` (`crateMirrorProblems`, run by `./verify.sh`)
-  compares every inherited value against DevCouncil's manifests **at the
-  commit `scripts/module-pins.txt` pins**, read through git, because that is
-  what CI and the release build. It refuses a member that is a copied
-  directory rather than a symlink. Bump the pin and the check names each value
-  to update.
-- `manvi/devcouncil/crate_pins_test.go` compares what `cargo metadata`
-  resolves for every member's dependencies here against DevCouncil's `rust/`
-  workspace, so a different version or feature set fails. It also fails if a
-  member stops being a symlink into DevCouncil.
+- `manvi/devcouncil/crate_pins_test.go` (`TestCratePinsMatchDevCouncil`, run by
+  `go test ./...`) is the single owner. It compares what `cargo metadata`
+  resolves for every member (version, licence, edition and each dependency
+  spec) and the `[workspace.lints]` tables against DevCouncil's `rust/` **at
+  the commit `scripts/module-pins.txt` pins**, exported with `git archive`
+  from the sibling checkout, because that is what CI and the release build. A
+  newer or edited sibling working tree changes nothing. It also fails if a
+  member stops being a symlink into DevCouncil. Bump the pin and the failure
+  names each value to update.
 
 ## Release / CI without a DevCouncil tree
 

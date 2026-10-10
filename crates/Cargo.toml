@@ -6,8 +6,9 @@ resolver = "3"
 members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-proc", "dc-redact"]
 
 # Every value a symlinked member inherits from here must equal DevCouncil's
-# own, because the crates are DevCouncil's: scripts/check-release.mjs
-# (crateMirrorProblems) compares them and fails the build on a difference.
+# own, because the crates are DevCouncil's: manvi/devcouncil/crate_pins_test.go
+# is the one check. It compares them with DevCouncil at the commit
+# scripts/module-pins.txt pins and fails the build on a difference.
 [workspace.package]
 version = "0.2.4"
 edition = "2024"
@@ -26,7 +27,7 @@ license = "Apache-2.0"
 # blamed. These ten are every workspace-inherited dependency the seven members
 # currently declare (dc-redact inherits none); the spec strings are
 # DevCouncil's, and Cargo.lock holds the versions DevCouncil's own lock
-# resolves. manvi/devcouncil/crate_pins_test.go fails when they drift.
+# resolves. The same test fails when they drift.
 [workspace.dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
