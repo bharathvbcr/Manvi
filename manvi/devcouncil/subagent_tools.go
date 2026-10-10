@@ -233,8 +233,8 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 			placements = append(placements, override)
 			continue
 		}
-		if def, ok := reg.Get(sub.TypeName); ok {
-			placements = append(placements, def.Model)
+		if role := resolveRole(reg, sub.TypeName, sub.Role, false, true); role.Known {
+			placements = append(placements, role.Def.Model)
 		}
 	}
 
@@ -252,11 +252,11 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		tasks: func() []agents.Task {
 			var subTasks []agents.Task
 			for _, s := range args.Subagents {
-				def, ok := reg.Get(s.TypeName)
-				if !ok {
+				role := resolveRole(reg, s.TypeName, s.Role, false, true)
+				if role.Unknown {
 					unknownTypes = append(unknownTypes, s.TypeName)
 				}
-				subTasks = append(subTasks, invokeTask(s, def, ok, mgr, runner))
+				subTasks = append(subTasks, invokeTask(s, role, mgr, runner))
 			}
 			return subTasks
 		},
@@ -265,45 +265,17 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		payload: func(payload map[string]any) {
 			// "dispatched" counts what was asked for, not what ran.
 			payload["dispatched"] = len(args.Subagents)
-			if len(unknownTypes) > 0 {
-				payload["unknown_types"] = unknownTypes
-				payload["unknown_types_note"] = fmt.Sprintf(
-					"these type_name values are not registered roles (%s). Each ran read-only on the "+
-						"parent's tool surface, under no role's system prompt, model placement or tool "+
-						"policy. Check the spelling against the registered roles, or define the role first",
-					strings.Join(unknownTypes, ", "))
-			}
+			reportUnknownRoles(payload, unknownTypes)
 		},
 	})
 }
 
 // invokeTask is one devcouncil_invoke_subagent child: a tracked instance the
-// control plane can list and kill, running under the role s names. known is
-// false when no role by that name is registered, and def is then the zero
-// value.
-func invokeTask(s invokeRequest, def agents.Definition, known bool,
+// control plane can list and kill, running under the role s names, as resolved
+// by resolveRole.
+func invokeTask(s invokeRequest, role resolvedRole,
 	mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
-	// The surface is taken only from a role that actually exists. The
-	// fallback below is synthetic — nobody wrote it down — so it declares
-	// nothing and the child inherits the parent's tool set, which is the
-	// same reading an unknown type already gets for its placement. Building
-	// a surface out of the fallback's zero fields would instead read as a
-	// role that deliberately denied the MCP group.
-	var surface agents.ToolSurface
-	if known {
-		surface = def.Surface()
-	} else {
-		// Auto-fallback to self, with writes withheld. A permission nobody
-		// wrote down is a permission nobody reviewed, and the direction an
-		// unverifiable permission has to fail is closed: the caller named a
-		// role that does not exist, and the one thing that must not follow
-		// from a misspelling is a child that can mutate the working tree.
-		def = agents.Definition{
-			Name:             s.TypeName,
-			Role:             s.Role,
-			EnableWriteTools: false,
-		}
-	}
+	def := role.Def
 
 	convID := fmt.Sprintf("subagent-%d-%d", time.Now().UnixMilli(), conversationCounter.Add(1))
 
@@ -358,10 +330,10 @@ func invokeTask(s invokeRequest, def agents.Definition, known bool,
 			out, err := runner.RunSubAgent(childCtx, SubAgentRequest{
 				Label:        s.Role,
 				Prompt:       s.Prompt,
-				ReadOnly:     !def.EnableWriteTools,
+				ReadOnly:     role.ReadOnly,
 				ModelSpec:    modelSpec,
 				SystemPrompt: def.SystemPrompt,
-				Surface:      surface,
+				Surface:      role.Surface,
 				// So a lease this child takes for itself is released by the
 				// same cleanup that releases one the dispatch named.
 				Leases: leaseSinkFor(holder),
@@ -390,19 +362,94 @@ func invokeTask(s invokeRequest, def agents.Definition, known bool,
 			outcome["conversation_id"] = convID
 			outcome["role"] = s.Role
 			outcome["type"] = s.TypeName
-			if !known {
-				// Carried on the child's own outcome as well as on the
-				// payload, because this is the line a dispatching model
-				// reads when it is deciding whether the answer it got came
-				// from the role it asked for.
-				outcome["unknown_type"] = true
-				outcome["note"] = fmt.Sprintf(
-					"no role named %q is registered; this child ran read-only on the parent's "+
-						"tool surface rather than under that role", s.TypeName)
-			}
+			role.annotate(outcome)
 			return outcome, nil
 		},
 	}
+}
+
+// resolvedRole is what a dispatch tool's role name came to. It is the one
+// reader of the role registry for both dispatchers, so what a name means — and
+// what an unregistered one is refused — cannot differ between them.
+type resolvedRole struct {
+	// Name is the type the caller wrote; empty when it named none.
+	Name string
+	// Named reports that the caller named a role at all.
+	Named bool
+	// Known reports that the named role is registered; Def is meaningful only
+	// then, or for the synthetic fallback below.
+	Known bool
+	// Unknown reports that a role was named and is not registered.
+	Unknown bool
+	Def     agents.Definition
+	// ReadOnly is what the child runs under. Surface is the role's tool
+	// surface, declared only by a role somebody actually wrote.
+	ReadOnly bool
+	Surface  agents.ToolSurface
+}
+
+// resolveRole resolves a dispatch's role name against the registry.
+//
+// A name that is not registered fails closed: a permission nobody wrote down is
+// a permission nobody reviewed, so the child is read-only, declares no surface
+// (it inherits the parent's, the same reading an unknown type already gets for
+// its placement) and the miss is reported through reportUnknownRoles and
+// annotate rather than left for the dispatching model to infer. A caller that
+// names no role at all keeps the placement the tool has always had, with
+// callerReadOnly as its only constraint, unless roleRequired says the tool has
+// no such reading (invoke_subagent always runs under a role, so an empty name
+// there is a miss like any other). Where a role is found, callerReadOnly
+// is a floor and never a ceiling: a caller that asked for a non-mutating child
+// is not handed a writing one because the role permits writes, and the role's
+// named write exceptions do not apply to it.
+func resolveRole(roles *agents.Registry, typeName, label string, callerReadOnly, roleRequired bool) resolvedRole {
+	role := resolvedRole{Name: typeName, Named: typeName != "" || roleRequired, ReadOnly: callerReadOnly}
+	if !role.Named {
+		return role
+	}
+	def, ok := roles.Get(typeName)
+	if !ok {
+		role.Unknown = true
+		role.ReadOnly = true
+		role.Def = agents.Definition{Name: typeName, Role: label, EnableWriteTools: false}
+		return role
+	}
+	role.Known = true
+	role.Def = def
+	role.Surface = def.Surface()
+	role.ReadOnly = callerReadOnly || !def.EnableWriteTools
+	if callerReadOnly {
+		role.Surface.Writes = nil
+	}
+	return role
+}
+
+// annotate marks a child's own outcome when its role was not registered. It is
+// carried here as well as on the payload because this is the line a dispatching
+// model reads when it is deciding whether the answer it got came from the role
+// it asked for.
+func (r resolvedRole) annotate(outcome map[string]any) {
+	if !r.Unknown {
+		return
+	}
+	outcome["unknown_type"] = true
+	outcome["note"] = fmt.Sprintf(
+		"no role named %q is registered; this child ran read-only on the parent's "+
+			"tool surface rather than under that role", r.Name)
+}
+
+// reportUnknownRoles adds the unregistered role names of a dispatch to its
+// payload, so a typo is visible on the result as well as on each child.
+func reportUnknownRoles(payload map[string]any, unknownTypes []string) {
+	if len(unknownTypes) == 0 {
+		return
+	}
+	payload["unknown_types"] = unknownTypes
+	payload["unknown_types_note"] = fmt.Sprintf(
+		"these role type values are not registered roles (%s). Each ran read-only on the "+
+			"parent's tool surface, under no role's system prompt, model placement or tool "+
+			"policy. Check the spelling against the registered roles, or define the role first",
+		strings.Join(unknownTypes, ", "))
 }
 
 // recordFailure moves an instance to errored and returns the failure the child
@@ -895,11 +942,8 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// onto the one device the local cap exists to protect.
 	placements := make([]string, 0, len(args.Tasks))
 	for _, t := range args.Tasks {
-		if t.Type == "" {
-			continue
-		}
-		if def, ok := roles.Get(t.Type); ok {
-			placements = append(placements, def.Model)
+		if role := resolveRole(roles, t.Type, t.Label, t.ReadOnly, false); role.Known {
+			placements = append(placements, role.Def.Model)
 		}
 	}
 
@@ -908,15 +952,21 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// paths stop at the child's log: the parent's checkpoint would be told the
 	// turn mutated — a dispatch is a mutating tool — and handed no file to
 	// look at, which is a check that runs against nothing and passes.
+	var unknownTypes []string
 	return r.runFanout(ctx, bounds, fanout{
 		placements: placements,
 		tasks: func() []agents.Task {
 			subTasks := make([]agents.Task, 0, len(args.Tasks))
 			for _, t := range args.Tasks {
-				subTasks = append(subTasks, r.spawnTask(t, roles, runner))
+				role := resolveRole(roles, t.Type, t.Label, t.ReadOnly, false)
+				if role.Unknown {
+					unknownTypes = append(unknownTypes, t.Type)
+				}
+				subTasks = append(subTasks, r.spawnTask(t, role, runner))
 			}
 			return subTasks
 		},
+		payload:    func(payload map[string]any) { reportUnknownRoles(payload, unknownTypes) },
 		runFailure: "subagent fan-out failed",
 		verb:       "delegated",
 		outcome: func(outcome map[string]any, res agents.Result) {
@@ -932,7 +982,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 
 // spawnTask is one devcouncil_spawn_subagents child: it holds a lease on the
 // task it names, if it names one, and runs under the role it names, if any.
-func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, runner SubAgentRunner) agents.Task {
+func (r *Registry) spawnTask(t spawnRequest, role resolvedRole, runner SubAgentRunner) agents.Task {
 	return agents.Task{
 		Label: t.Label,
 		Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {
@@ -964,25 +1014,11 @@ func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, runner SubA
 				// same cleanup that releases one the dispatch named.
 				Leases: leaseSinkFor(holder),
 			}
-			if t.Type != "" {
-				if def, ok := roles.Get(t.Type); ok {
-					req.ModelSpec = def.Model
-					req.SystemPrompt = def.SystemPrompt
-					req.Surface = def.Surface()
-					// ReadOnly is a floor, never a ceiling: a caller that
-					// asked for a non-mutating child must not be handed a
-					// writing one because the role permits writes.
-					req.ReadOnly = t.ReadOnly || !def.EnableWriteTools
-					if t.ReadOnly {
-						// The caller demanded a non-mutating child, so the
-						// role's named write exceptions do not apply. Both
-						// facts arrive as one bool at the runner, so the
-						// distinction has to be made here, where the
-						// caller's own request is still separable from the
-						// role's default.
-						req.Surface.Writes = nil
-					}
-				}
+			if role.Named {
+				req.ModelSpec = role.Def.Model
+				req.SystemPrompt = role.Def.SystemPrompt
+				req.Surface = role.Surface
+				req.ReadOnly = role.ReadOnly
 			}
 
 			out, err := runner.RunSubAgent(childCtx, req)
@@ -994,6 +1030,7 @@ func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, runner SubA
 			}
 			child := completedOutcome(out)
 			child["task_id"] = t.TaskID
+			role.annotate(child)
 			return child, nil
 		},
 	}

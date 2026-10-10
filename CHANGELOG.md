@@ -264,6 +264,13 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- `devcouncil_spawn_subagents` no longer runs an unregistered role `type` as a
+  write-capable child on the parent's whole tool surface. Both dispatchers
+  now resolve roles through one function (`resolveRole`): an unregistered name
+  runs read-only and is reported as `unknown_types` on the result and
+  `unknown_type` on the child's outcome. Previously only
+  `devcouncil_invoke_subagent` failed closed.
+
 - The end-of-turn check no longer skips a turn whose writes carried a policy
   rule. `progress.mutated` read any `Rule` as "refused", but the gate attaches
   one to allowed results too (demotion, grant, protected-file warning), so
