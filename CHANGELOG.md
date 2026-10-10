@@ -189,6 +189,13 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- `policy.check.command` honours the `allowed_commands` a host's `scope`
+  declares, and names that scope's task on the decision. `serve.HostScope` had
+  no field for them, so GitPulse's bound-task commands were dropped in decoding
+  and came back `command.not_allowed`: denied with the allowlist enforced,
+  demoted without it. Hard rules still run first; a scope allowlist admits
+  nothing they refuse.
+
 - Wrapping text no longer hangs when a character is wider than the line
   (a double-width character at width 1); it is placed on a line of its own.
 - **The TUI saves every turn of a session, not only the first.** Each save
