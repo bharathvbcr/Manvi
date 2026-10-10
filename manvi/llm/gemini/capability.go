@@ -139,6 +139,16 @@ const StoreInteractions = false
 // "not stated", which the neutral Capability does not enforce. Inventing the
 // numbers would produce a gate that rejects requests the provider accepts.
 var catalogue = llm.Catalogue{
+	// gemini-3.8-flash is the one entry whose limits are stated: Jarvis, which
+	// meters it against a spend cap, needs them to bound a reservation, and
+	// Google's model page for it gives 1,048,576 input and 65,536 output tokens.
+	"gemini-3.8-flash": {
+		Provider: Name, Model: "gemini-3.8-flash",
+		ContextWindow: 1_048_576, MaxOutputTokens: 65_536,
+		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
+		SupportsReasoning: true,
+		EffortLevels:      thinkingLevels,
+	},
 	"gemini-3.7-flash": {
 		Provider: Name, Model: "gemini-3.7-flash",
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,

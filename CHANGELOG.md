@@ -30,6 +30,17 @@ under **Unreleased** in the same commit as the code.
   and fails when one is missing from that document, reporting the reads whose
   name it could not resolve to a literal. Documentation and tests only; no
   behaviour changes.
+- `scripts/check-consumers.sh` builds and vets Jarvis against this checkout, so
+  an exported symbol cannot be removed while a consumer still calls it. It exits
+  2, not 0, when the consumer checkout is missing.
+- `session.RestoreSensitiveLog` is back (cab5166 removed it as unreferenced; its
+  consumer is Jarvis, in another repository), with its test. `gemini-3.8-flash`
+  is a served model with its stated context and output limits.
+- `workflow.State.Cause` (omitted when empty), the `human_takeover` failure
+  code, and the `external_interaction` and `human_takeover` intervention reason
+  codes.
+- `agent.ImageTokens`.
+
 - `manvi serve` binds every repository read to an explicit root. `devmap.status`
   and `devmap.query` require `root`, `work.enhancements.refine` requires
   `repo_root`, and `work.verify.task` validates its `worktree`, all through one
@@ -404,6 +415,19 @@ under **Unreleased** in the same commit as the code.
   RNG stream, pinned by a randrange oracle in `test_stats.py`); the nine copied
   `check()` helpers are one `mh/checks.py`; `verify.sh` lints `bench/` and
   `scripts/*.py` with ruff's F and E9 rules (NOT COVERED when ruff is absent).
+- `agent.CountRequestTokens` priced an image at zero tokens, so a computer-use
+  session of screenshots never compacted. Images, top level or inside a tool
+  result, now cost `ceil(w/28) * ceil(h/28)` visual tokens, capped at 4,784.
+- `workflow.ResultFromState` and `computer.StuckReasonCode` guessed the failure
+  code from the phase and from substrings of free text: a deadline or action
+  limit reported `checkpoint_failed`, an external-interaction pause or human
+  takeover reported `ambiguous_target` or `observation_budget`, and native text
+  mentioning a "deadline" reported `deadline_near`. Both now read a typed
+  `State.Cause`; `human_denied` is produced for a denied approval.
+- Catalog publication never synced the directory after linking or renaming the
+  published name, so a power loss could lose a revision.
+- `Client.Act` and `Client.HumanAct` were one 193-node clone; they share
+  `dispatch`.
 
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no

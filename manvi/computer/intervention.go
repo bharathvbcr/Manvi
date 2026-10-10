@@ -1,8 +1,6 @@
 package computer
 
 import (
-	"strings"
-
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
@@ -14,6 +12,8 @@ const (
 	ReasonApprovalPending     = "approval_pending"
 	ReasonDeadlineNear        = "deadline_near"
 	ReasonObservationBudget   = "observation_budget"
+	ReasonExternalInteraction = "external_interaction"
+	ReasonHumanTakeover       = "human_takeover"
 )
 
 const (
@@ -42,21 +42,25 @@ type InterventionRequest struct {
 	Sequence      uint64 `json:"sequence,omitempty"`
 }
 
-// StuckReasonCode maps reducer pause/approval reasons onto stable codes.
-func StuckReasonCode(phase workflow.Phase, reason string) string {
-	if phase == workflow.AwaitingApproval {
+// StuckReasonCode maps a stuck run onto a stable reason code. The code comes
+// from the cause the reducer recorded on the state, never from the prose of
+// Reason: native text such as an "incomplete observation: deadline banner
+// visible" says nothing about why the run stopped.
+func StuckReasonCode(s workflow.State) string {
+	if s.Phase == workflow.AwaitingApproval {
 		return ReasonApprovalPending
 	}
-	lower := strings.ToLower(reason)
-	switch {
-	case strings.Contains(lower, "intervention deadline") || strings.Contains(lower, "deadline"):
+	switch s.Cause {
+	case workflow.FailureDeadline:
 		return ReasonDeadlineNear
-	case strings.Contains(lower, "not actionable"):
+	case workflow.FailureNotActionable:
 		return ReasonNotActionable
-	case strings.Contains(lower, "recovery"):
-		return ReasonRecoveriesExhausted
-	case strings.Contains(lower, "target resolves to 0") || strings.Contains(lower, "ladder"):
+	case workflow.FailureAmbiguousTarget:
 		return ReasonLadderExhausted
+	case workflow.FailureExternalInteraction:
+		return ReasonExternalInteraction
+	case workflow.FailureHumanTakeover:
+		return ReasonHumanTakeover
 	default:
 		return ReasonObservationBudget
 	}

@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -383,6 +388,44 @@ func CountToolTokens(tools []llm.ToolSchema) int {
 	return total
 }
 
+// maxImageTokens is the most visual tokens any image can cost: the
+// high-resolution tier's limit (Claude 4.7 and later), which is also the
+// price of an image whose size cannot be read.
+const maxImageTokens = 4784
+
+// imagePatch is the side, in pixels, of the block an image is priced in.
+const imagePatch = 28
+
+// ImageTokens estimates what one image costs in a request.
+//
+// Anthropic prices an image in 28x28-pixel patches: ceil(width/28) *
+// ceil(height/28) visual tokens, with images beyond a model's resolution
+// limits downscaled first, which caps the cost at 4,784 on the
+// high-resolution tier and 1,568 on the standard tier
+// (https://platform.claude.com/docs/en/build-with-claude/vision, "Resolution
+// and token cost"). The estimate takes the high-resolution tier, the larger of
+// the two, for every provider: it guards a context window, so it may only be
+// wrong in the direction that compacts early. Other providers price images
+// lower per image (Gemini tiles at 258 tokens), so the estimate stays an upper
+// bound for them too, and the Calibrator corrects it from reported usage.
+//
+// Only the header is read, so the cost is the same on every step however many
+// screenshots the history holds. An image whose size cannot be read (empty,
+// truncated, or a format the standard library does not decode, such as WebP)
+// costs the cap, never zero.
+func ImageTokens(b llm.ImageBlock) int {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(b.Data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return maxImageTokens
+	}
+	w := (cfg.Width + imagePatch - 1) / imagePatch
+	h := (cfg.Height + imagePatch - 1) / imagePatch
+	if w > maxImageTokens/h {
+		return maxImageTokens
+	}
+	return min(w*h, maxImageTokens)
+}
+
 func countMessageBlocks(msg llm.Message) int {
 	total := 0
 	for _, b := range msg.Content {
@@ -391,10 +434,15 @@ func countMessageBlocks(msg llm.Message) int {
 			total += prompt.EstimateTokens(block.Text)
 		case llm.ReasoningBlock:
 			total += prompt.EstimateTokens(block.Text)
+		case llm.ImageBlock:
+			total += ImageTokens(block)
 		case llm.ToolResultBlock:
 			for _, inner := range block.Content {
-				if tb, ok := inner.(llm.TextBlock); ok {
-					total += prompt.EstimateTokens(tb.Text)
+				switch ib := inner.(type) {
+				case llm.TextBlock:
+					total += prompt.EstimateTokens(ib.Text)
+				case llm.ImageBlock:
+					total += ImageTokens(ib)
 				}
 			}
 			total += 8
