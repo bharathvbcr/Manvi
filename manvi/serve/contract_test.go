@@ -36,6 +36,9 @@ var contractTypes = map[string]reflect.Type{
 	"GapScanParams":      reflect.TypeFor[GapScanParams](),
 	"GapScanReadParams":  reflect.TypeFor[GapScanReadParams](),
 	"ScanView":           reflect.TypeFor[ScanView](),
+	"VerifyTaskParams":   reflect.TypeFor[VerifyTaskParams](),
+	"VerifyGetParams":    reflect.TypeFor[VerifyGetParams](),
+	"VerifyResult":       reflect.TypeFor[VerifyResult](),
 }
 
 type contractField struct {
@@ -134,6 +137,14 @@ func currentContract(t *testing.T) serveContract {
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
+	verify, err := NewVerifyRunner(VerifyDeps{
+		Client: client, Critic: &scriptedCritic{}, Devmap: func(string) DevmapClient { return &fakeDevmap{} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = verify.Close() })
+
 	always := opsOf(t, Options{})
 	scan, err := NewScanRunner(ScanDeps{
 		Devmap: func(string) ScanDevmap { return &scanFakeDevmap{} },
@@ -145,7 +156,7 @@ func currentContract(t *testing.T) serveContract {
 	}
 	t.Cleanup(func() { _ = scan.Close() })
 	full := opsOf(t, Options{Modules: []Module{
-		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Configuration: &EnhancementConfiguration{}},
+		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Verify: verify, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{Client: &fakeDevmap{}},
 	}})
 	var optional []string

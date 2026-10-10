@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -226,36 +225,18 @@ func scanStrict(raw json.RawMessage, into any) *Error {
 
 var scanRevision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@^~{}-]{0,199}$`)
 
+// scanGit is runGit for the scan, where a listing cut at the bound is an
+// error: a truncated diff or ls-files would drop files from a category while
+// its coverage still read as complete.
 func scanGit(ctx context.Context, root string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &limitedWriter{w: &out, left: scanGitOutputLimit}
-	cmd.Stderr = &limitedWriter{w: &stderr, left: 4096}
-	cmd.WaitDelay = 2 * time.Second
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	out, truncated, err := runGit(ctx, root, scanGitOutputLimit, args...)
+	if err != nil {
+		return nil, err
 	}
-	return out.Bytes(), nil
-}
-
-// limitedWriter discards output beyond a bound without failing the process.
-type limitedWriter struct {
-	w    io.Writer
-	left int
-}
-
-func (l *limitedWriter) Write(p []byte) (int, error) {
-	n := len(p)
-	if len(p) > l.left {
-		p = p[:l.left]
+	if truncated {
+		return nil, fmt.Errorf("git %s: output exceeded %d bytes; the listing is incomplete", args[0], scanGitOutputLimit)
 	}
-	l.left -= len(p)
-	_, err := l.w.Write(p)
-	return n, err
+	return out, nil
 }
 
 // canonicalScanRoot validates an explicit repository root: absolute, existing,

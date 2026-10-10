@@ -57,6 +57,25 @@ under **Unreleased** in the same commit as the code.
   carries is reported `attached`, a repeat of an earlier scan `known`, and the
   scan never writes the board. A per-scan proposal cap and concurrent scans of
   one root sharing one job bound the work.
+- `work.verify.task` and `work.verify.get` (host plane, enabled with
+  `--workbench-db`): an evidence-based completion verdict for a board task,
+  `passed`, `failed` or `degraded`, never on the agent's word. The changed
+  paths come from git (untracked files included); the rigor gates and the
+  operator's `MANVI_VERIFY_COMMAND` run over them; DevMap lists the tests that
+  reach the change, recording `truncated` and `walk_incomplete`; and a read-only
+  `critic` scores each acceptance criterion read from the stored item, one
+  `MANVI-VERDICT[n]:` line per criterion. A stale or unbuilt index, a missing
+  `dcverify`, an empty or capped change set, a critic with no or conflicting
+  verdict lines, and any check that could not run all degrade the verdict, and a
+  criterion the critic did not address is unmet. The op claims durably, answers
+  at once and runs on its own job context; a retry with the same `request_id`
+  returns the same record without re-running the critic. The record is stored as
+  dc-store evidence (type `work.verify.task`) with a verification-run row. The
+  request carries no command and no path list.
+- The verdict contract now lives in `manvi/devcouncil` (`ParseVerdict`,
+  `VerdictInstruction`, and the per-criterion `ParseCriterionVerdicts`) instead
+  of the `manvi` command package, so the serve host and the turn sensor read one
+  contract.
 
 - `contracts/serve.ops.schema.json`: the `manvi serve` ops and the shapes of
   hello, file and command checks, host scope and managed-run results, generated
@@ -93,6 +112,9 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The end-of-turn check no longer reports a clean pass for a turn that deleted
+  files: a path that is gone is recorded as omitted and a would-be `passed`
+  becomes `degraded` (`devcouncil.VerifyPresent`, shared with `work.verify.task`).
 - Anthropic requests use automatic prompt caching (top-level
   `cache_control: ephemeral`). An agent loop now reads the history it already
   sent instead of paying full input price for it on every turn.

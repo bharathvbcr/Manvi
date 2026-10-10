@@ -287,7 +287,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	// written together in verdict.go for the reason every parse-the-prose
 	// scheme fails: a contract only one side knows about is not a contract.
 	if strings.TrimSpace(req.Verdict) != "" {
-		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + verdictInstruction()
+		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + devcouncil.VerdictInstruction()
 	}
 
 	loop, err := newTurnLoop(turnFace{
@@ -393,7 +393,7 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	// fixed shape; anything else — a missing line, a pass that still lists
 	// objections — comes back as no judgement rather than as a pass, which
 	// is the only direction it is safe to be wrong in.
-	result.Verdict = parseVerdict(req.Verdict, summary)
+	result.Verdict = devcouncil.ParseVerdict(req.Verdict, summary)
 	return result, nil
 }
 

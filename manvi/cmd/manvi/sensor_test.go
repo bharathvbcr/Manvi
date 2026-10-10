@@ -219,7 +219,7 @@ func TestSensorEscalatesOnTheSecondFailure(t *testing.T) {
 		Verdict: devcouncil.VerdictFailed, Findings: []string{"still broken"},
 	}}
 	runner := &fakeRunner{result: devcouncil.SubAgentResult{
-		Summary: "reviewed\n" + verdictMarker + " FAIL\n- the lock is never released",
+		Summary: "reviewed\n" + devcouncil.VerdictMarker + " FAIL\n- the lock is never released",
 		Verdict: devcouncil.SubAgentVerdict{
 			Judged: true, Passed: false, Findings: []string{"the lock is never released"},
 		},
@@ -234,7 +234,7 @@ func TestSensorEscalatesOnTheSecondFailure(t *testing.T) {
 	if runner.calls != 1 {
 		t.Fatalf("critic dispatched %d times, want 1", runner.calls)
 	}
-	if runner.gotReq.Verdict != verdictMarker {
+	if runner.gotReq.Verdict != devcouncil.VerdictMarker {
 		t.Fatalf("the critic was not asked for a structured verdict: %+v", runner.gotReq)
 	}
 	if !strings.Contains(e.Inject, "the lock is never released") {
