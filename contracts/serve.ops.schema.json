@@ -38,6 +38,7 @@
       "work.enhancements.get",
       "work.enhancements.list",
       "work.enhancements.recover",
+      "work.enhancements.refine",
       "work.enhancements.revise",
       "work.enhancements.undo",
       "work.enhancements.wake",

@@ -691,6 +691,12 @@ undoes accepted fields, and exposes cancellation and expired-attempt recovery.
 An uncertain action retains its request identity and pauses task editing until
 reconciled. Automatic saved-text suggestions use the same review lifecycle.
 
+`work.enhancements.refine` (host-only, registered with the enhancement
+configuration) proposes acceptance criteria, splits and `duplicate_of` links for
+one task. It is not stored: the proposal is returned for review and the host
+applies what it accepts through the ordinary item operations. See the changelog
+entry for its output contract and caps.
+
 The CLI's explicitly enabled workbench module also advertises
 `work.enhancements.generate`. Storage-only embedders advertise this method only
 when supplied an `EnhancementRunner` sharing the module's profile client.

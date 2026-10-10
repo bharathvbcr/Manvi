@@ -17,6 +17,9 @@ type WorkbenchModule struct {
 	Runner        *EnhancementRunner
 	Configuration *EnhancementConfiguration
 	Managed       *ManagedRunner
+	// Devmap grounds refinements in the code index. Optional: without it a
+	// refinement is served ungrounded and says so.
+	Devmap DevmapClient
 }
 
 // EnhancementConfiguration describes the host's selection, not provider health.
@@ -119,6 +122,15 @@ func (m WorkbenchModule) Configure(r *Router) error {
 				}); err != nil {
 					return err
 				}
+			}
+			if err := r.Register(OpWorkRefine, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+				result, err := m.Runner.Refine(ctx, raw, configuration, m.Devmap)
+				if err != nil {
+					return nil, workbenchHostError("refinement", err)
+				}
+				return result, nil
+			}); err != nil {
+				return err
 			}
 			if err := r.Register("work.enhancements.configuration", func(_ context.Context, raw json.RawMessage) (any, *Error) {
 				if len(raw) == 0 {

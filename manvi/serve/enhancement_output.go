@@ -166,19 +166,31 @@ func (r *EnhancementRunner) infer(ctx context.Context, record enhancementRecord)
 	if err != nil {
 		return proposal, err
 	}
-	provider, err := r.provider(ctx, record.Provider, record.Model)
+	text, err := r.completeText(ctx, record.Provider, record.Model, enhancementSystem, prompt)
 	if err != nil {
-		return proposal, enhancementProviderFailure(err, record)
-	}
-	if nilInterface(provider) || provider.Name() != record.Provider {
-		return proposal, errors.New("provider resolution did not match the selected provider")
-	}
-	capability, available := provider.Capability(record.Model)
-	if err := ctx.Err(); err != nil {
 		return proposal, err
 	}
+	return decodeEnhancement([]byte(text), record)
+}
+
+// completeText runs one text-only, tool-free, bounded provider call and
+// returns the visible text. It is the single owner of the stream budget, the
+// context-window check and the stop-reason rules, so title/description
+// enhancement and refinement cannot drift apart on them.
+func (r *EnhancementRunner) completeText(ctx context.Context, providerName, model, system string, prompt []byte) (text string, err error) {
+	provider, err := r.provider(ctx, providerName, model)
+	if err != nil {
+		return "", enhancementProviderFailure(err, model)
+	}
+	if nilInterface(provider) || provider.Name() != providerName {
+		return "", errors.New("provider resolution did not match the selected provider")
+	}
+	capability, available := provider.Capability(model)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if !available || capability.ContextWindow <= 0 {
-		return proposal, fmt.Errorf("selected model %q is not available on provider %q; pick a served model in Local model servers", record.Model, record.Provider)
+		return "", fmt.Errorf("selected model %q is not available on provider %q; pick a served model in Local model servers", model, providerName)
 	}
 	maxTokens := 8192
 	if capability.MaxOutputTokens > 0 && capability.MaxOutputTokens < maxTokens {
@@ -186,56 +198,56 @@ func (r *EnhancementRunner) infer(ctx context.Context, record enhancementRecord)
 	}
 	// Conservative token estimate: ceil(bytes/3). The source stays intact;
 	// truncation cannot silently erase a task constraint.
-	promptTokens := (len(prompt) + len(enhancementSystem) + 2) / 3
+	promptTokens := (len(prompt) + len(system) + 2) / 3
 	if promptTokens+maxTokens > capability.ContextWindow {
-		return proposal, errors.New("task does not fit the selected model's declared context budget; narrow the task fields and retry")
+		return "", errors.New("task does not fit the selected model's declared context budget; narrow the task fields and retry")
 	}
 	temperature := 0.0
-	request := llm.Request{Model: record.Model, System: enhancementSystem, MaxTokens: maxTokens, Temperature: &temperature,
+	request := llm.Request{Model: model, System: system, MaxTokens: maxTokens, Temperature: &temperature,
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: string(prompt)}}}}}
 	if err := capability.Validate(request); err != nil {
-		return proposal, err
+		return "", err
 	}
 	stream, err := provider.Stream(ctx, request)
 	if err != nil {
-		return proposal, enhancementProviderFailure(err, record)
+		return "", enhancementProviderFailure(err, model)
 	}
 	if nilInterface(stream) {
-		return proposal, errors.New("provider returned no stream")
+		return "", errors.New("provider returned no stream")
 	}
 	defer func() { err = errors.Join(err, stream.Close()) }()
 	bytesSeen := 0
 	for chunks := 0; ; chunks++ {
 		if err := ctx.Err(); err != nil {
-			return proposal, err
+			return "", err
 		}
 		chunk, err := stream.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return proposal, err
+			return "", err
 		}
 		bytesSeen += len(chunk.Text) + len(chunk.ArgumentsRaw) + len(chunk.ToolName) + len(chunk.ToolCallID)
 		if chunks >= 8192 || bytesSeen > 256<<10 {
-			return proposal, errors.New("provider output exceeded the enhancement stream budget")
+			return "", errors.New("provider output exceeded the enhancement stream budget")
 		}
 		if chunk.Kind == llm.ChunkToolCallStart || chunk.Kind == llm.ChunkToolCallDelta {
-			return proposal, errors.New("provider requested a tool during text-only enhancement")
+			return "", errors.New("provider requested a tool during text-only enhancement")
 		}
 	}
 	response, err := stream.Response()
 	if err != nil {
-		return proposal, err
+		return "", err
 	}
 	if response.StopReason == llm.StopMaxTokens {
-		return proposal, errors.New("model hit the output token limit before finishing the enhancement JSON; narrow the requested fields or raise the model output cap, then retry")
+		return "", errors.New("model hit the output token limit before finishing the enhancement JSON; narrow the requested fields or raise the model output cap, then retry")
 	}
 	if response.StopReason != llm.StopEndTurn || len(response.Malformed) != 0 {
-		return proposal, errors.New("provider did not return a complete text-only result")
+		return "", errors.New("provider did not return a complete text-only result")
 	}
 	if response.MaxTokensApplied <= 0 || response.MaxTokensApplied > maxTokens {
-		return proposal, errors.New("provider did not confirm the requested output bound")
+		return "", errors.New("provider did not confirm the requested output bound")
 	}
 	var visible strings.Builder
 	contentBytes := 0
@@ -244,25 +256,25 @@ func (r *EnhancementRunner) infer(ctx context.Context, record enhancementRecord)
 		case llm.TextBlock:
 			contentBytes += len(block.Text)
 			if contentBytes > 256<<10 {
-				return proposal, errors.New("provider result exceeded the enhancement byte budget")
+				return "", errors.New("provider result exceeded the enhancement byte budget")
 			}
 			visible.WriteString(block.Text)
 		case llm.ReasoningBlock:
 			contentBytes += len(block.Text) + len(block.Signature)
 			if contentBytes > 256<<10 {
-				return proposal, errors.New("provider result exceeded the enhancement byte budget")
+				return "", errors.New("provider result exceeded the enhancement byte budget")
 			}
 		default:
-			return proposal, errors.New("provider returned non-text enhancement content")
+			return "", errors.New("provider returned non-text enhancement content")
 		}
 	}
-	return decodeEnhancement([]byte(visible.String()), record)
+	return visible.String(), nil
 }
 
-func enhancementProviderFailure(err error, record enhancementRecord) error {
+func enhancementProviderFailure(err error, model string) error {
 	var notServed *local.ErrNotServed
 	if errors.As(err, &notServed) {
-		return fmt.Errorf("selected model %q is not served by the configured local server; pick a served model in Local model servers", record.Model)
+		return fmt.Errorf("selected model %q is not served by the configured local server; pick a served model in Local model servers", model)
 	}
 	return err
 }
@@ -513,10 +525,8 @@ func decodeEnhancement(raw []byte, record enhancementRecord) (enhancementProposa
 				}
 			}
 		}
-		for _, claim := range []string{"tests pass", "all checks pass", "verified that", "root cause is", "deployed successfully"} {
-			if strings.Contains(strings.ToLower(value), claim) && !strings.Contains(strings.ToLower(original), claim) {
-				return result, errors.New("model added an unsupported completion or cause claim")
-			}
+		if unsupportedClaim(value, original) {
+			return result, errors.New("model added an unsupported completion or cause claim")
 		}
 		switch field {
 		case "title":
@@ -528,4 +538,15 @@ func decodeEnhancement(raw []byte, record enhancementRecord) (enhancementProposa
 		}
 	}
 	return result, nil
+}
+
+// unsupportedClaim reports a completion or cause claim in value that the
+// original task text never made. A model must not invent a result.
+func unsupportedClaim(value, original string) bool {
+	for _, claim := range []string{"tests pass", "all checks pass", "verified that", "root cause is", "deployed successfully"} {
+		if strings.Contains(strings.ToLower(value), claim) && !strings.Contains(strings.ToLower(original), claim) {
+			return true
+		}
+	}
+	return false
 }

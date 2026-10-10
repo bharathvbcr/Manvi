@@ -23,6 +23,25 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `work.enhancements.refine`: a host-only operation that proposes acceptance
+  criteria, `split_into` parts and `duplicate_of` links for one task, grounded
+  in DevMap answers for the symbols the task names and in the open board. It
+  takes `id`, `request_id` and `expected_revision`, runs one model call on the
+  host's selected provider and model (not a managed coding agent, and not
+  callable by an agent), and returns a reviewable proposal. It writes nothing:
+  `applied` is always false. The reply must be one JSON object with exactly
+  `acceptance_criteria`, `split_into`, `duplicate_of` (and optionally
+  `rationale`); anything else is refused whole. A `duplicate_of` must name a
+  live, open item in the task's repository and a split must carry every
+  protected literal (error codes, paths, quoted text) of the parent, or that
+  proposal is dropped and listed in `dropped` with its reason. Each proposal
+  cites the DevMap answers it used, with `truncated` and `walk_incomplete`; an
+  unbuilt or unavailable index gives `grounding.status: "unavailable"` and no
+  citation. A run is capped at 12 proposals, 10 acceptance criteria and 4
+  splits (the board growth), and is refused, not truncated, over a cap. The
+  same `request_id` replays its result without a second model call, and a
+  second refine of the same task while one runs is refused as busy.
+
 - `contracts/serve.ops.schema.json`: the `manvi serve` ops and the shapes of
   hello, file and command checks, host scope and managed-run results, generated
   from the Go types. A Go test fails when the file and the types disagree
