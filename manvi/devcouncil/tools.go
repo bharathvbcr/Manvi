@@ -90,6 +90,12 @@ type Deps struct {
 	SubagentRegistry *agents.Registry
 	SubagentMgr      *agents.InstanceManager
 	QuestionAsker    QuestionAsker
+	// KnownSecret reports whether text contains a credential this process
+	// holds (a provider key, a forwarded token). It is asked of every added
+	// line at commit time, so a known credential is refused whatever file it
+	// is in. Nil means the commit check relies on the working tree's
+	// secret-path files alone.
+	KnownSecret func(text string) bool
 }
 
 // Registry holds the tool set and the per-agent session.

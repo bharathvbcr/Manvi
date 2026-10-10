@@ -144,6 +144,16 @@ under **Unreleased** in the same commit as the code.
   - A turn cut short after `message_start` is retained at its reported prompt
     cost plus the full output allowance. It used to keep its whole
     byte-sized reservation.
+- Tier profile: advisor (Fable 5.1), main and heavy (Opus 5.5), lite (Sonnet 5.5)
+  and basic (Haiku 5.5), each with a configurable model and effort
+  (`llm.tier.<tier>`, `llm.tier.<tier>.effort`). Operator scope only: the
+  environment (`MANVI_LLM_TIER_*`), `manvi flags set`, or a user config outside
+  the repository (`MANVI_USER_CONFIG`); a tier key in the repository's
+  `config.yaml` is refused at startup. A session refuses to start, naming the
+  tier, when a tier's model is not in the catalogue, is unpriced under a
+  spend cap, or cannot honour its effort. `llm.tier.main` supplies the
+  Anthropic session model when `MANVI_MODEL` is unset. `manvi tiers` prints the
+  resolved table with the source of each value.
 - Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 in the Anthropic
   catalogue. `manvi probe anthropic` now uses Haiku 5.5.
 - `manvi budget reconcile` retains the reservations of attempts whose process
@@ -151,13 +161,33 @@ under **Unreleased** in the same commit as the code.
   crashed fan-out no longer holds in-flight slots until every later request
   fails at the 256-attempt bound. Reclaimed attempts stay counted against the
   limit.
-- Sub-agent fan-outs are admitted against the spend cap. Before any child
-  starts, the children's first-request reservations must fit the ledger's
-  headroom together, or the dispatch is refused with each child's figure and
-  the headroom in the message. After that, once a started child is refused by
-  the cap or the headroom no longer covers the next child, no further child is
+- Sub-agent fan-outs are admitted against the spend cap, and narrowed to it
+  rather than refused for the sum of their worst cases. A request reserves a
+  worst case — its whole prompt at the dearest input rate plus the full output
+  bound — so eight children reserve many times what they spend. The dispatch is
+  refused up front only when a child's first request cannot be reserved even
+  alone, with its figure and the headroom in the message. Otherwise children
+  start in order while the running children's reservations, plus the next
+  child's, fit the headroom read when the fan-out began and the headroom read
+  now; a waiting child starts when a running one finishes and its reservation
+  settles to what it spent. Once a started child is refused by the cap, or
+  nothing is running and the next child still does not fit, no further child is
   started; each one held back is reported with status `not_started` and reason
-  `budget`, carries no writes, and is counted apart from failures.
+  `budget` (or `cancelled`, if the dispatch was cancelled while it waited),
+  carries no writes, and is counted apart from failures.
+- Escalation on evidence. A sub-agent that shows evidence of being out of its
+  depth — the step ceiling reached, an empty summary, no verdict where one was
+  asked for, or an end-of-turn check still failing after its bounces — is
+  re-run once on the next tier up that runs a different model, from a fresh
+  conversation (the original prompt and a short account of what the first
+  attempt left, never its transcript or thinking). Effort is raised first, by
+  the loop's own ladder. The advisor never escalates; a child on the parent's
+  model or an operator-pinned role does not either. Each fan-out shares one cap
+  of ceil(N/2) escalations. A re-run that shows the same evidence fails the
+  child with a typed `ExhaustedError`; a re-run the provider or cap refuses, or
+  a cancellation, with a typed `EscalationError`, and neither climbs further.
+  The fan-out report lists each escalation (child, from, to, evidence, cold
+  cache) under `escalations`.
 - The usage line is priced and split by model. Each step is priced from its
   model's own table as it arrives, and the `turn.usage` event carries
   `cost_nano_usd`, `unpriced_steps` and `by_model[]`; the terminal prints the
@@ -345,6 +375,53 @@ under **Unreleased** in the same commit as the code.
   and off for hosted xAI, and a fenced-JSON call is recovered only when nothing
   follows it. A call whose arguments were rewritten is reported as
   `Decoding.ArgumentsRepaired`.
+- A shell command whose operand or input redirection names a secret path
+  (`cat .env`, `cp secrets/x y`, `base64 < .env`) is refused by a new hard rule,
+  `command.secret_read`, in every posture except `yolo`. Under the default dev
+  posture it was a soft `command.no_lease` the posture demoted, so the shell
+  printed credentials `devcouncil_read_file` refuses. `devcouncil_git_commit`
+  now also refuses staged content that is, or contains, what a secret-path file
+  or a known credential holds, so `cp .env notes.txt` then stage and commit no
+  longer puts the credential in history under another name.
+- `docs/POLICY_AND_SAFETY.md` named rules that do not exist (`cmd.secrets.leak`,
+  `cmd.shell.destructive`, `path.credential`, ...). It now names only catalogue
+  rules, says plainly that destructive commands have no dedicated rule, and a
+  contract test checks every rule id the page mentions against the catalogue.
+
+- The read gate now covers every tool that can return repository bytes, through
+  one owner (`readRefusal`, `withholdDiff`, `withholdHistoryDiff` in
+  `devcouncil/readauth.go`). `devcouncil_get_diff` withheld nothing, so an
+  untracked or modified `.env` was rendered; `devcouncil_grep` and `get_diff`
+  judged the name only, so a hard link to `.env` leaked; `devcouncil_git_show`
+  printed a patch that adds a credential from history; `devcouncil_read_file`
+  judged the typed name but opened the path the process working directory
+  resolved it to; and the code graph's source spans were not judged at all.
+  Each result now names what it withheld and the rule (`path.secret_read`, or
+  `path.aliased_read` for a file with more than one name). A test enumerates
+  the registry's read-only tools and fails if one is not classified.
+
+- Secrets forwarded to an MCP server (declared `env` values and
+  `env_passthrough` variables) are now scrubbed from what the server says on
+  stderr, which every failed call attaches to its error. The tool, session-log,
+  run, TUI, serve and watch scrubbers are all built by one function
+  (`newArmedScrubber`) that also watches GitHub's token variables, so the
+  quick-action and tool paths cannot drift apart again. Before, only provider
+  keys were watched and a server echoing its token put it in the session file
+  and the next request.
+
+- `devcouncil_spawn_subagents` no longer runs an unregistered role `type` as a
+  write-capable child on the parent's whole tool surface. Both dispatchers
+  now resolve roles through one function (`resolveRole`): an unregistered name
+  runs read-only and is reported as `unknown_types` on the result and
+  `unknown_type` on the child's outcome. Previously only
+  `devcouncil_invoke_subagent` failed closed.
+
+- The end-of-turn check no longer skips a turn whose writes carried a policy
+  rule. `progress.mutated` read any `Rule` as "refused", but the gate attaches
+  one to allowed results too (demotion, grant, protected-file warning), so
+  under `--yolo`, advisory mode, a grant, or a leased write to `package.json`
+  the turn reported `Mutated=false` and the sensor answered "no change".
+  Only `Blocked` now means refused.
 
 - TUI: the loop no longer deadlocks on its own queue (its own notices and turn-start bookkeeping are sent without blocking and drained in the same iteration), every producer outside the loop (event sink, `Send`, session effects, a turn's final report, the approval seam) returns once the runner stops instead of parking forever, and quitting now cancels every running turn and waits (bounded, 15s) for it to finish saving its log before `Run` returns, so session leases are released only after the turns have ended.
 - Managed runs: an approval whose decision was delivered no longer fails a Claude run at the callback's expiry (expiry applies only to callbacks still awaiting a person) and its decision row now ends `resolved` ("Decision delivered to the provider") rather than `cancelled`, "delivery may be uncertain"; a Claude `control_cancel_request` withdraws the pending callback (row `cancelled`) and an answer racing it no longer fails the run; a `Prepare` that failed before `runs.claim` no longer locks the run id in the process; the 32 MiB stdout cap is documented as per session and its failure reason says so.
@@ -386,6 +463,7 @@ under **Unreleased** in the same commit as the code.
   for every sub-agent, so the dearest input tokens a turn bought were reported
   as never having been bought. Each child's usage now also names its model and
   carries its cost.
+
 - Wrapping text no longer hangs when a character is wider than the line
   (a double-width character at width 1); it is placed on a line of its own.
 - **The TUI saves every turn of a session, not only the first.** Each save

@@ -1058,10 +1058,10 @@ func (h *harnessHost) creds() (*credentials.Resolver, *credentials.Scrubber) {
 			h.resolver = credentials.NewResolver()
 		}
 		if h.scrubber == nil {
-			h.scrubber = credentials.NewScrubber()
+			h.scrubber = newArmedScrubber(h.resolver)
 		}
 	})
-	h.scrubber.WatchAll(h.resolver)
+	armScrubber(h.scrubber, h.resolver)
 	return h.resolver, h.scrubber
 }
 

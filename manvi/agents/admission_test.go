@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // errCapRefused stands in for the ledger's own exhaustion error.
@@ -59,15 +60,14 @@ func meteredTasks(n int, reserve int64, ran *atomic.Int32) []Task {
 	return tasks
 }
 
-// TestAFanOutWhoseFirstStepsCannotFitIsRefusedBeforeAnyChildStarts.
+// TestAFanOutHoldingAChildThatCannotFitAloneIsRefusedBeforeAnyChildStarts.
 //
 // Pool.Run started every child at once and left the cap to refuse them one
-// request at a time. Four children each needing 30 against a headroom of 100
-// got three first requests through and a fourth refused — after the first
-// three were already working, and possibly writing. Asking up front, with the
-// arithmetic in the refusal, is the only point at which "do not start" is
-// still free.
-func TestAFanOutWhoseFirstStepsCannotFitIsRefusedBeforeAnyChildStarts(t *testing.T) {
+// request at a time. A child whose first request may reserve 120 against a
+// headroom of 100 can never run, however the rest are arranged: asking up
+// front, with the arithmetic in the refusal, is the only point at which "do
+// not start" is still free.
+func TestAFanOutHoldingAChildThatCannotFitAloneIsRefusedBeforeAnyChildStarts(t *testing.T) {
 	var ran atomic.Int32
 	b := &scriptedBudget{headroom: []int64{100}}
 	p, err := New(1, 8, newRecorder())
@@ -76,16 +76,109 @@ func TestAFanOutWhoseFirstStepsCannotFitIsRefusedBeforeAnyChildStarts(t *testing
 	}
 	p.Budget = b
 
-	results, err := p.Run(context.Background(), meteredTasks(4, 30, &ran))
+	tasks := meteredTasks(4, 30, &ran)
+	tasks[3].Reserve = 120
+	results, err := p.Run(context.Background(), tasks)
 	if !errors.Is(err, ErrBudget) {
-		t.Fatalf("Run = %v, %v; want ErrBudget — four children needing 30 cannot fit in 100", results, err)
+		t.Fatalf("Run = %v, %v; want ErrBudget — child-3 needs 120 and 100 is left", results, err)
 	}
 	if ran.Load() != 0 {
 		t.Errorf("%d children ran; a refused fan-out must start none", ran.Load())
 	}
-	for _, want := range []string{"4 children", "120n", "100n", "child-0 30n", "child-3 30n"} {
+	for _, want := range []string{"child-3", "120n", "100n", "4 metered children", "210n"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q does not carry %q; the operator needs the numbers that decided it", err, want)
+		}
+	}
+}
+
+// TestAWideFanOutIsNarrowedToTheCapNotRefused.
+//
+// Eight children each reserve 30 for a first request against a headroom of 100:
+// the worst cases sum to 240, far past the cap, though each child spends a
+// fraction of what it reserves. Refusing the fan-out for that sum was the
+// failure; starting all eight would let the cap refuse some of them mid-turn.
+// The pool runs three at a time — the most whose reservations fit — and starts
+// each of the rest as a running child finishes. None is left unstarted, and at
+// no moment do the running children's reservations exceed the cap.
+func TestAWideFanOutIsNarrowedToTheCapNotRefused(t *testing.T) {
+	var running, peak, ran atomic.Int32
+	tasks := make([]Task, 8)
+	for i := range tasks {
+		tasks[i] = Task{
+			Label: fmt.Sprintf("child-%d", i), Reserve: 30,
+			Run: func(context.Context, *Holder) (any, error) {
+				ran.Add(1)
+				n := running.Add(1)
+				for {
+					old := peak.Load()
+					if n <= old || peak.CompareAndSwap(old, n) {
+						break
+					}
+				}
+				time.Sleep(5 * time.Millisecond)
+				running.Add(-1)
+				return "done", nil
+			},
+		}
+	}
+	p, err := New(1, 8, newRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Budget = &scriptedBudget{headroom: []int64{100}}
+
+	results, err := p.Run(context.Background(), tasks)
+	if err != nil {
+		t.Fatalf("Run: %v; a fan-out whose every child fits alone must be narrowed, not refused", err)
+	}
+	if ran.Load() != 8 {
+		t.Errorf("%d of 8 children ran", ran.Load())
+	}
+	if got := peak.Load(); got > 3 {
+		t.Errorf("%d children ran at once; their reservations (30 each) exceed the cap of 100 beyond 3", got)
+	}
+	if rep := Summarise(results); !rep.Clean() || rep.NotStarted != 0 {
+		t.Errorf("report = %+v, want every child started and clean", rep)
+	}
+}
+
+// TestACancelledDispatchStopsWaitingForTheCap. A child waiting for headroom is
+// not started when the dispatch is cancelled, and says so.
+func TestACancelledDispatchStopsWaitingForTheCap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	gate := make(chan struct{})
+	tasks := make([]Task, 3)
+	for i := range tasks {
+		tasks[i] = Task{
+			Label: fmt.Sprintf("child-%d", i), Reserve: 60,
+			Run: func(ctx context.Context, _ *Holder) (any, error) {
+				<-gate
+				return "done", nil
+			},
+		}
+	}
+	p, err := New(1, 8, newRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Budget = &scriptedBudget{headroom: []int64{100}}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+		close(gate)
+	}()
+	results, err := p.Run(ctx, tasks)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if results[0].NotStarted != "" {
+		t.Errorf("child-0 was started and must report as such: %+v", results[0])
+	}
+	for _, r := range results[1:] {
+		if r.NotStarted != NotStartedCancelled || !errors.Is(r.Err, ErrNotStarted) {
+			t.Errorf("%s = %+v, want not started (cancelled)", r.Label, r)
 		}
 	}
 }

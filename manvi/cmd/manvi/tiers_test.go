@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -184,6 +185,38 @@ func TestStartupRefusesATierEffortTheModelCannotHonour(t *testing.T) {
 			t.Fatalf("main ceiling = %q, want high", main.Ceiling)
 		}
 	})
+}
+
+// Every failing tier is reported at once, so one startup refusal does not turn
+// into one per tier. (Adapted from hx/tier-profile's TestStartupReportsEveryFailingTier.)
+func TestStartupReportsEveryFailingTier(t *testing.T) {
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierLite)), "nope-a")
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierBasic)), "nope-b")
+	_, err := checkTiers(tierRegistry(t), anthropic.Name)
+	if err == nil || !strings.Contains(err.Error(), "tier lite") || !strings.Contains(err.Error(), "tier basic") {
+		t.Fatalf("got %v; want both tiers named", err)
+	}
+}
+
+// Resolving and checking the profile is read-only and safe to do from every
+// session goroutine at once, as the TUI does at each attach. Run under -race.
+// (Adapted from hx/tier-profile's TestTierReadsAreSafeUnderConcurrency.)
+func TestTierReadsAreSafeUnderConcurrency(t *testing.T) {
+	reg := tierRegistry(t)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if _, err := checkTiers(reg, anthropic.Name); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // TestTheHeadlessRunRefusesABadTierBeforeContactingAnyone is the end-to-end
