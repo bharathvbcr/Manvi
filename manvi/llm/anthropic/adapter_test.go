@@ -156,6 +156,60 @@ func TestAFullTurnDecodes(t *testing.T) {
 	}
 }
 
+// TestAWorkspaceIsNamedOnEveryRequest: a key that is not scoped to a workspace
+// is refused with a 400 unless each request names the workspace it acts in, and
+// a key that is scoped must not be sent a header nobody asked for.
+func TestAWorkspaceIsNamedOnEveryRequest(t *testing.T) {
+	server := adaptertest.NewServer(t, happyStream)
+	adapter, err := NewForWorkspace(server.URL, "  wrkspc_012zKivd76ns9ycYfGwn2bRn\n", adaptertest.Secret("sk-test-key-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := adapter.Stream(adaptertest.Ctx(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.Headers()[0].Get(WorkspaceHeader); got != "wrkspc_012zKivd76ns9ycYfGwn2bRn" {
+		t.Errorf("%s = %q, want the trimmed workspace id", WorkspaceHeader, got)
+	}
+
+	unscoped, server := adapterFor(t, happyStream)
+	stream, err = unscoped.Stream(adaptertest.Ctx(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got, sent := server.Headers()[0][http.CanonicalHeaderKey(WorkspaceHeader)]; sent {
+		t.Errorf("%s = %q sent with no workspace configured", WorkspaceHeader, got)
+	}
+}
+
+// TestAMalformedWorkspaceIsRefusedBeforeAnyRequest: the value lands in a
+// header, so anything but an identifier is a configuration fault to report
+// at construction, not a 400 to discover on the first turn.
+func TestAMalformedWorkspaceIsRefusedBeforeAnyRequest(t *testing.T) {
+	for _, bad := range []string{
+		"wrkspc_1\r\nx-api-key: stolen",
+		"wrkspc 1",
+		"wrkspc_1;",
+		strings.Repeat("w", 129),
+	} {
+		if _, err := NewForWorkspace("", bad, adaptertest.Secret("k")); err == nil {
+			t.Errorf("workspace %q was accepted", bad)
+		}
+	}
+	for _, unset := range []string{"", "   "} {
+		if _, err := NewForWorkspace("", unset, adaptertest.Secret("k")); err != nil {
+			t.Errorf("workspace %q is unset, not malformed: %v", unset, err)
+		}
+	}
+}
+
 // TestTruncatedToolArgumentsAreRefused is the consequential one. A tool call
 // whose arguments stopped halfway must not reach the tool layer: a partial
 // path or a partial patch that happens to parse is a wrong action taken

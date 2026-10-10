@@ -353,6 +353,12 @@ type Status struct {
 	Source   string `json:"source,omitempty"`
 	Length   int    `json:"length,omitempty"`
 	Detail   string `json:"detail,omitempty"`
+	// EnvVars and Doc are set when the credential is missing: the variables
+	// any one of which would satisfy it, and where a key is issued. They are
+	// the structured form of Detail, for a display that lays them out rather
+	// than printing one sentence.
+	EnvVars []string `json:"env_vars,omitempty"`
+	Doc     string   `json:"doc,omitempty"`
 }
 
 // Statuses reports every registered provider, sorted, for `harness doctor`.
@@ -372,6 +378,11 @@ func (r *Resolver) Statuses() []Status {
 		switch {
 		case err != nil:
 			status.Detail = err.Error()
+			var missing *ErrMissing
+			if errors.As(err, &missing) {
+				status.EnvVars = missing.EnvVars
+				status.Doc = missing.Doc
+			}
 		case secret.Present():
 			status.Present = true
 			status.Source = secret.Source()

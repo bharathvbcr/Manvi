@@ -7,11 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"github.com/bharathvbcr/Manvi/manvi/ui/logo"
-	"github.com/bharathvbcr/Manvi/manvi/ui/render"
-	"github.com/bharathvbcr/Manvi/manvi/ui/term"
-	"github.com/bharathvbcr/Manvi/manvi/ui/tui"
 )
 
 // showLogo prints the mark, or emits it as SVG.
@@ -35,23 +31,13 @@ func showLogo(out io.Writer, args []string) error {
 		return err
 	}
 
-	profile := render.NoColor
-	// Through any decorator: the composition root hands this command a stdout
-	// that remembers a failed write, and asking that value whether it is a
-	// terminal would answer about the wrapper rather than about the screen.
-	if f, ok := ui.TerminalFile(out); ok {
-		profile = term.DetectProfile(f)
-	}
-	th := tui.PickTheme(profile, term.DetectUnicode())
+	profile := outputProfile(out)
+	th := outputTheme(profile)
 	colors := th.Logo()
-	// Backgrounds are dropped for a stream this command does not own. In the
-	// full-screen face every cell is painted, so a style carrying the theme's
-	// background is correct; printed into a terminal whose background is
-	// something else, the same style draws dark boxes around each line.
-	colors.Tile = colors.Tile.Background(render.Default)
-	colors.Glyph = colors.Glyph.Background(render.Default)
-	colors.Word = colors.Word.Background(render.Default)
-	colors.Tag = colors.Tag.Background(render.Default)
+	colors.Tile = onTerminal(colors.Tile)
+	colors.Glyph = onTerminal(colors.Glyph)
+	colors.Word = onTerminal(colors.Word)
+	colors.Tag = onTerminal(colors.Tag)
 
 	width := logoWidth()
 	blocks := th.LogoBlocks()
@@ -60,15 +46,7 @@ func showLogo(out io.Writer, args []string) error {
 	if len(lines) == 0 {
 		return errors.New("the terminal is too narrow to draw the mark")
 	}
-	if profile == render.NoColor {
-		for _, l := range lines {
-			if _, err := fmt.Fprintln(out, l.Text()); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return render.WriteLines(out, profile, lines)
+	return writeStyled(out, profile, lines)
 }
 
 // logoWidth is how wide the mark may be drawn.

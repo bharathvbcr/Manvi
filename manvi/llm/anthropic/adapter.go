@@ -32,6 +32,16 @@ const (
 	APIVersion    = "2023-06-01"
 )
 
+// WorkspaceHeader names the workspace a request acts in. A key created for one
+// workspace carries it implicitly; a key that is not scoped to one is refused
+// with a 400 on every request that omits it.
+const WorkspaceHeader = "anthropic-workspace-id"
+
+// maxWorkspaceIDLen bounds a configured workspace id. Real ids are around
+// thirty characters; the bound exists so a pasted blob is refused rather than
+// sent as a header.
+const maxWorkspaceIDLen = 128
+
 // SSE event names.
 const (
 	EventMessageStart      = "message_start"
@@ -76,6 +86,43 @@ type Adapter struct {
 // request rather than captured, so a rotated key takes effect without a
 // restart and so the value is never stored on this struct.
 func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
+	return newAdapter(baseURL, "", resolve)
+}
+
+// NewForWorkspace builds an adapter whose every request names workspace. An
+// empty or blank workspace means none, which is right for a key created inside
+// a workspace. Anything but an identifier is refused here, because the value
+// becomes a header and a fault found now is cheaper than a 400 on the first
+// turn.
+func NewForWorkspace(baseURL, workspace string, resolve func() (credentials.Secret, error)) (*Adapter, error) {
+	workspace, err := ParseWorkspaceID(workspace)
+	if err != nil {
+		return nil, err
+	}
+	return newAdapter(baseURL, workspace, resolve), nil
+}
+
+// ParseWorkspaceID trims a configured workspace id and refuses anything that
+// is not an identifier. Blank is not an error: it means no workspace.
+func ParseWorkspaceID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if len(id) > maxWorkspaceIDLen {
+		return "", fmt.Errorf("workspace id is %d characters; a workspace id is at most %d", len(id), maxWorkspaceIDLen)
+	}
+	for _, r := range id {
+		if !workspaceIDRune(r) {
+			return "", fmt.Errorf("workspace id contains %q; a workspace id is letters, digits, '_' and '-' (e.g. wrkspc_01...)", r)
+		}
+	}
+	return id, nil
+}
+
+// workspaceIDRune is the alphabet a workspace id is drawn from.
+func workspaceIDRune(r rune) bool {
+	return r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
+func newAdapter(baseURL, workspace string, resolve func() (credentials.Secret, error)) *Adapter {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -91,6 +138,9 @@ func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
 		h := http.Header{}
 		h.Set(APIKeyHeader, key)
 		h.Set(VersionHeader, APIVersion)
+		if workspace != "" {
+			h.Set(WorkspaceHeader, workspace)
+		}
 		return h, nil
 	})
 	client.RequestIDHeader = "request-id"

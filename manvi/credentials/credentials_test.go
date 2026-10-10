@@ -169,6 +169,23 @@ func TestStatusesDescribeWithoutDisclosing(t *testing.T) {
 	}
 }
 
+// TestAMissingStatusNamesItsVariables: a display that lays the remedy out needs
+// the variables and the doc link as fields, not folded into one sentence.
+func TestAMissingStatusNamesItsVariables(t *testing.T) {
+	var xai Status
+	for _, s := range resolverWith(nil).Statuses() {
+		if s.Provider == "xai" {
+			xai = s
+		}
+	}
+	if xai.Present || strings.Join(xai.EnvVars, ",") != "XAI_API_KEY,GROK_API_KEY" || xai.Doc != "https://console.x.ai" {
+		t.Fatalf("xai status = %+v, want the missing credential's variables and doc", xai)
+	}
+	if xai.Detail == "" {
+		t.Errorf("Detail was dropped; doctor still prints it")
+	}
+}
+
 // TestScrubberCatchesWhatTheTypeCannot covers the realistic leak: a provider
 // echoing the key back inside an error body the harness then logs.
 func TestScrubberCatchesWhatTheTypeCannot(t *testing.T) {
