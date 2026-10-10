@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,8 +64,8 @@ func TestSeededBaselineGivesTheColdRoutesTreeID(t *testing.T) {
 		t.Fatalf("seeded tree %s differs from the cold tree %s", seeded, cold)
 	}
 	// The tree is the working tree: the staged-then-deleted file is not in it.
-	if listing := gitIn(t, root, "ls-tree", "-r", "--name-only", seeded); bytes.Contains([]byte(listing), []byte("file3.go")) ||
-		!bytes.Contains([]byte(listing), []byte("fresh/new file.go")) {
+	if listing := gitIn(t, root, "ls-tree", "-r", "--name-only", seeded); strings.Contains(listing, "file3.go") ||
+		!strings.Contains(listing, "fresh/new file.go") {
 		t.Fatalf("the baseline is not the working tree:\n%s", listing)
 	}
 }
