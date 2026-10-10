@@ -604,8 +604,17 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	withheld := 0
 	withheldFiles := map[string]struct{}{}
 	kept := matches[:0]
+	// A file's matches arrive together, and the verdict is per file: it
+	// resolves the path through every symlink on the way, so it is asked once
+	// per file rather than once per matching line.
+	refused := map[string]bool{}
 	for _, m := range matches {
-		if policy.ReadRefused(r.deps.Root, m.Path) {
+		verdict, seen := refused[m.Path]
+		if !seen {
+			verdict = policy.ReadRefused(r.deps.Root, m.Path)
+			refused[m.Path] = verdict
+		}
+		if verdict {
 			withheld++
 			withheldFiles[m.Path] = struct{}{}
 			continue

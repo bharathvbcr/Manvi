@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -111,14 +110,19 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	}
 	touched := map[string]bool{}
 
+	// One pass per file over the planned entries answers both questions: a
+	// file is in scope exactly when some entry matches it (MatchesPlannedPath
+	// is that any-of), and every entry it matches has been touched.
 	for _, file := range changed {
-		if policy.MatchesPlannedPath(file, inScope) {
-			report.InScope = append(report.InScope, file)
-			for _, p := range planned {
-				if policy.MatchesPlannedPath(file, []dc.PlannedFile{{Path: p}}) {
-					touched[p] = true
-				}
+		matched := false
+		for i, p := range planned {
+			if policy.MatchesPlannedPath(file, inScope[i:i+1]) {
+				touched[p] = true
+				matched = true
 			}
+		}
+		if matched {
+			report.InScope = append(report.InScope, file)
 			continue
 		}
 		report.Orphans = append(report.Orphans, file)
