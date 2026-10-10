@@ -264,6 +264,13 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- The end-of-turn check no longer skips a turn whose writes carried a policy
+  rule. `progress.mutated` read any `Rule` as "refused", but the gate attaches
+  one to allowed results too (demotion, grant, protected-file warning), so
+  under `--yolo`, advisory mode, a grant, or a leased write to `package.json`
+  the turn reported `Mutated=false` and the sensor answered "no change".
+  Only `Blocked` now means refused.
+
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a
   session that obeys only the context it is handed ignored `Stop` until the
