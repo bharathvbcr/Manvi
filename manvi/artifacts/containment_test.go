@@ -75,7 +75,10 @@ func TestNoArtifactWriteFollowsASymlinkOutOfTheStore(t *testing.T) {
 
 			// The filesystem is the arbiter: nothing may appear outside.
 			if err := filepath.Walk(outside, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
 					return nil
 				}
 				body, _ := os.ReadFile(p)

@@ -123,17 +123,17 @@
 # GOOS=darwin and GOOS=linux, against DevCouncil acfaa229 and gusset 23e925b
 # (scripts/module-pins.txt), and is the same on both.
 bodyclose 14
-contextcheck 22
-errcheck 385
-errorlint 43
-forcetypeassert 68
+contextcheck 21
+errcheck 179
+errorlint 1
+forcetypeassert 54
 # gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
 # calls were marked #nosec G103. Before that, pty_linux_test.go had two
 # findings and pty_darwin_test.go had one, so a count measured on darwin
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
-gosec 373
-nilerr 11
-noctx 24
+gosec 255
+nilerr 10
+noctx 21
 staticcheck 33
-wastedassign 6
+wastedassign 5

@@ -68,7 +68,7 @@ func (m WorkbenchModule) Configure(r *Router) error {
 				} else if receipt.Queued || method == "automation.put" {
 					// Persistence already succeeded. Wake-up is a coalesced hint; a
 					// stopped coordinator must never turn that receipt into failure.
-					if _, wakeErr := m.Runner.Wake(context.Background(), json.RawMessage(`{}`), *m.Configuration); wakeErr != nil {
+					if _, wakeErr := m.Runner.Wake(context.WithoutCancel(ctx), json.RawMessage(`{}`), *m.Configuration); wakeErr != nil {
 						log.Printf("workbench save wake unavailable: %s", m.Runner.errorText(wakeErr))
 					}
 				}

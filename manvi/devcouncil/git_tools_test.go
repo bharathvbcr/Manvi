@@ -1,6 +1,7 @@
 package devcouncil
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,7 +22,7 @@ import (
 
 func gitHead(t *testing.T, root string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestGitStatusParsesRenamesAndAwkwardNames(t *testing.T) {
 
 func porcelainStatus(t *testing.T, root string) (string, error) {
 	t.Helper()
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain=v1", "-z", "-b")
+	cmd := exec.CommandContext(context.Background(), "git", "-C", root, "status", "--porcelain=v1", "-z", "-b")
 	out, err := cmd.Output()
 	return string(out), err
 }
@@ -306,7 +307,7 @@ func TestGitCommitRefusesSecretAlreadyStaged(t *testing.T) {
 
 func headCount(t *testing.T, root string) int {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "rev-list", "--count", "HEAD").Output()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", root, "rev-list", "--count", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-list --count: %v", err)
 	}

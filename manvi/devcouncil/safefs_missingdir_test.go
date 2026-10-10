@@ -86,7 +86,10 @@ func TestPlantedSymlinkDirectoryCannotCarryAWriteOutOfTheRepo(t *testing.T) {
 				t.Fatalf("a file escaped the repository to %s containing %q", escaped, body)
 			}
 			if err := filepath.Walk(outside, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
 					return nil
 				}
 				t.Errorf("a file was created outside the repository: %s", p)

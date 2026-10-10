@@ -2,6 +2,7 @@ package contract
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +47,7 @@ var (
 // that is right in one layout and silent in the other.
 func flagsCatalog(t *testing.T) (catalogFile, flagsRoot string) {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-f", "{{.Dir}}", flagsModulePath)
+	cmd := exec.CommandContext(context.Background(), "go", "list", "-f", "{{.Dir}}", flagsModulePath)
 	cmd.Dir = moduleRoot
 	out, err := cmd.Output()
 	if err != nil {
@@ -90,7 +91,7 @@ func harnessAndFlags(t *testing.T) (catalogFile string, extraRoots []string) {
 		"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate",
 		"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/cmd/devcouncil",
 	} {
-		cmd := exec.Command("go", "list", "-f", "{{.Dir}}", pkg)
+		cmd := exec.CommandContext(context.Background(), "go", "list", "-f", "{{.Dir}}", pkg)
 		cmd.Dir = moduleRoot
 		out, err := cmd.Output()
 		if err != nil {

@@ -120,6 +120,9 @@ func (v *AgentView) Apply(ev ui.Event) {
 
 // SetBusy marks the session running or idle.
 func (v *AgentView) SetBusy(busy bool, label string) {
+	if v == nil {
+		return
+	}
 	v.Status.Busy = busy
 	v.Status.BusyLabel = label
 	if busy {
@@ -128,7 +131,12 @@ func (v *AgentView) SetBusy(busy bool, label string) {
 }
 
 // Approval returns the card blocking this session, if any.
-func (v *AgentView) Approval() *ApprovalCard { return v.approval }
+func (v *AgentView) Approval() *ApprovalCard {
+	if v == nil {
+		return nil
+	}
+	return v.approval
+}
 
 // PushApproval queues a request, activating it if nothing is blocking.
 func (v *AgentView) PushApproval(c *ApprovalCard) {
@@ -148,7 +156,12 @@ func (v *AgentView) PopApproval() {
 }
 
 // PendingApprovals is how many are still waiting behind the active one.
-func (v *AgentView) PendingApprovals() int { return len(v.pending) }
+func (v *AgentView) PendingApprovals() int {
+	if v == nil {
+		return 0
+	}
+	return len(v.pending)
+}
 
 // Queue adds a follow-up to run when the current turn ends.
 func (v *AgentView) Queue(text string) { v.queued = append(v.queued, text) }
@@ -164,7 +177,12 @@ func (v *AgentView) Dequeue() (string, bool) {
 }
 
 // Queued exposes the pending follow-ups.
-func (v *AgentView) Queued() []string { return v.queued }
+func (v *AgentView) Queued() []string {
+	if v == nil {
+		return nil
+	}
+	return v.queued
+}
 
 // EscapePressed implements the double-Escape rule and reports whether this
 // press was the second of a pair.
@@ -196,6 +214,9 @@ func (v *AgentView) promptHeight(width int) int {
 
 // SetTitle updates the session title.
 func (v *AgentView) SetTitle(title string) {
+	if v == nil {
+		return
+	}
 	v.Title = title
 }
 

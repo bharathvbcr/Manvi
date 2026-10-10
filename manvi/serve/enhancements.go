@@ -148,7 +148,7 @@ func (r *EnhancementRunner) Generate(ctx context.Context, raw json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), enhancementJobTimeout)
+	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), enhancementJobTimeout)
 	job := &enhancementJob{id: request.ID, owner: owner, cancel: cancel, done: make(chan struct{}), taskID: record.TaskID, automatic: record.Automatic}
 	r.mu.Lock()
 	if r.closed || r.active != nil {
