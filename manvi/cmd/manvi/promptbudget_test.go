@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,5 +247,48 @@ func TestTUISessionsPersistEveryTurn(t *testing.T) {
 	}
 	if got, want := len(loaded.Events()), len(log.Events()); got != want {
 		t.Fatalf("restored %d events, want %d", got, want)
+	}
+}
+
+// One store per process keeps the conflict check meaningful: a second run that
+// saved this session between two of this process's turns must still be
+// refused, not overwritten by the next persist.
+func TestTUIPersistStillRefusesAnotherRunsNewerGeneration(t *testing.T) {
+	t.Setenv("MANVI_STATE_DIR", t.TempDir())
+
+	log := session.NewLog()
+	h := &harnessHost{}
+	s := &tuiSession{id: "S1", storeID: "abc123", log: log}
+	appendUser := func(text string) {
+		t.Helper()
+		if _, err := log.Append(session.UserMessage, session.MessageData{
+			Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: text}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendUser("first")
+	if err := h.persist(s); err != nil {
+		t.Fatalf("first persist: %v", err)
+	}
+
+	other := session.NewStore(sessionsDir())
+	resumed, _, err := other.Load("abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumed.Append(session.UserMessage, session.MessageData{
+		Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "from another run"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Save("abc123", resumed); err != nil {
+		t.Fatal(err)
+	}
+
+	appendUser("second")
+	var conflict *session.ConflictError
+	if err := h.persist(s); !errors.As(err, &conflict) {
+		t.Fatalf("persist over another run's generation = %v, want a *session.ConflictError", err)
 	}
 }
