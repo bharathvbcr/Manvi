@@ -136,8 +136,42 @@ under **Unreleased** in the same commit as the code.
   link. The visual architecture guide is rewritten with fuller descriptions of
   each plane, ladder rung, posture and lifecycle stage.
 
+- **Long turns and long sessions no longer slow down with their own length.**
+  Every agent step copied the whole conversation two or three times through a
+  JSON round trip, so a turn's cost grew with the square of its steps; the
+  copy is now structural (about 57× faster on a 300-message history) and the
+  per-step invariant check no longer copies at all. What is sent to a
+  provider is byte-for-byte unchanged, so prompt caching is unaffected. Other
+  costs taken off the hot paths, none of which changes what is written,
+  sent or shown:
+  - a session save encodes each event once instead of three times;
+  - a large tool result is encoded and scrubbed before the session log's
+    lock is taken, not while every reader waits;
+  - streamed lines are no longer copied an extra time, and MCP replies (up to
+    16 MiB) are decoded once instead of twice;
+  - clients of local model servers share one connection pool, so a
+    capability probe reuses a warm connection instead of opening new ones and
+    leaving the old to idle out;
+  - `mcp_list_tools` starts its servers concurrently;
+  - `grep` checks whether a file is a credential file once per file, not once
+    per matching line;
+  - a new session reuses the code graph already loaded unless the file changed;
+  - the TUI lays out only the entries that changed, rather than the whole
+    transcript, at most once per width per frame.
+- **The TUI draws at most 2,000 lines or 64 KiB of a tool result**, followed by
+  one line saying how much was not drawn. A multi-megabyte `read_file` or
+  command output used to become tens of thousands of rows, rebuilt on every
+  resize, fold and theme switch. The entry keeps the whole result: search
+  still finds text past the cut.
 ### Fixed
 
+- **The TUI saves every turn of a session, not only the first.** Each save
+  built a new session store, and a store refuses to replace a saved
+  generation it has no record of writing — so from the second turn on every
+  save was refused as another run's work, and the session silently stopped
+  being saved. Sessions from affected builds kept their first turn.
+- After a theme switch, a transcript long enough to scroll kept drawing the
+  old theme's colours until the next event arrived.
 - **Read-only commands no longer write to the repository, and the managed
   `.gitignore` rules no longer reach past the harness's own state.** Every
   command except `help` and `version` created `.devcouncil/` and appended
