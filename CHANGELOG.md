@@ -23,6 +23,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **`manvi serve` never upgrades a shared workbench profile on a read.** With
+  the DevCouncil store that upgrades only on a write, a `work.*` read of a
+  profile one schema behind is refused with the typed error
+  `schema_upgrade_required` and the profile is left untouched (an older
+  GitPulse, MCP server or sidecar sharing the file is never locked out by a
+  reader). A `work.*` write upgrades it after an online backup
+  (`<profile>.pre-schema-<N>.bak`), and the new `work.store.upgrade` op does
+  the same without writing a task. GitPulse upgrades at app startup. The serve
+  contract gains `work.store.upgrade`; the store also gains `items.delete`
+  refusing a task with a live run (`task_in_use`, `even_if_running` overrides)
+  and an optional `scan_sequence` on task creation (`board_changed`).
+
 - Subprocess cost per tool call. The turn-start baseline seeds its scratch
   index from a copy of the repository's own index instead of `read-tree HEAD`,
   so `git add -A` reuses git's stat cache and re-hashes only changed files; the
