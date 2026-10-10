@@ -82,6 +82,21 @@ under **Unreleased** in the same commit as the code.
   from the Go types. A Go test fails when the file and the types disagree
   (`MANVI_UPDATE_CONTRACT=1` regenerates it), so a host that mirrors the file
   can fail its own build when it sends a field Manvi does not read.
+- Model tiers: `basic`, `lite`, `heavy`, `main` and `advisor`, cheapest
+  first, each with a model and an effort (`llm.tier.<tier>`,
+  `llm.tier.<tier>.effort`; defaults Haiku 5.5, Sonnet 5.5, Opus 5.5, Opus
+  5.5, Fable 5.1, every effort unset). They are operator-scope settings, read
+  from `MANVI_LLM_TIER_*`, `manvi flags set`, or the user config
+  `<user config dir>/manvi/config.yaml` (moved with `MANVI_USER_CONFIG`; a path
+  inside the repository is refused). A repository `config.yaml` that sets a
+  tier key is refused outright, naming the lines, rather than ignored. A
+  headless run or a TUI attach refuses to start, naming the tier, when a model
+  is not in the provider's catalogue, is unpriced while
+  `MANVI_ANTHROPIC_BUDGET_USD` is set, or has an effort it cannot honour.
+  `manvi tiers` prints the resolved table with each value's source and exits 1
+  on a profile a session would refuse. With the Anthropic provider and
+  `MANVI_MODEL` unset, the session runs the main tier's model; `MANVI_MODEL`
+  still wins.
 
 - An account-wide Anthropic spend cap. Set `MANVI_ANTHROPIC_BUDGET_USD=200`
   and every Anthropic request, from any project or any concurrent session,
