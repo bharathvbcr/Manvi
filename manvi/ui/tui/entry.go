@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -271,8 +272,12 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		add(head.Truncate(body))
 
 	case ui.KindToolResult:
-		for _, l := range renderMarkdown(e.text(), th, body, true) {
+		shown, rest := capToolResult(e.text())
+		for _, l := range renderMarkdown(shown, th, body, true) {
 			add(l)
+		}
+		if rest != "" {
+			addWrapped(omittedMarker(rest), th.Subtle())
 		}
 
 	case ui.KindPolicy:
@@ -350,6 +355,117 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		out[i] = render.Styled(strings.Repeat(" ", gutter), th.Base()).Concat(out[i])
 	}
 	return out
+}
+
+// The share of a tool result the transcript renders.
+//
+// A read_file of a large file or a chatty exec hands back megabytes, and every
+// byte of it used to be split, highlighted and wrapped — tens of thousands of
+// rows, rebuilt again on each resize, fold and theme switch, for a result
+// nobody scrolls through in a terminal pane. The cut is applied to what is
+// drawn and nothing else: the entry keeps the whole text, so search still
+// finds a match past the cut, and a copy is taken from the result rather than
+// from the rows that happened to be drawn.
+const (
+	toolResultMaxLines = 2000
+	toolResultMaxBytes = 64 << 10
+)
+
+// capToolResult splits a tool result into the part rendered and the part not.
+// rest is empty when the whole result fits, and shown is then the text itself,
+// so a result under the cap renders exactly as it always did.
+//
+// The cut falls at a line break where there is one inside the budget, so the
+// last row drawn is a whole line rather than half of one; only a single line
+// longer than the entire budget is cut mid-line, and then on a rune boundary,
+// never through a multi-byte character.
+func capToolResult(text string) (shown, rest string) {
+	limit := len(text)
+	if limit > toolResultMaxBytes {
+		limit = toolResultMaxBytes
+	}
+	cut := -1
+	for i, n := 0, 0; i < limit; i++ {
+		j := strings.IndexByte(text[i:limit], '\n')
+		if j < 0 {
+			break
+		}
+		i += j
+		if n++; n == toolResultMaxLines {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		if len(text) <= toolResultMaxBytes {
+			return text, ""
+		}
+		cut = strings.LastIndexByte(text[:limit], '\n')
+	}
+	if cut >= 0 {
+		// A break that is the result's last byte leaves nothing behind it, and
+		// a marker announcing one empty line would be noise.
+		if cut == len(text)-1 {
+			return text, ""
+		}
+		return text[:cut], text[cut+1:]
+	}
+	cut = limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut], text[cut:]
+}
+
+// omittedMarker is the row that stands where the rest of a capped result
+// would have been. It says how much is missing, because a cut that does not
+// announce itself reads as the tool having said less than it did.
+//
+// It does not point at y. That copies the selected entry, but through OSC 52,
+// which is bounded well below what a result this size can hold, and a result
+// holding one fenced block has only that block copied — so "copy for the
+// rest" would be a promise the key does not keep.
+func omittedMarker(rest string) string {
+	lines := strings.Count(rest, "\n")
+	if !strings.HasSuffix(rest, "\n") {
+		lines++
+	}
+	unit := " more lines"
+	if lines == 1 {
+		unit = " more line"
+	}
+	return "… " + groupDigits(lines) + unit + " (" + sizeLabel(len(rest)) + ") not rendered"
+}
+
+// groupDigits writes a count with thousands separators, so 12345 lines reads
+// at a glance.
+func groupDigits(n int) string {
+	s := itoa(n)
+	if n < 0 || len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	head := len(s) % 3
+	if head == 0 {
+		head = 3
+	}
+	b.WriteString(s[:head])
+	for i := head; i < len(s); i += 3 {
+		b.WriteByte(',')
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
+// sizeLabel renders a byte count in the unit a person would use for it.
+func sizeLabel(n int) string {
+	switch {
+	case n < 1<<10:
+		return itoa(n) + " B"
+	case n < 1<<20:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 }
 
 // gutterLine prefixes a line with its status marker.
