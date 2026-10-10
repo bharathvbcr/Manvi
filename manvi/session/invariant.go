@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -39,7 +40,9 @@ func (e *InvariantError) Error() string {
 // section, a compaction summary, or a steering message that reached the model
 // without leaving a record.
 func AssertModelVisible(log *Log, request []llm.Message) error {
-	derived, err := log.DeriveMessages()
+	// The uncloned projection: this check only reads it, and it runs on every
+	// step, so an owned copy of the whole history here was pure garbage.
+	derived, err := log.projected()
 	if err != nil {
 		return fmt.Errorf("session: cannot verify invariant: %w", err)
 	}
@@ -92,6 +95,9 @@ func AssertModelVisible(log *Log, request []llm.Message) error {
 
 // sameVisibleContent compares what a model would read, ignoring provenance.
 func sameVisibleContent(logged, sent llm.Message) error {
+	if logged.Role == sent.Role && equalVisible(logged.Content, sent.Content) {
+		return nil
+	}
 	if logged.Role != sent.Role {
 		return fmt.Errorf("role differs: logged %q, sent %q", logged.Role, sent.Role)
 	}
@@ -144,6 +150,51 @@ func visibleBlocks(msg llm.Message) []string {
 		}
 	}
 	return out
+}
+
+// equalVisible is the common case of the comparison above without rendering
+// every block to a string: it answers true only when visibleBlocks would render
+// both sides identically. Anything else — including a real difference — goes
+// back through the rendered comparison, so the verdict and the error describing
+// a violation are exactly what they were.
+func equalVisible(logged, sent []llm.ContentBlock) bool {
+	i, j := 0, 0
+	for {
+		for i < len(logged) && logged[i].Kind() == llm.KindReasoning {
+			i++
+		}
+		for j < len(sent) && sent[j].Kind() == llm.KindReasoning {
+			j++
+		}
+		if i == len(logged) || j == len(sent) {
+			return i == len(logged) && j == len(sent)
+		}
+		if !equalVisibleBlock(logged[i], sent[j]) {
+			return false
+		}
+		i++
+		j++
+	}
+}
+
+func equalVisibleBlock(logged, sent llm.ContentBlock) bool {
+	switch a := logged.(type) {
+	case llm.TextBlock:
+		b, ok := sent.(llm.TextBlock)
+		return ok && a.Text == b.Text
+	case llm.ImageBlock:
+		b, ok := sent.(llm.ImageBlock)
+		return ok && a.MediaType == b.MediaType && bytes.Equal(a.Data, b.Data)
+	case llm.ToolCallBlock:
+		b, ok := sent.(llm.ToolCallBlock)
+		return ok && a.ID == b.ID && a.Name == b.Name &&
+			(bytes.Equal(a.Arguments, b.Arguments) || canonical(a.Arguments) == canonical(b.Arguments))
+	case llm.ToolResultBlock:
+		b, ok := sent.(llm.ToolResultBlock)
+		return ok && a.ToolCallID == b.ToolCallID && a.IsError == b.IsError && equalVisible(a.Content, b.Content)
+	default:
+		return false
+	}
 }
 
 // canonical re-encodes JSON so key order cannot make identical arguments

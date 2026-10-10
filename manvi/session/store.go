@@ -398,7 +398,9 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	if log == nil {
 		return SaveReport{}, errors.New("session: nothing to save")
 	}
-	events := log.Events()
+	// Not Events(): that deep-copies every payload for a caller that may keep
+	// it, and this one only encodes them. An appended event is never mutated.
+	events := log.snapshot()
 	if len(events) == 0 {
 		// Refused rather than written. An empty file is what Load treats as
 		// corruption, and a session with no events is nothing to continue.
@@ -434,14 +436,14 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		}
 	}
 
-	kept, droppedTurns, oversize, err := trimToBudget(events, s.maxBytes)
+	from, droppedTurns, oversize, perEvent, err := trimToBudget(events, s.maxBytes)
 	if err != nil {
 		return SaveReport{}, err
 	}
-	encoded, err := json.Marshal(kept)
-	if err != nil {
-		return SaveReport{}, fmt.Errorf("session: encoding events: %w", err)
-	}
+	kept := events[from:]
+	// The events were each encoded to be measured; joined, those encodings
+	// are byte-for-byte what marshalling the kept slice produces.
+	encoded := joinArray(perEvent[from:])
 	body, err := json.Marshal(header{
 		Version:      FormatVersion,
 		ID:           id,
@@ -698,19 +700,19 @@ func countTurns(events []Event) int {
 // being resumed would make "resume" mean "start over", which is the failure
 // this whole file exists to rule out — so an outsized final turn is written
 // and flagged instead.
-func trimToBudget(events []Event, maxBytes int) ([]Event, int, bool, error) {
-	sizes := make([]int, len(events))
+func trimToBudget(events []Event, maxBytes int) (int, int, bool, []json.RawMessage, error) {
+	perEvent := make([]json.RawMessage, len(events))
 	total := len("[]")
 	for i, event := range events {
 		encoded, err := json.Marshal(event)
 		if err != nil {
-			return nil, 0, false, fmt.Errorf("session: encoding event %d: %w", event.Seq, err)
+			return 0, 0, false, nil, fmt.Errorf("session: encoding event %d: %w", event.Seq, err)
 		}
-		sizes[i] = len(encoded) + 1 // the separating comma
-		total += sizes[i]
+		perEvent[i] = encoded
+		total += len(encoded) + 1 // the separating comma
 	}
 	if total <= maxBytes {
-		return events, 0, false, nil
+		return 0, 0, false, perEvent, nil
 	}
 
 	// Turn boundaries, as index ranges over the event slice. Events recorded
@@ -729,10 +731,27 @@ func trimToBudget(events []Event, maxBytes int) ([]Event, int, bool, error) {
 	dropped, from := 0, 0
 	for total > maxBytes && dropped < len(starts)-1 {
 		for i := starts[dropped]; i < starts[dropped+1]; i++ {
-			total -= sizes[i]
+			total -= len(perEvent[i]) + 1
 		}
 		dropped++
 		from = starts[dropped]
 	}
-	return events[from:], dropped, total > maxBytes, nil
+	return from, dropped, total > maxBytes, perEvent, nil
+}
+
+// joinArray assembles already-encoded elements into a JSON array.
+func joinArray(elements []json.RawMessage) json.RawMessage {
+	size := len("[]")
+	for _, e := range elements {
+		size += len(e) + 1
+	}
+	out := make(json.RawMessage, 0, size)
+	out = append(out, '[')
+	for i, e := range elements {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, e...)
+	}
+	return append(out, ']')
 }

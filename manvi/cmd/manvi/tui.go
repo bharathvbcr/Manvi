@@ -146,8 +146,7 @@ func (h *harnessHost) persist(s *tuiSession) error {
 		// being replaced.
 		return errors.New("this session has no durable identifier")
 	}
-	store := session.NewStore(sessionsDir())
-	if _, err := store.Save(s.storeID, s.log); err != nil {
+	if _, err := h.sessionStore().Save(s.storeID, s.log); err != nil {
 		return err
 	}
 	return nil
@@ -215,6 +214,26 @@ type harnessHost struct {
 	mu       sync.Mutex
 	sessions map[string]*tuiSession
 	seq      int
+
+	// store persists every session this process runs. One for the process,
+	// not one per save: a Store remembers the generation it last wrote, and
+	// refuses to replace a generation it has no record of as another run's
+	// work — so a store built fresh for each turn refused every save after the
+	// first. Built on first use, against the directory current at that moment.
+	storeMu  sync.Mutex
+	store    *session.Store
+	storeDir string
+}
+
+// sessionStore returns this process's session store for the current state
+// directory.
+func (h *harnessHost) sessionStore() *session.Store {
+	h.storeMu.Lock()
+	defer h.storeMu.Unlock()
+	if dir := sessionsDir(); h.store == nil || h.storeDir != dir {
+		h.store, h.storeDir = session.NewStore(dir), dir
+	}
+	return h.store
 }
 
 // Commands lists the slash commands, which are the CLI subcommands.
