@@ -59,6 +59,7 @@ type enhancementRecord struct {
 	TaskID    string          `json:"task_id"`
 	Automatic bool            `json:"automatic"`
 	ExpiresAt int64           `json:"expires_at"`
+	Kind      string          `json:"kind"`
 }
 
 type generationRequest struct {
@@ -139,6 +140,9 @@ func (r *EnhancementRunner) Generate(ctx context.Context, raw json.RawMessage) (
 	// replay the provider call, including after another host took the claim.
 	if record.State != "pending" {
 		return observed, nil
+	}
+	if record.Kind == "refine" {
+		return nil, errors.New("a refinement proposal is produced by work.enhancements.refine, not generated")
 	}
 	owner, err := generationID()
 	if err != nil {
