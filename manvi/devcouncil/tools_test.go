@@ -68,7 +68,7 @@ func newFixtureFull(t testing.TB, settings map[string]string, runner SubAgentRun
 			testsupport.Unavailable(t, "git is required to exercise the diff and verify path: %v %s", err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "seed.txt"), []byte("seed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "seed"}} {
@@ -107,7 +107,7 @@ func newFixtureFull(t testing.TB, settings map[string]string, runner SubAgentRun
 	// verifier correctly reports every changed file as unmeasured.
 	coverage := filepath.Join(t.TempDir(), "cover.out")
 	if err := os.WriteFile(coverage,
-		[]byte("mode: set\nmanvi/src/calc.go:1.1,50.2 40 1\n"), 0o644); err != nil {
+		[]byte("mode: set\nmanvi/src/calc.go:1.1,50.2 40 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -352,7 +352,7 @@ func TestOrphanDiffProducesARoutableNextAction(t *testing.T) {
 	// Write outside scope directly, bypassing the gate, to simulate a change
 	// that arrived some other way — which is exactly what orphan detection is
 	// for.
-	if err := os.WriteFile(filepath.Join(f.root, "unplanned.txt"), []byte("x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "unplanned.txt"), []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -592,7 +592,7 @@ func TestNoCoverageFileIsReportedNotAssumed(t *testing.T) {
 func TestBrokenCoverageFileDoesNotBecomeZeroCoverage(t *testing.T) {
 	f := newFixture(t)
 	broken := filepath.Join(t.TempDir(), "broken.out")
-	if err := os.WriteFile(broken, []byte("{\"coverage\": 91.2}\n"), 0o644); err != nil {
+	if err := os.WriteFile(broken, []byte("{\"coverage\": 91.2}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f.reg.deps.CoverageFile = broken
@@ -660,10 +660,10 @@ func TestDeleteFileLifecycle(t *testing.T) {
 	f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
 
 	// Create an extra file on disk first
-	if err := os.MkdirAll(filepath.Join(f.root, "internal"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(f.root, "internal"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.root, "internal", "extra.go"), []byte("package internal\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "internal", "extra.go"), []byte("package internal\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -702,10 +702,10 @@ func TestListDirAndGrep(t *testing.T) {
 
 	// Create some files
 	subDir := filepath.Join(f.root, "pkg", "math")
-	if err := os.MkdirAll(subDir, 0o755); err != nil {
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(subDir, "calc.go"), []byte("package math\nconst Pi = 3.14159\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, "calc.go"), []byte("package math\nconst Pi = 3.14159\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1109,7 +1109,7 @@ func TestSpawnSubagentsRefusesAnEmptyPromptBeforeTakingALease(t *testing.T) {
 func TestGrepUnderstandsARegularExpression(t *testing.T) {
 	f := newFixture(t)
 	if err := os.WriteFile(filepath.Join(f.root, "mod.py"),
-		[]byte("import subprocess\nimport re\nimport os\n\nvalue = 1\n"), 0o644); err != nil {
+		[]byte("import subprocess\nimport re\nimport os\n\nvalue = 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

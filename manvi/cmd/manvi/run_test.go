@@ -339,7 +339,7 @@ func TestResumeRefusesACorruptSession(t *testing.T) {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(sessionsDir(), entry.Name())
-		if err := os.WriteFile(path, []byte(`{"manvi_session":1,"id":"`), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"manvi_session":1,"id":"`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -28,12 +28,12 @@ func TestFindProjectRoot_GitRepo(t *testing.T) {
 	}
 
 	gitDir := filepath.Join(tmp, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
+	if err := os.Mkdir(gitDir, 0o750); err != nil {
 		t.Fatalf("failed to create .git: %v", err)
 	}
 
 	deepSub := filepath.Join(tmp, "a", "b", "c", "d", "e")
-	if err := os.MkdirAll(deepSub, 0o755); err != nil {
+	if err := os.MkdirAll(deepSub, 0o750); err != nil {
 		t.Fatalf("failed to create deepSub: %v", err)
 	}
 
@@ -58,12 +58,12 @@ func TestFindProjectRoot_GitWorktree(t *testing.T) {
 	}
 
 	gitFile := filepath.Join(tmp, ".git")
-	if err := os.WriteFile(gitFile, []byte("gitdir: /path/to/main/.git/worktrees/wt\n"), 0o644); err != nil {
+	if err := os.WriteFile(gitFile, []byte("gitdir: /path/to/main/.git/worktrees/wt\n"), 0o600); err != nil {
 		t.Fatalf("failed to create .git file: %v", err)
 	}
 
 	sub := filepath.Join(tmp, "pkg", "core")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("failed to create sub: %v", err)
 	}
 
@@ -80,12 +80,12 @@ func TestFindProjectRoot_DevCouncilDir(t *testing.T) {
 	}
 
 	dcDir := filepath.Join(tmp, ".devcouncil")
-	if err := os.Mkdir(dcDir, 0o755); err != nil {
+	if err := os.Mkdir(dcDir, 0o750); err != nil {
 		t.Fatalf("failed to create .devcouncil: %v", err)
 	}
 
 	sub := filepath.Join(tmp, "cmd", "sub")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("failed to create sub: %v", err)
 	}
 
@@ -102,12 +102,12 @@ func TestFindProjectRoot_ManifestMarkers(t *testing.T) {
 	}
 
 	goMod := filepath.Join(tmp, "go.mod")
-	if err := os.WriteFile(goMod, []byte("module example.com/test\n\ngo 1.26\n"), 0o644); err != nil {
+	if err := os.WriteFile(goMod, []byte("module example.com/test\n\ngo 1.26\n"), 0o600); err != nil {
 		t.Fatalf("failed to create go.mod: %v", err)
 	}
 
 	sub := filepath.Join(tmp, "internal", "service")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("failed to create sub: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestFindProjectRoot_NoMarkersFallback(t *testing.T) {
 	}
 
 	sub := filepath.Join(tmp, "isolated", "dir")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("failed to create sub: %v", err)
 	}
 
@@ -155,17 +155,17 @@ func TestResolveCLIPath(t *testing.T) {
 	}
 
 	pkgDir := filepath.Join(root, "pkg", "calc")
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+	if err := os.MkdirAll(pkgDir, 0o750); err != nil {
 		t.Fatalf("failed to create pkgDir: %v", err)
 	}
 
 	calcFile := filepath.Join(pkgDir, "calc.go")
-	if err := os.WriteFile(calcFile, []byte("package calc\n"), 0o644); err != nil {
+	if err := os.WriteFile(calcFile, []byte("package calc\n"), 0o600); err != nil {
 		t.Fatalf("failed to create calc.go: %v", err)
 	}
 
 	rootFile := filepath.Join(root, "main.go")
-	if err := os.WriteFile(rootFile, []byte("package main\n"), 0o644); err != nil {
+	if err := os.WriteFile(rootFile, []byte("package main\n"), 0o600); err != nil {
 		t.Fatalf("failed to create main.go: %v", err)
 	}
 
@@ -257,12 +257,12 @@ func TestScaffoldFromSubdirectory(t *testing.T) {
 	}
 
 	gitDir := filepath.Join(root, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
+	if err := os.Mkdir(gitDir, 0o750); err != nil {
 		t.Fatalf("failed to create .git: %v", err)
 	}
 
 	sub := filepath.Join(root, "pkg", "deep", "dir")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("failed to create sub: %v", err)
 	}
 
@@ -315,22 +315,22 @@ func TestCheckAndAllow_FromSubdirectory(t *testing.T) {
 		root = resolved
 	}
 
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatalf("create .git: %v", err)
 	}
 
 	sub := filepath.Join(root, "src", "sub")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatalf("create sub: %v", err)
 	}
 
 	mainFile := filepath.Join(root, "main.go")
-	if err := os.WriteFile(mainFile, []byte("package main\n"), 0o644); err != nil {
+	if err := os.WriteFile(mainFile, []byte("package main\n"), 0o600); err != nil {
 		t.Fatalf("create main.go: %v", err)
 	}
 
 	subFile := filepath.Join(sub, "helper.go")
-	if err := os.WriteFile(subFile, []byte("package sub\n"), 0o644); err != nil {
+	if err := os.WriteFile(subFile, []byte("package sub\n"), 0o600); err != nil {
 		t.Fatalf("create helper.go: %v", err)
 	}
 
@@ -408,15 +408,15 @@ func TestFindProjectRoot_StrayMarkerInHomeDoesNotSwallowProject(t *testing.T) {
 
 	// A dotfiles repository in the home directory: extremely common, and
 	// nothing to do with the project below it.
-	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	project := filepath.Join(home, "Code", "thing")
-	if err := os.MkdirAll(project, 0o755); err != nil {
+	if err := os.MkdirAll(project, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module thing\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module thing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -433,15 +433,15 @@ func TestFindProjectRoot_StrayGitInHomeDoesNotSwallowProject(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 
-	if err := os.Mkdir(filepath.Join(home, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	project := filepath.Join(home, "scratch", "proj")
-	if err := os.MkdirAll(project, 0o755); err != nil {
+	if err := os.MkdirAll(project, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -459,22 +459,22 @@ func TestFindProjectRoot_MarkerBelowHomeStillWins(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 
-	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	repo := filepath.Join(home, "Code", "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "pkg", "deep"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "pkg", "deep"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	// From deep inside the repo, the repo's own .git is the answer — and it
 	// still outranks a go.mod nested below it, which is the monorepo case the
 	// two-pass order exists to serve.
-	if err := os.WriteFile(filepath.Join(repo, "pkg", "deep", "go.mod"), []byte("module deep\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "deep", "go.mod"), []byte("module deep\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if root := findProjectRoot(filepath.Join(repo, "pkg", "deep")); root != repo {
@@ -491,12 +491,12 @@ func TestFindProjectRoot_NoMarkerBelowHomeFallsBackToStartDir(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 
-	if err := os.Mkdir(filepath.Join(home, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	bare := filepath.Join(home, "notes", "scratch")
-	if err := os.MkdirAll(bare, 0o755); err != nil {
+	if err := os.MkdirAll(bare, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -535,11 +535,11 @@ func TestFindProjectRoot_SharedRootBoundIsRobust(t *testing.T) {
 			if resolved, err := filepath.EvalSymlinks(project); err == nil {
 				project = resolved
 			}
-			if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module p\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module p\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			sub := filepath.Join(project, "a", "b")
-			if err := os.MkdirAll(sub, 0o755); err != nil {
+			if err := os.MkdirAll(sub, 0o750); err != nil {
 				t.Fatal(err)
 			}
 
@@ -568,11 +568,11 @@ func TestFindProjectRoot_SymlinkedProjectResolvesToTheSameRoot(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(real); err == nil {
 		real = resolved
 	}
-	if err := os.Mkdir(filepath.Join(real, ".devcouncil"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(real, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(real, "pkg")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -596,7 +596,7 @@ func TestFindProjectRoot_StandingInTheSharedRootStillWorks(t *testing.T) {
 		home = resolved
 	}
 	t.Setenv("HOME", home)
-	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -617,10 +617,10 @@ func TestFindProjectRoot_EnvOverrideOutranksTheSharedRootBound(t *testing.T) {
 	t.Setenv("MANVI_PROJECT_ROOT", home)
 
 	project := filepath.Join(home, "Code", "thing")
-	if err := os.MkdirAll(project, 0o755); err != nil {
+	if err := os.MkdirAll(project, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module thing\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module thing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -641,11 +641,11 @@ func TestAWhitespaceProjectRootOverrideIsIgnored(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(real); err == nil {
 		real = resolved
 	}
-	if err := os.Mkdir(filepath.Join(real, ".devcouncil"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(real, ".devcouncil"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(real, "pkg")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
+	if err := os.MkdirAll(sub, 0o750); err != nil {
 		t.Fatal(err)
 	}
 

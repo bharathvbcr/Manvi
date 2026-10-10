@@ -382,7 +382,7 @@ func TestDoctorDoesNotAttributeTheIndexsCountsToTheArtifact(t *testing.T) {
 "nodes":[{"id":"a/x.go","kind":"file","path":"a/x.go","area":"a"},
 {"id":"b/y.go","kind":"file","path":"b/y.go","area":"b"}],
 "edges":[{"source":"a/x.go","target":"b/y.go","kind":"calls","confidence":"extracted"}]}`
-	if err := os.WriteFile(graph, []byte(doc), 0o644); err != nil {
+	if err := os.WriteFile(graph, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MANVI_GRAPH", graph)

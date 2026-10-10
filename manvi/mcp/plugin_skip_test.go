@@ -17,11 +17,11 @@ import (
 func TestAMalformedManifestIsReportedNotDropped(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".devcouncil", "plugins", "broken")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "plugin.json"),
-		[]byte(`{"name":"broken",}`), 0o644); err != nil {
+		[]byte(`{"name":"broken",}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -55,10 +55,10 @@ func TestOneBrokenManifestDoesNotHideAGoodOne(t *testing.T) {
 			"runtime":{"command":"echo","args":["hi"]}}`,
 	} {
 		path := filepath.Join(base, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -79,10 +79,10 @@ func TestOneBrokenManifestDoesNotHideAGoodOne(t *testing.T) {
 func TestTheManagerRemembersWhatItCouldNotRead(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".devcouncil", "plugins", "bad")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

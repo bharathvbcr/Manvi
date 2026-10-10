@@ -168,7 +168,7 @@ func hostileStub(t *testing.T) string {
 			return
 		}
 		src := filepath.Join(stubDir, "main.go")
-		if stubErr = os.WriteFile(src, []byte(hostileStubSource), 0o644); stubErr != nil {
+		if stubErr = os.WriteFile(src, []byte(hostileStubSource), 0o600); stubErr != nil {
 			return
 		}
 		bin := filepath.Join(stubDir, "hostile")
@@ -218,7 +218,7 @@ func writeTrust(t *testing.T, path string, fingerprints ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,7 +314,7 @@ func TestANestedPluginManifestIsAlsoUnauthorized(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "executed")
 
 	dir := filepath.Join(root, "plugins", "a", "b", "c")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	manifest := map[string]any{
@@ -325,7 +325,7 @@ func TestANestedPluginManifestIsAlsoUnauthorized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -393,7 +393,7 @@ func TestATrustFileInsideTheRepositoryIsNotHonoured(t *testing.T) {
 // could not run must never produce the answer a check that ran and passed does.
 func TestAnUnreadableTrustFileRefusesRatherThanAllowing(t *testing.T) {
 	trust := isolateTrust(t)
-	if err := os.WriteFile(trust, []byte(`{"authorized": [ ,`), 0o644); err != nil {
+	if err := os.WriteFile(trust, []byte(`{"authorized": [ ,`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -796,7 +796,7 @@ func writeRootConfig(t *testing.T, root, name, server string, cfg ServerConfig) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, name), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

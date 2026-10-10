@@ -27,7 +27,7 @@ func buildFakeMCPServer(t *testing.T, defect string) ServerConfig {
 	// Per-run marker directory: a marker left in the shared temp root made
 	// the second run of a test skip its own scripted death.
 	markerDir := filepath.Join(dir, "markers")
-	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+	if err := os.MkdirAll(markerDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +126,7 @@ func reply(id int, result map[string]any) {
 	fmt.Fprintln(os.Stdout, string(payload))
 }
 `)
-	if err := os.WriteFile(src, []byte(script), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	build := exec.Command("go", "build", "-o", bin, src)
@@ -412,14 +412,14 @@ func TestAnUnmatchableIDIsRecorded(t *testing.T) {
 func TestAPluginWithNoRuntimeCommandIsReportedNotDropped(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".devcouncil", "plugins", "static-only")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	manifest := `{"name":"static-only","version":"1.0.0",
 		"description":"declares tools but nothing to run",
 		"runtime":{"type":"http"},
 		"tools":[{"name":"lookup","description":"never reachable"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,10 +453,10 @@ func TestAPluginWithNoRuntimeCommandIsReportedNotDropped(t *testing.T) {
 func TestDiscoverDoesNotRaceSkipped(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".devcouncil", "plugins", "bad")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(`{`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

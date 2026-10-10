@@ -83,7 +83,7 @@ func assertUnchanged(t *testing.T, dir string, before map[string]string) {
 func TestWriteRefusesSwapOfADirectoryItCreatesItself(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "payload.txt"), []byte("PRE-EXISTING\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "payload.txt"), []byte("PRE-EXISTING\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before := treeSnapshot(t, outside)
@@ -120,17 +120,17 @@ func TestWriteRefusesSwapAtEveryDepth(t *testing.T) {
 
 				// Pre-create the first `existing` components.
 				if existing > 0 {
-					if err := os.MkdirAll(filepath.Join(append([]string{root}, parts[:existing]...)...), 0o755); err != nil {
+					if err := os.MkdirAll(filepath.Join(append([]string{root}, parts[:existing]...)...), 0o750); err != nil {
 						t.Fatal(err)
 					}
 				}
 				// A file the attacker hopes to clobber, at the name the write
 				// would land on if it followed the link.
 				victimDir := filepath.Join(append([]string{outside}, parts[swap+1:]...)...)
-				if err := os.MkdirAll(victimDir, 0o755); err != nil {
+				if err := os.MkdirAll(victimDir, 0o750); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(victimDir, "leaf.txt"), []byte("innocent\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(victimDir, "leaf.txt"), []byte("innocent\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				before := treeSnapshot(t, outside)
@@ -145,7 +145,7 @@ func TestWriteRefusesSwapAtEveryDepth(t *testing.T) {
 				if err := os.RemoveAll(swapped); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.MkdirAll(filepath.Dir(swapped), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(swapped), 0o750); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(outside, swapped); err != nil {
@@ -227,7 +227,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 		}},
 		{"symlink_inside_repo", func(t *testing.T, at, outside string) {
 			elsewhere := filepath.Join(filepath.Dir(at), "elsewhere")
-			if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+			if err := os.MkdirAll(elsewhere, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink("elsewhere", at); err != nil {
@@ -235,7 +235,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 			}
 		}},
 		{"regular_file", func(t *testing.T, at, outside string) {
-			if err := os.WriteFile(at, []byte("not a directory\n"), 0o644); err != nil {
+			if err := os.WriteFile(at, []byte("not a directory\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -245,7 +245,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 			}
 		}},
 		{"real_directory", func(t *testing.T, at, outside string) {
-			if err := os.Mkdir(at, 0o755); err != nil {
+			if err := os.Mkdir(at, 0o750); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -255,7 +255,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 		t.Run(shape.name, func(t *testing.T) {
 			root := t.TempDir()
 			outside := t.TempDir()
-			if err := os.WriteFile(filepath.Join(outside, "leaf.txt"), []byte("innocent\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(outside, "leaf.txt"), []byte("innocent\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			before := treeSnapshot(t, outside)
@@ -292,7 +292,7 @@ func TestWriteRefusesEveryHostileComponentShape(t *testing.T) {
 // write must fail closed rather than clobber whatever arrived.
 func TestWriteRefusesALeafThatAppearedDuringTheWindow(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "dir"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "dir"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	pinned, err := pinWriteTarget(root, "dir/leaf.txt")
@@ -302,7 +302,7 @@ func TestWriteRefusesALeafThatAppearedDuringTheWindow(t *testing.T) {
 	if pinned.targetExisted {
 		t.Fatal("the leaf was pinned as existing")
 	}
-	if err := os.WriteFile(filepath.Join(root, "dir", "leaf.txt"), []byte("someone else\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "dir", "leaf.txt"), []byte("someone else\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := pinned.Write([]byte("PAYLOAD"), 0o644); err == nil {
@@ -328,7 +328,7 @@ func TestWriteRefusesTailCreatedThenSwappedThenRecreated(t *testing.T) {
 	}
 
 	created := filepath.Join(root, "tail")
-	if err := os.Mkdir(created, 0o755); err != nil {
+	if err := os.Mkdir(created, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(created); err != nil {
@@ -340,7 +340,7 @@ func TestWriteRefusesTailCreatedThenSwappedThenRecreated(t *testing.T) {
 	if err := os.Remove(created); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(created, 0o755); err != nil {
+	if err := os.Mkdir(created, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -365,7 +365,7 @@ func TestWriteSurvivesSwapRacingTheWriteItself(t *testing.T) {
 	for attempt := 0; attempt < 40; attempt++ {
 		root := t.TempDir()
 		outside := t.TempDir()
-		if err := os.WriteFile(filepath.Join(outside, "leaf.txt"), []byte("innocent\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(outside, "leaf.txt"), []byte("innocent\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		before := treeSnapshot(t, outside)
@@ -390,7 +390,7 @@ func TestWriteSurvivesSwapRacingTheWriteItself(t *testing.T) {
 				os.RemoveAll(target)
 				os.Symlink(outside, target)
 				os.Remove(target)
-				os.Mkdir(target, 0o755)
+				os.Mkdir(target, 0o750)
 			}
 		}()
 		// Stand in for the approval delay: the attacker is already swapping
@@ -420,7 +420,7 @@ func TestWriteSurvivesSwapRacingTheWriteItself(t *testing.T) {
 func TestSpellingVariantsCannotSmuggleADifferentFile(t *testing.T) {
 	insensitive := func(t *testing.T, dir, a, b string) bool {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, a), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, a), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		fiA, err := os.Stat(filepath.Join(dir, a))
@@ -446,10 +446,10 @@ func TestSpellingVariantsCannotSmuggleADifferentFile(t *testing.T) {
 			}
 
 			root := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(root, "dir"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(root, "dir"), 0o750); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(root, "dir", v.written), []byte("original\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "dir", v.written), []byte("original\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			pinned, err := pinWriteTarget(root, "dir/"+v.requested)
@@ -477,7 +477,7 @@ func TestSpellingVariantOfACreatedDirectoryCannotEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	probeA, probeB := "Dir", "dir"
-	if err := os.Mkdir(filepath.Join(root, probeA), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, probeA), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	fiA, err := os.Stat(filepath.Join(root, probeA))
@@ -535,7 +535,7 @@ func TestDeepCreationStillWorks(t *testing.T) {
 func TestReadRefusesSwapOfAnUnpinnedComponent(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("OUTSIDE SECRET\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("OUTSIDE SECRET\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before := treeSnapshot(t, outside)
@@ -558,12 +558,12 @@ func TestReadRefusesSwapOfAnUnpinnedComponent(t *testing.T) {
 func TestRemoveRefusesDirectoriesAndSwaps(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("keep\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "victim.txt"), []byte("keep\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before := treeSnapshot(t, outside)
 
-	if err := os.Mkdir(filepath.Join(root, "adir"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "adir"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemovePinned(root, "adir"); err == nil {
@@ -575,7 +575,7 @@ func TestRemoveRefusesDirectoriesAndSwaps(t *testing.T) {
 
 	// A file that exists at pin time, swapped for a link before removal, is
 	// removed as the link (unlink never follows) — never as its target.
-	if err := os.WriteFile(filepath.Join(root, "doomed.txt"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "doomed.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemovePinned(root, "doomed.txt"); err != nil {

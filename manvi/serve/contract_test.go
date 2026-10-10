@@ -207,7 +207,7 @@ func encodeContract(t *testing.T, c serveContract) []byte {
 func TestServeContractMatchesGoTypes(t *testing.T) {
 	want := encodeContract(t, currentContract(t))
 	if os.Getenv("MANVI_UPDATE_CONTRACT") == "1" {
-		if err := os.WriteFile(contractPath, want, 0o644); err != nil {
+		if err := os.WriteFile(contractPath, want, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return

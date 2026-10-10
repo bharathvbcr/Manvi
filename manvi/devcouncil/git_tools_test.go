@@ -30,7 +30,7 @@ func gitHead(t *testing.T, root string) string {
 
 func modifySeed(t *testing.T, f *fixture) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.root, "seed.txt"), []byte("seed\nchanged\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "seed.txt"), []byte("seed\nchanged\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

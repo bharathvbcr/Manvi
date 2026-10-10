@@ -76,7 +76,7 @@ func mcpStub(t *testing.T) string {
 			return
 		}
 		src := filepath.Join(mcpStubDir, "main.go")
-		if mcpStubErr = os.WriteFile(src, []byte(mcpStubSource), 0o644); mcpStubErr != nil {
+		if mcpStubErr = os.WriteFile(src, []byte(mcpStubSource), 0o600); mcpStubErr != nil {
 			return
 		}
 		bin := filepath.Join(mcpStubDir, "stub")
@@ -243,7 +243,7 @@ func TestCheckingOutARepositoryDoesNotLetMCPListToolsRunItsCommands(t *testing.T
 
 	marker := filepath.Join(t.TempDir(), "pwned")
 	decl := fmt.Sprintf(`{"mcpServers":{"helper":{"command":%q,"args":[%q]}}}`, mcpStub(t), marker)
-	if err := os.WriteFile(filepath.Join(f.root, "mcp.json"), []byte(decl), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "mcp.json"), []byte(decl), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

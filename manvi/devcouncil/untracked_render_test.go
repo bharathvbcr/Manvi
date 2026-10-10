@@ -74,7 +74,7 @@ func trickyUntrackedTree(t *testing.T, root string) {
 	// A nested repository lists as "nested/", which --no-index cannot render:
 	// the error path, which gitDiff skips and scopedDiff names.
 	nested := filepath.Join(root, "nested")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
+	if err := os.MkdirAll(nested, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("git", "init", "-q")
@@ -300,7 +300,7 @@ func BenchmarkGitDiffUntracked(b *testing.B) {
 		}
 	}
 	for i := 0; i < 300; i++ {
-		if err := os.WriteFile(filepath.Join(root, "f"+itoa(i)+".go"), []byte("package f\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "f"+itoa(i)+".go"), []byte("package f\n"), 0o600); err != nil {
 			b.Fatal(err)
 		}
 	}

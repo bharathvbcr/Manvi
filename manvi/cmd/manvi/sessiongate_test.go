@@ -55,7 +55,7 @@ func TestAllowInASessionReachesTheLedgerTheAgentIsJudgedBy(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	defer setProjectRootForTest(root)()

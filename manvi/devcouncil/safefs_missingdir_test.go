@@ -25,7 +25,7 @@ func setupEscape(t *testing.T) (root, outside string) {
 	root = filepath.Join(base, "repo")
 	outside = filepath.Join(base, "outside")
 	for _, d := range []string{root, outside} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -49,12 +49,12 @@ func TestPlantedSymlinkDirectoryCannotCarryAWriteOutOfTheRepo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, outside := setupEscape(t)
 			if strings.Contains(tc.plant, "/") {
-				if err := os.MkdirAll(filepath.Join(root, filepath.Dir(tc.plant)), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, filepath.Dir(tc.plant)), 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
 			evil := filepath.Join(outside, "evil")
-			if err := os.MkdirAll(evil, 0o755); err != nil {
+			if err := os.MkdirAll(evil, 0o750); err != nil {
 				t.Fatal(err)
 			}
 
@@ -126,7 +126,7 @@ func TestWriteStillCreatesMissingDirectories(t *testing.T) {
 // symlink for exactly that reason.
 func TestSymlinkedDirectoryComponentIsRefusedEvenWhenContained(t *testing.T) {
 	root, _ := setupEscape(t)
-	if err := os.MkdirAll(filepath.Join(root, "real"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "real"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	pinned, err := pinWriteTarget(root, "link/file.txt")

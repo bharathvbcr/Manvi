@@ -360,7 +360,7 @@ func TestCratePinDriftIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := t.TempDir()
-	if err := os.WriteFile(filepath.Join(ws, "Cargo.toml"), []byte(drifted), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, "Cargo.toml"), []byte(drifted), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range md.Packages {
@@ -405,10 +405,10 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 
 func writeFixtureFile(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -435,7 +435,7 @@ func newPinFixture(t *testing.T) pinFixture {
 	f.head = gitIn(t, f.sibling, "rev-parse", "HEAD")
 
 	writeFixtureFile(t, filepath.Join(f.root, "scripts", "module-pins.txt"), "# pins\nDevCouncil\thttps://github.com/example/DevCouncil.git\t"+f.pin+"\n")
-	if err := os.MkdirAll(filepath.Join(f.root, "crates"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(f.root, "crates"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join("..", "..", "DevCouncil", "rust", "dc-a"), filepath.Join(f.root, "crates", "dc-a")); err != nil {

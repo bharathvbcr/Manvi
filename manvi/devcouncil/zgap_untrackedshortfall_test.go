@@ -100,7 +100,7 @@ func TestAnIncompleteDiffIsDegradedAndARealFailureStaysFailed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
-			if err := os.MkdirAll(filepath.Join(f.root, "src"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(f.root, "src"), 0o750); err != nil {
 				t.Fatal(err)
 			}
 			write(t, f.root, "src/calc.go", "package calc\n")
