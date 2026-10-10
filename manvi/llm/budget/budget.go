@@ -188,6 +188,20 @@ func (l *Ledger) Limit() int64 { return l.limit }
 // Path is the ledger file.
 func (l *Ledger) Path() string { return l.path }
 
+// Headroom is what may still be reserved: the limit less everything spent,
+// retained or in flight, and never below zero.
+//
+// It reads the file as it stands, so an attempt left in flight by a process
+// that has since exited still counts against it. That errs towards refusing a
+// little early, which is the direction a cap is allowed to be wrong in.
+func (l *Ledger) Headroom() (int64, error) {
+	s, err := l.Snapshot()
+	if err != nil {
+		return 0, err
+	}
+	return max(l.limit-s.CommittedNanoUSD(), 0), nil
+}
+
 // Snapshot reads the current ledger.
 func (l *Ledger) Snapshot() (Snapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)

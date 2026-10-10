@@ -118,6 +118,28 @@ type Event struct {
 	// Usage.
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
+	// CostNanoUSD is what the priced part of a usage event cost, in billionths
+	// of a dollar. UnpricedSteps counts the steps no price table covered; when
+	// it is not zero the cost is a lower bound, never the bill.
+	CostNanoUSD   int64 `json:"cost_nano_usd,omitempty"`
+	UnpricedSteps int   `json:"unpriced_steps,omitempty"`
+	// ByModel splits a usage event by the model that spent it — the turn's own
+	// agent and every sub-agent it dispatched — so a turn whose children ran on
+	// other models can still be priced line by line.
+	ByModel []ModelUsage `json:"by_model,omitempty"`
+}
+
+// ModelUsage is one model's share of a usage event.
+type ModelUsage struct {
+	// Model is "provider/model".
+	Model            string `json:"model"`
+	InputTokens      int    `json:"input_tokens"`
+	OutputTokens     int    `json:"output_tokens"`
+	ReasoningTokens  int    `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens  int    `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
+	CostNanoUSD      int64  `json:"cost_nano_usd,omitempty"`
+	UnpricedSteps    int    `json:"unpriced_steps,omitempty"`
 }
 
 // Qualified reports whether an outcome was reached by something other than the

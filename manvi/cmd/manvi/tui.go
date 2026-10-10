@@ -879,7 +879,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 
 	// Taken before the turn runs, so what it spends on children can be told
 	// apart from what earlier turns of this session already spent.
-	before := s.subMeter.Total()
+	before := s.subMeter.ByModel()
 
 	loop, err := newTurnLoop(turnFace{
 		maxTokens: tuiMaxTokens(h.reg),
@@ -930,7 +930,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 	if err != nil {
 		return err
 	}
-	h.reportTurn(sink, s.subMeter, before, outcome)
+	h.reportTurn(sink, turnUsage(at.provider, at.model, outcome), s.subMeter.Since(before), outcome)
 	return nil
 }
 
@@ -1000,24 +1000,15 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 
 // reportTurn puts a finished turn's spend and outcome in front of the
 // operator: one usage line covering the turn and the children it delegated to,
-// then one line per outcome notice. before is the meter's total from before
-// the turn ran.
-func (h *harnessHost) reportTurn(sink ui.Sink, meter *subAgentMeter, before devcouncil.SubAgentUsage, outcome agent.Outcome) {
+// then one line per outcome notice. delegated is what this turn's children
+// spent, by model.
+func (h *harnessHost) reportTurn(sink ui.Sink, own devcouncil.SubAgentUsage, delegated []devcouncil.SubAgentUsage, outcome agent.Outcome) {
 	// This turn's delegated spend, not the session's: the meter accumulates
-	// across every turn of the session, so the figure for one turn is the
-	// difference against the snapshot taken before it ran. Reporting the
-	// running total per turn would count the first turn's children again in
-	// every turn after it.
-	delegated := meter.Total()
-	delegated.InputTokens -= before.InputTokens
-	delegated.OutputTokens -= before.OutputTokens
-	delegated.ReasoningTokens -= before.ReasoningTokens
-	delegated.CacheReadTokens -= before.CacheReadTokens
-	sink.Emit(ui.Event{
-		Kind: ui.KindUsage, At: time.Now().UTC(),
-		InputTokens:  outcome.Usage.InputTokens + delegated.InputTokens,
-		OutputTokens: outcome.Usage.OutputTokens + delegated.OutputTokens,
-	})
+	// across every turn of the session, so the caller passes the difference
+	// against the snapshot taken before the turn ran. Reporting the running
+	// total per turn would count the first turn's children again in every turn
+	// after it.
+	sink.Emit(usageEvent(own, delegated))
 	// The same owner the headless face uses. The TUI used to hand-roll its own
 	// subset and silently omitted repeats, stalls, malformed calls and every
 	// decoding compensation.

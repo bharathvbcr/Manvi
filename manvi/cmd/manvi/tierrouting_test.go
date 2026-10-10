@@ -79,7 +79,7 @@ func TestTheCheckpointCriticIsAReadOnlyAdvisor(t *testing.T) {
 		reasons: map[string][]string{"parent-model": reasoningLevels, "advisor-model": reasoningLevels},
 		script: []llm.Response{
 			wantToolCall("fake_write", `{}`),
-			endTurn("reviewed\n" + verdictMarker + " FAIL\n- the lock is never released"),
+			endTurn("reviewed\n" + devcouncil.VerdictMarker + " FAIL\n- the lock is never released"),
 		},
 	}
 	models := llm.NewRegistry()
@@ -324,7 +324,7 @@ func TestTheCheckpointCriticRunsOverTheNativeSurface(t *testing.T) {
 	p := &tierProvider{
 		name:    "anthropic",
 		reasons: map[string][]string{"parent-model": reasoningLevels, "advisor-model": reasoningLevels},
-		script:  []llm.Response{endTurn("reviewed\n" + verdictMarker + " PASS")},
+		script:  []llm.Response{endTurn("reviewed\n" + devcouncil.VerdictMarker + " PASS")},
 	}
 	models := llm.NewRegistry()
 	if err := models.Register(p); err != nil {

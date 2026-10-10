@@ -13,9 +13,29 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
-// usageFixture is a two-step child: one tool call, then an answer. The token
+// usageTurns is a two-step child: one tool call, then an answer. The token
 // counts are distinct primes so a total that drops or double-counts a step is
 // visible in the number rather than only in a boolean.
+func usageTurns() []replay.Turn {
+	return []replay.Turn{
+		{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				llm.ToolCallBlock{ID: "c1", Name: "noop", Arguments: json.RawMessage(`{}`)},
+			}},
+			StopReason: llm.StopToolUse,
+			Usage:      llm.Usage{InputTokens: 101, OutputTokens: 11, ReasoningTokens: 3, CacheReadTokens: 50},
+		},
+		{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				llm.TextBlock{Text: "done"},
+			}},
+			StopReason: llm.StopEndTurn,
+			Usage:      llm.Usage{InputTokens: 211, OutputTokens: 13, ReasoningTokens: 5, CacheReadTokens: 60},
+		},
+	}
+}
+
+// usageFixture plays usageTurns on an unpriced provider.
 func usageFixture() *replay.Provider {
 	return replay.New(replay.Fixture{
 		Provider: "replay",
@@ -23,22 +43,7 @@ func usageFixture() *replay.Provider {
 			Provider: "replay", Model: "m", ContextWindow: 32768,
 			MaxOutputTokens: 4096, SupportsTools: true, SupportsStreaming: true,
 		}},
-		Turns: []replay.Turn{
-			{
-				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.ToolCallBlock{ID: "c1", Name: "noop", Arguments: json.RawMessage(`{}`)},
-				}},
-				StopReason: llm.StopToolUse,
-				Usage:      llm.Usage{InputTokens: 101, OutputTokens: 11, ReasoningTokens: 3, CacheReadTokens: 50},
-			},
-			{
-				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-					llm.TextBlock{Text: "done"},
-				}},
-				StopReason: llm.StopEndTurn,
-				Usage:      llm.Usage{InputTokens: 211, OutputTokens: 13, ReasoningTokens: 5, CacheReadTokens: 60},
-			},
-		},
+		Turns: usageTurns(),
 	})
 }
 
@@ -82,15 +87,19 @@ func TestASubAgentReportsWhatItSpent(t *testing.T) {
 		t.Fatalf("RunSubAgent: %v", err)
 	}
 
+	// The replay provider publishes no prices, so both steps are counted as
+	// unpriced rather than as free.
 	want := devcouncil.SubAgentUsage{
+		Model:       "replay/m",
 		InputTokens: 312, OutputTokens: 24, ReasoningTokens: 8, CacheReadTokens: 110,
+		UnpricedSteps: 2,
 	}
 	if out.Usage != want {
 		t.Errorf("the child reported %+v, want %+v — a fan-out's cost is invisible without this",
 			out.Usage, want)
 	}
-	if got := meter.Total(); got != want {
-		t.Errorf("the run meter holds %+v, want %+v", got, want)
+	if got := meter.ByModel(); len(got) != 1 || got[0] != want {
+		t.Errorf("the run meter holds %+v, want one model holding %+v", got, want)
 	}
 }
 

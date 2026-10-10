@@ -241,6 +241,10 @@ func TestEveryOutcomeFieldIsClassified(t *testing.T) {
 			"what was checked; repeating the file list in the run summary would restate the " +
 			"transcript. Its one dangerous property — being incomplete — is reported by " +
 			"WroteTruncated, which has a notice of its own",
+		"CostNanoUSD": "rendered on the same usage event as Usage, as the cost and its split by model; " +
+			"see usageEvent",
+		"UnpricedSteps": "rendered on the usage event, where it turns the cost into a lower bound " +
+			"(\"at least $X\") or into \"unpriced\" rather than $0.00; see costText",
 	}
 	// Fields whose notice fires from a different field being set. Listing them
 	// keeps the map honest rather than letting them fall into `silent`.

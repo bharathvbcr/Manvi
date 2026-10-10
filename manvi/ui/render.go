@@ -429,6 +429,13 @@ func (r *Renderer) Emit(e Event) {
 	case KindUsage:
 		r.endStream()
 		r.write("%s  %d in / %d out tokens%s\n", p.Dim, e.InputTokens, e.OutputTokens, p.Reset)
+		// The cost and the split by model, composed by whoever priced the
+		// usage; see ModelUsage.
+		for _, line := range strings.Split(e.Text, "\n") {
+			if line != "" {
+				r.write("%s    %s%s\n", p.Dim, r.safe(line), p.Reset)
+			}
+		}
 
 	case KindTurnEnd:
 		r.endStream()

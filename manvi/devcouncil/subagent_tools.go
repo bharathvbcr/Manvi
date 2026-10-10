@@ -316,19 +316,23 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	// names are reported, so a caller can tell "the role I named" from "a role
 	// this harness has never heard of".
 	var unknownTypes []string
+	known := make([]bool, 0, len(args.Subagents))
+	requests := make([]SubAgentRequest, 0, len(args.Subagents))
+	for i, s := range args.Subagents {
+		def, ok := reg.Get(s.TypeName)
+		if !ok {
+			unknownTypes = append(unknownTypes, s.TypeName)
+		}
+		req := invokeChildRequest(s, def, ok, tiers[i], len(args.Subagents))
+		known, requests = append(known, ok), append(requests, req)
+	}
 
 	return r.runFanout(ctx, bounds, fanout{
 		placements: placements,
-		tasks: func() []agents.Task {
-			var subTasks []agents.Task
-			for i, s := range args.Subagents {
-				def, ok := reg.Get(s.TypeName)
-				if !ok {
-					unknownTypes = append(unknownTypes, s.TypeName)
-				}
-				subTasks = append(subTasks, invokeTask(s, def, ok, tiers[i], len(args.Subagents), mgr, runner))
-			}
-			return subTasks
+		runner:     runner,
+		requests:   requests,
+		task: func(i int, req SubAgentRequest) agents.Task {
+			return invokeTask(args.Subagents[i], known[i], req, mgr, runner)
 		},
 		runFailure: "invoking subagents failed",
 		verb:       "dispatched",
@@ -387,13 +391,13 @@ func ApplyRole(req *SubAgentRequest, def agents.Definition, callerReadOnly bool)
 	}
 }
 
-// invokeTask is one devcouncil_invoke_subagent child: a tracked instance the
-// control plane can list and kill, running under the role s names. known is
-// false when no role by that name is registered, and def is then the zero
-// value. tier is the caller's own placement, already checked against the
-// role's ceiling, or empty; width is how many children this dispatch holds.
-func invokeTask(s invokeRequest, def agents.Definition, known bool, tier agents.Tier, width int,
-	mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
+// invokeChildRequest is what one devcouncil_invoke_subagent child is asked to
+// do, under the role s names. known is false when no role by that name is
+// registered, and def is then the zero value. tier is the caller's own
+// placement, already checked against the role's ceiling, or empty; width is
+// how many children this dispatch holds. Built before the fan-out runs so the
+// runner can admit every child against a spend cap before any starts.
+func invokeChildRequest(s invokeRequest, def agents.Definition, known bool, tier agents.Tier, width int) SubAgentRequest {
 	req := SubAgentRequest{Label: s.Role, Prompt: s.Prompt}
 	if known {
 		ApplyRole(&req, def, false)
@@ -413,6 +417,13 @@ func invokeTask(s invokeRequest, def agents.Definition, known bool, tier agents.
 		req.Tier = tier
 	}
 
+	return req
+}
+
+// invokeTask is one devcouncil_invoke_subagent child: a tracked instance the
+// control plane can list and kill, running req under the role s names.
+func invokeTask(s invokeRequest, known bool, req SubAgentRequest,
+	mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
 	convID := fmt.Sprintf("subagent-%d-%d", time.Now().UnixMilli(), conversationCounter.Add(1))
 
 	return agents.Task{
@@ -453,8 +464,9 @@ func invokeTask(s invokeRequest, def agents.Definition, known bool, tier agents.
 					"sub-agent %q cannot run: no model is attached to this invocation", s.Role))
 			}
 
-			// So a lease this child takes for itself is released by the
-			// same cleanup that releases one the dispatch named.
+			// So a lease this child takes for itself is released by the same
+			// cleanup that releases one the dispatch named.
+			req := req
 			req.Leases = leaseSinkFor(holder)
 			out, err := runner.RunSubAgent(childCtx, req)
 			if err != nil {
@@ -879,30 +891,55 @@ func (v SubAgentVerdict) Reconcile() SubAgentVerdict {
 	return v
 }
 
-// SubAgentUsage is one child's token cost.
+// SubAgentUsage is one child's token cost, and where it was spent.
 //
 // Declared here in plain integers rather than as llm.Usage so this package,
 // which describes what a delegated turn owes its caller, does not take on the
 // provider layer as a dependency.
 type SubAgentUsage struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+	// Model is where the child ran, as "provider/model".
+	//
+	// Carried because a sum of tokens cannot be turned into money once the
+	// children of one fan-out run on different models: a thousand tokens on a
+	// frontier model and a thousand on a small one are not the same bill, and
+	// a total that has forgotten which was which cannot be priced afterwards.
+	Model           string `json:"model,omitempty"`
+	InputTokens     int    `json:"input_tokens"`
+	OutputTokens    int    `json:"output_tokens"`
+	ReasoningTokens int    `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens int    `json:"cache_read_tokens,omitempty"`
+	// CacheWriteTokens is the part of the prompt written to the provider's
+	// cache, which is billed above a fresh input token. It was dropped, so a
+	// child that primed a cache reported the dearest part of its prompt as
+	// though it had cost the same as the rest.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// CostNanoUSD is what the child's priced steps cost, each step priced from
+	// its model's own table (budget.Prices) as its response arrived.
+	CostNanoUSD int64 `json:"cost_nano_usd,omitempty"`
+	// UnpricedSteps counts the child's steps that could not be priced — a
+	// model with no price table, or usage the table refused. When it is not
+	// zero, CostNanoUSD is a lower bound and must not be read as the bill.
+	UnpricedSteps int `json:"unpriced_steps,omitempty"`
 }
 
-// Add accumulates another child's cost.
+// Add accumulates another child's cost. Model is left as it was: a sum over
+// children on different models belongs to none of them, and the run's meter,
+// which does need the split, keeps one total per model instead.
 func (u *SubAgentUsage) Add(o SubAgentUsage) {
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
 	u.ReasoningTokens += o.ReasoningTokens
 	u.CacheReadTokens += o.CacheReadTokens
+	u.CacheWriteTokens += o.CacheWriteTokens
+	u.CostNanoUSD += o.CostNanoUSD
+	u.UnpricedSteps += o.UnpricedSteps
 }
 
 // Any reports whether anything was spent, so a fan-out that learned nothing
 // about its children's cost says nothing rather than reporting zero.
 func (u SubAgentUsage) Any() bool {
-	return u.InputTokens > 0 || u.OutputTokens > 0 || u.ReasoningTokens > 0 || u.CacheReadTokens > 0
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.ReasoningTokens > 0 || u.CacheReadTokens > 0 ||
+		u.CacheWriteTokens > 0 || u.CostNanoUSD > 0 || u.UnpricedSteps > 0
 }
 
 // SubAgentRunner runs one sub-agent turn to completion.
@@ -914,6 +951,21 @@ func (u SubAgentUsage) Any() bool {
 // says so instead of pretending.
 type SubAgentRunner interface {
 	RunSubAgent(ctx context.Context, req SubAgentRequest) (SubAgentResult, error)
+}
+
+// SubAgentAdmitter is implemented by a runner whose children draw on a spend
+// cap, so a fan-out can be admitted before any child starts.
+//
+// It is optional because only the runner knows where each child will run and
+// what its first request will look like, and only a runner whose provider is
+// metered has a cap to admit against. A runner without it dispatches as every
+// runner did before: all at once, with no cap consulted.
+type SubAgentAdmitter interface {
+	// AdmitSubAgents names the cap the children draw on and what each one's
+	// first request is expected to reserve against it, in the order given. A
+	// child the cap does not meter reserves zero; a nil Budget means none of
+	// them is metered. An error refuses the whole fan-out.
+	AdmitSubAgents(reqs []SubAgentRequest) (agents.Budget, []int64, error)
 }
 
 // spawnRequest is one entry of devcouncil_spawn_subagents' tasks array.
@@ -1006,14 +1058,16 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// paths stop at the child's log: the parent's checkpoint would be told the
 	// turn mutated — a dispatch is a mutating tool — and handed no file to
 	// look at, which is a check that runs against nothing and passes.
+	requests := make([]SubAgentRequest, 0, len(args.Tasks))
+	for _, t := range args.Tasks {
+		requests = append(requests, spawnChildRequest(t, roles, len(args.Tasks)))
+	}
 	return r.runFanout(ctx, bounds, fanout{
 		placements: placements,
-		tasks: func() []agents.Task {
-			subTasks := make([]agents.Task, 0, len(args.Tasks))
-			for _, t := range args.Tasks {
-				subTasks = append(subTasks, r.spawnTask(t, roles, len(args.Tasks), runner))
-			}
-			return subTasks
+		runner:     runner,
+		requests:   requests,
+		task: func(i int, req SubAgentRequest) agents.Task {
+			return r.spawnTask(args.Tasks[i], req, runner)
 		},
 		runFailure: "subagent fan-out failed",
 		verb:       "delegated",
@@ -1028,20 +1082,40 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	})
 }
 
+// spawnChildRequest is what one devcouncil_spawn_subagents child is asked to
+// do, under the role it names, if any. Built before the fan-out runs so the
+// runner can admit every child against a spend cap before any of them starts.
+func spawnChildRequest(t spawnRequest, roles *agents.Registry, width int) SubAgentRequest {
+	// A task may name a role, which is what lets one fan-out put a planner on
+	// one model and its workers on another. A task that names none keeps the
+	// placement this tool has always had: the parent's.
+	req := SubAgentRequest{Label: t.Label, Prompt: t.Prompt, TaskID: t.TaskID, ReadOnly: t.ReadOnly}
+	// A task with no role routes as a generalist that may write unless the
+	// caller said otherwise, which is what it is.
+	def := agents.Definition{EnableWriteTools: true}
+	if t.Type != "" {
+		if known, ok := roles.Get(t.Type); ok {
+			def = known
+			ApplyRole(&req, def, t.ReadOnly)
+		}
+	}
+	req.Tier = agents.Route(def, req.ReadOnly, false, width)
+	return req
+}
+
 // spawnTask is one devcouncil_spawn_subagents child: it holds a lease on the
-// task it names, if it names one, and runs under the role it names, if any.
-// width is how many children this dispatch holds, which the router reads.
-func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, width int, runner SubAgentRunner) agents.Task {
+// task it names, if it names one, and runs req.
+func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, runner SubAgentRunner) agents.Task {
 	return agents.Task{
 		Label: t.Label,
 		Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {
 			if t.TaskID != "" {
-				req := store.AcquireRequest{
+				acquire := store.AcquireRequest{
 					TaskID: t.TaskID,
 					Owner:  t.Label,
 					TTL:    r.deps.LeaseTTL,
 				}
-				lease, err := r.deps.Store.Acquire(childCtx, req)
+				lease, err := r.deps.Store.Acquire(childCtx, acquire)
 				if err != nil {
 					return nil, fmt.Errorf("acquiring task %s: %w", t.TaskID, err)
 				}
@@ -1053,26 +1127,10 @@ func (r *Registry) spawnTask(t spawnRequest, roles *agents.Registry, width int, 
 				holder.Add(agents.Lease{TaskID: lease.TaskID, Token: lease.Token})
 			}
 
-			// A task may name a role, which is what lets one fan-out
-			// put a planner on one model and its workers on another. A
-			// task that names none keeps the placement this tool has
-			// always had: the parent's.
-			req := SubAgentRequest{
-				Label: t.Label, Prompt: t.Prompt, TaskID: t.TaskID, ReadOnly: t.ReadOnly,
-				// So a lease this child takes for itself is released by the
-				// same cleanup that releases one the dispatch named.
-				Leases: leaseSinkFor(holder),
-			}
-			// A task with no role routes as a generalist that may write
-			// unless the caller said otherwise, which is what it is.
-			def := agents.Definition{EnableWriteTools: true}
-			if t.Type != "" {
-				if known, ok := roles.Get(t.Type); ok {
-					def = known
-					ApplyRole(&req, def, t.ReadOnly)
-				}
-			}
-			req.Tier = agents.Route(def, req.ReadOnly, false, width)
+			// So a lease this child takes for itself is released by the same
+			// cleanup that releases one the dispatch named.
+			req := req
+			req.Leases = leaseSinkFor(holder)
 
 			out, err := runner.RunSubAgent(childCtx, req)
 			if err != nil {
@@ -1144,9 +1202,17 @@ func (r *Registry) delegationBounds() (agents.Bounds, *tools.Result) {
 type fanout struct {
 	// placements are where the children will run; see agents.FanoutFor.
 	placements []string
-	// tasks builds the children. It is called only once the pool exists, so
-	// a fan-out the pool refuses builds nothing.
-	tasks func() []agents.Task
+	// requests are what each child is asked to do, in dispatch order. They
+	// exist before any child does, so the runner can admit the whole fan-out
+	// against a spend cap first.
+	requests []SubAgentRequest
+	// runner runs the children; when it is a SubAgentAdmitter, the fan-out is
+	// admitted against its cap. Nil is allowed: each child then reports that
+	// no runner is attached.
+	runner SubAgentRunner
+	// task builds child i from its request. It is called only once the pool
+	// exists, so a fan-out the pool refuses builds nothing.
+	task func(i int, req SubAgentRequest) agents.Task
 	// runFailure introduces the error when the pool could not run at all.
 	runFailure string
 	// verb completes "nothing was %s successfully" when every child failed.
@@ -1167,7 +1233,29 @@ func (r *Registry) runFanout(ctx context.Context, bounds agents.Bounds, f fanout
 		return tools.Errorf("creating subagent pool: %v", err)
 	}
 
-	results, err := pool.Run(ctx, f.tasks())
+	tasks := make([]agents.Task, 0, len(f.requests))
+	for i, req := range f.requests {
+		tasks = append(tasks, f.task(i, req))
+	}
+	if admitter, ok := f.runner.(SubAgentAdmitter); ok {
+		budget, reserves, err := admitter.AdmitSubAgents(f.requests)
+		if err != nil {
+			return tools.Errorf("%s: the children could not be admitted against the spend cap, so none was started: %v",
+				f.runFailure, err)
+		}
+		if budget != nil {
+			if len(reserves) != len(tasks) {
+				return tools.Errorf("%s: the runner sized %d of %d children's first requests, so none was started",
+					f.runFailure, len(reserves), len(tasks))
+			}
+			pool.Budget = budget
+			for i := range tasks {
+				tasks[i].Reserve = reserves[i]
+			}
+		}
+	}
+
+	results, err := pool.Run(ctx, tasks)
 	if err != nil {
 		return tools.Errorf("%s: %v", f.runFailure, err)
 	}
@@ -1180,6 +1268,18 @@ func (r *Registry) runFanout(ctx context.Context, bounds agents.Bounds, f fanout
 	outcomes := make([]map[string]any, 0, len(results))
 	for _, res := range results {
 		outcome := map[string]any{"label": res.Label}
+		if res.NotStarted != "" {
+			// Never run, so there is nothing left behind to carry: no paths,
+			// no spend, no leases. Reported apart from "failed" because the
+			// difference decides what the dispatching model should do next —
+			// a failed child's work may be half done, a child that never
+			// started has done none.
+			outcome["status"] = "not_started"
+			outcome["reason"] = res.NotStarted
+			outcome["error"] = res.Error
+			outcomes = append(outcomes, outcome)
+			continue
+		}
 		if res.Err != nil {
 			outcome["status"] = "failed"
 			outcome["error"] = res.Error
@@ -1289,11 +1389,27 @@ func completedOutcome(out SubAgentResult) map[string]any {
 // failed; one exit for both outcomes is what keeps that from recurring.
 func fanoutResult(payload map[string]any, report agents.Report, results []agents.Result, verb string) tools.Result {
 	var res tools.Result
-	if report.Children > 0 && report.Failed == report.Children {
+	switch {
+	case report.Children > 0 && report.NotStarted > 0 && report.Failed+report.NotStarted == report.Children:
+		started := "none was started"
+		if report.Failed > 0 {
+			started = fmt.Sprintf("the %d that started failed", report.Failed)
+		}
+		res = failure(payload, fmt.Sprintf(
+			"%d sub-agent(s) were not started because the spend cap could not cover them, and %s; "+
+				"nothing was %s successfully", report.NotStarted, started, verb))
+	case report.Children > 0 && report.Failed == report.Children:
 		res = failure(payload, fmt.Sprintf(
 			"all %d sub-agent(s) failed; nothing was %s successfully", report.Children, verb))
-	} else {
+	default:
 		res = ok(payload)
+	}
+	if report.NotStarted > 0 {
+		// Said on the result as well as per child, so a partly admitted
+		// fan-out is never read as a whole one.
+		res.Degraded = append(res.Degraded, fmt.Sprintf(
+			"%d of %d sub-agent(s) were not started: the spend cap could not cover them",
+			report.NotStarted, report.Children))
 	}
 	wrote, truncated := childWrites(results)
 	res.Wrote = wrote

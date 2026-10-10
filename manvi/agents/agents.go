@@ -20,9 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -32,7 +34,34 @@ import (
 var (
 	ErrFanoutExceeded = errors.New("agents: concurrent fan-out limit reached")
 	ErrClosed         = errors.New("agents: the pool is closed")
+	// ErrBudget refuses a whole fan-out whose children's first requests cannot
+	// all be reserved against the spend cap. Nothing has started when it is
+	// returned.
+	ErrBudget = errors.New("agents: the fan-out does not fit the spend cap")
+	// ErrNotStarted is the error a child that was never started carries, so a
+	// caller reading only Err never mistakes it for a success. Result.NotStarted
+	// says why.
+	ErrNotStarted = errors.New("agents: the child was not started")
 )
+
+// NotStartedBudget is Result.NotStarted for a child held back because the
+// spend cap could no longer cover it.
+const NotStartedBudget = "budget"
+
+// Budget is the spend cap a fan-out's children draw on, as the pool sees it.
+//
+// An interface rather than the ledger itself, so the package that bounds work
+// does not take on the provider layer that prices it.
+type Budget interface {
+	// Headroom is what may still be reserved against the cap. An error means
+	// the cap could not be read, and the pool then starts nothing rather than
+	// guessing that there is room.
+	Headroom() (int64, error)
+	// Exhausted reports whether err is the cap refusing a reservation.
+	Exhausted(err error) bool
+	// Render shows an amount the way the cap's own messages do.
+	Render(amount int64) string
+}
 
 // Bounds are the delegation limits one dispatch runs under.
 type Bounds struct {
@@ -214,6 +243,10 @@ type Releaser interface {
 type Task struct {
 	// Label names the work for the run report.
 	Label string
+	// Reserve is what this child's first request is expected to reserve
+	// against Pool.Budget. Zero means the cap does not meter the provider the
+	// child runs on, and the child is admitted without asking it.
+	Reserve int64
 	// Run performs the work. It receives a context that is cancelled when the
 	// parent is, and a Holder it must register any lease with so cleanup can
 	// find it.
@@ -270,7 +303,11 @@ type Result struct {
 	// the field that must never be quietly empty: an orphan holds a task locked
 	// until its TTL runs out, and an operator needs to know which.
 	OrphanedLeases []string `json:"orphaned_leases,omitempty"`
-	Duration       time.Duration
+	// NotStarted, when set, says why the child was never started; Err then
+	// wraps ErrNotStarted. Such a child ran nothing, wrote nothing and held
+	// nothing, and is counted apart from the children that started and failed.
+	NotStarted string `json:"not_started,omitempty"`
+	Duration   time.Duration
 }
 
 // Pool runs bounded fan-out.
@@ -291,6 +328,9 @@ type Pool struct {
 	ReleaseTimeout time.Duration
 	// Clock is injected for tests.
 	Now func() time.Time
+	// Budget, when set, is the spend cap the children's requests reserve
+	// against; see Run for how it admits them. Nil means no cap.
+	Budget Budget
 }
 
 // New builds a pool.
@@ -320,6 +360,20 @@ func (p *Pool) now() time.Time {
 // Every child's leases are released when it finishes, whether it succeeded,
 // failed, or was cancelled. That is the whole point: the failure modes that
 // strand a lease are exactly the ones where nobody is left to release it.
+//
+// With a Budget, admission happens twice. Before anything starts, the
+// children's first-request reservations must fit the cap's headroom together,
+// or the whole fan-out is refused with ErrBudget and the arithmetic. Then each
+// child is admitted as it is started: once a started child's request has been
+// refused by the cap, or the headroom read now no longer covers the next
+// child's reservation, no further child is started, and each one held back is
+// reported with NotStarted rather than run.
+//
+// The second check exists because the first is a snapshot. Every session on
+// the machine draws on the same ledger, and without it a fan-out admitted
+// against yesterday's headroom started every child anyway and let the cap
+// refuse them one request at a time — part-way through their turns, after
+// some had already written to the tree.
 func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 	if len(tasks) == 0 {
 		return nil, nil
@@ -331,21 +385,125 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 		return nil, fmt.Errorf("%w: %d tasks requested, limit is %d",
 			ErrFanoutExceeded, len(tasks), p.MaxFanout)
 	}
+	if err := p.admitAll(tasks); err != nil {
+		return nil, err
+	}
 
 	results := make([]Result, len(tasks))
+	// exhausted is set by a started child whose request the cap refused, and
+	// read before each later start.
+	var exhausted atomic.Bool
 	var wg sync.WaitGroup
 	for i, task := range tasks {
+		if why := p.admitOne(task, &exhausted); why != "" {
+			// One held back means every later one is too. Starting a cheaper
+			// child after refusing a dearer one would make which children ran
+			// depend on their prices rather than on the order they were asked
+			// for in.
+			results[i] = notStarted(task.Label, why)
+			for j := i + 1; j < len(tasks); j++ {
+				results[j] = notStarted(tasks[j].Label,
+					fmt.Sprintf("%s, started before it, was held back by the spend cap", task.Label))
+			}
+			break
+		}
 		wg.Add(1)
 		go func(i int, task Task) {
 			defer wg.Done()
-			results[i] = p.runOne(ctx, task)
+			results[i] = p.runOne(ctx, task, func(err error) {
+				if p.Budget != nil && p.Budget.Exhausted(err) {
+					exhausted.Store(true)
+				}
+			})
 		}(i, task)
 	}
 	wg.Wait()
 	return results, nil
 }
 
-func (p *Pool) runOne(ctx context.Context, task Task) Result {
+// admitAll refuses a fan-out whose children's first requests cannot all be
+// reserved against the cap's current headroom.
+func (p *Pool) admitAll(tasks []Task) error {
+	if p.Budget == nil {
+		return nil
+	}
+	var total int64
+	metered := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Reserve < 0 {
+			return fmt.Errorf("agents: %s has a negative reservation %d", task.Label, task.Reserve)
+		}
+		if task.Reserve == 0 {
+			continue
+		}
+		if total > math.MaxInt64-task.Reserve {
+			return fmt.Errorf("%w: the children's reservations overflow", ErrBudget)
+		}
+		total += task.Reserve
+		metered = append(metered, task.Label+" "+p.Budget.Render(task.Reserve))
+	}
+	if total == 0 {
+		return nil
+	}
+	headroom, err := p.Budget.Headroom()
+	if err != nil {
+		return fmt.Errorf("%w: the spend cap could not be read, so nothing was started: %w", ErrBudget, err)
+	}
+	if total > headroom {
+		return fmt.Errorf("%w: %d children would reserve up to %s for their first requests (%s), "+
+			"and %s is left under the cap; nothing was started",
+			ErrBudget, len(metered), p.Budget.Render(total), strings.Join(metered, ", "), p.Budget.Render(headroom))
+	}
+	return nil
+}
+
+// admitOne decides whether the next child may start, and returns why not when
+// it may not.
+//
+// The headroom it reads does not yet show siblings started an instant ago that
+// have not reserved anything; admitAll, which counted every child together, is
+// what covers them. This check answers the question that one cannot: whether
+// the cap has moved since.
+func (p *Pool) admitOne(task Task, exhausted *atomic.Bool) string {
+	if p.Budget == nil {
+		return ""
+	}
+	var headroom int64
+	var err error
+	if task.Reserve > 0 {
+		headroom, err = p.Budget.Headroom()
+	}
+	// Read after the headroom, so a sibling that finished while it was being
+	// read is seen.
+	if exhausted.Load() {
+		return "a sibling's request was refused by the spend cap"
+	}
+	switch {
+	case task.Reserve == 0:
+		return ""
+	case err != nil:
+		return "the spend cap could not be read: " + err.Error()
+	case task.Reserve > headroom:
+		return fmt.Sprintf("its first request may reserve up to %s, and %s is left under the cap",
+			p.Budget.Render(task.Reserve), p.Budget.Render(headroom))
+	}
+	return ""
+}
+
+func notStarted(label, why string) Result {
+	err := fmt.Errorf("%w: %s", ErrNotStarted, why)
+	return Result{
+		Label:      label,
+		Err:        err,
+		Error:      "not started (" + NotStartedBudget + "): " + why,
+		NotStarted: NotStartedBudget,
+	}
+}
+
+// runOne runs one child and releases what it held. failed, when the child
+// returns an error, is told before that release: handing leases back can wait
+// on the store, and a sibling's admission should not wait with it.
+func (p *Pool) runOne(ctx context.Context, task Task, failed func(error)) Result {
 	started := p.now()
 	holder := &Holder{}
 	result := Result{Label: task.Label}
@@ -361,6 +519,9 @@ func (p *Pool) runOne(ctx context.Context, task Task) Result {
 		}()
 		result.Value, result.Err = task.Run(ctx, holder)
 	}()
+	if result.Err != nil {
+		failed(result.Err)
+	}
 
 	released, orphaned := p.releaseAll(holder)
 	result.ReleasedLeases = released
@@ -406,22 +567,30 @@ func (p *Pool) releaseAll(holder *Holder) (released, orphaned []string) {
 
 // Report summarises a fan-out for the evidence trail.
 type Report struct {
-	Children int      `json:"children"`
-	Failed   int      `json:"failed"`
-	Released int      `json:"released_leases"`
-	Orphaned []string `json:"orphaned_leases,omitempty"`
+	Children int `json:"children"`
+	// Failed counts children that started and did not succeed.
+	Failed int `json:"failed"`
+	// NotStarted counts children that were never started. They are not
+	// failures — no work was attempted — and not successes either.
+	NotStarted int      `json:"not_started,omitempty"`
+	Released   int      `json:"released_leases"`
+	Orphaned   []string `json:"orphaned_leases,omitempty"`
 }
 
 // Clean reports whether every child finished and every lease came back. An
 // orphaned lease keeps a task locked until its TTL expires, so a fan-out with
-// one is not a clean fan-out however well the children did.
-func (r Report) Clean() bool { return r.Failed == 0 && len(r.Orphaned) == 0 }
+// one is not a clean fan-out however well the children did; nor is one that
+// left children unstarted.
+func (r Report) Clean() bool { return r.Failed == 0 && r.NotStarted == 0 && len(r.Orphaned) == 0 }
 
 // Summarise builds the report.
 func Summarise(results []Result) Report {
 	rep := Report{Children: len(results)}
 	for _, r := range results {
-		if r.Err != nil {
+		switch {
+		case r.NotStarted != "":
+			rep.NotStarted++
+		case r.Err != nil:
 			rep.Failed++
 		}
 		rep.Released += len(r.ReleasedLeases)
