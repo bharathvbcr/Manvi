@@ -332,9 +332,10 @@ under **Unreleased** in the same commit as the code.
   revision. `Update` on an artifact that does not exist is now an error.
 - An untracked file that cannot be rendered into the verification diff (an
   unreadable file, a deadline that ran out mid-fan-out) is named in the diff
-  notes with the reason instead of being dropped silently, and any diff
-  shortfall is now a blocking `diff_incomplete` gap: verification no longer
-  passes on a diff that does not cover the change.
+  notes with the reason (and "rendered N of M") instead of being dropped
+  silently, and any diff shortfall makes `devcouncil_verify_task` report
+  `verdict: "degraded"` with `passed: false`: never a pass, and never a failure
+  on that account alone. A blocking gap still gives `failed`.
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
   `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with

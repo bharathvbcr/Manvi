@@ -73,7 +73,7 @@ func TestAnExpiredDeadlineMidFanOutIsCountedInTheNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(notes, "\n")
-	if !strings.Contains(joined, fmt.Sprintf("%d untracked file(s) could not be rendered", files)) {
+	if !strings.Contains(joined, fmt.Sprintf("rendered 0 of %d untracked file(s); %d could not be rendered", files, files)) {
 		t.Fatalf("the notes do not count the %d unrendered files: %q", files, notes)
 	}
 	if !strings.Contains(joined, "new00.txt") || !strings.Contains(joined, "timed out") {
@@ -81,35 +81,62 @@ func TestAnExpiredDeadlineMidFanOutIsCountedInTheNotes(t *testing.T) {
 	}
 }
 
-// A diff with a shortfall is not a diff the gates can certify: verification
-// must not pass on it.
-func TestVerifyDoesNotPassOnAnIncompleteDiff(t *testing.T) {
+// An incomplete diff is a check that could not see everything: the verdict is
+// degraded when the gates are otherwise clean, never passed, and never failed
+// on that account alone. A real failure stays failed.
+func TestAnIncompleteDiffIsDegradedAndARealFailureStaysFailed(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("permission bits do not stop a read here")
 	}
-	f := newFixture(t)
-	f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
-	leak := filepath.Join(f.root, "leak.txt")
-	if err := os.WriteFile(leak, []byte("secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(leak, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(leak, 0o600) })
+	for _, tc := range []struct {
+		name    string
+		orphan  bool
+		want    string
+		blocked bool
+	}{
+		{"clean gates", false, VerdictDegraded, false},
+		{"a failing gate", true, VerdictFailed, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.payload("devcouncil_checkout_task", map[string]string{"task_id": "TASK-001"})
+			if err := os.MkdirAll(filepath.Join(f.root, "src"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(t, f.root, "src/calc.go", "package calc\n")
+			if tc.orphan {
+				write(t, f.root, "unplanned.txt", "x\n")
+			}
+			leak := filepath.Join(f.root, "leak.txt")
+			write(t, f.root, "leak.txt", "secret\n")
+			if err := os.Chmod(leak, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(leak, 0o600) })
 
-	report, err := f.reg.report(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Passed {
-		t.Fatalf("verification passed with an untracked file missing from the diff: %+v", report.Degraded)
-	}
-	found := false
-	for _, g := range report.Gaps {
-		found = found || (g.Type == "diff_incomplete" && g.Blocking)
-	}
-	if !found {
-		t.Fatalf("no blocking diff_incomplete gap: %+v", report.Gaps)
+			report, err := f.reg.report(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !report.diffIncomplete {
+				t.Fatalf("the shortfall was not recorded: %+v", report.Degraded)
+			}
+			if report.Verdict != tc.want || report.Passed {
+				t.Fatalf("verdict = %q passed = %v, want %q and not passed; gaps %+v",
+					report.Verdict, report.Passed, tc.want, report.Gaps)
+			}
+			if (report.BlockingCount() > 0) != tc.blocked {
+				t.Fatalf("blocking = %d, want blocked=%v: %+v", report.BlockingCount(), tc.blocked, report.Gaps)
+			}
+			for _, g := range report.Gaps {
+				if g.Type == "diff_incomplete" {
+					t.Fatalf("an incomplete diff became a gap: %+v", g)
+				}
+			}
+			joined := strings.Join(report.Degraded, "\n")
+			if !strings.Contains(joined, "rendered ") || !strings.Contains(joined, " of ") {
+				t.Fatalf("the reason does not carry rendered N of M: %q", report.Degraded)
+			}
+		})
 	}
 }

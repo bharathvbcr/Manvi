@@ -53,6 +53,11 @@ type Report struct {
 	// tell — this is the "a check that could not run must never look like one
 	// that ran and passed" rule, in report form.
 	Degraded []string `json:"degraded,omitempty"`
+	// Verdict is failed when a gap blocks, degraded when nothing blocks but the
+	// diff the gates read did not cover the whole change, and passed otherwise.
+	// Passed is true only for the last.
+	Verdict        string `json:"verdict"`
+	diffIncomplete bool
 }
 
 // BlockingCount is how many gaps stop the task.
@@ -98,28 +103,12 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	// folded into a pass: the gates below read this diff, so what is missing
 	// from it is missing from them.
 	report.Degraded = append(report.Degraded, diffNotes...)
-	if len(diffNotes) > 0 {
-		// Degraded alone reads as a pass: report.Passed is decided by blocking
-		// gaps. A diff that could not cover the whole tree is one the secret
-		// scan, the stub check and the scope check ran over only in part, so
-		// the report cannot say the change was verified.
-		gap := Gap{
-			ID:       fmt.Sprintf("GAP-%s-DIFF-INCOMPLETE", task.ID),
-			Type:     "diff_incomplete",
-			Severity: "high",
-			Blocking: true,
-			Detail: "the working-tree diff does not cover the whole change, so the gates read only part of it: " +
-				strings.Join(diffNotes, " | "),
-		}
-		report.Gaps = append(report.Gaps, gap)
-		report.NextActions = append(report.NextActions, NextAction{
-			GapID:    gap.ID,
-			Category: "fix_environment",
-			Blocking: true,
-			Action: "Make every changed file readable and within the diff caps (commit, split, or ignore what is not part " +
-				"of the change), then verify again.",
-		})
-	}
+	// An incomplete diff is a check that could not see everything. It is
+	// neither a pass nor a failure: the verdict is degraded, with the reasons
+	// (each carrying how many files were covered) in Degraded. Making it a
+	// blocking gap instead would send any change past the untracked-file cap
+	// back for repair forever, with nothing the agent could repair.
+	report.diffIncomplete = len(diffNotes) > 0
 
 	// The union, not the plan alone. This asks "was this file in scope", and a
 	// path an executor argued into its own scope is in scope — the fact that it
@@ -208,7 +197,15 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 		})
 	}
 
-	report.Passed = report.BlockingCount() == 0
+	report.Passed = report.BlockingCount() == 0 && !report.diffIncomplete
+	switch {
+	case report.BlockingCount() > 0:
+		report.Verdict = VerdictFailed
+	case report.diffIncomplete:
+		report.Verdict = VerdictDegraded
+	default:
+		report.Verdict = VerdictPassed
+	}
 	return report, nil
 }
 
@@ -406,15 +403,15 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	}
 	if len(failedFiles) > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"untracked_diff: %d untracked file(s) could not be rendered and are not in this diff: %s; "+
+			"untracked_diff: rendered %d of %d untracked file(s); %d could not be rendered and are not in this diff: %s; "+
 				"the gates that read it did not see them",
-			len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
+			len(renders)-len(failedFiles), len(paths), len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"untracked_diff: the %d-byte capture budget ran out with %d untracked file(s) still "+
+			"untracked_diff: the %d-byte capture budget ran out; rendered %d of %d untracked file(s), %d still "+
 				"unrendered; they are not in this diff and the gates did not see them",
-			maxGitCaptureBytes, unrendered))
+			maxGitCaptureBytes, len(renders)-len(failedFiles), len(paths), unrendered))
 	}
 	diff := b.String()
 	if quoted := quotedHeaderPaths(diff); len(quoted) > 0 {
