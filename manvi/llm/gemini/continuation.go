@@ -54,17 +54,33 @@ func inputContent(block llm.ContentBlock) (wireContent, error) {
 	}
 }
 
+// continuationEnvelope is what the continuation reads from a frame. It is an
+// alias of an unnamed struct, as wireEvent's parts are, because a frame that
+// fails this decode is refused with json's own message, which spells this type
+// out; see wireEvent.
+type continuationEnvelope = struct {
+	Index       *int                       `json:"index"`
+	Step        map[string]json.RawMessage `json:"step"`
+	Interaction *continuationSnapshot      `json:"interaction"`
+}
+
+type continuationSnapshot = struct {
+	Steps []json.RawMessage `json:"steps"`
+}
+
+// observe decodes the envelope from the frame's bytes and retains what it
+// carries. It is the path for a frame decodeFrame refused.
 func (c *continuation) observe(kind string, raw []byte, ev wireEvent, calls map[int]*callAccumulator) error {
-	var envelope struct {
-		Index       *int                       `json:"index"`
-		Step        map[string]json.RawMessage `json:"step"`
-		Interaction *struct {
-			Steps []json.RawMessage `json:"steps"`
-		} `json:"interaction"`
-	}
+	var envelope continuationEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return err
 	}
+	return c.observeEnvelope(kind, &envelope, ev, calls)
+}
+
+// observeEnvelope retains what one frame carries, from an envelope already
+// decoded.
+func (c *continuation) observeEnvelope(kind string, envelope *continuationEnvelope, ev wireEvent, calls map[int]*callAccumulator) error {
 	if envelope.Interaction != nil && len(envelope.Interaction.Steps) > 0 {
 		c.complete = envelope.Interaction.Steps
 		for _, step := range c.complete {

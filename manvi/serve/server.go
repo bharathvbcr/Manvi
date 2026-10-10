@@ -47,9 +47,13 @@ type Server struct {
 	out *bufio.Writer
 
 	// chat holds per-conversation compaction ledgers and calibrators. It is
-	// the only state that survives between requests, and it is what makes
-	// compaction one-way rather than recomputed each step.
-	chat      sessionTable
+	// what makes compaction one-way rather than recomputed each step.
+	chat sessionTable
+	// probes keeps the local adapters capability.probe built, so a repeated
+	// probe does not repeat its round trips. Unlike chat it is a cache: an
+	// entry only ever repeats an answer the server gave, and never one older
+	// than the discovery TTL. See probeAdapters.
+	probes    probeAdapters
 	router    *Router
 	configErr error
 }

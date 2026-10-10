@@ -157,7 +157,23 @@ under **Unreleased** in the same commit as the code.
     per matching line;
   - a new session reuses the code graph already loaded unless the file changed;
   - the TUI lays out only the entries that changed, rather than the whole
-    transcript, at most once per width per frame.
+    transcript, at most once per width per frame;
+  - hosted providers keep up to 64 idle connections per host instead of
+    `net/http`'s default of two, so a fan-out over HTTP/1.1 stops paying a
+    fresh TLS handshake per sub-agent per step (a replaced
+    `http.DefaultTransport` is still used as it stands);
+  - a stream's 1 MiB read buffer is recycled once the stream ends rather than
+    allocated per model call;
+  - the Gemini adapter decodes each streamed event once instead of twice.
+- **`manvi serve`: `capability.probe` reuses a successful answer** for a repeat
+  probe with identical parameters for up to the local adapter's discovery TTL
+  (60 s — the freshness the harness already accepts on its own request path).
+  A changed base URL or any other changed parameter probes afresh; failures and
+  declared-window fallbacks are never reused, and a "not served" answer from a
+  reused probe is re-asked of the server before it is returned, so a retry
+  after starting a server or pulling a model still sees the change. A repeated
+  probe went from two to four HTTP round trips on the sidecar's dispatch loop
+  to none.
 - **The TUI draws at most 2,000 lines or 64 KiB of a tool result**, followed by
   one line saying how much was not drawn. A multi-megabyte `read_file` or
   command output used to become tens of thousands of rows, rebuilt on every

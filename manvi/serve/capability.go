@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -139,12 +140,40 @@ func (s *Server) probe(ctx context.Context, raw json.RawMessage) (any, *Error) {
 		cfg.DiscoveryTimeout = time.Duration(p.TimeoutMS) * time.Millisecond
 	}
 
-	// The local adapter is built per probe rather than cached. A probe is one
-	// or two HTTP calls against a loopback server, and caching adapters keyed
-	// by config is how a host ends up reading a window discovered against a
-	// base URL the operator has since changed.
-	adapter := local.New(cfg, noCredential)
+	lease := s.probes.lease(cfg)
+	result, perr, keep := probeWith(ctx, lease.adapter, cfg, p)
+	if perr != nil && perr.Code == ErrNotServed && lease.hit {
+		// The listing this refusal was read from is up to a TTL old, and the
+		// one thing an operator does about "not served" is pull the model and
+		// probe again. Answering that second probe from the listing taken
+		// before the pull would refuse a model the server now serves, for as
+		// long as the entry lives — so a refusal from a reused adapter is
+		// asked again of a fresh one before it is believed.
+		s.probes.settle(cfg, lease, false)
+		lease = s.probes.fresh(cfg)
+		result, perr, keep = probeWith(ctx, lease.adapter, cfg, p)
+	}
+	s.probes.settle(cfg, lease, keep)
+	if perr != nil {
+		return nil, perr
+	}
+	return result, nil
+}
 
+// probeWith runs one probe against adapter, and reports whether the adapter
+// is worth keeping for the next probe of the same configuration.
+//
+// Only an adapter whose every answer came from the server is kept. The
+// adapter caches failures and fallbacks for its TTL on purpose — on the
+// harness path that stops a fan-out from re-dialling a dead server sixty-four
+// times — but a host retrying a probe is asking for a fresh look, and the
+// errors below promise one: unreachable is retryable because "start the
+// server and probe again" is the fix. A kept adapter would answer that retry
+// with the failure it cached a moment ago. The same holds for a window that
+// fell back to the declaration while the server was being asked: a probe
+// that timed out mid-load must not pin "declared" onto the next minute of
+// answers.
+func probeWith(ctx context.Context, adapter *local.Adapter, cfg local.Config, p ProbeParams) (ProbeResult, *Error, bool) {
 	// Discovery first, so "the server does not serve this model" is reported
 	// as itself rather than as a declared-window fallback that then fails at
 	// request time.
@@ -153,28 +182,32 @@ func (s *Server) probe(ctx context.Context, raw json.RawMessage) (any, *Error) {
 		if err != nil {
 			var undiscoverable *local.ErrUndiscoverable
 			if errors.As(err, &undiscoverable) {
-				return nil, &Error{
+				return ProbeResult{}, &Error{
 					Code:    ErrUnreachable,
 					Message: undiscoverable.Error(),
 					// The server may simply not be up yet — a host that pulls a
 					// model or starts Ollama and retries will succeed.
 					Retryable: true,
-				}
+				}, false
 			}
-			return nil, &Error{Code: ErrUnreachable, Message: err.Error(), Retryable: true}
+			return ProbeResult{}, &Error{Code: ErrUnreachable, Message: err.Error(), Retryable: true}, false
 		}
 		if !slices.Contains(served, p.Model) {
-			return nil, &Error{
+			return ProbeResult{}, &Error{
 				Code: ErrNotServed,
 				Message: (&local.ErrNotServed{
 					BaseURL: cfg.BaseURL, Model: p.Model, Served: served,
 				}).Error(),
-			}
+			}, false
 		}
 	}
 
 	dims := adapter.Dimensions(ctx, p.Model)
 	cap, _ := adapter.Capability(p.Model)
+	// A declared window is the server's answer only when the operator asked
+	// for the declaration; otherwise it is what a probe that got nothing back
+	// falls to, and see above for why that is not kept.
+	fellBack := dims.Source == local.SourceDeclared && !p.TrustDeclared && !p.AssumeModelServed
 
 	return ProbeResult{
 		Model:             p.Model,
@@ -188,7 +221,147 @@ func (s *Server) probe(ctx context.Context, raw json.RawMessage) (any, *Error) {
 		SupportsVision:    dims.SupportsVision,
 		SupportsReasoning: dims.SupportsReasoning,
 		Embedding:         dims.Embedding(),
-	}, nil
+	}, nil, !fellBack
+}
+
+// maxProbeAdapters bounds the adapters kept between probes. A host probes the
+// handful of servers and settings its operator has configured; sixteen is far
+// past that, and the bound is what keeps a host that probes a fresh base URL
+// per call from growing this without limit.
+const maxProbeAdapters = 16
+
+// probeAdapters keeps the local adapter a probe built, so the next probe of
+// the same configuration reuses what the adapter already discovered.
+//
+// Building one per probe threw away exactly the caching the adapter exists to
+// do: every probe re-fetched the model listing and re-ran the dimension probe
+// chain, serially, on the one dispatch loop every other call on this sidecar
+// waits behind. A host that probes on the path to each request it assembles
+// paid those round trips on every request.
+//
+// The objection the per-probe adapter answered is a stale answer: a window
+// discovered against a base URL the operator has since changed. Two things
+// keep that out. The key is the whole local.Config, so a changed base URL —
+// or any other changed setting, since every field changes what the adapter
+// does — is a different entry rather than an old one. And an entry lives for
+// the adapter's DiscoveryTTL, counted from before its first request, so a
+// reused answer is never older than the freshness the harness already accepts
+// for the same server on its own request path (see local.DefaultDiscoveryTTL).
+// What that leaves is a change made behind an unchanged URL — a server
+// restarted with a larger window — which a probe reports within the TTL
+// rather than at once, exactly as the harness itself would.
+//
+// Failures and fallbacks are not kept at all; see probeWith. That includes a
+// server that publishes no window, so it still pays the full chain per probe:
+// its "declared" cannot be told apart from a probe that timed out.
+type probeAdapters struct {
+	mu      sync.Mutex
+	entries map[string]probeLease
+	// now is injected for tests, so expiry is asserted rather than slept
+	// through.
+	now func() time.Time
+}
+
+// probeLease is one adapter handed to one probe.
+type probeLease struct {
+	adapter *local.Adapter
+	// expires is fixed when the adapter is built, before its first request,
+	// so an entry can never outlive the discovery it would be reused for.
+	expires time.Time
+	// hit records that the adapter was reused rather than built.
+	hit bool
+}
+
+// probeKey is the identity of a configuration. JSON rather than the struct
+// itself because Config holds pointers and a slice, so two equal settings are
+// not ==, and because encoding every exported field means a field added to
+// Config later is part of the key without anyone remembering to add it.
+func probeKey(cfg local.Config) (string, bool) {
+	key, err := json.Marshal(cfg)
+	if err != nil {
+		// Only a non-finite float gets here. Such a config is never kept,
+		// which costs it the old per-probe behaviour and nothing else.
+		return "", false
+	}
+	return string(key), true
+}
+
+func (c *probeAdapters) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// lease returns the live adapter kept for cfg, or a fresh one.
+func (c *probeAdapters) lease(cfg local.Config) probeLease {
+	if key, ok := probeKey(cfg); ok {
+		c.mu.Lock()
+		entry, found := c.entries[key]
+		if found && c.clock().Before(entry.expires) {
+			c.mu.Unlock()
+			entry.hit = true
+			return entry
+		}
+		if found {
+			delete(c.entries, key)
+		}
+		c.mu.Unlock()
+	}
+	return c.fresh(cfg)
+}
+
+// fresh builds an adapter without consulting what is kept.
+func (c *probeAdapters) fresh(cfg local.Config) probeLease {
+	ttl := cfg.DiscoveryTTL
+	if ttl <= 0 {
+		ttl = local.DefaultDiscoveryTTL
+	}
+	return probeLease{adapter: local.New(cfg, noCredential), expires: c.clock().Add(ttl)}
+}
+
+// settle keeps lease for the next probe of cfg, or drops it.
+func (c *probeAdapters) settle(cfg local.Config, lease probeLease, keep bool) {
+	key, ok := probeKey(cfg)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !keep {
+		// Only this adapter: anything else under the key is a newer answer.
+		if entry, found := c.entries[key]; found && entry.adapter == lease.adapter {
+			delete(c.entries, key)
+		}
+		return
+	}
+	if lease.hit {
+		return
+	}
+	if c.entries == nil {
+		c.entries = map[string]probeLease{}
+	}
+	now := c.clock()
+	if _, replacing := c.entries[key]; !replacing && len(c.entries) >= maxProbeAdapters {
+		// Expired entries go first because they are already worthless; only
+		// if that is not enough does the one closest to expiry go.
+		for k, entry := range c.entries {
+			if !now.Before(entry.expires) {
+				delete(c.entries, k)
+			}
+		}
+		for len(c.entries) >= maxProbeAdapters {
+			oldestKey, oldest := "", time.Time{}
+			for k, entry := range c.entries {
+				if oldestKey == "" || entry.expires.Before(oldest) {
+					oldestKey, oldest = k, entry.expires
+				}
+			}
+			delete(c.entries, oldestKey)
+		}
+	}
+	lease.hit = false
+	c.entries[key] = lease
 }
 
 // noCredential is the resolver for a server that needs none.
