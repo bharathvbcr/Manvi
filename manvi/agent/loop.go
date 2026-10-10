@@ -457,6 +457,7 @@ func mergeDecoding(into, from llm.DecodingReport) llm.DecodingReport {
 	}
 	into.ReasoningReclassified = into.ReasoningReclassified || from.ReasoningReclassified
 	into.PrefillDisproved = into.PrefillDisproved || from.PrefillDisproved
+	into.ArgumentsRepaired = into.ArgumentsRepaired || from.ArgumentsRepaired
 	return into
 }
 
@@ -932,6 +933,7 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 			FallbackFormat:        response.Decoding.FallbackFormat,
 			ReasoningReclassified: response.Decoding.ReasoningReclassified,
 			PrefillDisproved:      response.Decoding.PrefillDisproved,
+			ArgumentsRepaired:     response.Decoding.ArgumentsRepaired,
 		}); err != nil {
 			return err
 		}

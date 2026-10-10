@@ -264,6 +264,33 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- Provider streams that end without their terminal event no longer settle as
+  success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no
+  `message_stop`) and gemini (no `interaction.completed` or `done`) now fail with
+  a retryable `transport.TruncatedStream` error instead of running half-received
+  tool calls as `{}` and recording zero usage; the budget ledger settles such an
+  attempt at the prompt usage the stream reported or at its worst-case
+  reservation. A gemini interaction that ends `failed` or `cancelled` is an error
+  naming the status, and a tool call that was never closed (`content_block_stop`,
+  `step.stop`) and carries no arguments is never surfaced as `{}`. A final
+  `data: [DONE]` with no trailing blank line is a clean end (`SSE.Terminated`).
+- Every provider client now bounds the wait for response headers
+  (`Client.ResponseHeaderTimeout`: 2 minutes hosted, the 15-minute first-token
+  budget on loopback; `openaicompat.Options.HeaderTimeout`,
+  `SetResponseHeaderTimeout` on anthropic and gemini). It is a time-to-first-byte
+  bound and never cuts off a stream already flowing; a timeout is a typed,
+  retryable `transport.ErrHeaderTimeout`. The stream preflight that gemini had is
+  now `transport.PreflightStream`, bounded by the first-token budget, and
+  anthropic and openaicompat use it: an `overloaded_error`/`api_error` (or a
+  transient openaicompat `error` chunk) that arrives before any content is
+  retried like the 529/5xx it stands for, never after content has been emitted.
+- openaicompat no longer rewrites string arguments (`,]` and `,}` inside string
+  values were stripped by the JSON repair) and no longer runs prose as tool calls:
+  text-channel tool-call recovery is `Options.TextToolFallback`, on for `local`
+  and off for hosted xAI, and a fenced-JSON call is recovered only when nothing
+  follows it. A call whose arguments were rewritten is reported as
+  `Decoding.ArgumentsRepaired`.
+
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a
   session that obeys only the context it is handed ignored `Stop` until the

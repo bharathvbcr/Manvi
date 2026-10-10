@@ -511,20 +511,36 @@ func typedParam(value, declared string) json.RawMessage {
 // accepting anything in the tagged path, so the same call was recovered or
 // dropped depending on how the model happened to wrap it; the offered set is
 // now the single authority for both spellings.
+//
+// A fence is also only a call when nothing follows it. A model that calls a
+// tool through the text channel ends its turn with the call; a model that
+// explains the shape of a call goes on to explain it, and the fence it showed is
+// an example. Both are the same bytes, so position is the only evidence there
+// is, and the rule fails closed: a fence followed by prose, or by a fence that
+// is not itself a call, makes the whole message prose and recovers nothing. The
+// <tag> form, which no explanation produces by accident, has no such rule.
 func extractFencedCalls(data string, tools []llm.ToolSchema) (string, []llm.ToolCallBlock) {
 	var calls []llm.ToolCallBlock
 	var clean strings.Builder
 	rest := data
-	idx := 0
+	// proseAfterCall is set once anything other than another recovered call
+	// follows a recovered call.
+	proseAfterCall := false
 	for {
 		start := strings.Index(rest, "```")
 		if start < 0 {
+			if len(calls) > 0 && strings.TrimSpace(rest) != "" {
+				proseAfterCall = true
+			}
 			clean.WriteString(rest)
 			break
 		}
 		body := rest[start+3:]
 		end := strings.Index(body, "```")
 		if end < 0 {
+			if len(calls) > 0 {
+				proseAfterCall = true
+			}
 			clean.WriteString(rest)
 			break
 		}
@@ -533,6 +549,9 @@ func extractFencedCalls(data string, tools []llm.ToolSchema) (string, []llm.Tool
 		inner = strings.TrimPrefix(inner, "json")
 		inner = strings.TrimSpace(inner)
 
+		if len(calls) > 0 && strings.TrimSpace(rest[:start]) != "" {
+			proseAfterCall = true
+		}
 		if name, args, ok := parseJSONCall(inner); ok && schemaOffers(tools, name) {
 			clean.WriteString(rest[:start])
 			calls = append(calls, llm.ToolCallBlock{
@@ -540,13 +559,15 @@ func extractFencedCalls(data string, tools []llm.ToolSchema) (string, []llm.Tool
 				Name:      name,
 				Arguments: args,
 			})
-			idx++
 		} else {
+			if len(calls) > 0 {
+				proseAfterCall = true
+			}
 			clean.WriteString(rest[:start+3+end+3])
 		}
 		rest = after
 	}
-	if len(calls) == 0 {
+	if len(calls) == 0 || proseAfterCall {
 		return data, nil
 	}
 	return strings.TrimSpace(clean.String()), calls

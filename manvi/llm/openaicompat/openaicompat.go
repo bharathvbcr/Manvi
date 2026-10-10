@@ -90,6 +90,20 @@ type Options struct {
 	// default: the stream detects it and corrects the settled message, and this
 	// only makes the live view right from the first byte as well.
 	AssumeReasoningPrefill bool
+	// TextToolFallback recovers tool calls a server left in the message text
+	// (<tool_call> tags, or a fenced JSON object naming an offered tool) when
+	// it delivered none in tool_calls. It is for a local server that is not
+	// configured with a tool-call parser for the model it serves, and it is off
+	// by default: a hosted provider parses tool calls itself, so anything in
+	// its text that looks like a call is the model quoting an example, and
+	// running it executes prose. Every recovery is reported in
+	// Response.Decoding.FallbackFormat.
+	TextToolFallback bool
+	// HeaderTimeout bounds the wait for response headers: zero keeps the
+	// transport's default for the endpoint (see transport.Client), negative
+	// disables the bound. It is a time-to-first-byte limit and never cuts off a
+	// stream that is already flowing.
+	HeaderTimeout time.Duration
 
 	// stallClock drives the stall watchdog. Unexported because production has
 	// exactly one clock and a nil value is it; the seam exists so a test can
@@ -161,10 +175,14 @@ func New(opts Options) *Adapter {
 	if opts.StallTimeout == 0 {
 		opts.StallTimeout = DefaultStallTimeout
 	}
-	return &Adapter{
-		opts:   opts,
-		client: transport.New(opts.Name, opts.BaseURL, opts.Header),
+	client := transport.New(opts.Name, opts.BaseURL, opts.Header)
+	switch {
+	case opts.HeaderTimeout > 0:
+		client.ResponseHeaderTimeout = opts.HeaderTimeout
+	case opts.HeaderTimeout < 0:
+		client.ResponseHeaderTimeout = 0
 	}
+	return &Adapter{opts: opts, client: client}
 }
 
 // Name identifies the adapter.
@@ -249,11 +267,14 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		return nil, err
 	}
-	resp, err := a.client.Post(ctx, ChatCompletionsPath, body)
+	// PostStream rather than Post so an error chunk that arrives before any
+	// output is retried like the status it stands for; see preflight.
+	wait := transport.FirstTokenBudget(a.opts.StallTimeout)
+	respBody, err := a.client.PostStream(ctx, ChatCompletionsPath, body, preflight(wait, a.opts.Name))
 	if err != nil {
 		return nil, err
 	}
-	return newStream(resp.Body, req.Model, req.Tools, a.opts, a.appliedMaxTokens(req)), nil
+	return newStream(respBody, req.Model, req.Tools, a.opts, a.appliedMaxTokens(req)), nil
 }
 
 // appliedMaxTokens is the bound this adapter will actually send. One owner, so
