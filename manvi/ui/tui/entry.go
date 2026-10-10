@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -182,9 +183,47 @@ func (e *Entry) Summary(th Theme, width int) render.Line {
 		line = line.Append("["+ev.Agent+"] ", th.Subtle())
 	}
 	line = line.Append(head+" ", st)
-	body := strings.ReplaceAll(strings.TrimSpace(firstLine(e.text())), "\t", " ")
-	line = line.Append(body, th.Muted())
+	line = line.Append(summaryBody(e.text(), width), th.Muted())
 	return line.Truncate(width)
+}
+
+// summaryBody is the folded entry's text: its first line, trimmed, tabs as
+// spaces, marked when more follows.
+//
+// Only as much is built as a summary width columns wide can show. Built whole,
+// a folded multi-megabyte result copied its entire first line — and for a
+// single-line result that is all of it — to keep a few dozen columns. Cutting
+// early is exact because a width is a sum over runes, so once a prefix is
+// wider than the summary the rest cannot change what Truncate keeps; the one
+// thing beyond the cut that can is trailing whitespace the trim would have
+// removed, so the long form is kept whenever only whitespace follows.
+func summaryBody(text string, width int) string {
+	whole := func() string { return strings.ReplaceAll(strings.TrimSpace(firstLine(text)), "\t", " ") }
+	line, more := text, false
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		line, more = text[:i], true
+	}
+	line = strings.TrimLeftFunc(line, unicode.IsSpace)
+	used := 0
+	for i, r := range line {
+		if r == '\t' {
+			r = ' '
+		}
+		if used += render.RuneWidth(r); used <= width {
+			continue
+		}
+		end := i + utf8.RuneLen(r)
+		if r == utf8.RuneError {
+			_, end = utf8.DecodeRuneInString(line[i:])
+			end += i
+		}
+		rest := line[end:]
+		if !more && strings.IndexFunc(rest, func(r rune) bool { return !unicode.IsSpace(r) }) < 0 {
+			return whole()
+		}
+		return strings.ReplaceAll(line[:end], "\t", " ")
+	}
+	return whole()
 }
 
 func firstLine(s string) string {
@@ -260,6 +299,16 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 			add(l)
 		}
 	}
+	// addCapped is addWrapped for text of unbounded length — an error carrying
+	// a command's whole stderr, a harness message quoting a payload — under the
+	// cap tool results and reasoning take; see capRendered.
+	addCapped := func(text string, s render.Style) {
+		shown, rest := capRendered(text)
+		addWrapped(shown, s)
+		if rest != "" {
+			addWrapped(omittedMarker(rest), th.Subtle())
+		}
+	}
 
 	switch ev.Kind {
 	case ui.KindSessionStart:
@@ -311,7 +360,7 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		// is invisible in a copied transcript, and a copied transcript is
 		// exactly where a harness message attributed to the operator does its
 		// damage.
-		addWrapped("harness: "+ev.Text, th.Status(StatusWarn))
+		addCapped("harness: "+ev.Text, th.Status(StatusWarn))
 
 	case ui.KindText:
 		if e.whole {
@@ -323,11 +372,7 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 	case ui.KindReasoning:
 		// Capped as a tool result is, and for the same reason: a model's
 		// thinking can run to megabytes, and unfolding it rendered every byte.
-		shown, rest := capRendered(e.text())
-		addWrapped(shown, th.Subtle().With(render.Italic))
-		if rest != "" {
-			addWrapped(omittedMarker(rest), th.Subtle())
-		}
+		addCapped(e.text(), th.Subtle().With(render.Italic))
 
 	case ui.KindToolStart:
 		head := render.Styled(ev.Tool, th.Status(StatusInfo).With(render.Bold))
@@ -379,10 +424,10 @@ func (e *Entry) build(th Theme, width int) []render.Line {
 		add(render.Styled(ev.Text, th.Strong()))
 
 	case ui.KindError:
-		addWrapped(ev.Text, th.Status(StatusBlock))
+		addCapped(ev.Text, th.Status(StatusBlock))
 
 	default:
-		addWrapped(e.text(), th.Muted())
+		addCapped(e.text(), th.Muted())
 	}
 
 	// The qualification block. It is appended for every kind rather than only

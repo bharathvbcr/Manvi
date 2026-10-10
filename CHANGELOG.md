@@ -181,13 +181,16 @@ under **Unreleased** in the same commit as the code.
   after starting a server or pulling a model still sees the change. A repeated
   probe went from two to four HTTP round trips on the sidecar's dispatch loop
   to none.
-- **The TUI draws at most 2,000 lines or 64 KiB of a tool result**, followed by
-  one line saying how much was not drawn. A multi-megabyte `read_file` or
+- **The TUI draws at most 2,000 lines or 64 KiB of a tool result, a model's
+  reasoning, an error or a harness message**, followed by one line saying how
+  much was not drawn. A multi-megabyte `read_file` or
   command output used to become tens of thousands of rows, rebuilt on every
   resize, fold and theme switch. The entry keeps the whole result: search
   still finds text past the cut.
 ### Fixed
 
+- Wrapping text no longer hangs when a character is wider than the line
+  (a double-width character at width 1); it is placed on a line of its own.
 - **The TUI saves every turn of a session, not only the first.** Each save
   built a new session store, and a store refuses to replace a saved
   generation it has no record of writing — so from the second turn on every
