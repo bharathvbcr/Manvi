@@ -841,6 +841,35 @@ Deletion is soft, preserving history. Deleted IDs cannot be reused by
 execution status, verification evidence and human acceptance are not represented
 by changing this board status; their separate models remain to be implemented.
 
+## Suggesting what to work on next
+
+`work.tasks.suggest` (host only; nothing offers it to an agent) reads the open
+board and ranks the tasks worth starting. It never writes, and it makes no model
+call: the order is a fixed point table, so the same board gives the same list,
+each point is returned as a named signal, and the one-line `reason` is the three
+largest of them. Params are all optional: `request_id` (echoed back), `limit`
+(default 5, at most 20), `max_priority` (0 urgent to 3 low; keep that priority or
+more urgent) and `repository_id`.
+
+Points: priority urgent 100 / high 60 / normal 25 / low 0; severity critical 40,
+high 25, medium 10; due date overdue 50 plus a day each up to 14, within two
+days 35, within a week 20; one point per nine idle days up to 10; 12 for each
+open task it blocks (a link `{blocks, X}` held on a task means that task blocks
+X), up to 36; 10 when already `ready`; 8 when a repository gap scan raised it;
+a newest stored verification that failed or degraded adds 15 and one that
+passed takes 25 off. Ties break on priority, then the earlier due date, then id.
+
+Only `inbox`, `backlog` and `ready` tasks are suggested. Done and archived
+cards are not read; `in_progress` and `review` tasks are counted, not suggested;
+a task that duplicates an open task or is blocked by one is left out, listed
+under `blocked` with its blockers, and counted. A card whose links could not be
+read is treated as blocked rather than guessed at.
+
+Reads are bounded: ten pages of 200 per status column, 150 link reads for cards
+the list returned without links, and verification records for the best 12
+candidates only. `board.complete`, `board.unhydrated` and `verification` carry
+those numbers, so a capped read is never reported as the whole board.
+
 ## Bounded reads and durable events
 
 - Pages default to 100 rows, accept 1–200, and stop fetching before a 2 MiB response

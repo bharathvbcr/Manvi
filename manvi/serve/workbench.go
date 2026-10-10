@@ -113,6 +113,15 @@ func (m WorkbenchModule) Configure(r *Router) error {
 			return err
 		}
 	}
+	if err := r.Register(OpTasksSuggest, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+		result, err := Suggest(ctx, m.Client, raw)
+		if err != nil {
+			return nil, workbenchHostError("task suggestion", err)
+		}
+		return result, nil
+	}); err != nil {
+		return err
+	}
 	if m.Scan != nil {
 		for op, handler := range map[string]func(context.Context, json.RawMessage) (any, *Error){
 			OpScanGaps:   m.Scan.Start,
