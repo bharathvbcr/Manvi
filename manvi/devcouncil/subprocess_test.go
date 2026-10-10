@@ -49,13 +49,34 @@ func alive(t *testing.T, path string) bool {
 	}
 	// A reaped group is gone within moments; give the kill time to land.
 	for range 50 {
-		if syscall.Kill(pid, 0) != nil {
+		if syscall.Kill(pid, 0) != nil || exited(pid) {
 			return false
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	return true
+}
+
+// exited reports a process that has terminated but not been reaped. Signal 0
+// still succeeds on a zombie, and a backgrounded descendant is reparented to
+// PID 1 when its parent exits — so under an init that does not reap orphans,
+// as in some containers, a descendant the harness killed stays a zombie for
+// good and reads as alive. Where /proc is absent the state is unknown and the
+// signal alone decides.
+func exited(pid int) bool {
+	// #nosec G304 -- a fixed procfs path built from a pid.
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// The state follows the parenthesised command name, which may itself
+	// contain spaces or parentheses, so it is found from the last ')'.
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 || end+2 >= len(stat) {
+		return false
+	}
+	return stat[end+2] == 'Z' || stat[end+2] == 'X'
 }
 
 // TestAVerifierCannotLeaveADescendantBehind: a child that exits cleanly after

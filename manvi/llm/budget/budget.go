@@ -277,12 +277,16 @@ func load(path string) (Snapshot, error) {
 	return s, nil
 }
 
+// createTemp is os.CreateTemp, replaceable by a test that needs a save to fail
+// whoever runs it: a read-only directory does not stop root.
+var createTemp = os.CreateTemp
+
 func save(path string, s Snapshot) error {
 	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".budget-*")
+	f, err := createTemp(filepath.Dir(path), ".budget-*")
 	if err != nil {
 		return err
 	}
