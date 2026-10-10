@@ -689,7 +689,7 @@ func TestMidFlightFailureSettlesTheStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
-		fmt.Fprint(w, "event: interaction.created\ndata: {\"event_type\":\"interaction.created\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: interaction.created\ndata: {\"event_type\":\"interaction.created\"}\n\n")
 		flusher.Flush()
 		panic(http.ErrAbortHandler)
 	}))

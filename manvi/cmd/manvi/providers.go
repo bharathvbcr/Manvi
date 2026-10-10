@@ -227,7 +227,7 @@ func resolveLocalEndpoint(reg *flags.Registry, declared string, resolve func() (
 		Credential:         resolve,
 	})
 	if note := res.Note(); note != "" && notes != nil {
-		fmt.Fprintf(notes, "manvi: %s\n", note)
+		_, _ = fmt.Fprintf(notes, "manvi: %s\n", note)
 	}
 	return res.BaseURL
 }
@@ -638,8 +638,8 @@ func stallTimeoutSetting(reg *flags.Registry) (time.Duration, error) {
 // bug report.
 func showProviders(out io.Writer, reg *flags.Registry) error {
 	resolver := credentials.NewResolver()
-	fmt.Fprintln(out, "providers")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "providers")
+	_, _ = fmt.Fprintln(out)
 	for _, status := range resolver.Statuses() {
 		// The local provider's readiness is not a credential question. Its
 		// servers are on loopback and ignore authorisation, so the credential
@@ -647,16 +647,16 @@ func showProviders(out io.Writer, reg *flags.Registry) error {
 		// one report an operator most needed to be right, since local is the
 		// provider they are least likely to have configured on purpose.
 		if status.Provider == local.Name {
-			fmt.Fprintf(out, "  %-12s %s\n", status.Provider, describeLocalReadiness(reg))
+			_, _ = fmt.Fprintf(out, "  %-12s %s\n", status.Provider, describeLocalReadiness(reg))
 			continue
 		}
 		if status.Present {
-			fmt.Fprintf(out, "  %-12s ready — credential from %s (%d chars)\n",
+			_, _ = fmt.Fprintf(out, "  %-12s ready — credential from %s (%d chars)\n",
 				status.Provider, status.Source, status.Length)
 			continue
 		}
-		fmt.Fprintf(out, "  %-12s unavailable\n", status.Provider)
-		fmt.Fprintf(out, "               %s\n", status.Detail)
+		_, _ = fmt.Fprintf(out, "  %-12s unavailable\n", status.Provider)
+		_, _ = fmt.Fprintf(out, "               %s\n", status.Detail)
 	}
 	return nil
 }

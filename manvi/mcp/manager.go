@@ -98,11 +98,11 @@ type TrustEntry struct {
 func Fingerprint(cfg ServerConfig) string {
 	h := sha256.New()
 	write := func(label, value string) {
-		fmt.Fprintf(h, "%s\x00%d\x00%s\x00", label, len(value), value)
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00", label, len(value), value)
 	}
 	write("name", cfg.Name)
 	write("command", cfg.Command)
-	fmt.Fprintf(h, "args\x00%d\x00", len(cfg.Args))
+	_, _ = fmt.Fprintf(h, "args\x00%d\x00", len(cfg.Args))
 	for _, a := range cfg.Args {
 		write("arg", a)
 	}
@@ -111,13 +111,13 @@ func Fingerprint(cfg ServerConfig) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fmt.Fprintf(h, "env\x00%d\x00", len(keys))
+	_, _ = fmt.Fprintf(h, "env\x00%d\x00", len(keys))
 	for _, k := range keys {
 		write("env."+k, cfg.Env[k])
 	}
 	pass := append([]string(nil), cfg.EnvPassthrough...)
 	sort.Strings(pass)
-	fmt.Fprintf(h, "passthrough\x00%d\x00", len(pass))
+	_, _ = fmt.Fprintf(h, "passthrough\x00%d\x00", len(pass))
 	for _, p := range pass {
 		write("passthrough", p)
 	}

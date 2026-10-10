@@ -27,11 +27,11 @@ func lease(out io.Writer, args []string) error {
 			return err
 		}
 		if len(leases) == 0 {
-			fmt.Fprintln(out, "no active leases")
+			_, _ = fmt.Fprintln(out, "no active leases")
 			return nil
 		}
 		for _, l := range leases {
-			fmt.Fprintf(out, "%-14s %-16s expires %s\n", l.TaskID, l.Owner, l.ExpiresAt)
+			_, _ = fmt.Fprintf(out, "%-14s %-16s expires %s\n", l.TaskID, l.Owner, l.ExpiresAt)
 		}
 		return nil
 
@@ -53,13 +53,13 @@ func lease(out io.Writer, args []string) error {
 		var conflict *store.Conflict
 		if errors.As(err, &conflict) {
 			// Contention is routable information, not a crash.
-			fmt.Fprintf(out, "held by %s — take another task (%s)\n", conflict.Holder, conflict.Code())
+			_, _ = fmt.Fprintf(out, "held by %s — take another task (%s)\n", conflict.Holder, conflict.Code())
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "acquired %s\ntoken %s\nexpires %s\n", l.TaskID, l.Token, l.ExpiresAt)
+		_, _ = fmt.Fprintf(out, "acquired %s\ntoken %s\nexpires %s\n", l.TaskID, l.Token, l.ExpiresAt)
 		return nil
 
 	case "release":
@@ -71,10 +71,10 @@ func lease(out io.Writer, args []string) error {
 			return err
 		}
 		if !released {
-			fmt.Fprintln(out, "nothing to release")
+			_, _ = fmt.Fprintln(out, "nothing to release")
 			return nil
 		}
-		fmt.Fprintln(out, "released")
+		_, _ = fmt.Fprintln(out, "released")
 		return nil
 	}
 	return fmt.Errorf("unknown lease subcommand %q", args[0])

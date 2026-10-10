@@ -21,21 +21,21 @@ import (
 // not established. A check that could not run is printed as such rather than
 // omitted, because an omitted check reads as a passing one.
 func doctor(out io.Writer, reg *flags.Registry) error {
-	fmt.Fprintln(out, "manvi doctor")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "manvi doctor")
+	_, _ = fmt.Fprintln(out)
 
 	// First, because every other line below describes the configuration of a
 	// binary this one names. A report that does not say which build produced it
 	// cannot be compared against another run's.
-	fmt.Fprintf(out, "  build           %s\n", currentBuild().Summary())
+	_, _ = fmt.Fprintf(out, "  build           %s\n", currentBuild().Summary())
 
 	posture, postureOrigin, err := reg.String(flags.HarnessPosture)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  posture         %s (%s)\n", posture, postureOrigin)
+	_, _ = fmt.Fprintf(out, "  posture         %s (%s)\n", posture, postureOrigin)
 	for _, line := range wrapNotice(flags.DescribePosture(posture).Notice, 60) {
-		fmt.Fprintf(out, "                  %s\n", line)
+		_, _ = fmt.Fprintf(out, "                  %s\n", line)
 	}
 
 	// The *effective* mode, resolved exactly as the gate resolves it. Printing
@@ -45,13 +45,13 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  file gate       %s (%s)\n", mode, origin)
+	_, _ = fmt.Fprintf(out, "  file gate       %s (%s)\n", mode, origin)
 
 	cmdMode, cmdOrigin, err := flags.EffectiveGateMode(reg, flags.PolicyCommandMode)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  command gate    %s (%s)\n", cmdMode, cmdOrigin)
+	_, _ = fmt.Fprintf(out, "  command gate    %s (%s)\n", cmdMode, cmdOrigin)
 
 	// Resolved, not raw, for the same reason the gate modes are: the yolo
 	// posture turns these off without moving the flag, and a doctor that read
@@ -60,11 +60,11 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  hard rules      %s (%s)\n", ui.OnOff(hard), hardOrigin)
+	_, _ = fmt.Fprintf(out, "  hard rules      %s (%s)\n", ui.OnOff(hard), hardOrigin)
 	if !hard {
-		fmt.Fprintln(out, "                  credential paths, restricted paths, git safety, and the")
-		fmt.Fprintln(out, "                  repository boundary are not enforced; writes can land")
-		fmt.Fprintln(out, "                  anywhere, and every decision is recorded as unchecked")
+		_, _ = fmt.Fprintln(out, "                  credential paths, restricted paths, git safety, and the")
+		_, _ = fmt.Fprintln(out, "                  repository boundary are not enforced; writes can land")
+		_, _ = fmt.Fprintln(out, "                  anywhere, and every decision is recorded as unchecked")
 	}
 
 	agentGrants, _, err := reg.Bool(flags.GrantsAgentEnabled)
@@ -75,7 +75,7 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  agent overrides %s (max %s)\n", ui.OnOff(agentGrants), ttl)
+	_, _ = fmt.Fprintf(out, "  agent overrides %s (max %s)\n", ui.OnOff(agentGrants), ttl)
 
 	// Reported as what will actually be sent, for the same reason the gate
 	// modes are reported resolved rather than raw. supports_reasoning only
@@ -93,15 +93,15 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	}
 	switch {
 	case !reasoning:
-		fmt.Fprintf(out, "  reasoning       off (%s=false)\n", flags.LLMLocalSupportsReasoning)
+		_, _ = fmt.Fprintf(out, "  reasoning       off (%s=false)\n", flags.LLMLocalSupportsReasoning)
 	case effort == "":
-		fmt.Fprintln(out, "  reasoning       not requested")
-		fmt.Fprintf(out, "                  %s is on, but %s is empty, so no\n",
+		_, _ = fmt.Fprintln(out, "  reasoning       not requested")
+		_, _ = fmt.Fprintf(out, "                  %s is on, but %s is empty, so no\n",
 			flags.LLMLocalSupportsReasoning, flags.LLMEffort)
-		fmt.Fprintln(out, "                  reasoning_effort is sent and the model reasons at its own")
-		fmt.Fprintf(out, "                  default; set %s to ask for it\n", flags.LLMEffort)
+		_, _ = fmt.Fprintln(out, "                  reasoning_effort is sent and the model reasons at its own")
+		_, _ = fmt.Fprintf(out, "                  default; set %s to ask for it\n", flags.LLMEffort)
 	default:
-		fmt.Fprintf(out, "  reasoning       requested at effort %q\n", effort)
+		_, _ = fmt.Fprintf(out, "  reasoning       requested at effort %q\n", effort)
 		// The ceiling belongs beside the base, not in a separate line item: a
 		// turn that goes in circles may climb from one to the other, and an
 		// operator reading only the base would be told half the answer.
@@ -110,58 +110,58 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 			return err
 		}
 		if ceiling == "" {
-			fmt.Fprintf(out, "                  fixed for the whole turn; set %s to let a\n",
+			_, _ = fmt.Fprintf(out, "                  fixed for the whole turn; set %s to let a\n",
 				flags.LLMEffortCeiling)
-			fmt.Fprintln(out, "                  turn that goes in circles raise it")
+			_, _ = fmt.Fprintln(out, "                  turn that goes in circles raise it")
 		} else {
-			fmt.Fprintf(out, "                  rising to at most %q if calls are refused for\n", ceiling)
-			fmt.Fprintf(out, "                  going in circles (%s)\n", flags.LLMEffortCeiling)
+			_, _ = fmt.Fprintf(out, "                  rising to at most %q if calls are refused for\n", ceiling)
+			_, _ = fmt.Fprintf(out, "                  going in circles (%s)\n", flags.LLMEffortCeiling)
 		}
 	}
 
 	// Named before the settings that came out of it. "Why is this value what it
 	// is" is the question doctor exists to answer, and until now the config
 	// layer was never one of the possible answers.
-	fmt.Fprintf(out, "  config          %s\n", configPath())
+	_, _ = fmt.Fprintf(out, "  config          %s\n", configPath())
 	if keys := reg.ConfiguredKeys(); len(keys) > 0 {
-		fmt.Fprintf(out, "                  read, %d setting(s): %s\n", len(keys), strings.Join(keys, ", "))
+		_, _ = fmt.Fprintf(out, "                  read, %d setting(s): %s\n", len(keys), strings.Join(keys, ", "))
 	} else {
-		fmt.Fprintln(out, "                  absent — every setting comes from the environment or its default")
+		_, _ = fmt.Fprintln(out, "                  absent — every setting comes from the environment or its default")
 	}
 
 	verifier := toolBinary("MANVI_VERIFY_BINARY", "dcverify")
-	fmt.Fprintf(out, "  verifier        %s\n", verifier)
+	_, _ = fmt.Fprintf(out, "  verifier        %s\n", verifier)
 	if err := (rigorProbe{verifier}).check(); err != nil {
-		fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
-		fmt.Fprintln(out, "                  secret_scan, stub_detection, and diff_coverage will report as degraded")
+		_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
+		_, _ = fmt.Fprintln(out, "                  secret_scan, stub_detection, and diff_coverage will report as degraded")
 	} else {
-		fmt.Fprintln(out, "                  reachable — secret_scan, stub_detection, diff_coverage will run")
+		_, _ = fmt.Fprintln(out, "                  reachable — secret_scan, stub_detection, diff_coverage will run")
 	}
 
 	searcher := grepClient(projectRoot())
-	fmt.Fprintf(out, "  searcher        %s\n", searcher.Binary)
+	_, _ = fmt.Fprintf(out, "  searcher        %s\n", searcher.Binary)
 	if err := searcher.Available(context.Background()); err != nil {
-		fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
-		fmt.Fprintln(out, "                  devcouncil_grep will refuse rather than report zero matches")
+		_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
+		_, _ = fmt.Fprintln(out, "                  devcouncil_grep will refuse rather than report zero matches")
 	} else {
-		fmt.Fprintln(out, "                  reachable — devcouncil_grep will search, honouring ignore rules")
+		_, _ = fmt.Fprintln(out, "                  reachable — devcouncil_grep will search, honouring ignore rules")
 	}
 
 	client := storeClient()
-	fmt.Fprintf(out, "  store           %s -> %s\n", client.Binary, client.DB)
+	_, _ = fmt.Fprintf(out, "  store           %s -> %s\n", client.Binary, client.DB)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := client.Available(ctx); err != nil {
-		fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
-		fmt.Fprintln(out, "                  lease checks cannot run; writes that need one will be refused")
+		_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
+		_, _ = fmt.Fprintln(out, "                  lease checks cannot run; writes that need one will be refused")
 	} else {
 		leases, _ := client.ActiveLeases(ctx)
-		fmt.Fprintf(out, "                  reachable, %d active lease(s)\n", len(leases))
+		_, _ = fmt.Fprintf(out, "                  reachable, %d active lease(s)\n", len(leases))
 	}
 
 	reportDevMap(out, ctx, mapClient(projectRoot()))
 
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	for _, status := range credentials.NewResolver().Statuses() {
 		// Reported below instead, under its own heading. A loopback server
 		// needs no key, so "local — no credential" is a true statement about
@@ -171,10 +171,10 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 			continue
 		}
 		if status.Present {
-			fmt.Fprintf(out, "  %-15s credential from %s (%d chars)\n",
+			_, _ = fmt.Fprintf(out, "  %-15s credential from %s (%d chars)\n",
 				status.Provider, status.Source, status.Length)
 		} else {
-			fmt.Fprintf(out, "  %-15s no credential — %s\n", status.Provider, status.Detail)
+			_, _ = fmt.Fprintf(out, "  %-15s no credential — %s\n", status.Provider, status.Detail)
 		}
 	}
 
@@ -182,14 +182,14 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	// list answers a question this provider does not have: a loopback server
 	// needs no key, so "no credential" said nothing about whether a local model
 	// was available to run against.
-	fmt.Fprintf(out, "  %-15s %s\n", "local models", describeLocalReadiness(reg))
+	_, _ = fmt.Fprintf(out, "  %-15s %s\n", "local models", describeLocalReadiness(reg))
 
 	// A green run assembled under relaxed settings is not a green run.
 	if weak := reg.Weakened(); len(weak) > 0 {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "  WEAKENED — results produced under these settings are not strict:")
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out, "  WEAKENED — results produced under these settings are not strict:")
 		for _, v := range weak {
-			fmt.Fprintf(out, "    %s = %s (%s)\n", v.Key, v.Raw, v.Origin)
+			_, _ = fmt.Fprintf(out, "    %s = %s (%s)\n", v.Key, v.Raw, v.Origin)
 		}
 	}
 	return nil
@@ -246,12 +246,12 @@ func reportDevMap(out io.Writer, ctx context.Context, mc *devmap.Client) {
 	status, err := mc.Status(ctx)
 	switch {
 	case err != nil:
-		fmt.Fprintf(out, "  devmap          index UNAVAILABLE: %v\n", err)
-		fmt.Fprintln(out, "                  navigation tools will report unavailable; the scope rung falls back to same-directory")
+		_, _ = fmt.Fprintf(out, "  devmap          index UNAVAILABLE: %v\n", err)
+		_, _ = fmt.Fprintln(out, "                  navigation tools will report unavailable; the scope rung falls back to same-directory")
 	case status.NodeCount <= 0:
-		fmt.Fprintln(out, "  devmap          index holds no symbols — run `manvi map build`")
+		_, _ = fmt.Fprintln(out, "  devmap          index holds no symbols — run `manvi map build`")
 	default:
-		fmt.Fprintf(out, "  devmap          index generation %d (%d symbols, %d edges)%s\n",
+		_, _ = fmt.Fprintf(out, "  devmap          index generation %d (%d symbols, %d edges)%s\n",
 			status.GenerationID, status.NodeCount, status.EdgeCount, staleSuffix(status))
 	}
 
@@ -259,20 +259,20 @@ func reportDevMap(out io.Writer, ctx context.Context, mc *devmap.Client) {
 	m, loadErr := loadGraph(graph)
 	switch {
 	case loadErr != nil:
-		fmt.Fprintf(out, "                  %s UNREADABLE: %v\n", graph, loadErr)
+		_, _ = fmt.Fprintf(out, "                  %s UNREADABLE: %v\n", graph, loadErr)
 	case m == nil:
-		fmt.Fprintf(out, "                  no %s — the scope rung will record repo_map.unavailable\n", graph)
+		_, _ = fmt.Fprintf(out, "                  no %s — the scope rung will record repo_map.unavailable\n", graph)
 	default:
 		p := m.Provenance()
 		generation := "unstamped"
 		if p.Stamped {
 			generation = fmt.Sprintf("generation %d", p.GenerationID)
 		}
-		fmt.Fprintf(out, "                  %s (%d symbols over %d files, %s)\n",
+		_, _ = fmt.Fprintf(out, "                  %s (%d symbols over %d files, %s)\n",
 			graph, p.Nodes, m.Stats().Files, generation)
 		if status != nil {
 			for _, note := range m.DisagreementsWith(status.GenerationID, status.NodeCount) {
-				fmt.Fprintf(out, "                  DIVERGED: %s\n", note)
+				_, _ = fmt.Fprintf(out, "                  DIVERGED: %s\n", note)
 			}
 		}
 	}

@@ -182,7 +182,7 @@ func exitStatus(stdout, notes io.Writer, args []string) int {
 
 	if errors.Is(err, errUsage) {
 		// A request for help is not a failure.
-		fmt.Fprint(answer, runUsage)
+		_, _ = fmt.Fprint(answer, runUsage)
 		err = nil
 	}
 
@@ -243,7 +243,7 @@ func statusFor(err error, notes io.Writer) int {
 		// after issuing an override that was never going to apply.
 		return 7
 	default:
-		fmt.Fprintf(notes, "manvi: %v\n", err)
+		_, _ = fmt.Fprintf(notes, "manvi: %v\n", err)
 		return 1
 	}
 }
@@ -269,7 +269,7 @@ func run(out, notes io.Writer, args []string) error {
 	args, yolo := takeYolo(args)
 
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		fmt.Fprint(out, usage)
+		_, _ = fmt.Fprint(out, usage)
 		return nil
 	}
 
@@ -354,7 +354,7 @@ func run(out, notes io.Writer, args []string) error {
 			return err
 		}
 		for _, line := range report.Lines() {
-			fmt.Fprintf(notes, "manvi: %s\n", line)
+			_, _ = fmt.Fprintf(notes, "manvi: %s\n", line)
 		}
 	}
 

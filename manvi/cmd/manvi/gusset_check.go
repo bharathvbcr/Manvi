@@ -18,6 +18,6 @@ func gussetCheck(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "gusset-check: ok (parity, match-any, panic firewall)")
+	_, _ = fmt.Fprintln(out, "gusset-check: ok (parity, match-any, panic firewall)")
 	return nil
 }

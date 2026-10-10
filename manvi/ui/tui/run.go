@@ -810,7 +810,7 @@ func (r *Runner) copyToClipboard(text string) {
 		truncated = true
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Fprintf(r.term.Out(), "\x1b]52;c;%s\x07", encoded)
+	_, _ = fmt.Fprintf(r.term.Out(), "\x1b]52;c;%s\x07", encoded)
 	// The painter believes it owns the screen, and this wrote past it.
 	r.painter.Invalidate()
 	if truncated {

@@ -63,7 +63,7 @@ func fetchPath(t *testing.T, c *Client, path string) (*Document, error) {
 func TestRoundTripExtractsAPage(t *testing.T) {
 	_, c := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<html><head><title>Package fetch</title>
+		_, _ = fmt.Fprint(w, `<html><head><title>Package fetch</title>
 			<script>var tracking = 1;</script></head>
 			<body><h1>Package fetch</h1><p>It fetches things.</p></body></html>`)
 	})
@@ -91,9 +91,9 @@ func TestRoundTripExtractsAPage(t *testing.T) {
 func TestRoundTripEnforcesTheByteCap(t *testing.T) {
 	_, c := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, "<p>")
+		_, _ = fmt.Fprint(w, "<p>")
 		for range 200 {
-			fmt.Fprint(w, strings.Repeat("filler ", 1000))
+			_, _ = fmt.Fprint(w, strings.Repeat("filler ", 1000))
 		}
 	})
 	c.limits.MaxBytes = 4096

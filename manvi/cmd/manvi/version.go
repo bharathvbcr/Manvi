@@ -101,32 +101,32 @@ const unstamped = "unknown — no VCS stamp in this binary (built outside a repo
 // writeVersion prints the full report, one fact per line.
 func writeVersion(out io.Writer) {
 	id := currentBuild()
-	fmt.Fprintln(out, "manvi")
+	_, _ = fmt.Fprintln(out, "manvi")
 	switch {
 	case id.Version != "":
-		fmt.Fprintf(out, "  version    %s (%s)\n", id.Version, id.VersionFrom)
+		_, _ = fmt.Fprintf(out, "  version    %s (%s)\n", id.Version, id.VersionFrom)
 	default:
-		fmt.Fprintln(out, "  version    unknown — no -ldflags stamp, and the module reports no release version")
+		_, _ = fmt.Fprintln(out, "  version    unknown — no -ldflags stamp, and the module reports no release version")
 	}
 	if id.Revision != "" {
 		if id.TreeState != "" {
-			fmt.Fprintf(out, "  revision   %s (%s)\n", id.Revision, id.TreeState)
+			_, _ = fmt.Fprintf(out, "  revision   %s (%s)\n", id.Revision, id.TreeState)
 		} else {
-			fmt.Fprintf(out, "  revision   %s (working tree state not recorded)\n", id.Revision)
+			_, _ = fmt.Fprintf(out, "  revision   %s (working tree state not recorded)\n", id.Revision)
 		}
 	} else {
-		fmt.Fprintf(out, "  revision   %s\n", unstamped)
+		_, _ = fmt.Fprintf(out, "  revision   %s\n", unstamped)
 	}
 	if id.Built != "" {
-		fmt.Fprintf(out, "  committed  %s\n", id.Built)
+		_, _ = fmt.Fprintf(out, "  committed  %s\n", id.Built)
 	} else {
-		fmt.Fprintf(out, "  committed  %s\n", unstamped)
+		_, _ = fmt.Fprintf(out, "  committed  %s\n", unstamped)
 	}
 	if id.Module != "" {
-		fmt.Fprintf(out, "  module     %s\n", id.Module)
+		_, _ = fmt.Fprintf(out, "  module     %s\n", id.Module)
 	}
-	fmt.Fprintf(out, "  go         %s\n", id.Go)
-	fmt.Fprintf(out, "  platform   %s\n", id.Platform)
+	_, _ = fmt.Fprintf(out, "  go         %s\n", id.Go)
+	_, _ = fmt.Fprintf(out, "  platform   %s\n", id.Platform)
 }
 
 // Summary is the same identity on one line, for doctor — where "which build"

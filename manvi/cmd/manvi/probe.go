@@ -112,9 +112,9 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 
 	if effort != "" {
-		fmt.Fprintf(out, "probing %s/%s at effort %s %s\n\n", name, model, effort, credentialNote(secret))
+		_, _ = fmt.Fprintf(out, "probing %s/%s at effort %s %s\n\n", name, model, effort, credentialNote(secret))
 	} else {
-		fmt.Fprintf(out, "probing %s/%s %s\n\n", name, model, credentialNote(secret))
+		_, _ = fmt.Fprintf(out, "probing %s/%s %s\n\n", name, model, credentialNote(secret))
 	}
 
 	// Cold prefill of a large quantised model is measured in minutes — 120s for
@@ -161,37 +161,37 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	elapsed := time.Since(started)
 
 	calls := response.Message.ToolCalls()
-	fmt.Fprintf(out, "  reply        %q\n", scrubber.Clean(strings.TrimSpace(text.String())))
+	_, _ = fmt.Fprintf(out, "  reply        %q\n", scrubber.Clean(strings.TrimSpace(text.String())))
 	if len(req.Tools) > 0 {
 		switch {
 		case len(calls) == 0:
-			fmt.Fprintf(out, "  tool call    none\n")
+			_, _ = fmt.Fprintf(out, "  tool call    none\n")
 		case response.Decoding.FallbackFormat != "":
 			// The distinction an operator needs: the model did ask for the
 			// tool, and the *server* did not parse it, so the harness read it
 			// out of the message text. That works, but it is a misconfigured
 			// server and it will keep costing correctness elsewhere.
-			fmt.Fprintf(out, "  tool call    %s (recovered by the harness from %s text — "+
+			_, _ = fmt.Fprintf(out, "  tool call    %s (recovered by the harness from %s text — "+
 				"the server did not parse it)\n", calls[0].Name, response.Decoding.FallbackFormat)
 		default:
-			fmt.Fprintf(out, "  tool call    %s (parsed by the server)\n", calls[0].Name)
+			_, _ = fmt.Fprintf(out, "  tool call    %s (parsed by the server)\n", calls[0].Name)
 		}
 	}
 	if response.Usage.CacheReuse() >= 0 {
-		fmt.Fprintf(out, "  prefix cache %.0f%% of the prompt reused\n", 100*response.Usage.CacheReuse())
+		_, _ = fmt.Fprintf(out, "  prefix cache %.0f%% of the prompt reused\n", 100*response.Usage.CacheReuse())
 	}
 	if response.Usage.OutputTokensPerSecond > 0 {
-		fmt.Fprintf(out, "  throughput   %.1f tok/s\n", response.Usage.OutputTokensPerSecond)
+		_, _ = fmt.Fprintf(out, "  throughput   %.1f tok/s\n", response.Usage.OutputTokensPerSecond)
 	}
 	if local, ok := provider.(*local.Adapter); ok {
-		fmt.Fprintf(out, "  context      %s\n", local.Dimensions(context.Background(), model).Describe())
+		_, _ = fmt.Fprintf(out, "  context      %s\n", local.Dimensions(context.Background(), model).Describe())
 	}
-	fmt.Fprintf(out, "  stop reason  %s\n", response.StopReason)
-	fmt.Fprintf(out, "  usage        %d in / %d out", response.Usage.InputTokens, response.Usage.OutputTokens)
+	_, _ = fmt.Fprintf(out, "  stop reason  %s\n", response.StopReason)
+	_, _ = fmt.Fprintf(out, "  usage        %d in / %d out", response.Usage.InputTokens, response.Usage.OutputTokens)
 	if response.Usage.ReasoningTokens > 0 {
-		fmt.Fprintf(out, " / %d reasoning", response.Usage.ReasoningTokens)
+		_, _ = fmt.Fprintf(out, " / %d reasoning", response.Usage.ReasoningTokens)
 	}
-	fmt.Fprintf(out, "\n  chunks       %s\n  elapsed      %s\n\n", describe(kinds), elapsed.Round(time.Millisecond))
+	_, _ = fmt.Fprintf(out, "\n  chunks       %s\n  elapsed      %s\n\n", describe(kinds), elapsed.Round(time.Millisecond))
 
 	// The checks that make this a verdict rather than a transcript.
 	var complaints []string
@@ -232,7 +232,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 	if response.Usage.InputTokens == 0 && response.Usage.OutputTokens == 0 {
 		if name == local.Name {
-			fmt.Fprintln(out, "  NOTICE       no token usage was reported by the local server; token estimation will be used")
+			_, _ = fmt.Fprintln(out, "  NOTICE       no token usage was reported by the local server; token estimation will be used")
 		} else {
 			complaints = append(complaints,
 				"no token usage was reported; a turn that cannot be costed cannot be budgeted")
@@ -248,12 +248,12 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 	if len(complaints) > 0 {
 		for _, c := range complaints {
-			fmt.Fprintf(out, "  PROBLEM      %s\n", c)
+			_, _ = fmt.Fprintf(out, "  PROBLEM      %s\n", c)
 		}
 		return fmt.Errorf("%s answered, but %d contract check(s) failed", name, len(complaints))
 	}
 
-	fmt.Fprintf(out, "  OK — %s's live wire contract matches what this adapter was built against\n", name)
+	_, _ = fmt.Fprintf(out, "  OK — %s's live wire contract matches what this adapter was built against\n", name)
 	return nil
 }
 

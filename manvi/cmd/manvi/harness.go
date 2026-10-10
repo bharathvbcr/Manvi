@@ -254,9 +254,9 @@ func listTools(out io.Writer, reg *flags.Registry) error {
 		if readOnly[s.Name] {
 			access = "read"
 		}
-		fmt.Fprintf(out, "%-34s %-6s %s\n", s.Name, access, firstSentence(s.Description))
+		_, _ = fmt.Fprintf(out, "%-34s %-6s %s\n", s.Name, access, firstSentence(s.Description))
 	}
-	fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(pipeline.Schemas()))
+	_, _ = fmt.Fprintf(out, "\n%d tools, all native — no Python process is involved.\n", len(pipeline.Schemas()))
 	return nil
 }
 
@@ -301,17 +301,17 @@ func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pi
 	text := ui.Sanitize(scrubber.Clean(result.Text))
 
 	if result.IsError {
-		fmt.Fprintln(out, text)
+		_, _ = fmt.Fprintln(out, text)
 		return errors.New("tool reported an error")
 	}
-	fmt.Fprintln(out, text)
+	_, _ = fmt.Fprintln(out, text)
 	if result.GrantID != "" {
 		// The qualification goes to the notes stream rather than to os.Stderr.
 		// On the CLI that is stderr, so piping the tool's JSON stays clean; in
 		// the TUI it is a buffer that becomes an event. Writing to os.Stderr
 		// unconditionally put these bytes straight onto a terminal the painter
 		// believes it owns, which overwrote whatever the frame had there.
-		fmt.Fprintf(notes, "\n(allowed by %s from %s — not a clean pass)\n",
+		_, _ = fmt.Fprintf(notes, "\n(allowed by %s from %s — not a clean pass)\n",
 			result.GrantID, result.GrantedBy)
 	}
 	return nil

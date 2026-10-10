@@ -38,7 +38,7 @@ func mapCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err := os.RemoveAll(indexDir()); err != nil {
 			return fmt.Errorf("discarding the index at %s: %w", indexDir(), err)
 		}
-		fmt.Fprintf(out, "discarded %s; rebuilding from nothing\n", indexDir())
+		_, _ = fmt.Fprintf(out, "discarded %s; rebuilding from nothing\n", indexDir())
 		return mapBuild(out, client, ctx)
 	case "status", "":
 		return mapStatus(out, client, ctx, nil)
@@ -53,7 +53,7 @@ func mapBuild(out io.Writer, client *devmap.Client, ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, describeIndex(report))
+	_, _ = fmt.Fprintln(out, describeIndex(report))
 	// Kept so the status report below does not repeat what this one just said.
 	// The two describe the same artifact from two directions — what the build
 	// wrote, and what is on disk now — and a fact stated twice in one command's
@@ -61,26 +61,26 @@ func mapBuild(out io.Writer, client *devmap.Client, ctx context.Context) error {
 	said := map[string]bool{}
 	for _, line := range report.Degraded() {
 		said[line] = true
-		fmt.Fprintf(out, "                %s\n", line)
+		_, _ = fmt.Fprintf(out, "                %s\n", line)
 	}
-	fmt.Fprintf(out, "wrote %s\n", graphArtifactPath())
+	_, _ = fmt.Fprintf(out, "wrote %s\n", graphArtifactPath())
 	return mapStatus(out, client, ctx, said)
 }
 
 // said names lines a caller has already printed, so one command does not report
 // the same fact twice. Nil when nothing has been printed yet.
 func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said map[string]bool) error {
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	status, err := client.Available(ctx)
 	if err != nil {
-		fmt.Fprintf(out, "  index         UNAVAILABLE: %v\n", err)
-		fmt.Fprintln(out, "                the neighbour rule cannot run; unplanned writes will record repo_map.unavailable")
+		_, _ = fmt.Fprintf(out, "  index         UNAVAILABLE: %v\n", err)
+		_, _ = fmt.Fprintln(out, "                the neighbour rule cannot run; unplanned writes will record repo_map.unavailable")
 		return nil
 	}
-	fmt.Fprintf(out, "  index         generation %d — %d symbols, %d edges\n",
+	_, _ = fmt.Fprintf(out, "  index         generation %d — %d symbols, %d edges\n",
 		status.GenerationID, status.NodeCount, status.EdgeCount)
 	if !status.IsFresh {
-		fmt.Fprintln(out, "                STALE: built before the current working tree; answers describe older code")
+		_, _ = fmt.Fprintln(out, "                STALE: built before the current working tree; answers describe older code")
 	}
 
 	m, err := loadGraph(graphArtifactPath())
@@ -88,7 +88,7 @@ func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said m
 		return err
 	}
 	if m == nil {
-		fmt.Fprintf(out, "  areas         no graph artifact at %s — run `manvi map build`\n", graphArtifactPath())
+		_, _ = fmt.Fprintf(out, "  areas         no graph artifact at %s — run `manvi map build`\n", graphArtifactPath())
 		return nil
 	}
 	s := m.Stats()
@@ -101,21 +101,21 @@ func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said m
 	if p.Stamped {
 		generation = fmt.Sprintf("generation %d", p.GenerationID)
 	}
-	fmt.Fprintf(out, "  areas         %d over %d files, %d adjacencies from %d edges (%s)\n",
+	_, _ = fmt.Fprintf(out, "  areas         %d over %d files, %d adjacencies from %d edges (%s)\n",
 		s.Areas, s.Files, s.Adjacencies, s.Edges, generation)
 	for _, note := range m.DisagreementsWith(status.GenerationID, status.NodeCount) {
-		fmt.Fprintf(out, "                DIVERGED: %s\n", note)
+		_, _ = fmt.Fprintf(out, "                DIVERGED: %s\n", note)
 	}
 	for _, note := range m.Degraded() {
 		if said[note] {
 			continue
 		}
-		fmt.Fprintf(out, "                %s\n", note)
+		_, _ = fmt.Fprintf(out, "                %s\n", note)
 	}
 	if s.AmbiguousSkipped > 0 {
 		// Reported because it is the difference between "these areas are not
 		// coupled" and "the analyser could not tell".
-		fmt.Fprintf(out, "                %d coupling edge(s) excluded as unresolved; adjacency rests only on resolved ones\n",
+		_, _ = fmt.Fprintf(out, "                %d coupling edge(s) excluded as unresolved; adjacency rests only on resolved ones\n",
 			s.AmbiguousSkipped)
 	}
 	if s.Permissive() {
@@ -125,9 +125,9 @@ func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said m
 		// least. Printing the ratio there would say `"" neighbours 0 of 1`,
 		// which reads as the opposite of what it means.
 		if s.MaxDegree == 0 {
-			fmt.Fprintf(out, "                PERMISSIVE: the index holds one subsystem, so every indexed file is in the same subsystem as any planned file and the scope rung separates nothing\n")
+			_, _ = fmt.Fprintf(out, "                PERMISSIVE: the index holds one subsystem, so every indexed file is in the same subsystem as any planned file and the scope rung separates nothing\n")
 		} else {
-			fmt.Fprintf(out, "                PERMISSIVE: %q neighbours %d of %d areas, so the neighbour rule allows most writes\n",
+			_, _ = fmt.Fprintf(out, "                PERMISSIVE: %q neighbours %d of %d areas, so the neighbour rule allows most writes\n",
 				s.WidestArea, s.MaxDegree, s.Areas)
 		}
 	}

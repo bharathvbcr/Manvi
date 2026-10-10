@@ -93,10 +93,10 @@ func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
 		Capabilities: true,
 	})
 
-	fmt.Fprintln(out, "local model servers")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "local model servers")
+	_, _ = fmt.Fprintln(out)
 	if pinned {
-		fmt.Fprintf(out, "  %s is set to %s (%s), so only that address was tried\n\n",
+		_, _ = fmt.Fprintf(out, "  %s is set to %s (%s), so only that address was tried\n\n",
 			flags.EnvKey(flags.LLMLocalBaseURL), declared, origin)
 	}
 
@@ -117,23 +117,23 @@ func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
 // that was tried, so an operator serving on a port this harness does not guess
 // can see that theirs was not among them.
 func reportNoLocalServers(out io.Writer, endpoints []local.Endpoint, pinned bool) {
-	fmt.Fprintln(out, "  none answered. Tried:")
+	_, _ = fmt.Fprintln(out, "  none answered. Tried:")
 	for _, ep := range endpoints {
 		if pinned {
-			fmt.Fprintf(out, "    %s\n", ep.BaseURL)
+			_, _ = fmt.Fprintf(out, "    %s\n", ep.BaseURL)
 			continue
 		}
-		fmt.Fprintf(out, "    %-30s %s\n", ep.BaseURL, ep.Convention)
+		_, _ = fmt.Fprintf(out, "    %-30s %s\n", ep.BaseURL, ep.Convention)
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  Start a server, or point the harness at one it does not guess:")
-	fmt.Fprintf(out, "    export %s=http://127.0.0.1:PORT/v1\n", flags.EnvKey(flags.LLMLocalBaseURL))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  Start a server, or point the harness at one it does not guess:")
+	_, _ = fmt.Fprintf(out, "    export %s=http://127.0.0.1:PORT/v1\n", flags.EnvKey(flags.LLMLocalBaseURL))
 }
 
 // reportServer renders one server and everything it said about its models.
 func reportServer(out io.Writer, srv local.Server) {
-	fmt.Fprintf(out, "  %s\n", srv.Describe())
-	fmt.Fprintf(out, "    %s\n\n", summariseModels(srv))
+	_, _ = fmt.Fprintf(out, "  %s\n", srv.Describe())
+	_, _ = fmt.Fprintf(out, "    %s\n\n", summariseModels(srv))
 
 	models := append([]local.ServedModel(nil), srv.Models...)
 	sort.Slice(models, func(i, j int) bool {
@@ -150,12 +150,12 @@ func reportServer(out io.Writer, srv local.Server) {
 		if !m.Usable() {
 			mark = "-"
 		}
-		fmt.Fprintf(out, "    %s %-46s %s\n", mark, m.ID, describeModelDims(m))
+		_, _ = fmt.Fprintf(out, "    %s %-46s %s\n", mark, m.ID, describeModelDims(m))
 		if why := m.Why(); why != "" {
-			fmt.Fprintf(out, "      %s\n", why)
+			_, _ = fmt.Fprintf(out, "      %s\n", why)
 		}
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 }
 
 // summariseModels counts a server's models without overstating what was
@@ -273,32 +273,32 @@ func reportHowToUse(out io.Writer, reg *flags.Registry, servers []local.Server, 
 		Credential:         resolveCredential,
 	})
 	if note := res.Note(); note != "" {
-		fmt.Fprintf(out, "  %s\n\n", note)
+		_, _ = fmt.Fprintf(out, "  %s\n\n", note)
 	}
 	chosen := serverAt(servers, res.BaseURL)
 
 	if chosen == nil {
-		fmt.Fprintln(out, "  Pin the one you want, then run 'manvi probe local':")
-		fmt.Fprintf(out, "    export %s=%s\n", flags.EnvKey(flags.LLMLocalBaseURL), servers[0].BaseURL)
+		_, _ = fmt.Fprintln(out, "  Pin the one you want, then run 'manvi probe local':")
+		_, _ = fmt.Fprintf(out, "    export %s=%s\n", flags.EnvKey(flags.LLMLocalBaseURL), servers[0].BaseURL)
 		for _, l := range lines {
-			fmt.Fprintf(out, "    %s\n", l)
+			_, _ = fmt.Fprintf(out, "    %s\n", l)
 		}
 		return
 	}
 
 	switch sole, why := local.SoleUsableModel(*chosen); {
 	case strings.TrimSpace(model) != "":
-		fmt.Fprintf(out, "  %s is set to %s (%s)\n",
+		_, _ = fmt.Fprintf(out, "  %s is set to %s (%s)\n",
 			flags.EnvKey(flags.LLMLocalModel), model, modelOrigin)
 	case sole != "":
-		fmt.Fprintf(out, "  %s serves one usable model, so a run needs no model set: %s\n",
+		_, _ = fmt.Fprintf(out, "  %s serves one usable model, so a run needs no model set: %s\n",
 			chosen.BaseURL, sole)
 	case len(chosen.Usable()) == 0:
 		// Nothing here can run a turn, so there is no setting to suggest —
 		// printing an export line with a placeholder in it would be advice
 		// that cannot be followed.
-		fmt.Fprintf(out, "  %s\n", why)
-		fmt.Fprintln(out, "  Pull a model that can generate text and call tools, then run 'manvi local' again.")
+		_, _ = fmt.Fprintf(out, "  %s\n", why)
+		_, _ = fmt.Fprintln(out, "  Pull a model that can generate text and call tools, then run 'manvi local' again.")
 		return
 	default:
 		// The models are listed above; repeating them here would bury the one
@@ -306,7 +306,7 @@ func reportHowToUse(out io.Writer, reg *flags.Registry, servers []local.Server, 
 		// alphabetically first usable model on a machine is as likely to be an
 		// audio editor as a coding model, so it is offered as the shape of the
 		// setting, not as a recommendation.
-		fmt.Fprintf(out, "  %s serves several usable models, so a run must name one from the list above:\n",
+		_, _ = fmt.Fprintf(out, "  %s serves several usable models, so a run must name one from the list above:\n",
 			chosen.BaseURL)
 		if suggestion := firstUsable(*chosen); suggestion != "" {
 			lines = append(lines, fmt.Sprintf("export %s=%s",
@@ -315,14 +315,14 @@ func reportHowToUse(out io.Writer, reg *flags.Registry, servers []local.Server, 
 	}
 
 	if len(lines) == 0 {
-		fmt.Fprintln(out, "\n  Nothing to set — 'manvi probe local' will exercise this server now.")
+		_, _ = fmt.Fprintln(out, "\n  Nothing to set — 'manvi probe local' will exercise this server now.")
 		return
 	}
-	fmt.Fprintln(out, "\n  To run against it:")
+	_, _ = fmt.Fprintln(out, "\n  To run against it:")
 	for _, l := range lines {
-		fmt.Fprintf(out, "    %s\n", l)
+		_, _ = fmt.Fprintf(out, "    %s\n", l)
 	}
-	fmt.Fprintln(out, "    manvi probe local")
+	_, _ = fmt.Fprintln(out, "    manvi probe local")
 }
 
 // serverAt finds the scanned server at an address, or nil.
@@ -427,9 +427,9 @@ func resolveLocalSelection(out io.Writer, reg *flags.Registry, timeout time.Dura
 		baseSource = string(origin)
 	}
 
-	fmt.Fprintf(out, "base_url=%s\n", adapter.BaseURL())
-	fmt.Fprintf(out, "base_url_source=%s\n", baseSource)
-	fmt.Fprintf(out, "model=%s\n", model)
-	fmt.Fprintf(out, "model_source=%s\n", source)
+	_, _ = fmt.Fprintf(out, "base_url=%s\n", adapter.BaseURL())
+	_, _ = fmt.Fprintf(out, "base_url_source=%s\n", baseSource)
+	_, _ = fmt.Fprintf(out, "model=%s\n", model)
+	_, _ = fmt.Fprintf(out, "model_source=%s\n", source)
 	return nil
 }

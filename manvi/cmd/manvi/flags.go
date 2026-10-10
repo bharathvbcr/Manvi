@@ -79,16 +79,16 @@ func setFlag(out io.Writer, reg *flags.Registry, args []string, from surface) (s
 		return "", err
 	}
 
-	fmt.Fprintf(out, "%s  %s (%s) → %s (%s)\n", key, before.Raw, before.Origin, after.Raw, after.Origin)
+	_, _ = fmt.Fprintf(out, "%s  %s (%s) → %s (%s)\n", key, before.Raw, before.Origin, after.Raw, after.Origin)
 	// Said out loud, because "it was already that" and "it changed" look
 	// identical in the line above and lead to different next actions — an
 	// operator who believes they moved something is an operator who stops
 	// looking for why the behaviour did not change.
 	switch {
 	case before == after:
-		fmt.Fprintln(out, "\nnothing changed: it was already this value, from this layer")
+		_, _ = fmt.Fprintln(out, "\nnothing changed: it was already this value, from this layer")
 	case before.Raw == after.Raw:
-		fmt.Fprintln(out, "\nthe value did not change; only the layer it now comes from did")
+		_, _ = fmt.Fprintln(out, "\nthe value did not change; only the layer it now comes from did")
 	}
 	if def.Safety {
 		// Which direction it moved decides the sentence. Printing the weakened
@@ -96,9 +96,9 @@ func setFlag(out io.Writer, reg *flags.Registry, args []string, from surface) (s
 		// an operator to read the warning as noise, which is the reading that
 		// makes it useless when it is the true one.
 		if after.Raw == safestValue(def) {
-			fmt.Fprintf(out, "\n! %s is a safety flag, and this is its safest value.\n", key)
+			_, _ = fmt.Fprintf(out, "\n! %s is a safety flag, and this is its safest value.\n", key)
 		} else {
-			fmt.Fprintf(out, "\n! %s is a safety flag and is no longer at its safest value (%s). "+
+			_, _ = fmt.Fprintf(out, "\n! %s is a safety flag and is no longer at its safest value (%s). "+
 				"Every run that used it reports the value, so a result reached under this setting "+
 				"cannot be read as a strict one.\n", key, safestValue(def))
 		}
@@ -108,16 +108,16 @@ func setFlag(out io.Writer, reg *flags.Registry, args []string, from surface) (s
 		// of the old value, so both of these would describe work nobody did.
 		switch flags.ReachOf(def) {
 		case flags.ReachNewSession:
-			fmt.Fprintln(out, "\nsessions already open keep what they built at start; this applies to sessions opened from now on")
+			_, _ = fmt.Fprintln(out, "\nsessions already open keep what they built at start; this applies to sessions opened from now on")
 		case flags.ReachReload:
-			fmt.Fprintln(out, "\nwhatever had already read the old value is reloaded before the next turn")
+			_, _ = fmt.Fprintln(out, "\nwhatever had already read the old value is reloaded before the next turn")
 		}
 	}
 	// Last, and unconditional. The override layer lives in this process and
 	// dies with it, so from a shell this command changes nothing that outlives
 	// the exit — a trap worth spending three lines on, because the operator who
 	// falls into it believes the setting is applied.
-	fmt.Fprintf(out, "\nthis override lasts as long as this process. To make it durable, "+
+	_, _ = fmt.Fprintf(out, "\nthis override lasts as long as this process. To make it durable, "+
 		"export %s=%s, or write %s: %s into %s\n",
 		flags.EnvKey(key), after.Raw, key, after.Raw, configPath())
 	return key, nil
@@ -208,13 +208,13 @@ func showFlags(out io.Writer, reg *flags.Registry, args []string) error {
 		if set, err := reg.Lookup(key); err == nil && set.Raw != value.Raw {
 			note = fmt.Sprintf("  (set to %s/%s)", set.Raw, set.Origin)
 		}
-		fmt.Fprintf(out, "%s %-34s %-14s %-9s %s%s\n", marker, key, value.Raw, value.Origin, def.Mutable, note)
+		_, _ = fmt.Fprintf(out, "%s %-34s %-14s %-9s %s%s\n", marker, key, value.Raw, value.Origin, def.Mutable, note)
 	}
 	if !all {
-		fmt.Fprintln(out, "\n(showing safety flags and anything moved off its default; --all for everything)")
+		_, _ = fmt.Fprintln(out, "\n(showing safety flags and anything moved off its default; --all for everything)")
 	}
-	fmt.Fprintln(out, "\n! = safety flag: moving it is reported on every run that used it")
-	fmt.Fprintln(out, "the last column is who may move it: 'human' means 'flags set KEY VALUE' from here, "+
+	_, _ = fmt.Fprintln(out, "\n! = safety flag: moving it is reported on every run that used it")
+	_, _ = fmt.Fprintln(out, "the last column is who may move it: 'human' means 'flags set KEY VALUE' from here, "+
 		"'startup' means it is fixed for the life of this process")
 	return nil
 }

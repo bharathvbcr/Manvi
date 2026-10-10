@@ -406,7 +406,7 @@ func ollamaStub(t *testing.T, model string, contextLength int, capabilities []st
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"data":[{"id":%q}]}`, model)
+		_, _ = fmt.Fprintf(w, `{"data":[{"id":%q}]}`, model)
 	})
 	mux.HandleFunc("/api/show", func(w http.ResponseWriter, r *http.Request) {
 		caps, err := json.Marshal(capabilities)
@@ -415,7 +415,7 @@ func ollamaStub(t *testing.T, model string, contextLength int, capabilities []st
 			return
 		}
 		// Arch-prefixed, exactly as Ollama returns it.
-		fmt.Fprintf(w, `{"model_info":{"qwen3.context_length":%d},"capabilities":%s}`,
+		_, _ = fmt.Fprintf(w, `{"model_info":{"qwen3.context_length":%d},"capabilities":%s}`,
 			contextLength, caps)
 	})
 	srv := httptest.NewServer(mux)
@@ -473,7 +473,7 @@ func TestProbeDiscoveryBeatsTheHostsDeclaration(t *testing.T) {
 func TestProbeFallsBackToTheDeclarationAndSaysSo(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":[{"id":"mlx-community/Qwen3-27B-4bit"}]}`)
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"mlx-community/Qwen3-27B-4bit"}]}`)
 	})
 	// No /api/show, no /props — the MLX server's surface.
 	stub := httptest.NewServer(mux)

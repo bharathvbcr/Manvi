@@ -475,7 +475,7 @@ func TestMidFlightFailureSettlesTheStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
 		flusher.Flush()
 		panic(http.ErrAbortHandler)
 	}))
