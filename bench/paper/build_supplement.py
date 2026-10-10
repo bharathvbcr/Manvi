@@ -65,6 +65,7 @@ POLICY = (
     ("bench/probe.py", "include", "provider probe used before the API-served extension arm"),
     ("bench/selftest.py", "include", "task-suite self-test"),
     ("bench/stress_test.py", "include", "adversarial harness tests"),
+    ("bench/stats_bench.py", "include", "timing of the bootstrap statistics against their reference form"),
     ("bench/test_*.py", "include", "unit and regression tests"),
     ("bench/expand_hard.sh", "include", "driver of the superseded v1 grid, cited as a record"),
     ("bench/wait_expand.sh", "include", "companion of expand_hard.sh"),

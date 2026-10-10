@@ -491,7 +491,7 @@ agent's `build.sh` cannot set.
 **What changed.** The released harness (`mh/rpc.py`) runs the hidden test in a
 checker process that never executes candidate code, and the candidate in a
 separate contained worker that cannot write the sandbox; they exchange typed
-JSON over a socket. The same payloads fail. The worker's macOS profile (`sandbox-exec`) is verified by the stress suite's containment probes; its Linux profile (`bwrap`) has not yet been exercised on a Linux host: no CI or run-host record exists of `stress_test.py` passing under `bwrap` at or after the checker/worker split (`0f8b513`). The only green ubuntu verify run whose Bench step passed (36492793839, 2026-09-28, `37cc633`) predates it, and later main runs stop at the lint ratchet before the Bench step. The Linux worker profile is therefore unverified, and so is its `--unshare-net`. Five hidden tests changed with it,
+JSON over a socket. The same payloads fail. The worker's macOS profile (`sandbox-exec`) is verified by the stress suite's containment probes; its Linux profile (`bwrap`) has not yet been exercised on a Linux host: no CI or run-host record exists of `stress_test.py` passing under `bwrap` at or after the checker/worker split. The only green ubuntu verify run whose Bench step passed (2026-09-28) predates it, and later main runs stop at the lint ratchet before the Bench step. The Linux worker profile is therefore unverified, and so is its `--unshare-net`. Five hidden tests changed with it,
 each documented in the file:
 
 - `globmatch`, `nfa_match`, `concurrency_race`: the import ban's static scan
