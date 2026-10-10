@@ -174,6 +174,16 @@ func TestPauseRemainsResponsiveDuringBlockedAction(t *testing.T) {
 
 func TestApprovalIsRequiredAndOldEpochCannotDispatch(t *testing.T) {
 	opts, d := runFixture(t, true)
+	refused := make(chan Record, 1)
+	opts.OnRecord = func(r Record) error {
+		if r.Kind == "control_refused" {
+			select {
+			case refused <- r:
+			default:
+			}
+		}
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	run, err := StartRun(ctx, opts)
@@ -191,7 +201,18 @@ func TestApprovalIsRequiredAndOldEpochCannotDispatch(t *testing.T) {
 	if err := run.Send(ctx, Control{Kind: "approve", Epoch: 0, ActionID: s.ActionID(opts.Program), ObservationID: s.Observation.ID}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	// The run records the refusal in the same step that drops the control, so
+	// waiting for that record (not for time to pass) is what proves the fence
+	// ran; without it the check below would also pass on a slow runner that has
+	// not yet looked at the control.
+	select {
+	case r := <-refused:
+		if r.Reason != "stale control epoch" {
+			t.Fatalf("control refused for %q, want the stale-epoch fence", r.Reason)
+		}
+	case <-ctx.Done():
+		t.Fatal("the stale-epoch approval was never refused by the epoch fence")
+	}
 	d.mu.Lock()
 	acts := d.acts
 	d.mu.Unlock()

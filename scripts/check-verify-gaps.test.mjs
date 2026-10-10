@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { compare, parseVerdict } from "./check-verify-gaps.mjs";
 
 const EXPECTED = JSON.parse(readFileSync(new URL("./verify-expected-gaps.json", import.meta.url), "utf8"));
@@ -10,7 +10,7 @@ const UBUNTU = [
   "    covered: 874 checks",
   "",
   "\x1b[33mPASS\x1b[0m with gates that did not run:",
-  "    - 8 of 3005 test(s) skipped, so their assertions did not run: " +
+  "    - 7 of 3005 test(s) skipped, so their assertions did not run: " +
     EXPECTED.skips.filter((s) => s.os.includes("ubuntu-latest")).map((s) => s.test).join(", "),
   "    - devmap not found — repo navigation is unverified here",
   "    - local — this gate makes no request. The harness reports:",
@@ -20,7 +20,7 @@ const UBUNTU = [
 
 test("the ubuntu verdict CI produced is fully expected", () => {
   const found = parseVerdict(UBUNTU);
-  assert.equal(found.skips.length, 8);
+  assert.equal(found.skips.length, 7);
   assert.equal(found.gaps.length, 3);
   assert.deepEqual(compare(found, EXPECTED, "ubuntu-latest"), { unexpectedGaps: [], unexpectedSkips: [], stale: [] });
 });
@@ -53,20 +53,39 @@ test("every expected entry says why", () => {
 
 test("the macos verdict CI produced is fully expected", () => {
   // verify.sh (macos-latest) at d6c956f, attempt 2: APFS runs the three
-  // spelling tests, so five skips rather than eight.
+  // spelling tests, so four skips rather than seven.
   const skips = [
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
-    "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestEvidenceRustCompatibility",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
   ];
   const log = [
     "PASS with gates that did not run:",
-    `    - 5 of 3005 test(s) skipped, so their assertions did not run: ${skips.join(", ")}`,
+    `    - 4 of 3005 test(s) skipped, so their assertions did not run: ${skips.join(", ")}`,
     "    - devmap not found — repo navigation is unverified here",
     "    - local — this gate makes no request. The harness reports:",
     "    - anthropic, gemini and xai are verified against scripted servers only.",
   ].join("\n");
   assert.deepEqual(compare(parseVerdict(log), EXPECTED, "macos-latest"), { unexpectedGaps: [], unexpectedSkips: [], stale: [] });
+});
+
+test("every expected skip names a Go test that still exists", () => {
+  // verify.sh only reports a skip that happened, so an entry whose test was
+  // deleted (TestEvidenceRustCompatibility, in cab5166) is never contradicted
+  // by a run and would sit here certifying nothing. Entries are
+  // <import path>.<Test>[/<subtest>]; the test must be declared in that package.
+  const module = "github.com/bharathvbcr/Manvi/manvi/";
+  for (const { test: name } of EXPECTED.skips) {
+    assert.ok(name.startsWith(module), `${name} is outside ${module}`);
+    const parsed = /^(.*?)\.(Test\w+)(\/.*)?$/.exec(name.slice(module.length));
+    assert.ok(parsed, `${name} is not <package>.<Test>[/<subtest>]`);
+    const [, pkg, top] = parsed;
+    const dir = new URL(`../manvi/${pkg}/`, import.meta.url);
+    assert.ok(existsSync(dir), `${name}: package directory ${pkg} does not exist`);
+    const declared = readdirSync(dir)
+      .filter((file) => file.endsWith("_test.go"))
+      .some((file) => new RegExp(`^func ${top}\\(`, "m").test(readFileSync(new URL(file, dir), "utf8")));
+    assert.ok(declared, `${name}: no func ${top} in ${pkg}; delete the stale entry`);
+  }
 });

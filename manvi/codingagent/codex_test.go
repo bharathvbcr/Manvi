@@ -373,7 +373,15 @@ func TestCodexOutputBurstWaitsForBoundedConsumerWithoutKillingTheRun(t *testing.
 	}
 	// A native store round trip can briefly stop consumption while the provider
 	// emits more than the 64-frame buffer. The producer must wait, not be killed.
-	time.Sleep(150 * time.Millisecond)
+	// Consumption stays stopped until the buffer is observably full, which is
+	// the state the producer has to survive; a fixed pause only guessed at it.
+	full := time.Now().Add(10 * time.Second)
+	for len(s.wire.frames) < cap(s.wire.frames) {
+		if time.Now().After(full) {
+			t.Fatalf("the provider never filled the %d-frame buffer (%d queued)", cap(s.wire.frames), len(s.wire.frames))
+		}
+		time.Sleep(time.Millisecond)
+	}
 	count := 0
 	for {
 		e, err := s.Next(t.Context())

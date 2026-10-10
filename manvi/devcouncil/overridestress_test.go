@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -168,6 +169,11 @@ func TestConcurrentOverrideRequestsStayConsistent(t *testing.T) {
 	const workers = 16
 	var wg sync.WaitGroup
 	errs := make(chan string, workers*4)
+	// granted counts the workers that were blocked and went through the grant
+	// path. A worker that is already allowed returns without asserting
+	// anything, so if none were blocked the test below would pass having
+	// checked nothing.
+	var granted atomic.Int32
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -188,6 +194,8 @@ func TestConcurrentOverrideRequestsStayConsistent(t *testing.T) {
 			})
 			if out["granted"] != true {
 				errs <- fmt.Sprintf("%s: override refused: %v", path, out)
+			} else {
+				granted.Add(1)
 			}
 
 			cmdRes := f.call("devcouncil_exec_command", map[string]string{"command": command})
@@ -210,5 +218,8 @@ func TestConcurrentOverrideRequestsStayConsistent(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
+	}
+	if n := granted.Load(); n == 0 {
+		t.Fatalf("none of %d workers reached the override grant path: every write was already allowed, so nothing was asserted", workers)
 	}
 }
