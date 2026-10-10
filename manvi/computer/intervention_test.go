@@ -49,7 +49,10 @@ func TestInterventionEmittedOnPause(t *testing.T) {
 func TestTakeoverSetsHumanController(t *testing.T) {
 	opts, d := runFixture(t, false)
 	d.observation.Nodes = []Node{}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	// One bound for the whole test. The takeover is applied by the run's own
+	// loop after Send returns, so the wait for it shares this deadline rather
+	// than a separate one-second window that a loaded machine overran.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	run, err := StartRun(ctx, opts)
 	if err != nil {
@@ -60,12 +63,12 @@ func TestTakeoverSetsHumanController(t *testing.T) {
 	if err := run.Send(ctx, Control{Kind: "takeover", Epoch: s.Epoch}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && run.Controller() != ControllerHuman {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if run.Controller() != ControllerHuman {
-		t.Fatalf("controller=%s interventions=%+v", run.Controller(), run.Interventions())
+	for run.Controller() != ControllerHuman {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("controller=%s interventions=%+v: %v", run.Controller(), run.Interventions(), ctx.Err())
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 	if len(run.Interventions()) == 0 || run.Interventions()[0].Status != InterventionRequested {
 		t.Fatalf("interventions=%+v", run.Interventions())
