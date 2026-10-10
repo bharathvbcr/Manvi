@@ -101,6 +101,7 @@ Environment:
   MANVI_COVERAGE       Go coverprofile or LCOV report for the diff-coverage gate
   MANVI_MODEL          model id for 'manvi tui' (see: manvi providers)
   MANVI_TUI_THEME      dark | light | plain
+  ANTHROPIC_WORKSPACE_ID  workspace for an API key not scoped to one (wrkspc_...)
   MANVI_<FLAG>         any setting from 'manvi flags'
 
 Settings resolve lowest-first: the catalogue default, then

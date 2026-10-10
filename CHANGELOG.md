@@ -149,9 +149,21 @@ under **Unreleased** in the same commit as the code.
   cost and a row per model. Steps no price table covers make the cost a lower
   bound ("at least $X") and are never shown as `$0.00`. See
   [Reading the per-model usage line](docs/TUI_AND_EVENT_SUBSYSTEM.md#reading-the-per-model-usage-line).
+- `ANTHROPIC_WORKSPACE_ID`: when set, every Anthropic request carries it in the
+  `anthropic-workspace-id` header, which an API key not scoped to a workspace
+  needs (without it the API answers 400). A key created inside a workspace
+  needs neither. The value is trimmed and must be letters, digits, `_` and `-`;
+  anything else is refused before a request is built, and `manvi providers`
+  reports the provider as misconfigured.
 
 ### Changed
 
+- `manvi providers` is a table: a ready count, ready providers first, a status
+  mark and the state in their own columns, the credential's source and length
+  (and the Anthropic workspace, when one is set), and for a missing key the
+  variables to set with where to get one on the line beneath. It is coloured
+  with the session's theme on a terminal and plain in a pipe or in `/providers`
+  inside the full-screen face. `manvi doctor` output is unchanged.
 - Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
   read-only command allowlist now judges each command's arguments, so
   `git diff --output=`, `git diff --no-index` outside the root and pytest's

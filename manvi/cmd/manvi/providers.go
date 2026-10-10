@@ -19,6 +19,8 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
+	"github.com/bharathvbcr/Manvi/manvi/ui/render"
+	"github.com/bharathvbcr/Manvi/manvi/ui/tui"
 )
 
 // This file is the one place an adapter is constructed.
@@ -53,7 +55,11 @@ func buildProvider(name string, reg *flags.Registry, resolver *credentials.Resol
 
 	switch name {
 	case anthropic.Name:
-		return meterAnthropic(anthropic.New(env("ANTHROPIC_BASE_URL", ""), resolve))
+		adapter, err := anthropic.NewForWorkspace(env("ANTHROPIC_BASE_URL", ""), os.Getenv(anthropicWorkspaceEnv), resolve)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", anthropicWorkspaceEnv, err)
+		}
+		return meterAnthropic(adapter)
 	case xai.Name:
 		base, _, err := reg.String(flags.LLMXAIBaseURL)
 		if err != nil {
@@ -637,37 +643,186 @@ func stallTimeoutSetting(reg *flags.Registry) (time.Duration, error) {
 // discloses the thing it is diagnosing is a diagnostic nobody can paste into a
 // bug report.
 func showProviders(out io.Writer, reg *flags.Registry) error {
-	resolver := credentials.NewResolver()
-	fmt.Fprintln(out, "providers")
-	fmt.Fprintln(out)
-	for _, status := range resolver.Statuses() {
-		// The local provider's readiness is not a credential question. Its
-		// servers are on loopback and ignore authorisation, so the credential
-		// line reported "unavailable" for a provider that was working — the
-		// one report an operator most needed to be right, since local is the
-		// provider they are least likely to have configured on purpose.
-		if status.Provider == local.Name {
-			fmt.Fprintf(out, "  %-12s %s\n", status.Provider, describeLocalReadiness(reg))
-			continue
-		}
-		if status.Present {
-			fmt.Fprintf(out, "  %-12s ready — credential from %s (%d chars)\n",
-				status.Provider, status.Source, status.Length)
-			continue
-		}
-		fmt.Fprintf(out, "  %-12s unavailable\n", status.Provider)
-		fmt.Fprintf(out, "               %s\n", status.Detail)
-	}
-	return nil
+	profile := outputProfile(out)
+	return writeStyled(out, profile, providerLines(providerRows(reg), outputTheme(profile)))
 }
 
-// describeLocalReadiness reports whether a local model server can be reached,
-// which is what "ready" means for this provider.
+// stateNotSet is a provider whose credential is simply absent: not a fault,
+// so it is drawn quieter than unavailable or misconfigured.
+const stateNotSet = "not set"
+
+// anthropicWorkspaceEnv names the workspace an API key that is not scoped to
+// one acts in. It is the name the vendor's SDKs read for the same id under
+// workload identity federation.
+const anthropicWorkspaceEnv = "ANTHROPIC_WORKSPACE_ID"
+
+// providerRow is what `manvi providers` found for one backend, before any of
+// it is styled.
+type providerRow struct {
+	name  string
+	state string
+	// source is the variable the credential came from; facts follow it.
+	source string
+	facts  []string
+	// setVars are the variables any one of which would supply the missing
+	// credential, and doc is where such a key is issued.
+	setVars []string
+	doc     string
+}
+
+// providerRows answers for every registered provider, ready ones first.
+func providerRows(reg *flags.Registry) []providerRow {
+	statuses := credentials.NewResolver().Statuses()
+	rows := make([]providerRow, 0, len(statuses))
+	for _, status := range statuses {
+		row := providerRow{name: status.Provider}
+		switch {
+		case status.Provider == local.Name:
+			// The local provider's readiness is not a credential question. Its
+			// servers are on loopback and ignore authorisation, so a credential
+			// line reported "unavailable" for a provider that was working — the
+			// one report an operator most needed to be right, since local is the
+			// provider they are least likely to have configured on purpose.
+			r := localReadiness(reg)
+			row.state, row.facts = r.State, []string{r.Detail}
+		case status.Present:
+			row.state, row.source = stateReady, status.Source
+			row.facts = []string{plural(status.Length, "char")}
+			if status.Provider == anthropic.Name {
+				// Reported here because a workspace the API will refuse is the
+				// difference between a key that works and one that 400s.
+				id, err := anthropic.ParseWorkspaceID(os.Getenv(anthropicWorkspaceEnv))
+				switch {
+				case err != nil:
+					row.state, row.facts = stateMisconfigured, []string{anthropicWorkspaceEnv + ": " + err.Error()}
+				case id != "":
+					row.facts = append(row.facts, "workspace "+id)
+				}
+			}
+		case len(status.EnvVars) > 0:
+			row.state, row.setVars, row.doc = stateNotSet, status.EnvVars, status.Doc
+		default:
+			row.state, row.facts = stateUnavailable, []string{status.Detail}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].state == stateReady && rows[j].state != stateReady
+	})
+	return rows
+}
+
+// providerLines lays the rows out as a table: a status mark, the provider, its
+// state, and what was found or what to set — with where to get a key on a
+// line of its own beneath.
+func providerLines(rows []providerRow, th tui.Theme) []render.Line {
+	g := th.Glyphs()
+	// Body text keeps the terminal's own foreground: the theme's is chosen for
+	// the face's painted background, and on a light terminal the dark theme's
+	// near-white would vanish.
+	base, strong := render.Style{}, render.Style{Attrs: render.Bold}
+	accent, muted, subtle := onTerminal(th.AccentStyle()), onTerminal(th.Muted()), onTerminal(th.Subtle())
+
+	mark := func(state string) (string, render.Style) {
+		switch state {
+		case stateReady:
+			return g.Pass, onTerminal(th.Status(tui.StatusPass))
+		case stateNotSet:
+			return g.Bullet, subtle
+		}
+		return g.Warn, onTerminal(th.Status(tui.StatusWarn))
+	}
+
+	ready, markW, nameW, stateW := 0, 0, 0, 0
+	for _, row := range rows {
+		if row.state == stateReady {
+			ready++
+		}
+		glyph, _ := mark(row.state)
+		markW = max(markW, render.StringWidth(glyph))
+		nameW = max(nameW, render.StringWidth(row.name))
+		stateW = max(stateW, render.StringWidth(row.state))
+	}
+
+	lines := []render.Line{
+		render.Styled("providers", accent).Append("  ", base).
+			Append(fmt.Sprintf("%d of %d ready", ready, len(rows)), muted),
+		nil,
+	}
+	for _, row := range rows {
+		glyph, glyphStyle := mark(row.state)
+		stateStyle := glyphStyle
+		if row.state == stateNotSet {
+			stateStyle = muted
+		}
+		line := render.Styled("  ", base).
+			Concat(render.Styled(glyph, glyphStyle).Pad(markW, base)).Append(" ", base).
+			Concat(render.Styled(row.name, strong).Pad(nameW, base)).Append("  ", base).
+			Concat(render.Styled(row.state, stateStyle).Pad(stateW, base)).Append("  ", base)
+		indent := line.Width()
+
+		sep := ""
+		if row.source != "" {
+			line = line.Append(row.source, base)
+			sep = " · "
+		}
+		for _, fact := range row.facts {
+			line = line.Append(sep+fact, muted)
+			sep = " · "
+		}
+		for i, v := range row.setVars {
+			switch {
+			case i == 0:
+				line = line.Append("set ", muted)
+			case i == len(row.setVars)-1:
+				line = line.Append(" or ", muted)
+			default:
+				line = line.Append(", ", muted)
+			}
+			line = line.Append(v, base)
+		}
+		lines = append(lines, line)
+		if row.doc != "" {
+			lines = append(lines, render.Styled(strings.Repeat(" ", indent), base).Append(row.doc, subtle))
+		}
+	}
+	return lines
+}
+
+// plural is "1 char" and "2 chars".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// readiness is one provider's answer to "could a turn run on this now": a
+// one-word state and the detail behind it.
+type readiness struct {
+	State  string // stateReady, stateUnavailable or stateMisconfigured
+	Detail string
+}
+
+const (
+	stateReady         = "ready"
+	stateUnavailable   = "unavailable"
+	stateMisconfigured = "misconfigured"
+)
+
+// String is the one-line form doctor prints.
+func (r readiness) String() string { return r.State + " — " + r.Detail }
+
+// describeLocalReadiness is localReadiness as one line.
+func describeLocalReadiness(reg *flags.Registry) string { return localReadiness(reg).String() }
+
+// localReadiness reports whether a local model server can be reached, which is
+// what "ready" means for this provider.
 //
 // It is bounded tightly and never fails the command: `manvi providers` is a
 // configuration report, and a scan that could not finish must degrade to
 // saying so rather than turn the whole listing into an error.
-func describeLocalReadiness(reg *flags.Registry) string {
+func localReadiness(reg *flags.Registry) readiness {
 	// Settings first, before any server is contacted.
 	//
 	// doctor is the one command whose whole job is "is my configuration
@@ -681,12 +836,12 @@ func describeLocalReadiness(reg *flags.Registry) string {
 	// localConfig is the same resolution a real run performs, so this cannot
 	// drift from what it is certifying.
 	if _, err := localConfig(reg); err != nil {
-		return "misconfigured — " + err.Error()
+		return readiness{stateMisconfigured, err.Error()}
 	}
 
 	declared, origin, err := reg.String(flags.LLMLocalBaseURL)
 	if err != nil {
-		return "unavailable — " + err.Error()
+		return readiness{stateUnavailable, err.Error()}
 	}
 	resolver := credentials.NewResolver()
 	resolve := func() (credentials.Secret, error) { return resolver.Resolve(local.Name) }
@@ -706,12 +861,12 @@ func describeLocalReadiness(reg *flags.Registry) string {
 	servers := local.Scan(ctx, opts)
 	switch {
 	case len(servers) == 0 && origin != flags.OriginDefault:
-		return fmt.Sprintf("unavailable — nothing answered %s (%s)", declared, origin)
+		return readiness{stateUnavailable, fmt.Sprintf("nothing answered %s (%s)", declared, origin)}
 	case len(servers) == 0:
-		return "unavailable — no local server answered; run 'manvi local'"
+		return readiness{stateUnavailable, "no local server answered; run 'manvi local'"}
 	case len(servers) == 1:
-		return fmt.Sprintf("ready — %s, %d model(s)", servers[0].Describe(), len(servers[0].Models))
+		return readiness{stateReady, fmt.Sprintf("%s, %d model(s)", servers[0].Describe(), len(servers[0].Models))}
 	default:
-		return fmt.Sprintf("ready — %d servers found; run 'manvi local'", len(servers))
+		return readiness{stateReady, fmt.Sprintf("%d servers found; run 'manvi local'", len(servers))}
 	}
 }
