@@ -1,6 +1,8 @@
 package devcouncil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -448,6 +450,21 @@ func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create 
 	return next, id, nil
 }
 
+// Seams for the durability steps of a write. They are variables so a test can
+// make an fsync or a close fail, which no real disk will do on demand; nothing
+// else assigns them.
+var (
+	syncFile  = func(f *os.File) error { return f.Sync() }
+	closeFile = func(f *os.File) error { return f.Close() }
+	syncDir   = func(d *os.Root) error {
+		h, err := d.Open(".")
+		if err != nil {
+			return err
+		}
+		return errors.Join(h.Sync(), h.Close())
+	}
+)
+
 // leafName is the final component of the pinned path.
 func (p *pinnedTarget) leafName() string { return p.parts[len(p.parts)-1] }
 
@@ -496,7 +513,13 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 		}
 		return fmt.Errorf("opening %q: %w", p.rel, err)
 	}
-	defer f.Close()
+	// Closed explicitly on the paths that matter, because a close error is
+	// where some failures are reported; this only covers the early returns.
+	defer func() {
+		if f != nil {
+			_ = f.Close()
+		}
+	}()
 
 	openedID, err := p.checkOpened(f, chain, leaf, "write")
 	if err != nil {
@@ -519,17 +542,147 @@ func (p *pinnedTarget) Write(data []byte, perm fs.FileMode) error {
 		return &aliasRefusal{rel: p.rel, links: links, during: "write"}
 	}
 
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncating %q: %w", p.rel, err)
+	if !p.targetExisted {
+		// This call created the file, so a failure takes it away again: a
+		// half-written file nobody had before is not a result.
+		err := writeAndClose(f, data)
+		f = nil
+		if err != nil {
+			return errors.Join(fmt.Errorf("writing %q: %w", p.rel, err), p.discardCreated(chain, leaf, openedID))
+		}
+		return p.publishDir(chain)
 	}
+
+	// The file existed, so it is never written in place: a write that fails
+	// part-way (ENOSPC, EDQUOT, EIO) would leave the operator's file truncated
+	// or partial with the original gone. The new content goes to a sibling
+	// inside the verified parent, is made durable, and replaces the original
+	// by rename only after the original is proved to still be the pinned
+	// file. Links beyond one name were refused above, so no alias is left
+	// pointing at the old content. What a rename does not carry over —
+	// ownership, ACLs, extended attributes — is the cost of the guarantee;
+	// the permission bits are kept.
+	mode := openedMode(f)
+	if err := f.Close(); err != nil {
+		f = nil
+		return fmt.Errorf("closing %q: %w", p.rel, err)
+	}
+	f = nil
+	return p.replaceByRename(chain, leaf, data, mode)
+}
+
+// maybeChangedError is a write failure that happened after the target's bytes
+// may already have changed, so the caller must still report the path as
+// written: a checker told nothing changed would certify the old file.
+type maybeChangedError struct{ err error }
+
+func (e *maybeChangedError) Error() string { return e.err.Error() }
+func (e *maybeChangedError) Unwrap() error { return e.err }
+
+// WriteMayHaveChanged reports whether a failed write may have changed the file.
+func WriteMayHaveChanged(err error) bool {
+	var changed *maybeChangedError
+	return errors.As(err, &changed)
+}
+
+// openedMode is the permission bits of an open file, or 0o644 when they cannot
+// be read.
+func openedMode(f *os.File) fs.FileMode {
+	if info, err := f.Stat(); err == nil {
+		return info.Mode().Perm()
+	}
+	return 0o644
+}
+
+// writeAndClose writes data, makes it durable, and closes f, returning the
+// first failure. f is closed on every path.
+func writeAndClose(f *os.File, data []byte) error {
 	if _, err := f.Write(data); err != nil {
+		return errors.Join(err, closeFile(f))
+	}
+	if err := syncFile(f); err != nil {
+		return errors.Join(err, closeFile(f))
+	}
+	return closeFile(f)
+}
+
+// discardCreated removes a file this call created and failed to finish, but
+// only if the name still denotes that file.
+func (p *pinnedTarget) discardCreated(chain *verifiedChain, leaf string, id componentIdentity) error {
+	li, err := chain.parent().Lstat(leaf)
+	if err != nil {
+		return nil
+	}
+	if cur, ok := identityOf(li); !ok || !cur.Equal(id) {
+		return nil
+	}
+	if err := chain.parent().Remove(leaf); err != nil {
+		// The partial file is still there, so the path did change.
+		return &maybeChangedError{fmt.Errorf("removing the unfinished %q: %w", p.rel, err)}
+	}
+	return nil
+}
+
+// publishDir makes the new directory entry durable. The data was synced
+// already; this is what keeps the name after a crash. A failure here comes
+// after the file is in place, so it is reported as a possible change.
+func (p *pinnedTarget) publishDir(chain *verifiedChain) error {
+	if err := syncDir(chain.parent()); err != nil {
+		return &maybeChangedError{fmt.Errorf("syncing the directory of %q: %w", p.rel, err)}
+	}
+	return nil
+}
+
+// replaceByRename writes data to a temp sibling of the leaf and renames it
+// over the pinned file.
+func (p *pinnedTarget) replaceByRename(chain *verifiedChain, leaf string, data []byte, mode fs.FileMode) error {
+	parent := chain.parent()
+	var (
+		tmp  string
+		tf   *os.File
+		open error
+	)
+	for attempt := 0; attempt < 16; attempt++ {
+		var nonce [8]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return fmt.Errorf("naming a temporary file beside %q: %w", p.rel, err)
+		}
+		tmp = fmt.Sprintf(".%s.%s.tmp", leaf, hex.EncodeToString(nonce[:]))
+		tf, open = safefile.OpenNoFollow(parent, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if !errors.Is(open, fs.ErrExist) {
+			break
+		}
+	}
+	if open != nil {
+		return fmt.Errorf("creating a temporary file beside %q: %w", p.rel, open)
+	}
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = parent.Remove(tmp)
+		}
+	}()
+
+	// OpenFile applies the umask; the mode the operator's file had is restored
+	// exactly.
+	if err := tf.Chmod(mode); err != nil {
+		return errors.Join(fmt.Errorf("setting the mode of the replacement for %q: %w", p.rel, err), closeFile(tf))
+	}
+	if err := writeAndClose(tf, data); err != nil {
 		return fmt.Errorf("writing %q: %w", p.rel, err)
 	}
-	// Best-effort durability: the content is in the page cache either way,
-	// but a crash immediately after a reported success should not leave a
-	// zero-length file behind.
-	_ = f.Sync()
-	return nil
+	// The window since the pin was verified included the whole write.
+	if err := p.verifyLeafIdentity(chain, leaf); err != nil {
+		return err
+	}
+	if err := chain.stillLinked(p.parts); err != nil {
+		return err
+	}
+	if err := parent.Rename(tmp, leaf); err != nil {
+		return fmt.Errorf("replacing %q: %w", p.rel, err)
+	}
+	renamed = true
+	return p.publishDir(chain)
 }
 
 // checkOpened proves that the descriptor just opened is a regular file that is

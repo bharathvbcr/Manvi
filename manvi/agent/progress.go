@@ -175,7 +175,11 @@ func (p *progressTracker) mutated(name string, result tools.Result) bool {
 	if p == nil {
 		return false
 	}
-	return p.mutating[name] && !result.IsError && result.Rule == ""
+	// A failed call that still names the paths it changed (Wrote is set only
+	// for bytes that landed) did mutate: a write that failed at its last
+	// durability step has already replaced the file, and the end-of-turn check
+	// must look at it.
+	return p.mutating[name] && (!result.IsError || len(result.Wrote) > 0) && result.Rule == ""
 }
 
 // endStep folds a finished step into the streak. It returns what the step costs
