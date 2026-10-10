@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samber/mo"
-
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
@@ -329,27 +327,27 @@ func (a *Adapter) Survey(ctx context.Context, withCapabilities bool) (Server, er
 // bearer, which some servers reject as malformed where they would have
 // accepted no header at all.
 //
-// mo.Option gives absence one spelling and leaves the error channel for
-// failures only. It replaces credentialOrNone, which was this same Option
+// The present result gives absence one spelling and leaves the error channel
+// for failures only. It replaces credentialOrNone, which was this same pair
 // hand-rolled at one call site: a function whose name said "or none" while its
 // return type had no way to say it.
-func credential(resolve func() (credentials.Secret, error)) (mo.Option[credentials.Secret], error) {
+func credential(resolve func() (credentials.Secret, error)) (secret credentials.Secret, present bool, err error) {
 	if resolve == nil {
-		return mo.None[credentials.Secret](), nil
+		return credentials.Secret{}, false, nil
 	}
-	secret, err := resolve()
+	secret, err = resolve()
 	if err != nil {
 		var missing *credentials.ErrMissing
 		if errors.As(err, &missing) {
 			// Absent is the normal case on loopback, not a failure.
-			return mo.None[credentials.Secret](), nil
+			return credentials.Secret{}, false, nil
 		}
-		return mo.None[credentials.Secret](), err
+		return credentials.Secret{}, false, err
 	}
 	if !secret.Present() {
-		return mo.None[credentials.Secret](), nil
+		return credentials.Secret{}, false, nil
 	}
-	return mo.Some(secret), nil
+	return secret, true, nil
 }
 
 // ollamaVersion is the useful part of Ollama's /api/version.
