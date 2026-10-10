@@ -397,7 +397,11 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 	if err != nil {
 		return unavailable(fmt.Sprintf("patch for %s", object), err)
 	}
-	patch := patchRaw
+	// Filtered before it is cut, so the cap measures what the model will see
+	// and a credential section cannot be what survives it. This also refuses
+	// `rev:path`, which prints a blob and no diff: text no section owns is
+	// withheld as unattributed.
+	patch, withheld := withholdHistoryDiff(patchRaw)
 	var degraded []string
 	if len(patch) > maxShowPatchBytes {
 		patch = patch[:maxShowPatchBytes]
@@ -414,6 +418,9 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 		"date":    parts[3],
 		"subject": parts[4],
 		"patch":   patch,
+	}
+	if w := withheldPayload(withheld); w != nil {
+		payload["withheld"] = w
 	}
 	res := ok(payload)
 	if len(degraded) > 0 {

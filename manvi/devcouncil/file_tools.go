@@ -191,7 +191,13 @@ func (r *Registry) readFile(ctx context.Context, call tools.Call) tools.Result {
 	// the rung does not consult the task for anything but the ID it records.
 	// A session holding none still has its reads judged.
 	task, _ := r.currentTask(ctx)
-	decision, err := r.deps.Gate.EvaluateRead(args.Path, task)
+	//
+	// Judged by rel, the path the read will actually open, and not by what
+	// the model typed: containedRel resolves a short name against the process
+	// working directory when it does not exist under the root, so with the
+	// cwd in secrets/ the name "token.txt" was judged as a plain file and
+	// the read opened secrets/token.txt.
+	decision, err := r.deps.Gate.EvaluateRead(rel, task)
 	if err != nil {
 		return unavailable("read policy decision", err)
 	}
@@ -602,21 +608,21 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	// result presented as a complete one is the failure this file's other
 	// notes exist to prevent.
 	withheld := 0
-	withheldFiles := map[string]struct{}{}
+	withheldFiles := map[string]string{}
 	kept := matches[:0]
 	// A file's matches arrive together, and the verdict is per file: it
 	// resolves the path through every symlink on the way, so it is asked once
 	// per file rather than once per matching line.
-	refused := map[string]bool{}
+	refused := map[string]string{}
 	for _, m := range matches {
-		verdict, seen := refused[m.Path]
+		rule, seen := refused[m.Path]
 		if !seen {
-			verdict = policy.ClassifyRead(r.deps.Root, m.Path) != policy.ReadAllowed
-			refused[m.Path] = verdict
+			rule = r.readRefusal(m.Path)
+			refused[m.Path] = rule
 		}
-		if verdict {
+		if rule != "" {
 			withheld++
-			withheldFiles[m.Path] = struct{}{}
+			withheldFiles[m.Path] = rule
 			continue
 		}
 		kept = append(kept, m)
@@ -643,7 +649,11 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 		payload["withheld"] = map[string]any{
 			"matches": withheld,
 			"files":   names,
-			"note": fmt.Sprintf("%d match(es) in %d credential file(s) were withheld by the read "+
+			// The rule per file, because a path withheld for being
+			// hard-linked is not a credential file by name and the model
+			// should not be told it is.
+			"rules": withheldFiles,
+			"note": fmt.Sprintf("%d match(es) in %d file(s) were withheld by the read "+
 				"gate, so this result does not cover them", withheld, len(names)),
 		}
 	}

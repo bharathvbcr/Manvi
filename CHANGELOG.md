@@ -264,6 +264,18 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- The read gate now covers every tool that can return repository bytes, through
+  one owner (`readRefusal`, `withholdDiff`, `withholdHistoryDiff` in
+  `devcouncil/readauth.go`). `devcouncil_get_diff` withheld nothing, so an
+  untracked or modified `.env` was rendered; `devcouncil_grep` and `get_diff`
+  judged the name only, so a hard link to `.env` leaked; `devcouncil_git_show`
+  printed a patch that adds a credential from history; `devcouncil_read_file`
+  judged the typed name but opened the path the process working directory
+  resolved it to; and the code graph's source spans were not judged at all.
+  Each result now names what it withheld and the rule (`path.secret_read`, or
+  `path.aliased_read` for a file with more than one name). A test enumerates
+  the registry's read-only tools and fails if one is not classified.
+
 - Secrets forwarded to an MCP server (declared `env` values and
   `env_passthrough` variables) are now scrubbed from what the server says on
   stderr, which every failed call attaches to its error. The tool, session-log,
