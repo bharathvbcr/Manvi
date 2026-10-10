@@ -660,6 +660,40 @@ func (l *Log) SetSensitiveScrubber(scrub func(string) string) {
 	l.withholdChunks = true
 }
 
+// RestoreSensitiveLog sanitizes imported events before their first projection.
+// Signed continuation remains private and unchanged, as in SetSensitiveScrubber.
+//
+// It is the restore a consumer that treats a resumed file as untrusted needs
+// (Jarvis resumes discovery sessions through it): RestoreLog then
+// SetSensitiveScrubber would project the unscrubbed history first, and the
+// scrubber cannot reach events that are already recorded.
+func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error) {
+	if scrub == nil {
+		return nil, errors.New("session: sensitive restore requires scrubber")
+	}
+	clean := cloneEvents(events)
+	for i := range clean {
+		if clean[i].Type == AssistantChunk {
+			clean[i].Data = json.RawMessage(`{"withheld":true}`)
+			continue
+		}
+		if len(clean[i].Data) == 0 {
+			continue
+		}
+		raw, err := rewritePayload(clean[i].Data, scrub, false, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
+		}
+		clean[i].Data = raw
+	}
+	log, err := RestoreLog(clean)
+	if err != nil {
+		return nil, err
+	}
+	log.SetSensitiveScrubber(scrub)
+	return log, nil
+}
+
 // Events returns a copy of the log.
 func (l *Log) Events() []Event {
 	l.mu.RLock()

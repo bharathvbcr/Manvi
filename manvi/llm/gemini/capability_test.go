@@ -148,3 +148,19 @@ func TestReplayabilityIsClaimedOnlyForTheSameModel(t *testing.T) {
 		}
 	}
 }
+
+// gemini-3.8-flash is the model Jarvis's campaign runs. It must be served, and
+// its stated limits must be present, because budget.Provider refuses to meter a
+// model whose limits it cannot read.
+func TestGemini38FlashIsServedWithItsStatedLimits(t *testing.T) {
+	c, ok := Capability("gemini-3.8-flash")
+	if !ok {
+		t.Fatal("gemini-3.8-flash is not served")
+	}
+	if c.ContextWindow != 1_048_576 || c.MaxOutputTokens != 65_536 {
+		t.Fatalf("limits = %d/%d", c.ContextWindow, c.MaxOutputTokens)
+	}
+	if err := ValidateRequest(llm.Request{Model: "gemini-3.8-flash", Effort: "high"}); err != nil {
+		t.Fatalf("a served effort level was refused: %v", err)
+	}
+}
