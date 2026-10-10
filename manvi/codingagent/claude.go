@@ -44,7 +44,6 @@ const (
 	claudeMaxPending  = 32
 	claudeMaxRequests = 2048
 	claudeMaxQueue    = 64
-	claudeMaxDeferred = 128
 )
 
 type claudePending struct {
@@ -665,37 +664,8 @@ func (s *Claude) ValidateResponse(request Request, response Response) error {
 }
 
 func (s *Claude) drain() error {
-	for i := 0; i < claudeMaxDeferred; i++ {
-		var raw []byte
-		if len(s.queue) > 0 {
-			raw = s.queue[0]
-			s.queue = s.queue[1:]
-		} else {
-			select {
-			case next, ok := <-s.wire.frames:
-				if !ok {
-					return errors.New("Claude connection ended before response validation")
-				}
-				if next.err != nil {
-					return next.err
-				}
-				raw = next.raw
-			default:
-				return s.wire.ctx.Err()
-			}
-		}
-		e, meaningful, err := s.event(raw)
-		if err != nil {
-			return err
-		}
-		if meaningful {
-			if len(s.deferred) >= claudeMaxDeferred {
-				return errors.New("Claude response preflight exceeded its event budget")
-			}
-			s.deferred = append(s.deferred, e)
-		}
-	}
-	return errors.New("Claude response preflight could not drain its bounded event backlog")
+	return drainBacklog("Claude", s.wire, &s.queue, &s.deferred,
+		func(next wireRead) []byte { return next.raw }, s.event)
 }
 
 func (s *Claude) response(request Request, response Response) (any, error) {
@@ -703,11 +673,7 @@ func (s *Claude) response(request Request, response Response) (any, error) {
 		return nil, ErrCallbackWithdrawn
 	}
 	p := s.pending[request.ID]
-	if p == nil || p.sent || s.finished || !time.Now().Before(p.source.ExpiresAt) ||
-		request.Payload != p.source.Payload || request.Digest != p.source.Digest ||
-		payloadDigest(request.Payload) != p.source.Digest ||
-		request.ThreadID != p.source.ThreadID || request.TurnID != p.source.TurnID ||
-		request.Kind != p.source.Kind {
+	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
 		return nil, errors.New("Claude callback is stale, changed or already consumed")
 	}
 	if len(response.Answers) > 0 || (response.Decision != "allow_once" && response.Decision != "deny") {

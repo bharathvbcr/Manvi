@@ -590,41 +590,12 @@ func (s *Codex) ValidateResponse(request Request, response Response) error {
 	return err
 }
 func (s *Codex) drain() error {
-	for i := 0; i < 128; i++ {
-		var p packet
-		if len(s.queue) > 0 {
-			p = s.queue[0]
-			s.queue = s.queue[1:]
-		} else {
-			select {
-			case next, ok := <-s.wire.frames:
-				if !ok {
-					return errors.New("Codex connection ended before response validation")
-				}
-				if next.err != nil {
-					return next.err
-				}
-				p = next.value
-			default:
-				return s.wire.ctx.Err()
-			}
-		}
-		e, meaningful, err := s.event(p)
-		if err != nil {
-			return err
-		}
-		if meaningful {
-			if len(s.deferred) >= 128 {
-				return errors.New("Codex response preflight exceeded its event budget")
-			}
-			s.deferred = append(s.deferred, e)
-		}
-	}
-	return errors.New("Codex response preflight could not drain its bounded event backlog")
+	return drainBacklog("Codex", s.wire, &s.queue, &s.deferred,
+		func(next wireRead) packet { return next.value }, s.event)
 }
 func (s *Codex) response(request Request, response Response) (json.RawMessage, error) {
 	p := s.pending[request.ID]
-	if p == nil || p.sent || s.finished || !time.Now().Before(p.source.ExpiresAt) || request.Payload != p.source.Payload || request.Digest != p.source.Digest || payloadDigest(request.Payload) != p.source.Digest || request.ThreadID != p.source.ThreadID || request.TurnID != p.source.TurnID || request.Kind != p.source.Kind {
+	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
 		return nil, errors.New("Codex callback is stale, changed or already consumed")
 	}
 	var raw json.RawMessage
