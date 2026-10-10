@@ -93,6 +93,11 @@ type managedJob struct {
 type managedCallback struct {
 	request  codingagent.Request
 	captured store.DecisionRequest
+	// delivered is set once the human's decision was written to the provider.
+	// From then on nothing is awaited from a person, so the expiry that guards
+	// an unanswered callback no longer applies; the row is already resolved,
+	// whether or not the provider ever confirms (Codex does, Claude does not).
+	delivered bool
 }
 type ManagedPrepared struct {
 	ProtocolVersion int    `json:"protocol_version"`
@@ -160,6 +165,19 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 		return ManagedPrepared{}, errors.New("managed runner is closed")
 	}
 	job := r.jobs[request.ID]
+	if job != nil {
+		// A finished job is history, not a claim on the id. One that failed
+		// before runs.claim succeeded left the store row prepared, so the
+		// corrected retry (a new request identity included) must be admitted;
+		// one that ran to the end is refused by the store, which no longer
+		// finds the attempt prepared.
+		select {
+		case <-job.done:
+			delete(r.jobs, request.ID)
+			job = nil
+		default:
+		}
+	}
 	if job == nil {
 		active := 0
 		for id, j := range r.jobs {
@@ -494,7 +512,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	lastPoll := time.Time{}
 	for err == nil {
 		for _, callback := range job.callbacks {
-			if !time.Now().Before(callback.request.ExpiresAt) {
+			if !callback.delivered && !time.Now().Before(callback.request.ExpiresAt) {
 				err = errors.New("the managed provider request expired without confirmation")
 				break
 			}
@@ -551,7 +569,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			if err != nil {
 				break
 			}
-			job.callbacks[e.Request.ID] = &managedCallback{*e.Request, capture}
+			job.callbacks[e.Request.ID] = &managedCallback{request: *e.Request, captured: capture}
 		}
 		if e.ResolvedID != "" {
 			callback := job.callbacks[e.ResolvedID]
@@ -561,6 +579,15 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			}
 			err = r.resolve(ctx, job, callback, "resolved", "Provider confirmed callback resolution")
 			delete(job.callbacks, e.ResolvedID)
+		}
+		if e.CancelledID != "" {
+			// A callback the provider withdrew before it was answered. One
+			// already delivered has nothing to withdraw, and one never captured
+			// is not ours to resolve.
+			if callback := job.callbacks[e.CancelledID]; callback != nil && !callback.delivered {
+				err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason)
+				delete(job.callbacks, e.CancelledID)
+			}
 		}
 		if e.Text != "" {
 			remaining := 131072 - job.output.Len()
@@ -584,7 +611,13 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	receiptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	for _, callback := range job.callbacks {
-		if resolveErr := r.resolve(receiptCtx, job, callback, "cancelled", "The managed connection ended; callback delivery may be uncertain"); resolveErr != nil {
+		state, reason := "cancelled", "The managed connection ended; callback delivery may be uncertain"
+		if callback.delivered {
+			// Retries the receipt written at delivery, which is a no-op once the
+			// row is resolved.
+			state, reason = "resolved", deliveredReason
+		}
+		if resolveErr := r.resolve(receiptCtx, job, callback, state, reason); resolveErr != nil {
 			err = errors.Join(err, resolveErr)
 		}
 	}
@@ -663,6 +696,13 @@ func (r *ManagedRunner) decisions(ctx context.Context, job *managedJob) error {
 			return err
 		}
 		if err = job.provider.ValidateResponse(callback.request, response); err != nil {
+			if errors.Is(err, codingagent.ErrCallbackWithdrawn) {
+				if err = r.resolve(ctx, job, callback, "cancelled", withdrawnReason); err != nil {
+					return err
+				}
+				delete(job.callbacks, item.Request)
+				continue
+			}
 			return err
 		}
 		if _, err = r.client.ClaimDecision(ctx, callback.captured, id, item.Revision); err != nil {
@@ -671,9 +711,24 @@ func (r *ManagedRunner) decisions(ctx context.Context, job *managedJob) error {
 		if err = job.provider.Respond(ctx, callback.request, response); err != nil {
 			return err
 		}
+		// Respond succeeded, so the decision is delivered. Recorded now rather
+		// than waiting for a provider confirmation: only Codex sends one, and a
+		// Claude approval was otherwise left live until the run ended and then
+		// recorded as cancelled, the opposite of what happened.
+		callback.delivered = true
+		if err = r.resolve(ctx, job, callback, "resolved", deliveredReason); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+// deliveredReason is the receipt for a decision written to the provider.
+const deliveredReason = "Decision delivered to the provider"
+
+// withdrawnReason is the receipt for a callback the provider cancelled.
+const withdrawnReason = "The provider withdrew the request before it was answered"
+
 func (r *ManagedRunner) resolve(ctx context.Context, job *managedJob, callback *managedCallback, state, reason string) error {
 	input, err := json.Marshal(struct {
 		ID string `json:"id"`
