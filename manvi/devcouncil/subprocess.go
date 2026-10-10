@@ -43,6 +43,10 @@ type procResult struct {
 	// stdoutNote and stderrNote say what each cap discarded, empty when the
 	// capture is whole. A capped capture is never a complete one.
 	stdoutNote, stderrNote string
+	// stdoutDropped is how many bytes of stdout the cap discarded, so a caller
+	// can know the whole size of what the child wrote without keeping all of
+	// it. Zero exactly when stdoutNote is empty.
+	stdoutDropped int
 	// exitCode is the child's own exit status; -1 when a signal ended it.
 	exitCode int
 	// err is nil on a clean exit, an *exec.ExitError on a non-zero one, and
@@ -123,9 +127,9 @@ func runProc(ctx context.Context, spec procSpec) procResult {
 	})
 
 	res := procResult{}
-	res.stdout, res.stdoutNote = stdout.snapshot()
+	res.stdout, res.stdoutNote, res.stdoutDropped = stdout.snapshot()
 	if !spec.combined {
-		res.stderr, res.stderrNote = stderr.snapshot()
+		res.stderr, res.stderrNote, _ = stderr.snapshot()
 	}
 	if timedOut {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -166,11 +170,12 @@ func (c *lockedCapture) Write(p []byte) (int, error) {
 	return c.lw.Write(p)
 }
 
-// snapshot copies what has been captured so far and the truncation note.
-func (c *lockedCapture) snapshot() ([]byte, string) {
+// snapshot copies what has been captured so far, the truncation note, and how
+// many bytes the cap discarded.
+func (c *lockedCapture) snapshot() ([]byte, string, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return bytes.Clone(c.buf.Bytes()), c.lw.truncationNote()
+	return bytes.Clone(c.buf.Bytes()), c.lw.truncationNote(), c.lw.dropped
 }
 
 // limitWriter forwards at most limit bytes to w and silently discards the rest,
@@ -226,6 +231,18 @@ func (l *limitWriter) truncationNote() string {
 	if !l.truncated() {
 		return ""
 	}
+	return truncationNoteFor(l.wrote, l.dropped)
+}
+
+// truncationNoteFor is the wording of a capped capture, given what was kept
+// and what was dropped.
+//
+// Separate from truncationNote so a caller that captured more than its share
+// and cut the rest itself — the untracked-file fan-out in verify.go does —
+// reports the cut in exactly the words the cap would have used. Two spellings
+// of one fact would be a diff whose degradation notes depend on how it was
+// scheduled.
+func truncationNoteFor(wrote, dropped int) string {
 	return fmt.Sprintf("[output truncated: %d bytes captured, %d further bytes discarded]",
-		l.wrote, l.dropped)
+		wrote, dropped)
 }

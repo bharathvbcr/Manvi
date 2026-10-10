@@ -604,8 +604,17 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	withheld := 0
 	withheldFiles := map[string]struct{}{}
 	kept := matches[:0]
+	// A file's matches arrive together, and the verdict is per file: it
+	// resolves the path through every symlink on the way, so it is asked once
+	// per file rather than once per matching line.
+	refused := map[string]bool{}
 	for _, m := range matches {
-		if policy.ReadRefused(r.deps.Root, m.Path) {
+		verdict, seen := refused[m.Path]
+		if !seen {
+			verdict = policy.ReadRefused(r.deps.Root, m.Path)
+			refused[m.Path] = verdict
+		}
+		if verdict {
 			withheld++
 			withheldFiles[m.Path] = struct{}{}
 			continue
@@ -817,6 +826,61 @@ func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result 
 		decision)
 }
 
+// matchCandidates keeps the paths that match pattern, either whole or by their
+// last component, stopping once limit have matched.
+//
+// A path matches when fnmatch.Match accepts the path or its base name. That
+// rule is unchanged; what this skips is a second call whose answer is already
+// known. For a path pattern that is every base-name call, about a third of the
+// loop over a full 200,000-path listing; for a base-name pattern such as
+// "*.go" it is only the files at the top of the listed directory:
+//
+//   - A path with no '/' is its own base name, so the second call would repeat
+//     the first with the same arguments.
+//   - A pattern with a '/' before its first '[' can never match a base name.
+//     Every unit before the first '[' is a '*', a '?' or a literal — no
+//     bracket expression can have begun yet to swallow the '/' — so that '/'
+//     is a literal the matcher must consume against a '/' in the name, and a
+//     base name has none. A '/' after a '[' may sit inside a class, where a
+//     negated set matches non-'/' characters too, so that case is left to the
+//     matcher rather than reasoned about here. Note that "no '/' in the
+//     pattern" proves nothing the other way: in Python's fnmatch '*' crosses
+//     a separator.
+//
+// TestMatchCandidatesSkipsOnlyWhatCannotMatch pins this against the unskipped
+// rule over generated patterns, brackets and all.
+func matchCandidates(pattern string, paths []string, limit int) ([]string, bool) {
+	baseCanMatch := !slashBeforeFirstBracket(pattern)
+	matches := []string{}
+	for _, path := range paths {
+		if len(matches) >= limit {
+			return matches, true
+		}
+		if fnmatch.Match(pattern, path) {
+			matches = append(matches, path)
+			continue
+		}
+		if !baseCanMatch {
+			continue
+		}
+		if idx := strings.LastIndex(path, "/"); idx >= 0 && fnmatch.Match(pattern, path[idx+1:]) {
+			matches = append(matches, path)
+		}
+	}
+	return matches, false
+}
+
+// slashBeforeFirstBracket reports a literal '/' that no bracket expression can
+// contain: one that comes before any '[' at all. Bytes suffice — neither '/'
+// nor '[' can occur inside a multi-byte UTF-8 sequence.
+func slashBeforeFirstBracket(pattern string) bool {
+	head := pattern
+	if i := strings.IndexByte(pattern, '['); i >= 0 {
+		head = pattern[:i]
+	}
+	return strings.IndexByte(head, '/') >= 0
+}
+
 func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Pattern        string `json:"pattern"`
@@ -880,21 +944,7 @@ func (r *Registry) findFiles(ctx context.Context, call tools.Call) tools.Result 
 	// shared with crates/dc-glob; moving the matching across the boundary would
 	// fork the glob semantics to gain nothing. What was wrong was never the
 	// matching — it was that there were two walks.
-	matches := []string{}
-	truncated := false
-	for _, path := range listing.Paths {
-		if len(matches) >= args.MaxResults {
-			truncated = true
-			break
-		}
-		name := path
-		if idx := strings.LastIndex(path, "/"); idx >= 0 {
-			name = path[idx+1:]
-		}
-		if fnmatch.Match(args.Pattern, path) || fnmatch.Match(args.Pattern, name) {
-			matches = append(matches, path)
-		}
-	}
+	matches, truncated := matchCandidates(args.Pattern, listing.Paths, args.MaxResults)
 
 	payload := map[string]any{
 		"pattern":              args.Pattern,

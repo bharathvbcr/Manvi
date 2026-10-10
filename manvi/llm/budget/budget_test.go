@@ -273,14 +273,13 @@ func TestFileStaysBoundedAsSpendAccumulates(t *testing.T) {
 func TestFailedPersistenceKeepsTheReservation(t *testing.T) {
 	l := testLedger(t, 400)
 	id := accepted(t, l, 200)
-	dir := filepath.Dir(l.path)
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
+	// The save is made to fail where a read-only directory would fail it, at
+	// creating the replacement file. Making the directory read-only did that
+	// only for an unprivileged user; run as root, the save succeeded and the
+	// test reported a broken ledger instead of a broken setup.
+	defer func(saved func(string, string) (*os.File, error)) { createTemp = saved }(createTemp)
+	createTemp = func(string, string) (*os.File, error) { return nil, os.ErrPermission }
 	err := l.settle(id, 1)
-	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
-		t.Fatal(chmodErr)
-	}
 	if err == nil {
 		t.Fatal("failed save returned success")
 	}

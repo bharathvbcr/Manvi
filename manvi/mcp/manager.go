@@ -742,43 +742,52 @@ func (m *Manager) ListAllTools(ctx context.Context) ([]ServerTools, error) {
 		return nil, m.unavailable()
 	}
 	names := m.ServerNames()
-	var results []ServerTools
+	if len(names) == 0 {
+		return nil, nil
+	}
+	// Each server is surveyed independently, so they are surveyed at once: a
+	// cold server costs a spawn and a handshake, and one after another that
+	// summed across every configured server on a single tool call. Results
+	// keep the registration order.
+	results := make([]ServerTools, len(names))
+	sem := make(chan struct{}, maxConcurrentSurveys)
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			results[i] = m.surveyTools(ctx, name)
+		}()
+	}
+	wg.Wait()
+	return results, nil
+}
 
-	for _, name := range names {
-		// First check if static tools were declared in Open Plugin manifest
-		m.mu.RLock()
-		plugin := m.plugins[name]
-		m.mu.RUnlock()
+// maxConcurrentSurveys bounds how many servers ListAllTools starts at once.
+const maxConcurrentSurveys = 8
 
-		if plugin != nil && len(plugin.Tools) > 0 {
-			results = append(results, ServerTools{
-				Server: name,
-				Tools:  plugin.Tools,
-			})
-			continue
-		}
-
-		// A failure here does not fail the whole survey — one bad server must
-		// not hide the others — but it is reported rather than skipped past.
-		client, err := m.Client(ctx, name)
-		if err != nil {
-			results = append(results, ServerTools{Server: name, Error: err.Error()})
-			continue
-		}
-
-		tools, err := client.ListTools(ctx)
-		if err != nil {
-			results = append(results, ServerTools{Server: name, Error: err.Error()})
-			continue
-		}
-
-		results = append(results, ServerTools{
-			Server: name,
-			Tools:  tools,
-		})
+// surveyTools is one server's entry in ListAllTools.
+func (m *Manager) surveyTools(ctx context.Context, name string) ServerTools {
+	// First check if static tools were declared in Open Plugin manifest
+	m.mu.RLock()
+	plugin := m.plugins[name]
+	m.mu.RUnlock()
+	if plugin != nil && len(plugin.Tools) > 0 {
+		return ServerTools{Server: name, Tools: plugin.Tools}
 	}
 
-	return results, nil
+	// A failure here does not fail the whole survey — one bad server must
+	// not hide the others — but it is reported rather than skipped past.
+	client, err := m.Client(ctx, name)
+	if err != nil {
+		return ServerTools{Server: name, Error: err.Error()}
+	}
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		return ServerTools{Server: name, Error: err.Error()}
+	}
+	return ServerTools{Server: name, Tools: tools}
 }
 
 // Unavailable returns why this manager will not talk to servers, or nil when it

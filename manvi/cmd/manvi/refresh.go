@@ -9,7 +9,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
@@ -114,7 +113,7 @@ func refreshFailure(err error) (string, []string) {
 // check with room to spare. Its generation comparison verifies what devmap
 // intended to render. Only reading the bytes back verifies what landed.
 func artifactDisagreements(graphPath string, rendered int) []string {
-	m, err := repomap.LoadIfPresent(graphPath)
+	m, err := loadGraph(graphPath)
 	if err != nil {
 		return []string{fmt.Sprintf(
 			"the graph artifact was written but could not be read back, so the scope rung will "+
@@ -330,7 +329,7 @@ func artifactDivergence(graphPath string, status *devmap.Status) []string {
 	if status == nil {
 		return nil
 	}
-	m, err := repomap.LoadIfPresent(graphPath)
+	m, err := loadGraph(graphPath)
 	if err != nil || m == nil {
 		// Absent or unreadable is not divergence; it is the unavailability the
 		// gate already records as repo_map.unavailable on every decision.

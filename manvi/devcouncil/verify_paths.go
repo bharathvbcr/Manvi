@@ -356,33 +356,24 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 
 	var b strings.Builder
 	b.WriteString(out)
-	var unrendered int
-	for i, path := range untracked {
-		if budget <= 0 {
-			unrendered = len(untracked) - i
-			break
-		}
-		// The literal /dev/null, which is git's own convention for the empty
-		// side of a diff and means the same on every platform — os.DevNull is
-		// "NUL" on Windows and git would read that as a filename.
-		added, addNote, addErr := runGitCapped(ctx, r.deps.Root, budget,
-			"diff", "--no-index", "--", "/dev/null", path)
-		if addErr != nil && added == "" {
+	// The same renderer gitDiff uses, so the two diffs of one new file cannot
+	// differ in anything but which files they were asked about.
+	renders, unrendered := renderUntracked(ctx, r.deps.Root, untracked, budget)
+	for _, u := range renders {
+		if u.err != nil {
 			// --no-index exits non-zero whenever it finds a difference, which
 			// is every time here, so an error with output is the ordinary
 			// case. An error with no output is a real one.
 			notes = append(notes, fmt.Sprintf(
 				"scoped_diff: %s could not be rendered (%v), so the gates did not read it",
-				path, addErr))
+				u.path, u.err))
 			continue
 		}
-		if addNote != "" {
-			added = trimPartialLine(added)
+		if u.note != "" {
 			notes = append(notes, fmt.Sprintf(
-				"scoped_diff: %s %s; the gates saw only the part above the cut", path, addNote))
+				"scoped_diff: %s %s; the gates saw only the part above the cut", u.path, u.note))
 		}
-		budget -= len(added)
-		b.WriteString(added)
+		b.WriteString(u.added)
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(

@@ -535,16 +535,24 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		raw = encoded
 	}
 
-	l.mu.Lock()
-	if t == AssistantChunk && l.withholdChunks {
+	// Everything up to the sequence number depends only on the payload and
+	// the scrubbing settings, so it runs before the write lock rather than
+	// under it. A scrubbed megabyte tool result is tens of milliseconds of
+	// re-encoding, and every reader of the log used to wait it out. The
+	// settings are installed before appending (see SetScrubber), so reading
+	// them once here sees what reading them under the write lock saw.
+	l.mu.RLock()
+	scrub, withholdChunks := l.scrub, l.withholdChunks
+	l.mu.RUnlock()
+
+	if t == AssistantChunk && withholdChunks {
 		// Even provider-assigned identifiers may contain sensitive fragments.
 		// Retain only the occurrence; complete messages carry useful content.
 		raw = json.RawMessage(`{"withheld":true}`)
 	}
-	if l.scrub != nil && len(raw) > 0 {
-		cleaned, err := rewritePayload(raw, l.scrub, false, nil, 0)
+	if scrub != nil && len(raw) > 0 {
+		cleaned, err := rewritePayload(raw, scrub, false, nil, 0)
 		if err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: scrubbing %s: %w", t, err)
 		}
 		raw = cleaned
@@ -553,7 +561,6 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	if t == UserMessage || t == AssistantMessage {
 		public, err := (Event{Type: t, Data: raw}).Public()
 		if err != nil {
-			l.mu.Unlock()
 			return Event{}, err
 		}
 		publicData = public.Data
@@ -565,22 +572,21 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	case UserMessage, AssistantMessage:
 		var data MessageData
 		if err := json.Unmarshal(raw, &data); err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
 		}
 		projected = data
 	case ToolResult:
 		var data ToolResultData
 		if err := json.Unmarshal(raw, &data); err != nil {
-			l.mu.Unlock()
 			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
 		}
 		if err := validateToolContent(data); err != nil {
-			l.mu.Unlock()
 			return Event{}, err
 		}
 		projected = data
 	}
+
+	l.mu.Lock()
 	switch t {
 	case TurnStart:
 		l.turn++
@@ -660,6 +666,16 @@ func (l *Log) Events() []Event {
 	return cloneEvents(l.events)
 }
 
+// snapshot is Events without the copy, for a caller in this package that only
+// reads the payloads. The slice is a copy, so later appends do not reach it;
+// the payloads are shared, which is sound because none is mutated once
+// appended.
+func (l *Log) snapshot() []Event {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return append([]Event(nil), l.events...)
+}
+
 func cloneEvent(event Event) Event {
 	event.Data = append(json.RawMessage(nil), event.Data...)
 	return event
@@ -707,6 +723,17 @@ func (l *Log) Len() int {
 // and makes it survive a restore, which an in-memory map cannot.
 func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 	l.mu.RLock()
+	if l.proj.valid {
+		// The warm projection was built from these same events, and any
+		// compaction appended since invalidated it, so its ledger is the
+		// answer — without copying and scanning every per-token event.
+		out := make(map[llm.CallID]struct{}, len(l.proj.compacted))
+		for id := range l.proj.compacted {
+			out[id] = struct{}{}
+		}
+		l.mu.RUnlock()
+		return out, nil
+	}
 	events := append([]Event(nil), l.events...)
 	l.mu.RUnlock()
 
@@ -725,10 +752,25 @@ func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 }
 
 func (l *Log) DeriveMessages() ([]llm.Message, error) {
+	// Readers receive owned blocks so a provider or UI adapter cannot alter
+	// the retained evidence through a slice or image byte buffer.
+	shared, err := l.projected()
+	if err != nil {
+		return nil, err
+	}
+	return llm.CloneMessages(shared)
+}
+
+// projected is DeriveMessages without the copy: the returned messages share
+// their blocks with the projection, so it is only for a caller in this package
+// that reads them and lets go. That is sound because the projection never
+// mutates a message once it is visible — appends add messages, a flush hands
+// pending over and starts a fresh slice, and a compaction replaces the whole
+// projection rather than editing it.
+func (l *Log) projected() ([]llm.Message, error) {
 	// Fast path: the warm projection is extended by every Append, so a
 	// steady-state step costs one slice copy instead of re-decoding the
-	// whole log. Readers receive owned blocks so a provider or UI adapter cannot
-	// alter the retained evidence through a slice or image byte buffer.
+	// whole log.
 	l.mu.RLock()
 	var out []llm.Message
 	if l.proj.valid {
@@ -740,7 +782,7 @@ func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	}
 	l.mu.RUnlock()
 	if out != nil {
-		return llm.CloneMessages(out)
+		return out, nil
 	}
 
 	// Cold path: full replay under the write lock, stored so the next derive
@@ -767,7 +809,7 @@ func (l *Log) DeriveMessages() ([]llm.Message, error) {
 	if len(l.proj.pending) > 0 {
 		result = append(result, llm.Message{Role: llm.RoleUser, Content: l.proj.pending})
 	}
-	return llm.CloneMessages(result)
+	return result, nil
 }
 
 // SystemPrompt returns the most recently logged system prompt.

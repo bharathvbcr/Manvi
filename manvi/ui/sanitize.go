@@ -31,6 +31,13 @@ func Sanitize(text string) string {
 	if isPlain(text) {
 		return text
 	}
+	return sanitizeSlow(text)
+}
+
+// sanitizeSlow is the rewriting pass. It is split from Sanitize only so the
+// fast path can be tested against it: isPlain is allowed to accept a string
+// only if this would hand back the same string.
+func sanitizeSlow(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	for _, r := range text {
@@ -61,6 +68,16 @@ func Sanitize(text string) string {
 
 // isPlain reports whether text needs no work, which is the overwhelmingly
 // common case and worth not allocating for.
+//
+// It accepts only what sanitizeSlow would copy through untouched. Multi-byte
+// runes used to be refused wholesale, which sent the harness's own output —
+// every "—" and "✓" it prints — down the allocating path to be copied byte for
+// byte. They are decoded here instead, and refused only for the
+// reasons the slow path would rewrite them: a byte that does not decode, a C1
+// control, a bidi control. A literal U+FFFD is refused too, though the slow
+// path would leave it alone: decoding cannot tell it from a bad byte without a
+// second look, and erring towards the slow path costs an allocation where
+// erring the other way would let something through unexamined.
 func isPlain(text string) bool {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
@@ -71,9 +88,11 @@ func isPlain(text string) bool {
 			return false
 		}
 		if c >= utf8.RuneSelf {
-			// Any multi-byte content takes the slow path, which is where the
-			// bidi and replacement-character checks live.
-			return false
+			r, size := utf8.DecodeRuneInString(text[i:])
+			if r == utf8.RuneError || unicode.IsControl(r) || isBidiControl(r) {
+				return false
+			}
+			i += size - 1
 		}
 	}
 	return true

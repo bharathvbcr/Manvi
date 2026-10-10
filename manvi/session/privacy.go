@@ -10,21 +10,29 @@ import (
 // Public returns an owned event suitable for UI and export. Adapter-private
 // continuation data is deliberately absent; this is not a resumable journal.
 func (e Event) Public() (Event, error) {
-	out := cloneEvent(e)
 	if (e.Type == UserMessage || e.Type == AssistantMessage) && len(e.Data) > 0 {
+		// The rewrite re-encodes an object or array into new bytes, so the
+		// event's own are not copied first only to be replaced. A bare scalar
+		// comes back as a window onto the input, and is copied.
 		raw, err := rewritePayload(e.Data, nil, true, nil, 0)
 		if err != nil {
 			return Event{}, err
 		}
-		out.Data = raw
+		if len(raw) > 0 && raw[0] != '{' && raw[0] != '[' {
+			raw = append(json.RawMessage(nil), raw...)
+		}
+		e.Data = raw
+		return e, nil
 	}
-	return out, nil
+	return cloneEvent(e), nil
 }
 
 // PublicEvents omits opaque provider continuation state. Events and Store keep
 // the private resumable journal; applications must restrict its retention.
 func (l *Log) PublicEvents() ([]Event, error) {
-	events := l.Events()
+	// Not Events(): Public returns an owned event on its own, so copying
+	// every payload first only to copy or replace it again was waste.
+	events := l.snapshot()
 	for i := range events {
 		e, err := events[i].Public()
 		if err != nil {

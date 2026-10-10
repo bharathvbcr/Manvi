@@ -271,11 +271,70 @@ func isLoopbackURL(rawURL string) bool {
 	return false
 }
 
+// sharedLoopback is the one loopback pool every client in the process shares.
+//
+// A transport per client meant a pool per client: a capability probe or an
+// endpoint scan builds a client, makes a request or two and drops it, so every
+// probe opened fresh connections and abandoned the old ones to idle out — with
+// their goroutines — 90 seconds later. Shared, a probe reuses a warm keep-alive
+// connection to the same server. The settings are LocalLoopbackTransport's.
+var sharedLoopback = sync.OnceValue(LocalLoopbackTransport)
+
+// hostedMaxIdleConnsPerHost is how many idle connections to one hosted
+// endpoint survive between requests.
+//
+// http.DefaultTransport keeps two. A turn that fans out to sixty-four
+// sub-agents opens sixty-four connections to the same host, and over HTTP/1.1
+// — a plain-http inference box on the LAN, or any endpoint that does not
+// negotiate h2 — all but two are closed the moment their response ends, so
+// the next round of the fan-out pays sixty-two fresh dials and TLS handshakes
+// to reach a server it was connected to a second ago. Sixty-four matches the
+// fan-out ceiling and the loopback pool. Over HTTP/2 the setting is inert: one
+// connection carries every stream.
+const hostedMaxIdleConnsPerHost = 64
+
+// stockDefaultTransport is http.DefaultTransport as this package found it.
+var stockDefaultTransport = http.DefaultTransport
+
+// sharedHosted is the pool every hosted client shares while
+// http.DefaultTransport is still the standard library's own.
+//
+// It is a clone, not a fresh Transport, so proxying from the environment, the
+// dialer, the TLS and HTTP/2 settings and every timeout are exactly the
+// default's; only the idle bound differs. Clone is taken after the default's
+// HTTP/2 setup has run, which leaves the clone to configure its own HTTP/2
+// rather than share the default's connection pool.
+var sharedHosted = sync.OnceValue(func() http.RoundTripper {
+	stock, ok := stockDefaultTransport.(*http.Transport)
+	if !ok {
+		return stockDefaultTransport
+	}
+	tr := stock.Clone()
+	if tr.MaxIdleConnsPerHost < hostedMaxIdleConnsPerHost {
+		tr.MaxIdleConnsPerHost = hostedMaxIdleConnsPerHost
+	}
+	return tr
+})
+
+// hostedTransport is the round tripper for a non-loopback endpoint.
+//
+// A program that replaced http.DefaultTransport — to route through its own
+// proxy, record traffic, or pin certificates — chose what every default client
+// uses, and these clients used the default before they used a shared pool. So
+// a replacement is honoured as it stands, read at construction exactly as
+// before; the shared clone is only ever a stand-in for the stock transport.
+func hostedTransport() http.RoundTripper {
+	if current := http.DefaultTransport; current != stockDefaultTransport {
+		return current
+	}
+	return sharedHosted()
+}
+
 // New builds a client with sane defaults.
 func New(provider, baseURL string, header func() (http.Header, error)) *Client {
-	var tr http.RoundTripper = http.DefaultTransport
+	tr := hostedTransport()
 	if isLoopbackURL(baseURL) {
-		tr = LocalLoopbackTransport()
+		tr = sharedLoopback()
 	}
 
 	return &Client{
@@ -904,8 +963,48 @@ func NewSSE(body io.ReadCloser, done string) *SSE {
 	//
 	// A large buffer because a single data: line can carry a whole content
 	// block; the default 4KB limit would fail on ordinary traffic.
-	s.reader = bufio.NewReaderSize(&payloadReader{src: body, sse: s}, 1<<20)
+	s.reader = sseReaders.Get().(*bufio.Reader)
+	s.reader.Reset(&payloadReader{src: body, sse: s})
 	return s
+}
+
+// sseReaderSize is the read buffer behind every stream. See NewSSE.
+const sseReaderSize = 1 << 20
+
+// sseReaders recycles stream read buffers.
+//
+// Every streamed turn allocated a fresh mebibyte, zeroed, to read a reply that
+// is usually a few kilobytes, and dropped it when the turn ended — so a
+// fan-out of short sub-agent turns was mostly a garbage generator. A buffer is
+// returned only by release, at the one point a stream provably never reads
+// again; see there.
+var sseReaders = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, sseReaderSize) }}
+
+// release hands the read buffer back once this stream has settled.
+//
+// It is called only from Next, on the goroutine reading the stream, once s.err
+// is set. That is the whole safety argument, and it rests on three facts that
+// hold in this file:
+//
+//   - s.err is sticky. Next returns it on entry without touching the reader,
+//     and nothing clears it, so no later call can read the buffer.
+//   - Nothing else reads the buffer. Close and the stall watchdog touch only
+//     the body, never s.reader, so a Close from a cancellation path racing a
+//     Next in flight cannot be using the buffer when this runs, nor after.
+//   - Nothing Next returned points into it. readLine's window is consumed
+//     before the next read: the event name is copied into a string and data
+//     is accumulated into a slice Next allocates.
+//
+// A stream abandoned before it settles — closed early, or dropped — keeps its
+// buffer for the collector exactly as before. Reset to nil drops the pooled
+// reader's reference to this stream's body.
+func (s *SSE) release() {
+	if s.reader == nil {
+		return
+	}
+	s.reader.Reset(nil)
+	sseReaders.Put(s.reader)
+	s.reader = nil
 }
 
 // payloadReader reports byte arrival to the stall watchdog.
@@ -932,7 +1031,16 @@ func (s *SSE) Next() (Event, error) {
 	if s.err != nil {
 		return Event{}, s.err
 	}
+	event, err := s.next()
+	if s.err != nil {
+		s.release()
+	}
+	return event, err
+}
 
+// next reads one event. Next wraps it so the buffer goes back the moment the
+// stream settles, whichever of next's many returns settled it.
+func (s *SSE) next() (Event, error) {
 	var event Event
 	var data []byte
 
@@ -1059,9 +1167,16 @@ func (s *SSE) readLine() ([]byte, error) {
 		if len(line)+len(chunk) > MaxFrameBytes {
 			return nil, &ErrOversizedFrame{Limit: MaxFrameBytes}
 		}
-		// Copied out rather than returned as-is: ReadSlice hands back a window
-		// into the buffer that the next read invalidates, and every caller here
-		// expects the stable slice ReadBytes used to give them.
+		if line == nil && err != bufio.ErrBufferFull {
+			// The whole line fit in the buffer, which is nearly every line, so
+			// it is returned as the window ReadSlice gave. That window is only
+			// valid until the next read — Next copies what it keeps (the event
+			// name, the data it accumulates) before reading again, so a copy
+			// here was one allocation per streamed line for nothing.
+			return chunk, err
+		}
+		// A line longer than the buffer is assembled from successive windows,
+		// each of which the next read overwrites, so those are copied.
 		line = append(line, chunk...)
 		if err == bufio.ErrBufferFull {
 			continue

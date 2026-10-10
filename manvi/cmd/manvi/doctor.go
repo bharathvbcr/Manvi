@@ -9,7 +9,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
@@ -257,7 +256,7 @@ func reportDevMap(out io.Writer, ctx context.Context, mc *devmap.Client) {
 	}
 
 	graph := graphArtifactPath()
-	m, loadErr := repomap.LoadIfPresent(graph)
+	m, loadErr := loadGraph(graph)
 	switch {
 	case loadErr != nil:
 		fmt.Fprintf(out, "                  %s UNREADABLE: %v\n", graph, loadErr)

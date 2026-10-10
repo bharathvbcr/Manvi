@@ -218,3 +218,33 @@ func TestPersistToleratesAnEmptySession(t *testing.T) {
 		t.Fatal("a session with no durable identifier was silently not saved")
 	}
 }
+
+// Persisting is per turn, so the second turn's save is the one that matters.
+// A store refuses to replace a generation it has no record of writing, and a
+// store built afresh for each save has no record of any — every save after the
+// first was refused as another run's work.
+func TestTUISessionsPersistEveryTurn(t *testing.T) {
+	t.Setenv("MANVI_STATE_DIR", t.TempDir())
+
+	log := session.NewLog()
+	h := &harnessHost{}
+	s := &tuiSession{id: "S1", storeID: "abc123", log: log}
+	for turn, text := range []string{"first", "second", "third"} {
+		if _, err := log.Append(session.UserMessage, session.MessageData{
+			Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: text}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.persist(s); err != nil {
+			t.Fatalf("persist after turn %d: %v", turn+1, err)
+		}
+	}
+
+	loaded, _, err := session.NewStore(sessionsDir()).Load("abc123")
+	if err != nil {
+		t.Fatalf("the session did not come back: %v", err)
+	}
+	if got, want := len(loaded.Events()), len(log.Events()); got != want {
+		t.Fatalf("restored %d events, want %d", got, want)
+	}
+}

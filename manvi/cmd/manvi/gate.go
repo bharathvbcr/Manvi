@@ -36,7 +36,7 @@ func buildGate(reg *flags.Registry) (*gate.Gate, *repomap.Map, error) {
 	// neighbourhood. They read the same map so they cannot disagree about what
 	// is in scope. It is returned as well as installed because Deps wants the
 	// concrete map and the gate holds it behind an interface.
-	m, err := repomap.LoadIfPresent(graphArtifactPath())
+	m, err := loadGraph(graphArtifactPath())
 	if err != nil {
 		return nil, nil, err
 	}

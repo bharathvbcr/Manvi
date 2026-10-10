@@ -158,8 +158,15 @@ var (
 // goes through here so the tail cannot silently fall behind.
 func (f *tagFilter) emit(out []filteredChunk, c filteredChunk) []filteredChunk {
 	if c.text != "" {
+		n := longestCarryTag() - 1
+		if n > 0 && len(c.text) >= n {
+			// The tail lies wholly inside this chunk, so it is sliced from it
+			// rather than from a concatenation built for every visible chunk.
+			f.visibleTail = c.text[len(c.text)-n:]
+			return append(out, c)
+		}
 		tail := f.visibleTail + c.text
-		if n := longestCarryTag() - 1; n > 0 && len(tail) > n {
+		if n > 0 && len(tail) > n {
 			tail = tail[len(tail)-n:]
 		}
 		f.visibleTail = tail

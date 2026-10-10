@@ -508,7 +508,7 @@ func TestFindProjectRoot_NoMarkerBelowHomeFallsBackToStartDir(t *testing.T) {
 
 // --- adversarial cases against the shared-root bound ---
 //
-// isSharedRoot decides where containment starts, so it is worth attacking
+// isSharedRootOf decides where containment starts, so it is worth attacking
 // directly. Each case below is a way the environment it reads can be strange,
 // absent, or hostile; none of them may panic, and none may quietly hand back a
 // root wider than the caller's own directory.

@@ -70,10 +70,15 @@ func findProjectRoot(startDir string) string {
 		absStart = resolved
 	}
 
+	// Resolved once per call rather than at every ancestor of both passes:
+	// each resolution follows symlinks through several directories, and the
+	// list cannot change within one walk.
+	shared := sharedRoots()
+
 	// 1. Primary pass: look for .devcouncil or .git (including worktrees and submodules where .git is a file).
 	cur := absStart
 	for {
-		if isSharedRoot(cur) {
+		if isSharedRootOf(cur, shared) {
 			break
 		}
 		devcouncilPath := filepath.Join(cur, ".devcouncil")
@@ -95,7 +100,7 @@ func findProjectRoot(startDir string) string {
 	markers := []string{"go.work", "go.mod", "Cargo.toml", "package.json", "pyproject.toml"}
 	cur = absStart
 	for {
-		if isSharedRoot(cur) {
+		if isSharedRootOf(cur, shared) {
 			break
 		}
 		for _, marker := range markers {
@@ -114,7 +119,7 @@ func findProjectRoot(startDir string) string {
 	return absStart
 }
 
-// isSharedRoot reports whether dir is a directory that holds unrelated work
+// isSharedRootOf reports whether dir is a directory that holds unrelated work
 // side by side by construction, and so is never the root of the project being
 // edited.
 //
@@ -140,12 +145,14 @@ func findProjectRoot(startDir string) string {
 // running the harness directly in one of them still works — the fallback
 // returns the directory the caller was actually standing in. What can no
 // longer happen is a deep directory silently claiming a shared ancestor.
-func isSharedRoot(dir string) bool {
+//
+// roots is sharedRoots(), resolved once by the caller for a whole walk.
+func isSharedRootOf(dir string, roots []string) bool {
 	clean := filepath.Clean(dir)
 	if parent := filepath.Dir(clean); parent == clean {
 		return true // the filesystem root, and any volume root
 	}
-	for _, shared := range sharedRoots() {
+	for _, shared := range roots {
 		if clean == shared {
 			return true
 		}
@@ -153,7 +160,7 @@ func isSharedRoot(dir string) bool {
 	return false
 }
 
-// sharedRoots lists the directories isSharedRoot refuses, resolved the same way
+// sharedRoots lists the directories isSharedRootOf refuses, resolved the same way
 // findProjectRoot resolves its start directory so the comparison is like for
 // like — on macOS /tmp is a symlink to /private/tmp and the walk arrives with
 // the resolved spelling.

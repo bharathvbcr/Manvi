@@ -4,6 +4,7 @@ import (
 	"html"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // HTML to text, by hand and with no dependencies.
@@ -280,11 +281,22 @@ func collapse(s string) string {
 }
 
 // bound caps the text on a rune boundary and says that it did.
+//
+// It counts and cuts in place rather than converting the page to []rune, which
+// made a four-byte-per-character copy of the whole body twice per fetch.
 func bound(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxExtractedRunes {
+	if utf8.RuneCountInString(s) <= maxExtractedRunes {
 		return s
 	}
-	return string(runes[:maxExtractedRunes]) +
-		"\n\n[… the rest of this document was not included: it exceeds the extraction limit]"
+	cut := 0
+	for n := 0; n < maxExtractedRunes; n++ {
+		_, size := utf8.DecodeRuneInString(s[cut:])
+		cut += size
+	}
+	head := s[:cut]
+	if !utf8.ValidString(head) {
+		// A rune conversion writes each invalid byte as U+FFFD; keep doing so.
+		head = string([]rune(head))
+	}
+	return head + "\n\n[… the rest of this document was not included: it exceeds the extraction limit]"
 }

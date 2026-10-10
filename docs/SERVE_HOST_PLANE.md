@@ -28,7 +28,7 @@ manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite
 | `hello` | Handshake reporting supported operations, server version, and capabilities. |
 | `policy.check.file` | Evaluates a proposed file write or deletion against hard/soft policy rules without modifying the filesystem. |
 | `policy.check.command` | Evaluates a proposed shell command against the command gate and safety allowlists. |
-| `capability.probe` | Live-probes local endpoints to inspect tool calling, token budget, and context limits. |
+| `capability.probe` | Live-probes local endpoints to inspect tool calling, token budget, and context limits. A successful answer the server gave is reused by a repeat probe with identical parameters for up to the local adapter's discovery TTL (60 s, the freshness the harness itself accepts); a changed base URL or any other changed parameter probes afresh, and failures and declared-window fallbacks are never reused, so a retry after starting a server or pulling a model asks the server again. |
 | `local.scan` | Discovers runnable local LLM servers and returns advertised models plus capability flags (`supports_tools`, `supports_vision`, `supports_reasoning`). |
 | `chat.prepare` | Computes token budgets, applies self-calibration, and plans one-way compaction. |
 | `chat.settle` | Parses completed model responses: reclassifies `<think>` tags, recovers tool calls, and handles truncations. |

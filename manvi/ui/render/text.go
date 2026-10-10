@@ -3,6 +3,7 @@ package render
 import (
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // Span is a run of text sharing one style.
@@ -185,6 +186,15 @@ func (l Line) Wrap(width int) []Line {
 				}
 				for StringWidth(word) > width {
 					head := TruncateWidth(word, width, "")
+					if head == "" {
+						// The first character is wider than the whole line — a
+						// double-width rune at width 1. It is placed on a line
+						// of its own, overflowing it, rather than cut to
+						// nothing: an empty head consumed nothing, and this
+						// loop never ended.
+						_, size := utf8.DecodeRuneInString(word)
+						head = word[:size]
+					}
 					cur = cur.Append(head, span.Style)
 					breakLine()
 					word = word[len(head):]

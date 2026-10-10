@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -418,6 +419,13 @@ type stream struct {
 	// A thinking step precedes the call it produced, so this is set by the time
 	// the call opens.
 	lastSignature string
+
+	// decodeTwice sends every frame down the two-decode path, skipping the
+	// single pass entirely, which is the path frames the single pass refuses
+	// still take. Only tests set it: the equivalence test holds the single
+	// pass to what that path produces, and the benchmark measures one against
+	// the other.
+	decodeTwice bool
 }
 
 type callAccumulator struct {
@@ -474,14 +482,39 @@ type wireEvent struct {
 	Index int `json:"index"`
 	// Delta is the live stream's payload for step.delta. The documented shape
 	// puts content blocks inside `step`; the wire puts them here.
-	Delta *struct {
+	Delta *wireEventDelta `json:"delta"`
+	Step  *wireEventStep  `json:"step"`
+	// Interaction is the interaction object on interaction.* frames.
+	Interaction *wireEventInteraction `json:"interaction"`
+	// Error carries both `status` and `code` because this wire uses whichever
+	// it feels like and a reader of one alone gets nothing. preflight decodes
+	// both already (see errorInFrame, whose comment records that reading only
+	// `status` "reported an empty parenthesis where the reason belonged"); the
+	// fix landed there and not here, so an in-stream error frame carrying only
+	// `code` still reached the operator as "...try again later. ()".
+	Error *wireEventError `json:"error"`
+	// Status is the interaction status on an interaction.status_update frame,
+	// where it sits at the top level rather than inside `interaction`. Decoding
+	// it from the wrong place is how a terminal status arrives as a zero value
+	// and the turn ends with StopOther for no visible reason.
+	Status string `json:"status"`
+}
+
+// The pieces of wireEvent are aliases of unnamed struct types, not named
+// types, and that is load-bearing. A frame that fails to decode is reported
+// with encoding/json's own message, which spells out the Go type it could not
+// fill; naming these types would change the text of every such error, and
+// these were unnamed when that text was established. wireFrame shares them so
+// the single-decode path fills exactly the fields this struct does.
+type (
+	wireEventDelta = struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
 		Thought   string          `json:"thought"`
 		Arguments json.RawMessage `json:"arguments"`
 		Signature string          `json:"signature"`
-	} `json:"delta"`
-	Step *struct {
+	}
+	wireEventStep = struct {
 		Type      string          `json:"type"`
 		ID        string          `json:"id"`
 		Name      string          `json:"name"`
@@ -491,32 +524,156 @@ type wireEvent struct {
 			Text    string `json:"text"`
 			Thought string `json:"thought"`
 		} `json:"content"`
-	} `json:"step"`
-	Interaction *struct {
-		Status string `json:"status"`
-		Usage  *struct {
-			TotalInputTokens        int `json:"total_input_tokens"`
-			TotalOutputTokens       int `json:"total_output_tokens"`
-			ThoughtTokens           int `json:"total_thought_tokens"`
-			CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
-		} `json:"usage"`
-	} `json:"interaction"`
-	// Error carries both `status` and `code` because this wire uses whichever
-	// it feels like and a reader of one alone gets nothing. preflight decodes
-	// both already (see errorInFrame, whose comment records that reading only
-	// `status` "reported an empty parenthesis where the reason belonged"); the
-	// fix landed there and not here, so an in-stream error frame carrying only
-	// `code` still reached the operator as "...try again later. ()".
-	Error *struct {
+	}
+	wireEventUsage = struct {
+		TotalInputTokens        int `json:"total_input_tokens"`
+		TotalOutputTokens       int `json:"total_output_tokens"`
+		ThoughtTokens           int `json:"total_thought_tokens"`
+		CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
+	}
+	wireEventInteraction = struct {
+		Status string          `json:"status"`
+		Usage  *wireEventUsage `json:"usage"`
+	}
+	wireEventError = struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
 		Code    string `json:"code"`
-	} `json:"error"`
-	// Status is the interaction status on an interaction.status_update frame,
-	// where it sits at the top level rather than inside `interaction`. Decoding
-	// it from the wrong place is how a terminal status arrives as a zero value
-	// and the turn ends with StopOther for no visible reason.
-	Status string `json:"status"`
+	}
+)
+
+// wireFrame decodes a frame once into everything both of its readers need:
+// the wireEvent the decoder applies, and the continuationEnvelope the
+// continuation retains.
+//
+// Each frame used to be decoded twice, once into each, and the second pass
+// re-read every byte of every text delta — nearly every frame of a response —
+// for nothing but its index. The two readers disagree on three keys, and each
+// of those gets a type that fills both readings from one pass:
+//
+//   - index is an int to the decoder and an *int to the continuation, which
+//     must tell an absent or null index from zero. See frameIndex.
+//   - step is a typed struct to the decoder and a field map to the
+//     continuation, whose raw values are replayed to the provider byte for
+//     byte. See frameStep.
+//   - interaction carries status and usage for the decoder and steps for the
+//     continuation; the union below holds all three.
+//
+// Every other key has the same type here as in wireEvent. The contract is
+// narrow: when this decodes without error, the wireEvent and envelope it
+// yields are exactly what the two separate decodes would have produced. When
+// it fails, nothing is concluded from it — decodeFrame reports that, and the
+// caller takes the two-decode path, so a malformed frame is refused with
+// precisely the error and at precisely the point it always was.
+type wireFrame struct {
+	EventType   string            `json:"event_type"`
+	Index       frameIndex        `json:"index"`
+	Delta       *wireEventDelta   `json:"delta"`
+	Step        frameStep         `json:"step"`
+	Interaction *frameInteraction `json:"interaction"`
+	Error       *wireEventError   `json:"error"`
+	Status      string            `json:"status"`
+}
+
+type frameInteraction struct {
+	Status string            `json:"status"`
+	Usage  *wireEventUsage   `json:"usage"`
+	Steps  []json.RawMessage `json:"steps"`
+}
+
+// frameIndex holds both readings of `index`.
+//
+// value follows an int field: a number sets it and null leaves it alone.
+// present follows an *int field: a number makes it non-nil and null makes it
+// nil again. The two differ only for a frame that repeats the key with a null
+// after a number, and keeping both is what makes even that frame decode as it
+// did.
+type frameIndex struct {
+	value   int
+	present bool
+}
+
+func (i *frameIndex) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		i.present = false
+		return nil
+	}
+	// encoding/json has already checked b is one well-formed value. An int
+	// field accepts it only if it is a number token that ParseInt reads in
+	// full and that fits an int — exactly this — and refuses a string, bool,
+	// object or array. Anything refused here sends the frame down the
+	// two-decode path, which reports it in json's own words.
+	if b[0] != '-' && (b[0] < '0' || b[0] > '9') {
+		return errors.New("gemini: index is not a number")
+	}
+	n, err := strconv.ParseInt(string(b), 10, strconv.IntSize)
+	if err != nil {
+		return err
+	}
+	i.value, i.present = int(n), true
+	return nil
+}
+
+// frameStep holds both readings of `step`: the typed struct the decoder
+// switches on, and the field map the continuation keeps.
+//
+// The step object is the one thing still decoded twice, because its two
+// readings genuinely differ — json matches struct fields case-insensitively
+// and keeps the last duplicate, which a map cannot reproduce. It appears on
+// two frames per step and on the documented delta form, not on the live
+// wire's text deltas, which carry no step at all.
+//
+// Both decodes run on the bytes encoding/json hands over, which are the
+// frame's own bytes for this value, so every retained field is the same
+// slice of the wire the separate decode retained.
+type frameStep struct {
+	typed  *wireEventStep
+	fields map[string]json.RawMessage
+}
+
+func (s *frameStep) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		// Null clears a pointer and a map alike.
+		s.typed, s.fields = nil, nil
+		return nil
+	}
+	// A repeated key decodes into what the first occurrence left, for the
+	// struct and the map alike, so both are reused rather than replaced.
+	if s.typed == nil {
+		s.typed = new(wireEventStep)
+	}
+	if err := json.Unmarshal(b, s.typed); err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &s.fields)
+}
+
+// decodeFrame decodes one frame in a single pass. ok is false when that pass
+// refused the frame, in which case nothing it produced may be used and the
+// caller must decode the frame the two-pass way.
+func decodeFrame(data []byte) (ev wireEvent, env continuationEnvelope, ok bool) {
+	var f wireFrame
+	if err := json.Unmarshal(data, &f); err != nil {
+		return wireEvent{}, continuationEnvelope{}, false
+	}
+	ev = wireEvent{
+		EventType: f.EventType,
+		Index:     f.Index.value,
+		Delta:     f.Delta,
+		Step:      f.Step.typed,
+		Error:     f.Error,
+		Status:    f.Status,
+	}
+	env.Step = f.Step.fields
+	if f.Index.present {
+		index := f.Index.value
+		env.Index = &index
+	}
+	if f.Interaction != nil {
+		ev.Interaction = &wireEventInteraction{Status: f.Interaction.Status, Usage: f.Interaction.Usage}
+		env.Interaction = &continuationSnapshot{Steps: f.Interaction.Steps}
+	}
+	return ev, env, true
 }
 
 func (s *stream) Next() (llm.Chunk, error) {
@@ -545,10 +702,20 @@ func (s *stream) Next() (llm.Chunk, error) {
 			return llm.Chunk{}, io.EOF
 		}
 
+		// One decode serves the decoder and the continuation both. A frame
+		// that single pass refuses is decoded the way it always was, twice,
+		// so it fails with the same error at the same point; see wireFrame.
 		var ev wireEvent
-		if err := json.Unmarshal(event.Data, &ev); err != nil {
-			s.failure = fmt.Errorf("gemini: undecodable %s event: %w", event.Name, err)
-			return llm.Chunk{}, s.failure
+		var envelope continuationEnvelope
+		single := false
+		if !s.decodeTwice {
+			ev, envelope, single = decodeFrame(event.Data)
+		}
+		if !single {
+			if err := json.Unmarshal(event.Data, &ev); err != nil {
+				s.failure = fmt.Errorf("gemini: undecodable %s event: %w", event.Name, err)
+				return llm.Chunk{}, s.failure
+			}
 		}
 		// The type travels twice — in the SSE event name and in the payload —
 		// and they must agree. Believing one over the other when they differ is
@@ -568,7 +735,12 @@ func (s *stream) Next() (llm.Chunk, error) {
 			s.failure = err
 			return llm.Chunk{}, err
 		}
-		if err := s.continuation.observe(kind, event.Data, ev, s.calls); err != nil {
+		if !single {
+			err = s.continuation.observe(kind, event.Data, ev, s.calls)
+		} else {
+			err = s.continuation.observeEnvelope(kind, &envelope, ev, s.calls)
+		}
+		if err != nil {
 			s.failure = err
 			return llm.Chunk{}, err
 		}

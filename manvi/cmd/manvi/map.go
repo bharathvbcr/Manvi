@@ -8,7 +8,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 )
 
 // --- map ---
@@ -84,7 +83,7 @@ func mapStatus(out io.Writer, client *devmap.Client, ctx context.Context, said m
 		fmt.Fprintln(out, "                STALE: built before the current working tree; answers describe older code")
 	}
 
-	m, err := repomap.LoadIfPresent(graphArtifactPath())
+	m, err := loadGraph(graphArtifactPath())
 	if err != nil {
 		return err
 	}

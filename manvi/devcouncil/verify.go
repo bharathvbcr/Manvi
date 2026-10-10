@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -111,14 +111,19 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	}
 	touched := map[string]bool{}
 
+	// One pass per file over the planned entries answers both questions: a
+	// file is in scope exactly when some entry matches it (MatchesPlannedPath
+	// is that any-of), and every entry it matches has been touched.
 	for _, file := range changed {
-		if policy.MatchesPlannedPath(file, inScope) {
-			report.InScope = append(report.InScope, file)
-			for _, p := range planned {
-				if policy.MatchesPlannedPath(file, []dc.PlannedFile{{Path: p}}) {
-					touched[p] = true
-				}
+		matched := false
+		for i, p := range planned {
+			if policy.MatchesPlannedPath(file, inScope[i:i+1]) {
+				touched[p] = true
+				matched = true
 			}
+		}
+		if matched {
+			report.InScope = append(report.InScope, file)
 			continue
 		}
 		report.Orphans = append(report.Orphans, file)
@@ -352,32 +357,19 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	b.WriteString(tracked)
 	// One budget across the whole fan-out, not one cap per file: 256 files at
 	// their own ceiling is 256 ceilings, which is not a bound on anything.
-	budget := maxGitCaptureBytes
+	renders, unrendered := renderUntracked(ctx, root, rendered, maxGitCaptureBytes)
 	var cutFiles []string
-	unrendered := 0
-	for i, path := range rendered {
-		if budget <= 0 {
-			unrendered = len(rendered) - i
-			break
-		}
-		// Render an untracked file as an addition so one parser handles both.
-		// The literal, not os.DevNull: this is git's own convention for the
-		// empty side of a diff and it means the same thing on every platform,
-		// whereas os.DevNull is "NUL" on Windows and git would read that as a
-		// filename.
-		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
-		if err != nil && added == "" {
+	for _, u := range renders {
+		if u.err != nil {
 			continue
 		}
-		if note != "" {
-			added = trimPartialLine(added)
+		if u.note != "" {
 			// The path and the byte counts together: "some of this file is
 			// missing" is not actionable, and a note that carries only one of
 			// the two numbers is how a capped sample gets read as a whole one.
-			cutFiles = append(cutFiles, fmt.Sprintf("%s %s", path, note))
+			cutFiles = append(cutFiles, fmt.Sprintf("%s %s", u.path, u.note))
 		}
-		budget -= len(added)
-		b.WriteString(added)
+		b.WriteString(u.added)
 	}
 	if len(cutFiles) > 0 {
 		notes = append(notes, fmt.Sprintf(
@@ -404,6 +396,154 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 			len(quoted), strings.Join(quoted, ", ")))
 	}
 	return diff, notes, nil
+}
+
+// untrackedWorkers is how many untracked-file renders run at once.
+//
+// Each render is its own git process, and almost all of its cost is starting
+// git rather than diffing anything, so running them one after another made a
+// tree with a few hundred new files cost about a second per diff — paid by
+// every get_diff and every verify — for no reason but the shape of a loop.
+const untrackedWorkers = 8
+
+// untrackedSpeculativeCap bounds what one render captures before its place in
+// the budget is known.
+//
+// A render started ahead of its turn does not yet know how much budget the
+// files before it will leave, so it captures up to the budget as it stands
+// when it starts, held to this cap so eight renders in flight cannot each
+// hold the whole 16 MiB. A file whose share turns out larger than what was
+// captured is rendered again, the old way, when its turn comes. A variable
+// only so the tests can make that path ordinary.
+var untrackedSpeculativeCap = 1 << 20
+
+// untrackedRender is one untracked file as the fan-out rendered it.
+type untrackedRender struct {
+	path string
+	// added is the file's diff, already cut back to a whole line when note
+	// says the budget cut it.
+	added string
+	// note is the capture's truncation note, empty when the file is whole.
+	note string
+	// err is set when nothing could be rendered; added is then empty and the
+	// file took nothing from the budget.
+	err error
+}
+
+// untrackedDiffArgs renders an untracked file as an addition, so one parser
+// handles both halves of the diff. The literal /dev/null, not os.DevNull: this
+// is git's own convention for the empty side of a diff and it means the same
+// thing on every platform, whereas os.DevNull is "NUL" on Windows and git
+// would read that as a filename.
+func untrackedDiffArgs(path string) []string {
+	return []string{"diff", "--no-index", "--", "/dev/null", path}
+}
+
+// renderUntracked renders each path as an addition, in order, under one byte
+// budget shared by all of them, and returns the renders it reached and how
+// many paths the budget left unrendered.
+//
+// The answer is the sequential one, exactly. That loop ran one git per file
+// with the budget still left as its cap, cut a capped file back to a whole
+// line, and charged what it kept; it stopped once the budget was spent. The
+// renders here run untrackedWorkers at a time, but they are the same commands
+// and they are settled strictly in order against the same running budget, so
+// what each file contributes — its bytes, its truncation note, its error —
+// is what the loop would have produced. A render that started with a cap at
+// least as large as its eventual share is cut to that share here, with the
+// note the smaller cap would have written; one that captured less than its
+// share, or failed, is run again with the exact old call before its answer
+// is believed. The parallelism changes when git runs, never what the gates
+// read: a degradation note that depended on scheduling would make the same
+// tree verify differently twice.
+func renderUntracked(ctx context.Context, root string, paths []string, budget int) ([]untrackedRender, int) {
+	if len(paths) == 0 {
+		return nil, 0
+	}
+	if budget <= 0 {
+		return nil, len(paths)
+	}
+
+	// Renders started ahead of their turn are this function's alone; once
+	// the budget is spent or every file is settled, what is still running is
+	// waste, and it is stopped and waited for rather than left behind.
+	specCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	type speculative struct {
+		capture gitCapture
+		err     error
+	}
+	pending := make([]chan speculative, len(paths))
+	launched := 0
+	launch := func(limit int) {
+		i := launched
+		launched++
+		done := make(chan speculative, 1)
+		pending[i] = done
+		wg.Go(func() {
+			c, err := runGitCapture(specCtx, root, limit, untrackedDiffArgs(paths[i])...)
+			done <- speculative{capture: c, err: err}
+		})
+	}
+
+	renders := make([]untrackedRender, 0, len(paths))
+	for i, path := range paths {
+		if budget <= 0 {
+			return renders, len(paths) - i
+		}
+		// The budget only shrinks as files are settled, so the budget now is
+		// at least the share any file not yet settled will get. That is what
+		// makes a capture started with it big enough to cut down from.
+		for launched < len(paths) && launched < i+untrackedWorkers {
+			launch(min(budget, untrackedSpeculativeCap))
+		}
+		s := <-pending[i]
+		pending[i] = nil
+		u := settleUntracked(ctx, root, path, budget, s.capture, s.err)
+		if u.err == nil {
+			budget -= len(u.added)
+		}
+		renders = append(renders, u)
+	}
+	return renders, 0
+}
+
+// settleUntracked turns a capture taken under some cap into the render the
+// sequential loop would have produced with share bytes of budget left.
+func settleUntracked(ctx context.Context, root, path string, share int, c gitCapture, err error) untrackedRender {
+	if err == nil {
+		whole := len(c.out) == c.total
+		switch {
+		case c.total <= share && whole:
+			return untrackedRender{path: path, added: c.out}
+		case c.total > share && len(c.out) >= share:
+			// What a cap of share bytes would have kept and said: the first
+			// share bytes, and the rest counted as discarded.
+			return untrackedRender{
+				path:  path,
+				added: trimPartialLine(c.out[:share]),
+				note:  truncationNoteFor(share, c.total-share),
+			}
+		}
+	}
+	// The capture was smaller than this file's share, or it failed. A failure
+	// is not believed from a render that ran alongside others — eight at once
+	// is not the conditions the old loop ran under, and a file skipped for a
+	// spawn that only failed under load is a file the gates never see — so
+	// both cases ask git again, exactly as the loop did.
+	added, note, err := runGitCapped(ctx, root, share, untrackedDiffArgs(path)...)
+	if err != nil && added == "" {
+		return untrackedRender{path: path, err: err}
+	}
+	if note != "" {
+		added = trimPartialLine(added)
+	}
+	return untrackedRender{path: path, added: added, note: note}
 }
 
 // trimPartialLine drops an incomplete final line from a capture that was cut at
@@ -528,30 +668,46 @@ func runGitEnv(ctx context.Context, root, index string, args ...string) (string,
 // degradation channel of its own can report the shortfall and carry on with
 // the part it has. What no caller may do is treat a non-empty note as nothing.
 func runGitCapped(ctx context.Context, root string, limit int, args ...string) (string, string, error) {
+	c, err := runGitCapture(ctx, root, limit, args...)
+	return c.out, c.note, err
+}
+
+// gitCapture is runGitCapped's answer with the one number it leaves out: the
+// whole size of what git wrote, captured or not.
+type gitCapture struct {
+	out, note string
+	// total is len(out) plus whatever the cap discarded.
+	total int
+}
+
+// runGitCapture is runGitCapped, also reporting the size of the uncapped
+// output. That size is what lets renderUntracked capture under one limit and
+// answer, byte for byte, as a capture under a smaller one would have.
+func runGitCapture(ctx context.Context, root string, limit int, args ...string) (gitCapture, error) {
 	spec := gitSpec(root, "", args)
 	spec.stdoutLimit = limit
 	res := runProc(ctx, spec)
 	if res.timedOut {
-		return "", "", fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+		return gitCapture{}, fmt.Errorf("git %s: timed out", strings.Join(args, " "))
 	}
 	out, err := string(res.stdout), res.err
-	note := res.stdoutNote
+	c := gitCapture{out: out, note: res.stdoutNote, total: len(out) + res.stdoutDropped}
 
 	// `git diff --no-index` exits 1 when files differ, which is the normal
 	// case here rather than a failure.
 	if err != nil && len(out) > 0 {
-		return out, note, nil
+		return c, nil
 	}
 	if err != nil {
 		if msg := strings.TrimSpace(string(res.stderr)); msg != "" {
 			if len(msg) > gitStderrPreview {
 				msg = msg[:gitStderrPreview] + "…"
 			}
-			return "", "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+			return gitCapture{}, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
 		}
-		return "", "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return gitCapture{}, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return out, note, nil
+	return c, nil
 }
 
 // changedFiles extracts the post-change paths from a unified diff.

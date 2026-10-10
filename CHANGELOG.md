@@ -136,8 +136,68 @@ under **Unreleased** in the same commit as the code.
   link. The visual architecture guide is rewritten with fuller descriptions of
   each plane, ladder rung, posture and lifecycle stage.
 
+- **Long turns and long sessions no longer slow down with their own length.**
+  Every agent step copied the whole conversation two or three times through a
+  JSON round trip, so a turn's cost grew with the square of its steps; the
+  copy is now structural (about 57× faster on a 300-message history) and the
+  per-step invariant check no longer copies at all. What is sent to a
+  provider is byte-for-byte unchanged, so prompt caching is unaffected. Other
+  costs taken off the hot paths, none of which changes what is written,
+  sent or shown:
+  - a session save encodes each event once instead of three times;
+  - a large tool result is encoded and scrubbed before the session log's
+    lock is taken, not while every reader waits;
+  - streamed lines are no longer copied an extra time, and MCP replies (up to
+    16 MiB) are decoded once instead of twice;
+  - clients of local model servers share one connection pool, so a
+    capability probe reuses a warm connection instead of opening new ones and
+    leaving the old to idle out;
+  - `mcp_list_tools` starts its servers concurrently;
+  - `grep` checks whether a file is a credential file once per file, not once
+    per matching line;
+  - a new session reuses the code graph already loaded unless the file changed;
+  - the TUI lays out only the entries that changed, rather than the whole
+    transcript, at most once per width per frame;
+  - hosted providers keep up to 64 idle connections per host instead of
+    `net/http`'s default of two, so a fan-out over HTTP/1.1 stops paying a
+    fresh TLS handshake per sub-agent per step (a replaced
+    `http.DefaultTransport` is still used as it stands);
+  - a stream's 1 MiB read buffer is recycled once the stream ends rather than
+    allocated per model call;
+  - the Gemini adapter decodes each streamed event once instead of twice;
+  - `get_diff` and verification render untracked files eight at a time
+    instead of one after another (300 new files: ~840 ms → ~390 ms), with the
+    same bytes, order, budget cuts and notes as before;
+  - `find_files` skips a base-name match that cannot succeed;
+  - the TUI renders a streaming reply incrementally (a long reply: ~5 s of
+    layout and 2.4 GB of allocation → ~1 s and 51 MB), caps reasoning like
+    tool results, and keeps each entry's lowercased text for search.
+- **`manvi serve`: `capability.probe` reuses a successful answer** for a repeat
+  probe with identical parameters for up to the local adapter's discovery TTL
+  (60 s — the freshness the harness already accepts on its own request path).
+  A changed base URL or any other changed parameter probes afresh; failures and
+  declared-window fallbacks are never reused, and a "not served" answer from a
+  reused probe is re-asked of the server before it is returned, so a retry
+  after starting a server or pulling a model still sees the change. A repeated
+  probe went from two to four HTTP round trips on the sidecar's dispatch loop
+  to none.
+- **The TUI draws at most 2,000 lines or 64 KiB of a tool result, a model's
+  reasoning, an error or a harness message**, followed by one line saying how
+  much was not drawn. A multi-megabyte `read_file` or
+  command output used to become tens of thousands of rows, rebuilt on every
+  resize, fold and theme switch. The entry keeps the whole result: search
+  still finds text past the cut.
 ### Fixed
 
+- Wrapping text no longer hangs when a character is wider than the line
+  (a double-width character at width 1); it is placed on a line of its own.
+- **The TUI saves every turn of a session, not only the first.** Each save
+  built a new session store, and a store refuses to replace a saved
+  generation it has no record of writing — so from the second turn on every
+  save was refused as another run's work, and the session silently stopped
+  being saved. Sessions from affected builds kept their first turn.
+- After a theme switch, a transcript long enough to scroll kept drawing the
+  old theme's colours until the next event arrived.
 - **Read-only commands no longer write to the repository, and the managed
   `.gitignore` rules no longer reach past the harness's own state.** Every
   command except `help` and `version` created `.devcouncil/` and appended

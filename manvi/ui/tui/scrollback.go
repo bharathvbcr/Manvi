@@ -38,12 +38,20 @@ type Scrollback struct {
 	// beginning is a transcript that cannot be used as evidence.
 	dropped int
 
-	// layout is the flattened row index, rebuilt when the width or the content
-	// changes.
-	layout    []rowRef
-	layoutW   int
-	layoutGen int
-	gen       int
+	// layout is the row index the last layout pass produced — the one the
+	// last frame drew, unless a key handler has laid out since.
+	layout []rowRef
+	// slots keep the flattened row index at the two widths most recently laid
+	// out at. Two, because a frame lays out at two widths whenever the
+	// transcript is shorter than the pane: once without the scrollbar column
+	// to learn that none is needed, and again at the full width it then draws
+	// at. A single cache keyed on width was evicted twice every frame by that,
+	// idle ticks included, and every entry was re-rendered with it.
+	slots [2]layoutSlot
+	// slotUse orders the slots by recency; the older one is the one a third
+	// width replaces.
+	slotUse [2]uint64
+	useTick uint64
 
 	// view is the rect the last frame drew into, and viewW the width that frame
 	// laid the content out at.
@@ -77,6 +85,22 @@ type rowRef struct {
 	// first marks the entry's opening row, which is where selection highlights
 	// and fold markers anchor.
 	first bool
+}
+
+// layoutSlot is the flattened row index at one width and theme.
+//
+// It is kept current a tail at a time. A streamed delta changes only the last
+// entry, and rebuilding every row of a long transcript for it — once per frame
+// for the length of a turn — was the bulk of what a frame cost.
+type layoutSlot struct {
+	rows  []rowRef
+	width int
+	theme string
+	// valid is how many leading entries rows still describes correctly. Every
+	// change to an entry's rendering lowers it to that entry's index; a layout
+	// pass re-renders from there to the end and leaves the prefix alone.
+	valid int
+	used  bool
 }
 
 // NewScrollback builds an empty transcript.
@@ -115,17 +139,29 @@ func (s *Scrollback) Selected() *Entry {
 // its own entry would make the transcript unnavigable and the fold state
 // meaningless.
 func (s *Scrollback) Append(ev ui.Event) {
-	s.gen++
 	if ev.Kind == ui.KindText && len(s.entries) > 0 {
 		last := s.entries[len(s.entries)-1]
 		if last.Event.Kind == ui.KindText {
 			last.Body.WriteString(ev.Text)
-			last.Foldable = strings.Contains(last.text(), "\n") || len(last.text()) > 200
+			// The same rule foldable applies to a whole body, decided from the
+			// delta alone. A body that held a line break or ran past the bound
+			// still does once more text is added to it, so the answer only ever
+			// flips one way, and testing the new text is all a flip can need.
+			// Scanning the accumulated body instead made each delta cost the
+			// length of the reply so far.
+			if !last.Foldable {
+				last.Foldable = strings.Contains(ev.Text, "\n") || last.Body.Len() > 200
+			}
 			last.Invalidate()
+			s.changed(len(s.entries) - 1)
 			return
 		}
 	}
 
+	if n := len(s.entries); n > 0 {
+		// Only the last entry grows, so whatever was last has stopped.
+		s.entries[n-1].settle()
+	}
 	e := &Entry{Event: ev}
 	if ev.Kind == ui.KindText {
 		e.Body.WriteString(ev.Text)
@@ -137,6 +173,11 @@ func (s *Scrollback) Append(ev ui.Event) {
 		drop := len(s.entries) - s.MaxEntries
 		s.entries = append([]*Entry(nil), s.entries[drop:]...)
 		s.dropped += drop
+		// Every row's entry index just shifted. Rewriting them in place would
+		// work, but this happens once per new entry at the bound and rows are
+		// cheap to re-gather from the entries' own caches; a second, subtler
+		// path is not worth it.
+		s.touch()
 		if s.selected >= 0 {
 			s.selected -= drop
 			if s.selected < 0 {
@@ -154,20 +195,76 @@ func foldable(ev ui.Event) bool {
 	return false
 }
 
-// rows rebuilds the flat row index if the width or content changed.
+// rows brings the flat row index at a width up to date and returns it.
+//
+// Only entries at or after the first one that changed are laid out again; the
+// rows before them are kept as they are. The theme is part of the key: an
+// entry's own cache already knows a theme switch from a width change, and a
+// layout that did not would go on drawing the old theme's rows.
 func (s *Scrollback) rows(th Theme, width int) []rowRef {
-	if s.layout != nil && s.layoutW == width && s.layoutGen == s.gen {
-		return s.layout
+	slot := s.slotFor(th.Name, width)
+	if slot.valid < len(s.entries) {
+		// Rows are grouped by entry in order, so the stale ones are a suffix.
+		keep := len(slot.rows)
+		for keep > 0 && slot.rows[keep-1].entry >= slot.valid {
+			keep--
+		}
+		out := slot.rows[:keep]
+		for i := slot.valid; i < len(s.entries); i++ {
+			for j, l := range s.entries[i].Lines(th, width) {
+				out = append(out, rowRef{entry: i, line: l, first: j == 0})
+			}
+		}
+		slot.rows, slot.valid = out, len(s.entries)
 	}
-	out := make([]rowRef, 0, len(s.entries)*2)
-	for i, e := range s.entries {
-		lines := e.Lines(th, width)
-		for j, l := range lines {
-			out = append(out, rowRef{entry: i, line: l, first: j == 0})
+	s.layout = slot.rows
+	return slot.rows
+}
+
+// slotFor finds the layout slot for a width and theme, claiming the less
+// recently used one when neither matches.
+func (s *Scrollback) slotFor(theme string, width int) *layoutSlot {
+	s.useTick++
+	pick := -1
+	for i := range s.slots {
+		if s.slots[i].used && s.slots[i].width == width && s.slots[i].theme == theme {
+			pick = i
+			break
 		}
 	}
-	s.layout, s.layoutW, s.layoutGen = out, width, s.gen
-	return out
+	if pick < 0 {
+		pick = 0
+		if s.slotUse[1] < s.slotUse[0] {
+			pick = 1
+		}
+		// The row slice is reused rather than reallocated; a slot changes
+		// width on a resize, and the rows it held are all replaced.
+		s.slots[pick] = layoutSlot{rows: s.slots[pick].rows[:0], width: width, theme: theme, used: true}
+	}
+	s.slotUse[pick] = s.useTick
+	return &s.slots[pick]
+}
+
+// retain releases any slot this frame cannot use. A slot left at a width the
+// pane no longer has would otherwise hold a second copy of every rendered row
+// alive until some later width happened to claim it.
+func (s *Scrollback) retain(theme string, w1, w2 int) {
+	for i := range s.slots {
+		sl := &s.slots[i]
+		if sl.used && (sl.theme != theme || (sl.width != w1 && sl.width != w2)) {
+			s.slots[i] = layoutSlot{}
+		}
+	}
+}
+
+// changed marks entry i, and every entry after it, as needing to be laid out
+// again in every slot.
+func (s *Scrollback) changed(i int) {
+	for k := range s.slots {
+		if s.slots[k].valid > i {
+			s.slots[k].valid = i
+		}
+	}
 }
 
 // layoutTotal is the row count from the last draw.
@@ -184,9 +281,9 @@ func (s *Scrollback) layoutTotal() int {
 	return n
 }
 
-// touch marks the layout stale, for a change that alters rendering without
-// adding an entry — folding, or a theme switch.
-func (s *Scrollback) touch() { s.gen++ }
+// touch marks the whole layout stale, for a change that can alter any entry's
+// rendering — folding everything, or retiring entries off the front.
+func (s *Scrollback) touch() { s.changed(0) }
 
 // Viewport is the row count of the last drawn frame, or a usable minimum
 // before anything has been drawn.
@@ -340,7 +437,7 @@ func (s *Scrollback) ToggleFold() bool {
 		return false
 	}
 	e.Folded = !e.Folded
-	s.touch()
+	s.changed(s.selected)
 	return true
 }
 
@@ -403,8 +500,11 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 		return false
 	}
 	qLower := strings.ToLower(s.searchQuery)
+	// Each entry's lowered text is kept between searches. Typing a query runs
+	// this once per keystroke, and lowering every entry's whole text each time
+	// copied the transcript per key — a large tool result alone is megabytes.
 	for i, e := range s.entries {
-		if strings.Contains(strings.ToLower(e.text()), qLower) {
+		if strings.Contains(e.lowerText(), qLower) {
 			s.matches = append(s.matches, i)
 		}
 	}
@@ -424,7 +524,7 @@ func (s *Scrollback) SetSearch(query string, th Theme) bool {
 	s.selected = s.matches[s.matchIdx]
 	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
 		s.entries[s.selected].Folded = false
-		s.touch()
+		s.changed(s.selected)
 	}
 	s.revealSelected(th)
 	return true
@@ -439,7 +539,7 @@ func (s *Scrollback) NextMatch(th Theme) bool {
 	s.selected = s.matches[s.matchIdx]
 	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
 		s.entries[s.selected].Folded = false
-		s.touch()
+		s.changed(s.selected)
 	}
 	s.revealSelected(th)
 	return true
@@ -454,7 +554,7 @@ func (s *Scrollback) PrevMatch(th Theme) bool {
 	s.selected = s.matches[s.matchIdx]
 	if s.selected < len(s.entries) && s.entries[s.selected].Foldable && s.entries[s.selected].Folded {
 		s.entries[s.selected].Folded = false
-		s.touch()
+		s.changed(s.selected)
 	}
 	s.revealSelected(th)
 	return true
@@ -486,6 +586,7 @@ func (s *Scrollback) Draw(b *render.Buffer, r render.Rect, th Theme, focused boo
 		return 0
 	}
 	body := r
+	s.retain(th.Name, r.W-1, r.W)
 	// A scrollbar column is reserved only when there is something to scroll,
 	// so a short transcript uses the full width.
 	rows := s.rows(th, r.W-1)
