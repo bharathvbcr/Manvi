@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -35,7 +36,7 @@ func TestOpenBlocksCountAgainstTheDecodeCap(t *testing.T) {
 	for err == nil {
 		_, err = s.Next()
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		t.Fatalf("the stream ran to completion holding %d blocks and %d counted bytes; "+
 			"maxDecodedResponseBytes (%d) never fired, because an empty accumulator was free",
 			len(s.blocks), s.decodedBytes(), maxDecodedResponseBytes)
@@ -72,7 +73,7 @@ func TestAnOrdinaryResponseIsNotChargedIntoRefusal(t *testing.T) {
 	for err == nil {
 		_, err = s.Next()
 	}
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Fatalf("sixteen ordinary tool calls failed the stream: %v", err)
 	}
 	got := s.decodedBytes()

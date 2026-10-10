@@ -2,6 +2,7 @@ package local
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,7 @@ func TestLocalRecoversATextToolCall(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			t.Fatal(err)

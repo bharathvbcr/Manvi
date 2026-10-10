@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,7 +52,7 @@ func TestOpenAICompatStreamingText(t *testing.T) {
 	var chunks []llm.Chunk
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -117,7 +118,7 @@ func TestOpenAICompatThinkTagExtraction(t *testing.T) {
 	var textChunks, reasoningChunks []llm.Chunk
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -195,7 +196,7 @@ func TestOpenAICompatToolCallWithMarkdownSanitizationAndSyntheticID(t *testing.T
 
 	for {
 		_, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -272,7 +273,7 @@ func TestOpenAICompatSamplingParametersInWirePayload(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -327,7 +328,7 @@ func TestOpenAICompatFragmentedThinkTagStreaming(t *testing.T) {
 	var textParts, reasoningParts []string
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -392,7 +393,7 @@ func TestOpenAICompatFallbackHermesToolCall(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -460,7 +461,7 @@ func TestOpenAICompatFallbackMarkdownToolCall(t *testing.T) {
 
 	for {
 		_, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -527,7 +528,7 @@ func TestOpenAICompatFallbackArbitraryToolNameAndPythonLiterals(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -602,7 +603,7 @@ func TestOpenAICompatMultipleFallbackToolCalls(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -725,7 +726,7 @@ func TestAStringErrorFieldDoesNotAbandonTheStream(t *testing.T) {
 				defer stream.Close()
 				for {
 					_, err := stream.Next()
-					if err == io.EOF {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 					if err != nil {

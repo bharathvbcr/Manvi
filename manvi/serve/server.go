@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -194,7 +195,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) (err error) {
 				// An oversized line is refused downstream and the session
 				// lives on, so the producer keeps reading past it. Anything
 				// else — EOF, a failed stream — ends the feed.
-				if _, oversize := err.(errLineTooLarge); oversize {
+				if errors.As(err, new(errLineTooLarge)) {
 					continue
 				}
 				return
@@ -214,11 +215,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) (err error) {
 			}
 			line, readErr = rr.line, rr.err
 		}
-		if readErr == io.EOF {
+		if errors.Is(readErr, io.EOF) {
 			return s.flush()
 		}
 		if readErr != nil {
-			if oversized, ok := readErr.(errLineTooLarge); ok {
+			if oversized := (errLineTooLarge{}); errors.As(readErr, &oversized) {
 				// An oversized request is refused like any other: one
 				// response, correlated by id where the head preserved one,
 				// and the session lives on. Killing the connection here would
@@ -634,7 +635,7 @@ func readLine(r *bufio.Reader, max int) ([]byte, []byte, error) {
 			// boundary. Without this the oversized line's tail is parsed as
 			// requests, and a host gets a burst of malformed-line errors it
 			// never sent anything to cause.
-			if err == bufio.ErrBufferFull {
+			if errors.Is(err, bufio.ErrBufferFull) {
 				_ = discardTo(r, '\n')
 			}
 			// Every earlier chunk is already mirrored into head; only this one
@@ -656,7 +657,7 @@ func readLine(r *bufio.Reader, max int) ([]byte, []byte, error) {
 			}
 			head = append(head, chunk[:take]...)
 		}
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		if err != nil {
@@ -672,7 +673,7 @@ func readLine(r *bufio.Reader, max int) ([]byte, []byte, error) {
 func discardTo(r *bufio.Reader, delim byte) error {
 	for {
 		_, err := r.ReadSlice(delim)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return err

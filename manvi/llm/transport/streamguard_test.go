@@ -34,7 +34,7 @@ func TestDoneSentinelWithoutATrailingBlankLine(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := NewSSE(io.NopCloser(strings.NewReader("data: {\"a\":1}\n\n"+tail)), "[DONE]")
 			events, err := readAll(t, s)
-			if err != io.EOF || events != 1 {
+			if !errors.Is(err, io.EOF) || events != 1 {
 				t.Fatalf("events=%d err=%v, want the one real event then a clean EOF", events, err)
 			}
 			if !s.Terminated() {

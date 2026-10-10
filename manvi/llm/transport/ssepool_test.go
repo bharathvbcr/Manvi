@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -24,7 +25,7 @@ func BenchmarkSSEShortStream(b *testing.B) {
 		s := NewSSE(io.NopCloser(strings.NewReader(payload)), "[DONE]")
 		for {
 			if _, err := s.Next(); err != nil {
-				if err != io.EOF {
+				if !errors.Is(err, io.EOF) {
 					b.Fatal(err)
 				}
 				break
@@ -53,7 +54,7 @@ func TestEventsOutliveTheirRecycledBuffer(t *testing.T) {
 	first := NewSSE(io.NopCloser(strings.NewReader(
 		"event: a\ndata: first-stream-one\n\nevent: b\ndata: first-stream-two\ndata: continued\n\n")), "")
 	events, err := drainSSE(t, first)
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Fatalf("err = %v, want EOF", err)
 	}
 	if first.reader != nil {
@@ -65,7 +66,7 @@ func TestEventsOutliveTheirRecycledBuffer(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		other := NewSSE(io.NopCloser(strings.NewReader(
 			"event: zzzzzzzzzz\ndata: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n\n")), "")
-		if _, err := drainSSE(t, other); err != io.EOF {
+		if _, err := drainSSE(t, other); !errors.Is(err, io.EOF) {
 			t.Fatal(err)
 		}
 	}
@@ -150,7 +151,7 @@ func TestCloseDuringABlockedNextLeavesTheBufferWithTheReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := <-done
-	if err != io.ErrClosedPipe {
+	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Errorf("err = %v, want the closed pipe the body reports", err)
 	}
 	if s.reader != nil {
@@ -179,7 +180,7 @@ func TestConcurrentStreamsReadTheirOwnBytes(t *testing.T) {
 				s := NewSSE(io.NopCloser(strings.NewReader(body.String())), "")
 				for i := 0; ; i++ {
 					ev, err := s.Next()
-					if err == io.EOF {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 					if err != nil {

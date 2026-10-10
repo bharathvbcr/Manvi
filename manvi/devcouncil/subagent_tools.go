@@ -573,7 +573,7 @@ func reportUnknownRoles(payload map[string]any, unknownTypes []string) {
 // error path.
 func recordFailure(inst *agents.Instance, cause error) error {
 	if stateErr := inst.SetState(agents.StateErrored, cause.Error()); stateErr != nil {
-		return fmt.Errorf("%w (and its state could not be recorded: %v)", cause, stateErr)
+		return fmt.Errorf("%w (and its state could not be recorded: %w)", cause, stateErr)
 	}
 	return cause
 }

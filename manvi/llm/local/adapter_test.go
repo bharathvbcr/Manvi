@@ -449,7 +449,7 @@ func TestSamplingParametersAppliedWhenUnset(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}

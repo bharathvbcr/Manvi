@@ -67,7 +67,7 @@ func settle(t *testing.T, a *Adapter, tools []llm.ToolSchema) (llm.Response, err
 	}
 	defer stream.Close()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			return llm.Response{}, err
@@ -223,7 +223,7 @@ func TestErrorChunkAfterContentIsNotRetried(t *testing.T) {
 		}
 		got.WriteString(c.Text)
 	}
-	if failure == nil || failure == io.EOF || got.String() != "partial" {
+	if failure == nil || errors.Is(failure, io.EOF) || got.String() != "partial" {
 		t.Fatalf("failure=%v text=%q", failure, got.String())
 	}
 	if n := attempts.Load(); n != 1 {

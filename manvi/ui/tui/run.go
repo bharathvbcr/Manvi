@@ -597,7 +597,7 @@ func readNotice(r *bufio.Reader) (line string, truncated bool, err error) {
 			truncated = true
 		}
 		switch {
-		case readErr == bufio.ErrBufferFull:
+		case errors.Is(readErr, bufio.ErrBufferFull):
 			// More of this same line is waiting. Keep going: the tail is
 			// counted and discarded above, never accumulated.
 			continue

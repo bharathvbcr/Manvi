@@ -1174,7 +1174,7 @@ func (s *SSE) next() (Event, error) {
 			}
 		}
 		if len(line) == 0 && err != nil {
-			if err == io.EOF && len(data) > 0 {
+			if errors.Is(err, io.EOF) && len(data) > 0 {
 				// A final event without its terminating blank line.
 				event.Data = data
 				if s.isDone(data) {
@@ -1237,7 +1237,7 @@ func (s *SSE) next() (Event, error) {
 		}
 
 		if err != nil {
-			if err == io.EOF && (len(data) > 0 || event.Name != "") {
+			if errors.Is(err, io.EOF) && (len(data) > 0 || event.Name != "") {
 				event.Data = data
 				s.err = io.EOF
 				if s.isDone(data) {
@@ -1293,7 +1293,7 @@ func (s *SSE) readLine() ([]byte, error) {
 		if len(line)+len(chunk) > MaxFrameBytes {
 			return nil, &ErrOversizedFrame{Limit: MaxFrameBytes}
 		}
-		if line == nil && err != bufio.ErrBufferFull {
+		if line == nil && !errors.Is(err, bufio.ErrBufferFull) {
 			// The whole line fit in the buffer, which is nearly every line, so
 			// it is returned as the window ReadSlice gave. That window is only
 			// valid until the next read — Next copies what it keeps (the event
@@ -1304,7 +1304,7 @@ func (s *SSE) readLine() ([]byte, error) {
 		// A line longer than the buffer is assembled from successive windows,
 		// each of which the next read overwrites, so those are copied.
 		line = append(line, chunk...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return line, err

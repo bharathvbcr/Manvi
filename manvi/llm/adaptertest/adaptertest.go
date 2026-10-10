@@ -11,6 +11,7 @@ package adaptertest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -156,7 +157,7 @@ func Drain(s llm.Stream) ([]llm.Chunk, llm.Response, error) {
 	var chunks []llm.Chunk
 	for {
 		chunk, err := s.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

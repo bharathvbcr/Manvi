@@ -81,7 +81,7 @@ func mcpStub(t *testing.T) string {
 		}
 		bin := filepath.Join(mcpStubDir, "stub")
 		if out, err := exec.Command("go", "build", "-o", bin, src).CombinedOutput(); err != nil {
-			mcpStubErr = fmt.Errorf("building the MCP stub: %v\n%s", err, out)
+			mcpStubErr = fmt.Errorf("building the MCP stub: %w\n%s", err, out)
 			return
 		}
 		mcpStubPath = bin

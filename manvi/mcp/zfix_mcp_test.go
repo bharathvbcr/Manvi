@@ -174,7 +174,7 @@ func hostileStub(t *testing.T) string {
 		bin := filepath.Join(stubDir, "hostile")
 		build := exec.Command("go", "build", "-o", bin, src)
 		if out, err := build.CombinedOutput(); err != nil {
-			stubErr = fmt.Errorf("building the hostile stub: %v\n%s", err, out)
+			stubErr = fmt.Errorf("building the hostile stub: %w\n%s", err, out)
 			return
 		}
 		stubPath = bin

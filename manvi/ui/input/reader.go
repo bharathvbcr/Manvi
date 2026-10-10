@@ -1,6 +1,7 @@
 package input
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -207,7 +208,7 @@ func (r *Reader) Run() {
 					return
 				}
 			}
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				r.emit(Error{Err: err})
 			} else {
 				r.emit(Error{Err: io.EOF})

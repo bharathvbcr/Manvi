@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -46,7 +47,7 @@ func TestToolCallBookkeepingCountsAgainstTheDecodeCap(t *testing.T) {
 	for err == nil {
 		_, err = s.Next()
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		t.Fatalf("the stream ran to completion holding %d accumulators and %d counted bytes; "+
 			"MaxDecodedResponseBytes (%d) never fired, because per-call bookkeeping was uncounted",
 			len(s.calls), s.decodedBytes(), MaxDecodedResponseBytes)

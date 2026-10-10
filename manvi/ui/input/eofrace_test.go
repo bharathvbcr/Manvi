@@ -1,6 +1,7 @@
 package input
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestInputArrivingJustBeforeEOFIsNotDropped(t *testing.T) {
 				got = append(got, k.String())
 				continue
 			}
-			if e, ok := ev.(Error); ok && e.Err == io.EOF {
+			if e, ok := ev.(Error); ok && errors.Is(e.Err, io.EOF) {
 				break
 			}
 		}
@@ -65,7 +66,7 @@ func TestASplitSequenceSurvivesTheStreamEnding(t *testing.T) {
 				got = append(got, k.String())
 				continue
 			}
-			if e, ok := ev.(Error); ok && e.Err == io.EOF {
+			if e, ok := ev.(Error); ok && errors.Is(e.Err, io.EOF) {
 				break
 			}
 		}

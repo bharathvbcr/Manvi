@@ -2,6 +2,7 @@ package contract
 
 import (
 	"bytes"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -50,7 +51,8 @@ func flagsCatalog(t *testing.T) (catalogFile, flagsRoot string) {
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr []byte
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			stderr = ee.Stderr
 		}
 		t.Fatalf("resolving %s via go list: %v\n%s%s", flagsModulePath, err, out, stderr)
@@ -93,7 +95,8 @@ func harnessAndFlags(t *testing.T) (catalogFile string, extraRoots []string) {
 		out, err := cmd.Output()
 		if err != nil {
 			var stderr []byte
-			if ee, ok := err.(*exec.ExitError); ok {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
 				stderr = ee.Stderr
 			}
 			t.Fatalf("resolving %s via go list: %v\n%s%s", pkg, err, out, stderr)

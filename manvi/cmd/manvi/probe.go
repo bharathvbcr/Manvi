@@ -141,7 +141,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	kinds := map[llm.ChunkKind]int{}
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
