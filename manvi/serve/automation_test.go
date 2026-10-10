@@ -112,7 +112,14 @@ func TestAutomaticWakeProcessesSavedTextOnceAndReturnsToIdle(t *testing.T) {
 	if !strings.Contains(string(task), `"title":"fix E42"`) || !strings.Contains(string(task), `"revision":2`) {
 		t.Fatal("automatic generation accepted its own changes")
 	}
-	time.Sleep(40 * time.Millisecond)
+	// An explicit wake makes the worker re-examine the queue; Wake publishes
+	// "checking" before returning, so reaching idle again can only follow a
+	// completed pass. Only then does an unchanged call count say the idle
+	// worker declined to repeat inference, rather than not having looked yet.
+	if response := automaticRequest(t, client, runner, "wake", "{}", "test-model"); !response.OK {
+		t.Fatalf("wake failed: %+v", response)
+	}
+	automaticState(t, client, runner, "idle")
 	if calls.Load() != 1 {
 		t.Fatal("idle worker repeated inference")
 	}

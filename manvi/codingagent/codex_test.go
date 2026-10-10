@@ -373,7 +373,15 @@ func TestCodexOutputBurstWaitsForBoundedConsumerWithoutKillingTheRun(t *testing.
 	}
 	// A native store round trip can briefly stop consumption while the provider
 	// emits more than the 64-frame buffer. The producer must wait, not be killed.
-	time.Sleep(150 * time.Millisecond)
+	// Consumption stays stopped until the buffer is observably full, which is
+	// the state the producer has to survive; a fixed pause only guessed at it.
+	full := time.Now().Add(10 * time.Second)
+	for len(s.wire.frames) < cap(s.wire.frames) {
+		if time.Now().After(full) {
+			t.Fatalf("the provider never filled the %d-frame buffer (%d queued)", cap(s.wire.frames), len(s.wire.frames))
+		}
+		time.Sleep(time.Millisecond)
+	}
 	count := 0
 	for {
 		e, err := s.Next(t.Context())
@@ -436,7 +444,7 @@ func TestInstalledCodexHandshakeWithoutModelTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	root := t.TempDir()
-	s, err := OpenCodex(ctx, Options{Program: program, Cwd: root, Mode: "inspect"})
+	s, err := openCodex(ctx, Options{Program: program, Cwd: root, Mode: "inspect"}, codexArgs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +472,7 @@ func TestInstalledCodexReadOnlyTurn(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	s, err := OpenCodex(ctx, Options{Program: program, Cwd: t.TempDir(), Mode: "inspect"})
+	s, err := openCodex(ctx, Options{Program: program, Cwd: t.TempDir(), Mode: "inspect"}, codexArgs())
 	if err != nil {
 		t.Fatal(err)
 	}

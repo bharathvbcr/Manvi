@@ -5,9 +5,17 @@ No SVG->PDF converter is installed (no rsvg-convert, inkscape or cairosvg), so
 we go through macOS Quick Look, which pads its thumbnail to a square. Cropping
 that padding back off is the whole reason this script exists: without it every
 figure carries a block of whitespace taller than the plot.
+
+Optional tool, macOS only: it needs Pillow (`pip install pillow`), which no
+bench manifest declares because nothing under bench/ imports it and the paper
+build is the only caller. The import is checked first so a missing Pillow says
+what to install instead of a bare ModuleNotFoundError.
 """
 import io, os, re, subprocess, sys, tempfile
-from PIL import Image, ImageChops
+try:
+    from PIL import Image, ImageChops
+except ImportError:
+    sys.exit("svg2png.py needs Pillow: pip install pillow")
 
 SIZE = 2400          # first thumbnail attempt; reduced on clipping
 # px of white kept around the content. At 8 (about 3 SVG units at this scale)

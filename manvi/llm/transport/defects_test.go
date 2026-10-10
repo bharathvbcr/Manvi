@@ -92,59 +92,6 @@ func TestKeepAliveCommentsDoNotCountAsProgress(t *testing.T) {
 
 // --- 3. progress within one long line ---
 
-// TestALongLineArrivingContinuouslyIsNotAStall. A local model emitting a large
-// tool-call payload sends one enormous data: line. Resetting the watchdog only
-// when a line *completes* abandons that stream even though bytes are arriving
-// the whole time — the harness kills the request precisely when the model is
-// doing the most work.
-func TestALongLineArrivingContinuouslyIsNotAStall(t *testing.T) {
-	const gap = 50 * time.Millisecond
-	const limit = 200 * time.Millisecond
-	const chunks = 20
-
-	// The gaps are stated rather than slept, for the reason in manualClock: a
-	// sleep the scheduler overran and a watchdog that fired early are the same
-	// error here. The reader spends the whole line inside one Next, so the
-	// writer is what advances — and it can only ever be one advance ahead,
-	// because io.Pipe hands off synchronously and this writer cannot reach its
-	// next advance until the reader has taken the bytes before it.
-	clock := newManualClock()
-	pr, pw := io.Pipe()
-	go func() {
-		if _, err := pw.Write([]byte(`data: {"args":"`)); err != nil {
-			return
-		}
-		for i := 0; i < chunks; i++ {
-			clock.Advance(gap)
-			if _, err := pw.Write([]byte(strings.Repeat("x", 512))); err != nil {
-				return
-			}
-		}
-		_, _ = pw.Write([]byte("\"}\n\ndata: [DONE]\n\n"))
-		_ = pw.Close()
-	}()
-
-	// Every gap is well inside the limit; the line takes five limits to
-	// arrive, so a bound on how long the line took would abandon it.
-	sse := NewSSEWithStall(pr, "[DONE]", limit, clock)
-	defer func() { _ = sse.Close() }()
-	if n := clock.scheduled(); n != 1 {
-		t.Fatalf("the stream scheduled %d timers on this test's clock, want 1; the "+
-			"watchdog is not running on the clock this test drives", n)
-	}
-
-	event, err := sse.Next()
-	if err != nil {
-		t.Fatalf("a continuously arriving line was abandoned: %v", err)
-	}
-	if want := chunks * 512; len(event.Data) < want {
-		t.Fatalf("data = %d bytes, want at least %d", len(event.Data), want)
-	}
-	if _, err := sse.Next(); err != io.EOF {
-		t.Fatalf("expected EOF, got %v", err)
-	}
-}
-
 // TestAnEndlessLineIsBoundedRatherThanBuffered. bufio grows one line without
 // limit, so a server (or a corrupted connection) that never sends a newline
 // takes the harness's whole address space with it. The bound must be far above

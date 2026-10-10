@@ -20,13 +20,9 @@ import (
 // ErrNotLinked is the result of a build that does not contain the engine.
 var ErrNotLinked = errors.New("gusset: engine is not linked into this build")
 
-// Run checks the linked engine. The pool ceiling is read from Gusset so a
-// build that imported a different module fails here instead of at a later call.
-func Run(ctx context.Context) error {
-	return check(ctx)
-}
-
-// SelfTest is Run plus a deliberate panic inside the engine archive on a
+// SelfTest checks the linked engine (the pool ceiling is read from Gusset, so
+// a build that imported a different module fails here instead of at a later
+// call), then induces a deliberate panic inside the engine archive on a
 // throwaway handle, proving the panic firewall (I2) against the archive this
 // binary links. Rust prints the induced panic to stderr. For `manvi
 // gusset-check`, never for a server.

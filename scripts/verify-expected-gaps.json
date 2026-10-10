@@ -21,17 +21,12 @@
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
       "os": ["ubuntu-latest", "macos-latest"],
-      "why": "Needs an installed Codex binary (MANVI_TEST_CODEX_BINARY)."
+      "why": "Needs an installed Codex binary (MANVI_TEST_CODEX_BINARY), which no CI job sets; qualifying managed providers against installed binaries is board task ft-2550b25d."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
       "os": ["ubuntu-latest", "macos-latest"],
-      "why": "Opt-in model turn against an installed provider."
-    },
-    {
-      "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestEvidenceRustCompatibility",
-      "os": ["ubuntu-latest", "macos-latest"],
-      "why": "Needs DEVC_COUNCIL_EVIDENCE_ROOT pointing at a DevCouncil Rust build."
+      "why": "Opt-in model turn against an installed provider (MANVI_TEST_CODEX_BINARY and MANVI_TEST_CODEX_TURN), which no CI job sets; tracked with ft-2550b25d."
     },
     {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/case",
