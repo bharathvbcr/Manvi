@@ -236,6 +236,15 @@ under **Unreleased** in the same commit as the code.
 - The crate-pin mirror check has one owner, `manvi/devcouncil/crate_pins_test.go`,
   and it compares against DevCouncil at the pinned commit, not the sibling
   working tree. The hand-rolled TOML check in `check-release.mjs` is deleted.
+- A TUI repaints on the 100ms tick only while something animates (a running
+  turn, a pending approval, the dashboard, a notice, the empty screen's rain,
+  the composer's rotating tip); an idle terminal no longer redraws ten times a
+  second.
+- Session saves encode only the events appended since the previous save, and
+  read the previous generation's dates from memory rather than parsing it:
+  allocations per save of a 5000-event log fall from about 15,300 to about 230
+  and the save is about a fifth faster. The file format, generation numbering,
+  conflict rules and crash safety are unchanged.
 
 - Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
   read-only command allowlist now judges each command's arguments, so
