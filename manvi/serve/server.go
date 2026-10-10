@@ -39,12 +39,14 @@ type Server struct {
 	allowSameDir   bool
 	posture        Posture
 
-	// out serializes writes. Dispatch is serial (see Serve), so there is one
-	// writer today; the lock is what keeps that from being load-bearing, since
-	// two goroutines interleaving partial lines would corrupt the stream in a
-	// way neither side could resynchronise.
+	// out serializes writes. The read loop and every lane write to it (see
+	// lanes.go), and two goroutines interleaving partial lines would corrupt
+	// the stream in a way neither side could resynchronise.
 	mu  sync.Mutex
 	out *bufio.Writer
+	// laneErr is the first write failure a lane hit. A lane cannot return it
+	// to anyone, so Serve reports it when it ends.
+	laneErr error
 
 	// chat holds per-conversation compaction ledgers and calibrators. It is
 	// what makes compaction one-way rather than recomputed each step.
@@ -154,10 +156,24 @@ var ops = []string{
 // producer may end up parked on a read of a stdin nobody will ever close; it
 // exits when cancellation fires, which is exactly the case where it matters,
 // and dies with the process otherwise.
-func (s *Server) Serve(ctx context.Context, r io.Reader) error {
+func (s *Server) Serve(ctx context.Context, r io.Reader) (err error) {
 	if s.configErr != nil {
 		return fmt.Errorf("configure host plane: %w", s.configErr)
 	}
+	pool := newLanes(s)
+	// Every way out of the loop waits for the lanes: their requests were
+	// accepted, so each is owed its one response.
+	defer func() {
+		pool.drain()
+		if flushErr := s.flush(); err == nil {
+			err = flushErr
+		}
+		s.mu.Lock()
+		if err == nil {
+			err = s.laneErr
+		}
+		s.mu.Unlock()
+	}()
 	reader := bufio.NewReaderSize(r, 64<<10)
 
 	type readResult struct {
@@ -247,13 +263,17 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) error {
 			continue
 		}
 
-		// Handled inline rather than per-request goroutine. Every op served
-		// today is either pure computation or one bounded HTTP round-trip
-		// against loopback, and a host that wants concurrency can open a
-		// second sidecar. Spawning a goroutine per line would let a host with
-		// a runaway loop create unbounded work here, and the bound would have
-		// to be invented; there is no bound to invent while this is serial.
-		s.dispatch(ctx, req)
+		// Cheap operations are answered here; anything that can block goes to
+		// its lane (lanes.go), so a slow call never holds the read loop.
+		if lane := laneFor(req.Op); lane != "" {
+			if !pool.submit(ctx, lane, req) {
+				s.writeResponse(busy(req, lane))
+			} else {
+				continue
+			}
+		} else {
+			s.dispatch(ctx, req)
+		}
 		if err := s.flush(); err != nil {
 			return err
 		}
@@ -371,6 +391,16 @@ func (s *Server) flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.out.Flush()
+}
+
+// flushLane flushes after a lane's response and keeps the first failure for
+// Serve to report.
+func (s *Server) flushLane() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.out.Flush(); err != nil && s.laneErr == nil {
+		s.laneErr = err
+	}
 }
 
 // errLineTooLarge reports a request line past the cap.

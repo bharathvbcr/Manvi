@@ -87,6 +87,9 @@ func TestEnhancementGenerationIsAsyncDurableAndDoesNotRepeatModelCalls(t *testin
 	responses := roundTrip(t, Options{Modules: []Module{WorkbenchModule{Client: client, Runner: runner}}},
 		Request{ID: "start", Op: "work.enhancements.generate", Params: json.RawMessage(`{"id":"e","request_id":"start","expected_revision":1}`)},
 		Request{ID: "board", Op: "work.items.list"}, Request{ID: "hello", Op: OpHello})
+	if len(responses) == 3 {
+		responses = byID(t, responses, "start", "board", "hello")
+	}
 	for _, response := range responses {
 		if !response.OK {
 			t.Fatalf("control operation failed: %+v", response)

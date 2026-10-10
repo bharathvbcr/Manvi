@@ -189,6 +189,17 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- `manvi serve` no longer answers one request at a time. Cheap operations
+  (`hello`, the policy checks, `chat.*`, `work.runs.managed.stop`) are
+  answered on the read loop; anything that can block runs on a lane per
+  operation family (local probes, devmap, managed launch, workbench), in
+  arrival order within the family, under its own deadline. A stop sent while a
+  managed prepare waited on a provider's handshake used to wait behind it, and
+  a host that timed out tore the sidecar down with every session it hosted. A
+  lane holds at most 32 waiting requests; past that a request is answered
+  `E_BUSY` (retryable) at once. Responses on different lanes can arrive in
+  either order; as before, hosts correlate by id.
+
 - Wrapping text no longer hangs when a character is wider than the line
   (a double-width character at width 1); it is placed on a line of its own.
 - **The TUI saves every turn of a session, not only the first.** Each save

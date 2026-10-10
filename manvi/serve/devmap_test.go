@@ -51,6 +51,7 @@ func TestDevmapDependencyFailureIsTypedAndSessionSurvives(t *testing.T) {
 	responses := roundTrip(t, Options{HardRules: true, Modules: []Module{DevmapModule{Client: fake}}},
 		Request{ID: "bad", Op: OpDevmapQuery, Params: json.RawMessage(`{"kind":"impact","query":"Router","depth":3}`)},
 		Request{ID: "ok", Op: OpHello})
+	responses = byID(t, responses, "bad", "ok")
 	if responses[0].OK || responses[0].Error == nil || responses[0].Error.Code != ErrDependency {
 		t.Fatalf("dependency failure = %+v", responses[0])
 	}
