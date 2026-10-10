@@ -373,7 +373,7 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	// runs it after settle: the demotion is one of the ways a command that the
 	// ladder refused ends up permitted, and a rung placed before it never sees
 	// those.
-	refusal, err := gate.EvaluateRedirects(p.Command, id, func(target string) (policy.Decision, error) {
+	refusal, err := gate.EvaluateRedirects(p.Command, id, p.Scope != nil, func(target string) (policy.Decision, error) {
 		if p.Root == "" {
 			return policy.Decision{}, errCommandRootMissing
 		}
