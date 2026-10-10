@@ -80,12 +80,13 @@ func dispatchThree(t *testing.T, tool string, runner SubAgentRunner) tools.Resul
 	return f.call("devcouncil_spawn_subagents", map[string]any{"tasks": spawn})
 }
 
-// TestBothDispatchersRefuseAFanOutTheCapCannotCover. Three children at 30
-// against a headroom of 60: the third cannot fit, so none may start, and the
-// refusal carries the numbers rather than a bare "budget".
-func TestBothDispatchersRefuseAFanOutTheCapCannotCover(t *testing.T) {
+// TestBothDispatchersRefuseAFanOutWhoseChildrenCannotFitAlone. Three children at
+// 30 against a headroom of 20: none can ever fit, so none may start, and the
+// refusal carries the numbers rather than a bare "budget". (A headroom of 60
+// no longer refuses: the pool narrows the fan-out to two at a time.)
+func TestBothDispatchersRefuseAFanOutWhoseChildrenCannotFitAlone(t *testing.T) {
 	for _, tool := range dispatchTools {
-		runner := &cappedRunner{budget: &capBudget{headroom: []int64{60}}}
+		runner := &cappedRunner{budget: &capBudget{headroom: []int64{20}}}
 		res := dispatchThree(t, tool, runner)
 		if !res.IsError {
 			t.Errorf("%s: a fan-out the cap cannot cover was dispatched: %s", tool, res.Text)
@@ -93,7 +94,7 @@ func TestBothDispatchersRefuseAFanOutTheCapCannotCover(t *testing.T) {
 		if runner.ran.Load() != 0 {
 			t.Errorf("%s: %d children ran; a refused fan-out starts none", tool, runner.ran.Load())
 		}
-		for _, want := range []string{"3 children", "$90", "$60"} {
+		for _, want := range []string{"first", "$30", "$20", "3 metered children", "$90"} {
 			if !strings.Contains(res.Text, want) {
 				t.Errorf("%s: refusal %q does not say %q", tool, res.Text, want)
 			}

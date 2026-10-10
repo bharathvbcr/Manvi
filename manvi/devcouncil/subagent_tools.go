@@ -807,6 +807,9 @@ type SubAgentRequest struct {
 	// judgement — which is not a pass. Empty means the caller wants no
 	// judgement, and none is parsed.
 	Verdict string
+	// Escalation is the fan-out's shared cap on re-runs onto a higher tier,
+	// set by the dispatcher. Nil means the child may not escalate.
+	Escalation *EscalationBudget
 }
 
 // SubAgentResult is what one sub-agent actually produced.
@@ -851,6 +854,9 @@ type SubAgentResult struct {
 	// contract — it is a hope about prose — and an advance rule built on it
 	// certifies whatever the model happened to write.
 	Verdict SubAgentVerdict
+	// Escalations lists each move up a tier this child made, so the run report
+	// names it. Empty for a child that finished where it started.
+	Escalations []Escalation
 }
 
 // SubAgentVerdict is a judging child's structured answer.
@@ -1233,6 +1239,13 @@ func (r *Registry) runFanout(ctx context.Context, bounds agents.Bounds, f fanout
 		return tools.Errorf("creating subagent pool: %v", err)
 	}
 
+	// One cap for the whole dispatch, on every child's request before the
+	// requests are copied into tasks or sized for admission, so all of them
+	// draw on the same counter.
+	escalation := NewEscalationBudget(len(f.requests))
+	for i := range f.requests {
+		f.requests[i].Escalation = escalation
+	}
 	tasks := make([]agents.Task, 0, len(f.requests))
 	for i, req := range f.requests {
 		tasks = append(tasks, f.task(i, req))
@@ -1314,10 +1327,14 @@ func (r *Registry) runFanout(ctx context.Context, bounds agents.Bounds, f fanout
 	// nothing was learned, because printing 0 would read as "delegation is
 	// free".
 	var spent SubAgentUsage
+	var escalations []Escalation
 	for _, res := range results {
 		if value, isMap := res.Value.(map[string]any); isMap {
 			if u, ok := value["usage"].(SubAgentUsage); ok {
 				spent.Add(u)
+			}
+			if e, ok := value["escalations"].([]Escalation); ok {
+				escalations = append(escalations, e...)
 			}
 		}
 	}
@@ -1334,6 +1351,13 @@ func (r *Registry) runFanout(ctx context.Context, bounds agents.Bounds, f fanout
 	}
 	if spent.Any() {
 		payload["usage"] = spent
+	}
+	if len(escalations) > 0 {
+		// Named in the report, with the cap it drew on: an operator reading a
+		// bill that includes a dearer model needs to find which child moved
+		// there and on what evidence.
+		payload["escalations"] = escalations
+		payload["escalation_cap"] = escalation.Cap()
 	}
 	if f.payload != nil {
 		f.payload(payload)
@@ -1358,6 +1382,9 @@ func completedOutcome(out SubAgentResult) map[string]any {
 	}
 	if out.WroteTruncated {
 		outcome["wrote_truncated"] = true
+	}
+	if len(out.Escalations) > 0 {
+		outcome["escalations"] = out.Escalations
 	}
 	if out.Verdict.Judged {
 		// Carried structured rather than left in the prose. A judgement a
@@ -1438,6 +1465,9 @@ func leftBehind(out SubAgentResult) any {
 	if out.Usage.Any() {
 		v["usage"] = out.Usage
 	}
+	if len(out.Escalations) > 0 {
+		v["escalations"] = out.Escalations
+	}
 	if len(v) == 0 {
 		return nil
 	}
@@ -1451,7 +1481,7 @@ func carryLeftBehind(outcome map[string]any, value any) {
 	if !isMap {
 		return
 	}
-	for _, k := range []string{"wrote", "wrote_truncated"} {
+	for _, k := range []string{"wrote", "wrote_truncated", "escalations"} {
 		if v, ok := left[k]; ok {
 			outcome[k] = v
 		}

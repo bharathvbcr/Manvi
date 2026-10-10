@@ -48,6 +48,10 @@ var (
 // spend cap could no longer cover it.
 const NotStartedBudget = "budget"
 
+// NotStartedCancelled is Result.NotStarted for a child held back because the
+// dispatch was cancelled while it waited for the spend cap.
+const NotStartedCancelled = "cancelled"
+
 // Budget is the spend cap a fan-out's children draw on, as the pool sees it.
 //
 // An interface rather than the ledger itself, so the package that bounds work
@@ -361,12 +365,21 @@ func (p *Pool) now() time.Time {
 // failed, or was cancelled. That is the whole point: the failure modes that
 // strand a lease are exactly the ones where nobody is left to release it.
 //
-// With a Budget, admission happens twice. Before anything starts, the
-// children's first-request reservations must fit the cap's headroom together,
-// or the whole fan-out is refused with ErrBudget and the arithmetic. Then each
-// child is admitted as it is started: once a started child's request has been
-// refused by the cap, or the headroom read now no longer covers the next
-// child's reservation, no further child is started, and each one held back is
+// With a Budget, admission happens in two steps and never exceeds the cap.
+//
+// Before anything starts, each child's first-request reservation is checked
+// against the cap's headroom, and a fan-out holding a child that cannot fit
+// even alone is refused whole with ErrBudget and the arithmetic. Then children
+// are started in order, each only while the reservations of the children
+// already running, plus its own, fit the headroom read when the fan-out began
+// and the headroom read now. A wide fan-out is therefore narrowed, not
+// refused: reservations are a worst case per request, and the sum of every
+// child's worst case is far more than the sum of what they spend, so insisting
+// that all of them fit at once refused fan-outs that cost a few percent of the
+// cap. A child that has to wait starts when a running sibling finishes and its
+// reservation settles to what it really spent. Once a started child's request
+// has been refused by the cap, or nothing is running and the next child still
+// does not fit, no further child is started, and each one held back is
 // reported with NotStarted rather than run.
 //
 // The second check exists because the first is a snapshot. Every session on
@@ -385,7 +398,8 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 		return nil, fmt.Errorf("%w: %d tasks requested, limit is %d",
 			ErrFanoutExceeded, len(tasks), p.MaxFanout)
 	}
-	if err := p.admitAll(tasks); err != nil {
+	capacity, err := p.admitAll(tasks)
+	if err != nil {
 		return nil, err
 	}
 
@@ -393,20 +407,55 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 	// exhausted is set by a started child whose request the cap refused, and
 	// read before each later start.
 	var exhausted atomic.Bool
+	// held is what the running children's first requests may reserve, and
+	// running how many there are; both are guarded by mu. finished carries one
+	// token per child that has returned and given its share back.
+	var (
+		mu       sync.Mutex
+		held     int64
+		running  int
+		finished = make(chan struct{}, len(tasks))
+	)
 	var wg sync.WaitGroup
 	for i, task := range tasks {
-		if why := p.admitOne(task, &exhausted); why != "" {
+		var kind, why string
+		for {
+			mu.Lock()
+			heldNow, runningNow := held, running
+			mu.Unlock()
+			var wait bool
+			why, wait = p.admitOne(task, capacity-heldNow, &exhausted)
+			if why == "" {
+				break
+			}
+			kind = NotStartedBudget
+			if !wait || runningNow == 0 {
+				break
+			}
+			select {
+			case <-finished:
+				continue
+			case <-ctx.Done():
+				kind, why = NotStartedCancelled, "the dispatch was cancelled while it waited for the spend cap"
+			}
+			break
+		}
+		if why != "" {
 			// One held back means every later one is too. Starting a cheaper
 			// child after refusing a dearer one would make which children ran
 			// depend on their prices rather than on the order they were asked
 			// for in.
-			results[i] = notStarted(task.Label, why)
+			results[i] = notStarted(task.Label, kind, why)
 			for j := i + 1; j < len(tasks); j++ {
-				results[j] = notStarted(tasks[j].Label,
-					fmt.Sprintf("%s, started before it, was held back by the spend cap", task.Label))
+				results[j] = notStarted(tasks[j].Label, kind,
+					fmt.Sprintf("%s, started before it, was held back", task.Label))
 			}
 			break
 		}
+		mu.Lock()
+		held += task.Reserve
+		running++
+		mu.Unlock()
 		wg.Add(1)
 		go func(i int, task Task) {
 			defer wg.Done()
@@ -415,58 +464,72 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 					exhausted.Store(true)
 				}
 			})
+			mu.Lock()
+			held -= task.Reserve
+			running--
+			mu.Unlock()
+			finished <- struct{}{}
 		}(i, task)
 	}
 	wg.Wait()
 	return results, nil
 }
 
-// admitAll refuses a fan-out whose children's first requests cannot all be
-// reserved against the cap's current headroom.
-func (p *Pool) admitAll(tasks []Task) error {
+// admitAll refuses a fan-out holding a child whose first request cannot be
+// reserved against the cap's current headroom even with nothing else running,
+// and returns that headroom, which bounds what the running children may hold
+// together. Zero when no child is metered.
+func (p *Pool) admitAll(tasks []Task) (int64, error) {
 	if p.Budget == nil {
-		return nil
+		return 0, nil
 	}
-	var total int64
-	metered := make([]string, 0, len(tasks))
+	var total, dearest int64
+	var dearestLabel string
+	metered := 0
 	for _, task := range tasks {
 		if task.Reserve < 0 {
-			return fmt.Errorf("agents: %s has a negative reservation %d", task.Label, task.Reserve)
+			return 0, fmt.Errorf("agents: %s has a negative reservation %d", task.Label, task.Reserve)
 		}
 		if task.Reserve == 0 {
 			continue
 		}
 		if total > math.MaxInt64-task.Reserve {
-			return fmt.Errorf("%w: the children's reservations overflow", ErrBudget)
+			return 0, fmt.Errorf("%w: the children's reservations overflow", ErrBudget)
 		}
 		total += task.Reserve
-		metered = append(metered, task.Label+" "+p.Budget.Render(task.Reserve))
+		metered++
+		if task.Reserve > dearest {
+			dearest, dearestLabel = task.Reserve, task.Label
+		}
 	}
-	if total == 0 {
-		return nil
+	if metered == 0 {
+		return 0, nil
 	}
 	headroom, err := p.Budget.Headroom()
 	if err != nil {
-		return fmt.Errorf("%w: the spend cap could not be read, so nothing was started: %w", ErrBudget, err)
+		return 0, fmt.Errorf("%w: the spend cap could not be read, so nothing was started: %w", ErrBudget, err)
 	}
-	if total > headroom {
-		return fmt.Errorf("%w: %d children would reserve up to %s for their first requests (%s), "+
-			"and %s is left under the cap; nothing was started",
-			ErrBudget, len(metered), p.Budget.Render(total), strings.Join(metered, ", "), p.Budget.Render(headroom))
+	if dearest > headroom {
+		return 0, fmt.Errorf("%w: %s may reserve up to %s for its first request, and %s is left under the cap "+
+			"(%d metered children, %s if all ran at once); nothing was started",
+			ErrBudget, dearestLabel, p.Budget.Render(dearest), p.Budget.Render(headroom),
+			metered, p.Budget.Render(total))
 	}
-	return nil
+	return headroom, nil
 }
 
-// admitOne decides whether the next child may start, and returns why not when
-// it may not.
+// admitOne decides whether the next child may start now, and returns why not
+// when it may not. wait is true when the refusal can lift as running children
+// finish: the child fits the cap on its own, but not beside the children
+// already running.
 //
-// The headroom it reads does not yet show siblings started an instant ago that
-// have not reserved anything; admitAll, which counted every child together, is
-// what covers them. This check answers the question that one cannot: whether
-// the cap has moved since.
-func (p *Pool) admitOne(task Task, exhausted *atomic.Bool) string {
+// room is what the fan-out's own accounting leaves: the headroom read when it
+// began, less what the running children may reserve. The headroom read now is
+// the cap's own answer, which also shows spend by other sessions; the child
+// starts only if both have room for it.
+func (p *Pool) admitOne(task Task, room int64, exhausted *atomic.Bool) (why string, wait bool) {
 	if p.Budget == nil {
-		return ""
+		return "", false
 	}
 	var headroom int64
 	var err error
@@ -476,27 +539,30 @@ func (p *Pool) admitOne(task Task, exhausted *atomic.Bool) string {
 	// Read after the headroom, so a sibling that finished while it was being
 	// read is seen.
 	if exhausted.Load() {
-		return "a sibling's request was refused by the spend cap"
+		return "a sibling's request was refused by the spend cap", false
 	}
 	switch {
 	case task.Reserve == 0:
-		return ""
+		return "", false
 	case err != nil:
-		return "the spend cap could not be read: " + err.Error()
+		return "the spend cap could not be read: " + err.Error(), false
 	case task.Reserve > headroom:
 		return fmt.Sprintf("its first request may reserve up to %s, and %s is left under the cap",
-			p.Budget.Render(task.Reserve), p.Budget.Render(headroom))
+			p.Budget.Render(task.Reserve), p.Budget.Render(headroom)), true
+	case task.Reserve > room:
+		return fmt.Sprintf("its first request may reserve up to %s, and the children already running may "+
+			"reserve all but %s of the cap", p.Budget.Render(task.Reserve), p.Budget.Render(max(room, 0))), true
 	}
-	return ""
+	return "", false
 }
 
-func notStarted(label, why string) Result {
+func notStarted(label, kind, why string) Result {
 	err := fmt.Errorf("%w: %s", ErrNotStarted, why)
 	return Result{
 		Label:      label,
 		Err:        err,
-		Error:      "not started (" + NotStartedBudget + "): " + why,
-		NotStarted: NotStartedBudget,
+		Error:      "not started (" + kind + "): " + why,
+		NotStarted: kind,
 	}
 }
 

@@ -274,14 +274,36 @@ type childTurn struct {
 }
 
 // RunSubAgent carries out one delegated instruction and reports what came back.
+//
+// A child that shows evidence of being out of its depth — see
+// escalationEvidence — is re-run once on the next tier up, from a fresh
+// conversation, within the fan-out's escalation cap. Effort has already been
+// raised by then: the loop climbs its own ladder before it gives a turn back.
 func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgentRequest) (devcouncil.SubAgentResult, error) {
 	cfg, err := r.config(req)
 	if err != nil {
 		return devcouncil.SubAgentResult{}, err
 	}
+	first, err := r.attempt(ctx, cfg, req)
+	if first.evidence == "" {
+		return first.result, err
+	}
+	return r.escalate(ctx, cfg, req, first, err)
+}
+
+// attemptResult is one run of a child and what, if anything, it showed about
+// whether it was out of its depth.
+type attemptResult struct {
+	result devcouncil.SubAgentResult
+	// evidence is empty unless the run showed a fact escalation acts on.
+	evidence string
+}
+
+// attempt places, builds and runs one child on the tier its request names.
+func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req devcouncil.SubAgentRequest) (attemptResult, error) {
 	child, err := r.prepare(cfg, req)
 	if err != nil {
-		return devcouncil.SubAgentResult{}, err
+		return attemptResult{}, err
 	}
 	loop, provider, model := child.loop, child.provider, child.model
 
@@ -319,16 +341,17 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 		Wrote: outcome.Wrote, WroteTruncated: outcome.WroteTruncated,
 	}
 	if err != nil {
-		return result, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
+		return attemptResult{result: result}, fmt.Errorf("sub-agent %q failed: %w", req.Label, err)
 	}
 
 	summary := strings.TrimSpace(outcome.Final.Text())
+	evidence := escalationEvidence(outcome, summary, maxSubAgentSteps)
 	if summary == "" {
 		// The dispatch treats an empty summary as a failure, and it is right
 		// to: a child that finished with nothing to say did not do the work its
 		// prompt described. Saying so here means the report names the child
 		// rather than leaving the caller to infer it from a blank field.
-		return result, fmt.Errorf(
+		return attemptResult{result: result, evidence: evidence}, fmt.Errorf(
 			"sub-agent %q ran %d step(s) and produced no answer", req.Label, outcome.Steps)
 	}
 	// Everything worth saying about the turn, from the one function that
@@ -358,7 +381,10 @@ func (r *subAgentRunner) RunSubAgent(ctx context.Context, req devcouncil.SubAgen
 	// objections — comes back as no judgement rather than as a pass, which
 	// is the only direction it is safe to be wrong in.
 	result.Verdict = devcouncil.ParseVerdict(req.Verdict, summary)
-	return result, nil
+	if evidence == "" && req.Verdict != "" && !result.Verdict.Judged {
+		evidence = "no verdict reached when one was asked for"
+	}
+	return attemptResult{result: result, evidence: evidence}, nil
 }
 
 // config takes the runner's configuration for one child, refusing a child no

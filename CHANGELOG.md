@@ -119,13 +119,33 @@ under **Unreleased** in the same commit as the code.
   crashed fan-out no longer holds in-flight slots until every later request
   fails at the 256-attempt bound. Reclaimed attempts stay counted against the
   limit.
-- Sub-agent fan-outs are admitted against the spend cap. Before any child
-  starts, the children's first-request reservations must fit the ledger's
-  headroom together, or the dispatch is refused with each child's figure and
-  the headroom in the message. After that, once a started child is refused by
-  the cap or the headroom no longer covers the next child, no further child is
+- Sub-agent fan-outs are admitted against the spend cap, and narrowed to it
+  rather than refused for the sum of their worst cases. A request reserves a
+  worst case — its whole prompt at the dearest input rate plus the full output
+  bound — so eight children reserve many times what they spend. The dispatch is
+  refused up front only when a child's first request cannot be reserved even
+  alone, with its figure and the headroom in the message. Otherwise children
+  start in order while the running children's reservations, plus the next
+  child's, fit the headroom read when the fan-out began and the headroom read
+  now; a waiting child starts when a running one finishes and its reservation
+  settles to what it spent. Once a started child is refused by the cap, or
+  nothing is running and the next child still does not fit, no further child is
   started; each one held back is reported with status `not_started` and reason
-  `budget`, carries no writes, and is counted apart from failures.
+  `budget` (or `cancelled`, if the dispatch was cancelled while it waited),
+  carries no writes, and is counted apart from failures.
+- Escalation on evidence. A sub-agent that shows evidence of being out of its
+  depth — the step ceiling reached, an empty summary, no verdict where one was
+  asked for, or an end-of-turn check still failing after its bounces — is
+  re-run once on the next tier up that runs a different model, from a fresh
+  conversation (the original prompt and a short account of what the first
+  attempt left, never its transcript or thinking). Effort is raised first, by
+  the loop's own ladder. The advisor never escalates; a child on the parent's
+  model or an operator-pinned role does not either. Each fan-out shares one cap
+  of ceil(N/2) escalations. A re-run that shows the same evidence fails the
+  child with a typed `ExhaustedError`; a re-run the provider or cap refuses, or
+  a cancellation, with a typed `EscalationError`, and neither climbs further.
+  The fan-out report lists each escalation (child, from, to, evidence, cold
+  cache) under `escalations`.
 - The usage line is priced and split by model. Each step is priced from its
   model's own table as it arrives, and the `turn.usage` event carries
   `cost_nano_usd`, `unpriced_steps` and `by_model[]`; the terminal prints the
