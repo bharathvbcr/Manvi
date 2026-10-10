@@ -26,7 +26,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
-| **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. |
+| **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. `manvi budget reconcile` moves attempts left in flight by an exited process into retained spend (still counted against the limit); every reservation does the same before it is admitted. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |
 | **Code Graph Build** | `manvi map build` | Index repository symbols and AST relationships into `.devcouncil/code_graph.json`. |
 | **Code Graph Rebuild** | `manvi map rebuild` | Discard existing derived index and regenerate the code graph from scratch. |
@@ -90,7 +90,7 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 
 ## Operator-scope settings
 
-Two values are read from the process environment and from nowhere else. Both are
+Four values are read from the process environment and from nowhere else. Both are
 deliberately absent from the settings table below, because settings load from
 `.devcouncil/config.yaml` — a file inside the repository, protected by a rung
 that a relaxed posture switches off. A value the agent can write into the
@@ -100,6 +100,8 @@ repository is not a value that can authorise anything.
 |---|---|
 | `MANVI_VERIFY_COMMAND` | The command the end-of-turn check runs over a mutating turn's changes. Unset means the built-in path-scoped gates run alone. |
 | `MANVI_FETCH_HOSTS` | Comma- or space-separated hosts `devcouncil_fetch_url` may reach. **Unset means no outbound network access, and the tool is not offered at all.** |
+| `MANVI_ANTHROPIC_BUDGET_USD` | Account-wide Anthropic spend cap in dollars (`200`, `49.50`). Unset means unmetered. A value that is set but unusable stops the Anthropic provider from starting. |
+| `MANVI_ANTHROPIC_BUDGET_LEDGER` | Absolute path of the shared ledger. Unset means `<user config dir>/manvi/budget/anthropic.json`. The ledger is per machine: attempts whose process has exited are reclaimed by pid. |
 
 ```bash
 MANVI_VERIFY_COMMAND="go test ./..." \

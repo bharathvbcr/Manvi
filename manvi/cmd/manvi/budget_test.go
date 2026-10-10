@@ -186,3 +186,45 @@ func TestManagedClaudeAgentsDoNotInheritTheMeteredKey(t *testing.T) {
 		t.Fatalf("withheld %q, want the key the meter resolves", got)
 	}
 }
+
+func TestBudgetReconcileRetainsAttemptsNoProcessOwns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "anthropic.json")
+	// pid -1 can never be a running process, so its attempt is unresolvable.
+	ledger := `{"schema_version":2,"spent_nano_usd":0,"retained_nano_usd":0,"settled":0,"retained_attempts":0,` +
+		`"overruns":0,"next_id":2,"in_flight":[{"id":1,"model":"claude-opus-5-5","state":"accepted",` +
+		`"reserved_nano_usd":2000000000,"pid":-1,"started_unix":1}]}`
+	if err := os.WriteFile(path, []byte(ledger), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAnthropicBudget, "")
+	t.Setenv(envAnthropicLedger, path)
+
+	var out strings.Builder
+	if err := budgetCommand(&out, []string{"reconcile"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "retained #1 claude-opus-5-5 $2.00") {
+		t.Fatalf("report:\n%s", out.String())
+	}
+	s, err := budget.Inspect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.InFlight) != 0 || s.RetainedAttempts != 1 || s.CommittedNanoUSD() != 2_000_000_000 {
+		t.Fatalf("reconcile must move the attempt to retained without releasing it: %+v", s)
+	}
+}
+
+func TestBudgetCommandArguments(t *testing.T) {
+	t.Setenv(envAnthropicBudget, "")
+	t.Setenv(envAnthropicLedger, filepath.Join(t.TempDir(), "none.json"))
+	var out strings.Builder
+	if err := budgetCommand(&out, []string{"reconcile"}); err != nil || !strings.Contains(out.String(), "nothing to reconcile") {
+		t.Fatalf("reconcile without a ledger: %v\n%s", err, out.String())
+	}
+	for _, args := range [][]string{{"reset"}, {"reconcile", "now"}} {
+		if err := budgetCommand(io.Discard, args); err == nil {
+			t.Errorf("budget %v was accepted", args)
+		}
+	}
+}

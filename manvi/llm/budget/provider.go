@@ -179,11 +179,20 @@ func (s *budgetStream) Response() (llm.Response, error) {
 		return llm.Response{}, errors.Join(err, s.resolve(nil))
 	}
 	r, err := s.inner.Response()
-	if cancelled := s.ctx.Err(); cancelled != nil {
-		return llm.Response{}, errors.Join(cancelled, s.resolve(nil))
-	}
 	if err != nil {
+		if cancelled := s.ctx.Err(); cancelled != nil {
+			return llm.Response{}, errors.Join(cancelled, err, s.resolve(nil))
+		}
 		return r, errors.Join(err, s.resolve(nil))
+	}
+	// The inner stream finished, so its usage is the provider's final account
+	// of what this attempt cost. A cancellation that landed while it was being
+	// read does not make that usage less true: settle from it, and still report
+	// the cancellation. Retaining the full reservation here charged a fan-out
+	// cancelled a moment after a child answered the worst case instead of what
+	// the child spent.
+	if cancelled := s.ctx.Err(); cancelled != nil {
+		return llm.Response{}, errors.Join(cancelled, s.resolve(&r.Usage))
 	}
 	if err := s.resolve(&r.Usage); err != nil {
 		return r, err

@@ -539,7 +539,7 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 	case "providers":
 		return "", showProviders(out, h.reg)
 	case "budget":
-		return "", showBudget(out)
+		return "", budgetCommand(out, fields)
 	case "local":
 		return "", showLocal(out, h.reg, fields)
 	case "pull", "push":

@@ -278,3 +278,52 @@ func TestEveryCatalogueEntryIsSelfConsistent(t *testing.T) {
 		}
 	}
 }
+
+// TestPricesMatchThePublishedTable pins every price to Anthropic's published
+// table, in nano-USD per token ($1/MTok = 1000), as read from
+// https://platform.claude.com/docs/en/about-claude/pricing on 2026-10-10.
+// Cache writes are the 5-minute rate. A budget that misprices a model either
+// refuses spend the account could afford or lets the cap be passed, so a
+// change here must be a change to that page, re-read and re-dated.
+func TestPricesMatchThePublishedTable(t *testing.T) {
+	type row struct{ input, cacheWrite, cacheRead, output int64 }
+	published := map[string]struct {
+		short, long row
+		longAbove   int
+	}{
+		"claude-fable-5-1":  {short: row{10_000, 12_500, 250, 50_000}},
+		"claude-fable-5":    {short: row{10_000, 12_500, 1_000, 50_000}},
+		"claude-opus-5-5":   {short: row{4_000, 5_000, 200, 20_000}},
+		"claude-opus-5":     {short: row{5_000, 6_250, 500, 25_000}},
+		"claude-opus-4-8":   {short: row{5_000, 6_250, 500, 25_000}},
+		"claude-sonnet-5-5": {short: row{2_000, 2_500, 100, 10_000}},
+		"claude-sonnet-5":   {short: row{2_000, 2_500, 200, 10_000}},
+		"claude-haiku-5-5":  {short: row{100, 125, 10, 500}, long: row{500, 625, 50, 2_500}, longAbove: 100_000},
+		"claude-haiku-4-5":  {short: row{1_000, 1_250, 100, 5_000}},
+	}
+	for _, model := range Models() {
+		if _, ok := published[model]; !ok {
+			t.Errorf("%s is served but has no row here; read its price from the pricing page and add it", model)
+		}
+	}
+	for model, want := range published {
+		p, ok := PriceOf(model)
+		if !ok {
+			t.Errorf("%s: no price", model)
+			continue
+		}
+		got := row{p.Rates.Input, p.Rates.CacheWrite, p.Rates.CacheRead, p.Rates.Output}
+		if got != want.short {
+			t.Errorf("%s rates = %+v, published %+v", model, got, want.short)
+		}
+		if p.LongPromptAbove != want.longAbove {
+			t.Errorf("%s long-prompt threshold = %d, published %d", model, p.LongPromptAbove, want.longAbove)
+		}
+		if want.longAbove > 0 {
+			gotLong := row{p.LongRates.Input, p.LongRates.CacheWrite, p.LongRates.CacheRead, p.LongRates.Output}
+			if gotLong != want.long {
+				t.Errorf("%s long-prompt rates = %+v, published %+v", model, gotLong, want.long)
+			}
+		}
+	}
+}
