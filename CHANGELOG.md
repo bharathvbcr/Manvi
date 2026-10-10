@@ -112,6 +112,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Pins move to DevCouncil `acfaa229` (v0.2.4 line) and gusset `23e925b`. DevCouncil's
+  read-only command allowlist now judges each command's arguments, so
+  `git diff --output=`, `git diff --no-index` outside the root and pytest's
+  `--junitxml`/`--basetemp` no longer pass as read-only. `policy.ReadRefused`
+  is gone upstream; `grep`'s secret-path filter asks `policy.ClassifyRead` and
+  withholds any path it does not class as readable, as before.
+
 - The end-of-turn check no longer reports a clean pass for a turn that deleted
   files: a path that is gone is recorded as omitted and a would-be `passed`
   becomes `degraded` (`devcouncil.VerifyPresent`, shared with `work.verify.task`).

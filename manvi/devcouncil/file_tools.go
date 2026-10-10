@@ -611,7 +611,7 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	for _, m := range matches {
 		verdict, seen := refused[m.Path]
 		if !seen {
-			verdict = policy.ReadRefused(r.deps.Root, m.Path)
+			verdict = policy.ClassifyRead(r.deps.Root, m.Path) != policy.ReadAllowed
 			refused[m.Path] = verdict
 		}
 		if verdict {
