@@ -332,6 +332,11 @@ func TestOrdinaryFramesTakeTheSinglePass(t *testing.T) {
 // FuzzOneDecodeMatchesTwo is TestOneDecodeMatchesTwo over arbitrary frames.
 func FuzzOneDecodeMatchesTwo(f *testing.F) {
 	for _, frame := range adversarialFrames {
+		// A seed the body below would skip is a skip every plain `go test` run
+		// records, and verify.sh names recorded skips; it is not a case.
+		if strings.ContainsAny(frame.event, "\r\n") || strings.ContainsAny(frame.data, "\r\n") {
+			continue
+		}
 		f.Add(frame.event, frame.data)
 	}
 	f.Fuzz(func(t *testing.T, event, data string) {

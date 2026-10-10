@@ -142,7 +142,7 @@ func TestTheHeaderTimeoutDoesNotCutOffAHealthyStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 	if err != nil || strings.Count(string(body), "data: x") != 8 {
 		t.Fatalf("body=%q err=%v; a stream five times the header timeout long was cut off", body, err)
@@ -169,7 +169,7 @@ func TestAHeaderTimeoutIsRetriedAndTheNextAttemptSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if b, _ := io.ReadAll(resp.Body); string(b) != "ok" || hits.Load() != 2 {
+	if b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)); string(b) != "ok" || hits.Load() != 2 {
 		t.Fatalf("body=%q hits=%d", b, hits.Load())
 	}
 }
@@ -220,7 +220,7 @@ func TestPreflightStreamJudgesOnlyThePreamble(t *testing.T) {
 	if failure != nil {
 		t.Fatalf("an error after content was judged: %v", failure)
 	}
-	got, _ := io.ReadAll(accepted.Body)
+	got, _ := io.ReadAll(io.LimitReader(accepted.Body, 1<<20))
 	if !strings.Contains(string(got), "event: ping") || !strings.HasSuffix(string(got), "data: b\n\n") {
 		t.Fatalf("replay lost bytes: %q", got)
 	}
