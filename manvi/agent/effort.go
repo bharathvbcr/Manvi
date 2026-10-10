@@ -111,6 +111,40 @@ func PlanEffort(capability llm.Capability, base, ceiling string) (EffortPlan, er
 	return EffortPlan{levels: levels, base: base, ceiling: ceiling, ceilingAt: ceilingAt}, nil
 }
 
+// PlanTierEffort builds the ladder for a turn on a tier's model: the tier's own
+// effort as the base, and the session's ceiling only where this model can climb
+// to it.
+//
+// It differs from PlanEffort in the two places a tier differs from the session.
+// The base is checked even with no ceiling, because a tier's effort is a
+// setting in its own right and one its model refuses would otherwise surface as
+// a refused request mid-way through a delegated turn. And the ceiling is
+// inherited rather than demanded: it was checked against the main model, so on
+// a model that does not reason, or a tier that sets no effort, or one already
+// at or above the ceiling, the tier runs at its own effort throughout instead of
+// being refused for a ceiling nobody set on it. A ceiling the tier's model has
+// no rung for at all is still refused — that is the session's setting naming a
+// tier this model cannot reach, not a ceiling this tier sits above.
+func PlanTierEffort(capability llm.Capability, base, ceiling string) (EffortPlan, error) {
+	if base != "" {
+		if err := capability.Validate(llm.Request{Model: capability.Model, Effort: base}); err != nil {
+			return EffortPlan{}, err
+		}
+	}
+	if ceiling == "" || base == "" || !capability.SupportsReasoning || len(capability.EffortLevels) == 0 {
+		return PlanEffort(capability, base, "")
+	}
+	ceilingAt := slices.Index(capability.EffortLevels, ceiling)
+	if ceilingAt < 0 {
+		return EffortPlan{}, fmt.Errorf("model %s/%s supports effort %v, not the ceiling %q",
+			capability.Provider, capability.Model, capability.EffortLevels, ceiling)
+	}
+	if ceilingAt <= slices.Index(capability.EffortLevels, base) {
+		return PlanEffort(capability, base, "")
+	}
+	return PlanEffort(capability, base, ceiling)
+}
+
 // planEffort resolves the ladder for a loop's configuration.
 //
 // A ceiling that cannot be checked is refused rather than kept as a setting

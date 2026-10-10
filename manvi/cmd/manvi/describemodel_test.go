@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 )
 
@@ -19,9 +20,14 @@ import (
 // of a session, before the operator has anything else to look at.
 
 // TestAnUnconfiguredModelCarriesItsRemedy.
+//
+// On anthropic the main tier is the standing answer, so the one way to have no
+// model there is an operator emptying llm.tier.main; the remedy then names both
+// settings that would supply one.
 func TestAnUnconfiguredModelCarriesItsRemedy(t *testing.T) {
 	t.Setenv("MANVI_MODEL", "")
-	reg, err := flags.NewHarnessRegistry("")
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierMain)), "")
+	reg, err := newRegistry("")
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -35,8 +41,10 @@ func TestAnUnconfiguredModelCarriesItsRemedy(t *testing.T) {
 	if unresolved == "" {
 		t.Fatal("the resolver's reason was discarded; the operator is told nothing to do")
 	}
-	if !strings.Contains(unresolved, "MANVI_MODEL") {
-		t.Fatalf("the remedy must name what to set: %q", unresolved)
+	for _, want := range []string{"MANVI_MODEL", flags.EnvKey(tierModelKey(agents.TierMain))} {
+		if !strings.Contains(unresolved, want) {
+			t.Fatalf("the remedy must name what to set (%s): %q", want, unresolved)
+		}
 	}
 	// The catalogue is the other half of the remedy: knowing the variable
 	// without a value that works is one search away from being no help.
@@ -46,6 +54,22 @@ func TestAnUnconfiguredModelCarriesItsRemedy(t *testing.T) {
 	}
 	if !strings.Contains(unresolved, served[0]) {
 		t.Fatalf("the remedy must name a value that would work; %q names none of %v", unresolved, served)
+	}
+}
+
+// TestTheMainTierIsAConfiguredModel. With nothing exported, an anthropic
+// session runs the main tier, and the banner names it rather than reporting a
+// model nobody chose as missing.
+func TestTheMainTierIsAConfiguredModel(t *testing.T) {
+	t.Setenv("MANVI_MODEL", "")
+	reg, err := newRegistry("")
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	host := &harnessHost{reg: reg}
+	label, unresolved := host.describeModel(anthropic.Name)
+	if label != agents.DefaultTierProfile()[agents.TierMain].Model || unresolved != "" {
+		t.Fatalf("describeModel = %q, %q; want the main tier's model and no remedy", label, unresolved)
 	}
 }
 

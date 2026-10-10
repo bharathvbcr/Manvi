@@ -243,7 +243,6 @@ func TestATierWithNoProfileInheritsTheParent(t *testing.T) {
 	r := &subAgentRunner{}
 	r.attach(subAgentConfig{
 		provider: p, models: models, model: "parent-model", effort: "low",
-		tiers:    sessionTierProfile(p.Name()),
 		registry: surfaceRegistry(t), systemPrompt: "PARENT PROMPT",
 	})
 	if _, err := r.RunSubAgent(context.Background(), devcouncil.SubAgentRequest{
@@ -280,7 +279,7 @@ func TestATierTheProviderDoesNotServeIsRefused(t *testing.T) {
 // `manvi agents` shows every shipped role with its tier and that tier's model.
 func TestShowAgentsPrintsRoleTierAndModel(t *testing.T) {
 	t.Setenv("MANVI_MODEL", "")
-	reg, err := flags.NewHarnessRegistry("")
+	reg, err := newRegistry("")
 	if err != nil {
 		t.Fatal(err)
 	}

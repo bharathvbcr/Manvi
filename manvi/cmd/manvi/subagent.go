@@ -12,7 +12,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
-	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -73,19 +72,6 @@ type subAgentConfig struct {
 	// reaches the faces and the NDJSON stream without touching what the parent
 	// replays to the model.
 	sink ui.Sink
-}
-
-// sessionTierProfile is where each tier runs for a session on the named
-// provider.
-//
-// Tiers name Anthropic models, so a session on any other provider has no
-// profile and its children inherit the parent's model, as they did before
-// tiers existed. A nil profile is that answer, not an error: see placeOnTier.
-func sessionTierProfile(provider string) agents.TierProfile {
-	if provider != anthropic.Name {
-		return nil
-	}
-	return agents.DefaultTierProfile()
 }
 
 // maxSubAgentSteps bounds a child's turn independently of its parent's ceiling.
@@ -234,7 +220,19 @@ func (r *subAgentRunner) placeOnTier(cfg *subAgentConfig, req devcouncil.SubAgen
 	if spec.Model == cfg.model && effort == cfg.effort {
 		return inherit, nil
 	}
-	return childPlacement{provider: cfg.provider, model: spec.Model, effort: effort}, nil
+	// The one answer to what ceiling this tier inherits: startup checked the
+	// same plan for every tier, so a refusal here means the session changed
+	// under the profile, not that the profile was never checked.
+	plan, err := agent.PlanTierEffort(capability, effort, cfg.effortCeiling)
+	if err != nil {
+		return childPlacement{}, fmt.Errorf("sub-agent %q cannot run: tier %s on %q: %w",
+			req.Label, req.Tier, spec.Model, err)
+	}
+	placed := childPlacement{provider: cfg.provider, model: spec.Model, effort: effort}
+	if plan.Escalates() {
+		placed.effortCeiling = cfg.effortCeiling
+	}
+	return placed, nil
 }
 
 // carryEffort keeps the parent's effort and ceiling on a child an operator

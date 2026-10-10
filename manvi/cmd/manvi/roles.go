@@ -21,7 +21,11 @@ func showAgents(out io.Writer, reg *flags.Registry) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", flags.LLMDefaultProvider, err)
 	}
-	profile := sessionTierProfile(provider)
+	table, err := checkTiers(reg, provider)
+	if err != nil {
+		return err
+	}
+	profile := table.Profile()
 
 	// Composed whole and written once, so a failed write is one error to
 	// report rather than six to drop.

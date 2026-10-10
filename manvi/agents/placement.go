@@ -109,7 +109,7 @@ func ModelPlacement(spec string, ceiling Tier) (Tier, error) {
 // cheapest first. An unknown ceiling allows none.
 func TiersAtOrBelow(ceiling Tier) []Tier {
 	var out []Tier
-	for _, t := range tierOrder {
+	for _, t := range tiers {
 		if t.Rank() <= ceiling.Rank() {
 			out = append(out, t)
 		}

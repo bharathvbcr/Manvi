@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +24,28 @@ func TestMain(m *testing.M) {
 			panic("clearing " + key + ": " + err.Error())
 		}
 	}
-	os.Exit(m.Run())
+	// The tier profile is operator scope: it is read from the user config and
+	// from MANVI_LLM_TIER_*. Both would otherwise answer every tier test with
+	// the profile of whoever ran the suite, so the variables are cleared and the
+	// user config is pointed at a file that does not exist. A test that wants
+	// either sets it with t.Setenv.
+	for _, kv := range os.Environ() {
+		if key, _, _ := strings.Cut(kv, "="); strings.HasPrefix(key, "MANVI_LLM_TIER_") {
+			if err := os.Unsetenv(key); err != nil {
+				panic("clearing " + key + ": " + err.Error())
+			}
+		}
+	}
+	isolated, err := os.MkdirTemp("", "manvi-user-config-")
+	if err != nil {
+		panic("creating an isolated user config directory: " + err.Error())
+	}
+	if err := os.Setenv(envUserConfig, filepath.Join(isolated, "config.yaml")); err != nil {
+		panic("isolating the user config: " + err.Error())
+	}
+	code := m.Run()
+	_ = os.RemoveAll(isolated)
+	os.Exit(code)
 }
 
 // TestTheOperatorsRootOverrideDoesNotReachTests pins the isolation: an

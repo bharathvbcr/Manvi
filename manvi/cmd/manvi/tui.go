@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -124,7 +125,10 @@ type tuiSession struct {
 	// are only serviceable together and a ceiling found to be wrong after a
 	// prompt has been typed reads as the harness losing the turn.
 	effortCeiling string
-	registry      *llm.Registry
+	// tiers is where each tier runs for this session's provider, resolved and
+	// checked at attach beside the model, and nil where tiers do not apply.
+	tiers    agents.TierProfile
+	registry *llm.Registry
 }
 
 // persist writes a session's log to the same store the headless face resumes
@@ -159,6 +163,7 @@ type attached struct {
 	model         string
 	effort        string
 	effortCeiling string
+	tiers         agents.TierProfile
 }
 
 // attachment reads the block under the lock. A caller that read the five fields
@@ -167,14 +172,14 @@ type attached struct {
 func (s *tuiSession) attachment() attached {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
-	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling}
+	return attached{s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers}
 }
 
 // detach drops the resolved provider so the next turn resolves it again.
 func (s *tuiSession) detach() {
 	s.attachMu.Lock()
 	defer s.attachMu.Unlock()
-	s.provider, s.registry, s.model, s.effort, s.effortCeiling = nil, nil, "", "", ""
+	s.provider, s.registry, s.model, s.effort, s.effortCeiling, s.tiers = nil, nil, "", "", "", nil
 }
 
 type harnessHost struct {
@@ -982,7 +987,7 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 			model:           at.model,
 			effort:          at.effort,
 			effortCeiling:   at.effortCeiling,
-			tiers:           sessionTierProfile(at.provider.Name()),
+			tiers:           at.tiers,
 			registry:        s.pipeline,
 			native:          s.native,
 			meter:           s.subMeter,
@@ -1069,6 +1074,13 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	if err != nil {
 		return err
 	}
+	// Checked at attach, as the effort is: a tier this provider cannot serve is
+	// a configuration mistake, and found here it names the tier rather than
+	// arriving as a refused request in the middle of a delegated turn.
+	tiers, err := checkTiers(h.reg, name)
+	if err != nil {
+		return err
+	}
 	// Re-armed after the build, which is when the provider's own credential
 	// requirement became known to the resolver. Before this call the scrubber
 	// could not have been watching the key this session is about to use.
@@ -1093,7 +1105,7 @@ func (h *harnessHost) attachProvider(s *tuiSession) error {
 	}
 	s.attachMu.Lock()
 	s.provider, s.registry, s.model, s.effort = provider, registry, model, effort
-	s.effortCeiling = ceiling
+	s.effortCeiling, s.tiers = ceiling, tiers.Profile()
 	s.attachMu.Unlock()
 	return nil
 }
@@ -1140,7 +1152,7 @@ func (h *harnessHost) resolveEffortCeiling(provider llm.Provider, model, effort 
 // the provider's own default applies — the harness does not pick a tier on the
 // operator's behalf, for the same reason it does not pick a model.
 func (h *harnessHost) resolveEffort(registry *llm.Registry, provider, model string) (string, error) {
-	effort, _, err := h.reg.String(flags.LLMEffort)
+	effort, key, _, err := mainEffort(h.reg, provider)
 	if err != nil {
 		return "", err
 	}
@@ -1150,7 +1162,7 @@ func (h *harnessHost) resolveEffort(registry *llm.Registry, provider, model stri
 	// Resolve is the same capability gate the agent loop uses before every
 	// request, so attach cannot accept a value the turn would then refuse.
 	if _, _, err := registry.Resolve(provider, llm.Request{Model: model, Effort: effort}); err != nil {
-		return "", fmt.Errorf("%s=%s: %w", flags.EnvKey(flags.LLMEffort), effort, err)
+		return "", fmt.Errorf("%s=%s: %w", flags.EnvKey(key), effort, err)
 	}
 	return effort, nil
 }

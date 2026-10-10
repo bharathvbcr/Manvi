@@ -102,6 +102,16 @@ under **Unreleased** in the same commit as the code.
   - A turn cut short after `message_start` is retained at its reported prompt
     cost plus the full output allowance. It used to keep its whole
     byte-sized reservation.
+- Tier profile: advisor (Fable 5.1), main and heavy (Opus 5.5), lite (Sonnet 5.5)
+  and basic (Haiku 5.5), each with a configurable model and effort
+  (`llm.tier.<tier>`, `llm.tier.<tier>.effort`). Operator scope only: the
+  environment (`MANVI_LLM_TIER_*`), `manvi flags set`, or a user config outside
+  the repository (`MANVI_USER_CONFIG`); a tier key in the repository's
+  `config.yaml` is refused at startup. A session refuses to start, naming the
+  tier, when a tier's model is not in the catalogue, is unpriced under a
+  spend cap, or cannot honour its effort. `llm.tier.main` supplies the
+  Anthropic session model when `MANVI_MODEL` is unset. `manvi tiers` prints the
+  resolved table with the source of each value.
 - Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 in the Anthropic
   catalogue. `manvi probe anthropic` now uses Haiku 5.5.
 - `manvi budget reconcile` retains the reservations of attempts whose process
