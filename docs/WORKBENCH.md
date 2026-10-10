@@ -32,7 +32,7 @@ operations in `hello.ops`. The operation set describes the host handlers;
 successful storage requests additionally require a compatible `dcstore` binary.
 An old or unavailable binary produces an error, never an empty successful board.
 A `dcstore` build that reports its profile schema answers `dcstore --version`
-with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":11}`;
+with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":12}`;
 earlier builds print the same object without `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
@@ -522,7 +522,7 @@ queue to the version-three worker ownership and version-two proposal lifecycle.
 Migration preserves existing tasks, revisions, groups and leases; it does not
 queue existing tasks. Unknown versions and failed migrations are errors. Upgrade
 every host's store together: an older binary refuses a newer profile with
-`schema_unsupported`. The current schema is eleven. Five through eight add the
+`schema_unsupported`. The current schema is twelve. Five through eight add the
 terminal attempts, activity inbox, native notification records and structured
 agent requests described above. Nine and ten change no tables: nine adds the
 managed/terminal run kinds and their claim/protocol invariants, and ten
@@ -535,6 +535,10 @@ task it saved, which is why the rung is a hard fence. Manvi's release pin
 (`scripts/module-pins.txt`) moved from DevCouncil `a29a11b`, which carried
 schema ten, to `ad5c941c`, which carries eleven; a Manvi built before that
 move refuses an upgraded profile.
+Twelve adds refinement proposals (below): enhancement bodies gain `kind`, and
+`acceptance_criteria` joins the lockable fields. It changes no table, and is a
+hard fence for the same reason: a host that does not know it would complete a
+refinement as text or ignore a criteria lock.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank
@@ -696,9 +700,22 @@ reconciled. Automatic saved-text suggestions use the same review lifecycle.
 
 `work.enhancements.refine` (host-only, registered with the enhancement
 configuration) proposes acceptance criteria, splits and `duplicate_of` links for
-one task. It is not stored: the proposal is returned for review and the host
-applies what it accepts through the ordinary item operations. See the changelog
-entry for its output contract and caps.
+one task. Schema twelve stores the proposal as an enhancement of `kind: "refine"`
+whose `fields` are among `acceptance_criteria`, `split_into` and `duplicate_of`.
+It keeps every invariant above: the complete source snapshot, a refused stale
+`source_revision` or locked field (`locked_fields` may now name
+`acceptance_criteria`), the single profile-wide generation slot, dismiss to
+reject and expiry of an unclaimed pending record. Refine reserves the slot
+before its model call, completes the record with the proposal and its grounding,
+and returns `enhancement_id`; a failed or cancelled run records the failure and
+frees the slot. `enhancements.accept` applies it additively through the
+revisioned task update: criteria are appended, `duplicate_of` links merged into
+`links`, and each split (`split_ids` supplies the new identifiers) becomes an
+inbox task in the same repositories with a `parent` link. It is never automatic
+and cannot be revised or undone. Schema twelve is a hard fence like eleven:
+Manvi's pin must move to a DevCouncil that carries it, and a build that knows
+only eleven refuses an upgraded profile. See the changelog entry for the output
+contract and caps.
 
 The CLI's explicitly enabled workbench module also advertises
 `work.enhancements.generate`. Storage-only embedders advertise this method only

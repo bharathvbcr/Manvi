@@ -102,6 +102,9 @@ func refineFixture(t *testing.T, devmap *refineDevmap) *refineEnv {
 		enhancementCall(t, client, "items.put", item)
 	}
 	enhancementCall(t, client, "items.delete", `{"request_id":"vd","id":"v","expected_revision":1}`)
+	// enhancementFixture leaves a text proposal pending, which holds the
+	// profile's one generation slot; a refinement reserves that slot too.
+	enhancementCall(t, client, "enhancements.dismiss", `{"request_id":"e-dismiss","id":"e","expected_revision":1}`)
 	env.provider = &enhancementTestProvider{name: "local", cap: llm.Capability{Model: "test-model", ContextWindow: 200000, MaxOutputTokens: 8192}}
 	env.provider.stream = func(ctx context.Context, req llm.Request) (llm.Stream, error) {
 		env.calls.Add(1)
