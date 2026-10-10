@@ -139,15 +139,15 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	if workbenchDB != "" {
 		client := store.New(toolBinary("MANVI_STORE_BINARY", "dcstore"), workbenchDB)
 		defer client.Close()
-		scrubber := credentials.NewScrubber()
+		scrubber := newArmedScrubber(nil)
 		runner, err = serve.NewEnhancementRunner(client, func(ctx context.Context, name, model string) (llm.Provider, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			resolver := credentials.NewResolver()
-			scrubber.WatchAll(resolver)
+			armScrubber(scrubber, resolver)
 			provider, err := buildProvider(name, reg, resolver, io.Discard, model)
-			scrubber.WatchAll(resolver)
+			armScrubber(scrubber, resolver)
 			if err != nil {
 				return nil, err
 			}

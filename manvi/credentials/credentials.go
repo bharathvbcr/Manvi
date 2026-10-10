@@ -413,6 +413,9 @@ type Scrubber struct {
 	values []*memguard.LockedBuffer
 }
 
+// minScrubLen is the shortest value Watch keeps; see Watch.
+const minScrubLen = 8
+
 // NewScrubber returns an empty scrubber.
 func NewScrubber() *Scrubber { return &Scrubber{} }
 
@@ -424,7 +427,7 @@ func (s *Scrubber) Watch(secret Secret) {
 	// Very short values are not scrubbed. A three-character "key" would match
 	// ordinary prose and turn every log line into redaction marks, which
 	// destroys the diagnostics without protecting anything worth protecting.
-	if secret.Len() < 8 {
+	if secret.Len() < minScrubLen {
 		return
 	}
 	s.mu.Lock()
@@ -450,6 +453,26 @@ func (s *Scrubber) Watch(secret Secret) {
 		sort.Slice(s.values, func(i, j int) bool { return s.values[i].Size() > s.values[j].Size() })
 		return nil
 	})
+}
+
+// WatchValue watches a raw value that is not a provider key — an environment
+// variable forwarded to a child process, say. A value that is already watched,
+// or too short to scrub, is skipped before it is sealed, so callers may re-arm
+// on every use without paying for the same enclave twice.
+func (s *Scrubber) WatchValue(value, source string) {
+	if len(value) < minScrubLen {
+		return
+	}
+	raw := []byte(value)
+	s.mu.RLock()
+	for _, existing := range s.values {
+		if existing.EqualTo(raw) {
+			s.mu.RUnlock()
+			return
+		}
+	}
+	s.mu.RUnlock()
+	s.Watch(NewSecret(value, source))
 }
 
 // WatchAll adds every credential a resolver can currently produce.

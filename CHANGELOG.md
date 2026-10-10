@@ -264,6 +264,15 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- Secrets forwarded to an MCP server (declared `env` values and
+  `env_passthrough` variables) are now scrubbed from what the server says on
+  stderr, which every failed call attaches to its error. The tool, session-log,
+  run, TUI, serve and watch scrubbers are all built by one function
+  (`newArmedScrubber`) that also watches GitHub's token variables, so the
+  quick-action and tool paths cannot drift apart again. Before, only provider
+  keys were watched and a server echoing its token put it in the session file
+  and the next request.
+
 - `devcouncil_spawn_subagents` no longer runs an unregistered role `type` as a
   write-capable child on the parent's whole tool surface. Both dispatchers
   now resolve roles through one function (`resolveRole`): an unregistered name

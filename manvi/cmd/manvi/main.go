@@ -22,7 +22,6 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/bootstrap"
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
 const usage = `manvi — the DevCouncil execution harness
@@ -382,8 +381,7 @@ func run(out, notes io.Writer, args []string) error {
 		if err != nil {
 			return err
 		}
-		scrubber := credentials.NewScrubber()
-		scrubber.WatchAll(credentials.NewResolver())
+		scrubber := newArmedScrubber(nil)
 		return callTool(out, os.Stderr, scrubber, pipeline, args[1:])
 	case "providers":
 		return showProviders(out, reg)
