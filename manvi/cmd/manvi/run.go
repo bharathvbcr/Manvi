@@ -225,8 +225,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		}
 	}
 
-	scrubber := credentials.NewScrubber()
-	scrubber.WatchAll(resolver)
+	scrubber := newArmedScrubber(resolver)
 
 	var sink ui.Sink
 	switch {

@@ -49,6 +49,12 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	subRegistry := agents.NewRegistry()
 	subMgr := agents.NewInstanceManager()
 
+	// One scrubber for the tool surface, built before the surface so the
+	// commit check and the result scrubber ask the same question of the same
+	// set of credentials.
+	toolResolver := credentials.NewResolver()
+	toolScrubber := newArmedScrubber(toolResolver)
+
 	// Built empty and attached later, once a provider and the tool registry
 	// below exist. Until something attaches it the tool refuses, which is the
 	// behaviour that replaced it reporting completed work it never did.
@@ -74,6 +80,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		SubagentRegistry: subRegistry,
 		SubagentMgr:      subMgr,
 		SubAgent:         subRunner,
+		KnownSecret:      knownSecretIn(toolScrubber, toolResolver),
 	})
 	if err != nil {
 		_ = core.plugins.Close()
@@ -82,9 +89,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	pipeline := core.tools
 	// Armed before any tool can run. Every result the model sees, and every
 	// result the session log writes to disk, goes through this.
-	toolScrubber := credentials.NewScrubber()
-	toolScrubber.WatchAll(credentials.NewResolver())
-	pipeline.SetScrubber(toolScrubber.Clean)
+	pipeline.SetScrubber(armedClean(toolScrubber, toolResolver))
 	if err := native.Register(pipeline); err != nil {
 		_ = core.plugins.Close()
 		return nil, nil, err
@@ -139,6 +144,7 @@ func buildMCP(reg *flags.Registry, root string) (*mcp.Manager, error) {
 		return nil, err
 	}
 	mgr := mcp.NewManager(root)
+	trackMCPSecrets(mgr)
 	if err := mgr.Discover(context.Background(), mcp.ConfigSource{
 		Path:     path,
 		Declared: pathOrigin != flags.OriginDefault,
@@ -290,7 +296,7 @@ func callTool(out io.Writer, notes io.Writer, scrubber *credentials.Scrubber, pi
 	// a prompt over it — the exact scenario Sanitize's doc names, on the one
 	// command that echoes untrusted bytes most directly.
 	if scrubber == nil {
-		scrubber = credentials.NewScrubber()
+		scrubber = newArmedScrubber(nil)
 	}
 	text := ui.Sanitize(scrubber.Clean(result.Text))
 

@@ -38,9 +38,12 @@ import (
 // real work refuses something the model was right to do, and it cannot tell
 // that refusal apart from the ones it should heed.
 //
-// A policy-decided result (Rule set) is never claimed as a mutation: the gate
-// may have short-circuited the body, and the loop is not told whether it ran.
-// Its text is still new information the first time, which is (a)'s job.
+// A result the gate refused (Blocked) is never claimed as a mutation: the body
+// did not run. A Rule alone says policy had something to say, not which way —
+// devcouncil.annotate puts one on allowed results too (demotion, grant,
+// protected-file warn) — so a write that landed under one still mutated, and
+// the end-of-turn check must see it. The text of a refusal is still new
+// information the first time, which is (a)'s job.
 //
 // The limits worth naming: two different empty files read in a row look like
 // one file read twice, and a model that keeps learning genuinely new facts
@@ -155,7 +158,7 @@ func (p *progressTracker) observe(name string, result tools.Result) bool {
 	}
 	// The same answer as before. Only a tool that could have changed something
 	// counts now.
-	return p.mutating[name] && !result.IsError && result.Rule == ""
+	return p.mutating[name] && !result.IsError && !result.Blocked
 }
 
 // mutated reports whether this call could have changed the world and did not
@@ -175,7 +178,7 @@ func (p *progressTracker) mutated(name string, result tools.Result) bool {
 	if p == nil {
 		return false
 	}
-	return p.mutating[name] && !result.IsError && result.Rule == ""
+	return p.mutating[name] && !result.IsError && !result.Blocked
 }
 
 // endStep folds a finished step into the streak. It returns what the step costs

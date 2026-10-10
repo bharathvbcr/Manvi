@@ -69,16 +69,16 @@ The Write Gate controls all file creations, overwrites, modifications, and delet
 ```mermaid
 flowchart TD
     subgraph HardRulesGroup["Tier 1: Hard Rules (Immutable & Ungrantable)"]
-        H1["rule.path.outside_root: Path leaves workspace root"]
-        H2["rule.path.credential: Matches .env*, *.pem, *.key, id_rsa, etc."]
-        H3["rule.path.git_internal: Direct write to .git/* or bare .git"]
-        H4["rule.path.agent_config: Writes to .claude/settings.json, .cursorrules, etc."]
+        H1["path.outside_root: Path leaves workspace root"]
+        H2["path.secret: Matches .env*, *.pem, *.key, id_rsa, etc."]
+        H3["path.restricted: Write to .git, .devcouncil, or an agent client config directory"]
+        H4["task.forbidden_change: Path is listed in the task's forbidden changes"]
     end
 
     subgraph SoftRulesGroup["Tier 2: Soft Rules (Overridable via Grants & Posture)"]
-        S1["rule.scope.planned: Path was not listed in task plan"]
-        S2["rule.scope.adjacent: Path is outside code graph neighborhood"]
-        S3["rule.scope.untracked: Modified file has no task association"]
+        S1["scope.unplanned: Path was not listed in task plan"]
+        S2["scope.read_only: Planned file is read-only"]
+        S3["task.absent: No running task authorizes the write"]
     end
 
     HardRulesGroup --> SoftRulesGroup
@@ -89,11 +89,14 @@ flowchart TD
 | Rule ID | Tier | Default Action | Overridable By | Description |
 |---|---|---|---|---|
 | `path.outside_root` | Hard | **Reject** | *Never* | Traversal attempts (`../`), absolute paths outside workspace. |
-| `path.credential` | Hard | **Block** | *Never* | Matches sensitive files (`.env`, `credentials.json`, `id_ed25519`). |
-| `path.git_internal` | Hard | **Block** | *Never* | Protects `.git/config`, `.git/HEAD`, git hooks, and `.git` worktree pointers. |
-| `path.agent_config` | Hard | **Block** | *Never* | Protects harness configuration and agent system settings. |
+| `path.secret` | Hard | **Block** | *Never* | Matches sensitive files (`.env`, `credentials/`, `secrets/`, `id_ed25519`, `*.pem`). |
+| `path.restricted` | Hard | **Block** | *Never* | Protects `.git`, `.devcouncil` and the agent client config directories (`.claude/`, `.codex/`, `.cursor/`, ...). |
+| `task.forbidden_change` | Hard | **Block** | *Never* | The task lists the path in `forbidden_changes`. |
+| `path.secret_read` | Hard | **Block** | *Never* | The read-side twin of `path.secret`: `devcouncil_read_file`, and the diff, search and history readers, withhold credential paths and name what they withheld. |
 | `scope.unplanned` | Soft | **Block** | Human, Posture | Changes to files not declared during `devcouncil_checkout_task`. |
-| `scope.neighbourhood`| Soft | **Block** | Human, Agent | Modifying files outside the extracted AST dependency graph. |
+| `scope.read_only` | Soft | **Block** | Human | The plan declares the file read-only. |
+| `task.absent` | Soft | **Block** | Human, Posture | No running task authorizes the write. |
+| `path.protected_write` | Warn | **Warn** | Agent | A high-impact file (`package.json`, lockfiles, `Dockerfile`, CI workflows) is allowed but must be verified. |
 
 ---
 
@@ -104,19 +107,42 @@ The Command Gate verifies shell commands before execution by the agent.
 ```mermaid
 flowchart TD
     subgraph HardCmdRules["Command Gate Hard Rules"]
-        C1["cmd.git.force_push: Rejects push -f, push --force-with-lease, +refs/heads/*"]
-        C2["cmd.git.bypass: Rejects --no-verify, --no-gpg-sign"]
-        C3["cmd.shell.destructive: Rejects rm -rf /, dd, mkfs, fork bombs"]
-        C4["cmd.secrets.leak: Rejects echoing env vars or printing secret paths"]
+        C1["command.force_push: Rejects push -f, push --force-with-lease, +refs/heads/*"]
+        C2["command.bypass_flag: Rejects --no-verify, --no-gpg-sign"]
+        C3["command.secret_read: Rejects a command whose operand or input redirection names a secret path"]
+        C4["command.protected_reset: Rejects a hard reset of a protected branch"]
     end
 
     subgraph SoftCmdRules["Command Gate Soft Rules"]
-        C5["cmd.lifecycle: Validates build, test, lint, format commands"]
-        C6["cmd.dev_binary: Normalizes ./target/debug/ vs cargo run"]
+        C5["command.no_lease: Shell commands need an active task lease"]
+        C6["command.not_allowed: Command is in neither the task's nor the global allowlist"]
     end
 
     HardCmdRules --> SoftCmdRules
 ```
+
+### What a Command Line Reads
+
+`command.secret_read` is the shell's half of `path.secret_read`. A clause is
+refused, in every posture that keeps the hard rules (all but `yolo`), when one of
+its operands, a `--opt=value` or `rev:path` value, or the target of a `<`
+redirection names a path under the secret patterns. Wildcards are expanded
+against the working tree, so `cat .e*` is judged as `.env`; symlinks inside the
+root are followed; a plain file reader (`cat`, `head`, `cp`, `base64`, ...) given
+an operand only the shell can resolve (`cat $F`) is refused as unjudgeable.
+Operands a command only writes (`cp`'s destination, `tee`, `sed -i`) are the
+write rungs' to judge, and commands that only print a name (`echo`, `ls`, `rm`)
+are not reads.
+
+What this rung does not do is stated, not implied. It reads the command line, so
+it does not see a script on disk, an interpreter's own argument
+(`python -c "open('.env')"`), or an expansion given to a command outside the
+plain-reader list. Nor is there a rule for destructive commands (`rm -rf /`,
+`mkfs`, fork bombs): those are refused only because no allowlist admits them
+(`command.not_allowed`, soft), and an allowlist entry or a demoting posture lets
+them through. `git_commit` additionally refuses staged content that is, or
+contains, what a secret-path file or a known credential holds, so copying `.env`
+to another name does not put it in history.
 
 ### What a Command Line Writes
 
@@ -229,7 +255,7 @@ classDiagram
 
 ### Grant Authority Invariants
 
-1. **Hard Rules Are Ungrantable**: Any attempt to issue a grant for a hard rule (`path.credential`, `path.outside_root`, `cmd.git.force_push`) fails immediately with `ErrUngrantableRule`.
+1. **Hard Rules Are Ungrantable**: Any attempt to issue a grant for a hard rule (`path.secret`, `path.outside_root`, `command.force_push`) fails immediately with `ErrUngrantableRule`.
 2. **Mandatory Reason**: Every grant must specify a non-empty human-readable justification.
 3. **Bounded TTL**: Grants have a maximum lifetime (default: 15 minutes). A negative or zero TTL fails validation.
 4. **Literal vs Glob Matching**: Path patterns are matched strictly; literal paths cannot alias to globs.

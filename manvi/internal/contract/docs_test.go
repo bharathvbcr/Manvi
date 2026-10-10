@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
 // The documentation is a declaration layer too, and it was the one nothing
@@ -664,4 +666,33 @@ func TestDocumentedExitCodesMatchTheDispatch(t *testing.T) {
 		}
 	}
 	t.Logf("checked %d exit codes against the dispatch", len(documented))
+}
+
+// A document that names a policy rule is making a promise about the ladder.
+// POLICY_AND_SAFETY.md listed hard rules (cmd.shell.destructive,
+// cmd.secrets.leak) that no source file contained, plus a Tier 1 of write rules
+// (path.credential, path.git_internal, path.agent_config) whose real names are
+// path.secret and path.restricted. A reader trusting the page believed
+// protections existed that did not.
+//
+// Every token the document spells like a rule id is checked against the policy
+// catalogue, so renaming or removing a rule breaks the page that names it, and
+// a rule a page invents breaks the build.
+func TestPolicyDocNamesOnlyRulesThatExist(t *testing.T) {
+	body := readDoc(t, filepath.Join(docRoot, "docs", "POLICY_AND_SAFETY.md"))
+	ids := regexp.MustCompile(`\b(?:rule\.)?((?:cmd|command|path|task|scope)\.[a-z][a-z_]*(?:\.[a-z][a-z_]*)*)\b`)
+
+	seen := map[string]bool{}
+	for _, m := range ids.FindAllStringSubmatch(body, -1) {
+		seen[m[1]] = true
+	}
+	if len(seen) < 10 {
+		t.Fatalf("found only %d rule ids in the policy document; this check examined almost nothing", len(seen))
+	}
+	for id := range seen {
+		if !policy.RuleKnown(policy.RuleID(id)) {
+			t.Errorf("docs/POLICY_AND_SAFETY.md names rule %q, which the policy catalogue does not contain", id)
+		}
+	}
+	t.Logf("checked %d rule ids against the catalogue", len(seen))
 }

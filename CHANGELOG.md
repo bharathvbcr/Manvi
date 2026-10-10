@@ -360,6 +360,53 @@ under **Unreleased** in the same commit as the code.
   and off for hosted xAI, and a fenced-JSON call is recovered only when nothing
   follows it. A call whose arguments were rewritten is reported as
   `Decoding.ArgumentsRepaired`.
+- A shell command whose operand or input redirection names a secret path
+  (`cat .env`, `cp secrets/x y`, `base64 < .env`) is refused by a new hard rule,
+  `command.secret_read`, in every posture except `yolo`. Under the default dev
+  posture it was a soft `command.no_lease` the posture demoted, so the shell
+  printed credentials `devcouncil_read_file` refuses. `devcouncil_git_commit`
+  now also refuses staged content that is, or contains, what a secret-path file
+  or a known credential holds, so `cp .env notes.txt` then stage and commit no
+  longer puts the credential in history under another name.
+- `docs/POLICY_AND_SAFETY.md` named rules that do not exist (`cmd.secrets.leak`,
+  `cmd.shell.destructive`, `path.credential`, ...). It now names only catalogue
+  rules, says plainly that destructive commands have no dedicated rule, and a
+  contract test checks every rule id the page mentions against the catalogue.
+
+- The read gate now covers every tool that can return repository bytes, through
+  one owner (`readRefusal`, `withholdDiff`, `withholdHistoryDiff` in
+  `devcouncil/readauth.go`). `devcouncil_get_diff` withheld nothing, so an
+  untracked or modified `.env` was rendered; `devcouncil_grep` and `get_diff`
+  judged the name only, so a hard link to `.env` leaked; `devcouncil_git_show`
+  printed a patch that adds a credential from history; `devcouncil_read_file`
+  judged the typed name but opened the path the process working directory
+  resolved it to; and the code graph's source spans were not judged at all.
+  Each result now names what it withheld and the rule (`path.secret_read`, or
+  `path.aliased_read` for a file with more than one name). A test enumerates
+  the registry's read-only tools and fails if one is not classified.
+
+- Secrets forwarded to an MCP server (declared `env` values and
+  `env_passthrough` variables) are now scrubbed from what the server says on
+  stderr, which every failed call attaches to its error. The tool, session-log,
+  run, TUI, serve and watch scrubbers are all built by one function
+  (`newArmedScrubber`) that also watches GitHub's token variables, so the
+  quick-action and tool paths cannot drift apart again. Before, only provider
+  keys were watched and a server echoing its token put it in the session file
+  and the next request.
+
+- `devcouncil_spawn_subagents` no longer runs an unregistered role `type` as a
+  write-capable child on the parent's whole tool surface. Both dispatchers
+  now resolve roles through one function (`resolveRole`): an unregistered name
+  runs read-only and is reported as `unknown_types` on the result and
+  `unknown_type` on the child's outcome. Previously only
+  `devcouncil_invoke_subagent` failed closed.
+
+- The end-of-turn check no longer skips a turn whose writes carried a policy
+  rule. `progress.mutated` read any `Rule` as "refused", but the gate attaches
+  one to allowed results too (demotion, grant, protected-file warning), so
+  under `--yolo`, advisory mode, a grant, or a leased write to `package.json`
+  the turn reported `Mutated=false` and the sensor answered "no change".
+  Only `Blocked` now means refused.
 
 - `manvi serve`: stopping a managed run now ends it for every session, not only
   process-backed ones. `drive` ran on its own `Background` context, so a

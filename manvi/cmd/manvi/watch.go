@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
@@ -24,8 +23,7 @@ import (
 func watch(out io.Writer, reg *flags.Registry, args []string) (err error) {
 	asJSON := slices.Contains(args, "--json")
 
-	scrubber := credentials.NewScrubber()
-	scrubber.WatchAll(credentials.NewResolver())
+	scrubber := newArmedScrubber(nil)
 
 	var sink ui.Sink
 	if asJSON {

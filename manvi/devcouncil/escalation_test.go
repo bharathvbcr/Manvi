@@ -100,3 +100,56 @@ func TestBothDispatchersShareOneEscalationCapAndReportEscalations(t *testing.T) 
 		}
 	}
 }
+
+// captureRunner records every request it is handed.
+type captureRunner struct {
+	mu   sync.Mutex
+	reqs []SubAgentRequest
+}
+
+func (r *captureRunner) RunSubAgent(_ context.Context, req SubAgentRequest) (SubAgentResult, error) {
+	r.mu.Lock()
+	r.reqs = append(r.reqs, req)
+	r.mu.Unlock()
+	return SubAgentResult{Summary: "done"}, nil
+}
+
+// One role owner for both dispatchers and the tier rule over it: a type no one
+// registered stays non-writing and capped at lite whichever tool names it, and
+// a per-call model that is a raw id is refused, even on a role that is not
+// registered (the fail-open branch once appended a raw override to placements).
+func TestAnUnknownRoleIsReadOnlyAtLiteOnBothDispatchersAndNeverTakesARawModel(t *testing.T) {
+	for _, tool := range dispatchTools {
+		runner := &captureRunner{}
+		f, _ := fixtureWithRoles(t, runner)
+		var out string
+		if tool == "invoke_subagent" {
+			r := f.call("devcouncil_invoke_subagent", map[string]any{"subagents": []map[string]any{
+				{"type_name": "no-such-role", "role": "x", "prompt": "p"}}})
+			out = r.Text
+		} else {
+			r := f.call("devcouncil_spawn_subagents", map[string]any{"tasks": []map[string]any{
+				{"label": "x", "prompt": "p", "type": "no-such-role"}}})
+			out = r.Text
+		}
+		if len(runner.reqs) != 1 {
+			t.Fatalf("%s: %d children ran: %s", tool, len(runner.reqs), out)
+		}
+		req := runner.reqs[0]
+		if !req.ReadOnly || req.Tier != agents.TierLite || req.ModelSpec != "" {
+			t.Errorf("%s: unknown role child = readOnly %v tier %q model %q, want read-only, lite, no model",
+				tool, req.ReadOnly, req.Tier, req.ModelSpec)
+		}
+		if !strings.Contains(out, "no-such-role") {
+			t.Errorf("%s: the unknown role is not reported: %s", tool, out)
+		}
+	}
+
+	runner := &captureRunner{}
+	f, _ := fixtureWithRoles(t, runner)
+	res := f.call("devcouncil_invoke_subagent", map[string]any{"subagents": []map[string]any{
+		{"type_name": "no-such-role", "role": "x", "prompt": "p", "model": "claude-fable-5-1"}}})
+	if !res.IsError || len(runner.reqs) != 0 {
+		t.Fatalf("a raw model id on an unknown role was dispatched: %v %s", len(runner.reqs), res.Text)
+	}
+}
