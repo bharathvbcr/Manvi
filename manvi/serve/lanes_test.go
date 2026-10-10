@@ -160,8 +160,18 @@ func TestASlowLaneDoesNotHoldAnotherLane(t *testing.T) {
 		t.Fatal("a work op waited behind a managed prepare")
 	}
 	close(m.release)
-	s.await("prep", time.Second)
-	s.await("item", time.Second)
+	// Two lanes answer in whichever order they finish; await discards what it
+	// is not waiting for, so wait for both ids from one stream.
+	for pending := 2; pending > 0; pending-- {
+		select {
+		case r := <-s.got:
+			if r.ID != "prep" && r.ID != "item" {
+				t.Fatalf("unexpected response %q", r.ID)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%d of prep and item were not answered", pending)
+		}
+	}
 }
 
 // Within one family, requests keep the order they arrived in, as they did

@@ -3,9 +3,12 @@ package local
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -456,4 +459,154 @@ func resolveOver(t *testing.T, endpoints []Endpoint, declared string) Resolution
 		Endpoints: endpoints,
 		Timeout:   5 * time.Second,
 	})
+}
+
+// flightServer answers every model listing and every Ollama show request after
+// a short pause, and records the most requests it ever had open at once.
+func flightServer(t *testing.T, models int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var open, peak atomic.Int32
+	entries := make([]map[string]any, 0, models)
+	for i := range models {
+		entries = append(entries, map[string]any{"id": fmt.Sprintf("m%d", i), "object": "model"})
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := open.Add(1)
+		defer open.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/models") && !strings.HasPrefix(r.URL.Path, "/api"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": entries})
+		case r.URL.Path == "/api/show":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model_info":   map[string]any{"qwen3_5.context_length": 262144},
+				"capabilities": []string{"completion", "tools"},
+			})
+		case r.URL.Path == "/api/version":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &peak
+}
+
+func TestScanProbesNoMoreEndpointsAtOnceThanItsLimit(t *testing.T) {
+	srv, peak := flightServer(t, 1)
+	var eps []Endpoint
+	for i := range 6 * ScanConcurrency {
+		eps = append(eps, Endpoint{BaseURL: fmt.Sprintf("%s/e%d/v1", srv.URL, i)})
+	}
+	found := Scan(context.Background(), ScanOptions{Endpoints: eps, Timeout: 5 * time.Second})
+	if len(found) != len(eps) {
+		t.Fatalf("answered %d of %d endpoints", len(found), len(eps))
+	}
+	if got := int(peak.Load()); got > ScanConcurrency {
+		t.Fatalf("peak %d requests in flight, limit %d", got, ScanConcurrency)
+	}
+	if peak.Load() < 2 {
+		t.Fatalf("peak %d: the pool never ran two probes together", peak.Load())
+	}
+}
+
+func TestSurveyAsksNoMoreModelsAtOnceThanItsLimit(t *testing.T) {
+	srv, peak := flightServer(t, 6*SurveyConcurrency)
+	a := New(Config{BaseURL: srv.URL + "/v1", SupportsTools: true, DiscoveryTimeout: 5 * time.Second}, nil)
+	got, err := a.Survey(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 6*SurveyConcurrency {
+		t.Fatalf("surveyed %d models", len(got.Models))
+	}
+	for _, m := range got.Models {
+		if !m.Dimensions.CapabilitiesKnown {
+			t.Fatalf("model %s was never asked: %+v", m.ID, m)
+		}
+	}
+	if got := int(peak.Load()); got > SurveyConcurrency {
+		t.Fatalf("peak %d requests in flight, limit %d", got, SurveyConcurrency)
+	}
+}
+
+// One endpoint that never answers holds one worker until its timeout; the rest
+// of the list is still probed by the others, in order, and the scan ends at the
+// timeout rather than at the sum of them.
+func TestASlowEndpointHoldsOneWorkerNotTheScan(t *testing.T) {
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	defer close(release)
+	fast, _ := flightServer(t, 1)
+	eps := []Endpoint{{BaseURL: slow.URL + "/v1"}}
+	for i := range 4 * ScanConcurrency {
+		eps = append(eps, Endpoint{BaseURL: fmt.Sprintf("%s/e%d/v1", fast.URL, i)})
+	}
+	start := time.Now()
+	found := Scan(context.Background(), ScanOptions{Endpoints: eps, Timeout: 400 * time.Millisecond})
+	if len(found) != 4*ScanConcurrency {
+		t.Fatalf("answered %d, want %d", len(found), 4*ScanConcurrency)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("scan took %s; the slow endpoint held more than its own worker", took)
+	}
+}
+
+// Cancelling the context ends a scan whose workers are all stuck, leaves the
+// endpoints nobody started unprobed, and leaks no goroutine.
+func TestCancellingAScanEndsItWithoutLeakingWorkers(t *testing.T) {
+	release := make(chan struct{})
+	var started atomic.Int32
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started.Add(1)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer hang.Close()
+	var eps []Endpoint
+	for i := range 500 {
+		eps = append(eps, Endpoint{BaseURL: fmt.Sprintf("%s/e%d/v1", hang.URL, i)})
+	}
+	before := runtime.NumGoroutine()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan []Server, 1)
+	go func() { done <- Scan(ctx, ScanOptions{Endpoints: eps, Timeout: time.Minute}) }()
+	for started.Load() < ScanConcurrency {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case found := <-done:
+		if len(found) != 0 {
+			t.Fatalf("a cancelled scan reported %d servers", len(found))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Scan did not return after its context was cancelled")
+	}
+	close(release)
+	if got := int(started.Load()); got > 2*ScanConcurrency {
+		t.Fatalf("%d endpoints were probed after cancellation of a %d-endpoint scan", got, len(eps))
+	}
+	hang.CloseClientConnections()
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > before+4 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before+4 {
+		t.Fatalf("goroutines %d before, %d after: workers leaked", before, after)
+	}
 }

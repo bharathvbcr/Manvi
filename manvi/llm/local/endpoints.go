@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/samber/mo"
@@ -181,6 +182,17 @@ type ScanOptions struct {
 	Capabilities bool
 }
 
+// ScanConcurrency is how many endpoints one scan probes at once, and
+// SurveyConcurrency how many of a server's models one survey asks about at
+// once. They multiply: the worst case is ScanConcurrency*SurveyConcurrency
+// requests in flight, however many endpoints or models are named. Eight is
+// above the handful of runtimes a machine hosts and far below what a hostile
+// or mistaken list of thousands could open.
+const (
+	ScanConcurrency   = 8
+	SurveyConcurrency = 8
+)
+
 // DefaultScanTimeout bounds one endpoint probe.
 //
 // Short, because every candidate is loopback: a port with nothing behind it
@@ -209,15 +221,9 @@ func Scan(ctx context.Context, opts ScanOptions) []Server {
 	}
 
 	found := make([]*Server, len(endpoints))
-	var wg sync.WaitGroup
-	for i, ep := range endpoints {
-		wg.Add(1)
-		go func(i int, ep Endpoint) {
-			defer wg.Done()
-			found[i] = probeEndpoint(ctx, ep.BaseURL, timeout, opts)
-		}(i, ep)
-	}
-	wg.Wait()
+	forEachBounded(ctx, len(endpoints), ScanConcurrency, func(i int) {
+		found[i] = probeEndpoint(ctx, endpoints[i].BaseURL, timeout, opts)
+	})
 
 	out := make([]Server, 0, len(endpoints))
 	for _, s := range found {
@@ -226,6 +232,30 @@ func Scan(ctx context.Context, opts ScanOptions) []Server {
 		}
 	}
 	return out
+}
+
+// forEachBounded calls fn(0..n-1) on at most limit goroutines and returns when
+// every call it started has returned. Items nobody started because ctx ended
+// are skipped, so cancelling a scan of thousands costs the calls already in
+// flight rather than a goroutine per remaining item.
+func forEachBounded(ctx context.Context, n, limit int, fn func(i int)) {
+	workers := min(n, limit)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				i := int(next.Add(1)) - 1
+				if i >= n {
+					return
+				}
+				fn(i)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // probeEndpoint asks one address what it serves, returning nil when it is not a
@@ -282,15 +312,9 @@ func (a *Adapter) Survey(ctx context.Context, withCapabilities bool) (Server, er
 	srv.Runtime, srv.Version = a.identify(ctx)
 
 	if withCapabilities {
-		var wg sync.WaitGroup
-		for i := range srv.Models {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				srv.Models[i].Dimensions = a.Dimensions(ctx, srv.Models[i].ID)
-			}(i)
-		}
-		wg.Wait()
+		forEachBounded(ctx, len(srv.Models), SurveyConcurrency, func(i int) {
+			srv.Models[i].Dimensions = a.Dimensions(ctx, srv.Models[i].ID)
+		})
 	}
 	return srv, nil
 }
