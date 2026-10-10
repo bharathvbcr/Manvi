@@ -19,7 +19,11 @@ func TestAFailedWriteThatNamesItsPathCountsAsMutated(t *testing.T) {
 		{"landed", tools.Result{Wrote: []string{"a.go"}}, true},
 		{"failed, nothing changed", tools.Result{IsError: true}, false},
 		{"failed after the bytes landed", tools.Result{IsError: true, Wrote: []string{"a.go"}}, true},
-		{"refused by a rule", tools.Result{IsError: true, Wrote: []string{"a.go"}, Rule: "r"}, false},
+		// A refusal is Blocked; a Rule alone can sit on a call that ran (a
+		// protected-file warning, a demotion, a grant), so it does not mean
+		// nothing changed (ft-0fcd6c4c).
+		{"refused", tools.Result{IsError: true, Blocked: true, Rule: "r"}, false},
+		{"ran under a rule", tools.Result{Wrote: []string{"a.go"}, Rule: "r"}, true},
 	} {
 		if got := p.mutated("write_file", tc.result); got != tc.want {
 			t.Errorf("%s: mutated = %v, want %v", tc.name, got, tc.want)
