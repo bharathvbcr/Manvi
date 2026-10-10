@@ -59,6 +59,7 @@ The working-tree `verify.sh` adds `paper/test_supplement.py`. That edit is uncom
 - **Failure scenario:** under `verifygate` (on in `full`), the model writes a module that walks `sys._getframe().f_back...` to `src` and writes it to `leak.txt`, then calls `finish`. The gate runs the verifier and the payload writes the file. On the next turn `read_file("leak.txt")` returns the hidden test, including its expected values.
 - **Evidence:** `probe_verify.py [exfil]` gives `leak_bytes=814`, which is the whole `binsearch/hidden_test.py`. Also: `compile(src,...)`'s code object stays reachable through frames (`co_consts`) even if `src` is deleted.
 - **Existing test gap:** `stress_test.py` C4 (`:626-650`) checks only `sys.argv[0]` and `__main__.__file__`. It encodes the specific attacks that were fixed, not the invariant.
+- **Status (2026-10-10): closed in code.** The candidate now runs in a worker that never holds the hidden source and cannot write the sandbox (`mh/rpc.py`). `stress_test.py` C4 asserts the invariant rather than the specific attacks: "C4 the worker cannot write the sandbox", "C4 nothing the payload wrote persists in the sandbox", "C4 the hidden test's source is not reachable from the worker", "C4 no copy of the hidden test is left on disk anywhere", "C4 the raw hidden-test output never reaches the model". The C1/C2 payloads (`os._exit`, frame walking, `gc`, forged frames) are the `FORGES` cases under "C6 forge does not pass: ...".
 - **Fix, in order of strength:**
   1. `del src` after compile. This is weak on its own.
   2. Snapshot `_file_set(sandbox)` plus mtimes before and after each *gated* verify. Delete files the verification created, and flag them in the record. Flag-and-delete rather than fail, because `envbuild` legitimately builds during verify.
@@ -134,6 +135,7 @@ The working-tree `verify.sh` adds `paper/test_supplement.py`. That edit is uncom
 - API clients retry inside one call (`model.py:377` Gemini 16×, `:714` Cerebras 6×). The observed overruns of up to 3,047 s in `gemini-3.7-flash__*__hard-brokenwire` are consistent with that, but I did not trace which call produced them (INFERRED). Those rows are scored `wall_timeout`.
 - Local rows over the wall that passed: 0 of 1,327. v2 rows are not local.
 - **Fix:** before the final verdict, `if wall and elapsed >= wall: stop_reason = "wall_timeout"`, and pass the remaining time into tool timeouts. **Test:** a FakeClient turn holding a slow tool plus `finish` past the wall must score fail.
+- **Status (2026-10-10): closed in code.** `mh/harness.py:519-535` fails an episode whose tool dispatch or final gate crosses `wall_s`, and the final verifier still runs with `wall_timeout` forced to fail. Tests: `stress_test.py` "L1 a turn whose tools cross the wall then finishes is a fail", "L1 it is scored wall_timeout". The v2 grid ran before this fix (O6 in `DEVIATIONS.md`).
 
 ### L2 — LOW — The H2 decision uses `lo >= 0`; the prereg says "excludes zero" (RUN)
 - `compare.py:296`. Twenty identical-rate repeats give a degenerate [0,0], which is declared **supported** (`probe_stats.py`). `ci_degeneracy` flags it, but the verdict ignores the flag. It is not triggered in v2 (H2 lo < 0).
@@ -181,7 +183,7 @@ The working-tree `verify.sh` adds `paper/test_supplement.py`. That edit is uncom
 | 7 | SHA-256 of protected files, failing before the hidden test runs (§3.2-2) | VERIFIED | `bench.py:234-235, 258-276, 330-334` |
 | 8 | Checker copied to a temp dir, sandbox as `PYTHONPATH` (§3.2-3) | **MISMATCH** (H2) | `bench.py:8-21, 352-355` |
 | 9 | "Three independent mechanisms" make the grader unreachable (§3.2) | **MISMATCH** (C1, C2) | probes |
-| 10 | Final verifier always runs; `wall_timeout` scores fail (§3.2) | VERIFIED; the wall is not hard (L1) | `harness.py:519-525` |
+| 10 | Final verifier always runs; `wall_timeout` scores fail (§3.2) | VERIFIED; the wall is now hard (L1 closed 2026-10-10) | `harness.py:519-525` |
 | 11 | Baseline = every component off except native tools (§3, §4.4, Table 1) | VERIFIED | `harness.py:58-62` |
 | 12 | envboot 15 s timeout, 4,000 B cap, 20-entry listing, `envboot_empty` (§3.3, App. A) | VERIFIED | `harness.py:22, 71-116, 238-244` |
 | 13 | groundfs single sentence (§3.3) | VERIFIED | `harness.py:246-248` |
@@ -193,7 +195,7 @@ The working-tree `verify.sh` adds `paper/test_supplement.py`. That edit is uncom
 | 19 | Two consecutive no-tool-call turns give `no_tool_call` (§3.5) | VERIFIED | `harness.py:377-384` |
 | 20 | Context stop at >90% of num_ctx; 29,491 at 32,768 (§3.5, App. A) | VERIFIED | `harness.py:219-224, 334-344`; per-step `prompt_tok` is monotone in 4 local MLX episodes (same Ollama API, not the GH200 stack), i.e. the full prompt is counted |
 | 21 | `max_steps=0` means no ceiling (§3.5) | VERIFIED | `harness.py:295-298`, `run.py:73` |
-| 22 | 1800 s wall (§3.5) | VERIFIED as default; not hard (L1) | `harness.py:23`, `run.py:76` |
+| 22 | 1800 s wall (§3.5) | VERIFIED as default; now hard (L1 closed 2026-10-10) | `harness.py:23`, `run.py:76` |
 | 23 | Per-request timeout = remaining wall, first turn 600 s (§3.5, App. A) | VERIFIED | `harness.py:25, 308-313` |
 | 24 | "not retried" (§3.5, App. A) | **MISMATCH**: timeouts are not retried; URLError/OSError and 429/5xx are retried 2× (Ollama), 6× (Cerebras), 16× (Gemini) | `model.py:947, 983-1011, 377, 714` |
 | 25 | A 0-token first-turn timeout is re-run (App. A) | VERIFIED; the retry also re-runs non-timeout first-turn failures (M5) | `run.py:378-398`, `runtime.py:79-81, 822-833` |
@@ -225,6 +227,7 @@ The working-tree `verify.sh` adds `paper/test_supplement.py`. That edit is uncom
   - `selftest.py` hooks only `sitecustomize.py`.
   - `stress_test.py` C4 checks only `argv[0]` and `__file__`.
   - Neither exercises the verdict channel (C1) or frame introspection (C2). Both are one-line additions, and both fail today.
+  - **Status (2026-10-10): closed.** C4 asserts the exfiltration invariant and the `FORGES` block in `stress_test.py` exercises the verdict channel and frame introspection (see C2). `selftest.py` still hooks only `sitecustomize.py` among interpreter start-up hooks.
 - **A red suite was committed.** `selftest.py` was correct and caught C3. `138336f` landed with `verify.sh` failing.
 - **Mocked into tautology:** none found in the files read. `stress_test.py` F3 (`:253-258`) checks both that loopbreak fires and that the flag caused it. The stats tests assert on numbers.
 - **Count parsing in `verify.sh:1306-1307`** takes the first integer on the last line and requires it to be above 0. Exit codes govern pass or fail, so this is sound.
