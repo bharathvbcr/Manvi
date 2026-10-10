@@ -58,6 +58,10 @@ func laneFor(op string) string {
 		return "refine"
 	case strings.HasPrefix(op, "devmap."):
 		return "devmap"
+	case strings.HasPrefix(op, "work.scan."):
+		// Its own lane: a scan claim checks the index and must not queue
+		// behind, or hold up, board reads and writes.
+		return "scan"
 	case strings.HasPrefix(op, "work.runs.managed."):
 		return "managed"
 	case strings.HasPrefix(op, "work."):

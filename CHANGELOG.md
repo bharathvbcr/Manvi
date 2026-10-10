@@ -41,6 +41,22 @@ under **Unreleased** in the same commit as the code.
   splits (the board growth), and is refused, not truncated, over a cap. The
   same `request_id` replays its result without a second model call, and a
   second refine of the same task while one runs is refused as busy.
+- `work.scan.gaps`, `work.scan.get` and `work.scan.cancel` on the `manvi serve`
+  workbench plane: a deterministic audit (no model call) of an explicitly named
+  repository root, which must be an absolute, symlink-free git work-tree top. It
+  claims the scan, answers at once and runs on its own context under a deadline,
+  so it never holds the 60 s lane request. It proposes inbox tasks for dead
+  symbols (DevMap high-confidence `dead` plus no reference in an ignore-bypassing
+  text search, both stated, exempt and registry-looking symbols never proposed),
+  changed-since-`since` files no test reaches, open dc-store verification gaps
+  and stale paths named in docs. An unbuilt, degraded or stale index is refused
+  with a message naming `devmap status`; every category reports `truncated`,
+  `walk_incomplete`, `degraded` or `unavailable` rather than an empty "no gaps".
+  Proposals carry a stable fingerprint (as a `scan:<fp>` label and a
+  `manvi-scan:` line in the description); a finding an open board item already
+  carries is reported `attached`, a repeat of an earlier scan `known`, and the
+  scan never writes the board. A per-scan proposal cap and concurrent scans of
+  one root sharing one job bound the work.
 
 - `contracts/serve.ops.schema.json`: the `manvi serve` ops and the shapes of
   hello, file and command checks, host scope and managed-run results, generated

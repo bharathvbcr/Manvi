@@ -411,7 +411,13 @@ func (r *EnhancementRunner) refineBoard(ctx context.Context, task refineTask) (m
 	return board, candidates, RefineBoard{Scanned: len(listed.Items), Total: listed.Total, HasMore: listed.HasMore}, nil
 }
 
+// truncateRunes keeps at most n runes of s, never splitting one. The one
+// helper for the package: scan and refine each grew a copy, and one of them
+// panicked on n <= 0.
 func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
