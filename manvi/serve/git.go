@@ -14,6 +14,8 @@ import (
 // is capped during the copy: a worktree holding an unignored dependency tree
 // lists millions of paths, and the bound has to hold before the answer exists.
 func runGit(ctx context.Context, dir string, limit int, args ...string) (out []byte, truncated bool, err error) {
+	// #nosec G204 -- the binary is the literal "git"; every caller places a
+	// request-supplied revision behind --end-of-options or verifies it first.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")

@@ -73,7 +73,7 @@ type scriptedDevmap struct {
 	tests     string
 	err       error
 	queries   atomic.Int32
-	targets   atomic.Int32
+	targets   atomic.Int64
 }
 
 const devmapOneTest = `{"items":[{"path":"pkg/a_test.go","depth":1}],"resolution":"Available","shown":1,"total":1,"hidden":0,"truncated":false,"tokens_used":3}`
@@ -94,7 +94,7 @@ func (d *scriptedDevmap) Status(context.Context) (*mapclient.Status, error) {
 
 func (d *scriptedDevmap) Advanced(_ context.Context, q mapclient.AdvancedQuery) (mapclient.AdvancedResult, error) {
 	d.queries.Add(1)
-	d.targets.Store(int32(len(q.Targets)))
+	d.targets.Store(int64(len(q.Targets)))
 	if d.err != nil {
 		return mapclient.AdvancedResult{}, d.err
 	}

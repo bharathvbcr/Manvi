@@ -38,7 +38,7 @@ func judgeFrame(frame string) (preamble bool, failure *transport.Error) {
 	// An undecodable frame is not judged here: the decoder reports it, and
 	// inspection stops because it cannot say whether content has begun.
 	if json.Unmarshal([]byte(data), &ev) != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // the decoder reports it; see above
 	}
 	kind := ev.Type
 	if kind == "" {

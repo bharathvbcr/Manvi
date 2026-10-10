@@ -226,8 +226,10 @@ func ParseCriterionVerdicts(summary string, count int) CriterionVerdicts {
 			}
 		}
 		if current > 0 {
+			// #nosec G104 -- strings.Builder writes cannot fail.
 			buckets[current].WriteString(line)
 			if !strings.HasSuffix(line, "\n") {
+				// #nosec G104 -- strings.Builder writes cannot fail.
 				buckets[current].WriteString("\n")
 			}
 		}

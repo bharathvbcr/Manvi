@@ -322,7 +322,7 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 		r.mu.Unlock()
 		return nil, &Error{Code: ErrBusy, Message: "too many scans are running", Retryable: true}
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), r.deps.Deadline)
+	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.deps.Deadline)
 	job := &scanJob{cancel: cancel, view: ScanView{
 		ScanID: id, State: scanRunning, RepoRoot: root, Since: p.Since, MaxProposals: p.MaxProposals,
 		StartedAt: time.Now().Unix(), Generation: status.GenerationID, Coverage: []ScanCoverage{}, Proposals: []ScanProposal{},
@@ -618,7 +618,9 @@ func (r *ScanRunner) scanGaps(ctx context.Context, st *scanState) {
 		return
 	}
 	if c, ok := src.(io.Closer); ok {
-		defer c.Close()
+		// Read-only use of the store: the rows are taken before the close, so
+		// its error cannot change what this scan reports.
+		defer func() { _ = c.Close() }()
 	}
 	rows, truncated, err := src.Gaps(ctx, "")
 	if err != nil {
@@ -911,13 +913,22 @@ func (r *ScanRunner) scanDocs(ctx context.Context, st *scanState) {
 		hidden = len(docs) - scanMaxDocFiles
 		docs = docs[:scanMaxDocFiles]
 	}
+	// Every read and lookup goes through the repository as an os.Root: a
+	// tracked document can be a symlink out of the work tree, and a path a
+	// document names can climb out of it, and neither is this scan's to read.
+	repo, err := os.OpenRoot(st.root)
+	if err != nil {
+		st.note(scanDocs, "unavailable", "opening the repository root failed: "+err.Error(), 0)
+		return
+	}
+	defer func() { _ = repo.Close() }()
 	skipped := 0
 	for _, doc := range docs {
 		if ctx.Err() != nil {
 			st.note(scanDocs, "skipped", "stopped before every document was read: "+ctx.Err().Error(), 0)
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(st.root, doc))
+		data, err := repo.ReadFile(doc)
 		if err != nil || len(data) > scanMaxDocBytes {
 			skipped++
 			continue
@@ -930,10 +941,10 @@ func (r *ScanRunner) scanDocs(ctx context.Context, st *scanState) {
 				continue
 			}
 			seen[ref] = true
-			if _, e1 := os.Stat(filepath.Join(st.root, ref)); e1 == nil {
+			if _, e1 := repo.Stat(ref); e1 == nil {
 				continue
 			}
-			if _, e2 := os.Stat(filepath.Join(st.root, filepath.Dir(doc), ref)); e2 == nil {
+			if _, e2 := repo.Stat(filepath.Join(filepath.Dir(doc), ref)); e2 == nil {
 				continue
 			}
 			missing = append(missing, ref)

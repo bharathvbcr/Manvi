@@ -28,7 +28,7 @@ import (
 // could actually drive a coding turn, and prints the lines that make one of
 // them the default. Nothing here is a catalogue — every field is either
 // something a server said or is marked as not having been said.
-func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
+func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []string) error {
 	// Parsed by walking rather than by scanning for a prefix, so that the value
 	// of --timeout is consumed as a value. A prefix check rejected "5s" as an
 	// unknown option, and the test that was supposed to cover a malformed
@@ -70,7 +70,7 @@ func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
 	pinned := origin != flags.OriginDefault
 
 	if resolveOnly {
-		return resolveLocalSelection(out, reg, timeout)
+		return resolveLocalSelection(ctx, out, reg, timeout)
 	}
 
 	resolver := credentials.NewResolver()
@@ -84,9 +84,9 @@ func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
 		endpoints = []local.Endpoint{{BaseURL: declared}}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	scanCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	servers := local.Scan(ctx, local.ScanOptions{
+	servers := local.Scan(scanCtx, local.ScanOptions{
 		Endpoints:    endpoints,
 		Timeout:      timeout,
 		Credential:   resolve,
@@ -108,7 +108,7 @@ func showLocal(out io.Writer, reg *flags.Registry, args []string) error {
 	for _, srv := range servers {
 		reportServer(out, srv)
 	}
-	reportHowToUse(out, reg, servers, pinned, resolve)
+	reportHowToUse(ctx, out, reg, servers, pinned, resolve)
 	return nil
 }
 
@@ -250,7 +250,7 @@ func humanTokens(n int) string {
 // already local and whose server was found does not need to be told to export
 // what they exported, and a command that repeats settings back regardless is
 // one whose output stops being read.
-func reportHowToUse(out io.Writer, reg *flags.Registry, servers []local.Server, pinned bool, resolveCredential func() (credentials.Secret, error)) {
+func reportHowToUse(ctx context.Context, out io.Writer, reg *flags.Registry, servers []local.Server, pinned bool, resolveCredential func() (credentials.Secret, error)) {
 	provider, _, _ := reg.String(flags.LLMDefaultProvider)
 	model, modelOrigin, _ := reg.String(flags.LLMLocalModel)
 
@@ -266,7 +266,7 @@ func reportHowToUse(out io.Writer, reg *flags.Registry, servers []local.Server, 
 	// through for the same reason: resolving as though the address were unset
 	// would re-scan the well-known ports and then fail to find the operator's
 	// own pinned server among them.
-	res := local.ResolveEndpoint(context.Background(), local.ResolveOptions{
+	res := local.ResolveEndpoint(ctx, local.ResolveOptions{
 		Declared:           servers[0].BaseURL,
 		DeclaredByOperator: pinned,
 		Model:              namedLocalModel(reg),
@@ -374,12 +374,12 @@ func firstUsable(srv local.Server) string {
 // ':' and '.' but no whitespace, and a shell reading this with `read` or awk
 // should not have to strip anything. A failure to resolve is a non-zero exit
 // with the reason on the error, never a partial document.
-func resolveLocalSelection(out io.Writer, reg *flags.Registry, timeout time.Duration) error {
+func resolveLocalSelection(ctx context.Context, out io.Writer, reg *flags.Registry, timeout time.Duration) error {
 	resolver := credentials.NewResolver()
 
 	// io.Discard for the notes: the endpoint note is prose, and this document
 	// carries the same fact in base_url_source.
-	provider, err := buildProvider(local.Name, reg, resolver, io.Discard, "")
+	provider, err := buildProvider(ctx, local.Name, reg, resolver, io.Discard, "")
 	if err != nil {
 		return err
 	}
@@ -388,7 +388,7 @@ func resolveLocalSelection(out io.Writer, reg *flags.Registry, timeout time.Dura
 		return fmt.Errorf("the local provider built as %T, which cannot report an address", provider)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	model, source, err := resolveModelFor(ctx, local.Name, provider, reg)
 	if err != nil {

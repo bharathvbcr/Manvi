@@ -66,7 +66,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	err = drainNext(t, stream)
 	if errors.Is(err, io.EOF) || err == nil {
 		t.Fatalf("a stream with no message_stop ended as %v, want a failure", err)
@@ -245,7 +245,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var text strings.Builder
 	var failure error
 	for {

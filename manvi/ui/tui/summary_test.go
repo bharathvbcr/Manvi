@@ -25,6 +25,7 @@ func TestSummaryBodyTruncatesLikeTheWholeFirstLine(t *testing.T) {
 		return render.Line{}.Append(head, render.Style{Attrs: render.Bold}).
 			Append(body, render.Style{Attrs: render.Dim}).Truncate(width)
 	}
+	// #nosec G404 -- a fixed-seed sweep: reproducing a failing draw is the point, secrecy is not.
 	r := rand.New(rand.NewPCG(1, 2))
 	for range 50000 {
 		var b strings.Builder

@@ -30,7 +30,7 @@ func TestHostedClientsShareTheDefaultWithOnlyTheIdleBoundRaised(t *testing.T) {
 	if !ok {
 		t.Fatalf("hosted transport is %T, want *http.Transport", a.HTTP.Transport)
 	}
-	stock := http.DefaultTransport.(*http.Transport)
+	stock := asTransport(t, http.DefaultTransport)
 	if got == stock {
 		t.Fatal("hosted clients still use http.DefaultTransport itself")
 	}
@@ -117,6 +117,18 @@ func (c *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) 
 // handshakesPerRound drives rounds of concurrent requests through tr against
 // an HTTP/1.1-only TLS server and reports how many connections — and so TLS
 // handshakes — each round after the first opened.
+// asTransport names what a round tripper actually is, instead of panicking
+// with "interface conversion" when it is not the *http.Transport these tests
+// measure.
+func asTransport(tb testing.TB, rt http.RoundTripper) *http.Transport {
+	tb.Helper()
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		tb.Fatalf("round tripper is %T, want *http.Transport", rt)
+	}
+	return tr
+}
+
 func handshakesPerRound(tb testing.TB, tr *http.Transport, rounds, fanOut int) float64 {
 	tb.Helper()
 	var opened atomic.Int64
@@ -146,7 +158,12 @@ func handshakesPerRound(tb testing.TB, tr *http.Transport, rounds, fanOut int) f
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				resp, err := client.Get(srv.URL)
+				req, err := http.NewRequestWithContext(tb.Context(), http.MethodGet, srv.URL, nil)
+				if err != nil {
+					tb.Error(err)
+					return
+				}
+				resp, err := client.Do(req)
 				if err != nil {
 					tb.Error(err)
 					return
@@ -174,8 +191,8 @@ func handshakesPerRound(tb testing.TB, tr *http.Transport, rounds, fanOut int) f
 // should reuse them rather than re-handshake.
 func TestTheHostedPoolKeepsAFanOutsConnections(t *testing.T) {
 	const fanOut = 32
-	got := handshakesPerRound(t, sharedHosted().(*http.Transport), 5, fanOut)
-	stock := handshakesPerRound(t, http.DefaultTransport.(*http.Transport), 5, fanOut)
+	got := handshakesPerRound(t, asTransport(t, sharedHosted()), 5, fanOut)
+	stock := handshakesPerRound(t, asTransport(t, http.DefaultTransport), 5, fanOut)
 	t.Logf("new TLS connections per round of %d concurrent requests: stock default %.1f, hosted pool %.1f",
 		fanOut, stock, got)
 	// Loose on purpose, so a loaded runner cannot fail it. The stock default
@@ -190,8 +207,8 @@ func BenchmarkHostedFanOutHandshakes(b *testing.B) {
 		name string
 		tr   *http.Transport
 	}{
-		{"stock-default", http.DefaultTransport.(*http.Transport)},
-		{"hosted-pool", sharedHosted().(*http.Transport)},
+		{"stock-default", asTransport(b, http.DefaultTransport)},
+		{"hosted-pool", asTransport(b, sharedHosted())},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			var total float64

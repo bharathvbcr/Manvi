@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -101,21 +102,25 @@ func TestASettledStreamReleasesItsBufferOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewSSE(io.NopCloser(strings.NewReader(tc.body)), tc.done)
 			_, err := drainSSE(t, s)
-			if tc.want != nil && err != tc.want {
+			if tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 			if s.reader != nil {
 				t.Fatal("a settled stream kept its buffer")
 			}
 			for i := 0; i < 3; i++ {
-				if _, again := s.Next(); again != err {
+				if _, again := s.Next(); !errors.Is(again, err) {
 					t.Fatalf("Next after settling = %v, want the settled %v", again, err)
 				}
 			}
 			_ = s.Close()
 			_ = s.Close()
-			a := getSSEReader()
-			b := getSSEReader()
+			pa, pb := sseReaders.Get(), sseReaders.Get()
+			a, okA := pa.(*bufio.Reader)
+			b, okB := pb.(*bufio.Reader)
+			if !okA || !okB {
+				t.Fatalf("the pool handed out %T and %T, want *bufio.Reader", pa, pb)
+			}
 			if a == b {
 				t.Fatal("the pool handed out one buffer twice")
 			}
@@ -156,7 +161,7 @@ func TestCloseDuringABlockedNextLeavesTheBufferWithTheReader(t *testing.T) {
 	if s.reader != nil {
 		t.Error("the reader settled but kept its buffer")
 	}
-	if _, again := s.Next(); again != err {
+	if _, again := s.Next(); !errors.Is(again, err) {
 		t.Errorf("Next after settling = %v, want %v", again, err)
 	}
 }

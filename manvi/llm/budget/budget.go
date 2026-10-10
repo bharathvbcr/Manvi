@@ -165,18 +165,19 @@ type Ledger struct {
 
 // Open validates the ledger at path, creating its directory if needed. A
 // missing file is an empty ledger; a corrupt one is refused rather than reset.
-func Open(path string, limitNanoUSD int64) (*Ledger, error) {
+func Open(ctx context.Context, path string, limitNanoUSD int64) (*Ledger, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("budget: ledger path %q must be absolute", path)
 	}
 	if limitNanoUSD <= 0 || limitNanoUSD > 1_000_000_000_000_000 {
 		return nil, fmt.Errorf("budget: limit %d nano-USD outside (0, $1M]", limitNanoUSD)
 	}
+	// #nosec G703 -- the ledger path is the operator's own (anthropicLedgerPath), refused above unless absolute.
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	l := &Ledger{path: path, limit: limitNanoUSD}
-	if _, err := l.Snapshot(); err != nil {
+	if _, err := l.Snapshot(ctx); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -194,17 +195,18 @@ func (l *Ledger) Path() string { return l.path }
 // It reads the file as it stands, so an attempt left in flight by a process
 // that has since exited still counts against it. That errs towards refusing a
 // little early, which is the direction a cap is allowed to be wrong in.
-func (l *Ledger) Headroom() (int64, error) {
-	s, err := l.Snapshot()
+func (l *Ledger) Headroom(ctx context.Context) (int64, error) {
+	s, err := l.Snapshot(ctx)
 	if err != nil {
 		return 0, err
 	}
 	return max(l.limit-s.CommittedNanoUSD(), 0), nil
 }
 
-// Snapshot reads the current ledger.
-func (l *Ledger) Snapshot() (Snapshot, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+// Snapshot reads the current ledger, waiting for the file lock no longer than
+// ctx allows or resolveTimeout, whichever ends first.
+func (l *Ledger) Snapshot(ctx context.Context) (Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 	var out Snapshot
 	err := l.update(ctx, func(s *Snapshot) error { out = s.clone(); return errReadOnly })
@@ -215,16 +217,16 @@ func (l *Ledger) Snapshot() (Snapshot, error) {
 }
 
 // Inspect reads a ledger without enforcing a limit, for reporting.
-func Inspect(path string) (Snapshot, error) {
+func Inspect(ctx context.Context, path string) (Snapshot, error) {
 	l := &Ledger{path: path, limit: 1}
-	return l.Snapshot()
+	return l.Snapshot(ctx)
 }
 
 // ReconcileAt reclaims the dead attempts in the ledger at path without
 // enforcing a limit, for an operator command that has none to hand.
-func ReconcileAt(path string) ([]Attempt, error) {
+func ReconcileAt(ctx context.Context, path string) ([]Attempt, error) {
 	l := &Ledger{path: path, limit: 1}
-	return l.Reconcile()
+	return l.Reconcile(ctx)
 }
 
 var errReadOnly = errors.New("read only")
@@ -265,6 +267,7 @@ func (l *Ledger) update(ctx context.Context, mutate func(*Snapshot) error) error
 }
 
 func load(path string) (Snapshot, error) {
+	// #nosec G304 G703 -- the ledger path Open validated; the operator chose it.
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Snapshot{SchemaVersion: schemaVersion, NextID: 1, InFlight: []Attempt{}}, nil
@@ -272,7 +275,9 @@ func load(path string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	defer f.Close()
+	// Read-only: everything this function trusts has been read and checked
+	// before the close, so a close error cannot change the answer.
+	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(f, maxLedgerBytes+1))
 	if err != nil {
 		return Snapshot{}, err
@@ -312,18 +317,21 @@ func save(path string, s Snapshot) error {
 		return err
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	// After a successful rename the temp name is gone and this fails with
+	// ENOENT; before one, the failure that got us here is the one returned.
+	defer func() { _ = os.Remove(name) }()
 	if _, err := f.Write(raw); err != nil {
-		f.Close()
+		_ = f.Close() // the write error is the one to report
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close() // the sync error is the one to report
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
+	// #nosec G703 -- path is the validated ledger path; name is the temp file beside it.
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
@@ -363,8 +371,8 @@ func reclaimDead(s *Snapshot, gone func(int) bool) []Attempt {
 // Reconcile retains the reservations of attempts whose process has exited and
 // returns them. Reserve does the same before every admission; this is for an
 // operator who wants the ledger's in-flight list to be truthful now.
-func (l *Ledger) Reconcile() ([]Attempt, error) {
-	ctx, cancel := resolveContext()
+func (l *Ledger) Reconcile(ctx context.Context) ([]Attempt, error) {
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 	var reclaimed []Attempt
 	err := l.update(ctx, func(s *Snapshot) error {
@@ -400,16 +408,22 @@ func (l *Ledger) reserve(ctx context.Context, model string, amount int64) (uint6
 	return id, err
 }
 
-func resolveContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), resolveTimeout)
+// resolveContext bounds the recording of an attempt that was already sent.
+//
+// It keeps ctx's values but not its cancellation: the attempt is billed whether
+// or not anyone is still waiting for it, and ctx is often the very cancellation
+// that ended the stream, so the record must still be written. resolveTimeout
+// bounds the wait instead.
+func resolveContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), resolveTimeout)
 }
 
 // transportResult records how an attempt's HTTP exchange ended. refund is the
 // provider's own statement that a rejected attempt's status proves it was
 // refused before any billable work; without it a rejection keeps its
 // reservation.
-func (l *Ledger) transportResult(id uint64, r transport.AttemptResult, refund bool) error {
-	ctx, cancel := resolveContext()
+func (l *Ledger) transportResult(ctx context.Context, id uint64, r transport.AttemptResult, refund bool) error {
+	ctx, cancel := resolveContext(ctx)
 	defer cancel()
 	return l.update(ctx, func(s *Snapshot) error {
 		i := s.find(id)
@@ -444,11 +458,11 @@ func (l *Ledger) transportResult(id uint64, r transport.AttemptResult, refund bo
 	})
 }
 
-func (l *Ledger) settle(id uint64, charge int64) error {
+func (l *Ledger) settle(ctx context.Context, id uint64, charge int64) error {
 	if charge < 0 {
 		return errors.New("budget: negative charge")
 	}
-	ctx, cancel := resolveContext()
+	ctx, cancel := resolveContext(ctx)
 	defer cancel()
 	return l.update(ctx, func(s *Snapshot) error {
 		i := s.find(id)
@@ -470,14 +484,14 @@ func (l *Ledger) settle(id uint64, charge int64) error {
 
 // retain moves an attempt's reservation to the retained total. It is
 // idempotent: an attempt already resolved is left alone.
-func (l *Ledger) retain(id uint64) error { return l.retainAt(id, -1) }
+func (l *Ledger) retain(ctx context.Context, id uint64) error { return l.retainAt(ctx, id, -1) }
 
 // retainAt retains an attempt at bound instead of its reservation, when a
 // tighter upper bound on its charge is known; a negative bound means the
 // reservation. The bound is recorded even when it exceeds the reservation,
 // because it is the better-founded of the two.
-func (l *Ledger) retainAt(id uint64, bound int64) error {
-	ctx, cancel := resolveContext()
+func (l *Ledger) retainAt(ctx context.Context, id uint64, bound int64) error {
+	ctx, cancel := resolveContext(ctx)
 	defer cancel()
 	return l.update(ctx, func(s *Snapshot) error {
 		i := s.find(id)

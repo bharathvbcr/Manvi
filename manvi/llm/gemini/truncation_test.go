@@ -27,7 +27,7 @@ func drainFor(t *testing.T, body string) error {
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		if _, err := stream.Next(); err != nil {
 			if errors.Is(err, io.EOF) {

@@ -85,6 +85,7 @@ func TestReserveBoundsEveryChargeWithinItsLimits(t *testing.T) {
 	separate := tiered
 	separate.ReasoningInOutput = false
 	flat := Prices{Rates: Rates{Input: 4_000, Output: 20_000, CacheWrite: 5_000, CacheRead: 200}, ReasoningInOutput: true}
+	// #nosec G404 -- a fixed-seed sweep: reproducing a failing draw is the point, secrecy is not.
 	rng := rand.New(rand.NewPCG(1, 2))
 	for _, p := range []Prices{tiered, separate, flat} {
 		for range 20_000 {

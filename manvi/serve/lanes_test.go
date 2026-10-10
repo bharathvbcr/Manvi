@@ -70,7 +70,7 @@ func startSession(t *testing.T, ctx context.Context, opts Options) *session {
 	srv := New(outW, opts)
 	go func() {
 		err := srv.Serve(ctx, inR)
-		outW.Close()
+		_ = outW.Close()
 		s.done <- err
 	}()
 	go func() {

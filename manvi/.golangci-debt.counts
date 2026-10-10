@@ -76,18 +76,64 @@
 # 26: the excess is exactly the four gosec and two noctx findings a4156f3 added
 # in bootstrap/bootstrap_test.go, which is a regression to fix rather than a
 # new baseline.
-bodyclose 16
-contextcheck 28
-errcheck 413
-errorlint 53
+#
+# Lowered 2026-10-10, after the ratchet failed on main at b689a82 with every
+# linter but wastedassign above its count: bodyclose 19, contextcheck 37,
+# errcheck 447, errorlint 71, forcetypeassert 83, gosec 429, nilerr 15, noctx
+# 31, staticcheck 40. 37d641f, linted against its own DevCouncil and gusset
+# pins (ad5c941c, 92c2056), reproduces this file's measurement exactly, and
+# b689a82 has 124 findings more. Most came from f4553ce (the Anthropic spend
+# cap), bed69fe (truncated streams), 53ab7ee (pooled stream buffers), a1b3344
+# (budget reclaim), f479db6 (work.scan.gaps) and 3d3d257 (work.verify.task).
+# None of them carries a verification note GitPulse can read, so nothing
+# records the ratchet having run on the commits that crossed it.
+#
+# Every new finding was fixed or annotated where it stands. Five were defects:
+# serve's devmap root check passed an envelope whose repository field could
+# not be decoded; work.scan.gaps read tracked documents through symlinks out of
+# the repository and looked up referenced paths that climbed out of it (it now
+# reads through an os.Root); bootstrap discarded a failed removal of the check
+# file it writes into the operator's tree; `manvi budget` dropped its write
+# errors; and opening, reporting, reconciling the ledger and reading its
+# headroom waited out a 30s lock under context.Background() whatever the
+# caller had given up on. The last is why budget.Open, Snapshot, Inspect,
+# ReconcileAt, agents.Budget.Headroom, buildProvider, budgetCommand,
+# showLocal and probe take a context now: those signatures were the source of
+# the contextcheck findings in verifycritic.go and the budget slash command.
+# Recording a sent attempt keeps its caller's values but not its cancellation
+# (context.WithoutCancel), because the attempt is billed either way.
+#
+# What was annotated instead is not a defect, and says why on the line: fixed-
+# seed randomness in tests, a test re-execing its own binary, the literal git,
+# strings.Builder writes, a server-lifetime lane worker, a decode whose nil is
+# the success path, and mcp.Manager.Discover, which never reads its ctx (one
+# annotation at each of its three ctx-holding callers; harness.go says they
+# depend on that staying true).
+#
+# errcheck is 385 for this change on its own and 379 once the `manvi
+# providers` restyle that was in flight beside it lands, because that restyle
+# removes six findings from providers.go. Both were measured; 385 is recorded
+# so that the order the two land in does not matter. The bootstrap_test.go
+# regression noted above was fixed inside the window, which is why gosec and
+# noctx no longer exceed their counts. bed69fe also left the enforced set
+# failing on four ruleguard findings (an unbounded io.ReadAll three times in
+# streamguard_test.go, a reasonless t.Skip in a fuzz target), which verify.sh
+# would have stopped on before reaching this gate; they are fixed with the
+# rest. Every number below was measured with golangci-lint 2.14.0 on
+# GOOS=darwin and GOOS=linux, against DevCouncil acfaa229 and gusset 23e925b
+# (scripts/module-pins.txt), and is the same on both.
+bodyclose 14
+contextcheck 22
+errcheck 385
+errorlint 43
 forcetypeassert 68
 # gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
 # calls were marked #nosec G103. Before that, pty_linux_test.go had two
 # findings and pty_darwin_test.go had one, so a count measured on darwin
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
-gosec 390
-nilerr 12
+gosec 373
+nilerr 11
 noctx 24
-staticcheck 38
+staticcheck 33
 wastedassign 6

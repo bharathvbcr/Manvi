@@ -69,7 +69,7 @@ func TestLocalListsWhatAServerServesAndWhatCannotRunATurn(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -94,7 +94,7 @@ func TestLocalListsWhatAServerServesAndWhatCannotRunATurn(t *testing.T) {
 // operator to different places.
 func TestLocalSaysTheCheckRanWhenNothingAnswered(t *testing.T) {
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, "http://127.0.0.1:1/v1"), nil); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, "http://127.0.0.1:1/v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -113,7 +113,7 @@ func TestLocalSaysTheCheckRanWhenNothingAnswered(t *testing.T) {
 // ignored, which would report on a scan the operator did not ask for.
 func TestLocalRefusesAnUnknownOption(t *testing.T) {
 	var out bytes.Buffer
-	err := showLocal(&out, newTestRegistry(t), []string{"--all"})
+	err := showLocal(context.Background(), &out, newTestRegistry(t), []string{"--all"})
 	if err == nil {
 		t.Fatal("an unknown option was accepted")
 	}
@@ -140,7 +140,7 @@ func TestLocalRefusesAMalformedTimeout(t *testing.T) {
 				{"--timeout", tc.arg},
 				{"--timeout=" + tc.arg},
 			} {
-				err := showLocal(&out, newTestRegistry(t), args)
+				err := showLocal(context.Background(), &out, newTestRegistry(t), args)
 				if err == nil {
 					t.Fatalf("%v was accepted", args)
 				}
@@ -159,7 +159,7 @@ func TestLocalAcceptsAValidTimeout(t *testing.T) {
 	reg := pinnedTo(t, srv.URL+"/v1")
 	for _, args := range [][]string{{"--timeout", "5s"}, {"--timeout=5s"}} {
 		var out bytes.Buffer
-		if err := showLocal(&out, reg, args); err != nil {
+		if err := showLocal(context.Background(), &out, reg, args); err != nil {
 			t.Fatalf("%v was refused: %v", args, err)
 		}
 		if !strings.Contains(out.String(), "qwen3.8:27b-mlx") {
@@ -172,7 +172,7 @@ func TestLocalAcceptsAValidTimeout(t *testing.T) {
 // taking the default.
 func TestLocalRefusesATimeoutWithNoValue(t *testing.T) {
 	var out bytes.Buffer
-	if err := showLocal(&out, newTestRegistry(t), []string{"--timeout"}); err == nil {
+	if err := showLocal(context.Background(), &out, newTestRegistry(t), []string{"--timeout"}); err == nil {
 		t.Fatal("a --timeout with no value was accepted")
 	}
 }
@@ -182,7 +182,7 @@ func TestLocalRefusesATimeoutWithNoValue(t *testing.T) {
 func TestADeclaredEndpointIsNeverScannedPast(t *testing.T) {
 	const declared = "http://127.0.0.1:1/v1"
 	var notes bytes.Buffer
-	got := resolveLocalEndpoint(pinnedTo(t, declared), declared, nil, &notes, "")
+	got := resolveLocalEndpoint(context.Background(), pinnedTo(t, declared), declared, nil, &notes, "")
 	if got != declared {
 		t.Fatalf("resolved to %q, want the declared address unchanged", got)
 	}
@@ -220,7 +220,7 @@ func TestASingleUsableModelNeedsNoSetting(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
+	provider, err := buildProvider(context.Background(), local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestSeveralUsableModelsStillRefuses(t *testing.T) {
 		"gemma4:31b-mlx":  {"completion", "tools"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
+	provider, err := buildProvider(context.Background(), local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestARefusalDoesNotOfferModelsThatCannotRun(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	reg := pinnedTo(t, srv.URL+"/v1")
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
+	provider, err := buildProvider(context.Background(), local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestAnExplicitModelSettingBeatsDiscovery(t *testing.T) {
 		flags.LLMLocalBaseURL: srv.URL + "/v1",
 		flags.LLMLocalModel:   "chosen-by-hand",
 	})
-	provider, err := buildProvider(local.Name, reg, credentials.NewResolver(), nil, "")
+	provider, err := buildProvider(context.Background(), local.Name, reg, credentials.NewResolver(), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestLocalDoesNotSuggestSettingsThatCannotBeFollowed(t *testing.T) {
 		"textonly:7b":             {"completion"},
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -365,7 +365,7 @@ func TestLocalPinnedToAServerReportsThatServer(t *testing.T) {
 		"b:7b": {"completion", "tools"},
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -386,7 +386,7 @@ func TestResolvePrintsAShellReadableDocument(t *testing.T) {
 		"nomic-embed-text:latest": {"embedding"},
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"}); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -425,7 +425,7 @@ func TestResolveEmitsNoPartialDocument(t *testing.T) {
 	// is retried by the transport, and --resolve reports what a run would do
 	// rather than a cheaper approximation of it.
 	var down bytes.Buffer
-	if err := showLocal(&down, pinnedTo(t, "http://127.0.0.1:1/v1"), []string{"--resolve"}); err == nil {
+	if err := showLocal(context.Background(), &down, pinnedTo(t, "http://127.0.0.1:1/v1"), []string{"--resolve"}); err == nil {
 		t.Fatal("resolution succeeded against a server that is not there")
 	}
 	if down.Len() != 0 {
@@ -438,7 +438,7 @@ func TestResolveEmitsNoPartialDocument(t *testing.T) {
 		"b:7b": {"completion", "tools"},
 	})
 	var out bytes.Buffer
-	err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"})
+	err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"})
 	if err == nil {
 		t.Fatal("resolution chose between two usable models")
 	}
@@ -462,7 +462,7 @@ func TestResolveReportsProvenanceNotJustValues(t *testing.T) {
 		"the-other-one:7b":      {"completion", "tools"},
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"}); err != nil {
+	if err := showLocal(context.Background(), &out, pinnedTo(t, srv.URL+"/v1"), []string{"--resolve"}); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -488,7 +488,7 @@ func TestResolveRefusesAModelTheResolvedServerDoesNotServe(t *testing.T) {
 		flags.LLMLocalModel:   "on-some-other-server:7b",
 	})
 	var out bytes.Buffer
-	err := showLocal(&out, reg, []string{"--resolve"})
+	err := showLocal(context.Background(), &out, reg, []string{"--resolve"})
 	if err == nil {
 		t.Fatal("a model the server does not serve was reported as a usable selection")
 	}
@@ -514,7 +514,7 @@ func TestResolveStillAcceptsAServedNamedModel(t *testing.T) {
 		flags.LLMLocalModel:   "b:7b",
 	})
 	var out bytes.Buffer
-	if err := showLocal(&out, reg, []string{"--resolve"}); err != nil {
+	if err := showLocal(context.Background(), &out, reg, []string{"--resolve"}); err != nil {
 		t.Fatalf("a model the server does serve was refused: %v", err)
 	}
 	if !strings.Contains(out.String(), "model=b:7b") {

@@ -23,7 +23,7 @@ func lifecycleRunner(t *testing.T, queue int, host Host) *Runner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { out.Close() })
+	t.Cleanup(func() { _ = out.Close() })
 	tm := term.New(os.Stdin, out)
 	return &Runner{
 		cfg:     Config{Host: host},

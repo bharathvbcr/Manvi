@@ -141,7 +141,9 @@ func (l *lanes) submit(ctx context.Context, name string, req Request) bool {
 		q = make(chan laneJob, laneQueue)
 		l.queues[name] = q
 		l.wg.Add(1)
-		go l.run(q)
+		// The lane outlives the request that started it and serves every later
+		// job on it; each job carries its own ctx, which run honours.
+		go l.run(q) //nolint:contextcheck // server-lifetime worker; see above
 	}
 	select {
 	case q <- laneJob{ctx: ctx, req: req}:

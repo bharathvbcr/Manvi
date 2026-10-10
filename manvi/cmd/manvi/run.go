@@ -152,12 +152,30 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		return err
 	}
 
+	// Bounded before the model is contacted, so a wedged server cannot hold the
+	// process open indefinitely, and interruptible, so Ctrl-C in a terminal and
+	// SIGTERM from a job runner both end the turn through the same path that
+	// releases the lease. Building the provider is covered too: it can probe a
+	// local server for its address and wait on the spend ledger's lock.
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	defer cancel()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	providerName, _, err := reg.String(flags.LLMDefaultProvider)
 	if err != nil {
 		return err
 	}
 	resolver := credentials.NewResolver()
-	provider, err := buildProvider(providerName, reg, resolver, notes, "")
+	provider, err := buildProvider(ctx, providerName, reg, resolver, notes, "")
 	if err != nil {
 		return err
 	}
@@ -178,23 +196,6 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	if err != nil {
 		return err
 	}
-
-	// Bounded before the model is contacted, so a wedged server cannot hold the
-	// process open indefinitely, and interruptible, so Ctrl-C in a terminal and
-	// SIGTERM from a job runner both end the turn through the same path that
-	// releases the lease.
-	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
-	defer cancel()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stop)
-	go func() {
-		select {
-		case <-stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 
 	model, _, err := resolveModelFor(ctx, providerName, provider, reg)
 	if err != nil {

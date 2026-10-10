@@ -95,7 +95,11 @@ func probeOnce(t *testing.T, s *Server, p ProbeParams) (ProbeResult, *Error) {
 	if perr != nil {
 		return ProbeResult{}, perr
 	}
-	return got.(ProbeResult), nil
+	res, ok := got.(ProbeResult)
+	if !ok {
+		t.Fatalf("probe answered %T, want ProbeResult", got)
+	}
+	return res, nil
 }
 
 // fakeClock is a probe-cache clock a test moves by hand.

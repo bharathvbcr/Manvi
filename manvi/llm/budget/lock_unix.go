@@ -18,6 +18,7 @@ import (
 // stale lock. The lock file itself is never removed, because removing it lets
 // two processes hold locks on two different inodes of the same name.
 func lockFile(ctx context.Context, path string) (func(), error) {
+	// #nosec G304 G703 -- the validated ledger path plus ".lock"; the operator chose it.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -30,13 +31,15 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 				_ = f.Close()
 			}, nil
 		}
+		// The lock was never taken, so the descriptor holds nothing a failed
+		// close could lose; the error worth returning is the one that stopped us.
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("budget: lock %s: %w", path, err)
 		}
 		select {
 		case <-ctx.Done():
-			f.Close()
+			_ = f.Close()
 			return nil, ctx.Err()
 		case <-time.After(5 * time.Millisecond):
 		}
@@ -46,11 +49,14 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 // syncDir makes a rename in dir durable. Without it a crash can bring back the
 // previous ledger, and with it lose the record of money already spent.
 func syncDir(dir string) error {
+	// #nosec G304 G703 -- the directory of the validated ledger path.
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	// A read-only directory handle: durability is decided by Sync, which is
+	// returned; closing it afterwards cannot undo or confirm anything.
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 

@@ -528,7 +528,7 @@ func TestSurveyAsksNoMoreModelsAtOnceThanItsLimit(t *testing.T) {
 		t.Fatalf("surveyed %d models", len(got.Models))
 	}
 	for _, m := range got.Models {
-		if !m.Dimensions.CapabilitiesKnown {
+		if !m.CapabilitiesKnown {
 			t.Fatalf("model %s was never asked: %+v", m.ID, m)
 		}
 	}

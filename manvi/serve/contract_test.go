@@ -207,7 +207,9 @@ func encodeContract(t *testing.T, c serveContract) []byte {
 func TestServeContractMatchesGoTypes(t *testing.T) {
 	want := encodeContract(t, currentContract(t))
 	if os.Getenv("MANVI_UPDATE_CONTRACT") == "1" {
-		if err := os.WriteFile(contractPath, want, 0o600); err != nil {
+		// #nosec G306 -- regenerates a tracked, published contract file; it is
+		// world-readable like every other file in the repository.
+		if err := os.WriteFile(contractPath, want, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return

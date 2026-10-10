@@ -184,3 +184,23 @@ func TestDevmapRefusesAnEnvelopeAboutAnotherRepository(t *testing.T) {
 		t.Fatalf("foreign envelope = %+v", r)
 	}
 }
+
+// A repository field that is present but cannot be read is not the same as
+// one that is absent: passing it would let an answer about another repository
+// through whenever its envelope was malformed in the right way.
+func TestDevmapRefusesAnEnvelopeWhoseRepositoryCannotBeRead(t *testing.T) {
+	for name, repository := range map[string]string{
+		"string":       `"/somewhere/else"`,
+		"numeric_root": `{"root":7}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := `{"repository":` + repository + `,"items":[],"resolution":"Available","shown":0,"total":0,"hidden":0,"truncated":false,"tokens_used":0}`
+			fake := &fakeDevmap{result: mapclient.AdvancedResult{Data: json.RawMessage(data), Index: &mapclient.Status{DBPath: "db", HostContractVersion: 1, SchemaVersion: 19, ExpectedSchemaVersion: 19, SchemaRelation: "current", ReaderReady: true, QueryReady: true, GenerationID: 3, IsFresh: true, Capabilities: map[string]any{"impact": true}}}}
+			r := roundTrip(t, Options{Modules: []Module{DevmapModule{ForRoot: func(string) DevmapClient { return fake }}}},
+				Request{ID: "q", Op: OpDevmapQuery, Params: rootParams(t, `"kind":"impact","query":"R","depth":1`)})[0]
+			if r.OK || r.Error == nil || r.Error.Code != ErrDependency {
+				t.Fatalf("unreadable repository %s = %+v", repository, r)
+			}
+		})
+	}
+}

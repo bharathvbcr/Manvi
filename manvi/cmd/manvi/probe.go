@@ -28,7 +28,7 @@ import (
 // and reaches the public internet, none of which belong in `go test`. It is a
 // command an operator runs, and it is the only thing in this repository that
 // can honestly report that an adapter works.
-func probe(out io.Writer, reg *flags.Registry, args []string) error {
+func probe(ctx context.Context, out io.Writer, reg *flags.Registry, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: manvi probe PROVIDER [--model NAME] [--effort LEVEL]\n" +
 			"  providers: " + strings.Join(providerNames(), ", "))
@@ -57,7 +57,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 		return fmt.Errorf("cannot probe %s: %w", name, err)
 	}
 
-	provider, defaultModel, err := adapterFor(name, reg, resolver, out)
+	provider, defaultModel, err := adapterFor(ctx, name, reg, resolver, out)
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 		// served set is whatever the operator pulled. Resolve it the way a
 		// session does, and if that cannot answer either, say what the server
 		// actually offers rather than probing an empty model name.
-		model, _, err = resolveModelFor(context.Background(), name, provider, reg)
+		model, _, err = resolveModelFor(ctx, name, provider, reg)
 		if err != nil {
 			return err
 		}
@@ -121,7 +121,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 	// a 14.7k-token prompt on a 4-bit 27B — so a one-minute ceiling failed on
 	// models that were merely cold rather than broken. The probe's own prompt is
 	// tiny; what this has to cover is loading the weights.
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout(name))
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout(name))
 	defer cancel()
 
 	started := time.Now()
@@ -184,7 +184,7 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 		_, _ = fmt.Fprintf(out, "  throughput   %.1f tok/s\n", response.Usage.OutputTokensPerSecond)
 	}
 	if local, ok := provider.(*local.Adapter); ok {
-		_, _ = fmt.Fprintf(out, "  context      %s\n", local.Dimensions(context.Background(), model).Describe())
+		_, _ = fmt.Fprintf(out, "  context      %s\n", local.Dimensions(ctx, model).Describe())
 	}
 	_, _ = fmt.Fprintf(out, "  stop reason  %s\n", response.StopReason)
 	_, _ = fmt.Fprintf(out, "  usage        %d in / %d out", response.Usage.InputTokens, response.Usage.OutputTokens)
@@ -263,8 +263,8 @@ func probe(out io.Writer, reg *flags.Registry, args []string) error {
 // newly wired adapter is probeable without anyone remembering to edit this
 // switch as well — which is exactly how the local adapter came to be listed
 // everywhere and constructible nowhere.
-func adapterFor(name string, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer) (llm.Provider, string, error) {
-	provider, err := buildProvider(name, reg, resolver, notes, "")
+func adapterFor(ctx context.Context, name string, reg *flags.Registry, resolver *credentials.Resolver, notes io.Writer) (llm.Provider, string, error) {
+	provider, err := buildProvider(ctx, name, reg, resolver, notes, "")
 	if err != nil {
 		return nil, "", err
 	}

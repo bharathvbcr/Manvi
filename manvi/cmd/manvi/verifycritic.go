@@ -96,7 +96,7 @@ func buildCriticRuntime(ctx context.Context, reg *flags.Registry) (*criticRuntim
 	if !ok {
 		return nil, fmt.Errorf("the built-in %q role is not registered", criticRole)
 	}
-	native, pipeline, err := nativeToolsWith(reg, nil)
+	native, pipeline, err := nativeToolsWith(reg, nil) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func buildCriticRuntime(ctx context.Context, reg *flags.Registry) (*criticRuntim
 	if err != nil {
 		return nil, err
 	}
-	provider, err := buildProvider(providerName, reg, credentials.NewResolver(), io.Discard, "")
+	provider, err := buildProvider(ctx, providerName, reg, credentials.NewResolver(), io.Discard, "")
 	if err != nil {
 		return nil, err
 	}
