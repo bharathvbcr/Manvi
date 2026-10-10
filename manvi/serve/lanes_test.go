@@ -180,7 +180,12 @@ func TestALaneRunsItsRequestsInArrivalOrder(t *testing.T) {
 	m := newBlockingModule()
 	close(m.release)
 	s := startSession(t, context.Background(), Options{Modules: []Module{m}})
-	const n = 50
+	// No more than the lane can hold waiting. Past laneQueue the outcome is
+	// scheduling, not ordering: an overflow is answered E_BUSY on the read loop,
+	// ahead of the lane's own replies, and await discards it while waiting on an
+	// earlier id — so under load the test timed out on a reply it had already
+	// thrown away. TestAFullLaneIsBusyAndBounded owns the overflow.
+	const n = laneQueue
 	for i := range n {
 		tag := "t" + strings.Repeat("x", i)
 		s.send(tag, "work.items.update", `{"tag":"`+tag+`"}`)
