@@ -68,7 +68,7 @@ func TestRefineStoresItsProposalAndAcceptApplies(t *testing.T) {
 		t.Fatalf("refine modified the task: %s", task)
 	}
 	// The ordinary accept op applies it: criteria, a duplicate link and new tasks.
-	module := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig, Devmap: env.devmap}
+	module := WorkbenchModule{Client: env.client, Runner: env.runner, Configuration: &refineConfig, Devmap: func(string) DevmapClient { return env.devmap }}
 	accept := `{"id":"` + id + `","request_id":"acc","expected_revision":2,"expected_task_revision":2,"fields":["acceptance_criteria","split_into","duplicate_of"],"split_ids":["sa","sb"]}`
 	responses := roundTrip(t, Options{Modules: []Module{module}}, Request{ID: "a", Op: "work.enhancements.accept", Params: json.RawMessage(accept)})
 	if !responses[0].OK {
