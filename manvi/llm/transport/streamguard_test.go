@@ -117,8 +117,11 @@ func TestAMuteServerIsBoundedByTheResponseHeaderTimeout(t *testing.T) {
 	if !errors.As(err, &te) || !te.Retryable() || te.Attempts != 3 {
 		t.Fatalf("err = %#v, want a retryable failure after 3 attempts", err)
 	}
-	if hits.Load() != 3 {
-		t.Fatalf("server saw %d attempts, want 3", hits.Load())
+	// The client's own count is the contract. The server's can be lower: an
+	// attempt that times out at 40ms before a loaded server has accepted and
+	// parsed it never reaches the handler. It can never be higher.
+	if n := hits.Load(); n > 3 {
+		t.Fatalf("server saw %d attempts, want at most the policy's 3", n)
 	}
 }
 

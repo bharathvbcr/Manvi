@@ -65,10 +65,6 @@ func TestServeGeneratesThroughConfiguredLocalHTTPProvider(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		// Read the body first: the server notices the client hanging up only
-		// once it has, and Close waits for this handler.
-		_, _ = io.Copy(io.Discard, r.Body)
-
 		var request struct {
 			Model     string            `json:"model"`
 			MaxTokens int               `json:"max_tokens"`
@@ -82,6 +78,9 @@ func TestServeGeneratesThroughConfiguredLocalHTTPProvider(t *testing.T) {
 			http.Error(w, "invalid fixture request", http.StatusBadRequest)
 			return
 		}
+		// A decoder stops at the end of the object; read to EOF so the server
+		// notices the client hanging up, which the wait below depends on.
+		_, _ = io.Copy(io.Discard, r.Body)
 		if request.Model != "workbench-model" || request.MaxTokens != 8192 || len(request.Tools) != 0 || len(request.Messages) != 2 || !strings.Contains(request.Messages[1].Content, "fix E42") {
 			t.Errorf("generation did not use the configured bounded text request: %+v", request)
 		}
