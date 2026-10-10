@@ -279,3 +279,22 @@ func TestEndOfInputDrainsEveryLane(t *testing.T) {
 		}
 	}
 }
+
+// An unknown op is refused on the read loop. Queued on a lane it waited behind
+// whatever held that lane, and could be answered after a request sent later.
+func TestAnUnknownOpIsRefusedWithoutWaitingOnALane(t *testing.T) {
+	m := newBlockingModule()
+	defer close(m.release)
+	s := startSession(t, context.Background(), Options{Modules: []Module{m}})
+	s.send("hold", "test.block", `{"tag":"hold"}`)
+	<-m.started
+	start := time.Now()
+	s.send("nope", "no.such.op", "")
+	r := s.await("nope", time.Second)
+	if r.OK || r.Error == nil || r.Error.Code != ErrBadRequest {
+		t.Fatalf("unknown op: %+v, want E_BAD_REQUEST", r)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("an unknown op waited %v behind a busy lane", elapsed)
+	}
+}
