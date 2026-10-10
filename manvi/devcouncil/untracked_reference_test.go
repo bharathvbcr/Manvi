@@ -74,7 +74,7 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 	// One budget across the whole fan-out, not one cap per file: 256 files at
 	// their own ceiling is 256 ceilings, which is not a bound on anything.
 	budget := maxGitCaptureBytes
-	var cutFiles []string
+	var cutFiles, failedFiles []string
 	unrendered := 0
 	for i, path := range rendered {
 		if budget <= 0 {
@@ -88,6 +88,7 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 		// filename.
 		added, note, err := runGitCapped(ctx, root, budget, "diff", "--no-index", "--", "/dev/null", path)
 		if err != nil && added == "" {
+			failedFiles = append(failedFiles, fmt.Sprintf("%s (%s)", path, renderFailure(err)))
 			continue
 		}
 		if note != "" {
@@ -105,6 +106,12 @@ func gitDiffSequential(ctx context.Context, root string) (string, []string, erro
 			"untracked_diff: %d untracked file(s) were cut at the %d-byte capture budget: %s; "+
 				"the gates saw only the part above the cut",
 			len(cutFiles), maxGitCaptureBytes, strings.Join(cutFiles, "; ")))
+	}
+	if len(failedFiles) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: %d untracked file(s) could not be rendered and are not in this diff: %s; "+
+				"the gates that read it did not see them",
+			len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(

@@ -98,6 +98,28 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	// folded into a pass: the gates below read this diff, so what is missing
 	// from it is missing from them.
 	report.Degraded = append(report.Degraded, diffNotes...)
+	if len(diffNotes) > 0 {
+		// Degraded alone reads as a pass: report.Passed is decided by blocking
+		// gaps. A diff that could not cover the whole tree is one the secret
+		// scan, the stub check and the scope check ran over only in part, so
+		// the report cannot say the change was verified.
+		gap := Gap{
+			ID:       fmt.Sprintf("GAP-%s-DIFF-INCOMPLETE", task.ID),
+			Type:     "diff_incomplete",
+			Severity: "high",
+			Blocking: true,
+			Detail: "the working-tree diff does not cover the whole change, so the gates read only part of it: " +
+				strings.Join(diffNotes, " | "),
+		}
+		report.Gaps = append(report.Gaps, gap)
+		report.NextActions = append(report.NextActions, NextAction{
+			GapID:    gap.ID,
+			Category: "fix_environment",
+			Blocking: true,
+			Action: "Make every changed file readable and within the diff caps (commit, split, or ignore what is not part " +
+				"of the change), then verify again.",
+		})
+	}
 
 	// The union, not the plan alone. This asks "was this file in scope", and a
 	// path an executor argued into its own scope is in scope — the fact that it
@@ -358,9 +380,14 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 	// One budget across the whole fan-out, not one cap per file: 256 files at
 	// their own ceiling is 256 ceilings, which is not a bound on anything.
 	renders, unrendered := renderUntracked(ctx, root, rendered, maxGitCaptureBytes)
-	var cutFiles []string
+	var cutFiles, failedFiles []string
 	for _, u := range renders {
 		if u.err != nil {
+			// Listed by git and then not rendered: a permission error, a file
+			// that vanished, a deadline that ran out. Skipping it silently
+			// would hand the gates a diff without it and say nothing, so it is
+			// named with its reason.
+			failedFiles = append(failedFiles, fmt.Sprintf("%s (%s)", u.path, renderFailure(u.err)))
 			continue
 		}
 		if u.note != "" {
@@ -376,6 +403,12 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 			"untracked_diff: %d untracked file(s) were cut at the %d-byte capture budget: %s; "+
 				"the gates saw only the part above the cut",
 			len(cutFiles), maxGitCaptureBytes, strings.Join(cutFiles, "; ")))
+	}
+	if len(failedFiles) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"untracked_diff: %d untracked file(s) could not be rendered and are not in this diff: %s; "+
+				"the gates that read it did not see them",
+			len(failedFiles), summariseList(failedFiles, maxNamedShortfalls)))
 	}
 	if unrendered > 0 {
 		notes = append(notes, fmt.Sprintf(
@@ -396,6 +429,38 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 			len(quoted), strings.Join(quoted, ", ")))
 	}
 	return diff, notes, nil
+}
+
+// maxNamedShortfalls bounds how many files one diff note names; the count is
+// always the whole number, so a long list is never read as a complete one.
+const maxNamedShortfalls = 10
+
+// maxFailureReason bounds the reason carried per unrendered file.
+const maxFailureReason = 160
+
+// renderFailure is the reason a render failed, cut to something a note can
+// carry: git's own message names the command, which the path beside it
+// already says.
+func renderFailure(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, "--no-index -- /dev/null "); i >= 0 {
+		if j := strings.Index(msg[i:], ": "); j >= 0 {
+			msg = msg[i+j+2:]
+		}
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if runes := []rune(msg); len(runes) > maxFailureReason {
+		msg = string(runes[:maxFailureReason]) + "…"
+	}
+	return msg
+}
+
+// summariseList names the first limit entries and counts the rest.
+func summariseList(items []string, limit int) string {
+	if len(items) <= limit {
+		return strings.Join(items, "; ")
+	}
+	return fmt.Sprintf("%s; and %d more", strings.Join(items[:limit], "; "), len(items)-limit)
 }
 
 // untrackedWorkers is how many untracked-file renders run at once.
