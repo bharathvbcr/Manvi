@@ -515,6 +515,16 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 	if aliased := aliasedPaths(r.deps.Root, stagedPaths); len(aliased) > 0 {
 		return aliasedRefusal("commit", aliased)
 	}
+	// By content, after the names: a credential copied to an innocent name
+	// matches nothing above. A check that could not run refuses; it is never
+	// reported as a clean pass.
+	contentLeaks, err := r.stagedContentLeaks(ctx)
+	if err != nil {
+		return unavailable("staged-content secret check", err)
+	}
+	if len(contentLeaks) > 0 {
+		return contentRefusal(contentLeaks)
+	}
 
 	argv := []string{"commit", "-m", args.Message}
 	if args.AllowEmpty {

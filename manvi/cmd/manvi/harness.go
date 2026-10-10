@@ -49,6 +49,12 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	subRegistry := agents.NewRegistry()
 	subMgr := agents.NewInstanceManager()
 
+	// One scrubber for the tool surface, built before the surface so the
+	// commit check and the result scrubber ask the same question of the same
+	// set of credentials.
+	toolResolver := credentials.NewResolver()
+	toolScrubber := newArmedScrubber(toolResolver)
+
 	// Built empty and attached later, once a provider and the tool registry
 	// below exist. Until something attaches it the tool refuses, which is the
 	// behaviour that replaced it reporting completed work it never did.
@@ -74,6 +80,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		SubagentRegistry: subRegistry,
 		SubagentMgr:      subMgr,
 		SubAgent:         subRunner,
+		KnownSecret:      knownSecretIn(toolScrubber, toolResolver),
 	})
 	if err != nil {
 		_ = core.plugins.Close()
@@ -82,8 +89,6 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	pipeline := core.tools
 	// Armed before any tool can run. Every result the model sees, and every
 	// result the session log writes to disk, goes through this.
-	toolResolver := credentials.NewResolver()
-	toolScrubber := newArmedScrubber(toolResolver)
 	pipeline.SetScrubber(armedClean(toolScrubber, toolResolver))
 	if err := native.Register(pipeline); err != nil {
 		_ = core.plugins.Close()

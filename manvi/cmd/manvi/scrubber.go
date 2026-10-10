@@ -79,6 +79,16 @@ func armScrubber(s *credentials.Scrubber, r *credentials.Resolver) {
 	}
 }
 
+// knownSecretIn reports whether a text contains a credential s watches, for the
+// commit check. It re-arms first, as armedClean does, so a token forwarded to a
+// server registered mid-session is known by the time it is committed.
+func knownSecretIn(s *credentials.Scrubber, r *credentials.Resolver) func(string) bool {
+	return func(text string) bool {
+		armScrubber(s, r)
+		return s.Clean(text) != text
+	}
+}
+
 // armedClean is the tool pipeline's scrubber: re-armed before each result, so
 // a server registered mid-session is covered from its first failure.
 func armedClean(s *credentials.Scrubber, r *credentials.Resolver) func(string) string {

@@ -264,6 +264,19 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 ### Fixed
 
+- A shell command whose operand or input redirection names a secret path
+  (`cat .env`, `cp secrets/x y`, `base64 < .env`) is refused by a new hard rule,
+  `command.secret_read`, in every posture except `yolo`. Under the default dev
+  posture it was a soft `command.no_lease` the posture demoted, so the shell
+  printed credentials `devcouncil_read_file` refuses. `devcouncil_git_commit`
+  now also refuses staged content that is, or contains, what a secret-path file
+  or a known credential holds, so `cp .env notes.txt` then stage and commit no
+  longer puts the credential in history under another name.
+- `docs/POLICY_AND_SAFETY.md` named rules that do not exist (`cmd.secrets.leak`,
+  `cmd.shell.destructive`, `path.credential`, ...). It now names only catalogue
+  rules, says plainly that destructive commands have no dedicated rule, and a
+  contract test checks every rule id the page mentions against the catalogue.
+
 - The read gate now covers every tool that can return repository bytes, through
   one owner (`readRefusal`, `withholdDiff`, `withholdHistoryDiff` in
   `devcouncil/readauth.go`). `devcouncil_get_diff` withheld nothing, so an
