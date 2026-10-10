@@ -33,6 +33,9 @@ var contractTypes = map[string]reflect.Type{
 	"HostScope":          reflect.TypeFor[HostScope](),
 	"ManagedPrepared":    reflect.TypeFor[ManagedPrepared](),
 	"ManagedRun":         reflect.TypeFor[managedRun](),
+	"VerifyTaskParams":   reflect.TypeFor[VerifyTaskParams](),
+	"VerifyGetParams":    reflect.TypeFor[VerifyGetParams](),
+	"VerifyResult":       reflect.TypeFor[VerifyResult](),
 }
 
 type contractField struct {
@@ -131,9 +134,17 @@ func currentContract(t *testing.T) serveContract {
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
+	verify, err := NewVerifyRunner(VerifyDeps{
+		Client: client, Critic: &scriptedCritic{}, Devmap: func(string) DevmapClient { return &fakeDevmap{} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = verify.Close() })
+
 	always := opsOf(t, Options{})
 	full := opsOf(t, Options{Modules: []Module{
-		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Configuration: &EnhancementConfiguration{}},
+		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Verify: verify, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{Client: &fakeDevmap{}},
 	}})
 	var optional []string

@@ -252,19 +252,7 @@ func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.Path
 		}
 	}
 
-	// Deleted paths are separated before the check rather than inside it. A
-	// file that is gone cannot be read by a content gate, and handing it to one
-	// produces either an error that reads as a finding about the code or a
-	// silent skip — and a silent skip is the failure mode this whole file
-	// exists to remove.
-	present, missing := s.native.ExistingPaths(e.Wrote)
-	report := s.native.VerifyPaths(ctx, present, s.command, s.takeBaseline())
-	for _, m := range missing {
-		// Omitted, not Skipped. A path that is gone was never handed to the
-		// scoped diff, so nothing examined it and nothing can say what the turn
-		// did to it — that is a gap in coverage, not a decision not to look.
-		report.Omitted = append(report.Omitted, m+": no longer on disk")
-	}
+	report := devcouncil.VerifyPresent(ctx, s.native, e.Wrote, s.command, s.takeBaseline())
 
 	// A turn that changed something through a command is a turn whose effects no
 	// handler could enumerate. The operator's own command still covers it;
@@ -376,7 +364,7 @@ func (s *sensor) dispatchCritic(ctx context.Context, e *agent.TurnStopping, repo
 	result, err := s.runner.RunSubAgent(ctx, devcouncil.SubAgentRequest{
 		Label:   "checkpoint-critic",
 		Prompt:  b.String(),
-		Verdict: verdictMarker,
+		Verdict: devcouncil.VerdictMarker,
 	})
 	if err != nil {
 		// Named, not swallowed. A critic that could not run is a check that did
@@ -430,7 +418,7 @@ func verdictOf(report devcouncil.PathReport) agent.SensorVerdict {
 // it: a child's whole answer pasted into the parent's context is a child
 // deciding how much of the parent's window to spend.
 func indentLines(s string) string {
-	s = truncateRunes(strings.TrimSpace(s), maxCriticSummaryRunes)
+	s = devcouncil.TruncateRunes(strings.TrimSpace(s), maxCriticSummaryRunes)
 	var b strings.Builder
 	for line := range strings.Lines(s) {
 		b.WriteString("  ")

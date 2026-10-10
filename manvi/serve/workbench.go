@@ -17,6 +17,10 @@ type WorkbenchModule struct {
 	Runner        *EnhancementRunner
 	Configuration *EnhancementConfiguration
 	Managed       *ManagedRunner
+	// Verify enables work.verify.task and work.verify.get. Nil leaves them
+	// unregistered, so a build with no critic never offers a verdict it cannot
+	// back.
+	Verify *VerifyRunner
 }
 
 // EnhancementConfiguration describes the host's selection, not provider health.
@@ -38,6 +42,9 @@ func (m WorkbenchModule) Configure(r *Router) error {
 	}
 	if m.Managed != nil && m.Managed.client != m.Client {
 		return errors.New("managed runner and host must share the same profile client")
+	}
+	if m.Verify != nil && m.Verify.deps.Client != m.Client {
+		return errors.New("verify runner and host module must share the same profile client")
 	}
 	for _, method := range store.WorkbenchMethods() {
 		if err := r.Register("work."+method, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
@@ -95,6 +102,26 @@ func (m WorkbenchModule) Configure(r *Router) error {
 			return struct {
 				OK bool `json:"ok"`
 			}{true}, nil
+		}); err != nil {
+			return err
+		}
+	}
+	if m.Verify != nil {
+		if err := r.Register(OpVerifyTask, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+			result, err := m.Verify.Start(ctx, raw)
+			if err != nil {
+				return nil, workbenchHostError("verification", err)
+			}
+			return result, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Register(OpVerifyGet, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+			result, err := m.Verify.Get(ctx, raw)
+			if err != nil {
+				return nil, workbenchHostError("verification", err)
+			}
+			return result, nil
 		}); err != nil {
 			return err
 		}

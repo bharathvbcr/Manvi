@@ -133,6 +133,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	modules := []serve.Module{serve.DevmapModule{Client: mapClient(projectRoot())}}
 	var runner *serve.EnhancementRunner
 	var managed *serve.ManagedRunner
+	var verify *serve.VerifyRunner
 	if workbenchDB != "" {
 		client := store.New(toolBinary("MANVI_STORE_BINARY", "dcstore"), workbenchDB)
 		defer client.Close()
@@ -187,7 +188,21 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
-		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed})
+		// The verification op runs the operator's command and nothing a request
+		// names: both the command and the dcverify binary come from operator
+		// scope (environment), the same sources the end-of-turn sensor uses.
+		verify, err = serve.NewVerifyRunner(serve.VerifyDeps{
+			Client:         client,
+			Critic:         newServeCritic(reg),
+			Command:        operatorVerifyCommand(),
+			VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
+			CoverageFile:   os.Getenv("MANVI_COVERAGE"),
+			Devmap:         func(worktree string) serve.DevmapClient { return mapClient(worktree) },
+		})
+		if err != nil {
+			return err
+		}
+		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Verify: verify})
 	}
 	srv := serve.New(os.Stdout, serve.Options{
 		HardRules:      hardRules,
@@ -202,6 +217,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	}
 	if runner != nil {
 		err = errors.Join(err, runner.Close())
+	}
+	if verify != nil {
+		err = errors.Join(err, verify.Close())
 	}
 	// The policy plane's engine handle, if this build links one. Bounded: a
 	// stuck engine is reported as a shutdown error and left to process exit,

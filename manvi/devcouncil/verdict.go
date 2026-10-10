@@ -1,9 +1,9 @@
-package main
+package devcouncil
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
-
-	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
 
 // A judging child answers in prose and in one machine-readable line. This file
@@ -30,44 +30,44 @@ import (
 // the cost of advancing one that was not is a defect certified by a machine
 // that did not read its own verdict.
 
-// verdictMarker is the line prefix a judging child is asked to emit. It is
+// VerdictMarker is the line prefix a judging child is asked to emit. It is
 // deliberately not a word that occurs in ordinary prose about reviewing code.
-const verdictMarker = "MANVI-VERDICT:"
+const VerdictMarker = "MANVI-VERDICT:"
 
-// maxVerdictFindings bounds how many objections travel with a verdict.
+// MaxVerdictFindings bounds how many objections travel with a verdict.
 //
 // The findings reach a session event and, on a failure, the next turn's model
 // context. A judge that lists ninety is not more informative than one that
 // lists the first twelve, and an unbounded list is a child deciding how much of
 // the parent's context window to spend.
-const maxVerdictFindings = 12
+const MaxVerdictFindings = 12
 
-// maxVerdictFindingRunes bounds one objection's length, for the same reason.
-const maxVerdictFindingRunes = 400
+// MaxVerdictFindingRunes bounds one objection's length, for the same reason.
+const MaxVerdictFindingRunes = 400
 
-// verdictInstruction is what a judging child is told, appended to its role
+// VerdictInstruction is what a judging child is told, appended to its role
 // prompt. Stated as a requirement with its failure mode named, because a child
 // that omits the line is not refused — it is recorded as having reached no
 // judgement, and it should know that is what silence buys.
-func verdictInstruction() string {
+func VerdictInstruction() string {
 	return "End your answer with a single line in exactly this form:\n" +
-		"  " + verdictMarker + " PASS\n" +
+		"  " + VerdictMarker + " PASS\n" +
 		"or\n" +
-		"  " + verdictMarker + " FAIL\n" +
+		"  " + VerdictMarker + " FAIL\n" +
 		"followed, when you fail it, by one line per objection beginning \"- \".\n" +
 		"A missing, unreadable or self-contradicting line is recorded as no judgement, " +
 		"which is treated as a failure to certify — not as approval."
 }
 
-// parseVerdict reads a child's answer for the verdict line.
+// ParseVerdict reads a child's answer for the verdict line.
 //
 // marker empty means the caller asked for no judgement, and none is produced:
 // an ordinary builder's summary must never be mined for a word that happens to
 // look like a verdict.
-func parseVerdict(marker, summary string) devcouncil.SubAgentVerdict {
+func ParseVerdict(marker, summary string) SubAgentVerdict {
 	marker = strings.TrimSpace(marker)
 	if marker == "" {
-		return devcouncil.SubAgentVerdict{}
+		return SubAgentVerdict{}
 	}
 
 	var (
@@ -121,29 +121,132 @@ func parseVerdict(marker, summary string) devcouncil.SubAgentVerdict {
 		}
 		if objection, ok := strings.CutPrefix(trimmed, "- "); ok {
 			objection = strings.TrimSpace(objection)
-			if objection == "" || len(findings) >= maxVerdictFindings {
+			if objection == "" || len(findings) >= MaxVerdictFindings {
 				continue
 			}
-			findings = append(findings, truncateRunes(objection, maxVerdictFindingRunes))
+			findings = append(findings, TruncateRunes(objection, MaxVerdictFindingRunes))
 		}
 	}
 
 	if conflict || !decided {
-		return devcouncil.SubAgentVerdict{Judged: false}
+		return SubAgentVerdict{Judged: false}
 	}
 	// Handed to Reconcile whole rather than pre-cleaned. An earlier draft
 	// dropped the findings when the claim was PASS, which quietly disarmed the
 	// one check that exists for a judge contradicting itself: the pass went out
 	// certified because the evidence against it had been deleted on the way.
-	return devcouncil.SubAgentVerdict{Judged: true, Passed: passed, Findings: findings}.Reconcile()
+	return SubAgentVerdict{Judged: true, Passed: passed, Findings: findings}.Reconcile()
 }
 
-// truncateRunes cuts on rune boundaries and says that it cut. A silently
+// TruncateRunes cuts on rune boundaries and says that it cut. A silently
 // shortened finding reads as a complete one.
-func truncateRunes(s string, limit int) string {
+func TruncateRunes(s string, limit int) string {
 	runes := []rune(s)
 	if len(runes) <= limit {
 		return s
 	}
 	return string(runes[:limit]) + "… (truncated)"
+}
+
+// The per-criterion form of the same contract.
+//
+// A task's completion is not one question but one per acceptance criterion, so
+// the judge is asked for one marker line per criterion, "MANVI-VERDICT[n]:
+// PASS|FAIL", n counting from 1. Each criterion's lines go through ParseVerdict
+// under that criterion's own marker, so every rule above — whole-word compare,
+// disagreeing lines void the verdict, a pass listing objections is downgraded —
+// applies to each criterion unchanged rather than being restated for a second
+// reader that could drift from the first.
+//
+// A criterion with no line is "unaddressed" and is unmet: silence about a
+// criterion is not evidence that it holds.
+
+// Criterion statuses. Everything except CriterionMet is not a pass.
+const (
+	CriterionMet         = "met"
+	CriterionUnmet       = "unmet"
+	CriterionUnaddressed = "unaddressed"
+	CriterionConflict    = "conflict"
+)
+
+// CriterionMarker is the marker line prefix for acceptance criterion n, counted
+// from 1.
+func CriterionMarker(n int) string {
+	return "MANVI-VERDICT[" + strconv.Itoa(n) + "]:"
+}
+
+// CriterionVerdictInstruction tells a judge the shape its answer must take for
+// count criteria, with the failure mode of silence named.
+func CriterionVerdictInstruction(count int) string {
+	return fmt.Sprintf("Judge each of the %d numbered acceptance criteria separately. For every criterion n "+
+		"(1 to %d) end your answer with one line in exactly this form:\n"+
+		"  MANVI-VERDICT[n]: PASS\nor\n  MANVI-VERDICT[n]: FAIL\n"+
+		"followed, when you fail it, by one line per objection beginning \"- \". "+
+		"A criterion with no line, an unreadable line or two lines that disagree is recorded as not met.",
+		count, count)
+}
+
+// CriterionJudgement is the reading of one criterion's marker lines.
+type CriterionJudgement struct {
+	// Index is the criterion's number, from 1.
+	Index int `json:"index"`
+	// Status is one of the Criterion* constants.
+	Status string `json:"status"`
+	// Findings are the judge's objections, bounded as ParseVerdict bounds them.
+	Findings []string `json:"findings,omitempty"`
+}
+
+// CriterionVerdicts is a judge's answer read against count criteria.
+type CriterionVerdicts struct {
+	// Emitted is whether the answer held any marker line at all, readable or
+	// not. False means the judge reached no judgement of any kind.
+	Emitted bool `json:"emitted"`
+	// Items has exactly one entry per criterion, in order.
+	Items []CriterionJudgement `json:"items"`
+}
+
+// ParseCriterionVerdicts reads a judge's answer for count criteria.
+func ParseCriterionVerdicts(summary string, count int) CriterionVerdicts {
+	out := CriterionVerdicts{Items: make([]CriterionJudgement, count)}
+	buckets := make([]strings.Builder, count+1)
+	seen := make([]bool, count+1)
+	current := 0
+	for line := range strings.Lines(summary) {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "MANVI-VERDICT") {
+			out.Emitted = true
+			current = 0
+			if rest, ok := strings.CutPrefix(trimmed, "MANVI-VERDICT["); ok {
+				if digits, _, found := strings.Cut(rest, "]:"); found {
+					if n, err := strconv.Atoi(digits); err == nil && n >= 1 && n <= count {
+						current = n
+						seen[n] = true
+					}
+				}
+			}
+		}
+		if current > 0 {
+			buckets[current].WriteString(line)
+			if !strings.HasSuffix(line, "\n") {
+				buckets[current].WriteString("\n")
+			}
+		}
+	}
+	for n := 1; n <= count; n++ {
+		item := CriterionJudgement{Index: n, Status: CriterionUnaddressed}
+		if seen[n] {
+			verdict := ParseVerdict(CriterionMarker(n), buckets[n].String())
+			switch {
+			case !verdict.Judged:
+				item.Status = CriterionConflict
+			case verdict.Passed:
+				item.Status = CriterionMet
+			default:
+				item.Status = CriterionUnmet
+				item.Findings = verdict.Findings
+			}
+		}
+		out.Items[n-1] = item
+	}
+	return out
 }

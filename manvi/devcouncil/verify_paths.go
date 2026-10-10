@@ -196,6 +196,53 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 	return report.settle()
 }
 
+// NewPathVerifier builds a surface that can run VerifyPaths and nothing else.
+//
+// VerifyPaths reads a repository root, the dcverify binary and an optional
+// coverage file; it takes no lease, no gate and no store. A caller that only
+// wants the end-of-turn check over some other worktree — the serve host
+// verifying a board task — would otherwise have to build a whole tool surface,
+// with a gate it would never consult, to reach it. The surface returned here
+// registers no tools and must not be handed to anything that expects them.
+func NewPathVerifier(root, verifierBinary, coverageFile string) (*Registry, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("devcouncil: no repository root")
+	}
+	return &Registry{deps: Deps{Root: root, VerifierBinary: verifierBinary, CoverageFile: coverageFile}, session: &Session{}}, nil
+}
+
+// PathChecker is what VerifyPresent needs of a surface: the check itself and
+// the means to tell a deleted path from one that is still there.
+type PathChecker interface {
+	VerifyPaths(ctx context.Context, paths []string, command string, baseline Baseline) PathReport
+	ExistingPaths(paths []string) (present, missing []string)
+}
+
+// VerifyPresent is VerifyPaths over a change set that may name deleted files.
+//
+// A file that is gone cannot be read by a content gate, and handing it to one
+// produces either an error that reads as a finding about the code or a silent
+// skip. So the deleted paths are separated first and reported as Omitted — not
+// Skipped: nothing examined them, which is a gap in coverage and not a
+// decision not to look. Both the end-of-turn sensor and the board-task verifier
+// call this, so the two cannot disagree about what a deletion means.
+//
+// A clean pass is demoted to degraded once an omission is added. A path that no
+// longer exists is owed an examination it cannot receive, and leaving the
+// verdict as settled before the omission let a change set that deleted files
+// read as a clean pass. Any other verdict already says more than this does.
+func VerifyPresent(ctx context.Context, c PathChecker, paths []string, command string, baseline Baseline) PathReport {
+	present, missing := c.ExistingPaths(paths)
+	report := c.VerifyPaths(ctx, present, command, baseline)
+	for _, m := range missing {
+		report.Omitted = append(report.Omitted, m+": no longer on disk")
+	}
+	if len(missing) > 0 && report.Verdict == VerdictPassed {
+		report.Verdict = VerdictDegraded
+	}
+	return report
+}
+
 // settle decides the final verdict from what the report actually holds.
 //
 // One place, called on every path out, because the alternative was every branch
