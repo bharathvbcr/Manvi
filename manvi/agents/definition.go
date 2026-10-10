@@ -394,6 +394,12 @@ type InstanceSnapshot struct {
 	Killable bool `json:"killable"`
 }
 
+func (inst *Instance) stateNow() string {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.State
+}
+
 // Snapshot copies this instance's live state.
 func (inst *Instance) Snapshot() InstanceSnapshot {
 	inst.mu.Lock()
@@ -413,7 +419,17 @@ func (inst *Instance) Snapshot() InstanceSnapshot {
 type InstanceManager struct {
 	mu        sync.RWMutex
 	instances map[string]*Instance
+	// order is registration order, oldest first, so pruning drops the longest
+	// finished child rather than an arbitrary one.
+	order []string
 }
+
+// maxRetainedFinished bounds how many finished (completed or errored)
+// instances stay registered for listing. Nothing ever removed one, so a long
+// TUI or serve session grew the list without limit and every kill_all swept
+// every child it had ever dispatched. Running and canceling instances are
+// never pruned.
+const maxRetainedFinished = 128
 
 // NewInstanceManager creates a new instance manager.
 func NewInstanceManager() *InstanceManager {
@@ -445,8 +461,34 @@ func (m *InstanceManager) Register(inst *Instance) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, known := m.instances[id]; !known {
+		m.order = append(m.order, id)
+	}
 	m.instances[id] = inst
+	m.pruneFinishedLocked(id)
 	return nil
+}
+
+// pruneFinishedLocked drops the oldest finished instances beyond
+// maxRetainedFinished. keep is the instance just registered, which is
+// running, so it is never a candidate. Caller holds m.mu for writing.
+func (m *InstanceManager) pruneFinishedLocked(keep string) {
+	finished := 0
+	for _, id := range m.order {
+		if id != keep && terminal(m.instances[id].stateNow()) {
+			finished++
+		}
+	}
+	kept := m.order[:0]
+	for _, id := range m.order {
+		if finished > maxRetainedFinished && id != keep && terminal(m.instances[id].stateNow()) {
+			delete(m.instances, id)
+			finished--
+			continue
+		}
+		kept = append(kept, id)
+	}
+	m.order = kept
 }
 
 // Get retrieves an instance by conversation ID.
@@ -546,6 +588,10 @@ func (inst *Instance) kill() error {
 		inst.mu.Unlock()
 		return fmt.Errorf("agents: subagent %q already reached %s; nothing was terminated",
 			inst.ConversationID, state)
+	case inst.State == StateCanceling:
+		inst.mu.Unlock()
+		return fmt.Errorf("agents: subagent %q is already being terminated; nothing new was terminated",
+			inst.ConversationID)
 	case inst.cancel == nil:
 		inst.mu.Unlock()
 		return fmt.Errorf("agents: subagent %q has no cancellation handle; nothing was terminated",
@@ -582,8 +628,17 @@ func (m *InstanceManager) KillAll() (killed []string, err error) {
 	}
 
 	var failures []string
+	candidates := 0
 	for _, inst := range live {
 		id := inst.ConversationID
+		// A child that already finished, or is already being terminated, is
+		// neither killed nor a failure of this call: kill_all stopping every
+		// running child must not report the earlier fan-outs' finished ones as
+		// termination failures.
+		if st := inst.stateNow(); terminal(st) || st == StateCanceling {
+			continue
+		}
+		candidates++
 		if killErr := inst.kill(); killErr != nil {
 			failures = append(failures, killErr.Error())
 			continue
@@ -593,16 +648,19 @@ func (m *InstanceManager) KillAll() (killed []string, err error) {
 	sort.Strings(killed)
 	sort.Strings(failures)
 
+	if candidates == 0 {
+		return nil, fmt.Errorf("agents: none of the %d registered subagents is running; nothing was terminated", len(live))
+	}
 	if len(killed) == 0 {
-		return nil, fmt.Errorf("agents: none of the %d registered subagents could be terminated: %s",
-			len(live), strings.Join(failures, "; "))
+		return nil, fmt.Errorf("agents: none of the %d running subagents could be terminated: %s",
+			candidates, strings.Join(failures, "; "))
 	}
 	if len(failures) > 0 {
 		// Partial success is reported as both: the IDs that were cancelled are
 		// real, and so are the ones that were not. Collapsing either half is
 		// how a caller comes to believe it stopped everything.
 		return killed, fmt.Errorf("agents: %d of %d subagents could not be terminated: %s",
-			len(failures), len(live), strings.Join(failures, "; "))
+			len(failures), candidates, strings.Join(failures, "; "))
 	}
 	return killed, nil
 }
