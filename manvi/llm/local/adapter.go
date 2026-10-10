@@ -71,6 +71,10 @@ func New(cfg Config, resolve func() (credentials.Secret, error)) *Adapter {
 		SendReasoningEffort:    cfg.SupportsReasoning,
 		StallTimeout:           cfg.StallTimeout,
 		AssumeReasoningPrefill: cfg.AssumeReasoningPrefill,
+		// A local server is the one place a tool call can be left in the text:
+		// it is only as good as the tool-call parser it was launched with. A
+		// hosted provider (xai) leaves this off.
+		TextToolFallback: true,
 		Header: func() (http.Header, error) {
 			h := http.Header{}
 			held, err := credential(resolve)

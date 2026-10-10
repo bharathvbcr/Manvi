@@ -375,10 +375,11 @@ func TestOpenAICompatFallbackHermesToolCall(t *testing.T) {
 	defer server.Close()
 
 	adapter := New(Options{
-		Name:     "local",
-		BaseURL:  server.URL,
-		Validate: func(req llm.Request) error { return nil },
-		Header:   func() (http.Header, error) { return http.Header{}, nil },
+		TextToolFallback: true,
+		Name:             "local",
+		BaseURL:          server.URL,
+		Validate:         func(req llm.Request) error { return nil },
+		Header:           func() (http.Header, error) { return http.Header{}, nil },
 	})
 
 	stream, err := adapter.Stream(context.Background(), llm.Request{
@@ -437,10 +438,11 @@ func TestOpenAICompatFallbackMarkdownToolCall(t *testing.T) {
 	defer server.Close()
 
 	adapter := New(Options{
-		Name:     "local",
-		BaseURL:  server.URL,
-		Validate: func(req llm.Request) error { return nil },
-		Header:   func() (http.Header, error) { return http.Header{}, nil },
+		TextToolFallback: true,
+		Name:             "local",
+		BaseURL:          server.URL,
+		Validate:         func(req llm.Request) error { return nil },
+		Header:           func() (http.Header, error) { return http.Header{}, nil },
 	})
 
 	// The offered set is the authority on what may be recovered, so the fixture
@@ -504,10 +506,11 @@ func TestOpenAICompatFallbackArbitraryToolNameAndPythonLiterals(t *testing.T) {
 	defer server.Close()
 
 	adapter := New(Options{
-		Name:     "local",
-		BaseURL:  server.URL,
-		Validate: func(req llm.Request) error { return nil },
-		Header:   func() (http.Header, error) { return http.Header{}, nil },
+		TextToolFallback: true,
+		Name:             "local",
+		BaseURL:          server.URL,
+		Validate:         func(req llm.Request) error { return nil },
+		Header:           func() (http.Header, error) { return http.Header{}, nil },
 	})
 
 	// The offered set is the authority on what may be recovered, so the fixture
@@ -577,10 +580,11 @@ func TestOpenAICompatMultipleFallbackToolCalls(t *testing.T) {
 	defer server.Close()
 
 	adapter := New(Options{
-		Name:     "local",
-		BaseURL:  server.URL,
-		Validate: func(req llm.Request) error { return nil },
-		Header:   func() (http.Header, error) { return http.Header{}, nil },
+		TextToolFallback: true,
+		Name:             "local",
+		BaseURL:          server.URL,
+		Validate:         func(req llm.Request) error { return nil },
+		Header:           func() (http.Header, error) { return http.Header{}, nil },
 	})
 
 	// The request carries the tool it is about to recover a call to. A real
@@ -704,6 +708,11 @@ func TestAStringErrorFieldDoesNotAbandonTheStream(t *testing.T) {
 				Header:   func() (http.Header, error) { return http.Header{}, nil },
 			})
 
+			// An error chunk that is the first thing on the wire is now judged
+			// when the stream opens (see preflight), so it may surface from
+			// Stream itself rather than from Next; either is the error
+			// surfacing, and the assertions below hold for both.
+			var failure error
 			stream, err := adapter.Stream(context.Background(), llm.Request{
 				Model: "m",
 				Messages: []llm.Message{{
@@ -711,19 +720,18 @@ func TestAStringErrorFieldDoesNotAbandonTheStream(t *testing.T) {
 				}},
 			})
 			if err != nil {
-				t.Fatalf("stream: %v", err)
-			}
-			defer stream.Close()
-
-			var failure error
-			for {
-				_, err := stream.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					failure = err
-					break
+				failure = err
+			} else {
+				defer stream.Close()
+				for {
+					_, err := stream.Next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						failure = err
+						break
+					}
 				}
 			}
 			if failure == nil {

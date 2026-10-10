@@ -274,6 +274,7 @@ type (
 		FallbackFormat        string `json:"fallback_format,omitempty"`
 		ReasoningReclassified bool   `json:"reasoning_reclassified,omitempty"`
 		PrefillDisproved      bool   `json:"prefill_disproved,omitempty"`
+		ArgumentsRepaired     bool   `json:"arguments_repaired,omitempty"`
 	}
 	// OverflowData records history that could not be made to fit.
 	OverflowData struct {

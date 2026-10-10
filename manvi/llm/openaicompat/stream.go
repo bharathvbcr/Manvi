@@ -59,8 +59,18 @@ type stream struct {
 
 	stopReason llm.StopReason
 	usage      llm.Usage
-	done       bool
-	failure    error
+	// finished is set when a choice carried a finish_reason, the wire's own
+	// statement that the model stopped. With the [DONE] sentinel it is one of
+	// the two ways a stream can legitimately end; a stream that closed with
+	// neither was cut off.
+	finished bool
+	// textFallback is Options.TextToolFallback for this stream.
+	textFallback bool
+	// repaired records that a tool call's arguments were rewritten to make them
+	// valid JSON, so the settled response can say so. See sanitizeJSONArguments.
+	repaired bool
+	done     bool
+	failure  error
 	// fallbackFormat names the shape a tool call had to be recovered from,
 	// when the server did not parse it. Empty is the healthy case.
 	fallbackFormat FallbackFormat
@@ -122,6 +132,7 @@ func newStream(body io.ReadCloser, model string, tools []llm.ToolSchema, opts Op
 		maxTokensApplied: maxTokensApplied,
 	}
 	st.filter.assumePrefill = opts.AssumeReasoningPrefill
+	st.textFallback = opts.TextToolFallback
 	return st
 }
 
@@ -184,6 +195,7 @@ type wireChunk struct {
 type wireError struct {
 	Message string
 	Code    any
+	Type    string
 }
 
 func (e *wireError) UnmarshalJSON(data []byte) error {
@@ -195,9 +207,10 @@ func (e *wireError) UnmarshalJSON(data []byte) error {
 	var asObject struct {
 		Message string `json:"message"`
 		Code    any    `json:"code"`
+		Type    string `json:"type"`
 	}
 	if err := json.Unmarshal(data, &asObject); err == nil {
-		e.Message, e.Code = asObject.Message, asObject.Code
+		e.Message, e.Code, e.Type = asObject.Message, asObject.Code, asObject.Type
 		if e.Message == "" {
 			// An object with no message field still carries the fault; showing
 			// the raw JSON beats reporting an empty error.
@@ -256,6 +269,17 @@ func (s *stream) Next() (llm.Chunk, error) {
 					return llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: s.reasonIdx, Text: fl.reasoning}, nil
 				}
 			}
+			// io.EOF is a finished stream only when the wire said so: a
+			// finish_reason, or the [DONE] sentinel. Without either the
+			// connection simply closed, and settling that as StopOther would
+			// promote whatever tool calls had arrived — with whatever
+			// arguments had arrived — to a turn the agent runs. It is a
+			// failure that carries no response; UsageSoFar answers for the
+			// budget.
+			if !s.finished && !s.sse.Terminated() {
+				s.failure = transport.TruncatedStream(s.name, "finish_reason or [DONE]")
+				return llm.Chunk{}, s.failure
+			}
 			return llm.Chunk{}, err
 		}
 
@@ -291,6 +315,7 @@ func (s *stream) Next() (llm.Chunk, error) {
 		choice := chunk.Choices[0]
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			s.stopReason = mapFinishReason(*choice.FinishReason)
+			s.finished = true
 		}
 
 		// Every branch below queues rather than returning, and the loop head
@@ -558,8 +583,12 @@ func (s *stream) Response() (llm.Response, error) {
 	var visibleText = s.text.String()
 	var fallbackCalls []llm.ToolCallBlock
 
-	// If no wire tool calls were accumulated, inspect the visible text for fallback tool calls
-	if len(s.callOrder) == 0 && visibleText != "" {
+	// If no wire tool calls were accumulated, inspect the visible text for
+	// fallback tool calls — but only for a server declared not to parse them.
+	// A server that does parse them (every hosted provider) never leaves a call
+	// in the text, so anything in the text that looks like one is the model
+	// quoting an example, and running it would execute prose.
+	if s.textFallback && len(s.callOrder) == 0 && visibleText != "" {
 		cleaned, extracted, format := extractFallbackToolCalls(visibleText, s.tools)
 		if len(extracted) > 0 {
 			visibleText = cleaned
@@ -596,7 +625,10 @@ func (s *stream) Response() (llm.Response, error) {
 			})
 			continue
 		}
-		args := sanitizeJSONArguments(acc.args.String())
+		args, repaired := sanitizeJSONArgumentsReport(acc.args.String())
+		if repaired {
+			s.repaired = true
+		}
 		if !json.Valid(args) {
 			s.malformed = append(s.malformed, MalformedCall{
 				ID:   llm.CallID(acc.id),
@@ -639,6 +671,7 @@ func (s *stream) Response() (llm.Response, error) {
 		MaxTokensApplied: s.maxTokensApplied,
 		Decoding: llm.DecodingReport{
 			FallbackFormat:        string(s.fallbackFormat),
+			ArgumentsRepaired:     s.repaired,
 			ReasoningReclassified: s.filter.prefillSuspected,
 			PrefillDisproved:      s.filter.prefillDisproved,
 		},
@@ -647,6 +680,14 @@ func (s *stream) Response() (llm.Response, error) {
 }
 
 func (s *stream) Close() error { return s.sse.Close() }
+
+// UsageSoFar reports the usage the stream had seen, answering
+// budget.UsageReporter. A prompt count is only trustworthy once the server has
+// sent one, so a stream that reported none answers false and the caller keeps
+// the worst-case reservation.
+func (s *stream) UsageSoFar() (llm.Usage, bool) {
+	return s.usage, s.usage.InputTokens > 0
+}
 
 func mapFinishReason(raw string) llm.StopReason {
 	switch raw {

@@ -244,11 +244,16 @@ type DecodingReport struct {
 	// response; left in place it deletes answers, so it is surfaced rather
 	// than compensated for in silence.
 	PrefillDisproved bool `json:"prefill_disproved,omitempty"`
+	// ArgumentsRepaired reports that a tool call's arguments were not valid
+	// JSON as received and were rewritten to be — a code fence stripped, a
+	// Python literal or trailing comma repaired — so the tool ran on arguments
+	// the model did not literally send.
+	ArgumentsRepaired bool `json:"arguments_repaired,omitempty"`
 }
 
 // Clean reports whether the response decoded without compensating for anything.
 func (d DecodingReport) Clean() bool {
-	return d.FallbackFormat == "" && !d.ReasoningReclassified && !d.PrefillDisproved
+	return d.FallbackFormat == "" && !d.ReasoningReclassified && !d.PrefillDisproved && !d.ArgumentsRepaired
 }
 
 // Response is the settled result of a stream.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -48,6 +49,11 @@ func New(baseURL string, resolve func() (credentials.Secret, error)) *Adapter {
 	})
 	return &Adapter{client: client}
 }
+
+// SetResponseHeaderTimeout sets how long a request may wait for response
+// headers before it is abandoned and retried. Zero disables the bound; see
+// transport.Client.ResponseHeaderTimeout.
+func (a *Adapter) SetResponseHeaderTimeout(d time.Duration) { a.client.ResponseHeaderTimeout = d }
 
 // Name identifies the adapter.
 func (a *Adapter) Name() string { return Name }
@@ -403,8 +409,12 @@ type stream struct {
 
 	usage      llm.Usage
 	stopReason llm.StopReason
-	done       bool
-	failure    error
+	// completed is set by interaction.completed, the event that carries the
+	// interaction's final status and usage. With the `done` event it is one of
+	// the two ways this wire says a stream is whole.
+	completed bool
+	done      bool
+	failure   error
 
 	nextIndex int
 	textIndex int
@@ -688,6 +698,13 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				s.done = true
+				// A connection that closes before interaction.completed or
+				// done is a truncated interaction, not a finished one: its
+				// content is a prefix and its usage was never reported.
+				if !s.completed && !s.sse.Terminated() {
+					s.failure = transport.TruncatedStream(Name, "interaction.completed")
+					return llm.Chunk{}, s.failure
+				}
 			} else {
 				// A stream that died mid-flight settles as that failure, so
 				// Response reports the server's silence instead of blaming
@@ -821,7 +838,11 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 
 	switch kind {
 	case EventInteractionCompleted:
+		s.completed = true
 		if ev.Interaction != nil {
+			if err := failedStatus(ev.Interaction.Status); err != nil {
+				return llm.Chunk{}, false, err
+			}
 			if u := ev.Interaction.Usage; u != nil {
 				s.usage.InputTokens = u.TotalInputTokens
 				s.usage.OutputTokens = u.TotalOutputTokens
@@ -839,6 +860,9 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 		// notice on a stream that reports its ending this way. A non-terminal
 		// status is left alone so an in_progress frame cannot overwrite a
 		// stop reason already settled by a completion frame.
+		if err := failedStatus(ev.Status); err != nil {
+			return llm.Chunk{}, false, err
+		}
 		if stop := mapStatus(ev.Status); stop != llm.StopOther {
 			s.stopReason = stop
 		}
@@ -1178,6 +1202,15 @@ func (s *stream) Response() (llm.Response, error) {
 		msg.Content = append(msg.Content, llm.TextBlock{Text: s.text.String()})
 	}
 	for _, acc := range s.order {
+		// An empty argument list is believed only for a call the stream framed
+		// as complete with step.stop. One that was never closed and carries no
+		// argument bytes is a call whose arguments did not arrive, and turning
+		// it into `{}` runs the tool on arguments nobody sent.
+		if !acc.sealed && acc.args.Len() == 0 {
+			return llm.Response{}, fmt.Errorf(
+				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
+					"it was not dispatched", acc.name)
+		}
 		args := json.RawMessage(acc.args.String())
 		if len(args) == 0 {
 			args = json.RawMessage("{}")
@@ -1287,6 +1320,18 @@ func signatureFor(msg llm.Message, id llm.CallID) string {
 }
 
 func (s *stream) Close() error { return s.sse.Close() }
+
+// failedStatus turns an interaction that ended in failure into an error that
+// names the status. A failed or cancelled interaction carries whatever content
+// it had produced before it stopped; settling that as an answer is how a
+// prefix of one reads as the whole.
+func failedStatus(status string) error {
+	switch status {
+	case "failed", "cancelled":
+		return fmt.Errorf("gemini: the interaction ended with status %q; its partial output was not used", status)
+	}
+	return nil
+}
 
 func mapStatus(status string) llm.StopReason {
 	switch status {

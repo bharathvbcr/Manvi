@@ -102,7 +102,9 @@ func (e *Error) Error() string {
 	if e.Body != "" {
 		fmt.Fprintf(&b, ": %s", e.Body)
 	}
-	if e.Err != nil {
+	if e.Err != nil && e.Err.Error() != e.Body {
+		// Not repeated when it is the body's own text, which is what
+		// StreamFailure builds: the same sentence twice reads as two faults.
 		fmt.Fprintf(&b, ": %v", e.Err)
 	}
 	return b.String()
@@ -220,6 +222,93 @@ type Client struct {
 	// RequestIDHeader names the response header carrying the provider's trace
 	// id, so failures are reportable to that provider's support.
 	RequestIDHeader string
+	// ResponseHeaderTimeout bounds the wait between sending a request and
+	// receiving the response headers. It is a time-to-first-byte bound, not a
+	// bound on the response: it stops running the moment headers arrive, so a
+	// healthy stream of any length is never cut off by it. Zero disables it,
+	// which leaves the caller's context as the only bound.
+	//
+	// New sets DefaultHostedHeaderTimeout for a hosted endpoint and
+	// DefaultFirstTokenTimeout for a loopback one, whose server may send no
+	// headers until prefill is done. A timeout is reported as ErrHeaderTimeout
+	// and is retryable like any other transport fault.
+	ResponseHeaderTimeout time.Duration
+}
+
+// DefaultHostedHeaderTimeout is how long a hosted provider may take to answer
+// with response headers. Hosted streaming APIs send headers as soon as a
+// request is accepted, so this only has to clear a slow connection or a
+// queueing front end, not generation.
+const DefaultHostedHeaderTimeout = DefaultHostedStallTimeout
+
+// ErrHeaderTimeout reports that a server accepted a request and then sent no
+// response headers within the client's ResponseHeaderTimeout.
+type ErrHeaderTimeout struct {
+	After time.Duration
+}
+
+func (e *ErrHeaderTimeout) Error() string {
+	return fmt.Sprintf("the server sent no response headers within %s of receiving the request; "+
+		"the connection was abandoned (raise the response header timeout for a server that "+
+		"queues requests before it answers)", e.After)
+}
+
+// Timeout reports that this is a timeout, so callers classifying errors treat it
+// as one.
+func (e *ErrHeaderTimeout) Timeout() bool { return true }
+
+// send issues one request under the client's response-header bound.
+//
+// The bound is a timer that cancels the request's own derived context, stopped
+// the instant Do returns. Cancelling is the only way to abandon a request that
+// is blocked in the runtime's poller, and stopping on return is what keeps the
+// bound from ever reaching the body: the derived context outlives Do and is
+// released when the caller closes the body, so a long healthy stream is not
+// subject to it.
+func (c *Client) send(ctx context.Context, req *http.Request) (*http.Response, error) {
+	limit := c.ResponseHeaderTimeout
+	if limit <= 0 {
+		return c.HTTP.Do(req)
+	}
+	reqCtx, cancel := context.WithCancelCause(ctx)
+	timer := time.AfterFunc(limit, func() { cancel(&ErrHeaderTimeout{After: limit}) })
+	resp, err := c.HTTP.Do(req.WithContext(reqCtx))
+	fired := !timer.Stop()
+	if fired {
+		// The timer won the race against the headers. The body belongs to a
+		// cancelled context and cannot be read; report the timeout.
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		cause := context.Cause(reqCtx)
+		cancel(nil)
+		var timeout *ErrHeaderTimeout
+		if errors.As(cause, &timeout) {
+			return nil, timeout
+		}
+		if err == nil {
+			err = cause
+		}
+		return nil, err
+	}
+	if err != nil {
+		cancel(nil)
+		return nil, err
+	}
+	resp.Body = &releaseOnClose{ReadCloser: resp.Body, release: func() { cancel(nil) }}
+	return resp, nil
+}
+
+// releaseOnClose frees a request's derived context when its body is closed.
+type releaseOnClose struct {
+	io.ReadCloser
+	release func()
+}
+
+func (r *releaseOnClose) Close() error {
+	err := r.ReadCloser.Close()
+	r.release()
+	return err
 }
 
 // LocalLoopbackTransport builds an http.Transport optimized for local loopback
@@ -333,8 +422,13 @@ func hostedTransport() http.RoundTripper {
 // New builds a client with sane defaults.
 func New(provider, baseURL string, header func() (http.Header, error)) *Client {
 	tr := hostedTransport()
+	headerTimeout := DefaultHostedHeaderTimeout
 	if isLoopbackURL(baseURL) {
 		tr = sharedLoopback()
+		// A local server may send no headers until prefill is finished, and
+		// prefill scales with prompt length, so the first-token budget is the
+		// bound that does not kill a healthy cold request.
+		headerTimeout = DefaultFirstTokenTimeout
 	}
 
 	return &Client{
@@ -347,9 +441,10 @@ func New(provider, baseURL string, header func() (http.Header, error)) *Client {
 			Timeout:   0,
 			Transport: tr,
 		},
-		Retry:           DefaultRetryPolicy(),
-		Header:          header,
-		RequestIDHeader: "request-id",
+		Retry:                 DefaultRetryPolicy(),
+		Header:                header,
+		RequestIDHeader:       "request-id",
+		ResponseHeaderTimeout: headerTimeout,
 	}
 }
 
@@ -468,7 +563,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 	if err := ctx.Err(); err != nil {
 		return nil, &Error{Provider: c.Provider, Err: err, cancelled: true, notSent: true}
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, req)
 	if err != nil {
 		// Distinguish the caller's cancellation from a network fault: the first
 		// is a decision, not a failure, and retrying it cannot succeed while
@@ -540,6 +635,12 @@ type SSE struct {
 	// Empty means the stream ends only at EOF.
 	Done string
 	err  error
+
+	// doneSeen records that the Done sentinel itself ended the stream, as
+	// opposed to the connection simply closing. Both surface from Next as
+	// io.EOF; this is how a caller tells a finished stream from a truncated
+	// one. See Terminated.
+	doneSeen bool
 
 	// watchdog bounds silence, not the length of the stream.
 	//
@@ -1026,6 +1127,24 @@ func (r *payloadReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Terminated reports whether the stream ended because the Done sentinel
+// arrived, rather than because the connection closed.
+//
+// Next returns io.EOF for both, and a decoder that treats every io.EOF as a
+// finished stream settles a truncated one as a success: the half-received tool
+// call runs and the usage is recorded as zero. A decoder whose provider has a
+// sentinel reads this at EOF; a provider that ends with a terminal event of its
+// own (anthropic's message_stop, gemini's interaction.completed) tracks that
+// event itself and reports a missing one with TruncatedStream.
+//
+// Always false for a stream built without a Done sentinel.
+func (s *SSE) Terminated() bool { return s.doneSeen }
+
+// isDone reports whether an assembled event payload is the Done sentinel.
+func (s *SSE) isDone(data []byte) bool {
+	return s.Done != "" && string(bytes.TrimSpace(data)) == s.Done
+}
+
 // Next returns the next event, or io.EOF when the stream ends.
 func (s *SSE) Next() (Event, error) {
 	if s.err != nil {
@@ -1058,6 +1177,11 @@ func (s *SSE) next() (Event, error) {
 			if err == io.EOF && len(data) > 0 {
 				// A final event without its terminating blank line.
 				event.Data = data
+				if s.isDone(data) {
+					s.doneSeen = true
+					s.err = io.EOF
+					return Event{}, io.EOF
+				}
 				return event, nil
 			}
 			s.err = err
@@ -1072,7 +1196,8 @@ func (s *SSE) next() (Event, error) {
 				continue // keep-alive or padding
 			}
 			event.Data = data
-			if s.Done != "" && string(bytes.TrimSpace(data)) == s.Done {
+			if s.isDone(data) {
+				s.doneSeen = true
 				s.err = io.EOF
 				return Event{}, io.EOF
 			}
@@ -1115,7 +1240,8 @@ func (s *SSE) next() (Event, error) {
 			if err == io.EOF && (len(data) > 0 || event.Name != "") {
 				event.Data = data
 				s.err = io.EOF
-				if s.Done != "" && string(bytes.TrimSpace(data)) == s.Done {
+				if s.isDone(data) {
+					s.doneSeen = true
 					return Event{}, io.EOF
 				}
 				return event, nil
@@ -1240,7 +1366,7 @@ func (c *Client) Probe(ctx context.Context, method, url string, payload []byte) 
 			}
 		}
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, req)
 	if err != nil {
 		return nil, &Error{Provider: c.Provider, Err: err}
 	}

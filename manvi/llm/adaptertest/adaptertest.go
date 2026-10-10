@@ -192,3 +192,36 @@ func ReasoningOf(chunks []llm.Chunk) string {
 
 // Ctx is a background context, for brevity at call sites.
 func Ctx() context.Context { return context.Background() }
+
+// TruncationCase is one stream that ends before its provider's terminal event.
+type TruncationCase struct {
+	// Name labels the case, usually the provider.
+	Name string
+	// Provider is built against the scripted server's URL.
+	Provider func(baseURL string) llm.Provider
+	Request  llm.Request
+	// Body is the raw stream, which must end after a tool call opened and
+	// before the wire's own terminal event.
+	Body string
+}
+
+// AssertTruncatedCallIsNeverDispatched is the one rule every decoder owes: a
+// stream that ends without its terminal event is an error, and a tool call it
+// had begun is never surfaced — in particular never as `{}` because its
+// arguments had not arrived yet. It is stated here so the three wires are held
+// to one assertion rather than to three that drift.
+func AssertTruncatedCallIsNeverDispatched(t *testing.T, c TruncationCase) {
+	t.Helper()
+	server := NewServer(t, c.Body)
+	stream, err := c.Provider(server.URL).Stream(Ctx(), c.Request)
+	if err != nil {
+		return // refused when opened: nothing was dispatched
+	}
+	_, resp, err := Drain(stream)
+	if err == nil {
+		t.Fatalf("%s: truncated stream settled: stop=%s calls=%d", c.Name, resp.StopReason, len(resp.Message.ToolCalls()))
+	}
+	if calls := resp.Message.ToolCalls(); len(calls) > 0 {
+		t.Fatalf("%s: error %v but %d call(s) were still returned: %s", c.Name, err, len(calls), calls[0].Arguments)
+	}
+}

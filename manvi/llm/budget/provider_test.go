@@ -341,3 +341,74 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
 		t.Fatalf("retained %+v, want the prompt-bounded %d", s, bound)
 	}
 }
+
+// A stream that ends with no terminal event and no usage settles at the
+// worst-case reservation: never zero, and never as a success.
+func TestATruncatedStreamWithNoUsageKeepsTheWorstCaseReservation(t *testing.T) {
+	l := ledger(t, 1_000_000_000)
+	const cut = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half an ans"}}
+
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, cut)
+	}))
+	defer server.Close()
+	p := &budget.Provider{Inner: anthropic.New(server.URL, adaptertest.Secret("fixture-key")), Ledger: l}
+	stream, err := p.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for {
+		if _, streamErr = stream.Next(); streamErr != nil {
+			break
+		}
+	}
+	if streamErr == nil || errors.Is(streamErr, io.EOF) {
+		t.Fatalf("truncation surfaced as %v, want a failure", streamErr)
+	}
+	if _, err := stream.Response(); err == nil {
+		t.Fatal("a truncated stream produced a response")
+	}
+	stream.Close()
+	s := snapshot(t, l)
+	if s.SpentNanoUSD != 0 || s.Settled != 0 || s.RetainedAttempts != 1 || s.RetainedNanoUSD <= 0 || len(s.InFlight) != 0 {
+		t.Fatalf("snapshot = %+v, want the whole reservation retained and nothing settled", s)
+	}
+}
+
+// An in-stream overloaded_error before any content is retried like the 529 it
+// stands for, and the ledger keeps exactly one retained attempt for the
+// refused one and settles only the attempt that answered.
+func TestAnInStreamOverloadIsRetriedAndMeteredPerAttempt(t *testing.T) {
+	l := ledger(t, 1_000_000_000)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls.Add(1) == 1 {
+			_, _ = io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, turnSSE)
+	}))
+	defer server.Close()
+	inner := anthropic.New(server.URL, adaptertest.Secret("fixture-key"))
+	p := &budget.Provider{Inner: inner, Ledger: l}
+	stream, err := p.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := snapshot(t, l)
+	if calls.Load() != 2 || s.Settled != 1 || s.SpentNanoUSD != turnCost || s.RetainedAttempts != 1 || len(s.InFlight) != 0 {
+		t.Fatalf("calls=%d snapshot=%+v, want one retained refusal and one settled turn of %d", calls.Load(), s, turnCost)
+	}
+}

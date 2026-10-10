@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -123,7 +124,7 @@ func (*Adapter) RejectionUnbilled(status int) bool {
 
 // AttemptGateSupported declares that every Messages API attempt, retries
 // included, goes through the shared transport admission gate: Stream's only
-// HTTP call is client.Post, which admits each attempt before sending it.
+// HTTP call is client.PostStream, which admits each attempt before sending it.
 func (*Adapter) AttemptGateSupported() bool { return true }
 
 // wire request types.
@@ -204,12 +205,22 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		return nil, err
 	}
-	resp, err := a.client.Post(ctx, MessagesPath, body)
+	// PostStream rather than Post, because a 200 is not yet a success here: the
+	// API documents that an overloaded_error can arrive as an `event: error`
+	// frame inside an otherwise healthy stream, "which would normally
+	// correspond to an HTTP 529 in a non-streaming context". The same condition
+	// as a 529 is retried, so it is retried in this form too; see preflight.
+	body2, err := a.client.PostStream(ctx, MessagesPath, body, preflight)
 	if err != nil {
 		return nil, err
 	}
-	return newStream(resp.Body, req.Model, a.AppliedMaxTokens(req)), nil
+	return newStream(body2, req.Model, a.AppliedMaxTokens(req)), nil
 }
+
+// SetResponseHeaderTimeout sets how long a request may wait for response
+// headers before it is abandoned and retried. Zero disables the bound; see
+// transport.Client.ResponseHeaderTimeout.
+func (a *Adapter) SetResponseHeaderTimeout(d time.Duration) { a.client.ResponseHeaderTimeout = d }
 
 // AppliedMaxTokens is the bound this adapter will actually send. Kept apart
 // from Capability.MaxOutputTokens, which is the model's ceiling: this adapter
@@ -378,6 +389,9 @@ type accumulator struct {
 	toolID    string
 	toolName  string
 	args      strings.Builder
+	// sealed is set by content_block_stop, the event that says this block's
+	// content (a tool call's arguments in particular) is complete.
+	sealed bool
 }
 
 func newStream(body io.ReadCloser, model string, maxTokensApplied int) *stream {
@@ -439,6 +453,15 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				s.done = true
+				// message_stop is the only event that says the message is
+				// whole. A connection that closes without it is a truncated
+				// response, reported here so it never settles as one: Response
+				// would fail anyway, but a consumer that stops at EOF must not
+				// mistake the prefix for the answer.
+				if !s.stopped {
+					s.failure = transport.TruncatedStream(Name, "message_stop")
+					return llm.Chunk{}, s.failure
+				}
 			} else {
 				// A stream that died mid-flight settles as that failure.
 				// Without this the reader's error is known only to whoever
@@ -599,7 +622,13 @@ func (s *stream) apply(ev wireEvent) (llm.Chunk, bool, error) {
 		s.stopped = true
 		return llm.Chunk{}, false, nil
 
-	case EventContentBlockStop, EventPing:
+	case EventContentBlockStop:
+		if acc := s.blocks[ev.Index]; acc != nil {
+			acc.sealed = true
+		}
+		return llm.Chunk{}, false, nil
+
+	case EventPing:
 		return llm.Chunk{}, false, nil
 
 	default:
@@ -625,7 +654,7 @@ func (s *stream) Response() (llm.Response, error) {
 	// so assembling a Response would hand the agent a truncated turn and the
 	// budget an under-counted charge.
 	if !s.stopped {
-		return llm.Response{}, errors.New("anthropic: the stream ended before message_stop; the response is incomplete")
+		return llm.Response{}, transport.TruncatedStream(Name, "message_stop")
 	}
 
 	msg := llm.Message{
@@ -681,6 +710,17 @@ func (s *stream) Response() (llm.Response, error) {
 				// parse is the failure this guards against.
 				return llm.Response{}, fmt.Errorf(
 					"anthropic: tool call %q arrived with incomplete arguments: %q", acc.toolName, args)
+			}
+			// A call is complete when its block was sealed by content_block_stop.
+			// An unsealed block means the stream lost the event that frames the
+			// arguments, so whatever arrived is a prefix; running it is how a
+			// half-received call becomes `{}`. A sealed call that took no
+			// arguments is legitimately empty and is the only way `{}` appears.
+			if !acc.sealed {
+				return llm.Response{}, fmt.Errorf(
+					"anthropic: tool call %q (id %q) was never closed by content_block_stop; "+
+						"its arguments may be incomplete and it was not dispatched",
+					acc.toolName, acc.toolID)
 			}
 			msg.Content = append(msg.Content, llm.ToolCallBlock{
 				ID: llm.CallID(acc.toolID), Name: acc.toolName, Arguments: args,

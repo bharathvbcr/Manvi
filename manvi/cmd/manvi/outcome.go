@@ -222,6 +222,13 @@ func outcomeNotices(o agent.Outcome, maxSteps int) []outcomeNotice {
 				Degraded: []string{"reasoning tag corrected"},
 			})
 		}
+		if o.Decoding.ArgumentsRepaired {
+			out = append(out, outcomeNotice{
+				Text: "a tool call's arguments were not valid JSON as the model sent them and were " +
+					"rewritten before the tool ran",
+				Degraded: []string{"tool call arguments repaired"},
+			})
+		}
 	}
 	if o.Denied > 0 {
 		out = append(out, outcomeNotice{
