@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
@@ -102,10 +106,11 @@ func TestPlaceResolvesRolePlacements(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := runnerWith(t, "claude-opus-4-5", frontier, local)
-			provider, model, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: tc.spec})
+			placed, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: tc.spec})
 			if err != nil {
 				t.Fatalf("place(%q): %v", tc.spec, err)
 			}
+			provider, model := placed.provider, placed.model
 			if provider.Name() != tc.wantProvider || model != tc.wantModel {
 				t.Fatalf("place(%q) = %s/%s, want %s/%s",
 					tc.spec, provider.Name(), model, tc.wantProvider, tc.wantModel)
@@ -121,7 +126,7 @@ func TestPlaceRefusesAnUnregisteredProvider(t *testing.T) {
 	frontier := &stubProvider{name: "anthropic", serves: []string{"claude-opus-4-5"}}
 	r, _ := runnerWith(t, "claude-opus-4-5", frontier)
 
-	_, _, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: "local/qwen3-27b-mlx"})
+	_, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: "local/qwen3-27b-mlx"})
 	if err == nil {
 		t.Fatal("a role naming an unenabled provider was accepted")
 	}
@@ -141,7 +146,7 @@ func TestPlaceRefusesAModelTheProviderDoesNotServe(t *testing.T) {
 	local := &stubProvider{name: "local", serves: []string{"qwen3-27b-mlx"}}
 	r, _ := runnerWith(t, "claude-opus-4-5", frontier, local)
 
-	_, _, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: "local"})
+	_, err := r.place(r.cfg, devcouncil.SubAgentRequest{Label: "w", ModelSpec: "local"})
 	if err == nil {
 		t.Fatal("a placement onto a provider that cannot serve the model was accepted")
 	}
@@ -179,6 +184,75 @@ func TestRoleModelAndPromptReachTheWire(t *testing.T) {
 	if got.System != "ROLE PROMPT" {
 		t.Errorf("wire system prompt = %q, want the role's prompt", got.System)
 	}
+
+	// The tier router reaches the wire as well: one mixed fan-out, dispatched
+	// through the real tool, sends the builder to the heavy tier's model and
+	// each of seven research children — a fan-out wide enough for basic — to
+	// the basic tier's model, each under its own role's prompt.
+	t.Run("mixed fan-out", func(t *testing.T) {
+		flagReg, err := flags.NewHarnessRegistry("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pipeline, err := nativeTools(flagReg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runner, _ := harnessFor(pipeline)
+		if runner == nil {
+			t.Fatal("the native surface has no sub-agent runner attached")
+		}
+		p := &tierProvider{name: "anthropic", reasons: map[string][]string{
+			"main-model": reasoningLevels, "heavy-model": reasoningLevels,
+			"lite-model": reasoningLevels, "basic-model": reasoningLevels,
+		}}
+		models := llm.NewRegistry()
+		if err := models.Register(p); err != nil {
+			t.Fatal(err)
+		}
+		runner.attach(subAgentConfig{
+			provider: p, models: models, model: "main-model",
+			tiers: agents.TierProfile{
+				agents.TierHeavy: {Model: "heavy-model"},
+				agents.TierLite:  {Model: "lite-model"},
+				agents.TierBasic: {Model: "basic-model"},
+			},
+			registry: pipeline, systemPrompt: "PARENT PROMPT",
+		})
+
+		subs := []map[string]any{{"type_name": "builder", "role": "builder", "prompt": "build it"}}
+		for i := 0; i < 7; i++ {
+			subs = append(subs, map[string]any{"type_name": "research", "role": "research", "prompt": "survey it"})
+		}
+		raw, err := json.Marshal(map[string]any{"subagents": subs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := pipeline.Run(context.Background(), tools.Call{ID: "c1", Name: "devcouncil_invoke_subagent", Arguments: raw})
+		if res.IsError {
+			t.Fatalf("invoke_subagent: %s", res.Text)
+		}
+
+		byModel := map[string]int{}
+		for _, req := range p.requests() {
+			byModel[req.Model]++
+			switch req.Model {
+			case "heavy-model":
+				if !strings.Contains(req.System, "feature builder") {
+					t.Errorf("the heavy-tier request is not the builder's: %q", req.System)
+				}
+			case "basic-model":
+				if !strings.Contains(req.System, "research subagent") {
+					t.Errorf("a basic-tier request is not a researcher's: %q", req.System)
+				}
+			default:
+				t.Errorf("a child reached the wire on %q", req.Model)
+			}
+		}
+		if byModel["heavy-model"] != 1 || byModel["basic-model"] != 7 {
+			t.Fatalf("requests by model = %v, want 1 on heavy-model and 7 on basic-model", byModel)
+		}
+	})
 }
 
 // A child with no role prompt inherits the parent's. The "self" role and the

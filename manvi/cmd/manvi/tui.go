@@ -246,6 +246,7 @@ func (h *harnessHost) Commands() []tui.CommandSpec {
 		{Name: "doctor", Summary: "configuration, store reachability, and weakened gates"},
 		{Name: "flags", Args: "[--all] | set KEY VALUE", Summary: "settings, their values, where each came from, and how to move one"},
 		{Name: "providers", Summary: "model backends and whether each one is usable"},
+		{Name: "agents", Summary: "sub-agent roles, the tier each runs on, and that tier's model"},
 		{Name: "budget", Summary: "Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD"},
 		{Name: "local", Args: "[--resolve] [--timeout DURATION]", Summary: "find local model servers and what they serve"},
 		{Name: "pull", Summary: "fast-forward the current branch; refuses a dirty tree", Mutating: true},
@@ -557,6 +558,8 @@ func (h *harnessHost) runCommand(ctx context.Context, s *tuiSession, sessionID, 
 		return flagsCommand(out, h.reg, fields, surfaceSession)
 	case "providers":
 		return "", showProviders(out, h.reg)
+	case "agents":
+		return "", showAgents(out, h.reg)
 	case "budget":
 		return "", budgetCommand(out, fields)
 	case "local":
@@ -884,6 +887,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		check: &sensor{
 			native: s.native, log: s.log, flags: h.reg,
 			runner:  subRunner,
+			roles:   s.native.Roles(),
 			command: operatorVerifyCommand(),
 		},
 	}, turnDeps{
@@ -978,6 +982,7 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 			model:           at.model,
 			effort:          at.effort,
 			effortCeiling:   at.effortCeiling,
+			tiers:           sessionTierProfile(at.provider.Name()),
 			registry:        s.pipeline,
 			native:          s.native,
 			meter:           s.subMeter,
