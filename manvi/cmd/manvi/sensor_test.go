@@ -443,3 +443,53 @@ func TestSensorWithNoVerifierIsDegraded(t *testing.T) {
 		t.Fatalf("verdict = %q with no verifier attached, want degraded", e.Verdict)
 	}
 }
+
+// A failed check bounces and the loop re-checks inside the same turn, with no
+// new TurnStarting. The baseline belongs to the turn, not to the first read:
+// consumed on read, the re-check ran with "no pre-turn baseline was recorded"
+// and could never be anything but degraded.
+func TestBounceRecheckKeepsTheTurnsBaseline(t *testing.T) {
+	v := &fakeVerifier{
+		queue: []devcouncil.PathReport{
+			{Verdict: devcouncil.VerdictFailed, Findings: []string{"x"}},
+			{Verdict: devcouncil.VerdictPassed},
+		},
+		baseline: devcouncil.Baseline{Tree: "deadbeef"},
+	}
+	s, _ := newSensor(t, v)
+	if err := s.begin(context.Background(), &agent.TurnStarting{Turn: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for bounce := 0; bounce < 2; bounce++ {
+		e := &agent.TurnStopping{Turn: 1, Bounce: bounce, Mutated: true, Wrote: []string{"a.go"}}
+		if err := s.check(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+		if v.gotBaseline.Tree != "deadbeef" {
+			t.Fatalf("check %d (bounce %d, same turn) ran against baseline %+v, want the turn's captured tree",
+				bounce+1, bounce, v.gotBaseline)
+		}
+		if bounce == 1 && e.Verdict != agent.SensorPassed {
+			t.Fatalf("re-check verdict = %q, want passed", e.Verdict)
+		}
+	}
+}
+
+// A new TurnStarting replaces the baseline; a turn that never started has none
+// even when an earlier turn did.
+func TestBaselineFollowsTheTurnNumber(t *testing.T) {
+	v := &fakeVerifier{report: devcouncil.PathReport{Verdict: devcouncil.VerdictPassed},
+		baseline: devcouncil.Baseline{Tree: "turn1"}}
+	s, _ := newSensor(t, v)
+	_ = s.begin(context.Background(), &agent.TurnStarting{Turn: 1})
+	v.baseline = devcouncil.Baseline{Tree: "turn2"}
+	_ = s.begin(context.Background(), &agent.TurnStarting{Turn: 2})
+	_ = s.check(context.Background(), &agent.TurnStopping{Turn: 2, Mutated: true, Wrote: []string{"a.go"}})
+	if v.gotBaseline.Tree != "turn2" {
+		t.Fatalf("turn 2 checked against %+v", v.gotBaseline)
+	}
+	_ = s.check(context.Background(), &agent.TurnStopping{Turn: 3, Mutated: true, Wrote: []string{"a.go"}})
+	if v.gotBaseline.Captured() || v.gotBaseline.Note == "" {
+		t.Fatalf("turn 3 never started and must not inherit a baseline: %+v", v.gotBaseline)
+	}
+}

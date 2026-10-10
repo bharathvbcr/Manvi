@@ -179,6 +179,16 @@ func TestClaudeProtocolChild(t *testing.T) {
 				initFrame("default")
 				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_1"}}`)
 				continue
+			case "withdrawn":
+				// The CLI offers a permission request and then withdraws it,
+				// the shape it uses when the tool call stopped needing a
+				// decision (for instance a rule or hook answered first).
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"about to run"}]},"uuid":"u1"}`, session)
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]},"uuid":"u2"}`, session)
+				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo hi"},"tool_use_id":"toolu_1","decision_reason_type":"rule"}}`)
+				emit(`{"type":"control_cancel_request","request_id":"req-1"}`)
+				continue
 			case "permission":
 				initFrame("default")
 				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"about to run"}]},"uuid":"u1"}`, session)
@@ -638,5 +648,59 @@ func TestClaudeSessionIdentityIsAUniqueUUID(t *testing.T) {
 			t.Fatalf("session identity repeated: %q", id)
 		}
 		seen[id] = true
+	}
+}
+
+// A control_cancel_request withdraws the permission request it names. The
+// adapter reported nothing for it, so the callback stayed pending and live in
+// the host's queue, and a later human answer was written to a request the CLI
+// had already cancelled.
+func TestClaudeWithdrawnApprovalIsReportedAndRefusesAnswers(t *testing.T) {
+	s := openFixture(t, "withdrawn", "ask")
+	if err := s.StartTurn(t.Context(), "Run something"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, request := collect(t, s)
+	if request == nil {
+		t.Fatal("no approval was captured")
+	}
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	e, err := s.Next(ctx)
+	if err != nil || e.CancelledID != request.ID {
+		t.Fatalf("the withdrawal was not reported: event %+v, error %v", e, err)
+	}
+	if err := s.Respond(t.Context(), *request, Response{Decision: "allow_once"}); !errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("an answer to a withdrawn request was not refused as withdrawn: %v", err)
+	}
+}
+
+// The withdrawal can arrive while the host is validating the human's answer;
+// preflight reads it, and must say withdrawn rather than stale, and still
+// surface the event to the next read.
+func TestClaudeWithdrawalSeenDuringPreflightIsNamedAndNotLost(t *testing.T) {
+	s := openFixture(t, "withdrawn", "ask")
+	if err := s.StartTurn(t.Context(), "Run something"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, request := collect(t, s)
+	if request == nil {
+		t.Fatal("no approval was captured")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var err error
+	for time.Now().Before(deadline) {
+		if err = s.ValidateResponse(*request, Response{Decision: "allow_once"}); errors.Is(err, ErrCallbackWithdrawn) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("validation of a withdrawn request: %v", err)
+	}
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	if e, err := s.Next(ctx); err != nil || e.CancelledID != request.ID {
+		t.Fatalf("the withdrawal read during preflight was lost: %+v %v", e, err)
 	}
 }

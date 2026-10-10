@@ -485,8 +485,11 @@ func invokeTask(s invokeRequest, known bool, req SubAgentRequest,
 			// completed work is exactly the fabrication this file exists to
 			// prevent.
 			if err := inst.SetState(agents.StateCompleted, "done"); err != nil {
-				return leftBehind(out), fmt.Errorf(
-					"sub-agent %q was terminated before it could report its work: %w", s.Role, err)
+				// Errored, not left in canceling: nothing else moves a
+				// canceling child on, so it would stay listed as terminating
+				// forever and a later kill would "terminate" it again.
+				return leftBehind(out), recordFailure(inst, fmt.Errorf(
+					"sub-agent %q was terminated before it could report its work: %w", s.Role, err))
 			}
 			outcome := completedOutcome(out)
 			outcome["conversation_id"] = convID

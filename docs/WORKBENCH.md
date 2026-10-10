@@ -362,7 +362,10 @@ separate facts. Model completion never moves or accepts the task.
 Limits: 64 active managed sessions per runner (`MaxManagedSessions`, equal to
 the store's ceiling, so it never refuses a run the store admitted under the
 host's limit); a 45-minute turn budget; 256 KiB protocol
-frames; 32 MiB stdout and 64 KiB discarded stderr; 32 pending callbacks and 2,048
+frames; 32 MiB stdout per session (cumulative over the whole session and
+counting every frame the provider writes, including tool results the run does
+not record; a session that reads a great deal can reach it, and its failure
+reason says so) and 64 KiB discarded stderr; 32 pending callbacks and 2,048
 callback IDs per connection; a 64 KiB complete request; 128 KiB retained output
 and 64 KiB effective configuration. Run history excludes the latter two fields;
 GitPulse loads one detailed record on demand. Output truncation is explicit.
