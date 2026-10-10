@@ -18,12 +18,7 @@ from mh.pool import (CONFIG_FLAGS, PROTOCOL_KEYS, arm_drift, arms_drift, config_
                      unseeded_cells)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PASS, FAIL = [], []
-
-
-def check(name, cond, detail=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"  {detail}" if not cond and detail else ""))
+from mh.checks import FAIL, PASS, check  # noqa: E402
 
 
 # A complete protocol block, as run.py now writes one.

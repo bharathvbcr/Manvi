@@ -303,5 +303,5 @@ if __name__ == "__main__":
             interval = float(args[i + 1])
             i += 2
         else:
-            sys.exit(f"usage: python3 -m mh.compute [--out PATH] [--interval SEC]")
+            sys.exit("usage: python3 -m mh.compute [--out PATH] [--interval SEC]")
     watch(ap_out, interval)

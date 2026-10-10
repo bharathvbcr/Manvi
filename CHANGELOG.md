@@ -392,6 +392,18 @@ under **Unreleased** in the same commit as the code.
 - `scripts/fetch-modules.sh --link-main` lets a worktree nested under the main
   checkout build: it links the main worktree's pinned siblings instead of
   cloning, and refuses to replace anything that exists.
+- Bench containment no longer leaks hidden tests and reference solutions through
+  git. The shell and the verifier's checker and worker now also cannot read the
+  git dir and common dir enclosing the benchmark (or a task), nor any other
+  worktree registered in that repository (`git_guard_roots`), so
+  `git show HEAD:bench/tasks/<t>/hidden_test.py`, `git cat-file` and
+  `git -C .. log` are refused. The verifier's worker on macOS now denies
+  network, as bwrap's `--unshare-net` already did on Linux. `containment_proves_itself`
+  probes the git dirs. The shell's own network is unchanged on both platforms.
+- Bench: the bootstrap draw is inlined (about 2.5x to 3x faster, bit-identical
+  RNG stream, pinned by a randrange oracle in `test_stats.py`); the nine copied
+  `check()` helpers are one `mh/checks.py`; `verify.sh` lints `bench/` and
+  `scripts/*.py` with ruff's F and E9 rules (NOT COVERED when ruff is absent).
 
 - Provider streams that end without their terminal event no longer settle as
   success. openaicompat/xAI (no `finish_reason` and no `[DONE]`), anthropic (no

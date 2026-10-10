@@ -3,7 +3,7 @@
 Every hypothesised failure point from DESIGN.md gets a test that would fail if the
 defence were removed. No GPU required, so this runs on every change.
 """
-import json, os, shutil, subprocess, sys, tempfile, time, traceback
+import json, os, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mh import tools as toolmod
@@ -12,12 +12,7 @@ from mh.model import Reply, _coerce_args, _extract_reasoning, _extract_tool_call
 from mh.harness import Config, Harness, gather_env_snapshot
 from mh.bench import load_tasks
 
-PASS, FAIL = [], []
-
-
-def check(name, cond, detail=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"  {detail}" if not cond and detail else ""))
+from mh.checks import FAIL, PASS, check  # noqa: E402
 
 
 class FakeClient:
@@ -193,7 +188,7 @@ check("groundfs sentence absent when off",
       h_off.initial_messages()[1]["content"])
 
 print("nativetools ablation is live")
-from mh.tools import schemas_for, FILE_TOOLS
+from mh.tools import schemas_for
 check("full surface five tools", len(schemas_for(True)) == 5)
 check("shell surface two tools",
       {s["function"]["name"] for s in schemas_for(False)} == {"run_shell", "finish"})
@@ -519,7 +514,6 @@ check("duplicate finish handled", r.passed)
 # Each block below is an exploit that worked against the pre-hardening
 # instrument. They are written as the exploit, not as a paraphrase of it.
 print("C1 interpreter startup hijack")
-import mh.bench as benchmod
 from mh.bench import model_facing, failure_labels, _file_set
 from mh.tools import BENCH_ROOT, containment_backend
 
@@ -737,6 +731,30 @@ if containment_backend() in ("sandbox-exec", "bwrap"):
 else:
     check("C6 containment is explicitly off", containment_backend() == "off")
 
+print("C6 the worker has no network on either platform (bwrap --unshare-net, seatbelt deny network*)")
+import socket as _socket
+_lsn = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+_lsn.bind(("127.0.0.1", 0)); _lsn.listen(8)
+NETPROBE = (
+    "import socket\n"
+    "try:\n"
+    "    socket.create_connection(('127.0.0.1', %d), timeout=3).close()\n"
+    "    print('MH_NET_OK')\n"
+    "except OSError as _e:\n"
+    "    print('MH_NET_DENIED')\n"
+) % _lsn.getsockname()[1]
+sbdir = tmpdir(); s_ = os.path.join(sbdir, "s"); task.materialise(s_)
+open(os.path.join(s_, "app", "invoice.py"), "w").write(NETPROBE + "\n" + ref)
+ok, out = task.verify(s_)
+wout = (task.last_record or {}).get("worker_output", "")
+check("C6 the worker still completes and reports with its network denied",
+      "MH_NET_OK" in wout or "MH_NET_DENIED" in wout, wout[:200])
+if containment_backend() in ("sandbox-exec", "bwrap"):
+    check("C6 the worker cannot open a socket to a local listener",
+          "MH_NET_DENIED" in wout and "MH_NET_OK" not in wout, wout[:200])
+    check("C6 a worker with no network still returns the checker's verdict", ok, out[:200])
+_lsn.close()
+
 print("C6 the verdict channel cannot be forged across the process split")
 # Each payload is overlaid on the BROKEN candidate and must NOT turn the failing
 # verification into a pass. This is the AUDIT C1 property, checked at the wire:
@@ -862,6 +880,58 @@ check("C5 a poisoned hidden test fails loudly instead of passing",
       (not ok) and "pinned" in out, out[:200])
 open(victim, "wb").write(before)
 check("C5 restoring the test restores verification", not rtask.verify(rsand)[0])
+
+print("C5 the enclosing repository's git dir and sibling worktrees are not a side door to the hidden tests")
+if containment_backend() in ("sandbox-exec", "bwrap") and shutil.which("git"):
+    def _g(*args, cwd):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout
+    grepo = os.path.realpath(tmpdir())
+    shutil.copytree(task.dir, os.path.join(grepo, "tasks", "cryptic"))
+    _g("init", "-q", cwd=grepo)
+    _g("add", "-f", ".", cwd=grepo)
+    _g("commit", "-q", "-m", "hidden-tests-commit", cwd=grepo)
+    gblob = _g("rev-parse", "HEAD:tasks/cryptic/hidden_test.py", cwd=grepo).strip()
+    gwt = grepo + "-sibling"
+    _g("worktree", "add", "-q", "-b", "side", gwt, cwd=grepo)
+    open(os.path.join(gwt, "SIBLING_SECRET.txt"), "w").write("sibling-secret")
+    gtask = load_tasks(["cryptic"], tasks_dir=os.path.join(grepo, "tasks"))[0]
+    gsand = os.path.join(grepo, ".work", "cryptic-full-0")
+    os.makedirs(os.path.dirname(gsand), exist_ok=True)
+    gtask.materialise(gsand)
+    gsb = Sandbox(gsand, protected_roots=gtask.guard_roots)
+    leaks = {
+        "git show HEAD:<hidden test>": (
+            f"git -C {grepo} show HEAD:tasks/cryptic/hidden_test.py", "invoice_total"),
+        "git -C .. log": ("git -C ../.. log --format=%s", "hidden-tests-commit"),
+        "git cat-file -p <hidden blob>": (
+            f"git --git-dir={grepo}/.git cat-file -p {gblob}", "invoice_total"),
+        "cat the loose object": (
+            f"cat {grepo}/.git/objects/{gblob[:2]}/{gblob[2:]} | wc -c", None),
+        "read a sibling worktree": (f"cat {gwt}/SIBLING_SECRET.txt", "sibling-secret"),
+    }
+    for _name, (_cmd, _needle) in leaks.items():
+        if _needle is None:
+            continue
+        _host = subprocess.run(["/bin/sh", "-c", _cmd], cwd=gsand,
+                               capture_output=True, text=True).stdout
+        check(f"C5 precondition: '{_name}' leaks when uncontained", _needle in _host, _host[:120])
+        got = gsb.run_shell(cmd=_cmd)
+        check(f"C5 '{_name}' is refused under containment", _needle not in got, got[:200])
+    check("C5 the sandbox is still writable beside a guarded git dir",
+          "inside" in gsb.run_shell(cmd="echo inside > ok.txt && cat ok.txt"))
+    check("C5 guard roots name the git dir and the sibling worktree",
+          os.path.join(grepo, ".git") in gtask.guard_roots and gwt in gtask.guard_roots,
+          str(gtask.guard_roots))
+    check("C5 the real bench checkout's git dir is guarded when there is one",
+          not os.path.isdir(os.path.join(os.path.dirname(BENCH_ROOT), ".git"))
+          or os.path.join(os.path.dirname(BENCH_ROOT), ".git") in task.guard_roots,
+          str(task.guard_roots))
+    shutil.rmtree(gwt, ignore_errors=True)
+else:
+    check("C5 git side-door probes need a backend and git, or an explicit opt-out",
+          containment_backend() in ("off", None))
 
 print("output caps are measured in bytes")
 body, trunc = cap_output("漢" * 40_000, 30_000)
@@ -1102,6 +1172,18 @@ else:
           "did not stop a read" not in _detail, _detail)
     check("a write into the bench tree is refused under containment",
           "did not stop a write" not in _detail, _detail)
+    from mh.tools import git_guard_roots, contained_argv
+    _gitdirs = [r for r in git_guard_roots(BENCH_ROOT)
+                if os.path.isfile(os.path.join(r, "HEAD"))]
+    if _gitdirs:
+        _argv, _ = contained_argv(["/bin/cat", os.path.join(_gitdirs[0], "HEAD")])
+        _r = subprocess.run(_argv, capture_output=True, text=True)
+        check("the default guard refuses a read of the enclosing repository's git dir",
+              _r.returncode != 0 and not _r.stdout, _r.stdout[:80])
+    else:
+        check("the bench tree has no enclosing git dir to guard (an export)",
+              not any(os.path.lexists(os.path.join(d, ".git"))
+                      for d in [BENCH_ROOT, os.path.dirname(BENCH_ROOT)]))
 
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

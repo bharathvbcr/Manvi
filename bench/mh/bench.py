@@ -34,7 +34,7 @@ import sys
 
 from . import rpc
 from .tools import (BENCH_ROOT, ContainmentUnavailable, contained_argv,
-                    run_bounded)
+                    git_guard_roots, run_bounded)
 
 # Candidate-source tells that a run tried to reach the verdict channel rather
 # than earn it. Recorded in the verification record as "tactics"; NEVER a
@@ -238,8 +238,13 @@ class Task:
 
     @property
     def guard_roots(self):
-        """Directories no sandboxed process may read or write."""
-        return (BENCH_ROOT, os.path.dirname(self.dir), self.dir)
+        """Directories no sandboxed process may read or write.
+
+        Includes the git dirs and sibling worktrees enclosing the benchmark and
+        this task: they hold every tracked hidden test and reference solution.
+        """
+        return ((BENCH_ROOT, os.path.dirname(self.dir), self.dir)
+                + git_guard_roots(BENCH_ROOT, self.dir))
 
     def materialise(self, dest):
         """Copy a pristine copy of the task into dest, and snapshot its files."""

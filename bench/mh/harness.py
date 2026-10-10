@@ -10,7 +10,6 @@ or re-scored; everything here applies to future runs only.
 """
 import hashlib
 import json
-import os
 import time
 
 from . import tools as toolmod

@@ -21,12 +21,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mh.model as M
 
-PASS, FAIL = [], []
-
-
-def check(name, cond, detail=""):
-    (PASS if cond else FAIL).append(name)
-    print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"  {detail}" if not cond and detail else ""))
+from mh.checks import FAIL, PASS, check  # noqa: E402
 
 
 class _Resp:

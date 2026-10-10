@@ -491,7 +491,7 @@ agent's `build.sh` cannot set.
 **What changed.** The released harness (`mh/rpc.py`) runs the hidden test in a
 checker process that never executes candidate code, and the candidate in a
 separate contained worker that cannot write the sandbox; they exchange typed
-JSON over a socket. The same payloads fail. The worker's macOS profile (`sandbox-exec`) is verified by the stress suite's containment probes; its Linux profile (`bwrap`) has not yet been exercised on a Linux host. Five hidden tests changed with it,
+JSON over a socket. The same payloads fail. The worker's macOS profile (`sandbox-exec`) is verified by the stress suite's containment probes; its Linux profile (`bwrap`) has not yet been exercised on a Linux host: no CI or run-host record exists of `stress_test.py` passing under `bwrap` at or after the checker/worker split (`0f8b513`). The only green ubuntu verify run whose Bench step passed (36492793839, 2026-09-28, `37cc633`) predates it, and later main runs stop at the lint ratchet before the Bench step. The Linux worker profile is therefore unverified, and so is its `--unshare-net`. Five hidden tests changed with it,
 each documented in the file:
 
 - `globmatch`, `nfa_match`, `concurrency_race`: the import ban's static scan
@@ -518,6 +518,53 @@ gate; at `82e453a` such an episode scored the gate's verdict.
 `82e453a`, and whether any episode used the channel is O5's audit. The released
 harness is not the instrument that produced the grid, and results from it are
 not comparable cell for cell.
+
+## O7 — The enclosing git repository was readable from the sandbox
+
+*Recorded 10 October 2026, from a post-hoc audit of the instrument.*
+
+**What the instrument did.** Containment denied the benchmark tree and the task
+directory, but the tree sits inside a git checkout that tracks
+`tasks/*/hidden_test.py` and `tasks/*/reference/`. `git show
+HEAD:bench/tasks/<t>/hidden_test.py` run from the model's shell returned the
+hidden test (reproduced on macOS `sandbox-exec`), and `git cat-file`,
+`git -C .. log` and any other worktree or clone of the repository were equally
+readable. The containment probe only tried a direct `cat` and a write, so it
+passed. The same audit found that the verifier's worker had network on macOS
+(`(allow default)`) and none on Linux (`--unshare-net`), so a candidate that
+touched the network was verified under different rules on the two platforms.
+
+**What changed.** `mh/tools.py:git_guard_roots` adds the enclosing git dir, its
+common dir and every other worktree registered there to the protected roots of
+the shell, the checker and the worker; the macOS worker profile now carries
+`(deny network*)`. `containment_proves_itself` probes the git dirs, and
+`stress_test.py` runs `git show`, `git cat-file`, `git -C .. log` and a
+sibling-worktree read from a sandbox inside a scratch repository, each shown to
+leak uncontained and to be refused contained. The model's own shell still has
+network on both platforms; that is unchanged and unrestricted by design (the
+task toolchain may need it).
+
+**Could published episodes have used it?** Yes in principle, for any episode run
+before this change on a host whose benchmark tree lay inside a git checkout.
+Whether any did is answered only for the logs in this checkout.
+`bench/results` (untracked) holds 1,387 episode logs with events, including 22
+`v2` episodes; the full 2,880-episode v2 grid and the `ext-cerebras` logs are
+**not** in this checkout, so no statement is made about them. In those 1,387
+episodes, 38 invoked `git` (36 with exit 0), and none ran a git command that
+names `bench/tasks`, a hidden test, a reference solution, `cat-file`, `ls-tree`
+or `.git/objects`; the git calls were status, diff and log on the sandbox's own
+files (one `git show HEAD:bqueue.py`). So there is no recorded git read of
+`bench/tasks` in the logs that could be searched.
+
+**A different leak those same logs do show.** Separately from git, in the
+pre-containment archives `run_shell`/`read_file` calls named
+`bench/tasks/<t>/hidden_test.py` or `.../reference/...` by absolute path and
+got content back in 22 episodes (tag `hard` 15, `hard-protocol1` 6, `orep` 1;
+detected by tool arguments naming those paths with an output that is not a
+refusal, not hand-read). Those directories predate `contained_argv` and are the
+frozen v1 material; none of them carries a `containment` event. This is
+recorded here because it bears on the v1 audit's "zero exploiting episodes"
+claim, and has not been adjudicated.
 
 ## What has *not* been deviated from
 

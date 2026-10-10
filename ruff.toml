@@ -1,0 +1,10 @@
+# Lint gate for the bench harness and the repo's Python scripts (verify.sh,
+# "Bench - lint"). Only F (pyflakes) and E9 (syntax/IO errors) are selected: they
+# are the rules whose findings are dead code or defects. bugbear's B904/B905/B007
+# fire on the harness's deliberate style and B023 on lambdas that run at once.
+# tasks/**/setup is deliberately broken fixture code the benchmark scores
+# candidates against; results/ is recorded output.
+extend-exclude = ["bench/tasks", "bench/results"]
+
+[lint]
+select = ["F", "E9"]
