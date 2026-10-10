@@ -111,6 +111,25 @@ func PlanEffort(capability llm.Capability, base, ceiling string) (EffortPlan, er
 	return EffortPlan{levels: levels, base: base, ceiling: ceiling, ceilingAt: ceilingAt}, nil
 }
 
+// ValidateEffort refuses an effort the model cannot honour. An empty effort is
+// always serviceable: it omits the field. A model that does not reason accepts
+// no level at all, so a tier on one must not be handed an effort — least of
+// all the parent's.
+func ValidateEffort(capability llm.Capability, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	if !capability.SupportsReasoning || len(capability.EffortLevels) == 0 {
+		return fmt.Errorf("model %s/%s does not support reasoning effort, so effort %q can never apply",
+			capability.Provider, capability.Model, effort)
+	}
+	if !slices.Contains(capability.EffortLevels, effort) {
+		return fmt.Errorf("model %s/%s supports effort %v, not %q",
+			capability.Provider, capability.Model, capability.EffortLevels, effort)
+	}
+	return nil
+}
+
 // planEffort resolves the ladder for a loop's configuration.
 //
 // A ceiling that cannot be checked is refused rather than kept as a setting

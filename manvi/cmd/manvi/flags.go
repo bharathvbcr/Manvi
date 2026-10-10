@@ -210,6 +210,7 @@ func showFlags(out io.Writer, reg *flags.Registry, args []string) error {
 		}
 		fmt.Fprintf(out, "%s %-34s %-14s %-9s %s%s\n", marker, key, value.Raw, value.Origin, def.Mutable, note)
 	}
+	writeTierRefusals(out, configPath())
 	if !all {
 		fmt.Fprintln(out, "\n(showing safety flags and anything moved off its default; --all for everything)")
 	}

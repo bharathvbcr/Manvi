@@ -300,6 +300,9 @@ type ModelSource string
 const (
 	// SourceEnv is MANVI_MODEL, named for this run.
 	SourceEnv ModelSource = "MANVI_MODEL"
+	// SourceTier is the main tier's model, llm.tier.main, which supplies the
+	// session model for a provider that serves it when MANVI_MODEL is unset.
+	SourceTier ModelSource = "llm.tier.main"
 	// SourceSetting is the provider's own standing configuration.
 	SourceSetting ModelSource = "llm.local.model"
 	// SourceDiscovered is the server's own answer: it serves exactly one model
@@ -320,6 +323,15 @@ const (
 func resolveModelFor(ctx context.Context, name string, provider llm.Provider, reg *flags.Registry) (string, ModelSource, error) {
 	if m := strings.TrimSpace(os.Getenv("MANVI_MODEL")); m != "" {
 		return m, SourceEnv, nil
+	}
+	// The tiers name Anthropic models, so the main tier answers only for that
+	// provider: handing its model id to another one would be a request for a
+	// model it does not serve. A registry without the tier settings falls
+	// through to the old behaviour rather than guessing.
+	if name == anthropic.Name {
+		if m, ok := tierMainModel(reg); ok {
+			return m, SourceTier, nil
+		}
 	}
 	if name == local.Name {
 		if m, _, err := reg.String(flags.LLMLocalModel); err == nil && strings.TrimSpace(m) != "" {

@@ -41,6 +41,7 @@ Usage:
   manvi tools                       List the native DevCouncil tools an agent can call
   manvi tool NAME [--json ARGS]     Call one natively, the same path an agent takes
   manvi providers                   Show model providers and whether a credential is present
+  manvi tiers                       Show the model and effort each tier runs, and where each came from
   manvi budget                      Show Anthropic spend against MANVI_ANTHROPIC_BUDGET_USD
   manvi local [--resolve]           Find local model servers; --resolve prints what a run would use
   manvi pull                        Fast-forward the current branch; refuses a dirty tree
@@ -64,7 +65,7 @@ in: the state directory the harness writes into and, inside a git working tree,
 the .gitignore rules that keep that directory out of a commit. It is
 idempotent, it only ever adds, it never adds a rule that would ignore a tracked
 file, and it reports on stderr what it changed. Every other command — help,
-version, flags, logo, providers, budget, tools, check, an unknown command, a
+version, flags, logo, providers, tiers, budget, tools, check, an unknown command, a
 missing or unknown subcommand, or '--help' after any command — leaves the
 working tree as it found it. 'manvi tui' also brings the navigation index up to date, in the
 background, so the first frame does not wait on a build whose cost scales with
@@ -96,7 +97,8 @@ Environment:
   MANVI_MAP_BINARY     path to devmap    (default: PATH, then crates/target)
   MANVI_GRAPH          code graph path   (default: <state dir>/code_graph.json)
   MANVI_COVERAGE       Go coverprofile or LCOV report for the diff-coverage gate
-  MANVI_MODEL          model id for 'manvi tui' (see: manvi providers)
+  MANVI_MODEL          model id for 'manvi tui' (see: manvi providers); unset, an
+                       Anthropic session runs the main tier's model (see: manvi tiers)
   MANVI_TUI_THEME      dark | light | plain
   MANVI_<FLAG>         any setting from 'manvi flags'
 
@@ -311,10 +313,11 @@ func run(out, notes io.Writer, args []string) error {
 		return errors.New(b.String())
 	}
 
-	reg, err := flags.NewHarnessRegistry(configPath())
+	reg, err := newOperatorRegistry(configPath())
 	if err != nil {
 		return err
 	}
+	writeTierRefusals(notes, configPath())
 
 	// On human authority, because a command line is a human at a keyboard —
 	// and because the posture is human-only precisely so that nothing the
@@ -336,6 +339,15 @@ func run(out, notes io.Writer, args []string) error {
 	// reachable the moment 'flags set' exists. Sealing here is what keeps
 	// "hard rules cannot be switched off mid-run" a fact rather than a comment.
 	reg.Seal()
+
+	// Before anything is built or written: a tier that cannot run is refused
+	// here, naming the tier, rather than mid-turn. Diagnostics are exempt so a
+	// broken profile can still be read with 'manvi tiers'.
+	if startsSession(args) {
+		if err := validateTiers(reg, anthropicTierCatalogue(), budgetCapSet()); err != nil {
+			return err
+		}
+	}
 
 	// Before the command runs, for every command that keeps state, because
 	// both failures this prevents are silent ones. Without the state directory
@@ -386,6 +398,8 @@ func run(out, notes io.Writer, args []string) error {
 		return callTool(out, os.Stderr, scrubber, pipeline, args[1:])
 	case "providers":
 		return showProviders(out, reg)
+	case "tiers":
+		return showTiers(out, reg, anthropicTierCatalogue(), budgetCapSet())
 	case "budget":
 		return showBudget(out)
 	case "local":

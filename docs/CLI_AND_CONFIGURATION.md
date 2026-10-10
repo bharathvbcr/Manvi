@@ -26,6 +26,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
+| **Model Tiers** | `manvi tiers` | Print the resolved tier table (advisor, main, heavy, lite, basic): each tier's model and effort and the layer each came from, then any `llm.tier.*` line a repository's `config.yaml` tried to set (refused). Exits non-zero when a tier fails the startup checks, and still prints the table. |
 | **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |
 | **Code Graph Build** | `manvi map build` | Index repository symbols and AST relationships into `.devcouncil/code_graph.json`. |
@@ -87,6 +88,46 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 > `startup` bounds *when* a value may move, not *who* may supply it. Every flag, `startup` ones included, can be set before boot from `MANVI_<KEY>` or from `.devcouncil/config.yaml` — which the managed `.gitignore` rules deliberately keep committable (`.devcouncil/*` followed by `!.devcouncil/config.yaml`), so it arrives with a `git clone`. Settings resolve lowest-first: catalogue default, then `.devcouncil/config.yaml`, then `MANVI_<KEY>`. Run `manvi flags` to see which layer supplied each value in force.
 
 ### Full Flag Catalogue
+
+## Model tiers
+
+Five tiers name the model and reasoning effort each kind of work runs on. This
+release defines and validates them; nothing routes a sub-agent to a tier yet.
+
+| Tier | Default model | Intended for |
+|---|---|---|
+| `advisor` | `claude-fable-5-1` | consulted, not run as a worker |
+| `main` | `claude-opus-5-5` | the session itself |
+| `heavy` | `claude-opus-5-5` | sub-agents that write |
+| `lite` | `claude-sonnet-5-5` | read-only sub-agents |
+| `basic` | `claude-haiku-5-5` | wide, simple fan-out |
+
+Tiers are ordered `basic < lite < main < heavy < advisor`. Each has two keys,
+`llm.tier.<tier>` (model) and `llm.tier.<tier>.effort` (default empty, which
+omits the field), set by `MANVI_LLM_TIER_<TIER>` and
+`MANVI_LLM_TIER_<TIER>_EFFORT`:
+
+```bash
+MANVI_LLM_TIER_LITE=claude-haiku-5-5 MANVI_LLM_TIER_ADVISOR_EFFORT=max manvi tiers
+```
+
+**Operator scope only.** Tier keys decide spend, so they come from the
+environment and nowhere else. A `llm.tier.*` line in `.devcouncil/config.yaml`
+is ignored in every posture, noted on stderr at startup, and listed as
+`refused` by `manvi flags` and `manvi tiers`; the rest of the file still loads.
+They are `startup` flags: `manvi flags set` and the model's tools cannot move
+one after boot.
+
+**Validated at startup.** `manvi`, `manvi tui`, `run`, `watch` and `serve`
+refuse to start, naming each failing tier, when its model is not in the
+provider catalogue, when it has no price while `MANVI_ANTHROPIC_BUDGET_USD` is
+set, or when its effort is not one the model supports (a model that does not
+reason accepts none). `manvi tiers`, `flags`, `doctor` and `--help` still run so
+the profile can be read and fixed. All tiers are Anthropic models for now.
+
+**Main model.** With the Anthropic provider and `MANVI_MODEL` unset, the session
+runs `llm.tier.main`; `MANVI_MODEL` still wins when set. Other providers are
+unaffected and still need `MANVI_MODEL`.
 
 ## Operator-scope settings
 

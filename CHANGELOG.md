@@ -23,6 +23,19 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- Model tiers: `advisor`, `main`, `heavy`, `lite` and `basic`, ordered, each
+  with a model and an effort (`llm.tier.<tier>`, `llm.tier.<tier>.effort`;
+  defaults Fable 5.1, Opus 5.5, Opus 5.5, Sonnet 5.5, Haiku 5.5). They are
+  operator-scope startup settings: a repository's `config.yaml` cannot set
+  them (the lines are ignored, noted, and shown as refused by `manvi flags`),
+  and nothing after boot can move them. Session commands refuse to start,
+  naming the tier, when a model is not in the catalogue, is unpriced while
+  `MANVI_ANTHROPIC_BUDGET_USD` is set, or has an effort it cannot honour.
+  `manvi tiers` prints the resolved table with each value's source. With the
+  Anthropic provider and `MANVI_MODEL` unset, the session now runs the main
+  tier's model instead of refusing; `MANVI_MODEL` still wins. Nothing routes
+  sub-agents to a tier yet.
+
 - An account-wide Anthropic spend cap. Set `MANVI_ANTHROPIC_BUDGET_USD=200`
   and every Anthropic request, from any project or any concurrent session,
   draws from one ledger. By default that ledger is
