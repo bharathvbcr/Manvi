@@ -230,7 +230,10 @@ func TestServeContractMatchesGoTypes(t *testing.T) {
 // The host's own check is only as good as the field set it reads; pin the one
 // field whose absence caused the drift this contract exists to catch.
 func TestServeContractDeclaresScopeAllowedCommands(t *testing.T) {
-	scope := currentContract(t).Types["HostScope"]
+	scope, ok := currentContract(t).Types["HostScope"]
+	if !ok || scope == nil {
+		t.Fatal("the contract declares no HostScope type")
+	}
 	if _, ok := scope.Fields["allowed_commands"]; !ok {
 		t.Fatal("HostScope does not declare allowed_commands")
 	}
