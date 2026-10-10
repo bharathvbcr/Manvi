@@ -205,4 +205,18 @@ type HelloResult struct {
 	// exists at all, and `ManagedProviders` is never an empty slice, so absent
 	// and "said none" do not collide in practice.
 	ManagedProviders []string `json:"managed_providers,omitempty"`
+	// OpLimits says, per served op, which lane runs it and how long the server
+	// lets one request take, so a host sizes its client timeouts from the
+	// server instead of a table of its own that drifts. A host's timeout should
+	// be DeadlineMS plus a margin for the wire. Absent means this harness did
+	// not say (a build that predates the field): the host keeps its own table
+	// and should say so. An op answered inline has Lane "inline" and no
+	// deadline (DeadlineMS 0): the server never holds it.
+	OpLimits map[string]OpLimit `json:"op_limits,omitempty"`
+}
+
+// OpLimit is one op's lane and server-side deadline.
+type OpLimit struct {
+	Lane       string `json:"lane"`
+	DeadlineMS int64  `json:"deadline_ms"`
 }

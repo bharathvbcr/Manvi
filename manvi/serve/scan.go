@@ -239,38 +239,6 @@ func scanGit(ctx context.Context, root string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// canonicalScanRoot validates an explicit repository root: absolute, existing,
-// free of symlinks, and the top of a git work tree. A symlinked root is
-// refused rather than followed so the path a host names is the path scanned.
-func canonicalScanRoot(ctx context.Context, raw string) (string, *Error) {
-	if raw == "" || strings.ContainsRune(raw, 0) || !filepath.IsAbs(raw) {
-		return "", badRequest("repo_root must be an absolute path")
-	}
-	clean := filepath.Clean(raw)
-	resolved, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		return "", badRequest("repo_root does not exist or cannot be resolved: %v", err)
-	}
-	if resolved != clean {
-		return "", badRequest("repo_root is or passes through a symlink; pass the resolved path %s", resolved)
-	}
-	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
-		return "", badRequest("repo_root is not a directory")
-	}
-	top, err := scanGit(ctx, resolved, "rev-parse", "--show-toplevel")
-	if err != nil {
-		if ctx.Err() != nil {
-			return "", dependencyError("git", ctx.Err())
-		}
-		return "", badRequest("repo_root is not a git work tree")
-	}
-	topResolved, err := filepath.EvalSymlinks(strings.TrimSpace(string(top)))
-	if err != nil || topResolved != resolved {
-		return "", badRequest("repo_root is not the top of a git work tree")
-	}
-	return resolved, nil
-}
-
 func scanReady(st *mapclient.Status, root string) error {
 	var why string
 	switch {
@@ -302,7 +270,7 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 	if p.MaxProposals == 0 {
 		p.MaxProposals = scanDefaultCap
 	}
-	root, e := canonicalScanRoot(ctx, p.RepoRoot)
+	root, e := canonicalRepoRoot(ctx, "repo_root", p.RepoRoot)
 	if e != nil {
 		return nil, e
 	}
