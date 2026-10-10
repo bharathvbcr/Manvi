@@ -774,11 +774,19 @@ func (r *Registry) getDiff(ctx context.Context, call tools.Call) tools.Result {
 	if err != nil {
 		return unavailable("working-tree diff", err)
 	}
+	// What the model is shown is filtered here and not in gitDiff, which the
+	// verifier also reads: its secret scanner has to see a credential to flag
+	// one. Untracked files are rendered into the same text, so a new .env is
+	// withheld by the rule that withholds a modified one.
+	diff, withheld := r.withholdDiff(diff)
 	files, err := changedFiles(diff)
 	if err != nil {
 		return unavailable("diff parse", err)
 	}
 	out := map[string]any{"files": files, "diff": diff}
+	if w := withheldPayload(withheld); w != nil {
+		out["withheld"] = w
+	}
 	if len(notes) > 0 {
 		// The model has to be able to tell a complete diff from a capped one;
 		// acting on a partial diff as though it were whole is how a change is

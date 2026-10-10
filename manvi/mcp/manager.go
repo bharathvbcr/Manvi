@@ -722,6 +722,38 @@ func (m *Manager) ServerNames() []string {
 	return names
 }
 
+// SecretValues returns every value this manager would hand to a server
+// process through its environment: each declared Env value and the current
+// value of each EnvPassthrough variable that is set.
+//
+// It exists so the harness can arm its credential scrubber with them. A server
+// that echoes its own token on stderr has that text attached to the error of
+// every failed call, and the scrubber knows only the provider keys unless told
+// otherwise. Values are read at call time, not at registration, because a
+// passthrough variable is the process's own environment and may change.
+//
+// The result is sensitive and is for the scrubber only; short values are
+// returned too, and the scrubber's own minimum length decides which it keeps.
+func (m *Manager) SecretValues() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var values []string
+	for _, cfg := range m.configs {
+		for _, v := range cfg.Env {
+			if v != "" {
+				values = append(values, v)
+			}
+		}
+		for _, k := range cfg.EnvPassthrough {
+			if v, ok := os.LookupEnv(k); ok && v != "" {
+				values = append(values, v)
+			}
+		}
+	}
+	return values
+}
+
 // ServerTools represents tools provided by a specific MCP server.
 type ServerTools struct {
 	Server string `json:"server"`

@@ -99,13 +99,19 @@ func (r *Registry) graphQuery(ctx context.Context, call tools.Call) tools.Result
 		// would spend the turn's context on material the agent did not ask for
 		// and can fetch with read_file.
 		Span string `json:"source_span,omitempty"`
+		// Withheld is the read-gate rule that removed Span, when one did.
+		Withheld string `json:"withheld,omitempty"`
 	}
 	hits := make([]hit, 0, len(result.Items))
 	for _, item := range result.Items {
-		hits = append(hits, hit{
-			Path: item.FilePath, Name: item.Name, Kind: item.Kind,
-			Span: firstLines(item.SourceSpan, 3),
-		})
+		h := hit{Path: item.FilePath, Name: item.Name, Kind: item.Kind}
+		// A source span is file content, so it answers to the read gate.
+		if rule := r.readRefusal(item.FilePath); rule != "" {
+			h.Withheld = rule
+		} else {
+			h.Span = firstLines(item.SourceSpan, 3)
+		}
+		hits = append(hits, h)
 	}
 	return payload(map[string]any{
 		"query": args.Query, "matches": len(hits), "results": hits,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -278,3 +280,116 @@ func TestATurnReportsOnlyWhatItsOwnChildrenSpent(t *testing.T) {
 		}
 	}
 }
+
+// TestAWideFanOutUnderAWorstCaseCapRunsToCompletion.
+//
+// A request reserves a worst case — its whole prompt priced at the dearest
+// input rate, plus the full output bound — and eight children's worst cases
+// together are many times what they spend. The cap here holds three
+// first-request reservations and, by a wide margin, the eight children's real
+// spend. Admission that insisted every child's worst case fit at once refused
+// this fan-out; starting all eight let the cap refuse some of them mid-turn.
+// It must run all eight, three at a time, none refused by the cap and none
+// left unstarted.
+func TestAWideFanOutUnderAWorstCaseCapRunsToCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, wideTurnSSE)
+	}))
+	t.Cleanup(server.Close)
+	registry := tools.NewRegistry(bus.New())
+	build := func(limit int64) (*subAgentRunner, *budget.Ledger) {
+		ledger, err := budget.Open(filepath.Join(t.TempDir(), "ledger.json"), limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider := &budget.Provider{Inner: anthropic.New(server.URL, adaptertest.Secret("fixture-key")), Ledger: ledger}
+		models := llm.NewRegistry()
+		if err := models.Register(provider); err != nil {
+			t.Fatal(err)
+		}
+		r := &subAgentRunner{}
+		r.attach(subAgentConfig{
+			provider: provider, models: models, model: "claude-opus-5-5",
+			registry: registry, systemPrompt: "child", meter: &subAgentMeter{},
+		})
+		return r, ledger
+	}
+
+	reqs := make([]devcouncil.SubAgentRequest, 8)
+	for i := range reqs {
+		reqs[i] = devcouncil.SubAgentRequest{Label: "c" + string(rune('0'+i)), Prompt: "look at it"}
+	}
+	probe, _ := build(1_000_000_000_000_000)
+	_, reserves, err := probe.AdmitSubAgents(reqs)
+	if err != nil || reserves[0] <= 0 {
+		t.Fatalf("sizing a child: %v, %v", reserves, err)
+	}
+	limit := reserves[0]*3 + reserves[0]/2
+	runner, ledger := build(limit)
+
+	capb, reserves, err := runner.AdmitSubAgents(reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := make([]agents.Task, len(reqs))
+	for i, req := range reqs {
+		tasks[i] = agents.Task{
+			Label: req.Label, Reserve: reserves[i],
+			Run: func(ctx context.Context, _ *agents.Holder) (any, error) {
+				return runner.RunSubAgent(ctx, req)
+			},
+		}
+	}
+	pool, err := agents.New(1, 8, nopReleaser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Budget = capb
+	results, err := pool.Run(context.Background(), tasks)
+	if err != nil {
+		t.Fatalf("Run: %v; eight children whose real spend is a fraction of the cap must not be refused for their worst cases", err)
+	}
+	for _, res := range results {
+		if res.Err != nil || res.NotStarted != "" {
+			t.Errorf("%s: err=%v notStarted=%q", res.Label, res.Err, res.NotStarted)
+		}
+	}
+	snap, err := ledger.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spent := snap.CommittedNanoUSD(); spent <= 0 || spent > limit {
+		t.Errorf("committed %d against a limit of %d", spent, limit)
+	}
+	if reserves[0]*8 <= limit {
+		t.Fatalf("test is vacuous: eight worst cases (%d) fit the cap (%d)", reserves[0]*8, limit)
+	}
+}
+
+// nopReleaser is a lease store for children that take no leases.
+type nopReleaser struct{}
+
+func (nopReleaser) Release(context.Context, string, string) (bool, error) { return true, nil }
+
+// wideTurnSSE is one answered turn: 1000 prompt tokens of which 800 were read
+// from cache, 50 output tokens — a sliver of what a request reserves.
+const wideTurnSSE = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":200,"cache_read_input_tokens":800}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`

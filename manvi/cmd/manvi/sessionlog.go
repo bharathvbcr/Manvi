@@ -21,8 +21,7 @@ import (
 // constructor is called anywhere else.
 func newSessionLog() *session.Log {
 	log := session.NewLog()
-	scrubber := credentials.NewScrubber()
-	scrubber.WatchAll(credentials.NewResolver())
-	log.SetScrubber(scrubber.Clean)
+	resolver := credentials.NewResolver()
+	log.SetScrubber(armedClean(newArmedScrubber(resolver), resolver))
 	return log
 }

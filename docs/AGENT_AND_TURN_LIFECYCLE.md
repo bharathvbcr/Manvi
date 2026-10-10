@@ -200,6 +200,32 @@ a per-call tier cannot move it.
 The end-of-turn checkpoint critic runs as the `critic` role, read-only whatever
 that role says, on the tier a verdict routes to (advisor).
 
+A child that shows evidence of being out of its depth is moved up a tier once,
+on evidence and never on a reading of its prompt. The ladder is: the loop raises
+effort on the child's own model up to the session's ceiling; if the turn still
+comes back with evidence (the step ceiling reached, an empty summary, no verdict
+where one was asked for, or an end-of-turn check still failing), the child is
+re-run on the nearest tier above its own that runs a *different* model — heavy
+and main both being Opus, heavy escalates to the advisor — from a fresh
+conversation. Thinking blocks belong to the model that produced them, so the
+re-run gets the original prompt and a short account of what the first attempt
+left, never its transcript. The advisor is the top and never escalates; neither
+does a child placed on the parent's model or pinned by the operator. One cap per
+fan-out, ceil(N/2) re-runs, is shared by its children under a lock-free counter.
+A re-run showing the same evidence fails the child with `ExhaustedError`; a
+re-run refused by the provider, the spend cap or a cancellation fails it with
+`EscalationError`, and neither climbs further. The fan-out report names each
+escalation (`escalations`: child, from, to, evidence, `cold_cache`): the re-run
+is on another model, so its first request writes the whole prompt to that
+model's cache again, and the extra cache writes in the usage line are that.
+Within a tier the role's system prompt is the same bytes on every step.
+
+Under an Anthropic spend cap a wide fan-out is narrowed rather than refused: a
+request reserves a worst case, so the children's reservations together far
+exceed what they spend. Children start in order while the running children's
+reservations fit the cap; the rest wait for a running child to settle. Only a
+child that cannot fit the cap even alone refuses the dispatch.
+
 The tool-permission
 columns above are the two switches a definition actually carries
 (`EnableWriteTools`, `EnableMCPTools`); finer-grained per-tool permissions are

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -254,13 +253,7 @@ var (
 // or terminal. Besides provider credentials, watch GitHub's documented token
 // variables and redact userinfo from an accidentally credentialed remote URL.
 func cleanQuickOutput(text string) string {
-	scrubber := credentials.NewScrubber()
-	scrubber.WatchAll(credentials.NewResolver())
-	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			scrubber.Watch(credentials.NewSecret(value, key))
-		}
-	}
+	scrubber := newArmedScrubber(nil)
 	text = scrubber.Clean(text)
 	text = remoteUserinfoPattern.ReplaceAllString(text, `${1}[redacted]@`)
 	text = githubTokenPattern.ReplaceAllString(text, credentials.Redacted)
