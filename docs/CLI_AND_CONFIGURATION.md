@@ -138,7 +138,7 @@ held in the harness's credential store ahead of the environment outranks all of 
 
 | Variable | Effect |
 |---|---|
-| `ANTHROPIC_BASE_URL` | Base URL for the `anthropic` provider. Unset means Anthropic's own endpoint. The other providers' base URLs are settings (`llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url`), not variables of this kind. |
+| `ANTHROPIC_BASE_URL` | Host root for the `anthropic` provider (`https://api.anthropic.com`, or a gateway's root), read the way the vendor SDK and Claude Code read it: requests go to `<root>/v1/messages`. A value that already ends in `/v1`, with or without a trailing slash, is accepted and that segment dropped, so `https://api.anthropic.com/v1` still works. Unset means Anthropic's own endpoint. The other providers' base URLs are settings (`llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url`), not variables of this kind. |
 | `ANTHROPIC_WORKSPACE_ID` | Workspace an `anthropic` API key that is not scoped to one acts in (`wrkspc_...`), sent as the `anthropic-workspace-id` header. Unset or blank sends no header. A value that is not letters, digits, `_` and `-`, or is too long, refuses to build the provider, naming the variable, and `manvi providers` reports the key as misconfigured. |
 
 **Binaries.** Each names a path and is used as given when set; it is never second-guessed.

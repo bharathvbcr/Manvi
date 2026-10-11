@@ -21,6 +21,15 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Fixed
+
+- `ANTHROPIC_BASE_URL` is read as the host root, as the vendor SDK and Claude
+  Code read it. Manvi used to treat it as including `/v1`, so the value those
+  tools set (`https://api.anthropic.com`) requested `/messages` and every turn,
+  including `manvi probe anthropic`, was refused with a 404 before any content.
+  A value ending in `/v1` (with or without a trailing slash) keeps working: the
+  segment is dropped rather than doubled.
+
 ## [0.1.0] — 2026-10-11
 
 ### Added

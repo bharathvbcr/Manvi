@@ -210,6 +210,48 @@ func TestAMalformedWorkspaceIsRefusedBeforeAnyRequest(t *testing.T) {
 	}
 }
 
+// TestABaseURLIsTheHostRootTheVendorDocuments: ANTHROPIC_BASE_URL names the
+// host root, as the vendor SDK and Claude Code read it, so the request path
+// carries the version. A host root used to be sent to /messages and refused
+// with a 404 before any content; a value that already ends in /v1 is what
+// configs written against the old reading hold, and must not become /v1/v1.
+func TestABaseURLIsTheHostRootTheVendorDocuments(t *testing.T) {
+	paths := make(chan string, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, happyStream)
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct{ base, want string }{
+		{srv.URL, "/v1/messages"},
+		{srv.URL + "/", "/v1/messages"},
+		{srv.URL + "/v1", "/v1/messages"},
+		{srv.URL + "/v1/", "/v1/messages"},
+		{srv.URL + "/gateway/anthropic", "/gateway/anthropic/v1/messages"},
+		{srv.URL + "/gateway/anthropic/v1/", "/gateway/anthropic/v1/messages"},
+		// Only a whole /v1 segment is the version; a prefix that merely ends
+		// in those letters is part of the gateway's path.
+		{srv.URL + "/gateway/av1", "/gateway/av1/v1/messages"},
+	} {
+		stream, err := New(tc.base, adaptertest.Secret("sk-test-key-value")).Stream(adaptertest.Ctx(), request())
+		if err != nil {
+			t.Fatalf("base %q: %v", tc.base, err)
+		}
+		if _, _, err := adaptertest.Drain(stream); err != nil {
+			t.Fatalf("base %q: %v", tc.base, err)
+		}
+		if got := <-paths; got != tc.want {
+			t.Errorf("base %q requested %q, want %q", tc.base, got, tc.want)
+		}
+	}
+
+	if got := New("", adaptertest.Secret("k")).client.BaseURL + MessagesPath; got != "https://api.anthropic.com/v1/messages" {
+		t.Errorf("unset base requests %q, want the documented endpoint", got)
+	}
+}
+
 // TestTruncatedToolArgumentsAreRefused is the consequential one. A tool call
 // whose arguments stopped halfway must not reach the tool layer: a partial
 // path or a partial patch that happens to parse is a wrong action taken

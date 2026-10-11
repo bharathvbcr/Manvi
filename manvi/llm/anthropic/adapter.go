@@ -16,11 +16,28 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
-// DefaultBaseURL is the documented API root.
-const DefaultBaseURL = "https://api.anthropic.com/v1"
+// DefaultBaseURL is the documented API host root. ANTHROPIC_BASE_URL means the
+// same thing to the vendor SDK and to Claude Code: the host, with the version
+// carried by the request path.
+const DefaultBaseURL = "https://api.anthropic.com"
 
-// MessagesPath is the content-generation endpoint.
-const MessagesPath = "/messages"
+// MessagesPath is the content-generation endpoint, relative to the host root.
+const MessagesPath = "/v1/messages"
+
+// apiVersionSegment is the path segment MessagesPath begins with.
+const apiVersionSegment = "/v1"
+
+// hostRoot reads a configured base URL as the host root. A value that already
+// ends in the version segment is what configs written when Manvi read the base
+// as including /v1 still hold; dropping that one segment keeps them working
+// instead of requesting /v1/v1/messages.
+func hostRoot(baseURL string) string {
+	root := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if root == "" {
+		return DefaultBaseURL
+	}
+	return strings.TrimRight(strings.TrimSuffix(root, apiVersionSegment), "/")
+}
 
 // APIKeyHeader and VersionHeader are the documented authentication and
 // versioning headers. The version is required on every request and pinned here
@@ -123,10 +140,7 @@ func workspaceIDRune(r rune) bool {
 }
 
 func newAdapter(baseURL, workspace string, resolve func() (credentials.Secret, error)) *Adapter {
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
-	client := transport.New(Name, baseURL, func() (http.Header, error) {
+	client := transport.New(Name, hostRoot(baseURL), func() (http.Header, error) {
 		secret, err := resolve()
 		if err != nil {
 			return nil, err
