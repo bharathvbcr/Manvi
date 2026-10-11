@@ -73,9 +73,17 @@ func watch(out io.Writer, reg *flags.Registry, args []string) (err error) {
 		})
 	}
 
-	ready, err := client.ReadyTasks(ctx)
+	ready, unreadable, err := client.ReadyReport(ctx)
 	if err != nil {
 		return err
+	}
+	for _, lease := range unreadable {
+		// Named, not counted away: the task is missing from the ready list
+		// because its lease cannot be judged, and nothing else says so.
+		sink.Emit(ui.Event{
+			Kind: ui.KindError, At: time.Now().UTC(), TaskID: lease.TaskID,
+			Text: fmt.Sprintf("%s: lease %s has an unreadable expiry; the task is withheld until it is acquired with force", lease.TaskID, lease.LeaseID),
+		})
 	}
 	sink.Emit(ui.Event{Kind: ui.KindReport, At: time.Now().UTC(),
 		Text: fmt.Sprintf("%d task(s) ready, %d lease(s) active", len(ready), len(leases))})

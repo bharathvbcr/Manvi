@@ -1245,3 +1245,30 @@ func TestAWhollyFailedFanOutIsAnErrorResult(t *testing.T) {
 		t.Error("the payload carries no error key saying why the dispatch failed")
 	}
 }
+
+// A task whose lease the store cannot judge is left out of `ready` — it fails
+// closed for its own task — and the store names it in unreadable_leases. A
+// next_task that read only the task list reported "no unheld ready tasks" for a
+// task that was in fact held by a lease nobody could read: the empty answer of a
+// check that could not finish, read as the answer of one that did.
+func TestNextTaskNamesALeaseTheStoreCouldNotRead(t *testing.T) {
+	f := newFixture(t)
+	insertTask(t, storeBinary(t), f.db, "TASK-BAD", `[]`)
+	seed := "INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +
+		"VALUES ('L-BAD','TASK-BAD','someone','tok','active','2026-01-01T00:00:00Z','not a timestamp');"
+	if out, err := exec.Command(testsupport.Tool(t, "sqlite3"), f.db, seed).CombinedOutput(); err != nil {
+		t.Fatalf("seeding a lease failed: %v %s", err, out)
+	}
+
+	got := f.payload("devcouncil_next_task", map[string]any{})
+	unreadable, _ := got["unreadable_leases"].([]any)
+	if len(unreadable) != 1 {
+		t.Fatalf("next_task hid the unreadable lease: %v", got)
+	}
+	if lease, _ := unreadable[0].(map[string]any); lease["task_id"] != "TASK-BAD" {
+		t.Fatalf("the unreadable lease does not name its task: %v", unreadable)
+	}
+	if got["task_id"] == "TASK-BAD" {
+		t.Fatalf("a task under a lease nobody could read was offered: %v", got)
+	}
+}

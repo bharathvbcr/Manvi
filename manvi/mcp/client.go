@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,20 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 )
+
+// serverError is a JSON-RPC error a server answered a call with. It unwraps to
+// the *RPCError, so a caller can read the code and data (-32022 carries the
+// revisions the server does serve) instead of matching the message.
+type serverError struct {
+	server string
+	rpc    *RPCError
+}
+
+func (e *serverError) Error() string {
+	return fmt.Sprintf("mcp: %s returned error: %s (code %d)", e.server, e.rpc.Message, e.rpc.Code)
+}
+
+func (e *serverError) Unwrap() error { return e.rpc }
 
 // ServerConfig configures an MCP server process.
 type ServerConfig struct {
@@ -572,6 +587,19 @@ func (c *Client) dispatch(line []byte) {
 	}
 
 	id, ok := numericID(resp.ID)
+	if !ok && resp.ID == nil && resp.Error != nil {
+		// The server could not read a request well enough to know whose it
+		// was, and answers with an explicit "id": null (DevCouncil's server
+		// since wave 6: a parse error, or -32600 for a frame over its size
+		// bound). It is the server's own account of why the request failed, so
+		// it is what the in-flight calls fail with — not "an id this client
+		// cannot match", which names the envelope and drops the cause.
+		reason := fmt.Sprintf("server %s could not read a request: %s (code %d)",
+			c.Name(), truncateForMessage(resp.Error.Message), resp.Error.Code)
+		c.recordError(reason)
+		c.failAllPending(reason)
+		return
+	}
 	if !ok {
 		reason := fmt.Sprintf("server %s replied with an id this client cannot match (%s); "+
 			"every request it issued uses a JSON number", c.Name(), renderID(resp.ID))
@@ -818,7 +846,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 				c.cfg.Name, method, c.diagnosticsSuffix())
 		}
 		if resp.Error != nil {
-			return fmt.Errorf("mcp: %s returned error: %s (code %d)", c.cfg.Name, resp.Error.Message, resp.Error.Code)
+			return &serverError{server: c.cfg.Name, rpc: resp.Error}
 		}
 		if result != nil && len(resp.Result) > 0 {
 			if err := json.Unmarshal(resp.Result, result); err != nil {
@@ -1007,6 +1035,14 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 		c.initErr = err
 		c.initTried = false // a later call may retry; the server may recover
 		return nil, err
+	}
+	if !slices.Contains(handshakeVersions, res.ProtocolVersion) {
+		// Not cached: the next call asks again, and a server that was
+		// misconfigured for a moment is not condemned for the session.
+		c.initErr = fmt.Errorf("mcp: %s answered initialize with protocol revision %q, which this client does not speak (it speaks %s)",
+			c.cfg.Name, res.ProtocolVersion, strings.Join(handshakeVersions, ", "))
+		c.initTried = false
+		return nil, c.initErr
 	}
 	c.initResult = &res
 	c.initErr = nil

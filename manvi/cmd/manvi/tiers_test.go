@@ -455,3 +455,22 @@ func requireTierRefusal(t *testing.T, err error, tier agents.Tier, wants ...stri
 		}
 	}
 }
+
+// TestAUserConfigBlockListUnderATierKeyIsRefused. ParseConfig flattens a block
+// list under a scalar key into an empty section, so LoadConfig accepted
+// `llm.tier.lite:` followed by `- model` as "unset" and the operator's intended
+// tier silently stayed at its default. Only the layer a parse reports with
+// positions carries the list, and only LoadLayer refuses it.
+func TestAUserConfigBlockListUnderATierKeyIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv(envUserConfig, path)
+	writeFile(t, filepath.Dir(path), "config.yaml", "llm.tier.lite:\n  - claude-haiku-5-5\n")
+
+	_, err := newRegistry("")
+	if err == nil {
+		t.Fatal("a block list under a scalar tier setting loaded as if it were unset")
+	}
+	if !strings.Contains(err.Error(), "llm.tier.lite") || !strings.Contains(err.Error(), "line") {
+		t.Fatalf("the refusal must name the key and the line to fix: %v", err)
+	}
+}

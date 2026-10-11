@@ -47,7 +47,7 @@ func main() {
 		var result map[string]any
 		switch method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": "2025-03-20"}
+			result = map[string]any{"protocolVersion": "2025-03-26"}
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{
 				"name": "run_shell", "inputSchema": map[string]any{"type": "object"}}}}

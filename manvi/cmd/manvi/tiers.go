@@ -114,24 +114,27 @@ func newRegistry(repoConfig string) (*flags.Registry, error) {
 	return reg, nil
 }
 
-// readConfigFile parses a settings file, reporting a missing one as nil.
-func readConfigFile(path string) (map[string]string, error) {
+// readConfigFile parses a settings file, reporting a missing one as an empty
+// layer. The layer, not the flat map: its line numbers and block lists are what
+// let Registry.LoadLayer refuse a list written under a scalar setting, which
+// LoadConfig closes as an empty section.
+func readConfigFile(path string) (flags.ConfigLayer, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, nil
+		return flags.ConfigLayer{}, nil
 	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return flags.ConfigLayer{}, nil
 		}
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return flags.ConfigLayer{}, fmt.Errorf("reading %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
-	values, err := flags.ParseConfig(f)
+	layer, err := flags.ParseConfigLayer(f)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return flags.ConfigLayer{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return values, nil
+	return layer, nil
 }
 
 // refuseRepositoryTiers refuses a repository config that sets any tier key.
@@ -140,12 +143,12 @@ func readConfigFile(path string) (map[string]string, error) {
 // the parser's own account of the line, which is what NewHarnessRegistry would
 // have said about it a moment later.
 func refuseRepositoryTiers(path string) error {
-	values, err := readConfigFile(path)
+	layer, err := readConfigFile(path)
 	if err != nil {
 		return err
 	}
 	var set []string
-	for key := range values {
+	for key := range layer.Values {
 		if isTierKey(key) {
 			set = append(set, key)
 		}
@@ -215,12 +218,12 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 			"can write is not operator scope, so it was not read — move it, or point %s elsewhere",
 			path, root, envUserConfig)
 	}
-	values, err := readConfigFile(path)
+	layer, err := readConfigFile(path)
 	if err != nil {
 		return fmt.Errorf("user config: %w", err)
 	}
 	var other []string
-	for key := range values {
+	for key := range layer.Values {
 		if !isTierKey(key) {
 			other = append(other, key)
 		}
@@ -230,7 +233,7 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 		return fmt.Errorf("user config %s sets %s; it carries %s* settings only — put the rest in the "+
 			"repository's config.yaml or the environment", path, strings.Join(other, ", "), tierPrefix)
 	}
-	if err := reg.LoadConfig(values); err != nil {
+	if err := reg.LoadLayer(layer); err != nil {
 		return fmt.Errorf("user config %s: %w", path, err)
 	}
 	return nil

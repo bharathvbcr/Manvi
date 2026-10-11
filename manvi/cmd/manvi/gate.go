@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/grants"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
 )
 
 // --- check / allow ---
@@ -59,10 +59,12 @@ func buildGate(reg *flags.Registry) (*gate.Gate, *repomap.Map, error) {
 	if err := loadGrants(g); err != nil {
 		return nil, nil, err
 	}
-	// Every grant this gate issues becomes durable, whoever issued it. A grant
-	// that exists only for the life of one process is a grant nobody can review
-	// later, which is the whole reason the ledger is written down.
-	g.OnIssue = func(grants.Grant) {
+	// Every ledger mutation becomes durable, whoever made it: an issue, a
+	// single-use grant spent by a decision, and a revoke. A grant that exists
+	// only for the life of one process is a grant nobody can review later, and
+	// saving on issue alone let a restart bring back a spent grant and undo a
+	// revoke.
+	g.OnChange = func(grants.Change) {
 		if err := saveGrants(g); err != nil {
 			fmt.Fprintf(os.Stderr, "manvi: the grant ledger could not be written: %v\n", err)
 		}
@@ -297,13 +299,11 @@ var ledgerWrite sync.Mutex
 func saveGrants(g *gate.Gate) error {
 	ledgerWrite.Lock()
 	defer ledgerWrite.Unlock()
-	path := grantLedgerPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(g.Ledger.All(), "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	// Renamed into place rather than truncated and rewritten: a crash mid-write
+	// must leave the previous ledger, not half of one that loadGrants refuses.
+	return safefile.WriteAtomic(grantLedgerPath(), append(data, '\n'), 0o644)
 }

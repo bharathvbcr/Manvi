@@ -321,3 +321,20 @@ func BenchmarkGraphContext25(b *testing.B) {
 	b.ReportMetric(float64(beforeSpawns), "old-spawns")
 	b.ReportMetric(float64(afterSpawns), "new-spawns")
 }
+
+// A cancelled tool call must not condemn the index for the calls after it.
+// The client probes the devmap binary once and caches the verdict; a probe run
+// under a caller's cancelled context used to cache "presumed hung" for a
+// minute, so in a long-lived session one interrupted graph_query turned every
+// following navigation tool into "unavailable" with a healthy binary installed.
+func TestACancelledGraphCallDoesNotPoisonTheNextOne(t *testing.T) {
+	reg, _ := stubDevmap(t, stubHealthy, 0)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if res := reg.graphQuery(cancelled, callOf(t, map[string]string{"query": "A"})); !res.IsError {
+		t.Fatal("a call whose context was already cancelled succeeded")
+	}
+	if res := reg.graphQuery(context.Background(), callOf(t, map[string]string{"query": "A"})); res.IsError {
+		t.Fatalf("one cancelled call left the code graph unavailable to the next: %s", res.Text)
+	}
+}

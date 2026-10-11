@@ -13,21 +13,34 @@ import (
 // --- task lifecycle ---
 
 func (r *Registry) nextTask(ctx context.Context, call tools.Call) tools.Result {
-	ids, err := r.deps.Store.ReadyTasks(ctx)
+	ids, unreadable, err := r.deps.Store.ReadyReport(ctx)
 	if err != nil {
 		return unavailable("ready tasks", err)
 	}
+	// A task whose lease the store could not judge is missing from ids, and it
+	// is named here so the absence is explained: a lease with an unreadable
+	// expiry fails closed for its own task, which is a different fact from the
+	// task not existing or not being ready.
 	if len(ids) == 0 {
-		return ok(map[string]any{
+		payload := map[string]any{
 			"task_id": nil,
 			"message": "no unheld ready tasks",
-		})
+		}
+		if len(unreadable) > 0 {
+			payload["message"] = "no unheld ready tasks; some tasks are held by a lease the store could not read"
+			payload["unreadable_leases"] = unreadable
+		}
+		return ok(payload)
 	}
 	task, err := r.deps.Store.Task(ctx, ids[0])
 	if err != nil {
 		return unavailable("task scope", err)
 	}
-	return ok(map[string]any{"task_id": ids[0], "task": task, "ready_count": len(ids)})
+	payload := map[string]any{"task_id": ids[0], "task": task, "ready_count": len(ids)}
+	if len(unreadable) > 0 {
+		payload["unreadable_leases"] = unreadable
+	}
+	return ok(payload)
 }
 
 func (r *Registry) getTask(ctx context.Context, call tools.Call) tools.Result {

@@ -40,6 +40,28 @@ Highest confidence. Each was checked in this session.
 > **Re-verified 2026-10-06 — mostly STALE; the residue is below.** Read this
 > box before the 2026-09-01 text under it, which is kept as the record.
 >
+> - **Measured accuracy, DevCouncil wave 6 (2026-10-11).** The call-edge
+>   accuracy lanes (`devmap-analyze/tests/accuracy_fixtures.rs`) now report, per
+>   language, how many labelled call edges `devmap` finds (recall) and what share
+>   of the edges it reports are right (precision):
+>
+>   | Language | Recall | Precision |
+>   |---|---|---|
+>   | go | 51/51 | 1.0 |
+>   | kotlin | 55/55 | 1.0 |
+>   | python | 47/49 | 1.0 |
+>   | rust | 93/106 | 1.0 |
+>   | swift | 79/79 | 1.0 |
+>   | typescript | 71/71 | 1.0 |
+>
+>   **Measured on fixtures; real-corpus labels are not available**, so these
+>   are not rates on a real codebase. The same wave stopped storing
+>   ambiguous (speculative) edges in the graph, so an ambiguous call now has no
+>   edge at all and `impact` can under-report where recall is below 1 (python
+>   and rust above). Java, C#, Ruby and PHP have no row: they are not measured, which is
+>   not the same as accurate. The table was supplied with the wave 6 hand-off
+>   and not re-run here.
+>
 > - **Call extraction landed (P2.7b/c).** `rust/devmap-extract/src/langcalls/`
 >   has a module per language, dispatched from `langcalls::extract_calls`:
 >   C#, Dart, Erlang, Java, Kotlin, Lua/Luau, Nix, Pascal, PHP, R, Ruby,

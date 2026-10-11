@@ -23,6 +23,42 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to wave 6 (`8229de20`) and gusset to `984209b5`,
+  together** (`scripts/module-pins.txt`). `crates/Cargo.toml` mirrors the new
+  workspace `rust-version`, which `dc-grep` now inherits; without it the whole
+  Rust workspace failed to load. `manvi/go.mod` gains `toolchain go1.26.9`:
+  `govulncheck` under go1.26.6 reported ten reachable standard-library
+  advisories (net/http, net/textproto, crypto/tls, os), none under 1.26.9.
+  The `contracts/` mirror takes `lease.schema.md` and `verdict.schema.json` (the
+  new hard rule `command.operand.unverifiable`) with their `CHECKSUMS`.
+- **`command.operand.unverifiable` is not softened anywhere in Manvi.** A
+  program the gate does not model, handed a path outside the root or one the
+  restricted list protects (`go build -o /tmp/x`, `sqlite3 .devcouncil/...`), is
+  a hard refusal in the agent gate, `manvi check` (status 7) and `manvi serve`
+  under every posture. Manvi does not read `policy.unreadable_only` to relax it.
+- **Grants are saved on every ledger change, atomically.** `manvi` wrote the
+  grant ledger only when a grant was issued, so a revoke, or a single-use grant
+  being spent, was undone by the next process. It now saves from `Gate.OnChange`
+  through `safefile.WriteAtomic`, so a crash leaves the previous ledger rather
+  than half of one.
+- **Tier settings are read with their line numbers and block lists.** The user
+  config and repository config go through `flags.ParseConfigLayer` /
+  `Registry.LoadLayer`, so a block list written under a scalar tier key is
+  refused naming the line instead of loading as an unset tier.
+- **The MCP client speaks a real revision and checks the answer.** It asked for
+  `2025-03-20`, which is no revision, so a server configured modern-first
+  refused it. It now asks for `2025-03-26`, accepts only a handshake revision in
+  the reply (a per-request revision such as `2026-07-28` is refused and not
+  cached), returns a server's JSON-RPC error as a typed `*RPCError` (so `-32022`
+  and its `supported` list are readable), and fails an in-flight call with the
+  server's own reason when it answers `"id": null`.
+- **`devcouncil_next_task` and `manvi watch` name a lease the store could not
+  read.** A task held by a lease with an unparseable expiry is withheld by the
+  store; both now say so (`unreadable_leases`) instead of reporting no ready
+  task, or a complete watch report.
+- `docs/KNOWN_GAPS.md` GAP-1 carries DevMap's measured per-language call-edge
+  accuracy (fixtures only; no real-corpus labels exist).
+
 - **The DevCouncil pin moves to the workbench schema 13 store** (`40b6bbbf`).
   Schema 13 shortens request receipts (a retry rebuilds its response from the
   event), so it is a hard fence: a Manvi built at the previous pin (schema 12)

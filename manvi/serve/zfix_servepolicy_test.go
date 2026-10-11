@@ -162,3 +162,38 @@ func TestServeCommandsWithoutARedirectAreUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A program the gate does not model, handed a path outside the root or one the
+// restricted list protects, is refused outright. The gate cannot tell whether
+// `go build -o /tmp/x` or `sqlite3 .devcouncil/store.db` reads or writes there,
+// and the paths it must never let a write reach are the only ones it asks
+// about. Manvi does not soften this for any posture: the rule is Hard, so the
+// host posture's demotion of soft refusals never reaches it, and a host that
+// wants the build to run says so by listing the exact command in a task scope
+// the gate can model — not by the gate guessing the operand is a read.
+// operandUnverifiable is spelled out: it is a wire value hosts match on.
+const operandUnverifiable policy.RuleID = "command.operand.unverifiable"
+
+func TestServeRefusesAnUnmodelledProgramHandedAnUnverifiableOperand(t *testing.T) {
+	root := t.TempDir()
+	for _, opts := range []Options{hostOpts(), {HardRules: true, Posture: PostureDevCouncil}} {
+		for _, command := range []string{
+			"go build -o /tmp/x ./...",
+			"sqlite3 .devcouncil/store.db .tables",
+		} {
+			d := decodeDecision(t, roundTrip(t, opts, commandCheckWith(t, CommandCheckParams{
+				Command:          command,
+				Root:             root,
+				AllowedCommands:  []string{"go build *", "sqlite3 *"},
+				EnforceAllowlist: true,
+			}))[0])
+			if d.Action != policy.Deny || d.Rule != operandUnverifiable {
+				t.Errorf("%q under %q: action = %q rule = %q demoted = %q, want deny/%s",
+					command, opts.Posture, d.Action, d.Rule, d.Demoted, operandUnverifiable)
+			}
+			if d.Demoted != "" {
+				t.Errorf("%q: a hard refusal was demoted to %q", command, d.Demoted)
+			}
+		}
+	}
+}

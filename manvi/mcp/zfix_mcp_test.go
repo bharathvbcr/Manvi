@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -79,7 +80,27 @@ func main() {
 		id := q["id"]
 		method, _ := q["method"].(string)
 		if method == "initialize" {
-			reply(id, map[string]any{"protocolVersion": "2025-03-20"})
+			params, _ := q["params"].(map[string]any)
+			switch mode {
+			case "askedversion":
+				// Records what the client asked for and counter-offers the
+				// newest handshake revision, as DevCouncil's server does for a
+				// revision it does not know.
+				asked, _ := params["protocolVersion"].(string)
+				os.WriteFile(aux, []byte(asked), 0o644)
+				reply(id, map[string]any{"protocolVersion": "2025-11-25"})
+			case "modernonly":
+				// A per-request-era server answering a handshake with its own
+				// revision, which has no handshake.
+				reply(id, map[string]any{"protocolVersion": "2026-07-28"})
+			case "unsupported":
+				payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{
+					"code": -32022, "message": "unsupported protocol revision",
+					"data": map[string]any{"supported": []string{"2026-07-28"}, "requested": params["protocolVersion"]}}})
+				fmt.Fprintln(os.Stdout, string(payload))
+			default:
+				reply(id, map[string]any{"protocolVersion": "2025-03-26"})
+			}
 			continue
 		}
 		if method != "tools/list" {
@@ -89,6 +110,10 @@ func main() {
 			continue
 		}
 		switch mode {
+		case "idnull":
+			// What the Go server answers a frame it could not parse, or one over
+			// its size bound: an error carrying an explicit null id.
+			fmt.Fprintln(os.Stdout, ` + "`" + `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"frame exceeds the size bound"}}` + "`" + `)
 		case "badframe":
 			// Object-shaped, claims to be a reply, and jsonrpc is a number
 			// where the envelope requires a string: unparseable.
@@ -812,4 +837,100 @@ func mustConfig(t *testing.T, m *Manager, name string) ServerConfig {
 		t.Fatalf("server %q was never registered", name)
 	}
 	return cfg
+}
+
+// --- MCP negotiation against the dual-era DevCouncil server ---
+
+// The client asks for a real handshake revision and accepts the counter-offer a
+// legacy-default server answers an unfamiliar one with. It used to ask for
+// "2025-03-20", which no revision of the protocol is: a server configured
+// modern-first refuses that outright, and a legacy one only papers over it.
+func TestInitializeAsksForARealRevisionAndAcceptsACounterOffer(t *testing.T) {
+	asked := filepath.Join(t.TempDir(), "asked")
+	c, err := NewClient(stubConfig(t, "asked", "askedversion", asked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := c.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("a counter-offered handshake revision was refused: %v", err)
+	}
+	if res.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("negotiated %q, want the server's counter-offer", res.ProtocolVersion)
+	}
+	raw, err := os.ReadFile(asked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(handshakeVersions, string(raw)) {
+		t.Fatalf("the client asked for %q, which is not a revision it speaks (%v)", raw, handshakeVersions)
+	}
+}
+
+// A server that answers `initialize` with a revision this client does not speak
+// has not agreed to a protocol; the call fails, and is not cached, so a later
+// attempt negotiates afresh.
+func TestInitializeRefusesARevisionTheClientDoesNotSpeak(t *testing.T) {
+	c, err := NewClient(stubConfig(t, "modern", "modernonly", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err = c.Initialize(ctx)
+	if err == nil || !strings.Contains(err.Error(), "2026-07-28") {
+		t.Fatalf("a revision with no handshake was accepted as the negotiated one: %v", err)
+	}
+	if _, err := c.ListTools(ctx); err == nil {
+		t.Fatal("tools were listed over a protocol the client never agreed to")
+	}
+}
+
+// -32022 is the server saying it does not serve the revision named, with the
+// ones it does in the data. It reaches the caller as the typed error, so a host
+// can tell it from any other handshake failure.
+func TestAnUnsupportedRevisionIsReportedAsTheTypedError(t *testing.T) {
+	c, err := NewClient(stubConfig(t, "refuses", "unsupported", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err = c.Initialize(ctx)
+	var rpc *RPCError
+	if !errors.As(err, &rpc) || rpc.Code != CodeUnsupportedProtocol {
+		t.Fatalf("err = %v, want an *RPCError with code %d", err, CodeUnsupportedProtocol)
+	}
+	if !strings.Contains(string(rpc.Data), "2026-07-28") {
+		t.Fatalf("the supported revisions were dropped: %s", rpc.Data)
+	}
+}
+
+// A reply with "id": null and an error is the server saying it could not read a
+// request. The call it concerned fails at once with the server's own reason,
+// rather than sitting out its deadline or reporting an id it could not match.
+func TestAnErrorWithANullIDFailsTheCallWithTheServersReason(t *testing.T) {
+	c, err := NewClient(stubConfig(t, "idnull", "idnull", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := c.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = c.ListTools(ctx)
+	if err == nil || !strings.Contains(err.Error(), "frame exceeds the size bound") || !strings.Contains(err.Error(), "-32600") {
+		t.Fatalf("err = %v, want the server's own reason and code", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("the call sat out its deadline instead of failing when the server said it could not read the request")
+	}
 }

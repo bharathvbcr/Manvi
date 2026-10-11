@@ -12,6 +12,9 @@ members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-pro
 [workspace.package]
 version = "0.2.4"
 edition = "2024"
+# dc-grep inherits this from DevCouncil's workspace (the pinned toolchain,
+# 1.99), so the mirror must define it or the whole workspace fails to load.
+rust-version = "1.99"
 license = "Apache-2.0"
 
 # Canonical sources live in DevCouncil rust/, where `dc-store` inherits

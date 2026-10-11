@@ -6,12 +6,23 @@ import "encoding/json"
 
 // Protocol versions supported.
 const (
-	ProtocolVersionLatest     = "2025-03-20"
+	// ProtocolVersionLatest is the handshake revision this client asks for. It
+	// was "2025-03-20", which is no revision: a server that negotiates exactly
+	// (DevCouncil's, since wave 6) counter-offers or, configured modern-first,
+	// refuses it with -32022 instead of serving it.
+	ProtocolVersionLatest     = "2025-03-26"
 	ProtocolVersionMCP20      = "2.0-stateless"
 	ProtocolVersionLegacy     = "2024-11-05"
 	OpenPluginStandardVersion = "1.0"
 	JSONRPCVersion            = "2.0"
 )
+
+// handshakeVersions are the revisions this client will talk after an
+// `initialize`: the ones whose requests and results it reads. A server that
+// answers with anything else — a per-request revision such as 2026-07-28, which
+// has no handshake, or a string nobody defined — has not agreed to a protocol
+// this client speaks, and the specification has the client disconnect.
+var handshakeVersions = []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
 
 // Request is a JSON-RPC 2.0 / MCP 2.0 request envelope.
 type Request struct {
@@ -60,6 +71,9 @@ const (
 	CodeMethodNotFound = -32601
 	CodeInvalidParams  = -32602
 	CodeInternalError  = -32603
+	// CodeUnsupportedProtocol is MCP's answer to a revision the server does not
+	// serve; its data carries `supported` and `requested`.
+	CodeUnsupportedProtocol = -32022
 )
 
 // Implementation describes a client or server implementation.
