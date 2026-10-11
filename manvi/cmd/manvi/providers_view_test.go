@@ -122,6 +122,11 @@ func TestProviderColoursFollowTheStatusVocabulary(t *testing.T) {
 	lines := providerLines([]providerRow{
 		{name: "anthropic", state: stateReady, source: "ANTHROPIC_API_KEY", facts: []string{"9 chars"}},
 	}, th)
+	// The row is the third line (heading, rule, row). A view that rendered less
+	// is a failure to report, not an index out of range.
+	if len(lines) < 3 {
+		t.Fatalf("providerLines rendered %d lines, want the heading, a rule and the row", len(lines))
+	}
 
 	spans := map[string]render.Style{}
 	for _, span := range lines[2] {
