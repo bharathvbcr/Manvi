@@ -121,7 +121,7 @@ func TestGatedGitEmitsRawUTF8Paths(t *testing.T) {
 		flags.HarnessPosture:      flags.PostureStrict,
 		flags.GrantsAgentCommands: "true",
 	})
-	if err := os.WriteFile(filepath.Join(f.root, "é.txt"), []byte("x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "é.txt"), []byte("x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	run(t, f.root, "add", "é.txt")

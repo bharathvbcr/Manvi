@@ -52,7 +52,7 @@ const turnCost = 200*4_000 + 800*200 + 50*20_000
 
 func ledger(t *testing.T, limit int64) *budget.Ledger {
 	t.Helper()
-	l, err := budget.Open(filepath.Join(t.TempDir(), "ledger.json"), limit)
+	l, err := budget.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.json"), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func ledger(t *testing.T, limit int64) *budget.Ledger {
 
 func snapshot(t *testing.T, l *budget.Ledger) budget.Snapshot {
 	t.Helper()
-	s, err := l.Snapshot()
+	s, err := l.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestUngatedProviderIsRefusedBeforeItConsumesATurn(t *testing.T) {
 	if err != nil {
 		t.Fatal("budget wrapper already consumed the provider's turn: ", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 }
 
 func TestUnpricedProviderOrModelIsRefusedBeforeSending(t *testing.T) {
@@ -260,7 +260,7 @@ func TestMeteringImposesNoDeadlineOnTheStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if probe.hasDeadline {
 		t.Fatal("the budget wrapper bounded the stream with a deadline of its own")
 	}
@@ -297,7 +297,9 @@ func TestARateLimitedAttemptIsNotCountedAsSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	drain(t, stream)
-	stream.Close()
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 	s := snapshot(t, l)
 	if calls.Load() != 2 || s.RefusedAttempts != 1 || s.RetainedAttempts != 0 || s.CommittedNanoUSD() != turnCost {
 		t.Fatalf("calls=%d snapshot=%+v; a 429 is refused before the model runs and must cost nothing", calls.Load(), s)
@@ -334,7 +336,9 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
 	if _, err := stream.Response(); err == nil {
 		t.Fatal("a truncated stream produced a response")
 	}
-	stream.Close()
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 	// 200 fresh at 4000 + 800 cached at 200, plus all 100 allowed output tokens at 20000.
 	const bound = 200*4_000 + 800*200 + 100*20_000
 	if s := snapshot(t, l); s.RetainedNanoUSD != bound || s.RetainedAttempts != 1 || s.Settled != 0 {
@@ -375,7 +379,9 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	if _, err := stream.Response(); err == nil {
 		t.Fatal("a truncated stream produced a response")
 	}
-	stream.Close()
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 	s := snapshot(t, l)
 	if s.SpentNanoUSD != 0 || s.Settled != 0 || s.RetainedAttempts != 1 || s.RetainedNanoUSD <= 0 || len(s.InFlight) != 0 {
 		t.Fatalf("snapshot = %+v, want the whole reservation retained and nothing settled", s)

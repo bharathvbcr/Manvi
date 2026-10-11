@@ -34,13 +34,13 @@ func TestWriteRefusesAfterDirectorySwapToOutside(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	victim := filepath.Join(outside, "app.conf")
-	if err := os.WriteFile(victim, []byte("innocent\n"), 0o644); err != nil {
+	if err := os.WriteFile(victim, []byte("innocent\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("old\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,10 +71,10 @@ func TestWriteRefusesWhenLeafBecomesASymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	victim := filepath.Join(outside, "real.txt")
-	if err := os.WriteFile(victim, []byte("keep\n"), 0o644); err != nil {
+	if err := os.WriteFile(victim, []byte("keep\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("old\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +106,7 @@ func TestWriteRefusesWhenLeafBecomesASymlink(t *testing.T) {
 func TestCreateRefusesAfterDirectorySwap(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestPinRefusesPreexistingEscapingSymlink(t *testing.T) {
 func TestPinRefusesSymlinkedLeaf(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(root, "link.txt")); err != nil {
@@ -161,11 +161,11 @@ func TestPinRefusesSymlinkedLeaf(t *testing.T) {
 func TestReadRefusesAfterDirectorySwap(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("inside\n"), 0o755); err != nil {
-		if err := os.MkdirAll(filepath.Join(root, "configs"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("inside\n"), 0o600); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, "configs"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("inside\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "configs", "app.conf"), []byte("inside\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -175,7 +175,7 @@ func TestReadRefusesAfterDirectorySwap(t *testing.T) {
 	}
 
 	swapDirWithSymlink(t, root, "configs", outside)
-	if err := os.WriteFile(filepath.Join(outside, "app.conf"), []byte("OUTSIDE SECRET\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "app.conf"), []byte("OUTSIDE SECRET\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -219,7 +219,7 @@ func TestPinnedHappyPath(t *testing.T) {
 
 	// Production creates missing directories before pinning (writeFile's
 	// MkdirAll step), so the test does too.
-	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	pinned, err := pinWriteTarget(root, "src/main.go")

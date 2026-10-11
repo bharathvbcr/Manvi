@@ -165,7 +165,7 @@ func (s Secret) String() string {
 // Format redacts under every verb, including %v, %+v, %#v, and %q. Without
 // this, a struct holding a Secret printed with %#v would render the field's
 // contents directly.
-func (s Secret) Format(f fmt.State, verb rune) { fmt.Fprint(f, s.String()) }
+func (s Secret) Format(f fmt.State, verb rune) { _, _ = fmt.Fprint(f, s.String()) }
 
 // GoString redacts under %#v.
 func (s Secret) GoString() string { return "credentials.Secret(" + s.String() + ")" }

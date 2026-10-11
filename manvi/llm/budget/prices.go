@@ -54,7 +54,7 @@ func (r Rates) validate() error {
 
 // Validate refuses a table that could not bound a charge.
 func (p Prices) Validate() error {
-	if err := p.Rates.validate(); err != nil {
+	if err := p.validate(); err != nil {
 		return err
 	}
 	if p.LongPromptAbove < 0 {

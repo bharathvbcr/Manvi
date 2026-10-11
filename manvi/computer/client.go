@@ -234,7 +234,7 @@ func (c *Client) read(r io.Reader) {
 	for _, ch := range pending {
 		ch <- pendingResult{err: terminal}
 	}
-	if c.cmd.Process != nil && terminal != io.EOF {
+	if c.cmd.Process != nil && !errors.Is(terminal, io.EOF) {
 		proc.KillGroup(c.cmd.Process.Pid)
 		_ = c.cmd.Process.Kill()
 	}

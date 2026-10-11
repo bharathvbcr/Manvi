@@ -60,7 +60,7 @@ type Budget interface {
 	// Headroom is what may still be reserved against the cap. An error means
 	// the cap could not be read, and the pool then starts nothing rather than
 	// guessing that there is room.
-	Headroom() (int64, error)
+	Headroom(ctx context.Context) (int64, error)
 	// Exhausted reports whether err is the cap refusing a reservation.
 	Exhausted(err error) bool
 	// Render shows an amount the way the cap's own messages do.
@@ -398,7 +398,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 		return nil, fmt.Errorf("%w: %d tasks requested, limit is %d",
 			ErrFanoutExceeded, len(tasks), p.MaxFanout)
 	}
-	capacity, err := p.admitAll(tasks)
+	capacity, err := p.admitAll(ctx, tasks)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +424,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 			heldNow, runningNow := held, running
 			mu.Unlock()
 			var wait bool
-			why, wait = p.admitOne(task, capacity-heldNow, &exhausted)
+			why, wait = p.admitOne(ctx, task, capacity-heldNow, &exhausted)
 			if why == "" {
 				break
 			}
@@ -479,7 +479,7 @@ func (p *Pool) Run(ctx context.Context, tasks []Task) ([]Result, error) {
 // reserved against the cap's current headroom even with nothing else running,
 // and returns that headroom, which bounds what the running children may hold
 // together. Zero when no child is metered.
-func (p *Pool) admitAll(tasks []Task) (int64, error) {
+func (p *Pool) admitAll(ctx context.Context, tasks []Task) (int64, error) {
 	if p.Budget == nil {
 		return 0, nil
 	}
@@ -505,7 +505,7 @@ func (p *Pool) admitAll(tasks []Task) (int64, error) {
 	if metered == 0 {
 		return 0, nil
 	}
-	headroom, err := p.Budget.Headroom()
+	headroom, err := p.Budget.Headroom(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("%w: the spend cap could not be read, so nothing was started: %w", ErrBudget, err)
 	}
@@ -527,14 +527,14 @@ func (p *Pool) admitAll(tasks []Task) (int64, error) {
 // began, less what the running children may reserve. The headroom read now is
 // the cap's own answer, which also shows spend by other sessions; the child
 // starts only if both have room for it.
-func (p *Pool) admitOne(task Task, room int64, exhausted *atomic.Bool) (why string, wait bool) {
+func (p *Pool) admitOne(ctx context.Context, task Task, room int64, exhausted *atomic.Bool) (why string, wait bool) {
 	if p.Budget == nil {
 		return "", false
 	}
 	var headroom int64
 	var err error
 	if task.Reserve > 0 {
-		headroom, err = p.Budget.Headroom()
+		headroom, err = p.Budget.Headroom(ctx)
 	}
 	// Read after the headroom, so a sibling that finished while it was being
 	// read is seen.

@@ -66,7 +66,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help", "help":
-			fmt.Fprint(out, serveUsage)
+			_, _ = fmt.Fprint(out, serveUsage)
 			return nil
 		case "--posture":
 			if i+1 >= len(args) {
@@ -149,7 +149,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			}
 			resolver := credentials.NewResolver()
 			armScrubber(scrubber, resolver)
-			provider, err := buildProvider(name, reg, resolver, io.Discard, model)
+			provider, err := buildProvider(ctx, name, reg, resolver, io.Discard, model)
 			armScrubber(scrubber, resolver)
 			if err != nil {
 				return nil, err

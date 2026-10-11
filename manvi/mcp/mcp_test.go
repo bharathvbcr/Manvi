@@ -57,7 +57,7 @@ func TestParseOpenPluginManifest(t *testing.T) {
 func TestDiscoverOpenPlugins(t *testing.T) {
 	tmpDir := t.TempDir()
 	pluginDir := filepath.Join(tmpDir, "plugins", "my-plugin")
-	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+	if err := os.MkdirAll(pluginDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +71,7 @@ func TestDiscoverOpenPlugins(t *testing.T) {
 			"args": ["test"]
 		}
 	}`
-	if err := os.WriteFile(manifestPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +103,7 @@ func TestManagerConfigFile(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

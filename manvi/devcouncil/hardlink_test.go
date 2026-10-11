@@ -78,7 +78,7 @@ func TestPinnedReadRefusesATargetWithASecondName(t *testing.T) {
 // aliasing, and a rung that refuses ordinary files is a rung operators turn off.
 func TestPinnedWriteAndReadStillAllowASingleNamedFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("old\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pinned, err := pinWriteTarget(root, "notes.txt")

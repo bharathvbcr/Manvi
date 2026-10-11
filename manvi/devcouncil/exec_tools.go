@@ -59,7 +59,7 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 		if task != nil {
 			taskID = task.ID
 		}
-		refused, err := gate.EvaluateRedirects(args.Command, taskID,
+		refused, err := gate.EvaluateRedirects(args.Command, taskID, task != nil,
 			func(target string) (policy.Decision, error) {
 				return r.deps.Gate.EvaluateWrite(target, task, dc.OpWrite)
 			})

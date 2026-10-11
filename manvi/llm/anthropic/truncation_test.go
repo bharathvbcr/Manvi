@@ -66,9 +66,9 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	err = drainNext(t, stream)
-	if err == io.EOF || err == nil {
+	if errors.Is(err, io.EOF) || err == nil {
 		t.Fatalf("a stream with no message_stop ended as %v, want a failure", err)
 	}
 	var te *transport.Error
@@ -245,7 +245,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var text strings.Builder
 	var failure error
 	for {
@@ -256,7 +256,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 		}
 		text.WriteString(chunk.Text)
 	}
-	if failure == nil || failure == io.EOF || !strings.Contains(failure.Error(), "overloaded_error") {
+	if failure == nil || errors.Is(failure, io.EOF) || !strings.Contains(failure.Error(), "overloaded_error") {
 		t.Fatalf("failure = %v, want the in-stream overloaded_error", failure)
 	}
 	if text.String() != "partial" {

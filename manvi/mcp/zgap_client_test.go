@@ -24,7 +24,7 @@ import "time"
 
 func main() { time.Sleep(120 * time.Second) }
 `
-	if err := os.WriteFile(src, []byte(script), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("go", "build", "-o", bin, src).CombinedOutput(); err != nil {
@@ -131,7 +131,7 @@ func main() {
 	}
 }
 `
-	if err := os.WriteFile(src, []byte(script), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("go", "build", "-o", bin, src).CombinedOutput(); err != nil {

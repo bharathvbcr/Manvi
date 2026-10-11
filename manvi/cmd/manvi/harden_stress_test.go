@@ -122,7 +122,7 @@ llm:
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			cfgPath := filepath.Join(tmp, "config.yaml")
-			if err := os.WriteFile(cfgPath, []byte(tc.yaml), 0o644); err != nil {
+			if err := os.WriteFile(cfgPath, []byte(tc.yaml), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -165,7 +165,7 @@ func TestConcurrentProjectRootAndPaths(t *testing.T) {
 		root = resolved
 	}
 
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,7 +173,7 @@ func TestConcurrentProjectRootAndPaths(t *testing.T) {
 	var subs []string
 	for i := 0; i < 10; i++ {
 		sub := filepath.Join(root, "pkg", "sub", string(rune('a'+i)))
-		if err := os.MkdirAll(sub, 0o755); err != nil {
+		if err := os.MkdirAll(sub, 0o750); err != nil {
 			t.Fatal(err)
 		}
 		subs = append(subs, sub)
@@ -257,12 +257,12 @@ func TestCorruptedDevMapIsRefusedNotIgnored(t *testing.T) {
 		root = resolved
 	}
 	dcDir := filepath.Join(root, ".devcouncil")
-	if err := os.Mkdir(dcDir, 0o755); err != nil {
+	if err := os.Mkdir(dcDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
 	graphFile := filepath.Join(dcDir, "code_graph.json")
-	if err := os.WriteFile(graphFile, []byte("{ malformed json"), 0o644); err != nil {
+	if err := os.WriteFile(graphFile, []byte("{ malformed json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,7 +332,7 @@ func TestCLICommandsRunCleanly(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 

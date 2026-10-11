@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,12 +47,12 @@ func TestOpenAICompatStreamingText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var chunks []llm.Chunk
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -112,12 +113,12 @@ func TestOpenAICompatThinkTagExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var textChunks, reasoningChunks []llm.Chunk
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -191,11 +192,11 @@ func TestOpenAICompatToolCallWithMarkdownSanitizationAndSyntheticID(t *testing.T
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for {
 		_, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -270,9 +271,9 @@ func TestOpenAICompatSamplingParametersInWirePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -322,12 +323,12 @@ func TestOpenAICompatFragmentedThinkTagStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var textParts, reasoningParts []string
 	for {
 		chunk, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -389,10 +390,10 @@ func TestOpenAICompatFallbackHermesToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -456,11 +457,11 @@ func TestOpenAICompatFallbackMarkdownToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for {
 		_, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -524,10 +525,10 @@ func TestOpenAICompatFallbackArbitraryToolNameAndPythonLiterals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -599,10 +600,10 @@ func TestOpenAICompatMultipleFallbackToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream failed: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -722,10 +723,10 @@ func TestAStringErrorFieldDoesNotAbandonTheStream(t *testing.T) {
 			if err != nil {
 				failure = err
 			} else {
-				defer stream.Close()
+				defer func() { _ = stream.Close() }()
 				for {
 					_, err := stream.Next()
-					if err == io.EOF {
+					if errors.Is(err, io.EOF) {
 						break
 					}
 					if err != nil {

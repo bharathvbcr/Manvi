@@ -41,10 +41,10 @@ func TestTheConfiguredMCPPathIsRead(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	cfg := filepath.Join(dir, "config", "servers.json")
-	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg, []byte(`{"mcpServers":{"declared-server":{"command":"cat"}}}`), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte(`{"mcpServers":{"declared-server":{"command":"cat"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

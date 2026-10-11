@@ -57,6 +57,7 @@ func trickyUntrackedTree(t *testing.T, root string) {
 	write(t, root, "big.txt", big.String())
 
 	write(t, root, "run.sh", "#!/bin/sh\necho hi\n")
+	// #nosec G302 -- the file has to be executable: how an executable untracked file renders is the case.
 	if err := os.Chmod(filepath.Join(root, "run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -74,10 +75,10 @@ func trickyUntrackedTree(t *testing.T, root string) {
 	// A nested repository lists as "nested/", which --no-index cannot render:
 	// the error path, which gitDiff skips and scopedDiff names.
 	nested := filepath.Join(root, "nested")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
+	if err := os.MkdirAll(nested, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "init", "-q")
+	cmd := exec.CommandContext(t.Context(), "git", "init", "-q")
 	cmd.Dir = nested
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init nested: %v\n%s", err, out)
@@ -293,14 +294,15 @@ func BenchmarkGitDiffUntracked(b *testing.B) {
 		{"init", "-q"}, {"config", "user.email", "b@test"}, {"config", "user.name", "b"},
 		{"commit", "-q", "--allow-empty", "-m", "seed"},
 	} {
-		cmd := exec.Command("git", args...)
+		// #nosec G204 -- the binary is the literal "git"; the arguments are this benchmark's own.
+		cmd := exec.CommandContext(b.Context(), "git", args...)
 		cmd.Dir = root
 		if out, err := cmd.CombinedOutput(); err != nil {
 			b.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	for i := 0; i < 300; i++ {
-		if err := os.WriteFile(filepath.Join(root, "f"+itoa(i)+".go"), []byte("package f\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "f"+itoa(i)+".go"), []byte("package f\n"), 0o600); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -236,7 +237,8 @@ func TestSystemPromptReturnsTheMostRecent(t *testing.T) {
 }
 
 func asInvariant(err error, target **InvariantError) bool {
-	if e, ok := err.(*InvariantError); ok {
+	var e *InvariantError
+	if errors.As(err, &e) {
 		*target = e
 		return true
 	}

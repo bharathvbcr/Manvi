@@ -80,7 +80,12 @@ func TestCloneMessagesOwnsItsBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	data[0], args[2] = 9, 'z'
-	if got[0].Content[0].(ImageBlock).Data[0] != 1 || string(got[0].Content[1].(ToolCallBlock).Arguments) != `{"a":1}` {
+	img, okImg := got[0].Content[0].(ImageBlock)
+	call, okCall := got[0].Content[1].(ToolCallBlock)
+	if !okImg || !okCall {
+		t.Fatalf("clone changed the block types to %T and %T", got[0].Content[0], got[0].Content[1])
+	}
+	if img.Data[0] != 1 || string(call.Arguments) != `{"a":1}` {
 		t.Fatal("clone shares memory with its source")
 	}
 }

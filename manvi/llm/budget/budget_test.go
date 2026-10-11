@@ -19,7 +19,7 @@ import (
 
 func testLedger(t *testing.T, limit int64) *Ledger {
 	t.Helper()
-	l, err := Open(filepath.Join(t.TempDir(), "ledger.json"), limit)
+	l, err := Open(context.Background(), filepath.Join(t.TempDir(), "ledger.json"), limit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func testLedger(t *testing.T, limit int64) *Ledger {
 
 func snapshot(t *testing.T, l *Ledger) Snapshot {
 	t.Helper()
-	s, err := l.Snapshot()
+	s, err := l.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func accepted(t *testing.T, l *Ledger, amount int64) uint64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err != nil {
+	if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -54,14 +54,14 @@ func TestUnknownAndRejectedRetainReservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = l.transportResult(first, transport.AttemptResult{State: transport.AttemptUnknown}, false); err != nil {
+	if err = l.transportResult(context.Background(), first, transport.AttemptResult{State: transport.AttemptUnknown}, false); err != nil {
 		t.Fatal(err)
 	}
 	second, err := l.reserve(ctx, "m", 200)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = l.transportResult(second, transport.AttemptResult{State: transport.AttemptRejected, Status: 503}, false); err != nil {
+	if err = l.transportResult(context.Background(), second, transport.AttemptResult{State: transport.AttemptRejected, Status: 503}, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = l.reserve(ctx, "m", 1); !errors.Is(err, ErrExhausted) {
@@ -79,14 +79,14 @@ func TestProvenNoSendRefundsAndUsageSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = l.transportResult(id, transport.AttemptResult{State: transport.AttemptNotSent}, false); err != nil {
+	if err = l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptNotSent}, false); err != nil {
 		t.Fatal(err)
 	}
 	if s := snapshot(t, l); s.CommittedNanoUSD() != 0 || len(s.InFlight) != 0 {
 		t.Fatalf("not-sent attempt kept its reservation: %+v", s)
 	}
 	id = accepted(t, l, 200)
-	if err = l.settle(id, 24); err != nil {
+	if err = l.settle(context.Background(), id, 24); err != nil {
 		t.Fatal(err)
 	}
 	s := snapshot(t, l)
@@ -98,7 +98,7 @@ func TestProvenNoSendRefundsAndUsageSettles(t *testing.T) {
 func TestOverrunIsRecordedInFull(t *testing.T) {
 	l := testLedger(t, 400)
 	id := accepted(t, l, 10)
-	if err := l.settle(id, 50); err != nil {
+	if err := l.settle(context.Background(), id, 50); err != nil {
 		t.Fatal(err)
 	}
 	if s := snapshot(t, l); s.SpentNanoUSD != 50 || s.Overruns != 1 {
@@ -115,6 +115,39 @@ func TestCancelledReserveRecordsNothing(t *testing.T) {
 	}
 	if s := snapshot(t, l); len(s.InFlight) != 0 || s.NextID != 1 {
 		t.Fatalf("cancelled attempt recorded: %+v", s)
+	}
+}
+
+// The reads a caller makes — opening the ledger, reporting it, reading the
+// headroom, reconciling it — wait on the same lock as a reservation, and they
+// are the caller's to cancel. Before they took a context they waited out the
+// whole lockWait, thirty seconds, whatever the caller had given up on.
+func TestACancelledCallerStopsWaitingForTheLedgerLock(t *testing.T) {
+	l := testLedger(t, 400)
+	unlock, err := lockFile(context.Background(), l.path+".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	for name, read := range map[string]func(context.Context) error{
+		"open":      func(ctx context.Context) error { _, err := Open(ctx, l.path, 400); return err },
+		"snapshot":  func(ctx context.Context) error { _, err := l.Snapshot(ctx); return err },
+		"inspect":   func(ctx context.Context) error { _, err := Inspect(ctx, l.path); return err },
+		"headroom":  func(ctx context.Context) error { _, err := l.Headroom(ctx); return err },
+		"reconcile": func(ctx context.Context) error { _, err := ReconcileAt(ctx, l.path); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			err := read(ctx)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("error = %v, want the caller's deadline", err)
+			}
+			if waited := time.Since(start); waited > 5*time.Second {
+				t.Fatalf("waited %s for a caller that gave up after 50ms", waited)
+			}
+		})
 	}
 }
 
@@ -140,14 +173,14 @@ func TestCancellationWhileWaitingForTheLockDoesNotReserve(t *testing.T) {
 
 func TestReservationsSurviveRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.json")
-	l, err := Open(path, 200)
+	l, err := Open(context.Background(), path, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = l.reserve(context.Background(), "m", 200); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := Open(path, 200)
+	restarted, err := Open(context.Background(), path, 200)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +193,7 @@ func TestHandlesSharingOneFileCannotOverspend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	var handles []*Ledger
 	for range 4 {
-		l, err := Open(path, 100)
+		l, err := Open(context.Background(), path, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -192,7 +225,8 @@ func TestProcessesSharingOneFileCannotOverspend(t *testing.T) {
 	const workers, each = 4, 15
 	var cmds []*exec.Cmd
 	for range workers {
-		cmd := exec.Command(os.Args[0])
+		// #nosec G204 G702 -- re-execs this test binary as the ledger helper; the environment selects the role.
+		cmd := exec.CommandContext(t.Context(), os.Args[0])
 		cmd.Env = append(os.Environ(), "BUDGET_HELPER_LEDGER="+path, "BUDGET_HELPER_COUNT="+strconv.Itoa(each))
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
@@ -204,7 +238,7 @@ func TestProcessesSharingOneFileCannotOverspend(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := Inspect(path)
+	s, err := Inspect(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +266,7 @@ func reserveWorker(path string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	l, err := Open(path, 50)
+	l, err := Open(context.Background(), path, 50)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -255,7 +289,7 @@ func reserveWorker(path string) int {
 func TestFileStaysBoundedAsSpendAccumulates(t *testing.T) {
 	l := testLedger(t, 1_000_000)
 	cycle := func() {
-		if err := l.settle(accepted(t, l, 10), 3); err != nil {
+		if err := l.settle(context.Background(), accepted(t, l, 10), 3); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -289,7 +323,7 @@ func TestFailedPersistenceKeepsTheReservation(t *testing.T) {
 	// test reported a broken ledger instead of a broken setup.
 	defer func(saved func(string, string) (*os.File, error)) { createTemp = saved }(createTemp)
 	createTemp = func(string, string) (*os.File, error) { return nil, os.ErrPermission }
-	err := l.settle(id, 1)
+	err := l.settle(context.Background(), id, 1)
 	if err == nil {
 		t.Fatal("failed save returned success")
 	}
@@ -305,26 +339,26 @@ func TestSettlementRequiresAcceptedSingleUseAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.settle(id, 1); err == nil {
+	if err := l.settle(context.Background(), id, 1); err == nil {
 		t.Fatal("unaccepted request settled")
 	}
-	if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptNotSent}, false); err != nil {
+	if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptNotSent}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.settle(id, 1); err == nil {
+	if err := l.settle(context.Background(), id, 1); err == nil {
 		t.Fatal("unsent request settled")
 	}
-	if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err == nil {
+	if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptAccepted}, false); err == nil {
 		t.Fatal("transport result rewritten")
 	}
-	if err := l.transportResult(99, transport.AttemptResult{State: transport.AttemptAccepted}, false); err == nil {
+	if err := l.transportResult(context.Background(), 99, transport.AttemptResult{State: transport.AttemptAccepted}, false); err == nil {
 		t.Fatal("unknown attempt accepted")
 	}
 	settled := accepted(t, l, 10)
-	if err := l.settle(settled, 1); err != nil {
+	if err := l.settle(context.Background(), settled, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.settle(settled, 1); err == nil {
+	if err := l.settle(context.Background(), settled, 1); err == nil {
 		t.Fatal("attempt settled twice")
 	}
 }
@@ -333,7 +367,7 @@ func TestRetainIsIdempotent(t *testing.T) {
 	l := testLedger(t, 400)
 	id := accepted(t, l, 30)
 	for range 3 {
-		if err := l.retain(id); err != nil {
+		if err := l.retain(context.Background(), id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -367,9 +401,10 @@ func TestOpenRejectsIncoherentLedgers(t *testing.T) {
 			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Open(path, 400); err == nil {
+			if _, err := Open(context.Background(), path, 400); err == nil {
 				t.Fatal("invalid saved ledger accepted")
 			}
+			// #nosec G304 -- a path under this test's own t.TempDir.
 			after, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -382,11 +417,11 @@ func TestOpenRejectsIncoherentLedgers(t *testing.T) {
 }
 
 func TestOpenRefusesRelativePathAndBadLimit(t *testing.T) {
-	if _, err := Open("ledger.json", 1); err == nil {
+	if _, err := Open(context.Background(), "ledger.json", 1); err == nil {
 		t.Fatal("relative path accepted")
 	}
 	for _, limit := range []int64{0, -1} {
-		if _, err := Open(filepath.Join(t.TempDir(), "l.json"), limit); err == nil {
+		if _, err := Open(context.Background(), filepath.Join(t.TempDir(), "l.json"), limit); err == nil {
 			t.Fatalf("limit %d accepted", limit)
 		}
 	}
@@ -408,7 +443,7 @@ func TestAnUnbilledRejectionReleasesItsReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptRejected, Status: 429}, true); err != nil {
+	if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptRejected, Status: 429}, true); err != nil {
 		t.Fatal(err)
 	}
 	s := snapshot(t, l)
@@ -421,7 +456,7 @@ func TestAnUnbilledRejectionReleasesItsReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.transportResult(id, transport.AttemptResult{State: transport.AttemptUnknown}, true); err != nil {
+	if err := l.transportResult(context.Background(), id, transport.AttemptResult{State: transport.AttemptUnknown}, true); err != nil {
 		t.Fatal(err)
 	}
 	if s := snapshot(t, l); s.RetainedNanoUSD != 200 {
@@ -431,10 +466,10 @@ func TestAnUnbilledRejectionReleasesItsReservation(t *testing.T) {
 
 func TestRetainAtRecordsTheTighterBound(t *testing.T) {
 	l := testLedger(t, 400)
-	if err := l.retainAt(accepted(t, l, 200), 30); err != nil {
+	if err := l.retainAt(context.Background(), accepted(t, l, 200), 30); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.retainAt(accepted(t, l, 10), 25); err != nil {
+	if err := l.retainAt(context.Background(), accepted(t, l, 10), 25); err != nil {
 		t.Fatal(err)
 	}
 	if s := snapshot(t, l); s.RetainedNanoUSD != 55 || s.RetainedAttempts != 2 {

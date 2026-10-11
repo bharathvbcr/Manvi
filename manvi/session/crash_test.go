@@ -83,7 +83,6 @@ func TestASaveKilledPartWayLeavesALoadableSession(t *testing.T) {
 		if report.Turns < lastTurns {
 			t.Fatalf("round %d: the session went back from %d turns to %d", round, lastTurns, report.Turns)
 		}
-		lastTurns = report.Turns
 		t.Logf("round %d: generation %d, %d turns survived the kill", round, report.Generation, report.Turns)
 		msgs, err := log.DeriveMessages()
 		if err != nil || len(msgs) != report.Turns {

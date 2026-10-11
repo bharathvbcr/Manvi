@@ -126,7 +126,7 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 
 	area := r
 	header, area := area.SplitTop(2)
-	title := render.Line{}
+	var title render.Line
 	switch {
 	case fxOn && th.Unicode && th.Name != "plain":
 		title = fx.GradientSweep("  manvi", th.Accent, th.Info, tick, render.Bold)

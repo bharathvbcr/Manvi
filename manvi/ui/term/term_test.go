@@ -1,6 +1,7 @@
 package term
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -122,7 +123,7 @@ func TestStartRefusesANonTerminal(t *testing.T) {
 	}
 	defer f.Close()
 	tr := New(f, f)
-	if err := tr.Start(Options{AltScreen: true}); err != ErrNotATerminal {
+	if err := tr.Start(Options{AltScreen: true}); !errors.Is(err, ErrNotATerminal) {
 		t.Fatalf("Start on a file returned %v", err)
 	}
 	// And teardown on something never started must be a no-op, because it runs

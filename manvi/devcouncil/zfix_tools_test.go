@@ -65,7 +65,7 @@ func TestZfixtoolsApprovalCardCarriesTheCommandThatWillRun(t *testing.T) {
 	// the command genuinely runs. Pointing it at an unplanned path instead is
 	// the separate guarantee asserted by the test below.
 	const command = "cat seed.txt > src/calc.go"
-	if err := os.MkdirAll(filepath.Join(f.root, "src"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(f.root, "src"), 0o750); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
 	result := f.call("devcouncil_exec_command", map[string]string{"command": command})
@@ -301,11 +301,11 @@ func TestZfixtoolsGrepDoesNotReadThroughASymlinkOutOfTheRepository(t *testing.T)
 func TestZfixtoolsGrepStillReadsOrdinaryFiles(t *testing.T) {
 	f := newFixture(t)
 	nested := filepath.Join(f.root, "pkg", "inner")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
+	if err := os.MkdirAll(nested, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(nested, "found.go"),
-		[]byte("package inner\n// zfixtoolsNeedle\n"), 0o644); err != nil {
+		[]byte("package inner\n// zfixtoolsNeedle\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := f.payload("devcouncil_grep", map[string]any{"pattern": "zfixtoolsNeedle"})
@@ -351,7 +351,7 @@ func TestZfixtoolsReadFileRefusesANonRegularFileInsideTheRepository(t *testing.T
 func TestZfixtoolsReadFileIsBounded(t *testing.T) {
 	f := newFixture(t)
 	big := filepath.Join(f.root, "zfixtools-big.bin")
-	if err := os.WriteFile(big, bytes.Repeat([]byte("a"), maxToolReadBytes+1024), 0o644); err != nil {
+	if err := os.WriteFile(big, bytes.Repeat([]byte("a"), maxToolReadBytes+1024), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	res := f.call("devcouncil_read_file", map[string]string{"path": "zfixtools-big.bin"})
@@ -364,7 +364,7 @@ func TestZfixtoolsReadFileIsBounded(t *testing.T) {
 
 	// A file under the ceiling is still read whole.
 	small := filepath.Join(f.root, "zfixtools-small.txt")
-	if err := os.WriteFile(small, []byte("hello\n"), 0o644); err != nil {
+	if err := os.WriteFile(small, []byte("hello\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	okRes := f.call("devcouncil_read_file", map[string]string{"path": "zfixtools-small.txt"})
@@ -488,11 +488,11 @@ func zfixtoolsAssertNoOrphan(t *testing.T, sentinel string) {
 func TestZfixtoolsListDirCapsAndSaysSo(t *testing.T) {
 	f := newFixture(t)
 	dir := filepath.Join(f.root, "many")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 620; i++ {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.txt", i)), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.txt", i)), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

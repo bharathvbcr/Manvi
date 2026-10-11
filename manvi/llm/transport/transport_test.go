@@ -251,7 +251,7 @@ func TestSSEParsesNamedEvents(t *testing.T) {
 	if err != nil || second.Name != "content_block_delta" {
 		t.Fatalf("second = %+v, err = %v", second, err)
 	}
-	if _, err := s.Next(); err != io.EOF {
+	if _, err := s.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected EOF, got %v", err)
 	}
 }
@@ -265,11 +265,11 @@ func TestSSEHonoursTheDoneSentinel(t *testing.T) {
 	if _, err := s.Next(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Next(); err != io.EOF {
+	if _, err := s.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("[DONE] must terminate the stream, got %v", err)
 	}
 	// And it stays terminated — content after the sentinel is never delivered.
-	if _, err := s.Next(); err != io.EOF {
+	if _, err := s.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("stream must stay closed, got %v", err)
 	}
 }
@@ -304,7 +304,7 @@ func TestSSEDeliversAFinalEventWithoutTrailingBlankLine(t *testing.T) {
 	if err != nil || string(event.Data) != `{"a":1}` {
 		t.Fatalf("event = %+v, err = %v", event, err)
 	}
-	if _, err := s.Next(); err != io.EOF {
+	if _, err := s.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected EOF, got %v", err)
 	}
 }
@@ -330,7 +330,7 @@ func TestSSEOverAnHTTPResponse(t *testing.T) {
 	count := 0
 	for {
 		_, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

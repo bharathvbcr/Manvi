@@ -270,7 +270,10 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	// PostStream rather than Post so an error chunk that arrives before any
 	// output is retried like the status it stands for; see preflight.
 	wait := transport.FirstTokenBudget(a.opts.StallTimeout)
-	respBody, err := a.client.PostStream(ctx, ChatCompletionsPath, body, preflight(wait, a.opts.Name))
+	// bodyclose takes preflight(...), which returns the judge PostStream calls
+	// on each response, for a call that yields an unclosed response. The body
+	// is respBody, owned and closed by the stream newStream returns.
+	respBody, err := a.client.PostStream(ctx, ChatCompletionsPath, body, preflight(wait, a.opts.Name)) //nolint:bodyclose // see above
 	if err != nil {
 		return nil, err
 	}

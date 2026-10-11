@@ -597,7 +597,7 @@ func readNotice(r *bufio.Reader) (line string, truncated bool, err error) {
 			truncated = true
 		}
 		switch {
-		case readErr == bufio.ErrBufferFull:
+		case errors.Is(readErr, bufio.ErrBufferFull):
 			// More of this same line is waiting. Keep going: the tail is
 			// counted and discarded above, never accumulated.
 			continue
@@ -810,7 +810,7 @@ func (r *Runner) copyToClipboard(text string) {
 		truncated = true
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Fprintf(r.term.Out(), "\x1b]52;c;%s\x07", encoded)
+	_, _ = fmt.Fprintf(r.term.Out(), "\x1b]52;c;%s\x07", encoded)
 	// The painter believes it owns the screen, and this wrote past it.
 	r.painter.Invalidate()
 	if truncated {

@@ -28,7 +28,7 @@ func writeOversizedFile(t *testing.T, root, name string) {
 	for b.Len() < maxGitCaptureBytes+(4<<20) {
 		b.WriteString(line)
 	}
-	if err := os.WriteFile(filepath.Join(root, name), []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, name), []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

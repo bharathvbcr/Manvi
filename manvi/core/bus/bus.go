@@ -92,7 +92,11 @@ func register[E any](b *Bus, mode Mode, fn any) (Dispose, error) {
 	}, nil
 }
 
-func snapshot[E any](b *Bus, want Mode) ([]any, error) {
+// snapshot returns the listeners registered for E as F, the function type the
+// mode's registrar stored. The assertion is checked: a listener of any other
+// type is reported as an error rather than panicking in the middle of a
+// dispatch.
+func snapshot[E, F any](b *Bus, want Mode) ([]F, error) {
 	key := reflect.TypeOf((*E)(nil)).Elem()
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -104,9 +108,14 @@ func snapshot[E any](b *Bus, want Mode) ([]any, error) {
 		return nil, fmt.Errorf("bus: %s is a %s event; cannot dispatch it as %s",
 			key, s.mode, want)
 	}
-	out := make([]any, len(s.listeners))
+	out := make([]F, len(s.listeners))
 	for i, l := range s.listeners {
-		out[i] = l.fn
+		fn, ok := l.fn.(F)
+		if !ok {
+			return nil, fmt.Errorf("bus: a %s listener for %s has type %T, want %T",
+				want, key, l.fn, fn)
+		}
+		out[i] = fn
 	}
 	return out, nil
 }
@@ -120,7 +129,7 @@ func OnWaterfall[E any](b *Bus, fn func(E, Next[E]) E) (Dispose, error) {
 // short-circuits: the listeners behind it never run, and the caller cannot tell
 // which one decided — which is the point.
 func Waterfall[E any](b *Bus, event E) (E, error) {
-	fns, err := snapshot[E](b, ModeWaterfall)
+	fns, err := snapshot[E, func(E, Next[E]) E](b, ModeWaterfall)
 	if err != nil {
 		return event, err
 	}
@@ -129,7 +138,7 @@ func Waterfall[E any](b *Bus, event E) (E, error) {
 		if i >= len(fns) {
 			return v
 		}
-		return fns[i].(func(E, Next[E]) E)(v, func(nv E) E { return run(i+1, nv) })
+		return fns[i](v, func(nv E) E { return run(i+1, nv) })
 	}
 	return run(0, event), nil
 }
@@ -141,12 +150,12 @@ func OnSerial[E any](b *Bus, fn func(context.Context, E) error) (Dispose, error)
 
 // Serial runs listeners in order and stops at the first error.
 func Serial[E any](b *Bus, ctx context.Context, event E) error {
-	fns, err := snapshot[E](b, ModeSerial)
+	fns, err := snapshot[E, func(context.Context, E) error](b, ModeSerial)
 	if err != nil {
 		return err
 	}
 	for _, fn := range fns {
-		if err := fn.(func(context.Context, E) error)(ctx, event); err != nil {
+		if err := fn(ctx, event); err != nil {
 			return err
 		}
 	}

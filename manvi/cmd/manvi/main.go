@@ -183,7 +183,7 @@ func exitStatus(stdout, notes io.Writer, args []string) int {
 
 	if errors.Is(err, errUsage) {
 		// A request for help is not a failure.
-		fmt.Fprint(answer, runUsage)
+		_, _ = fmt.Fprint(answer, runUsage)
 		err = nil
 	}
 
@@ -244,7 +244,7 @@ func statusFor(err error, notes io.Writer) int {
 		// after issuing an override that was never going to apply.
 		return 7
 	default:
-		fmt.Fprintf(notes, "manvi: %v\n", err)
+		_, _ = fmt.Fprintf(notes, "manvi: %v\n", err)
 		return 1
 	}
 }
@@ -270,7 +270,7 @@ func run(out, notes io.Writer, args []string) error {
 	args, yolo := takeYolo(args)
 
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		fmt.Fprint(out, usage)
+		_, _ = fmt.Fprint(out, usage)
 		return nil
 	}
 
@@ -355,7 +355,7 @@ func run(out, notes io.Writer, args []string) error {
 			return err
 		}
 		for _, line := range report.Lines() {
-			fmt.Fprintf(notes, "manvi: %s\n", line)
+			_, _ = fmt.Fprintf(notes, "manvi: %s\n", line)
 		}
 	}
 
@@ -393,9 +393,9 @@ func run(out, notes io.Writer, args []string) error {
 	case "tiers":
 		return showTiers(out, reg)
 	case "budget":
-		return budgetCommand(out, args[1:])
+		return budgetCommand(context.Background(), out, args[1:])
 	case "local":
-		return showLocal(out, reg, args[1:])
+		return showLocal(context.Background(), out, reg, args[1:])
 	case "pull", "push", "issues":
 		return runQuickAction(context.Background(), out, projectRoot(), args[0], args[1:], osQuickCommandRunner{})
 	case "watch":
@@ -407,7 +407,7 @@ func run(out, notes io.Writer, args []string) error {
 	case "map":
 		return mapCommand(out, reg, args[1:])
 	case "probe":
-		return probe(out, reg, args[1:])
+		return probe(context.Background(), out, reg, args[1:])
 	case "serve":
 		return serveCommand(out, reg, args[1:])
 	case "logo":

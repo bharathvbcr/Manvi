@@ -179,7 +179,7 @@ func TestUnexercisedAddedLinesAreReportedAndNeverBlock(t *testing.T) {
 	f := newFixture(t)
 	profile := filepath.Join(t.TempDir(), "cover.out")
 	if err := os.WriteFile(profile,
-		[]byte("mode: set\nmanvi/src/calc.go:1.1,10.2 4 0\n"), 0o644); err != nil {
+		[]byte("mode: set\nmanvi/src/calc.go:1.1,10.2 4 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f.reg.deps.CoverageFile = profile

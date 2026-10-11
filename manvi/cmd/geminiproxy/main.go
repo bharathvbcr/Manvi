@@ -73,7 +73,7 @@ type proxy struct {
 func (p *proxy) note(format string, args ...any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fmt.Fprintf(p.capture, format, args...)
+	_, _ = fmt.Fprintf(p.capture, format, args...)
 	p.capture.Sync()
 }
 

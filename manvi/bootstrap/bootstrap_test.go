@@ -185,7 +185,7 @@ func TestEnsureRecognisesARuleUnderAnyHeading(t *testing.T) {
 // made, and must not be silent about what it could not do.
 func TestEnsureReportsAFailureAndKeepsGoing(t *testing.T) {
 	root := gitRepo(t)
-	if err := os.Mkdir(filepath.Join(root, ".gitignore"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".gitignore"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 

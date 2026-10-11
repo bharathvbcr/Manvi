@@ -97,9 +97,21 @@ func (f scanFakeGaps) Gaps(context.Context, string) ([]store.GapRow, bool, error
 	return f.rows, f.truncated, nil
 }
 
+// asScanView names what the runner answered when it is not a ScanView,
+// instead of panicking with "interface conversion".
+func asScanView(t *testing.T, got any) ScanView {
+	t.Helper()
+	v, ok := got.(ScanView)
+	if !ok {
+		t.Fatalf("the scan runner answered %T, want ScanView", got)
+	}
+	return v
+}
+
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "commit.gpgsign=false"}, args...)...)
+	// #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
+	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir, "-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -126,10 +138,10 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
 	for name, body := range files {
 		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -183,7 +195,7 @@ func (h *scanHarness) start(t *testing.T, params string) ScanView {
 	if e != nil {
 		t.Fatalf("Start(%s) refused: %+v", params, e)
 	}
-	return got.(ScanView)
+	return asScanView(t, got)
 }
 
 func (h *scanHarness) wait(t *testing.T, id string) ScanView {
@@ -194,7 +206,7 @@ func (h *scanHarness) wait(t *testing.T, id string) ScanView {
 		if e != nil {
 			t.Fatalf("Get: %+v", e)
 		}
-		if v := got.(ScanView); v.State != scanRunning {
+		if v := asScanView(t, got); v.State != scanRunning {
 			return v
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -264,6 +276,54 @@ func TestScanRescanOfAnUnchangedRepoFilesNothingNew(t *testing.T) {
 		if call != "items.list" {
 			t.Errorf("scan used board method %s", call)
 		}
+	}
+}
+
+// A scan of one repository reads that repository. A tracked document that is
+// a symlink out of it is not read through, and a referenced path that climbs
+// out of it is not looked up outside: it is reported as missing from the
+// work tree, which is what it is.
+func TestScanDocsStayInsideTheRepository(t *testing.T) {
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, outside, map[string]string{
+		"notes.md": "see `pkg/only_outside.go`\n",
+		"real.go":  "package outside\n",
+	})
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(root, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	climb := "x/../" + filepath.ToSlash(rel) + "/real.go"
+	gitIn(t, root, "init", "-q")
+	writeFiles(t, root, map[string]string{"README.md": "see `" + climb + "`\n"})
+	if err := os.Symlink(filepath.Join(outside, "notes.md"), filepath.Join(root, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-q", "-m", "init")
+
+	view := newScanHarness(t, 0).scan(t, root, "")
+	var climbed bool
+	for _, p := range view.Proposals {
+		if p.Category != scanDocs {
+			continue
+		}
+		if strings.Contains(p.Description, "only_outside.go") {
+			t.Errorf("a document outside the repository was read through a tracked symlink: %+v", p)
+		}
+		if strings.Contains(p.Description, climb) {
+			climbed = true
+		}
+	}
+	if !climbed {
+		t.Errorf("a reference that leaves the repository was found outside it instead of reported missing: %+v", view.Proposals)
 	}
 }
 
@@ -474,7 +534,7 @@ func TestScanRootIsValidatedAndNeverTheSidecarCwd(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if name == "subdirectory" {
-				if err := os.MkdirAll(root, 0o755); err != nil {
+				if err := os.MkdirAll(root, 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -614,7 +674,12 @@ func TestConcurrentScansOfOneRootShareOneJob(t *testing.T) {
 				t.Errorf("start %d: %+v", i, e)
 				return
 			}
-			ids[i] = got.(ScanView).ScanID
+			v, ok := got.(ScanView)
+			if !ok {
+				t.Errorf("start %d answered %T, want ScanView", i, got)
+				return
+			}
+			ids[i] = v.ScanID
 		}()
 	}
 	wg.Wait()

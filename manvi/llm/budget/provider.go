@@ -77,8 +77,10 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 		mu.Lock()
 		last = id
 		mu.Unlock()
+		// The ledger keeps ctx's values but not its cancellation when it records
+		// the result: see resolveContext.
 		return func(r transport.AttemptResult) error {
-			return p.Ledger.transportResult(id, r, r.State == transport.AttemptRejected && rejector != nil && rejector.RejectionUnbilled(r.Status))
+			return p.Ledger.transportResult(ctx, id, r, r.State == transport.AttemptRejected && rejector != nil && rejector.RejectionUnbilled(r.Status))
 		}, nil
 	}
 	lastID := func() uint64 { mu.Lock(); defer mu.Unlock(); return last }
@@ -88,7 +90,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) (llm.Stream, err
 		// An attempt the server accepted before the adapter gave up was still
 		// sent; it keeps its reservation.
 		if id := lastID(); id != 0 {
-			err = errors.Join(err, p.Ledger.retain(id))
+			err = errors.Join(err, p.Ledger.retain(ctx, id))
 		}
 		return nil, err
 	}
@@ -199,15 +201,15 @@ func (s *budgetStream) Next() (llm.Chunk, error) {
 func (s *budgetStream) resolve(usage *llm.Usage) error {
 	s.once.Do(func() {
 		if usage == nil {
-			s.err = s.ledger.retainAt(s.id, s.partialBound())
+			s.err = s.ledger.retainAt(s.ctx, s.id, s.partialBound())
 			return
 		}
 		charge, err := s.prices.Charge(*usage)
 		if err != nil {
-			s.err = errors.Join(fmt.Errorf("%w; its reservation is kept", err), s.ledger.retain(s.id))
+			s.err = errors.Join(fmt.Errorf("%w; its reservation is kept", err), s.ledger.retain(s.ctx, s.id))
 			return
 		}
-		s.err = s.ledger.settle(s.id, charge)
+		s.err = s.ledger.settle(s.ctx, s.id, charge)
 	})
 	return s.err
 }

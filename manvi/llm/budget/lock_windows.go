@@ -18,6 +18,7 @@ import (
 // handle and is released when the holder exits, so a crashed session cannot
 // wedge later ones. As on Unix, the lock file is never removed.
 func lockFile(ctx context.Context, path string) (func(), error) {
+	// #nosec G304 G703 -- the validated ledger path plus ".lock"; the operator chose it.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -32,13 +33,15 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 				_ = f.Close()
 			}, nil
 		}
+		// The lock was never taken, so the handle holds nothing a failed close
+		// could lose; the error worth returning is the one that stopped us.
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) && !errors.Is(err, windows.ERROR_IO_PENDING) {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("budget: lock %s: %w", path, err)
 		}
 		select {
 		case <-ctx.Done():
-			f.Close()
+			_ = f.Close()
 			return nil, ctx.Err()
 		case <-time.After(5 * time.Millisecond):
 		}

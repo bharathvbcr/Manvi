@@ -25,7 +25,7 @@ type capBudget struct {
 	calls    int
 }
 
-func (b *capBudget) Headroom() (int64, error) {
+func (b *capBudget) Headroom(context.Context) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := b.calls

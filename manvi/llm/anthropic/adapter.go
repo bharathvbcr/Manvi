@@ -713,6 +713,9 @@ func (s *stream) Response() (llm.Response, error) {
 	}
 	for _, index := range s.order {
 		acc := s.blocks[index]
+		if acc == nil {
+			return llm.Response{}, fmt.Errorf("anthropic: content block %d is in the stream's order but was never opened", index)
+		}
 		switch acc.kind {
 		case BlockText:
 			msg.Content = append(msg.Content, llm.TextBlock{Text: acc.text.String()})

@@ -131,7 +131,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 			// Reported, and it takes over the exit status. Status 2 tells a
 			// caller "resume this"; if the session did not persist, that is
 			// advice the caller cannot act on, and a failure it must see.
-			fmt.Fprintf(notes, "manvi: the session did not save: %v\n", saveErr)
+			_, _ = fmt.Fprintf(notes, "manvi: the session did not save: %v\n", saveErr)
 			// errNoAnswer belongs here for the same reason as the other two:
 			// exit 4's advice is "re-run it", and a caller cannot act on that
 			// when the session it would resume from was never written. It was
@@ -152,12 +152,30 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		return err
 	}
 
+	// Bounded before the model is contacted, so a wedged server cannot hold the
+	// process open indefinitely, and interruptible, so Ctrl-C in a terminal and
+	// SIGTERM from a job runner both end the turn through the same path that
+	// releases the lease. Building the provider is covered too: it can probe a
+	// local server for its address and wait on the spend ledger's lock.
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	defer cancel()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	providerName, _, err := reg.String(flags.LLMDefaultProvider)
 	if err != nil {
 		return err
 	}
 	resolver := credentials.NewResolver()
-	provider, err := buildProvider(providerName, reg, resolver, notes, "")
+	provider, err := buildProvider(ctx, providerName, reg, resolver, notes, "")
 	if err != nil {
 		return err
 	}
@@ -178,23 +196,6 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	if err != nil {
 		return err
 	}
-
-	// Bounded before the model is contacted, so a wedged server cannot hold the
-	// process open indefinitely, and interruptible, so Ctrl-C in a terminal and
-	// SIGTERM from a job runner both end the turn through the same path that
-	// releases the lease.
-	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
-	defer cancel()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stop)
-	go func() {
-		select {
-		case <-stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 
 	model, _, err := resolveModelFor(ctx, providerName, provider, reg)
 	if err != nil {
@@ -278,7 +279,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 			ID: "shutdown", Name: "devcouncil_release_task", Arguments: []byte(`{}`),
 		})
 		if result.IsError {
-			fmt.Fprintf(notes, "manvi: the lease did not release cleanly: %s\n", result.Text)
+			_, _ = fmt.Fprintf(notes, "manvi: the lease did not release cleanly: %s\n", result.Text)
 		}
 	}()
 
@@ -306,7 +307,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	}
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {
-		fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)
+		_, _ = fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)
 	}
 	// Recorded before the turn runs, so a log that explains the turn is
 	// complete by the time anything reads it.
@@ -384,7 +385,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// part of the bill.
 	sink.Emit(usageEvent(turnUsage(provider, model, outcome), meter.ByModel()))
 	if delegated := meter.Total(); delegated.Any() {
-		fmt.Fprintf(notes, "manvi: of that, %d in / %d out was spent by sub-agents\n",
+		_, _ = fmt.Fprintf(notes, "manvi: of that, %d in / %d out was spent by sub-agents\n",
 			delegated.InputTokens, delegated.OutputTokens)
 	}
 	// One owner decides what a finished turn has to say; this face renders it.
@@ -397,7 +398,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 			Text: n.Text, Degraded: n.Degraded,
 		})
 		if len(n.Degraded) > 0 {
-			fmt.Fprintf(notes, "manvi: %s\n", n.Text)
+			_, _ = fmt.Fprintf(notes, "manvi: %s\n", n.Text)
 		}
 	}
 	return outputStatus(outcomeStatus(outcome), notes, scrubber.Clean, faceFailure(sink), answerErr)
@@ -470,7 +471,7 @@ func outputStatus(status error, notes io.Writer, clean func(string) string, caus
 	// failure.
 	told := errors.Is(status, errOutputLost) || errors.Is(status, cause)
 	if notes != nil && !told {
-		fmt.Fprintf(notes, "manvi: %v\n", failure)
+		_, _ = fmt.Fprintf(notes, "manvi: %v\n", failure)
 	}
 	return status
 }
@@ -571,7 +572,7 @@ func openSession(notes io.Writer, store *session.Store, opts runOptions) (string
 		if err != nil {
 			return "", nil, err
 		}
-		fmt.Fprintf(notes, "manvi: session %s\n", id)
+		_, _ = fmt.Fprintf(notes, "manvi: session %s\n", id)
 		return id, newSessionLog(), nil
 	}
 
@@ -602,15 +603,15 @@ func openSession(notes io.Writer, store *session.Store, opts runOptions) (string
 	if err != nil {
 		return "", nil, err
 	}
-	fmt.Fprintf(notes, "manvi: resumed session %s — %d event(s) across %d turn(s), last written %s\n",
+	_, _ = fmt.Fprintf(notes, "manvi: resumed session %s — %d event(s) across %d turn(s), last written %s\n",
 		report.ID, report.Events, report.Turns, report.UpdatedAt.Format(time.RFC3339))
 	if report.TrimmedTurns > 0 {
-		fmt.Fprintf(notes,
+		_, _ = fmt.Fprintf(notes,
 			"manvi: this session's %d oldest turn(s) were dropped to keep it within its size bound — "+
 				"the history below that point is gone\n", report.TrimmedTurns)
 	}
 	if report.Oversize {
-		fmt.Fprintf(notes,
+		_, _ = fmt.Fprintf(notes,
 			"manvi: this session's most recent turn alone exceeds the size bound; it was kept whole\n")
 	}
 	return id, log, nil
@@ -623,15 +624,15 @@ func saveSession(notes io.Writer, store *session.Store, id string, log *session.
 		return err
 	}
 	if report.TrimmedTurns > 0 {
-		fmt.Fprintf(notes,
+		_, _ = fmt.Fprintf(notes,
 			"manvi: %d oldest turn(s) were dropped from session %s to keep it within its size bound\n",
 			report.TrimmedTurns, id)
 	}
 	if report.Oversize {
-		fmt.Fprintf(notes,
+		_, _ = fmt.Fprintf(notes,
 			"manvi: session %s exceeds its size bound with a single turn; it was saved whole\n", id)
 	}
-	fmt.Fprintf(notes, "manvi: session %s saved (%d event(s)) — continue it with: manvi run --resume %s\n",
+	_, _ = fmt.Fprintf(notes, "manvi: session %s saved (%d event(s)) — continue it with: manvi run --resume %s\n",
 		id, report.Events, id)
 	return nil
 }

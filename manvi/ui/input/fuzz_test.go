@@ -2,6 +2,7 @@ package input
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -125,7 +126,7 @@ func TestReaderFlushAlwaysDrains(t *testing.T) {
 						return
 					}
 					if e, isErr := ev.(Error); isErr {
-						if e.Err == io.EOF {
+						if errors.Is(e.Err, io.EOF) {
 							return // drained to the end of the stream
 						}
 						return

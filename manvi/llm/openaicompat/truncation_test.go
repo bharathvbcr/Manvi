@@ -65,9 +65,9 @@ func settle(t *testing.T, a *Adapter, tools []llm.ToolSchema) (llm.Response, err
 	if err != nil {
 		return llm.Response{}, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			return llm.Response{}, err
@@ -141,7 +141,7 @@ func TestATruncatedStreamReportsTheUsageItReceived(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		if _, err := stream.Next(); err != nil {
 			break
@@ -212,7 +212,7 @@ func TestErrorChunkAfterContentIsNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var got strings.Builder
 	var failure error
 	for {
@@ -223,7 +223,7 @@ func TestErrorChunkAfterContentIsNotRetried(t *testing.T) {
 		}
 		got.WriteString(c.Text)
 	}
-	if failure == nil || failure == io.EOF || got.String() != "partial" {
+	if failure == nil || errors.Is(failure, io.EOF) || got.String() != "partial" {
 		t.Fatalf("failure=%v text=%q", failure, got.String())
 	}
 	if n := attempts.Load(); n != 1 {
@@ -331,7 +331,7 @@ func FuzzRepairNeverRewritesAStringValue(f *testing.F) {
 	f.Fuzz(func(t *testing.T, value string) {
 		enc, err := json.Marshal(value)
 		if err != nil {
-			t.Skip("a string the encoder refuses is not a case this contract covers")
+			t.Skipf("json.Marshal refused %q (%v), so there is no payload for the repair path to run on", value, err)
 		}
 		// A payload that is invalid for an unrelated reason (a Python literal
 		// and a trailing comma), so the repair path always runs.

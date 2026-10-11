@@ -58,14 +58,20 @@ type subagentPlane struct {
 }
 
 func (r *Registry) fallbackPlane() *subagentPlane {
-	if plane, ok := fallbackPlanes.Load(r); ok {
-		return plane.(*subagentPlane)
+	if stored, ok := fallbackPlanes.Load(r); ok {
+		if plane, ok := stored.(*subagentPlane); ok {
+			return plane
+		}
 	}
-	plane, _ := fallbackPlanes.LoadOrStore(r, &subagentPlane{
+	fresh := &subagentPlane{
 		roles:     agents.NewRegistry(),
 		instances: agents.NewInstanceManager(),
-	})
-	return plane.(*subagentPlane)
+	}
+	stored, _ := fallbackPlanes.LoadOrStore(r, fresh)
+	if plane, ok := stored.(*subagentPlane); ok {
+		return plane
+	}
+	return fresh
 }
 
 func (r *Registry) subagentTools() []tools.Tool {
@@ -573,7 +579,7 @@ func reportUnknownRoles(payload map[string]any, unknownTypes []string) {
 // error path.
 func recordFailure(inst *agents.Instance, cause error) error {
 	if stateErr := inst.SetState(agents.StateErrored, cause.Error()); stateErr != nil {
-		return fmt.Errorf("%w (and its state could not be recorded: %v)", cause, stateErr)
+		return fmt.Errorf("%w (and its state could not be recorded: %w)", cause, stateErr)
 	}
 	return cause
 }

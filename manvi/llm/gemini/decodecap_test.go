@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -44,7 +45,7 @@ func TestThoughtSignaturesCountAgainstTheDecodeCap(t *testing.T) {
 	for err == nil {
 		_, err = s.Next()
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		t.Fatalf("the stream ran to completion holding %d accumulators and %d counted bytes; "+
 			"maxDecodedResponseBytes (%d) never fired, because signature bytes were uncounted",
 			len(s.order), s.decodedBytes(), maxDecodedResponseBytes)

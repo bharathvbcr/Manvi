@@ -1,6 +1,7 @@
 package transport_test
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func TestSlowButLiveStreamIsNotAbandoned(t *testing.T) {
 	frames := 0
 	for {
 		_, err := sse.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -116,7 +117,7 @@ func TestALongLineArrivingContinuouslyIsNotAStall(t *testing.T) {
 	if want := chunks * 512; len(event.Data) < want {
 		t.Fatalf("data = %d bytes, want at least %d", len(event.Data), want)
 	}
-	if _, err := sse.Next(); err != io.EOF {
+	if _, err := sse.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected EOF, got %v", err)
 	}
 }

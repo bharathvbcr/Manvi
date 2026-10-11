@@ -608,6 +608,10 @@ func withholdTracked(ctx context.Context, root, content string, sections []Secti
 	return withheld, nil
 }
 
+// removeCheckFile is os.Remove, replaceable by a test that needs the cleanup
+// to fail: no file mode stops the owner removing a file it just created.
+var removeCheckFile = os.Remove
+
 // trackedIgnored lists the files tracked below root that a .gitignore holding
 // content, placed at root, would ignore.
 //
@@ -615,7 +619,12 @@ func withholdTracked(ctx context.Context, root, content string, sections []Secti
 // to read that name in place of .gitignore, so the rules are evaluated exactly
 // as they would be once written — anchored at root, negations included —
 // without the operator's file being touched to find out.
-func trackedIgnored(ctx context.Context, root, content string) ([]string, error) {
+//
+// The check file is created in the operator's own work tree, so failing to
+// remove it is reported with the answer: a stray .gitignore-check-* left there
+// without a word is exactly the kind of change this package promises not to
+// make silently.
+func trackedIgnored(ctx context.Context, root, content string) (tracked []string, err error) {
 	if strings.TrimSpace(content) == "" {
 		return nil, nil
 	}
@@ -624,7 +633,11 @@ func trackedIgnored(ctx context.Context, root, content string) ([]string, error)
 		return nil, err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	defer func() {
+		if rmErr := removeCheckFile(name); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("removing the ignore-rule check file %s: %w", name, rmErr))
+		}
+	}()
 	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close() // the write failed; that is the error worth returning
 		return nil, err

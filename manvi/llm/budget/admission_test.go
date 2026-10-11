@@ -19,7 +19,7 @@ import (
 // a reservation another session holds right now is money this one cannot use.
 func TestHeadroomIsTheLimitLessEverythingCommitted(t *testing.T) {
 	l := ledger(t, 1_000_000_000)
-	got, err := l.Headroom()
+	got, err := l.Headroom(context.Background())
 	if err != nil || got != 1_000_000_000 {
 		t.Fatalf("Headroom of an empty ledger = %d, %v; want the whole limit", got, err)
 	}
@@ -39,7 +39,7 @@ func TestHeadroomIsTheLimitLessEverythingCommitted(t *testing.T) {
 	for held == 0 {
 		held = snapshot(t, l).InFlightNanoUSD()
 	}
-	got, err = l.Headroom()
+	got, err = l.Headroom(context.Background())
 	if err != nil || got != 1_000_000_000-held {
 		t.Errorf("Headroom with %d in flight = %d, %v; want %d", held, got, err, 1_000_000_000-held)
 	}

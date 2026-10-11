@@ -135,3 +135,23 @@ func TestDispatchWithNoListenersIsANoop(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A listener whose stored function is not the type its mode dispatches is an
+// error from the dispatch, not a panic in the middle of it.
+func TestMistypedListenerIsAnErrorNotAPanic(t *testing.T) {
+	b := New()
+	if _, err := register[evt](b, ModeSerial, "not a function"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Serial(b, context.Background(), evt{}); err == nil {
+		t.Fatal("Serial dispatched a listener of the wrong type without reporting it")
+	}
+
+	w := New()
+	if _, err := register[evt](w, ModeWaterfall, 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Waterfall(w, evt{}); err == nil {
+		t.Fatal("Waterfall dispatched a listener of the wrong type without reporting it")
+	}
+}

@@ -32,7 +32,7 @@ operations in `hello.ops`. The operation set describes the host handlers;
 successful storage requests additionally require a compatible `dcstore` binary.
 An old or unavailable binary produces an error, never an empty successful board.
 A `dcstore` build that reports its profile schema answers `dcstore --version`
-with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":12}`;
+with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":13}`;
 earlier builds print the same object without `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
@@ -522,7 +522,7 @@ queue to the version-three worker ownership and version-two proposal lifecycle.
 Migration preserves existing tasks, revisions, groups and leases; it does not
 queue existing tasks. Unknown versions and failed migrations are errors. Upgrade
 every host's store together: an older binary refuses a newer profile with
-`schema_unsupported`. The current schema is twelve. Five through eight add the
+`schema_unsupported`. The current schema is thirteen. Five through eight add the
 terminal attempts, activity inbox, native notification records and structured
 agent requests described above. Nine and ten change no tables: nine adds the
 managed/terminal run kinds and their claim/protocol invariants, and ten
@@ -539,6 +539,12 @@ Twelve adds refinement proposals (below): enhancement bodies gain `kind`, and
 `acceptance_criteria` joins the lockable fields. It changes no table, and is a
 hard fence for the same reason: a host that does not know it would complete a
 refinement as text or ignore a criteria lock.
+Thirteen shortens request receipts: a receipt keeps the event sequence instead of
+a copy of the response and a retry rebuilds the response from the event. It
+changes no table, and is a hard fence because a schema twelve host would replay
+the short receipt verbatim as the response. Receipts stored in full by schema
+twelve keep replaying as written. Manvi's release pin moved to a DevCouncil that
+carries thirteen; a Manvi built before that move refuses an upgraded profile.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank
@@ -840,6 +846,35 @@ Deletion is soft, preserving history. Deleted IDs cannot be reused by
 `items.put`; `items.restore` brings the same task back. An agent's
 execution status, verification evidence and human acceptance are not represented
 by changing this board status; their separate models remain to be implemented.
+
+## Suggesting what to work on next
+
+`work.tasks.suggest` (host only; nothing offers it to an agent) reads the open
+board and ranks the tasks worth starting. It never writes, and it makes no model
+call: the order is a fixed point table, so the same board gives the same list,
+each point is returned as a named signal, and the one-line `reason` is the three
+largest of them. Params are all optional: `request_id` (echoed back), `limit`
+(default 5, at most 20), `max_priority` (0 urgent to 3 low; keep that priority or
+more urgent) and `repository_id`.
+
+Points: priority urgent 100 / high 60 / normal 25 / low 0; severity critical 40,
+high 25, medium 10; due date overdue 50 plus a day each up to 14, within two
+days 35, within a week 20; one point per nine idle days up to 10; 12 for each
+open task it blocks (a link `{blocks, X}` held on a task means that task blocks
+X), up to 36; 10 when already `ready`; 8 when a repository gap scan raised it;
+a newest stored verification that failed or degraded adds 15 and one that
+passed takes 25 off. Ties break on priority, then the earlier due date, then id.
+
+Only `inbox`, `backlog` and `ready` tasks are suggested. Done and archived
+cards are not read; `in_progress` and `review` tasks are counted, not suggested;
+a task that duplicates an open task or is blocked by one is left out, listed
+under `blocked` with its blockers, and counted. A card whose links could not be
+read is treated as blocked rather than guessed at.
+
+Reads are bounded: ten pages of 200 per status column, 150 link reads for cards
+the list returned without links, and verification records for the best 12
+candidates only. `board.complete`, `board.unhydrated` and `verification` carry
+those numbers, so a capped read is never reported as the whole board.
 
 ## Bounded reads and durable events
 

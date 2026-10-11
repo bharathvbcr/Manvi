@@ -23,6 +23,37 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to the workbench schema 13 store** (`40b6bbbf`).
+  Schema 13 shortens request receipts (a retry rebuilds its response from the
+  event), so it is a hard fence: a Manvi built at the previous pin (schema 12)
+  refuses a profile this build has upgraded with `schema_unsupported`. The
+  upgrade still runs only on a write, after the `VACUUM INTO` backup, and
+  `work.store.upgrade` takes it explicitly. Receipts a schema 12 store wrote in
+  full keep replaying. `contracts/lease.schema.md` and `docs/WORKBENCH.md` name
+  the new rung.
+- **`manvi serve` never upgrades a shared workbench profile on a read.** With
+  the DevCouncil store that upgrades only on a write, a `work.*` read of a
+  profile one schema behind is refused with the typed error
+  `schema_upgrade_required` and the profile is left untouched (an older
+  GitPulse, MCP server or sidecar sharing the file is never locked out by a
+  reader). A `work.*` write upgrades it after an online backup
+  (`<profile>.pre-schema-<N>.bak`), and the new `work.store.upgrade` op does
+  the same without writing a task. GitPulse upgrades at app startup. The serve
+  contract gains `work.store.upgrade`; the store also gains `items.delete`
+  refusing a task with a live run (`task_in_use`, `even_if_running` overrides)
+  and an optional `scan_sequence` on task creation (`board_changed`).
+
+- A task scope now fences every command that writes a file, not only the
+  redirect and `sed -i`, `tee`, `cp`, `mv`. `policy.check.command` (and the
+  harness's own shell tool) judges the files `rm`, `truncate`, `touch`,
+  `dd of=`, `perl -i`, `install`, `ln`, `rsync` and `patch FILE` write against
+  the same decision `policy.check.file` gives: outside the plan is
+  `scope.unplanned`, a credential `path.secret`, outside the root
+  `path.outside_root`. Under a declared scope, `git apply`, `patch` with no file
+  operand, `xargs`/`find -exec`/`-delete` running a writer, and a recursive `rm`
+  of a pattern write files the command text does not name and are refused as
+  `command.substitution`; with no scope they are unchanged. DevCouncil pin
+  `ec26e906`.
 - Subprocess cost per tool call. The turn-start baseline seeds its scratch
   index from a copy of the repository's own index instead of `read-tree HEAD`,
   so `git add -A` reuses git's stat cache and re-hashes only changed files; the
@@ -40,6 +71,16 @@ under **Unreleased** in the same commit as the code.
   enforces (DevCouncil `docs/workbench-retention.md`).
 
 ### Added
+
+- `work.tasks.suggest` (host plane, enabled with `--workbench-db`): ranks the
+  open board for what to work on next and returns a short list with a reason
+  each. It is deterministic and makes no model call: a fixed point table over
+  priority, severity, due date, idle age, the open tasks a task blocks, a
+  `ready` status, a repository gap-scan origin and the newest stored
+  verification, every point named in the answer. Done, archived, in-progress,
+  review, duplicate and blocked tasks are left out and counted. Reads are
+  bounded and the answer says when the board or the verification probes were
+  capped.
 
 - Every environment variable the binary reads is documented in
   `docs/CLI_AND_CONFIGURATION.md` (credentials, `ANTHROPIC_BASE_URL`, the

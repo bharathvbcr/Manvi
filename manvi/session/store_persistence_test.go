@@ -67,6 +67,8 @@ func TestStreamChunksDoNotSpendTheHistoryBudget(t *testing.T) {
 // a value split across chunks matches no exact-value scrubber. Not persisting
 // them is what keeps the credential out of the file.
 func TestStreamChunksDoNotPersistASplitCredential(t *testing.T) {
+	// #nosec G101 -- a made-up key in the real one's shape: the test is that a
+	// value of this shape never reaches the saved file.
 	const secret = "sk-ant-api03-AUDITKEYVALUE0123456789"
 	log := NewLog()
 	log.SetScrubber(func(s string) string { return strings.ReplaceAll(s, secret, "[redacted]") })

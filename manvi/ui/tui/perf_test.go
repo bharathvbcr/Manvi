@@ -135,6 +135,7 @@ func TestIncrementalLayoutDrawsWhatAFullRebuildDraws(t *testing.T) {
 	deltas := []string{"word ", "more words here ", "\n", "line\n", "```go\nfunc x() {}\n```\n", "- item\n", strings.Repeat("x", 120)}
 
 	for seed := int64(1); seed <= 12; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		s := NewScrollback()
 		s.MaxEntries = 25
@@ -404,9 +405,7 @@ func replyDeltas(n int) []string {
 	para := "The parser splits the **input** on line breaks and then wraps each line at the pane width, so a long one fits; `code` stays inset. "
 	var out []string
 	for len(out) < n {
-		for _, w := range strings.SplitAfter(para+para+"\n", " ") {
-			out = append(out, w)
-		}
+		out = append(out, strings.SplitAfter(para+para+"\n", " ")...)
 		out = append(out, "- a list item with `inline` code\n", "## A heading\n", "```go\n", "func x() { return }\n", "```\n")
 	}
 	return out[:n]
@@ -538,6 +537,7 @@ func randomReply(rng *rand.Rand, pieces int) []string {
 func TestAStreamedReplyRendersAsAWholeOne(t *testing.T) {
 	themes := []Theme{Dark(), Light(), NoColorTheme()}
 	for seed := int64(1); seed <= 60; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		s := NewScrollback()
 		ev := ui.Event{Kind: ui.KindText}
@@ -588,6 +588,7 @@ func TestAStreamedReplyRendersAsAWholeOne(t *testing.T) {
 func TestStreamRowsMatchRenderMarkdown(t *testing.T) {
 	th := Dark()
 	for seed := int64(1); seed <= 40; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		e := &Entry{Event: ui.Event{Kind: ui.KindText}}
 		body := 8 + rng.Intn(120)
@@ -659,6 +660,7 @@ func TestStreamingIntoAShortTranscriptDrawsWhatAFullRebuildDraws(t *testing.T) {
 	}
 	short, tall := 0, 0
 	for seed := int64(1); seed <= 40; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		s := NewScrollback()
 		th := themes[rng.Intn(len(themes))]
@@ -766,6 +768,7 @@ func TestSearchMatchesWhatLoweringEveryEntryMatches(t *testing.T) {
 	words := []string{"Parser", "PARSER", "parser", "İstanbul", "STRASSE", "straße", "ΣΊΣΥΦΟΣ", "σίσυφος", "Ǆ", "ǆ", "K", "\xff", "日本", "\n", " "}
 	queries := []string{"parser", "PaRsEr", "i̇stanbul", "istanbul", "straße", "σίσυφος", "ǆ", "k", "日本", "�", "zz", "er s"}
 	for seed := int64(1); seed <= 20; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		s := NewScrollback()
 		s.MaxEntries = 30

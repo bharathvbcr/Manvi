@@ -198,7 +198,7 @@ func TestLoadRejectsACorruptFile(t *testing.T) {
 	if altered == string(raw) {
 		t.Fatal("test setup: nothing was altered")
 	}
-	if err := os.WriteFile(report.Path, []byte(altered), 0o644); err != nil {
+	if err := os.WriteFile(report.Path, []byte(altered), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +231,7 @@ func TestLoadRejectsATruncatedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(report.Path, raw[:len(raw)/2], 0o644); err != nil {
+	if err := os.WriteFile(report.Path, raw[:len(raw)/2], 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -254,7 +254,7 @@ func TestLoadRejectsAnEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := os.WriteFile(report.Path, nil, 0o644); err != nil {
+	if err := os.WriteFile(report.Path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +283,7 @@ func TestLoadRejectsAFileFiledUnderTheWrongID(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := newID(t)
-	if err := os.WriteFile(filepath.Join(dir, name(other, 1)), raw, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name(other, 1)), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := NewStore(dir).Load(other); err == nil {

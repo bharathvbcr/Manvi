@@ -38,7 +38,7 @@ func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
 		t.Run(rel, func(t *testing.T) {
 			root := t.TempDir()
 			release := filepath.Join(root, rel)
-			if err := os.MkdirAll(release, 0o755); err != nil {
+			if err := os.MkdirAll(release, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			built := filepath.Join(release, "dcstore-testonly")
@@ -71,7 +71,7 @@ func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
 func TestADirectoryNamedLikeTheBinaryIsNotACandidate(t *testing.T) {
 	root := t.TempDir()
 	release := filepath.Join(root, "crates", "target", "release")
-	if err := os.MkdirAll(filepath.Join(release, "dcstore-dirname"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(release, "dcstore-dirname"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	cwd, err := os.Getwd()
@@ -92,10 +92,10 @@ func TestADirectoryNamedLikeTheBinaryIsNotACandidate(t *testing.T) {
 func TestANonExecutableFileIsNotACandidate(t *testing.T) {
 	root := t.TempDir()
 	release := filepath.Join(root, "crates", "target", "release")
-	if err := os.MkdirAll(release, 0o755); err != nil {
+	if err := os.MkdirAll(release, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(release, "dcstore-noexec"), []byte("data"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(release, "dcstore-noexec"), []byte("data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cwd, err := os.Getwd()

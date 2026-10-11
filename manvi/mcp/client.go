@@ -308,7 +308,7 @@ func (c *Client) stderrLoop() {
 		case errors.As(err, new(errLineTooLarge)):
 			c.recordError(fmt.Sprintf("stderr line skipped: %v", err))
 			continue
-		case err == io.EOF:
+		case errors.Is(err, io.EOF):
 		default:
 			c.recordError(fmt.Sprintf("stderr reader failed: %v", err))
 		}
@@ -439,7 +439,7 @@ func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 				return chunk, nil
 			}
 			return append(buf, chunk...), nil
-		case err == bufio.ErrBufferFull:
+		case errors.Is(err, bufio.ErrBufferFull):
 			buf = append(buf, chunk...)
 			if len(buf) > limit {
 				drainToNewline(r)
@@ -465,7 +465,7 @@ func readLimitedLine(r *bufio.Reader, limit int) ([]byte, error) {
 func drainToNewline(r *bufio.Reader) {
 	for {
 		_, err := r.ReadSlice('\n')
-		if err == nil || (err != nil && err != bufio.ErrBufferFull) {
+		if err == nil || (err != nil && !errors.Is(err, bufio.ErrBufferFull)) {
 			return
 		}
 	}
@@ -491,7 +491,7 @@ func (c *Client) readLoop() {
 					"the reply to this request cannot be recovered", err.Error()))
 			}
 			continue
-		case err == io.EOF:
+		case errors.Is(err, io.EOF):
 		default:
 			c.recordError(fmt.Sprintf("stdout reader failed: %v", err))
 		}
@@ -654,7 +654,7 @@ func decodeFrame(line []byte) (resp Response, method string, hasPayload bool, er
 		Method string `json:"method"`
 	}
 	if json.Unmarshal(line, &frame) == nil && (len(frame.Result) > 0 || frame.Error != nil) {
-		return frame.Response, frame.Method, true, nil
+		return frame.Response, frame.Method, true, nil //nolint:nilerr // reached only when the decode succeeded
 	}
 
 	if err := json.Unmarshal(line, &resp); err != nil {

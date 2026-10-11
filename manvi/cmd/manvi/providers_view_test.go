@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -106,7 +107,7 @@ func TestABadWorkspaceIsShownAndRefused(t *testing.T) {
 	if !strings.Contains(out.String(), "anthropic  misconfigured  ANTHROPIC_API_KEY · ANTHROPIC_WORKSPACE_ID: workspace id contains ' '") {
 		t.Errorf("report does not name the bad workspace:\n%s", out.String())
 	}
-	if _, err := buildProvider("anthropic", reg, credentials.NewResolver(), io.Discard, ""); err == nil ||
+	if _, err := buildProvider(context.Background(), "anthropic", reg, credentials.NewResolver(), io.Discard, ""); err == nil ||
 		!strings.Contains(err.Error(), anthropicWorkspaceEnv) {
 		t.Errorf("buildProvider = %v, want a refusal naming %s", err, anthropicWorkspaceEnv)
 	}

@@ -21,7 +21,7 @@ func failSeam[T any](t *testing.T, seam *T, replacement T) {
 func seedFile(t *testing.T, root, rel, content string) string {
 	t.Helper()
 	full := filepath.Join(root, rel)
-	if err := os.WriteFile(full, []byte(content), 0o640); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return full
@@ -115,8 +115,8 @@ func TestPinnedWriteKeepsTheModeOfTheFileItReplaces(t *testing.T) {
 	if got, _ := os.ReadFile(full); string(got) != "replacement" {
 		t.Fatalf("content = %q", got)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode = %v, want 0640", info.Mode().Perm())
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600, not the 0644 the write asked for", info.Mode().Perm())
 	}
 	if extra := leftovers(t, root, "a.txt"); len(extra) != 0 {
 		t.Fatalf("a successful write left %v behind", extra)

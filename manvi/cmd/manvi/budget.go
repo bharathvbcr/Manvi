@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -74,7 +75,7 @@ func anthropicLedgerPath() (string, error) {
 // meterAnthropic wraps the adapter in the spend cap when one is configured.
 // A cap that is set but unusable fails construction: silently running
 // unmetered is the one outcome an operator who set a cap did not ask for.
-func meterAnthropic(p llm.Provider) (llm.Provider, error) {
+func meterAnthropic(ctx context.Context, p llm.Provider) (llm.Provider, error) {
 	raw := strings.TrimSpace(os.Getenv(envAnthropicBudget))
 	if raw == "" {
 		return p, nil
@@ -87,7 +88,7 @@ func meterAnthropic(p llm.Provider) (llm.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	ledger, err := budget.Open(path, limit)
+	ledger, err := budget.Open(ctx, path, limit)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envAnthropicBudget, err)
 	}
@@ -112,90 +113,98 @@ func meteredAnthropicEnv() []string {
 }
 
 // budgetCommand is `manvi budget [reconcile]`.
-func budgetCommand(out io.Writer, args []string) error {
+func budgetCommand(ctx context.Context, out io.Writer, args []string) error {
+	var b strings.Builder
+	var err error
 	switch {
 	case len(args) == 0:
-		return showBudget(out)
+		err = showBudget(ctx, &b)
 	case len(args) == 1 && args[0] == "reconcile":
-		return reconcileBudget(out)
+		err = reconcileBudget(ctx, &b)
 	default:
 		return fmt.Errorf("usage: budget [reconcile]")
 	}
+	// Rendered whole and written once, so a write that does not land is this
+	// command's error rather than a line silently missing from its answer.
+	// What was rendered before a failure is still written, as it was when
+	// each line went straight out.
+	_, werr := io.WriteString(out, b.String())
+	return errors.Join(err, werr)
 }
 
 // reconcileBudget retains the reservations of attempts whose process exited
 // before resolving them. They stay counted against the limit — they may have
 // been billed — but they stop occupying in-flight slots.
-func reconcileBudget(out io.Writer) error {
+func reconcileBudget(ctx context.Context, out *strings.Builder) error {
 	path, err := anthropicLedgerPath()
 	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(out, "no ledger at %s; nothing to reconcile\n", path)
+		_, _ = fmt.Fprintf(out, "no ledger at %s; nothing to reconcile\n", path)
 		return nil
 	}
-	reclaimed, err := budget.ReconcileAt(path)
+	reclaimed, err := budget.ReconcileAt(ctx, path)
 	if err != nil {
 		return err
 	}
 	if len(reclaimed) == 0 {
-		fmt.Fprintln(out, "every in-flight attempt belongs to a running process; nothing reclaimed")
+		_, _ = fmt.Fprintln(out, "every in-flight attempt belongs to a running process; nothing reclaimed")
 		return nil
 	}
 	var total int64
 	for _, a := range reclaimed {
 		total += a.ReservedNanoUSD
-		fmt.Fprintf(out, "retained #%d %s %s (pid %d exited)\n", a.ID, a.Model, budget.USD(a.ReservedNanoUSD), a.PID)
+		_, _ = fmt.Fprintf(out, "retained #%d %s %s (pid %d exited)\n", a.ID, a.Model, budget.USD(a.ReservedNanoUSD), a.PID)
 	}
-	fmt.Fprintf(out, "%d attempts, %s, moved from in flight to retained; still counted against the limit\n", len(reclaimed), budget.USD(total))
+	_, _ = fmt.Fprintf(out, "%d attempts, %s, moved from in flight to retained; still counted against the limit\n", len(reclaimed), budget.USD(total))
 	return nil
 }
 
 // showBudget reports the Anthropic ledger.
-func showBudget(out io.Writer) error {
+func showBudget(ctx context.Context, out *strings.Builder) error {
 	path, err := anthropicLedgerPath()
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "anthropic budget")
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  ledger     %s\n", path)
+	_, _ = fmt.Fprintln(out, "anthropic budget")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  ledger     %s\n", path)
 	raw := strings.TrimSpace(os.Getenv(envAnthropicBudget))
 	var limit int64
 	if raw == "" {
-		fmt.Fprintf(out, "  limit      none — set %s to cap spend (e.g. %s=200)\n", envAnthropicBudget, envAnthropicBudget)
+		_, _ = fmt.Fprintf(out, "  limit      none — set %s to cap spend (e.g. %s=200)\n", envAnthropicBudget, envAnthropicBudget)
 	} else if limit, err = parseUSD(raw); err != nil {
 		return fmt.Errorf("%s: %w", envAnthropicBudget, err)
 	} else {
-		fmt.Fprintf(out, "  limit      %s\n", budget.USD(limit))
+		_, _ = fmt.Fprintf(out, "  limit      %s\n", budget.USD(limit))
 	}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintln(out, "  spent      $0.00 — no metered request yet")
+		_, _ = fmt.Fprintln(out, "  spent      $0.00 — no metered request yet")
 		return nil
 	}
-	s, err := budget.Inspect(path)
+	s, err := budget.Inspect(ctx, path)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  spent      %s over %d requests, priced from reported usage\n", budget.USD(s.SpentNanoUSD), s.Settled)
-	fmt.Fprintf(out, "  retained   %s over %d attempts whose charge could not be confirmed (counted as spent)\n",
+	_, _ = fmt.Fprintf(out, "  spent      %s over %d requests, priced from reported usage\n", budget.USD(s.SpentNanoUSD), s.Settled)
+	_, _ = fmt.Fprintf(out, "  retained   %s over %d attempts whose charge could not be confirmed (counted as spent)\n",
 		budget.USD(s.RetainedNanoUSD), s.RetainedAttempts)
 	if s.RefusedAttempts > 0 {
-		fmt.Fprintf(out, "  refused    %d attempts rejected before processing (rate limited, overloaded, invalid); not counted\n", s.RefusedAttempts)
+		_, _ = fmt.Fprintf(out, "  refused    %d attempts rejected before processing (rate limited, overloaded, invalid); not counted\n", s.RefusedAttempts)
 	}
-	fmt.Fprintf(out, "  in flight  %s over %d attempts\n", budget.USD(s.InFlightNanoUSD()), len(s.InFlight))
+	_, _ = fmt.Fprintf(out, "  in flight  %s over %d attempts\n", budget.USD(s.InFlightNanoUSD()), len(s.InFlight))
 	for _, a := range s.InFlight {
-		fmt.Fprintf(out, "               #%d %s %s pid %d since %s\n", a.ID, a.Model, budget.USD(a.ReservedNanoUSD), a.PID,
+		_, _ = fmt.Fprintf(out, "               #%d %s %s pid %d since %s\n", a.ID, a.Model, budget.USD(a.ReservedNanoUSD), a.PID,
 			time.Unix(a.StartedUnix, 0).Format(time.RFC3339))
 	}
 	if limit > 0 {
-		fmt.Fprintf(out, "  remaining  %s\n", budget.USD(max(limit-s.CommittedNanoUSD(), 0)))
+		_, _ = fmt.Fprintf(out, "  remaining  %s\n", budget.USD(max(limit-s.CommittedNanoUSD(), 0)))
 	}
 	if s.Overruns > 0 {
-		fmt.Fprintf(out, "  warning    %d requests cost more than their reservation; the limit can be passed by that difference\n", s.Overruns)
+		_, _ = fmt.Fprintf(out, "  warning    %d requests cost more than their reservation; the limit can be passed by that difference\n", s.Overruns)
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "  This ledger counts only requests Manvi metered; the Anthropic Console shows the account balance.")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  This ledger counts only requests Manvi metered; the Anthropic Console shows the account balance.")
 	return nil
 }

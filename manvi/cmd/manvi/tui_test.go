@@ -182,14 +182,14 @@ func TestRebuildDiscardsOnlyTheDerivedIndex(t *testing.T) {
 	t.Setenv("MANVI_STATE_DIR", filepath.Join(dir, ".devcouncil"))
 
 	index := indexDir()
-	if err := os.MkdirAll(index, 0o755); err != nil {
+	if err := os.MkdirAll(index, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(index, "index.sqlite"), []byte("derived"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(index, "index.sqlite"), []byte("derived"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// State the harness owns, beside the index and not derived from the tree.
-	if err := os.WriteFile(storeDBPath(), []byte("leases and tasks"), 0o644); err != nil {
+	if err := os.WriteFile(storeDBPath(), []byte("leases and tasks"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

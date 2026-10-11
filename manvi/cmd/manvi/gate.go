@@ -165,7 +165,7 @@ func allow(out io.Writer, g *gate.Gate, args []string) error {
 		return err
 	}
 	if !decision.Blocked() {
-		fmt.Fprintln(out, "not blocked — nothing to grant")
+		_, _ = fmt.Fprintln(out, "not blocked — nothing to grant")
 		printDecision(out, decision)
 		return nil
 	}
@@ -176,30 +176,30 @@ func allow(out io.Writer, g *gate.Gate, args []string) error {
 		// A refusal here is the seam working: hard rules are never grantable.
 		return fmt.Errorf("refused: %w", err)
 	}
-	fmt.Fprintf(out, "granted %s\n  rule    %s\n  target  %s\n  by      %s\n  reason  %s\n  expires %s\n",
+	_, _ = fmt.Fprintf(out, "granted %s\n  rule    %s\n  target  %s\n  by      %s\n  reason  %s\n  expires %s\n",
 		grant.ID, decision.Rule, decision.Target, grant.Grantor, grant.Reason,
 		grant.ExpiresAt.Format(time.RFC3339))
-	fmt.Fprintln(out, "\nthis grant is recorded; the write will now report as allowed-by-grant, never as a clean pass")
+	_, _ = fmt.Fprintln(out, "\nthis grant is recorded; the write will now report as allowed-by-grant, never as a clean pass")
 	return nil
 }
 
 func printDecision(out io.Writer, d policy.Decision) {
-	fmt.Fprintf(out, "%-8s %s\n", strings.ToUpper(string(d.Action)), d.Target)
+	_, _ = fmt.Fprintf(out, "%-8s %s\n", strings.ToUpper(string(d.Action)), d.Target)
 	if d.Rule != policy.RuleNone {
-		fmt.Fprintf(out, "  rule     %s (%s)\n", d.Rule, d.Severity)
+		_, _ = fmt.Fprintf(out, "  rule     %s (%s)\n", d.Rule, d.Severity)
 	}
-	fmt.Fprintf(out, "  reason   %s\n", d.Reason)
+	_, _ = fmt.Fprintf(out, "  reason   %s\n", d.Reason)
 	if d.GrantID != "" {
-		fmt.Fprintf(out, "  granted  %s by %s\n", d.GrantID, d.GrantedBy)
+		_, _ = fmt.Fprintf(out, "  granted  %s by %s\n", d.GrantID, d.GrantedBy)
 	}
 	if d.Demoted != "" {
-		fmt.Fprintf(out, "  demoted  %s\n", d.Demoted)
+		_, _ = fmt.Fprintf(out, "  demoted  %s\n", d.Demoted)
 	}
 	if d.Widened != "" {
-		fmt.Fprintf(out, "  widened  %s (scope this task appended at runtime, not its plan)\n", d.Widened)
+		_, _ = fmt.Fprintf(out, "  widened  %s (scope this task appended at runtime, not its plan)\n", d.Widened)
 	}
 	for _, degraded := range d.Degraded {
-		fmt.Fprintf(out, "  degraded %s\n", degraded)
+		_, _ = fmt.Fprintf(out, "  degraded %s\n", degraded)
 	}
 	if d.Blocked() && d.Overridable() {
 		// The subject decides the flag. Printed without it, a command block
@@ -207,10 +207,10 @@ func printDecision(out io.Writer, d policy.Decision) {
 		// operator who ran what they were shown got a grant for a *file* named
 		// "grep" — human authority, eight-hour ceiling, and the command still
 		// blocked. The advice has to name the command as a command.
-		fmt.Fprintf(out, "\n  overridable: manvi allow %s --reason \"...\"\n", allowSubjectArg(d))
+		_, _ = fmt.Fprintf(out, "\n  overridable: manvi allow %s --reason \"...\"\n", allowSubjectArg(d))
 	}
 	if d.Blocked() && d.Severity == policy.Hard {
-		fmt.Fprintln(out, "\n  hard rule: no grant clears this, by any authority")
+		_, _ = fmt.Fprintln(out, "\n  hard rule: no grant clears this, by any authority")
 	}
 }
 

@@ -68,7 +68,7 @@ func (m WorkbenchModule) Configure(r *Router) error {
 				} else if receipt.Queued || method == "automation.put" {
 					// Persistence already succeeded. Wake-up is a coalesced hint; a
 					// stopped coordinator must never turn that receipt into failure.
-					if _, wakeErr := m.Runner.Wake(context.Background(), json.RawMessage(`{}`), *m.Configuration); wakeErr != nil {
+					if _, wakeErr := m.Runner.Wake(context.WithoutCancel(ctx), json.RawMessage(`{}`), *m.Configuration); wakeErr != nil {
 						log.Printf("workbench save wake unavailable: %s", m.Runner.errorText(wakeErr))
 					}
 				}
@@ -112,6 +112,15 @@ func (m WorkbenchModule) Configure(r *Router) error {
 		}); err != nil {
 			return err
 		}
+	}
+	if err := r.Register(OpTasksSuggest, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+		result, err := Suggest(ctx, m.Client, raw)
+		if err != nil {
+			return nil, workbenchHostError("task suggestion", err)
+		}
+		return result, nil
+	}); err != nil {
+		return err
 	}
 	if m.Scan != nil {
 		for op, handler := range map[string]func(context.Context, json.RawMessage) (any, *Error){

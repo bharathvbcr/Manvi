@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -413,7 +414,7 @@ func drain(t *testing.T, a *Adapter, req llm.Request) (llm.Response, []llm.Chunk
 	var chunks []llm.Chunk
 	for {
 		c, err := s.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

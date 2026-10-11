@@ -54,8 +54,8 @@ func newServer(t *testing.T, models []string, status int) *server {
 		default:
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	})
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -148,7 +148,7 @@ func TestAnEmptyListingIsAFailureNotAnEmptyCatalogue(t *testing.T) {
 // error page. Decoding failure must name the shape, not surface as "no models".
 func TestAMalformedListingIsReportedAsSuch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "<html>not a model server</html>")
+		_, _ = fmt.Fprint(w, "<html>not a model server</html>")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -374,7 +374,7 @@ func TestAnEmptyModelIsRefusedBeforeTheWire(t *testing.T) {
 // model was never configured.
 func TestAnEntryWithNoIDIsSkipped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"object":"list","data":[{"id":""},{"id":"real-model"}]}`)
+		_, _ = fmt.Fprint(w, `{"object":"list","data":[{"id":""},{"id":"real-model"}]}`)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -412,8 +412,8 @@ func TestSamplingParametersAppliedWhenUnset(t *testing.T) {
 		if r.URL.Path == "/v1/chat/completions" {
 			_ = json.NewDecoder(r.Body).Decode(&captured)
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
-			fmt.Fprint(w, "data: [DONE]\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
 		http.NotFound(w, r)
@@ -449,7 +449,7 @@ func TestSamplingParametersAppliedWhenUnset(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		if _, err := stream.Next(); err == io.EOF {
+		if _, err := stream.Next(); errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -546,8 +546,8 @@ func TestAnUncappedRequestIsBoundedByTheDiscoveredWindow(t *testing.T) {
 			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 			sentMaxTokens.Store(int64(body.MaxTokens))
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
-			fmt.Fprint(w, "data: [DONE]\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

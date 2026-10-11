@@ -24,7 +24,7 @@ func storeTree(t *testing.T) (store *Store, dir, outside string) {
 	dir = filepath.Join(base, "artifacts")
 	outside = filepath.Join(base, "outside")
 	for _, d := range []string{dir, outside} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -55,11 +55,11 @@ func TestNoArtifactWriteFollowsASymlinkOutOfTheStore(t *testing.T) {
 			// reason.
 			if strings.Contains(tc.artifact, "/") && !strings.HasSuffix(tc.plant, ".md") &&
 				!strings.HasSuffix(tc.plant, ".json") {
-				if err := os.MkdirAll(target, 0o755); err != nil {
+				if err := os.MkdirAll(target, 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, tc.plant)), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, tc.plant)), 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(target, filepath.Join(dir, tc.plant)); err != nil {
@@ -75,7 +75,10 @@ func TestNoArtifactWriteFollowsASymlinkOutOfTheStore(t *testing.T) {
 
 			// The filesystem is the arbiter: nothing may appear outside.
 			if err := filepath.Walk(outside, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
 					return nil
 				}
 				body, _ := os.ReadFile(p)

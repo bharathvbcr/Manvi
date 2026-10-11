@@ -1064,7 +1064,13 @@ func NewSSE(body io.ReadCloser, done string) *SSE {
 	//
 	// A large buffer because a single data: line can carry a whole content
 	// block; the default 4KB limit would fail on ordinary traffic.
-	s.reader = sseReaders.Get().(*bufio.Reader)
+	// The pool only ever holds *bufio.Reader of sseReaderSize; anything else
+	// would be a bug elsewhere, and a fresh buffer is the safe answer to it.
+	reader, ok := sseReaders.Get().(*bufio.Reader)
+	if !ok {
+		reader = bufio.NewReaderSize(nil, sseReaderSize)
+	}
+	s.reader = reader
 	s.reader.Reset(&payloadReader{src: body, sse: s})
 	return s
 }
@@ -1174,7 +1180,7 @@ func (s *SSE) next() (Event, error) {
 			}
 		}
 		if len(line) == 0 && err != nil {
-			if err == io.EOF && len(data) > 0 {
+			if errors.Is(err, io.EOF) && len(data) > 0 {
 				// A final event without its terminating blank line.
 				event.Data = data
 				if s.isDone(data) {
@@ -1237,7 +1243,7 @@ func (s *SSE) next() (Event, error) {
 		}
 
 		if err != nil {
-			if err == io.EOF && (len(data) > 0 || event.Name != "") {
+			if errors.Is(err, io.EOF) && (len(data) > 0 || event.Name != "") {
 				event.Data = data
 				s.err = io.EOF
 				if s.isDone(data) {
@@ -1293,7 +1299,7 @@ func (s *SSE) readLine() ([]byte, error) {
 		if len(line)+len(chunk) > MaxFrameBytes {
 			return nil, &ErrOversizedFrame{Limit: MaxFrameBytes}
 		}
-		if line == nil && err != bufio.ErrBufferFull {
+		if line == nil && !errors.Is(err, bufio.ErrBufferFull) {
 			// The whole line fit in the buffer, which is nearly every line, so
 			// it is returned as the window ReadSlice gave. That window is only
 			// valid until the next read — Next copies what it keeps (the event
@@ -1304,7 +1310,7 @@ func (s *SSE) readLine() ([]byte, error) {
 		// A line longer than the buffer is assembled from successive windows,
 		// each of which the next read overwrites, so those are copied.
 		line = append(line, chunk...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return line, err

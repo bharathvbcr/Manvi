@@ -26,7 +26,7 @@ func TestSessionOutputCapIsCumulativeAndSaysSo(t *testing.T) {
 				return
 			}
 		}
-		w.Close()
+		_ = w.Close()
 	}()
 	for rd := range c.frames {
 		if rd.err == nil {

@@ -11,6 +11,7 @@ package adaptertest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -152,11 +153,14 @@ func MissingSecret() func() (credentials.Secret, error) {
 // Drain reads a stream to exhaustion and returns the chunks and the settled
 // response, or the first error.
 func Drain(s llm.Stream) ([]llm.Chunk, llm.Response, error) {
+	if s == nil {
+		return nil, llm.Response{}, errors.New("adaptertest: Drain was given a nil stream")
+	}
 	defer s.Close()
 	var chunks []llm.Chunk
 	for {
 		chunk, err := s.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
