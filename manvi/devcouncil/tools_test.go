@@ -1256,7 +1256,7 @@ func TestNextTaskNamesALeaseTheStoreCouldNotRead(t *testing.T) {
 	insertTask(t, storeBinary(t), f.db, "TASK-BAD", `[]`)
 	seed := "INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +
 		"VALUES ('L-BAD','TASK-BAD','someone','tok','active','2026-01-01T00:00:00Z','not a timestamp');"
-	if out, err := exec.Command(testsupport.Tool(t, "sqlite3"), f.db, seed).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(t.Context(), testsupport.Tool(t, "sqlite3"), f.db, seed).CombinedOutput(); err != nil {
 		t.Fatalf("seeding a lease failed: %v %s", err, out)
 	}
 

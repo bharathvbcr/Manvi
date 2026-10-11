@@ -851,7 +851,7 @@ func TestInitializeAsksForARealRevisionAndAcceptsACounterOffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	res, err := c.Initialize(ctx)
@@ -878,7 +878,7 @@ func TestInitializeRefusesARevisionTheClientDoesNotSpeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, err = c.Initialize(ctx)
@@ -898,7 +898,7 @@ func TestAnUnsupportedRevisionIsReportedAsTheTypedError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, err = c.Initialize(ctx)
@@ -919,7 +919,7 @@ func TestAnErrorWithANullIDFailsTheCallWithTheServersReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if _, err := c.Initialize(ctx); err != nil {
