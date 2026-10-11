@@ -11,6 +11,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // maxLineBytes bounds one request line.
@@ -371,12 +373,15 @@ func (s *Server) hello(raw json.RawMessage) (any, *Error) {
 				p.Protocol, ProtocolVersion),
 		}
 	}
+	capability := childenv.Advertised()
 	return HelloResult{
-		Protocol:         ProtocolVersion,
-		Ops:              s.router.operations(),
-		Posture:          string(s.posture),
-		ManagedProviders: s.router.managed(),
-		OpLimits:         s.opLimits(),
+		Protocol:                     ProtocolVersion,
+		Ops:                          s.router.operations(),
+		Posture:                      string(s.posture),
+		ManagedProviders:             s.router.managed(),
+		OpLimits:                     s.opLimits(),
+		WithholdsProviderCredentials: capability.WithholdsProviderCredentials,
+		WithheldProviderEnv:          capability.WithheldProviderEnv,
 	}, nil
 }
 

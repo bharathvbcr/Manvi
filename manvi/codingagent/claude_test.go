@@ -33,6 +33,7 @@ const fixtureBuild = "9.9.9-fixture"
 func TestMain(m *testing.M) {
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" {
+			dumpFixtureEnv("version")
 			fmt.Println(fixtureBuild + " (Claude Code)")
 			os.Exit(0)
 		}
@@ -62,6 +63,7 @@ func TestClaudeProtocolChild(t *testing.T) {
 	if marker == "" {
 		return
 	}
+	dumpFixtureEnv("session")
 	scenario := marker
 	session := sessionArg()
 	cwd, _ := os.Getwd()

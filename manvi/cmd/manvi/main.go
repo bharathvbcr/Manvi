@@ -58,6 +58,7 @@ Usage:
   manvi serve [--posture P]         Serve the policy and local-LLM planes to a host over stdio
   manvi logo [--svg]                Print the mark, or emit it as SVG
   manvi version, --version          Print which build this is: version, revision, toolchain
+  manvi version --json              The same as JSON, with the provider env no child inherits
   manvi help, -h, --help            Show this help
 
 Commands that keep state — the face, run, serve, watch, doctor, tool, allow,
@@ -280,8 +281,15 @@ func run(out, notes io.Writer, args []string) error {
 	// half-configured harness which binary it just ran must still get an
 	// answer.
 	if len(args) > 0 && (args[0] == "--version" || args[0] == "version") {
-		writeVersion(out)
-		return nil
+		switch {
+		case len(args) == 1:
+			writeVersion(out)
+			return nil
+		case len(args) == 2 && args[1] == "--json":
+			return writeVersionJSON(out)
+		default:
+			return fmt.Errorf("usage: version [--json]")
+		}
 	}
 
 	// A setting that no longer applies must not look like a setting that did.

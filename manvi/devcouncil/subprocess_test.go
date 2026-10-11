@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // writeScript puts an executable shell script at dir/name.
@@ -141,7 +142,7 @@ func TestGatedGitEmitsRawUTF8Paths(t *testing.T) {
 // TestRunProcRefusesAnUnboundedCall: a call with neither its own timeout nor a
 // deadline on its context is refused rather than run without a bound.
 func TestRunProcRefusesAnUnboundedCall(t *testing.T) {
-	res := runProc(context.Background(), procSpec{argv: []string{"true"}})
+	res := runProc(context.Background(), procSpec{argv: []string{"true"}, env: childenv.Inherit()})
 	if res.err == nil || !strings.Contains(res.err.Error(), "bound") {
 		t.Fatalf("unbounded call returned %v", res.err)
 	}
@@ -154,7 +155,7 @@ func TestRunProcKeepsWhatItCapturedOnATimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	res := runProc(ctx, procSpec{
-		argv: []string{"sh", "-c", "echo started; sleep 600"}, stdoutLimit: 1024, combined: true,
+		argv: []string{"sh", "-c", "echo started; sleep 600"}, env: childenv.Inherit(), stdoutLimit: 1024, combined: true,
 	})
 	if !res.timedOut || res.err != nil {
 		t.Fatalf("timedOut=%v err=%v, want a timeout and no error", res.timedOut, res.err)
@@ -169,7 +170,7 @@ func TestRunProcKeepsWhatItCapturedOnATimeout(t *testing.T) {
 func TestRunProcReportsCancellationAsAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(200*time.Millisecond, cancel)
-	res := runProc(ctx, procSpec{argv: []string{"sleep", "600"}, timeout: time.Minute})
+	res := runProc(ctx, procSpec{argv: []string{"sleep", "600"}, env: childenv.Inherit(), timeout: time.Minute})
 	if res.timedOut || !errors.Is(res.err, context.Canceled) {
 		t.Fatalf("timedOut=%v err=%v, want context.Canceled", res.timedOut, res.err)
 	}
@@ -180,6 +181,7 @@ func TestRunProcReportsCancellationAsAnError(t *testing.T) {
 func TestRunProcCapsAndSaysSo(t *testing.T) {
 	res := runProc(context.Background(), procSpec{
 		argv:        []string{"sh", "-c", "head -c 5000 /dev/zero; head -c 5000 /dev/zero >&2; exit 3"},
+		env:         childenv.Inherit(),
 		timeout:     time.Minute,
 		stdoutLimit: 100, stderrLimit: 10,
 	})

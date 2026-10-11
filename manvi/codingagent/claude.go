@@ -35,6 +35,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // Budgets mirror the Codex adapter: the same run is being protected, and a
@@ -122,7 +124,11 @@ func claudePolicy(o Options) (flag string, reported string, err error) {
 func claudeBuild(ctx context.Context, program string) (string, error) {
 	probe, stop := context.WithTimeout(ctx, 10*time.Second)
 	defer stop()
-	out, err := exec.CommandContext(probe, program, "--version").Output()
+	cmd := exec.CommandContext(probe, program, "--version")
+	// The probe is the same executable the session will be; it gets the same
+	// withholding.
+	cmd.Env = childenv.Inherit()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("read managed Claude build identity: %w", err)
 	}
@@ -179,7 +185,7 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if err != nil {
 		return nil, beforeStart(err)
 	}
-	wire, err := startConnection(ctx, program, argv(mode, session), cwd, options.WithheldEnv, validateClaudeFrame)
+	wire, err := startConnection(ctx, program, argv(mode, session), cwd, validateClaudeFrame)
 	if err != nil {
 		return nil, err
 	}

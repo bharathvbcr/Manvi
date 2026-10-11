@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // runGit runs git in dir and reads at most limit bytes of stdout. The read
@@ -18,7 +19,8 @@ func runGit(ctx context.Context, dir string, limit int, args ...string) (out []b
 	// request-supplied revision behind --end-of-options or verifies it first.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	// Built, not inherited: a hook or filter in the repository runs with it.
+	cmd.Env = childenv.Git("GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderr, left: 4096}
 	pipe, err := cmd.StdoutPipe()

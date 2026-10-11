@@ -42,6 +42,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // Section is one heading in the managed part of .gitignore, with the rules
@@ -685,7 +687,8 @@ func inWorkTree(ctx context.Context, root string) (bool, error) {
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	// #nosec G204 -- the binary is the literal "git"; every argument is a literal, the project root, or a file name this package created.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	// Built, not inherited: a hook or filter in the repository runs with it.
+	cmd.Env = childenv.Git("LC_ALL=C")
 	out, err := cmd.Output()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && len(exit.Stderr) > 0 {

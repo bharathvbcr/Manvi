@@ -180,7 +180,8 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return session, nil
 			case "claude":
 				options.Program = toolBinary("MANVI_CLAUDE_BINARY", "claude")
-				options.WithheldEnv = meteredAnthropicEnv()
+				// Started without this process's provider keys, budget or no
+				// budget: it runs on the CLI's own login. See childenv.
 				session, err := codingagent.StartClaude(ctx, options)
 				if err != nil {
 					return nil, err

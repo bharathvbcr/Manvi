@@ -548,12 +548,9 @@ func TestTheEnvAllowlistNamesNoHarnessCredential(t *testing.T) {
 	for _, k := range baseEnvAllowlist {
 		allowed[k] = true
 	}
-	for _, req := range credentials.DefaultRequirements() {
-		for _, name := range req.EnvVars {
-			if allowed[name] {
-				t.Errorf("%s is a harness credential (provider %q) and is on the MCP env allowlist",
-					name, req.Provider)
-			}
+	for _, name := range credentials.ProviderEnv() {
+		if allowed[name] {
+			t.Errorf("%s is a provider credential and is on the MCP env allowlist", name)
 		}
 	}
 	for _, name := range []string{"SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",

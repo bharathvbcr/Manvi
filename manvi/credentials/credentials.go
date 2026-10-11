@@ -204,6 +204,42 @@ type Requirement struct {
 	// hard error cannot talk to the one class of endpoint that never wanted
 	// one. Every provider that does require a key keeps refusing without it.
 	Optional bool
+	// Related names variables that are not this provider's key but travel
+	// with it: the account or workspace the key acts in, or another bearer
+	// form the vendor's own tooling reads. Resolve never consults them. They
+	// are here so that ProviderEnv, the set no child process may inherit, is
+	// derived from this catalogue rather than hand-listed beside it.
+	Related []string
+}
+
+// AnthropicWorkspaceEnv names the workspace an Anthropic key that is not
+// scoped to one acts in. It is not a secret, but it routes the key's spend,
+// so it is withheld from children with the key.
+const AnthropicWorkspaceEnv = "ANTHROPIC_WORKSPACE_ID"
+
+// ProviderEnv names every environment variable that carries a provider
+// credential or scopes one — each requirement's EnvVars and Related — sorted,
+// each once.
+//
+// It is the one answer to "what must a child of this process never see".
+// Every child environment is either built from an allowlist that a test
+// checks against this set, or is this process's environment with this set
+// removed.
+func ProviderEnv() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, req := range DefaultRequirements() {
+		for _, list := range [][]string{req.EnvVars, req.Related} {
+			for _, name := range list {
+				if !seen[name] {
+					seen[name] = true
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ErrMissing reports that no credential was found for a provider.
@@ -253,6 +289,10 @@ func DefaultRequirements() []Requirement {
 			Provider: "anthropic",
 			EnvVars:  []string{"ANTHROPIC_API_KEY"},
 			Doc:      "https://console.anthropic.com/settings/keys",
+			// ANTHROPIC_AUTH_TOKEN is the bearer form the vendor SDK and
+			// Claude Code read for a gateway. This harness does not use it,
+			// but a child that inherited it would bill the account it names.
+			Related: []string{AnthropicWorkspaceEnv, "ANTHROPIC_AUTH_TOKEN"},
 		},
 		{
 			Provider: "xai",

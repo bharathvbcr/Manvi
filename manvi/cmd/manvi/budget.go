@@ -12,9 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
-	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 )
 
@@ -93,23 +91,6 @@ func meterAnthropic(ctx context.Context, p llm.Provider) (llm.Provider, error) {
 		return nil, fmt.Errorf("%s: %w", envAnthropicBudget, err)
 	}
 	return &budget.Provider{Inner: p, Ledger: ledger}, nil
-}
-
-// meteredAnthropicEnv names the variables a managed Claude agent must not
-// inherit while a cap is set. That agent is a separate process speaking to the
-// API itself: handed the metered key, it would spend from the same account
-// with nothing recording it. Withheld, it authenticates however it otherwise
-// would — its own login — or fails to start and says so.
-func meteredAnthropicEnv() []string {
-	if strings.TrimSpace(os.Getenv(envAnthropicBudget)) == "" {
-		return nil
-	}
-	for _, req := range credentials.DefaultRequirements() {
-		if req.Provider == anthropic.Name {
-			return append([]string(nil), req.EnvVars...)
-		}
-	}
-	return nil
 }
 
 // budgetCommand is `manvi budget [reconcile]`.

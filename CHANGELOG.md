@@ -21,6 +21,37 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Added
+
+- `manvi version --json` prints the build identity as one object, plus
+  `withholds_provider_credentials` (boolean) and `withheld_provider_env` (sorted
+  variable names): the provider credentials no child of this build inherits.
+  The serve `hello` result carries the same two fields
+  (`contracts/serve.ops.schema.json`). A host that wants to start `manvi` with
+  a key in its environment checks, before it does, that every name it would
+  inject is listed; a build that omits the keys does not withhold them.
+  `manvi version` with any other argument is now refused.
+
+### Changed
+
+- Every child process Manvi starts is given an environment it built, and none
+  of them inherits a provider credential: every key variable in the credential
+  catalogue plus `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_AUTH_TOKEN`
+  (`manvi/childenv`). Git children — of `manvi serve`, the bootstrap and the
+  agent's git tools — get an allowlist (`gitAllowlist`), so a hook, filter,
+  fsmonitor or alias in an untrusted repository no longer runs with the
+  operator's keys, and a parent's `GIT_DIR`/`GIT_INDEX_FILE` no longer reaches
+  Manvi's own git. Managed Codex and Claude agents, the `claude --version`
+  probe, the desktop broker, the verifier, the `devcouncil` CLI and
+  `pull`/`push`/`issues` inherit everything else. A contract test fails on any
+  production spawn that does not assign an environment.
+- Managed Claude agents never inherit `ANTHROPIC_API_KEY`, whether or not
+  `MANVI_ANTHROPIC_BUDGET_USD` is set. It used to be withheld only under a cap,
+  so without one a managed run silently moved from the CLI's subscription login
+  to API billing on the host's key. They also no longer inherit
+  `ANTHROPIC_AUTH_TOKEN`; `CLAUDE_CODE_OAUTH_TOKEN` still passes. Codex agents
+  no longer inherit `OPENAI_API_KEY`.
+
 ### Fixed
 
 - `ANTHROPIC_BASE_URL` is read as the host root, as the vendor SDK and Claude

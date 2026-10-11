@@ -17,7 +17,7 @@ import (
 func providersEnv(t *testing.T, key, workspace string) {
 	t.Helper()
 	t.Setenv("ANTHROPIC_API_KEY", key)
-	t.Setenv(anthropicWorkspaceEnv, workspace)
+	t.Setenv(credentials.AnthropicWorkspaceEnv, workspace)
 	for _, v := range []string{"XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"} {
 		t.Setenv(v, "")
 	}
@@ -108,8 +108,8 @@ func TestABadWorkspaceIsShownAndRefused(t *testing.T) {
 		t.Errorf("report does not name the bad workspace:\n%s", out.String())
 	}
 	if _, err := buildProvider(context.Background(), "anthropic", reg, credentials.NewResolver(), io.Discard, ""); err == nil ||
-		!strings.Contains(err.Error(), anthropicWorkspaceEnv) {
-		t.Errorf("buildProvider = %v, want a refusal naming %s", err, anthropicWorkspaceEnv)
+		!strings.Contains(err.Error(), credentials.AnthropicWorkspaceEnv) {
+		t.Errorf("buildProvider = %v, want a refusal naming %s", err, credentials.AnthropicWorkspaceEnv)
 	}
 }
 

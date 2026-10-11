@@ -3,12 +3,12 @@ package devcouncil
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -713,6 +713,10 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 // which is what lets CaptureBaseline record the tree without touching the
 // repository's real one.
 //
+// The environment is git's allowlist, never this process's: a hook, filter or
+// fsmonitor in the repository runs with it, and the repository is not trusted
+// with the operator's provider keys.
+//
 // core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead of
 // C-style octal escapes. It is set here rather than in either parser because
 // crates/dc-verify reads this same format: unquoting on one side only would
@@ -723,9 +727,10 @@ func gitSpec(root, index string, args []string) procSpec {
 		dir:         root,
 		timeout:     gitTimeout,
 		stderrLimit: maxGitStderrBytes,
+		env:         childenv.Git(),
 	}
 	if index != "" {
-		spec.env = append(os.Environ(), "GIT_INDEX_FILE="+index)
+		spec.env = childenv.Git("GIT_INDEX_FILE=" + index)
 	}
 	return spec
 }

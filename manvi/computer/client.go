@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 	"io"
 	"os"
@@ -178,6 +179,8 @@ func Start(ctx context.Context, binary string) (*Client, error) {
 		return nil, errors.New("native broker binary required")
 	}
 	cmd := exec.CommandContext(ctx, binary, "serve")
+	// The broker starts helpers of its own, and they inherit this.
+	cmd.Env = childenv.Inherit()
 	proc.ConfigureGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	in, err := cmd.StdinPipe()

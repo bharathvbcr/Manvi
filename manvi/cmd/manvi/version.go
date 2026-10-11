@@ -11,11 +11,14 @@ package main
 // it was forgotten, and stale in the direction that looks correct.
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"runtime"
 	"runtime/debug"
 	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // stampedVersion is the release stamp, and is set at link time:
@@ -127,6 +130,35 @@ func writeVersion(out io.Writer) {
 	}
 	_, _ = fmt.Fprintf(out, "  go         %s\n", id.Go)
 	_, _ = fmt.Fprintf(out, "  platform   %s\n", id.Platform)
+}
+
+// versionReport is `manvi version --json`: the same identity as writeVersion,
+// plus what this build guarantees about the environment of its children, so a
+// host can decide before starting it whether a credential may be put in its
+// environment. Identity fields this binary does not record are omitted rather
+// than written empty, as writeVersion prints "unknown" rather than a blank.
+type versionReport struct {
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	VersionFrom string `json:"version_from,omitempty"`
+	Revision    string `json:"revision,omitempty"`
+	TreeState   string `json:"tree_state,omitempty"`
+	Committed   string `json:"committed,omitempty"`
+	Module      string `json:"module,omitempty"`
+	Go          string `json:"go"`
+	Platform    string `json:"platform"`
+	childenv.Capability
+}
+
+// writeVersionJSON prints versionReport as one JSON object.
+func writeVersionJSON(out io.Writer) error {
+	id := currentBuild()
+	return json.NewEncoder(out).Encode(versionReport{
+		Name: "manvi", Version: id.Version, VersionFrom: id.VersionFrom,
+		Revision: id.Revision, TreeState: id.TreeState, Committed: id.Built, Module: id.Module,
+		Go: id.Go, Platform: id.Platform,
+		Capability: childenv.Advertised(),
+	})
 }
 
 // Summary is the same identity on one line, for doctor — where "which build"

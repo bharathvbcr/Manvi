@@ -213,6 +213,13 @@ type HelloResult struct {
 	// and should say so. An op answered inline has Lane "inline" and no
 	// deadline (DeadlineMS 0): the server never holds it.
 	OpLimits map[string]OpLimit `json:"op_limits,omitempty"`
+	// WithholdsProviderCredentials and WithheldProviderEnv repeat, from the
+	// running process, what `manvi version --json` promised before it
+	// started: which provider credentials no child of this harness inherits
+	// (see childenv.Capability). Absent means a build that predates them,
+	// which does not withhold them.
+	WithholdsProviderCredentials bool     `json:"withholds_provider_credentials"`
+	WithheldProviderEnv          []string `json:"withheld_provider_env"`
 }
 
 // OpLimit is one op's lane and server-side deadline.

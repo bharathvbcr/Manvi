@@ -55,9 +55,9 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 
 	switch name {
 	case anthropic.Name:
-		adapter, err := anthropic.NewForWorkspace(env("ANTHROPIC_BASE_URL", ""), os.Getenv(anthropicWorkspaceEnv), resolve)
+		adapter, err := anthropic.NewForWorkspace(env("ANTHROPIC_BASE_URL", ""), os.Getenv(credentials.AnthropicWorkspaceEnv), resolve)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", anthropicWorkspaceEnv, err)
+			return nil, fmt.Errorf("%s: %w", credentials.AnthropicWorkspaceEnv, err)
 		}
 		return meterAnthropic(ctx, adapter)
 	case xai.Name:
@@ -651,11 +651,6 @@ func showProviders(out io.Writer, reg *flags.Registry) error {
 // so it is drawn quieter than unavailable or misconfigured.
 const stateNotSet = "not set"
 
-// anthropicWorkspaceEnv names the workspace an API key that is not scoped to
-// one acts in. It is the name the vendor's SDKs read for the same id under
-// workload identity federation.
-const anthropicWorkspaceEnv = "ANTHROPIC_WORKSPACE_ID"
-
 // providerRow is what `manvi providers` found for one backend, before any of
 // it is styled.
 type providerRow struct {
@@ -691,10 +686,10 @@ func providerRows(reg *flags.Registry) []providerRow {
 			if status.Provider == anthropic.Name {
 				// Reported here because a workspace the API will refuse is the
 				// difference between a key that works and one that 400s.
-				id, err := anthropic.ParseWorkspaceID(os.Getenv(anthropicWorkspaceEnv))
+				id, err := anthropic.ParseWorkspaceID(os.Getenv(credentials.AnthropicWorkspaceEnv))
 				switch {
 				case err != nil:
-					row.state, row.facts = stateMisconfigured, []string{anthropicWorkspaceEnv + ": " + err.Error()}
+					row.state, row.facts = stateMisconfigured, []string{credentials.AnthropicWorkspaceEnv + ": " + err.Error()}
 				case id != "":
 					row.facts = append(row.facts, "workspace "+id)
 				}

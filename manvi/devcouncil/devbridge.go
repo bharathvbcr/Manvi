@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -125,7 +126,7 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 
 	// A pinned inspect binary may spawn children; runProc reaches them.
 	child := runProc(ctx, procSpec{
-		argv: argv, dir: r.deps.Root, timeout: devInspectTimeout,
+		argv: argv, dir: r.deps.Root, env: childenv.Inherit(), timeout: devInspectTimeout,
 		stdoutLimit: maxGitOutputBytes, stderrLimit: 32 * 1024,
 	})
 	if child.timedOut {

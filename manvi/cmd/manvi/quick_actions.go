@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
@@ -79,6 +80,9 @@ func (osQuickCommandRunner) Run(
 	// See proc.ConfigureGroup.
 	proc.ConfigureGroup(cmd)
 	cmd.Dir = dir
+	// git and gh keep what the operator's own login needs; a repository's
+	// hooks run with this too, so the model keys are not part of it.
+	cmd.Env = childenv.Inherit()
 	cmd.WaitDelay = 2 * time.Second
 	out := &cappedBuffer{limit: maxQuickOutputBytes}
 	cmd.Stdout, cmd.Stderr = out, out

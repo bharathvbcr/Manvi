@@ -31,7 +31,9 @@ var procSpawns atomic.Int64
 type procSpec struct {
 	argv []string
 	dir  string
-	// env is the child's whole environment; nil inherits this process's.
+	// env is the child's whole environment, and is required: os/exec reads
+	// nil as "inherit this process's", provider keys included, so runProc
+	// refuses a spec without one. childenv builds every value used here.
 	env   []string
 	stdin io.Reader
 	// timeout bounds the call on top of whatever deadline ctx carries. Zero
@@ -91,6 +93,9 @@ func (r procResult) failedToRun() bool {
 func runProc(ctx context.Context, spec procSpec) procResult {
 	if len(spec.argv) == 0 {
 		return procResult{err: errors.New("no command to run")}
+	}
+	if spec.env == nil {
+		return procResult{err: errors.New("refusing to run " + spec.argv[0] + " without a built environment: a nil one inherits this process's credentials")}
 	}
 	procSpawns.Add(1)
 	if spec.timeout > 0 {

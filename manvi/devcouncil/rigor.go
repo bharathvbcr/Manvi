@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // rigorClient runs the Rust verifier over a diff.
@@ -99,7 +101,7 @@ func (c rigorClient) run(ctx context.Context, diff string, planned []string, cov
 	// a large diff used to be able to allocate the whole result before the
 	// bound was ever consulted.
 	res := runProc(ctx, procSpec{
-		argv: append([]string{c.Binary}, args...), stdin: strings.NewReader(diff),
+		argv: append([]string{c.Binary}, args...), stdin: strings.NewReader(diff), env: childenv.Inherit(),
 		timeout: timeout, stdoutLimit: maxRigorOutput, stderrLimit: maxRigorStderr,
 	})
 	if res.timedOut {
@@ -134,7 +136,7 @@ func (c rigorClient) available(ctx context.Context) error {
 		return errors.New("no dcverify binary configured")
 	}
 	res := runProc(ctx, procSpec{
-		argv: []string{c.Binary, "health"}, timeout: 10 * time.Second,
+		argv: []string{c.Binary, "health"}, env: childenv.Inherit(), timeout: 10 * time.Second,
 		stdoutLimit: maxRigorHealthOutput, stderrLimit: maxRigorStderr,
 	})
 	switch {

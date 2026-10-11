@@ -187,20 +187,6 @@ func TestProbeModelIsServedAndPriced(t *testing.T) {
 	}
 }
 
-// A managed Claude agent is a separate process speaking to the API itself.
-// Handed the metered key while a cap is set, it would spend from the account
-// with nothing recording it.
-func TestManagedClaudeAgentsDoNotInheritTheMeteredKey(t *testing.T) {
-	t.Setenv(envAnthropicBudget, "")
-	if got := meteredAnthropicEnv(); got != nil {
-		t.Fatalf("withheld %q with no cap set", got)
-	}
-	t.Setenv(envAnthropicBudget, "200")
-	if got := meteredAnthropicEnv(); len(got) != 1 || got[0] != "ANTHROPIC_API_KEY" {
-		t.Fatalf("withheld %q, want the key the meter resolves", got)
-	}
-}
-
 func TestBudgetReconcileRetainsAttemptsNoProcessOwns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "anthropic.json")
 	// pid -1 can never be a running process, so its attempt is unresolvable.

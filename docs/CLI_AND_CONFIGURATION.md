@@ -9,6 +9,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | Command | Syntax / Options | Description |
 |---|---|---|
 | **Interactive TUI** | `manvi` or `manvi tui` | Launch the modern full-screen Elm-loop TUI (tab strip, live theme switcher, session switcher, rich markdown & diff rendering). |
+| **Build Identity** | `manvi --version [--json]` (or `version`) | Print which build this is: version and where it came from, Git revision and tree state, commit time, toolchain, platform. `--json` prints the same as one object (`name`, `version`, `version_from`, `revision`, `tree_state`, `committed`, `module`, `go`, `platform`; an identity fact the binary does not record is omitted) plus `withholds_provider_credentials` (boolean) and `withheld_provider_env` (sorted array of variable names): the provider credentials no child of this build inherits. A host deciding whether to start `manvi` with a credential in its environment checks that every name it would inject is in `withheld_provider_env`; a build that omits the two keys predates the guarantee and does not withhold. See [Child processes](#child-processes). |
 | **System Diagnostics** | `manvi doctor` | Validate active configuration, verify SQLite store reachability, and detect weakened security gates. |
 | **Headless Turn** | `manvi run -p "PROMPT"` | Drive a single agent turn without terminal interaction. Ideal for scripts, CI, and benchmarks.<br/>• `--json`: Output structured JSON turn summary.<br/>• `--max-steps N`: Cap maximum execution steps (default 500).<br/>• `--timeout D`: Bounded turn duration (e.g. `10m`).<br/>• `--quiet`: Suppress streaming prose. |
 | **Settings Inspection** | `manvi flags [--all]` | Display all configuration flags, active values, safety ratings, and origin layers. |
@@ -28,7 +29,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
 | **Sub-agent Roles** | `manvi agents` | Show each sub-agent role, the tier it runs on, and the model that tier resolves to for the default provider (role → tier → model). |
 | **Tier Profile** | `manvi tiers` | Print the model and effort each tier runs at — `advisor`, `main`, `heavy`, `lite`, `basic` — the setting and layer each value came from, and the effort ceiling each tier inherits. Runs the same check a session runs at startup, prints the table either way, and exits 1 on a profile a session would refuse. See [Tier profile](#tier-profile). |
-| **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. While a cap is set, managed Claude agents started by `manvi serve` do not inherit `ANTHROPIC_API_KEY`, because spend they make would not reach the ledger. `manvi budget reconcile` moves attempts left in flight by an exited process into retained spend (still counted against the limit); every reservation does the same before it is admitted. |
+| **Anthropic Spend** | `manvi budget` | Show Anthropic spend (settled, retained, in flight, remaining) against `MANVI_ANTHROPIC_BUDGET_USD`. With that variable set, every Anthropic request from any project or session draws on one ledger, and a request whose worst-case cost would pass the limit is refused before it is sent. The ledger defaults to `<user config dir>/manvi/budget/anthropic.json`; set `MANVI_ANTHROPIC_BUDGET_LEDGER` to an absolute path to move it. Managed Claude agents started by `manvi serve` never inherit `ANTHROPIC_API_KEY`, cap or no cap (see [Child processes](#child-processes)), so spend they could make on it never bypasses the ledger. `manvi budget reconcile` moves attempts left in flight by an exited process into retained spend (still counted against the limit); every reservation does the same before it is admitted. |
 | **Event Wire Watcher** | `manvi watch [--json]` | Stream the typed `ui.Event` wire to terminal or emit raw NDJSON lines for CI pipelines. |
 | **Code Graph Build** | `manvi map build` | Index repository symbols and AST relationships into `.devcouncil/code_graph.json`. |
 | **Code Graph Rebuild** | `manvi map rebuild` | Discard existing derived index and regenerate the code graph from scratch. |
@@ -184,13 +185,36 @@ the directories the project-root search stops at instead of adopting (a stray
 `.devcouncil` or `.git` there is debris, not a project), `USER` is the operator name
 recorded on a grant issued from the CLI, and `PATH` is program lookup.
 
-**Child processes.** A command the agent runs, and an MCP server it starts, receive
-a scrubbed environment, not this process's: only the names on an allowlist are
-copied across, and no credential is among them. The lists are `childEnvAllowlist`
-(`manvi/devcouncil/exec_tools.go`, for commands) and `baseEnvAllowlist`
-(`manvi/mcp/client.go`, for MCP servers, plus the names a server's own manifest
-declares in `EnvPassthrough`). They are policy, so the exact names live in those
-two lists and nowhere else.
+<a id="child-processes"></a>**Child processes.** No child of this process inherits a
+provider credential. The names are every variable in the credential catalogue —
+each provider's key variables above plus `ANTHROPIC_WORKSPACE_ID` and
+`ANTHROPIC_AUTH_TOKEN` — and `manvi --version --json` prints them as
+`withheld_provider_env` (the serve `hello` repeats it). A host may therefore put a
+key and workspace in this process's environment for the `anthropic` provider
+without git hooks, coding agents or anything else Manvi starts seeing them.
+`manvi/childenv` owns the rule, and `TestNoChildInheritsThisProcessEnvironment`
+fails on any production spawn site that does not assign an environment, or that
+reads `os.Environ()` outside that package.
+
+- A command the agent runs, and an MCP server it starts, receive only the names on
+  an allowlist: `childEnvAllowlist` (`manvi/devcouncil/exec_tools.go`, for
+  commands) and `baseEnvAllowlist` (`manvi/mcp/client.go`, for MCP servers, plus
+  the names a server's own manifest declares in `EnvPassthrough`).
+- Git — every git child of `manvi serve`, of the bootstrap and of the agent's git
+  tools — receives only the names on `gitAllowlist` (`manvi/childenv/childenv.go`):
+  program lookup, home and configuration, locale, temp, commit identity, the SSH
+  agent socket and askpass, GPG, and proxies. A repository's hooks, filters and
+  fsmonitor run with that, and a parent's `GIT_DIR` or `GIT_INDEX_FILE` no longer
+  steers Manvi's own git.
+- The operator's own tools — managed Codex and Claude agents and the `claude
+  --version` probe, the desktop broker, the verifier, the `devcouncil` CLI, and
+  `pull`/`push`/`issues` — inherit this process's environment with the withheld
+  names removed, because what they need cannot be enumerated. A managed Claude
+  agent therefore runs on the CLI's own login (`CLAUDE_CODE_OAUTH_TOKEN`, which is
+  not withheld, or the login the CLI stored), never on API billing through the
+  host's key.
+
+The lists are policy, so the exact names live in them and nowhere else.
 
 **Development only.** `manvi/cmd/geminiproxy` is a wire-capture proxy for
 developing the Gemini adapter and is not part of the shipped binary.
