@@ -21,90 +21,7 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
-### Changed
-
-- **The DevCouncil pin moves to wave 6 (`9add99c2`) and gusset to `984209b5`,
-  together** (`scripts/module-pins.txt`). `crates/Cargo.toml` mirrors the new
-  workspace `rust-version`, which `dc-grep` now inherits; without it the whole
-  Rust workspace failed to load. `manvi/go.mod` gains `toolchain go1.26.9`:
-  `govulncheck` under go1.26.6 reported ten reachable standard-library
-  advisories (net/http, net/textproto, crypto/tls, os), none under 1.26.9.
-  The `contracts/` mirror takes `lease.schema.md` and `verdict.schema.json` (the
-  new hard rule `command.operand.unverifiable`) with their `CHECKSUMS`.
-- **`command.operand.unverifiable` is not softened anywhere in Manvi.** A
-  program the gate does not model, handed a path outside the root or one the
-  restricted list protects (`go build -o /tmp/x`, `sqlite3 .devcouncil/...`), is
-  a hard refusal in the agent gate, `manvi check` (status 7) and `manvi serve`
-  under every posture. Manvi does not read `policy.unreadable_only` to relax it.
-- **Grants are saved on every ledger change, atomically.** `manvi` wrote the
-  grant ledger only when a grant was issued, so a revoke, or a single-use grant
-  being spent, was undone by the next process. It now saves from `Gate.OnChange`
-  through `safefile.WriteAtomic`, so a crash leaves the previous ledger rather
-  than half of one.
-- **Tier settings are read with their line numbers and block lists.** The user
-  config and repository config go through `flags.ParseConfigLayer` /
-  `Registry.LoadLayer`, so a block list written under a scalar tier key is
-  refused naming the line instead of loading as an unset tier.
-- **The MCP client speaks a real revision and checks the answer.** It asked for
-  `2025-03-20`, which is no revision, so a server configured modern-first
-  refused it. It now asks for `2025-03-26`, accepts only a handshake revision in
-  the reply (a per-request revision such as `2026-07-28` is refused and not
-  cached), returns a server's JSON-RPC error as a typed `*RPCError` (so `-32022`
-  and its `supported` list are readable), and fails an in-flight call with the
-  server's own reason when it answers `"id": null`.
-- **`devcouncil_next_task` and `manvi watch` name a lease the store could not
-  read.** A task held by a lease with an unparseable expiry is withheld by the
-  store; both now say so (`unreadable_leases`) instead of reporting no ready
-  task, or a complete watch report.
-- `docs/KNOWN_GAPS.md` GAP-1 carries DevMap's measured per-language call-edge
-  accuracy (fixtures only; no real-corpus labels exist).
-
-- **The DevCouncil pin moves to the workbench schema 13 store** (`40b6bbbf`).
-  Schema 13 shortens request receipts (a retry rebuilds its response from the
-  event), so it is a hard fence: a Manvi built at the previous pin (schema 12)
-  refuses a profile this build has upgraded with `schema_unsupported`. The
-  upgrade still runs only on a write, after the `VACUUM INTO` backup, and
-  `work.store.upgrade` takes it explicitly. Receipts a schema 12 store wrote in
-  full keep replaying. `contracts/lease.schema.md` and `docs/WORKBENCH.md` name
-  the new rung.
-- **`manvi serve` never upgrades a shared workbench profile on a read.** With
-  the DevCouncil store that upgrades only on a write, a `work.*` read of a
-  profile one schema behind is refused with the typed error
-  `schema_upgrade_required` and the profile is left untouched (an older
-  GitPulse, MCP server or sidecar sharing the file is never locked out by a
-  reader). A `work.*` write upgrades it after an online backup
-  (`<profile>.pre-schema-<N>.bak`), and the new `work.store.upgrade` op does
-  the same without writing a task. GitPulse upgrades at app startup. The serve
-  contract gains `work.store.upgrade`; the store also gains `items.delete`
-  refusing a task with a live run (`task_in_use`, `even_if_running` overrides)
-  and an optional `scan_sequence` on task creation (`board_changed`).
-
-- A task scope now fences every command that writes a file, not only the
-  redirect and `sed -i`, `tee`, `cp`, `mv`. `policy.check.command` (and the
-  harness's own shell tool) judges the files `rm`, `truncate`, `touch`,
-  `dd of=`, `perl -i`, `install`, `ln`, `rsync` and `patch FILE` write against
-  the same decision `policy.check.file` gives: outside the plan is
-  `scope.unplanned`, a credential `path.secret`, outside the root
-  `path.outside_root`. Under a declared scope, `git apply`, `patch` with no file
-  operand, `xargs`/`find -exec`/`-delete` running a writer, and a recursive `rm`
-  of a pattern write files the command text does not name and are refused as
-  `command.substitution`; with no scope they are unchanged. DevCouncil pin
-  `ec26e906`.
-- Subprocess cost per tool call. The turn-start baseline seeds its scratch
-  index from a copy of the repository's own index instead of `read-tree HEAD`,
-  so `git add -A` reuses git's stat cache and re-hashes only changed files; the
-  tree id is unchanged and a seed git refuses falls back to the old route.
-  Untracked files in a diff are rendered by one `git diff` over an
-  intent-to-add scratch index instead of one process each (258 git processes
-  for 256 files became 5), and anything the batch cannot attribute exactly
-  falls back to the per-file route. `graph_query`, `code_dead`, `graph_context`
-  and the new-file reuse check read `devmap status` once per call instead of
-  two or three times, and `graph_context` runs its per-file `devmap deps`
-  queries five at a time, in input order, stopping on cancel. Measured numbers
-  and the items closed without a change (dcgrep index, task cache, secret
-  pattern fold, concurrent tool dispatch) are on the card ft-9bff2fd4.
-- `docs/WORKBENCH.md` documents the bounded retention policy `store.compact`
-  enforces (DevCouncil `docs/workbench-retention.md`).
+## [0.1.0] — 2026-10-11
 
 ### Added
 
@@ -316,6 +233,89 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to wave 6 (`9add99c2`) and gusset to `984209b5`,
+  together** (`scripts/module-pins.txt`). `crates/Cargo.toml` mirrors the new
+  workspace `rust-version`, which `dc-grep` now inherits; without it the whole
+  Rust workspace failed to load. `manvi/go.mod` gains `toolchain go1.26.9`:
+  `govulncheck` under go1.26.6 reported ten reachable standard-library
+  advisories (net/http, net/textproto, crypto/tls, os), none under 1.26.9.
+  The `contracts/` mirror takes `lease.schema.md` and `verdict.schema.json` (the
+  new hard rule `command.operand.unverifiable`) with their `CHECKSUMS`.
+- **`command.operand.unverifiable` is not softened anywhere in Manvi.** A
+  program the gate does not model, handed a path outside the root or one the
+  restricted list protects (`go build -o /tmp/x`, `sqlite3 .devcouncil/...`), is
+  a hard refusal in the agent gate, `manvi check` (status 7) and `manvi serve`
+  under every posture. Manvi does not read `policy.unreadable_only` to relax it.
+- **Grants are saved on every ledger change, atomically.** `manvi` wrote the
+  grant ledger only when a grant was issued, so a revoke, or a single-use grant
+  being spent, was undone by the next process. It now saves from `Gate.OnChange`
+  through `safefile.WriteAtomic`, so a crash leaves the previous ledger rather
+  than half of one.
+- **Tier settings are read with their line numbers and block lists.** The user
+  config and repository config go through `flags.ParseConfigLayer` /
+  `Registry.LoadLayer`, so a block list written under a scalar tier key is
+  refused naming the line instead of loading as an unset tier.
+- **The MCP client speaks a real revision and checks the answer.** It asked for
+  `2025-03-20`, which is no revision, so a server configured modern-first
+  refused it. It now asks for `2025-03-26`, accepts only a handshake revision in
+  the reply (a per-request revision such as `2026-07-28` is refused and not
+  cached), returns a server's JSON-RPC error as a typed `*RPCError` (so `-32022`
+  and its `supported` list are readable), and fails an in-flight call with the
+  server's own reason when it answers `"id": null`.
+- **`devcouncil_next_task` and `manvi watch` name a lease the store could not
+  read.** A task held by a lease with an unparseable expiry is withheld by the
+  store; both now say so (`unreadable_leases`) instead of reporting no ready
+  task, or a complete watch report.
+- `docs/KNOWN_GAPS.md` GAP-1 carries DevMap's measured per-language call-edge
+  accuracy (fixtures only; no real-corpus labels exist).
+
+- **The DevCouncil pin moves to the workbench schema 13 store** (`40b6bbbf`).
+  Schema 13 shortens request receipts (a retry rebuilds its response from the
+  event), so it is a hard fence: a Manvi built at the previous pin (schema 12)
+  refuses a profile this build has upgraded with `schema_unsupported`. The
+  upgrade still runs only on a write, after the `VACUUM INTO` backup, and
+  `work.store.upgrade` takes it explicitly. Receipts a schema 12 store wrote in
+  full keep replaying. `contracts/lease.schema.md` and `docs/WORKBENCH.md` name
+  the new rung.
+- **`manvi serve` never upgrades a shared workbench profile on a read.** With
+  the DevCouncil store that upgrades only on a write, a `work.*` read of a
+  profile one schema behind is refused with the typed error
+  `schema_upgrade_required` and the profile is left untouched (an older
+  GitPulse, MCP server or sidecar sharing the file is never locked out by a
+  reader). A `work.*` write upgrades it after an online backup
+  (`<profile>.pre-schema-<N>.bak`), and the new `work.store.upgrade` op does
+  the same without writing a task. GitPulse upgrades at app startup. The serve
+  contract gains `work.store.upgrade`; the store also gains `items.delete`
+  refusing a task with a live run (`task_in_use`, `even_if_running` overrides)
+  and an optional `scan_sequence` on task creation (`board_changed`).
+
+- A task scope now fences every command that writes a file, not only the
+  redirect and `sed -i`, `tee`, `cp`, `mv`. `policy.check.command` (and the
+  harness's own shell tool) judges the files `rm`, `truncate`, `touch`,
+  `dd of=`, `perl -i`, `install`, `ln`, `rsync` and `patch FILE` write against
+  the same decision `policy.check.file` gives: outside the plan is
+  `scope.unplanned`, a credential `path.secret`, outside the root
+  `path.outside_root`. Under a declared scope, `git apply`, `patch` with no file
+  operand, `xargs`/`find -exec`/`-delete` running a writer, and a recursive `rm`
+  of a pattern write files the command text does not name and are refused as
+  `command.substitution`; with no scope they are unchanged. DevCouncil pin
+  `ec26e906`.
+- Subprocess cost per tool call. The turn-start baseline seeds its scratch
+  index from a copy of the repository's own index instead of `read-tree HEAD`,
+  so `git add -A` reuses git's stat cache and re-hashes only changed files; the
+  tree id is unchanged and a seed git refuses falls back to the old route.
+  Untracked files in a diff are rendered by one `git diff` over an
+  intent-to-add scratch index instead of one process each (258 git processes
+  for 256 files became 5), and anything the batch cannot attribute exactly
+  falls back to the per-file route. `graph_query`, `code_dead`, `graph_context`
+  and the new-file reuse check read `devmap status` once per call instead of
+  two or three times, and `graph_context` runs its per-file `devmap deps`
+  queries five at a time, in input order, stopping on cancel. Measured numbers
+  and the items closed without a change (dcgrep index, task cache, secret
+  pattern fold, concurrent tool dispatch) are on the card ft-9bff2fd4.
+- `docs/WORKBENCH.md` documents the bounded retention policy `store.compact`
+  enforces (DevCouncil `docs/workbench-retention.md`).
+
 - The crate-pin mirror check has one owner, `manvi/devcouncil/crate_pins_test.go`,
   and it compares against DevCouncil at the pinned commit, not the sibling
   working tree. The hand-rolled TOML check in `check-release.mjs` is deleted.
@@ -495,6 +495,7 @@ under **Unreleased** in the same commit as the code.
   command output used to become tens of thousands of rows, rebuilt on every
   resize, fold and theme switch. The entry keeps the whole result: search
   still finds text past the cut.
+
 ### Fixed
 
 - A file the agent rewrites is replaced, not truncated: the new content goes to
@@ -1172,7 +1173,8 @@ process boundary, the native tool suite, the full-screen TUI, multi-provider
 support (Anthropic, Gemini, xAI, and local servers), the benchmark rig, and
 `verify.sh` as the single gate over all of it.
 
-[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/bharathvbcr/Manvi/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/bharathvbcr/Manvi/compare/v0.0.6...v0.1.0
 [0.0.6]: https://github.com/bharathvbcr/Manvi/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/bharathvbcr/Manvi/compare/v0.0.2...v0.0.5
 [0.0.2]: https://github.com/bharathvbcr/Manvi/compare/v0.0.1...v0.0.2
