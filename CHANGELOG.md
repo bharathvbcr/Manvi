@@ -23,7 +23,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
-- **The DevCouncil pin moves to wave 6 (`8229de20`) and gusset to `984209b5`,
+- **The DevCouncil pin moves to wave 6 (`9add99c2`) and gusset to `984209b5`,
   together** (`scripts/module-pins.txt`). `crates/Cargo.toml` mirrors the new
   workspace `rust-version`, which `dc-grep` now inherits; without it the whole
   Rust workspace failed to load. `manvi/go.mod` gains `toolchain go1.26.9`:
