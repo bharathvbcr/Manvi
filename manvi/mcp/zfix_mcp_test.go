@@ -861,7 +861,7 @@ func TestInitializeAsksForARealRevisionAndAcceptsACounterOffer(t *testing.T) {
 	if res.ProtocolVersion != "2025-11-25" {
 		t.Fatalf("negotiated %q, want the server's counter-offer", res.ProtocolVersion)
 	}
-	raw, err := os.ReadFile(asked)
+	raw, err := os.ReadFile(filepath.Clean(asked))
 	if err != nil {
 		t.Fatal(err)
 	}
