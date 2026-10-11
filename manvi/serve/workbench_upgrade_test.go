@@ -101,7 +101,7 @@ func TestServeWriteAndTheExplicitOpUpgradeAnOlderProfileAfterABackup(t *testing.
 			if !responses[0].OK {
 				t.Fatalf("%s: %+v", via, responses[0])
 			}
-			if got := schemaOf(t, db); got != 12 {
+			if got := schemaOf(t, db); got != 13 {
 				t.Fatalf("schema after %s = %d", via, got)
 			}
 			backup := db + ".pre-schema-11.bak"

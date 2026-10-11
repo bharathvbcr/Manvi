@@ -23,6 +23,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to the workbench schema 13 store** (`40b6bbbf`).
+  Schema 13 shortens request receipts (a retry rebuilds its response from the
+  event), so it is a hard fence: a Manvi built at the previous pin (schema 12)
+  refuses a profile this build has upgraded with `schema_unsupported`. The
+  upgrade still runs only on a write, after the `VACUUM INTO` backup, and
+  `work.store.upgrade` takes it explicitly. Receipts a schema 12 store wrote in
+  full keep replaying. `contracts/lease.schema.md` and `docs/WORKBENCH.md` name
+  the new rung.
 - **`manvi serve` never upgrades a shared workbench profile on a read.** With
   the DevCouncil store that upgrades only on a write, a `work.*` read of a
   profile one schema behind is refused with the typed error
