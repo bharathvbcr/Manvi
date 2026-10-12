@@ -81,6 +81,7 @@ bench/results/
 
 # Built binaries
 /bin/
+/dist/
 
 # Built binary sitting in the module tree
 /manvi/harness
