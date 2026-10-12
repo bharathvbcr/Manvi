@@ -817,6 +817,10 @@
             "review": {
               "type": "integer",
               "required": true
+            },
+            "unread": {
+              "type": "integer",
+              "required": true
             }
           }
         },
