@@ -360,6 +360,19 @@ func (c *Client) awaitStderr() {
 	}
 }
 
+// awaitExit waits for the read loop to finish, which includes draining stderr,
+// for at most stderrDrainBound or until ctx ends. A server that is still alive
+// after its stdin broke is not waited on past that bound.
+func (c *Client) awaitExit(ctx context.Context) {
+	timer := time.NewTimer(stderrDrainBound)
+	defer timer.Stop()
+	select {
+	case <-c.doneCh:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
 func (c *Client) Diagnostics() []string {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -825,7 +838,12 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return fmt.Errorf("mcp: writing request %s to %s: %w", method, c.cfg.Name, writeErr)
+		// A write that fails because the child stopped reading is usually a
+		// child that is exiting, and what it said on the way out is still in
+		// flight. Returning now made the same failure read differently
+		// depending on whether stderr had been drained yet.
+		c.awaitExit(ctx)
+		return fmt.Errorf("mcp: writing request %s to %s: %w%s", method, c.cfg.Name, writeErr, c.diagnosticsSuffix())
 	}
 
 	select {
