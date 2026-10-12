@@ -205,7 +205,7 @@ in_manvi() { (cd manvi && "$@"); }
 
 step "Release — notes, assets and workflow"
 if have node; then
-  node --test scripts/check-release.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs || fail "release checks"
+  node --test scripts/check-release.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs scripts/verify-gates-cannot-run.test.mjs || fail "release checks"
   # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
   # is an unbound variable that fails the gate before it checks anything.
   if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then
