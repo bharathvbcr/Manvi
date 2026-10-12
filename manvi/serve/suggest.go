@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -32,7 +33,9 @@ const (
 	suggestPageSize = 200
 	suggestMaxPages = 10
 	// suggestMaxHydrate bounds the items.get calls made for cards a list page
-	// returned without their links.
+	// returned without their links. dc-store's items.list has no option to
+	// return links (CARD_OMITS drops them from every card), so the budget is
+	// spent best-first and only on the columns a task can be suggested from.
 	suggestMaxHydrate = 150
 	// suggestMaxVerifyProbes bounds the evidence reads: only the best
 	// candidates are checked, and the rest are counted as unchecked.
@@ -62,8 +65,9 @@ type SuggestParams struct {
 	// MaxPriority keeps only tasks at that priority or more urgent (0 urgent
 	// through 3 low). Absent means every priority.
 	MaxPriority *int `json:"max_priority,omitempty"`
-	// RepositoryID keeps only tasks linked to that repository. Blocking is
-	// still judged against the whole board.
+	// RepositoryID keeps only tasks linked to that repository. Every count and
+	// the blocked list cover that repository only; whether a task is blocked
+	// or a duplicate is still judged against the whole board.
 	RepositoryID string `json:"repository_id,omitempty"`
 }
 
@@ -98,18 +102,27 @@ type SuggestCounts struct {
 	InProgress int `json:"in_progress"`
 	Review     int `json:"review"`
 	Duplicate  int `json:"duplicate"`
-	Blocked    int `json:"blocked"`
-	// Filtered is what the request's repository or priority filter removed.
+	// Blocked counts tasks an open task is known to block. A task whose links
+	// were not read is never counted here; see Unread.
+	Blocked int `json:"blocked"`
+	// Unread counts tasks that could have been suggested but whose links were
+	// not read (budget spent or read failed), so they were left out unjudged.
+	Unread int `json:"unread"`
+	// Filtered is what the request's priority filter removed. Tasks outside
+	// the requested repository are not counted at all.
 	Filtered int `json:"filtered"`
 }
 
 // SuggestBoard is how much of the board was read.
 type SuggestBoard struct {
 	Scanned int `json:"scanned"`
-	// Complete is false when a bound cut a read; the ranking is then over a
-	// sample: a blocker that was never read cannot be seen.
+	// Complete is false when a bound cut a read or any open task's links were
+	// not read; the ranking is then partial: a blocker that was never read
+	// cannot be seen, so any candidate might be blocked by it.
 	Complete bool `json:"complete"`
-	// Unhydrated counts open tasks whose links could not be read.
+	// Unhydrated counts open tasks, in any column, whose links were not read.
+	// in_progress and review cards are never read: they cannot be suggested,
+	// and the budget goes to cards that can.
 	Unhydrated int `json:"unhydrated"`
 }
 
@@ -203,11 +216,23 @@ func Suggest(ctx context.Context, board SuggestStore, raw json.RawMessage) (Sugg
 	}
 	result := SuggestResult{OK: true, RequestID: params.RequestID, GeneratedAt: now.Unix(),
 		Suggestions: []Suggestion{}, Blocked: []SuggestBlocked{}, Board: SuggestBoard{Scanned: len(items), Complete: complete}}
-	unhydrated, err := suggestHydrate(ctx, board, items)
-	if err != nil {
+	inScope := func(item *suggestItem) bool {
+		return params.RepositoryID == "" || item.inRepository(params.RepositoryID)
+	}
+	passesPriority := func(item *suggestItem) bool {
+		return params.MaxPriority == nil || item.priority() <= *params.MaxPriority
+	}
+	if err := suggestHydrate(ctx, board, items, func(item *suggestItem) bool { return inScope(item) && passesPriority(item) }); err != nil {
 		return SuggestResult{}, err
 	}
-	result.Board.Unhydrated = unhydrated
+	for _, item := range items {
+		if item.Links == nil {
+			result.Board.Unhydrated++
+		}
+	}
+	if result.Board.Unhydrated > 0 {
+		result.Board.Complete = false
+	}
 
 	byID := make(map[string]*suggestItem, len(items))
 	for _, item := range items {
@@ -240,6 +265,11 @@ func Suggest(ctx context.Context, board SuggestStore, raw json.RawMessage) (Sugg
 	}
 	var ranked []*candidate
 	for _, item := range items {
+		// The repository scope comes first: no count and no blocked entry
+		// describes another repository's task.
+		if !inScope(item) {
+			continue
+		}
 		switch item.Status {
 		case "in_progress":
 			result.Excluded.InProgress++
@@ -252,25 +282,25 @@ func Suggest(ctx context.Context, board SuggestStore, raw json.RawMessage) (Sugg
 			continue
 		}
 		if item.Links == nil {
-			// Its links could not be read, so neither can a duplicate or a
-			// blocker be ruled out. Naming it a suggestion would be a guess.
-			result.Excluded.Blocked++
-			result.Blocked = appendBlocked(result.Blocked, item, []string{"links unreadable"})
+			// Its links were not read, so neither a duplicate nor a blocker
+			// can be ruled out. It is not blocked, it is unknown: counted
+			// apart from Blocked and never named a suggestion.
+			result.Excluded.Unread++
 			continue
 		}
-		if duplicateOfOpen(item, byID) {
+		if duplicateLoses(item, byID) {
 			result.Excluded.Duplicate++
 			continue
 		}
 		blockers := slices.Clone(blockedBy[item.ID])
+		slices.Sort(blockers)
+		blockers = slices.Compact(blockers)
 		if len(blockers) > 0 {
-			slices.Sort(blockers)
 			result.Excluded.Blocked++
 			result.Blocked = appendBlocked(result.Blocked, item, blockers)
 			continue
 		}
-		if (params.RepositoryID != "" && !item.inRepository(params.RepositoryID)) ||
-			(params.MaxPriority != nil && item.priority() > *params.MaxPriority) {
+		if !passesPriority(item) {
 			result.Excluded.Filtered++
 			continue
 		}
@@ -346,15 +376,54 @@ func appendBlocked(list []SuggestBlocked, item *suggestItem, by []string) []Sugg
 	return append(list, SuggestBlocked{ID: item.ID, Title: truncateRunes(item.Title, 300), BlockedBy: by})
 }
 
-func duplicateOfOpen(item *suggestItem, byID map[string]*suggestItem) bool {
-	for _, link := range *item.Links {
-		if link.Kind == "duplicate_of" {
-			if _, open := byID[link.ItemID]; open {
-				return true
-			}
+// duplicateLoses reports whether item is left out as a duplicate of an open
+// task. duplicate_of cycles are allowed by the store; inside a cycle the task
+// with the lowest id survives, so a mutual pair still yields one suggestion.
+func duplicateLoses(item *suggestItem, byID map[string]*suggestItem) bool {
+	reach := duplicateReach(item.ID, byID)
+	for target := range reach {
+		if target == item.ID {
+			continue
+		}
+		// Only a target that cannot get back to item is a canonical copy that
+		// item must yield to; a cycle-mate yields by id below.
+		if _, back := duplicateReach(target, byID)[item.ID]; !back {
+			return true
+		}
+		if target < item.ID {
+			return true
 		}
 	}
 	return false
+}
+
+// duplicateReach is every open task reachable from id over duplicate_of links
+// (id itself only if it lies on a cycle).
+func duplicateReach(id string, byID map[string]*suggestItem) map[string]struct{} {
+	seen := map[string]struct{}{}
+	stack := []string{id}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		node := byID[cur]
+		if node == nil || node.Links == nil {
+			continue
+		}
+		for _, link := range *node.Links {
+			if link.Kind != "duplicate_of" {
+				continue
+			}
+			if _, open := byID[link.ItemID]; !open {
+				continue
+			}
+			if _, done := seen[link.ItemID]; done {
+				continue
+			}
+			seen[link.ItemID] = struct{}{}
+			stack = append(stack, link.ItemID)
+		}
+	}
+	return seen
 }
 
 func compareDue(a, b *int64) int {
@@ -377,7 +446,8 @@ var (
 
 // scoreSignals is the whole ranking policy: every point a task earns, named.
 func scoreSignals(item *suggestItem, unblocks int, now time.Time) []SuggestSignal {
-	var out []SuggestSignal
+	// Never nil: a task with no signal must serialize as [], not null.
+	out := []SuggestSignal{}
 	add := func(name string, points int, detail string) {
 		if points != 0 {
 			out = append(out, SuggestSignal{Name: name, Points: points, Detail: detail})
@@ -394,7 +464,11 @@ func scoreSignals(item *suggestItem, unblocks int, now time.Time) []SuggestSigna
 		switch {
 		case left < 0:
 			days := int(-left / 86400)
-			add("due", 50+min(days, 14), fmt.Sprintf("overdue by %s", plural(days, "day")))
+			detail := "overdue"
+			if days > 0 {
+				detail = fmt.Sprintf("overdue by %s", plural(days, "day"))
+			}
+			add("due", 50+min(days, 14), detail)
 		case left <= 2*86400:
 			add("due", 35, "due within 2 days")
 		case left <= 7*86400:
@@ -456,7 +530,7 @@ func suggestReason(signals []SuggestSignal) string {
 // verificationSignal reads the newest stored verification for a task. ok is
 // false when there is none to speak of.
 func verificationSignal(ctx context.Context, board SuggestStore, id string) (SuggestSignal, bool, error) {
-	rows, _, err := board.EvidenceList(ctx, id)
+	rows, truncated, err := board.EvidenceList(ctx, id)
 	if err != nil {
 		return SuggestSignal{}, false, err
 	}
@@ -478,8 +552,17 @@ func verificationSignal(ctx context.Context, board SuggestStore, id string) (Sug
 		}
 		return SuggestSignal{}, false, nil
 	}
+	if truncated {
+		// Rows are newest first and the newest were cut off before a
+		// verification record turned up: "none" would be a guess.
+		return SuggestSignal{}, false, errEvidenceTruncated
+	}
 	return SuggestSignal{}, false, nil
 }
+
+// errEvidenceTruncated says a task's evidence read was cut before it showed a
+// verification record, so the task counts as unchecked.
+var errEvidenceTruncated = errors.New("evidence list truncated")
 
 // suggestReadBoard reads every open column, page by page up to a bound.
 // complete is false when a bound cut any column.
@@ -536,35 +619,57 @@ func suggestReadBoard(ctx context.Context, board SuggestStore) ([]*suggestItem, 
 }
 
 // suggestHydrate reads the cards a list page returned without links through
-// items.get, up to a bound. It returns how many were left unread.
-func suggestHydrate(ctx context.Context, board SuggestStore, items []*suggestItem) (int, error) {
-	unread, calls := 0, 0
-	for _, item := range items {
-		if item.Links != nil {
-			continue
+// items.get, at most suggestMaxHydrate of them. Only the columns a task can be
+// suggested from are read, and best-first: cards the request wants (first),
+// then by priority, due date and board position, so the budget goes to likely
+// winners. Cards it does not read keep Links == nil.
+func suggestHydrate(ctx context.Context, board SuggestStore, items []*suggestItem, wanted func(*suggestItem) bool) error {
+	type entry struct {
+		item  *suggestItem
+		index int
+		want  bool
+	}
+	var queue []entry
+	for i, item := range items {
+		if item.Links == nil && suggestStatuses[item.Status] {
+			queue = append(queue, entry{item, i, wanted(item)})
 		}
-		if calls == suggestMaxHydrate {
-			unread++
-			continue
+	}
+	slices.SortFunc(queue, func(a, b entry) int {
+		if a.want != b.want {
+			if a.want {
+				return -1
+			}
+			return 1
 		}
-		calls++
+		if c := cmp.Compare(a.item.priority(), b.item.priority()); c != 0 {
+			return c
+		}
+		if c := compareDue(a.item.DueAt, b.item.DueAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.index, b.index)
+	})
+	for n, e := range queue {
+		if n == suggestMaxHydrate {
+			break
+		}
+		item := e.item
 		in, err := json.Marshal(map[string]string{"id": item.ID})
 		if err != nil {
-			return 0, err
+			return err
 		}
 		out, err := board.Workbench(ctx, "items.get", in)
 		if err != nil {
 			if ctx.Err() != nil {
-				return 0, ctx.Err()
+				return ctx.Err()
 			}
-			unread++
 			continue
 		}
 		var res struct {
 			Item suggestItem `json:"item"`
 		}
 		if err := json.Unmarshal(out, &res); err != nil {
-			unread++
 			continue
 		}
 		links := []suggestLink{}
@@ -574,5 +679,5 @@ func suggestHydrate(ctx context.Context, board SuggestStore, items []*suggestIte
 		item.Links = &links
 		item.Description = res.Item.Description
 	}
-	return unread, nil
+	return nil
 }
