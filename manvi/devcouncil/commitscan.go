@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
@@ -238,28 +239,25 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error)
 		}
 	}
 
-	patch, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--no-renames", "--no-color", "-U0")
+	// The prefixes are spelled out because diff.noprefix and diff.mnemonicPrefix
+	// are repository configuration: with either set, git writes no "b/" and the
+	// name below was never found, which skipped the whole file's content.
+	patch, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--no-renames", "--no-color",
+		"--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0")
 	if err != nil {
 		return nil, fmt.Errorf("reading the staged patch: %w", err)
 	}
-	var current string
-	for _, line := range strings.Split(patch, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+++ b/"):
-			current = strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
-		case strings.HasPrefix(line, "+++ "):
-			current = ""
-		case strings.HasPrefix(line, "+") && current != "":
-			added := line[1:]
-			for value, source := range set.values {
-				if strings.Contains(added, value) {
-					note(current, "contains a value assigned in "+source)
-				}
-			}
-			if r.deps.KnownSecret != nil && r.deps.KnownSecret(added) {
-				note(current, "contains a credential this process holds")
+	if err := scanAddedLines(patch, func(path, added string) {
+		for value, source := range set.values {
+			if strings.Contains(added, value) {
+				note(path, "contains a value assigned in "+source)
 			}
 		}
+		if r.deps.KnownSecret != nil && r.deps.KnownSecret(added) {
+			note(path, "contains a credential this process holds")
+		}
+	}); err != nil {
+		return nil, err
 	}
 
 	var out []stagedLeak
@@ -301,4 +299,81 @@ func contentRefusal(leaks []stagedLeak) tools.Result {
 		Rule:     string(policy.RuleSecretPath),
 		Severity: string(policy.Hard),
 	}
+}
+
+// hunkHeader reads the line counts out of "@@ -a[,b] +c[,d] @@".
+var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
+
+// scanAddedLines calls visit with every added line of a -U0 patch and the path
+// it was added to. It fails closed: an added line it cannot attribute to a path
+// is an error, because that is content nothing judged.
+//
+// Two things in a patch are easy to misread as a file header. A name git
+// C-quotes (a quote, a backslash, a control character) arrives as
+// `+++ "b/..."`, and an added line whose own text begins "++ " arrives as
+// `+++ ...` — so lines inside a hunk are told apart by the counts the hunk
+// header promised, never by their spelling.
+func scanAddedLines(patch string, visit func(path, added string)) error {
+	var path string
+	var haveFile bool
+	oldLeft, newLeft := 0, 0
+	for _, line := range strings.Split(patch, "\n") {
+		if oldLeft > 0 || newLeft > 0 {
+			switch {
+			case strings.HasPrefix(line, "+"):
+				newLeft--
+				if !haveFile {
+					return fmt.Errorf("the staged patch adds a line to a file whose name could not be read, so it was not checked")
+				}
+				visit(path, line[1:])
+			case strings.HasPrefix(line, "-"):
+				oldLeft--
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			path, haveFile = "", false
+		case strings.HasPrefix(line, "+++ "):
+			name, ok := unquotePatchName(strings.TrimPrefix(line, "+++ "))
+			switch {
+			case name == "/dev/null":
+				path, haveFile = "", false
+			case ok && strings.HasPrefix(name, "b/"):
+				path, haveFile = strings.TrimPrefix(name, "b/"), true
+			default:
+				path, haveFile = "", false
+			}
+		case strings.HasPrefix(line, "@@"):
+			m := hunkHeader.FindStringSubmatch(line)
+			if m == nil {
+				return fmt.Errorf("the staged patch has a hunk header this check cannot read: %q", line)
+			}
+			oldLeft, newLeft = hunkCount(m[1]), hunkCount(m[2])
+		}
+	}
+	return nil
+}
+
+// hunkCount is a hunk header's line count, which git omits when it is 1.
+func hunkCount(raw string) int {
+	if raw == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// unquotePatchName undoes git's C-style quoting of a header name and the tab it
+// appends to a name that contains a space.
+func unquotePatchName(raw string) (string, bool) {
+	raw = strings.TrimSuffix(raw, "\t")
+	if !strings.HasPrefix(raw, `"`) {
+		return raw, true
+	}
+	name, err := strconv.Unquote(raw)
+	return name, err == nil
 }
