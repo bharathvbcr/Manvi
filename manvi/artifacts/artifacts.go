@@ -74,15 +74,45 @@ func (s *Store) sanitizeName(name string) (string, error) {
 	}
 	// "<name>.meta.json" is where the metadata of <name> is kept. A name in that
 	// namespace would clobber another artifact's metadata, or have its own
-	// content read back as one, so no artifact may be called that.
-	if strings.HasSuffix(clean, metaSuffix) {
-		return "", fmt.Errorf("artifacts: invalid artifact name %q: names ending in %s are reserved for metadata", name, metaSuffix)
+	// content read back as one, so no artifact may be called that. The test is
+	// case-blind and covers every path component: on a case-insensitive
+	// filesystem (APFS and NTFS by default) "x.META.JSON" is the sidecar of "x",
+	// and a directory called "x.meta.json" occupies the sidecar's name.
+	for _, part := range strings.Split(filepath.ToSlash(clean), "/") {
+		if isSidecarName(part) {
+			return "", fmt.Errorf("artifacts: invalid artifact name %q: names ending in %s are reserved for metadata", name, metaSuffix)
+		}
+		if isStoreTemp(part) {
+			return "", fmt.Errorf("artifacts: invalid artifact name %q: that shape is reserved for the store's temporary files", name)
+		}
 	}
 	return clean, nil
 }
 
 // metaSuffix is appended to an artifact's name to give its metadata file.
 const metaSuffix = ".meta.json"
+
+// isSidecarName reports whether a single path component is in the metadata
+// namespace, ignoring case.
+func isSidecarName(component string) bool {
+	return strings.HasSuffix(strings.ToLower(component), metaSuffix)
+}
+
+// isStoreTemp reports whether name is a temporary sibling left by writeContained
+// (".<base>.<16 hex>.tmp"): a crash between create and publish leaves one, and
+// it is not an artifact.
+func isStoreTemp(name string) bool {
+	if !strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".tmp") {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ".tmp")
+	i := strings.LastIndex(stem, ".")
+	if i <= 0 || len(stem)-i-1 != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(stem[i+1:])
+	return err == nil
+}
 
 func (s *Store) metaPath(cleanName string) string {
 	return filepath.Join(s.dir, cleanName+metaSuffix)
@@ -246,7 +276,7 @@ func (s *Store) List() ([]*Artifact, error) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(d.Name(), metaSuffix) {
+		if strings.HasSuffix(d.Name(), metaSuffix) || isStoreTemp(d.Name()) {
 			return nil
 		}
 
