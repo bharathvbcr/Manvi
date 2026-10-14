@@ -116,6 +116,75 @@ func requireStopped(t *testing.T, r *ManagedRunner, job *managedJob, wantProvide
 	}
 }
 
+// The wire form of the preparing-stop case. Registering the op names on a
+// fake module is not this: stop has to be ManagedRunner.Stop, reached through
+// WorkbenchModule, while the real Prepare is blocked inside the factory.
+// Under serial dispatch that stop was answered only after the factory returned.
+func TestStopIsAnsweredWhileARealManagedPrepareBlocks(t *testing.T) {
+	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	t.Cleanup(func() { client.Close() })
+	root := t.TempDir()
+	common := filepath.Join(root, ".git")
+	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
+	enhancementCall(t, client, "items.put", `{"id":"t","request_id":"t","expected_revision":0,"title":"Inspect fixture","repository_ids":["r"],"primary_repository_id":"r"}`)
+	enhancementCall(t, client, "runs.prepare", fmt.Sprintf(`{"id":"run","request_id":"prep","expected_revision":0,"kind":"managed","task_id":"t","source_revision":1,"repository_id":"r","repository_revision":1,"provider":"codex","permission_mode":"ask","cwd":%q,"git_dir":%q,"git_common_dir":%q,"head_oid":null}`, root, common, common))
+	entered := make(chan struct{})
+	runner, err := NewManagedRunner(client, func(ctx context.Context, _ codingagent.Options) (ManagedSession, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, func(err error) string { return err.Error() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runner.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	s := startSession(t, context.Background(), Options{Modules: []Module{WorkbenchModule{Client: client, Managed: runner}}})
+	t.Cleanup(func() { _ = s.in.Close() })
+	s.send("prep", "work.runs.managed.prepare", `{"id":"run","request_id":"launch","expected_revision":1}`)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the factory was never reached")
+	}
+	start := time.Now()
+	s.send("stop", opManagedStop, `{"id":"run"}`)
+	var stopAt time.Duration
+	seenPrep, seenStop := false, false
+	wait := time.After(5 * time.Second)
+	for !seenPrep || !seenStop {
+		select {
+		case r, ok := <-s.got:
+			if !ok {
+				t.Fatalf("stream ended with prep=%v stop=%v", seenPrep, seenStop)
+			}
+			switch r.ID {
+			case "stop":
+				seenStop = true
+				stopAt = time.Since(start)
+				if !r.OK {
+					t.Fatalf("stop failed: %+v", r.Error)
+				}
+			case "prep":
+				seenPrep = true
+				if r.OK {
+					t.Fatal("a stopped preparation reported success")
+				}
+			default:
+				t.Fatalf("unexpected response %q", r.ID)
+			}
+		case <-wait:
+			t.Fatalf("prep answered=%v stop answered=%v", seenPrep, seenStop)
+		}
+	}
+	if stopAt > 100*time.Millisecond {
+		t.Fatalf("stop answered after %v while prepare held the managed lane", stopAt)
+	}
+}
+
 // A job stopped while its factory is still starting the provider ends, and the
 // run is recorded interrupted rather than failed: nobody judged the provider.
 func TestManagedStopDuringPreparingEndsTheJob(t *testing.T) {

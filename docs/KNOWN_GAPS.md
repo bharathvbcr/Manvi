@@ -161,8 +161,8 @@ GAP-2 (`dcstore` table coverage), GAP-3 (no Go MCP server), GAP-4 (substring
 stub detection), GAP-5 (no drift check) and GAP-6 (no Go component home) were
 all contradicted by the code at the pinned DevCouncil commit and moved to
 [§3](#3-recorded-open-but-actually-closed--do-not-spend-time-here), each with
-its file:line evidence. The one residue, GAP-2's unreferenced tables, is the
-single open row there and is tracked on this repository's board as `ft-46ab2b`.
+its file:line evidence. GAP-2's unread tables were dropped on 2026-10-13;
+artifacts stay files and planning state stays retired.
 
 ---
 
@@ -202,7 +202,7 @@ The code says otherwise. Verified this session; the notice should be corrected.
 | INTEGRITY: "29 of 35 languages return `ParseOutcome::Failed`" | **Superseded.** 34 of 35 reach a real grammar (only VB.NET does not). Note this is *parsing* — GAP-1 is about *call extraction*, which is a different and still-open question. |
 | IMPROVEMENTS: `fail_under = 18` | **Superseded.** `pyproject.toml` now sets `fail_under = 90`. |
 | `rust/STATUS.md`: "one file differs from MANVI's copy" | **Corrected in commit `a48c423`.** Two do. |
-| **GAP-2** — "`dcstore` covers 2 of 16 tables" | **Stale.** `crates/dc-store/src/schema.rs` (DevCouncil `rust/dc-store/src/schema.rs`) creates 18 tables, `schema_version` included, and the workbench adds 19 `work_*` tables (`rust/dc-store/src/workbench/*.sql`). **Residue, open:** six of the 18 (`project_state`, `critique_findings`, `shell_sessions`, `shell_command_events`, `file_change_events`, `semantic_diffs`) are named by no source outside `schema.rs` and tests, and `correction_manifests` appears only in a comment (`devcouncil/correction/manifest.go:3`) and is never inserted. Tracked as `ft-46ab2b`. |
+| **GAP-2** — "`dcstore` covers 2 of 16 tables" | **Closed.** Artifacts persist as files under `.devcouncil/artifacts/` (`manvi/artifacts/artifacts.go`, `NewStore` defaults `dir` to that path). Planning state was retired in Phase 7 (`DevCouncil/docs/PHASE7_LONG_TAIL.md` deletes `planning/`). The core tables nothing read or wrote — `assumptions`, `project_state`, `critique_findings`, `shell_sessions`, `shell_command_events`, `file_change_events`, `semantic_diffs` and `correction_manifests` — are dropped when a store opens (`DevCouncil/rust/dc-store/src/schema.rs`, `RETIRED_TABLES`) and are not created for a new one. The schema version stays 9. `correction.WriteAndRecord` and its claim that a manifest is recorded in dc-store are gone; `Write` still stores the brief as a file. |
 | **GAP-3** — "all 29 `devcouncil_*` handlers still Python" | **Stale.** The Go host serves MCP (`backend/go_orchestrator/cmd/devcouncil/main.go:70`, `"mcp"`) with 8 tools (`devcouncil/registry.go`). The thick surface is Manvi's native registry (40 `devcouncil_*` tools listed in `TOOLS_REFERENCE.md`); DevCouncil `docs/TODO.md` records this as `GAP-P7-MCP-HOST-THIN`. |
 | **GAP-4** — "`dc-verify` stub detection is substring matching" | **Stale.** AST detection landed in DevCouncil `c6b48a28` and Java/C# in `9b0b9e5c`, both ancestors of the pin. `rust/dc-verify/src/stub_ast.rs:1-27`; the `allow-stub` marker is `rigor.rs` `ALLOW_STUB_MARKER`; `tests/false_accept.rs` and `tests/stub_ast.rs` are the gates. Assert-free and skipped-test checks cover Rust, Go, Python and TypeScript, not Java or C#; a file that does not parse falls back to the substring gate, labelled `Derived`. |
 | **GAP-5** — "nothing detects drift between the two source copies" | **Superseded.** `crates/dc-*` are symlinks into `../../DevCouncil/rust/` (`ls -la crates`), so there is one copy. `scripts/check-release.mjs` `crateMirrorProblems` checks inherited manifest values at the pin in `scripts/module-pins.txt`, and `manvi/devcouncil/crate_pins_test.go` checks resolved dependencies. |

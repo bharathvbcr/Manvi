@@ -209,6 +209,13 @@ func (r *Registry) report(ctx context.Context) (*Report, error) {
 	return report, nil
 }
 
+// coverageUnmeasuredNote is what runRigor records when no coverage file was
+// supplied. An unmeasured diff is reported and does not block: the task-report
+// verifier already says so, and VerifyPaths must agree. The match is this
+// whole string, so a missing binary, an empty diff, or an omitted path still
+// demotes the verdict.
+const coverageUnmeasuredNote = "diff_coverage: no coverage file was supplied, so every changed file is reported unmeasured; pass one with --coverage or MANVI_COVERAGE to get a real answer"
+
 // gitDiff returns the working-tree diff, including untracked files.
 //
 // Untracked files are included deliberately: a new file that the plan never
@@ -268,9 +275,7 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 		}}, []string{fmt.Sprintf("%s: did not run (%v)", owned, err)}
 	}
 	if coverage == "" {
-		degraded = append(degraded,
-			"diff_coverage: no coverage file was supplied, so every changed file is reported unmeasured; "+
-				"pass one with --coverage or MANVI_COVERAGE to get a real answer")
+		degraded = append(degraded, coverageUnmeasuredNote)
 	}
 
 	// Every gate dcverify ran is reported, and no setting here changes that.

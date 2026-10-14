@@ -153,7 +153,7 @@ port". The Python is deleted, and Phase 7 decided each row. Sizes are the
 | `knowledge` | 2,338 | **Retired** (P5.1). Agent guides come from `devmap build --guides`. | `:11` |
 | `reporting` | 1,947 | **Retired** (P5.2). Successor: `devcouncil verify --json`, `devcouncil_get_gaps`, MANVI session logs. | `:12` |
 | `campaign` | 1,700 | **Retired** (P5.3). Successor: MANVI multi-agent profiles. | `:14` |
-| `storage` | 1,574 | **Done as a transcription, with a residue.** `dc-store` creates 18 tables and the workbench adds 19 `work_*` tables. Six of the 18 are referenced by no code, and `correction_manifests` is never written; that is `ft-46ab2b`. Task creation has no product command: `TASK-P7-11`. | `rust/dc-store/src/schema.rs`; `PHASE7_LONG_TAIL.md:26`; `docs/TODO.md:26` |
+| `storage` | 1,574 | **Done as a transcription.** `dc-store` creates the tables a reader or writer still uses, and the workbench adds the `work_*` tables. The unread core tables (`assumptions`, `project_state`, `critique_findings`, the shell and file-change tables, `semantic_diffs`, `correction_manifests`) are dropped on open. Task creation has no product command: `TASK-P7-11`. | `rust/dc-store/src/schema.rs`; `PHASE7_LONG_TAIL.md:26`; `docs/TODO.md:26` |
 | `planning` + `council` | 1,470 | **Hard-cut, successor "Manvi `llm/` + agents"; no council code exists.** See D2. | `PHASE7_LONG_TAIL.md:22,56-57` |
 | `app` | 1,472 | **Unaudited** (P5.9). MANVI has `flags`, `bootstrap`, `core`. | — |
 | `live` | 1,212 | **Retired** (P5.4). | `:15` |

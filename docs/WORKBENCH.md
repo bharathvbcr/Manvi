@@ -949,6 +949,35 @@ event per mutation afterward. Run explicitly from
 go test ./dc/store -run '^$' -bench '^BenchmarkWorkbenchProfile(Stress)?$' -benchtime=100x -count=1 -timeout=20m
 ```
 
+Measured on Apple M5 Pro (`darwin/arm64`). Mean milliseconds are `ns/op / 1e6`. p95 is the benchmark's own `p95-ms`. `events.list` counts at most 10,000 rows and sets `total_exact` false above that; the fixture check uses `latest_sequence`, the AUTOINCREMENT high-water mark.
+
+The 10,000-task run (10 revisions each, 100,110 events, seed 7m31s, `-benchtime=20x`) is the earlier run recorded in DevCouncil `docs/workbench-retention.md`. Mean / p95 in milliseconds: global list 3.32 / 3.79, workspace 8.29 / 9.31, repository 1.90 / 2.33, search 10.2 / 12.95, history 0.59 / 0.79, edit 2.16 / 2.83. One `store.compact {"keep_revisions":1,"limit":100000}` deleted 90,021 revisions (eligible 90,021, not truncated) in 2.94 s. Receipts and events were fresh, so none were eligible. That write-up does not include rare search, scoped search or empty status.
+
+The 100,000-task run is from 2026-10-13, `-benchtime=20x -count=1`, invoked as:
+
+```sh
+go test -C manvi -run '^$' -bench '^BenchmarkWorkbenchProfileStress$' -benchtime=20x -count=1 -timeout=90m -v github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store
+```
+
+`manvi/go.mod` replaces that package with the live DevCouncil tree. Seed 8m28.6s. Fixture check: `latest_sequence` 100,110. Each printed sample is 20 iterations. The result names end in `-18` (GOMAXPROCS). Other local processes were up during the run.
+
+| Case | ns/op | Mean ms | p95 ms |
+|---|---:|---:|---:|
+| global | 9630338 | 9.63 | 11.65 |
+| workspace | 76226683 | 76.23 | 112.9 |
+| repository | 7174469 | 7.17 | 9.944 |
+| search | 83882712 | 83.88 | 120.5 |
+| history | 606162 | 0.606 | 1.160 |
+| rare_search | 2385340 | 2.39 | 5.646 |
+| repository_search | 57804852 | 57.80 | 72.87 |
+| workspace_search | 115900885 | 115.9 | 150.5 |
+| empty_status | 2923192 | 2.92 | 7.977 |
+| edit | 5102760 | 5.10 | 11.78 |
+
+One `store.compact {"keep_revisions":1,"limit":100000}` on that fixture took 517 ms and deleted 21 revisions (eligible 21, truncated false). Receipts deleted 0, events deleted 0. The printed edit sample is 20 iterations. The high-water mark after the edits was 100,131, which is the 100,110 seed events plus 21 committed edits; the benchmark's revision counter includes any extra invocation of that sub-benchmark. Vacuum was incremental (free pages 5, then 0).
+
+The two fixtures commit the same number of mutations. Workspace list and search are slower on the 100,000-task fixture (one revision per task) than on the 10,000-task fixture (ten revisions per task).
+
 Setup is excluded from operation timing; the temporary fixture is removed after
 the child closes. Report hardware, build mode and competing activity alongside
 results. One hundred samples provide a preliminary p95, not desktop qualification

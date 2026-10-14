@@ -142,13 +142,18 @@ func lastField(out []byte) string {
 
 // findings bounds are shared by the record and the critic prompt.
 const (
-	maxRecordedPaths    = 128
-	maxRecordedFindings = 30
-	maxRecordedFinding  = 1000
-	maxRecordedOmitted  = 20
-	maxRecordedTests    = 100
-	maxAffectedTargets  = 128
-	maxCriticSummary    = 6000
+	maxRecordedPaths       = 128
+	maxRecordedFindings    = 30
+	maxRecordedFinding     = 1000
+	maxRecordedOmitted     = 20
+	maxRecordedTests       = 100
+	maxAffectedTargets     = 128
+	// DevMap's affected query refuses more than this many targets. The client
+	// allows 128 and then hands them over in one call, which the producer
+	// rejects. Batches stay at the producer's limit. Splitting the query is
+	// not itself a reason to degrade.
+	maxDevmapAffectedBatch = 16
+	maxCriticSummary       = 6000
 )
 
 func boundedStrings(in []string, limit, runes int) []string {
@@ -290,6 +295,10 @@ func (r *VerifyRunner) runAffectedTests(ctx context.Context, rec *VerifyRecord, 
 		degrade("affected tests were computed for the first %d of %d changed paths", maxAffectedTargets, len(paths))
 		targets = targets[:maxAffectedTargets]
 	}
+	if len(targets) > maxDevmapAffectedBatch {
+		r.affectedInBatches(ctx, rec, client, targets, degrade)
+		return
+	}
 	query := mapclient.AdvancedQuery{Kind: mapclient.QueryAffected, Targets: targets, Depth: 6, Budget: 20000}
 	result, err := client.Advanced(ctx, query)
 	if err == nil {
@@ -337,6 +346,98 @@ func (r *VerifyRunner) runAffectedTests(ctx context.Context, rec *VerifyRecord, 
 		degrade("affected tests walk_incomplete in the blast radius: %s", note)
 	}
 	if envelope.BlastRadius.Layers.Truncated {
+		degrade("affected tests: the blast radius was truncated, so candidates may be missing")
+	}
+}
+
+// affectedEnvelope is one DevMap affected-tests answer.
+type affectedEnvelope struct {
+	Tests struct {
+		Items []struct {
+			Path string `json:"path"`
+		} `json:"items"`
+		Total          int             `json:"total"`
+		Truncated      bool            `json:"truncated"`
+		WalkIncomplete json.RawMessage `json:"walk_incomplete"`
+	} `json:"tests"`
+	BlastRadius struct {
+		Layers struct {
+			Truncated      bool            `json:"truncated"`
+			WalkIncomplete json.RawMessage `json:"walk_incomplete"`
+		} `json:"layers"`
+	} `json:"blast_radius"`
+}
+
+// affectedInBatches asks DevMap in groups of maxDevmapAffectedBatch and unions
+// the candidate paths. One batch keeps the caller's own wording; this path
+// exists only when the change is larger than the producer accepts. A failed
+// batch, a truncated batch, or a walk that stopped short still degrades. The
+// fact that the query was split does not.
+func (r *VerifyRunner) affectedInBatches(ctx context.Context, rec *VerifyRecord, client DevmapClient, targets []string, degrade func(string, ...any)) {
+	seen := map[string]struct{}{}
+	candidates := []string{}
+	var totalSum int
+	var anyTruncated bool
+	var layerTruncated bool
+	var walkTest string
+	var walkBlast string
+	for start := 0; start < len(targets); start += maxDevmapAffectedBatch {
+		end := min(start+maxDevmapAffectedBatch, len(targets))
+		query := mapclient.AdvancedQuery{Kind: mapclient.QueryAffected, Targets: targets[start:end], Depth: 6, Budget: 20000}
+		result, err := client.Advanced(ctx, query)
+		if err == nil {
+			err = mapclient.ValidateAdvancedResult(mapclient.QueryAffected, result)
+		}
+		if err != nil {
+			degrade("affected tests could not be computed (%v)", err)
+			return
+		}
+		var envelope affectedEnvelope
+		if err := json.Unmarshal(result.Data, &envelope); err != nil {
+			degrade("affected tests answer is unreadable (%v)", err)
+			return
+		}
+		anyTruncated = anyTruncated || envelope.Tests.Truncated
+		totalSum += envelope.Tests.Total
+		layerTruncated = layerTruncated || envelope.BlastRadius.Layers.Truncated
+		for _, item := range envelope.Tests.Items {
+			path := devcouncil.TruncateRunes(item.Path, 400)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			if len(candidates) < maxRecordedTests {
+				candidates = append(candidates, path)
+			}
+		}
+		if walkTest == "" {
+			if note := walkNote(envelope.Tests.WalkIncomplete); note != "" {
+				walkTest = note
+			}
+		}
+		if walkBlast == "" {
+			if note := walkNote(envelope.BlastRadius.Layers.WalkIncomplete); note != "" {
+				walkBlast = note
+			}
+		}
+	}
+	rec.Tests.Queried = true
+	rec.Tests.Candidates = candidates
+	rec.Tests.Truncated = anyTruncated
+	if anyTruncated {
+		rec.Tests.Total = totalSum
+		degrade("affected tests truncated: devmap listed %d of %d, so the candidate list is incomplete", len(candidates), totalSum)
+	} else {
+		rec.Tests.Total = len(seen)
+	}
+	if walkTest != "" {
+		rec.Tests.WalkIncomplete = walkTest
+		degrade("affected tests walk_incomplete: %s", walkTest)
+	} else if walkBlast != "" {
+		rec.Tests.WalkIncomplete = walkBlast
+		degrade("affected tests walk_incomplete in the blast radius: %s", walkBlast)
+	}
+	if layerTruncated {
 		degrade("affected tests: the blast radius was truncated, so candidates may be missing")
 	}
 }

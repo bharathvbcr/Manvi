@@ -181,7 +181,18 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 	// whether the content is sound, not whether it was in a plan — there is no
 	// plan without a task.
 	gaps, _, degraded := r.runRigor(ctx, diff, examined, "turn")
-	report.Degraded = append(report.Degraded, degraded...)
+	// The coverage-absent note is a report about the harness's inputs, not a
+	// check that was owed and did not run. It stays on the report, after
+	// settle, so an otherwise clean verdict stays passed and the note is
+	// still visible. Every other degradation is owed and still demotes.
+	var reported []string
+	for _, note := range degraded {
+		if note == coverageUnmeasuredNote {
+			reported = append(reported, note)
+			continue
+		}
+		report.Degraded = append(report.Degraded, note)
+	}
 	for _, gap := range gaps {
 		if !gap.Blocking {
 			continue
@@ -193,7 +204,9 @@ func (r *Registry) VerifyPaths(ctx context.Context, paths []string, command stri
 		report.Findings = append(report.Findings, detail)
 	}
 
-	return report.settle()
+	report = report.settle()
+	report.Degraded = append(report.Degraded, reported...)
+	return report
 }
 
 // NewPathVerifier builds a surface that can run VerifyPaths and nothing else.

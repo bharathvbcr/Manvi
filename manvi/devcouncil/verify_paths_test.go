@@ -38,6 +38,27 @@ func withoutVerifier(f *fixture) *fixture {
 	return f
 }
 
+// An unmeasured diff is reported and does not block. The task-report verifier
+// already holds that, and this is the board path that used to demote the same
+// note into a degraded verdict.
+func TestVerifyPathsUnmeasuredCoverageIsReportedAndDoesNotBlock(t *testing.T) {
+	f := newFixture(t)
+	f.reg.deps.CoverageFile = ""
+	writeRepoFile(t, f.root, "a.go", "package a\n\nfunc A() {}\n")
+
+	got := f.reg.VerifyPaths(context.Background(), []string{"a.go"}, "", Baseline{})
+	if got.Verdict != VerdictPassed {
+		t.Fatalf("verdict = %q, want passed; unmeasured coverage is reported and does not block\ndegraded: %v\nfindings: %v",
+			got.Verdict, got.Degraded, got.Findings)
+	}
+	if !got.Passed() {
+		t.Fatal("Passed() is false for a passed verdict")
+	}
+	if !strings.Contains(strings.Join(got.Degraded, "\n"), "no coverage file was supplied") {
+		t.Fatalf("the coverage note was dropped: %v", got.Degraded)
+	}
+}
+
 // The headline property: with no verifier binary configured, the content gates
 // did not run, and a report that says "passed" would be claiming they did.
 func TestVerifyPathsWithoutTheVerifierIsDegradedNotPassed(t *testing.T) {

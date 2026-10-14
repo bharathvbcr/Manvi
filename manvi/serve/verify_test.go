@@ -74,6 +74,10 @@ type scriptedDevmap struct {
 	err       error
 	queries   atomic.Int32
 	targets   atomic.Int64
+	// batchLimit, when non-zero, refuses a query with more targets than this,
+	// the way the devmap CLI refuses more than 16. Zero means no limit, so
+	// tests written against one query stay on that path.
+	batchLimit int
 }
 
 const devmapOneTest = `{"items":[{"path":"pkg/a_test.go","depth":1}],"resolution":"Available","shown":1,"total":1,"hidden":0,"truncated":false,"tokens_used":3}`
@@ -94,7 +98,11 @@ func (d *scriptedDevmap) Status(context.Context) (*mapclient.Status, error) {
 
 func (d *scriptedDevmap) Advanced(_ context.Context, q mapclient.AdvancedQuery) (mapclient.AdvancedResult, error) {
 	d.queries.Add(1)
-	d.targets.Store(int64(len(q.Targets)))
+	n := len(q.Targets)
+	d.targets.Store(int64(n))
+	if d.batchLimit > 0 && n > d.batchLimit {
+		return mapclient.AdvancedResult{}, fmt.Errorf("affected accepts at most %d targets, got %d", d.batchLimit, n)
+	}
 	if d.err != nil {
 		return mapclient.AdvancedResult{}, d.err
 	}
@@ -352,6 +360,26 @@ func TestVerifyAffectedTestsWalkIncompleteIsDegraded(t *testing.T) {
 	requireDegraded(t, record, "walk_incomplete")
 	if record.Tests.WalkIncomplete == "" {
 		t.Fatalf("the incompleteness was not recorded: %+v", record.Tests)
+	}
+}
+
+func TestVerifyAffectedTestsOverTheDevmapLimitAreQueriedInBatches(t *testing.T) {
+	h := newVerifyHarness(t, []string{"the change is tested"}, nil)
+	h.devmap.batchLimit = 16
+	for i := 0; i < 17; i++ {
+		writeFile(t, h.repo, fmt.Sprintf("pkg/f%d.go", i), "package pkg\n")
+	}
+	rec := h.settled("t", "req-batch")
+	if h.devmap.queries.Load() < 2 {
+		t.Fatalf("queries = %d, want at least 2", h.devmap.queries.Load())
+	}
+	if got := h.devmap.targets.Load(); got > 16 {
+		t.Fatalf("last batch = %d, want at most 16", got)
+	}
+	for _, d := range rec.Degraded {
+		if strings.Contains(d, "at most 16") {
+			t.Fatalf("a batched query was refused: %s", d)
+		}
 	}
 }
 
