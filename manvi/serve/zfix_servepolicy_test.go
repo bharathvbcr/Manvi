@@ -130,6 +130,10 @@ func TestARedirectWithoutARootIsRefusedRatherThanGuessedAt(t *testing.T) {
 	}
 }
 
+// gitReadArgument is spelled out for the same reason operandUnverifiable is:
+// it is a wire value hosts match on, and contracts/verdict.schema.json lists it.
+const gitReadArgument policy.RuleID = "command.git_read_argument"
+
 // The decision set for a command with no redirection must not move.
 func TestServeCommandsWithoutARedirectAreUnchanged(t *testing.T) {
 	for _, tc := range []struct {
@@ -141,6 +145,15 @@ func TestServeCommandsWithoutARedirectAreUnchanged(t *testing.T) {
 		{"git status", policy.Allow, policy.RuleNone},
 		{"git push --force origin main", policy.Deny, policy.RuleCommandForcePush},
 		{"git commit --no-verify -m x", policy.Deny, policy.RuleCommandBypassFlag},
+		{"git commit --no-gpg-sign -m x", policy.Deny, policy.RuleCommandBypassFlag},
+		// A read-only git command whose arguments do more than read is refused
+		// under its own rule. It used to be reported as command.bypass_flag, so
+		// a host was told an expansion or a secret path was a skipped hook
+		// (DevCouncil e79c2610).
+		{`git log -1 --format=%s "$b"`, policy.Deny, gitReadArgument},
+		{"git show HEAD:.env", policy.Deny, gitReadArgument},
+		{"git diff --output=x", policy.Deny, gitReadArgument},
+		{"git -c core.pager=sh log", policy.Deny, gitReadArgument},
 		{"", policy.Deny, policy.RuleCommandEmpty},
 		// The substituted command is judged as itself: `date` is in no
 		// allowlist, so the line is refused under `date`'s own soft

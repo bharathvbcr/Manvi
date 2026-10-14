@@ -102,20 +102,26 @@ flowchart TD
 
 ## 4. The Command Gate Ladder
 
-The Command Gate verifies shell commands before execution by the agent.
+The Command Gate verifies shell commands before execution by the agent. The
+diagram shows the rules that judge what a command does, not every hard rule:
+the structural refusals (`command.substitution`, `command.heredoc`,
+`command.reparse`, `command.directory_change`, `command.too_long`,
+`command.operand.unverifiable`, ...) are not drawn, and DevCouncil's
+`backend/go_orchestrator/policy/decision.go` is the full list.
 
 ```mermaid
 flowchart TD
     subgraph HardCmdRules["Command Gate Hard Rules"]
         C1["command.force_push: Rejects push -f, push --force-with-lease, +refs/heads/*"]
         C2["command.bypass_flag: Rejects --no-verify, --no-gpg-sign"]
-        C3["command.secret_read: Rejects a command whose operand or input redirection names a secret path"]
-        C4["command.protected_reset: Rejects a hard reset of a protected branch"]
+        C3["command.git_read_argument: Rejects a read-only git command whose arguments do more than read: an expansion, a path outside the root or a secret path, --output/--no-index/-O, unsafe global options or GIT_* assignments"]
+        C4["command.secret_read: Rejects a command whose operand or input redirection names a secret path"]
+        C5["command.protected_reset: Rejects a hard reset of a protected branch"]
     end
 
     subgraph SoftCmdRules["Command Gate Soft Rules"]
-        C5["command.no_lease: Shell commands need an active task lease"]
-        C6["command.not_allowed: Command is in neither the task's nor the global allowlist"]
+        C6["command.no_lease: Shell commands need an active task lease"]
+        C7["command.not_allowed: Command is in neither the task's nor the global allowlist"]
     end
 
     HardCmdRules --> SoftCmdRules
