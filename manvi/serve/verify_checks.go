@@ -142,12 +142,12 @@ func lastField(out []byte) string {
 
 // findings bounds are shared by the record and the critic prompt.
 const (
-	maxRecordedPaths       = 128
-	maxRecordedFindings    = 30
-	maxRecordedFinding     = 1000
-	maxRecordedOmitted     = 20
-	maxRecordedTests       = 100
-	maxAffectedTargets     = 128
+	maxRecordedPaths    = 128
+	maxRecordedFindings = 30
+	maxRecordedFinding  = 1000
+	maxRecordedOmitted  = 20
+	maxRecordedTests    = 100
+	maxAffectedTargets  = 128
 	// DevMap's affected query refuses more than this many targets. The client
 	// allows 128 and then hands them over in one call, which the producer
 	// rejects. Batches stay at the producer's limit. Splitting the query is
