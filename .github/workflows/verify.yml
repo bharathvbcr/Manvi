@@ -65,6 +65,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # manvi/go.mod replaces DevCouncil and gusset with sibling directories
       # that are not in this checkout. go vet fails closed on that absence;
@@ -221,6 +223,8 @@ jobs:
       MANVI_REQUIRE_MODULE_PINS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Module replacements
         shell: bash
         run: bash scripts/fetch-modules.sh
@@ -251,6 +255,8 @@ jobs:
         mode: [race, fuzz]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Module replacements
         run: bash scripts/fetch-modules.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
