@@ -94,7 +94,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+. Kept equal to
           # NODE_VERSION in scripts/tool-versions.env by scripts/verify-lib.test.mjs.
@@ -263,7 +263,7 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # jsdom 30 requires ^22.22.2; mermaid 12 requires 22.12+. Kept equal to
           # NODE_VERSION in scripts/tool-versions.env by scripts/verify-lib.test.mjs.
