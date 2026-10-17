@@ -101,7 +101,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
   What to install, how to read `./verify.sh`'s verdict, what the gate refuses, how the parity fixtures are regenerated, and the commit conventions.
 - [**Changelog**](../CHANGELOG.md)  
   What changed per release. Organised by version; the hardening ledger above is organised by defect.
-- [**Release Notes**](releases/v0.0.6.md)  
-  Per-release notes with install and verification steps (latest: v0.0.6, which links the Gusset engine into release binaries). Earlier: [v0.0.5](releases/v0.0.5.md), [v0.0.4](releases/v0.0.4.md).
+- [**Release Notes**](releases/v0.1.0.md)  
+  Per-release notes with install and verification steps (the version being prepared: v0.1.0). Origin's newest published tag is v0.0.5. Earlier notes: [v0.0.6](releases/v0.0.6.md) (local tag), [v0.0.5](releases/v0.0.5.md), [v0.0.4](releases/v0.0.4.md).
 - [**Benchmark & Paper**](../bench/paper/README.md)  
   The preregistered benchmark, its deviations and audit trail, and the manuscript source.

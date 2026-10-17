@@ -477,7 +477,7 @@ Full specifications live in [`docs/`](docs/README.md):
 | [Comparison](docs/COMPARISON.md) | MANVI vs SWE-agent, OpenHands, Aider, Claude Code |
 | [Trade-offs](docs/TRADE_OFFS.md) | Write discipline vs shell breadth, two toolchains, zero-cgo costs |
 | [Hardening Ledger](docs/HARDENING_LEDGER.md) | 30+ hardened invariants, bug patterns, test locations |
-| [Release Notes (v0.0.6)](docs/releases/v0.0.6.md) | Linked Gusset engine, zero-cgo fallbacks, install steps |
+| [Release Notes (v0.1.0)](docs/releases/v0.1.0.md) | Prepared v0.1.0 notes: workbench host plane, model tiers and spend cap, install steps |
 | [Benchmark & Paper](bench/paper/README.md) | Preregistered benchmark, audit trail, and manuscript source |
 | [Contributing](CONTRIBUTING.md) | Toolchains, reading `./verify.sh`'s verdict, what the gate refuses, commit conventions |
 | [Changelog](CHANGELOG.md) | What changed per release |
