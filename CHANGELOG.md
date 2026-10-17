@@ -21,6 +21,8 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-10-17
+
 ### Added
 
 - `manvi version --json` prints the build identity as one object, plus
@@ -31,39 +33,6 @@ under **Unreleased** in the same commit as the code.
   a key in its environment checks, before it does, that every name it would
   inject is listed; a build that omits the keys does not withhold them.
   `manvi version` with any other argument is now refused.
-
-### Changed
-
-- Every child process Manvi starts is given an environment it built, and none
-  of them inherits a provider credential: every key variable in the credential
-  catalogue plus `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_AUTH_TOKEN`
-  (`manvi/childenv`). Git children — of `manvi serve`, the bootstrap and the
-  agent's git tools — get an allowlist (`gitAllowlist`), so a hook, filter,
-  fsmonitor or alias in an untrusted repository no longer runs with the
-  operator's keys, and a parent's `GIT_DIR`/`GIT_INDEX_FILE` no longer reaches
-  Manvi's own git. Managed Codex and Claude agents, the `claude --version`
-  probe, the desktop broker, the verifier, the `devcouncil` CLI and
-  `pull`/`push`/`issues` inherit everything else. A contract test fails on any
-  production spawn that does not assign an environment.
-- Managed Claude agents never inherit `ANTHROPIC_API_KEY`, whether or not
-  `MANVI_ANTHROPIC_BUDGET_USD` is set. It used to be withheld only under a cap,
-  so without one a managed run silently moved from the CLI's subscription login
-  to API billing on the host's key. They also no longer inherit
-  `ANTHROPIC_AUTH_TOKEN`; `CLAUDE_CODE_OAUTH_TOKEN` still passes. Codex agents
-  no longer inherit `OPENAI_API_KEY`.
-
-### Fixed
-
-- `ANTHROPIC_BASE_URL` is read as the host root, as the vendor SDK and Claude
-  Code read it. Manvi used to treat it as including `/v1`, so the value those
-  tools set (`https://api.anthropic.com`) requested `/messages` and every turn,
-  including `manvi probe anthropic`, was refused with a 404 before any content.
-  A value ending in `/v1` (with or without a trailing slash) keeps working: the
-  segment is dropped rather than doubled.
-
-## [0.1.0] — 2026-10-11
-
-### Added
 
 - `work.tasks.suggest` (host plane, enabled with `--workbench-db`): ranks the
   open board for what to work on next and returns a short list with a reason
@@ -204,10 +173,12 @@ under **Unreleased** in the same commit as the code.
   spent, retained, in-flight and remaining. A cap that is set but unusable (a
   bad amount, a relative path, a corrupt ledger) stops the provider from
   starting rather than letting it run unmetered.
-  - While a cap is set, managed Claude agents started by `manvi serve` do not
-    inherit `ANTHROPIC_API_KEY`. They are separate processes that call the API
-    themselves, so with the key they could spend from the account without the
-    ledger recording it. They fall back to their own login instead.
+  - Managed Claude agents started by `manvi serve` do not inherit
+    `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, whether or not a cap is set.
+    They are separate processes that call the API themselves, so with the key
+    they could spend from the account without the ledger recording it. They
+    fall back to their own login instead. Codex agents do not inherit
+    `OPENAI_API_KEY`.
   - Rejections Anthropic documents as refusals of the request itself (400,
     401, 402, 403, 404, 413, 429, 529) release their reservation. 500, 504 and
     lost connections keep it.
@@ -272,6 +243,34 @@ under **Unreleased** in the same commit as the code.
   reports the provider as misconfigured.
 
 ### Changed
+
+- Every child process Manvi starts is given an environment it built, and none
+  of them inherits a provider credential: every key variable in the credential
+  catalogue plus `ANTHROPIC_WORKSPACE_ID` and `ANTHROPIC_AUTH_TOKEN`
+  (`manvi/childenv`). Git children — of `manvi serve`, the bootstrap and the
+  agent's git tools — get an allowlist (`gitAllowlist`), so a hook, filter,
+  fsmonitor or alias in an untrusted repository no longer runs with the
+  operator's keys, and a parent's `GIT_DIR`/`GIT_INDEX_FILE` no longer reaches
+  Manvi's own git. Managed Codex and Claude agents, the `claude --version`
+  probe, the desktop broker, the verifier, the `devcouncil` CLI and
+  `pull`/`push`/`issues` inherit everything else. A contract test fails on any
+  production spawn that does not assign an environment.
+- Managed Claude agents never inherit `ANTHROPIC_API_KEY`, whether or not
+  `MANVI_ANTHROPIC_BUDGET_USD` is set. It used to be withheld only under a cap,
+  so without one a managed run silently moved from the CLI's subscription login
+  to API billing on the host's key. They also no longer inherit
+  `ANTHROPIC_AUTH_TOKEN`; `CLAUDE_CODE_OAUTH_TOKEN` still passes. Codex agents
+  no longer inherit `OPENAI_API_KEY`.
+- The DevCouncil pin moves to `1ae3bc15` (extract schema 94); gusset stays
+  `984209b5`. A read-only git command whose arguments do more than read — an
+  expansion, a path outside the root or a secret path, `--output`,
+  `--no-index`, `-O`, an unsafe global or a `GIT_*` assignment — is reported
+  as `command.git_read_argument` instead of `command.bypass_flag`.
+  `command.bypass_flag` now names only the verification-bypass flags. What is
+  refused is unchanged; only the label moved. Realigning the verify-check
+  constants with gofmt changes no behaviour.
+- `scripts/.dev-build.sh` builds a local darwin/arm64 binary into `dist/`
+  without a release-tag stamp. `dist/` is gitignored.
 
 - **The DevCouncil pin moves to wave 6 (`9add99c2`) and gusset to `984209b5`,
   together** (`scripts/module-pins.txt`). `crates/Cargo.toml` mirrors the new
@@ -537,6 +536,57 @@ under **Unreleased** in the same commit as the code.
   still finds text past the cut.
 
 ### Fixed
+
+- `ANTHROPIC_BASE_URL` is read as the host root, as the vendor SDK and Claude
+  Code read it. Manvi used to treat it as including `/v1`, so the value those
+  tools set (`https://api.anthropic.com`) requested `/messages` and every turn,
+  including `manvi probe anthropic`, was refused with a 404 before any content.
+  A value ending in `/v1` (with or without a trailing slash) keeps working: the
+  segment is dropped rather than doubled.
+- The end-of-turn check and `work.verify.task` no longer demote an otherwise
+  passed verdict because no coverage file was supplied. The note stays on the
+  report (`diff_coverage: no coverage file was supplied, so every changed file
+  is reported unmeasured; pass one with --coverage or MANVI_COVERAGE to get a
+  real answer`). A missing binary, an empty diff, or an omitted path still
+  demotes. `work.verify.task` asks DevMap for affected tests in groups of 16
+  targets, which is what the producer accepts. A change of up to 128 paths is
+  split across those groups, and the split itself does not degrade the
+  verdict. A failed batch, a truncated answer, or a walk that stopped short
+  still does. Past 128 paths, only the first 128 are queried and the verdict
+  is degraded for the cap, as before.
+- An MCP request write that fails because the child closed stdin waits up to
+  2 seconds, or until the call's context ends, for the server's read loop to
+  drain stderr. The error then includes what the exiting server reported
+  (`— the server reported: …`) when it wrote diagnostics. It used to return
+  at once, so the same failure carried that explanation or not depending on
+  whether stderr had been drained yet.
+- `devcouncil_git_commit`'s staged-content scan forces `a/` and `b/` prefixes,
+  passes `--no-ext-diff` and `--no-textconv`, unquotes a C-quoted name, and
+  counts hunk lines from the hunk header. With `diff.noprefix`,
+  `diff.mnemonicPrefix`, or a quoted name, the scan used to skip the file's
+  content, and an added line beginning `++ ` used to end it. An added line
+  it cannot attribute to a path, or a hunk header it cannot read, fails the
+  commit closed.
+- An artifact name is refused when any path component is a metadata sidecar,
+  ignoring case, or a store temporary (a leading dot, the base name, 16 hex
+  digits and `.tmp`). On a case-insensitive filesystem `x.META.JSON` is the
+  sidecar of `x`, and a directory named `x.meta.json` occupies that name. A
+  leftover write temporary is not listed as an artifact.
+- `work.tasks.suggest` spends its link-read budget best-first, and only on
+  inbox, backlog and ready cards: cards the request's repository and priority
+  keep, then by priority, due date and board position. `in_progress` and
+  `review` cards are not read. A task whose links were not read is counted
+  under `excluded.unread` (required on the suggest result) and is not
+  suggested or listed as blocked. `board.complete` is false when any open
+  task's links were not read, and `board.unhydrated` counts those tasks in
+  any column. A `repository_id` limits every count and the blocked list to
+  that repository; a task outside it is not counted as filtered. Whether a
+  task is blocked, or a duplicate, is still judged against the whole board.
+  Inside a `duplicate_of` cycle the task with the lowest id is the one that
+  can be suggested. Blocker ids on a blocked task are unique. An evidence
+  list cut off before a verification record counts that candidate as
+  unchecked. A suggestion with no ranking signal serializes `signals` as
+  `[]`, and a task overdue by less than a day says "overdue".
 
 - A file the agent rewrites is replaced, not truncated: the new content goes to
   a temporary sibling, is fsynced, and is renamed over the original, so a write
