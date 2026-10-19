@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 )
@@ -248,6 +249,9 @@ func (s securityCLI) run(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/security", args...)
+	// security reads the Keychain, not a provider key: it gets none of the ones
+	// this process may hold.
+	cmd.Env = childenv.Inherit()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

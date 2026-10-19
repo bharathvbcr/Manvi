@@ -32,6 +32,8 @@ import (
 	"os/user"
 	"syscall"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // deps is everything run touches outside its arguments, so a test can drive
@@ -64,10 +66,15 @@ func main() {
 		name = u.Username
 	}
 	os.Exit(run(os.Args[1:], deps{
-		home:     home,
-		cwd:      cwd,
-		getenv:   os.Getenv,
-		environ:  os.Environ(),
+		home:   home,
+		cwd:    cwd,
+		getenv: os.Getenv,
+		// CMD's environment is built, not inherited: every provider credential
+		// this process holds is dropped here, and childEnv adds back only the
+		// chosen account's. A Gemini or xAI key in the caller's environment
+		// does not ride along to CMD; hosts that route to those providers
+		// start Manvi without this launcher.
+		environ:  childenv.Inherit(),
 		keychain: securityCLI{user: name, timeout: 2 * time.Minute},
 		lookPath: exec.LookPath,
 		execve:   syscall.Exec,
