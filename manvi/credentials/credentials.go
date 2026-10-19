@@ -439,6 +439,12 @@ func (r *Resolver) Resolve(provider string) (Secret, error) {
 	r.mu.RUnlock()
 
 	if hasOverride && override.Present() {
+		// An override NewSecret could not seal is reported here, where the
+		// caller expects a resolution failure, rather than handed back as a
+		// credential that fails only when it is revealed.
+		if override.err != nil {
+			return Secret{}, override.err
+		}
 		return override, nil
 	}
 	if !known {
@@ -484,8 +490,8 @@ type Status struct {
 	Doc     string   `json:"doc,omitempty"`
 }
 
-// Statuses reports every registered provider, sorted, for `harness doctor`.
-func (r *Resolver) Statuses() []Status {
+// providers names every registered provider, sorted.
+func (r *Resolver) providers() []string {
 	r.mu.RLock()
 	names := make([]string, 0, len(r.requirements))
 	for name := range r.requirements {
@@ -493,7 +499,12 @@ func (r *Resolver) Statuses() []Status {
 	}
 	r.mu.RUnlock()
 	sort.Strings(names)
+	return names
+}
 
+// Statuses reports every registered provider, sorted, for `harness doctor`.
+func (r *Resolver) Statuses() []Status {
+	names := r.providers()
 	out := make([]Status, 0, len(names))
 	for _, name := range names {
 		secret, err := r.Resolve(name)
@@ -506,11 +517,6 @@ func (r *Resolver) Statuses() []Status {
 				status.EnvVars = missing.EnvVars
 				status.Doc = missing.Doc
 			}
-		case secret.err != nil:
-			// Supplied, but never sealed (an in-process Set of a NewSecret that
-			// could not get locked memory). Reporting it present with a length
-			// would describe a credential the process cannot use.
-			status.Detail = secret.err.Error()
 		case secret.Present():
 			status.Present = true
 			status.Source = secret.Source()
@@ -550,15 +556,42 @@ type Scrubber struct {
 	// copy, so the match reads the plaintext in place. The buffers are frozen
 	// (read-only) and destroyed by Purge at exit.
 	values []*memguard.LockedBuffer
+	// unarmed is why a value this scrubber was asked to watch is not among
+	// values — it could not be opened, or there was no locked memory to hold
+	// it — or why values themselves are gone. Once set it stays set: the
+	// scrubber can no longer say a text is free of every credential it was
+	// given, so Clean withholds text rather than pass it on as cleaned.
+	unarmed error
 }
 
 // minScrubLen is the shortest value Watch keeps; see Watch.
 const minScrubLen = 8
 
+// Withheld begins what Clean returns in place of a text once the scrubber is
+// unarmed. It is followed by the reason, which names a source and an errno and
+// never a value.
+const Withheld = "[withheld: the credential scrubber is not armed"
+
+// errScrubberWiped is the reason when a watched buffer has been destroyed
+// under the scrubber, which only a memguard Purge does.
+var errScrubberWiped = errors.New("credentials: a watched value was wiped by memguard")
+
+// markUnarmed records the first reason the scrubber stopped covering
+// everything it was given. Callers hold s.mu for writing.
+func (s *Scrubber) markUnarmed(err error) {
+	if s.unarmed == nil {
+		s.unarmed = err
+	}
+}
+
 // NewScrubber returns an empty scrubber.
 func NewScrubber() *Scrubber { return &Scrubber{} }
 
 // Watch adds a secret's value to the set that gets removed.
+//
+// It returns nothing, and its callers re-arm on every use, so a value it cannot
+// take is not reported here: it leaves the scrubber unarmed, and Clean says so
+// in place of every text from then on.
 func (s *Scrubber) Watch(secret Secret) {
 	if !secret.Present() {
 		return
@@ -572,13 +605,11 @@ func (s *Scrubber) Watch(secret Secret) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// RevealBytes rather than Reveal: the value goes from one guarded buffer
-	// straight into another without a Go string in between.
-	//
-	// Its error is dropped, as it always has been: Watch has no caller to
-	// report to. A secret that cannot be opened, or a value with no locked
-	// memory to hold it (ErrLockedMemory), leaves the scrubber unarmed for that
-	// value rather than holding it in pageable memory.
-	_ = secret.RevealBytes(func(raw []byte) error {
+	// straight into another without a Go string in between. A secret that
+	// cannot be opened, or a value with no locked memory to hold it
+	// (ErrLockedMemory), is never held in pageable memory instead; it unarms
+	// the scrubber.
+	err := secret.RevealBytes(func(raw []byte) error {
 		for _, existing := range s.values {
 			if existing.EqualTo(raw) {
 				return nil
@@ -602,6 +633,9 @@ func (s *Scrubber) Watch(secret Secret) {
 		sort.Slice(s.values, func(i, j int) bool { return s.values[i].Size() > s.values[j].Size() })
 		return nil
 	})
+	if err != nil {
+		s.markUnarmed(fmt.Errorf("credentials: the scrubber could not watch the value from %s: %w", secret.Source(), err))
+	}
 }
 
 // WatchValue watches a raw value that is not a provider key — an environment
@@ -625,29 +659,59 @@ func (s *Scrubber) WatchValue(value, source string) {
 }
 
 // WatchAll adds every credential a resolver can currently produce.
+//
+// A provider with no credential is skipped. One whose credential is set but
+// cannot be resolved — it could not be sealed — unarms the scrubber: the value
+// is still in this process's environment, where a child or an error body can
+// echo it, and the scrubber does not hold it.
 func (s *Scrubber) WatchAll(r *Resolver) {
-	for _, status := range r.Statuses() {
-		if !status.Present {
+	for _, name := range r.providers() {
+		secret, err := r.Resolve(name)
+		var missing *ErrMissing
+		switch {
+		case errors.As(err, &missing):
+			continue
+		case err != nil:
+			s.mu.Lock()
+			s.markUnarmed(err)
+			s.mu.Unlock()
 			continue
 		}
-		if secret, err := r.Resolve(status.Provider); err == nil {
-			s.Watch(secret)
-		}
+		s.Watch(secret)
 	}
 }
 
 // Clean returns text with every watched credential replaced.
+//
+// An unarmed scrubber returns Withheld and the reason instead of the text,
+// because the text may carry a value it was never able to watch. So does one
+// whose buffers memguard has destroyed: a destroyed buffer reads as the empty
+// string, and replacing "" would put a redaction mark between every character
+// of the text while removing nothing.
 func (s *Scrubber) Clean(text string) string {
 	s.mu.RLock()
-	values := s.values
+	values, unarmed := s.values, s.unarmed
 	s.mu.RUnlock()
+	if unarmed != nil {
+		return withheld(unarmed)
+	}
 	for _, v := range values {
 		// v.String() is a view into the guarded page, so the credential is
 		// never copied onto the heap to be searched for.
-		text = strings.ReplaceAll(text, v.String(), Redacted)
+		needle := v.String()
+		if needle == "" {
+			s.mu.Lock()
+			s.markUnarmed(errScrubberWiped)
+			unarmed = s.unarmed
+			s.mu.Unlock()
+			return withheld(unarmed)
+		}
+		text = strings.ReplaceAll(text, needle, Redacted)
 	}
 	return text
 }
+
+func withheld(reason error) string { return Withheld + ": " + reason.Error() + "]" }
 
 // Count reports how many distinct values are being scrubbed, so a run report
 // can say the backstop is armed without describing what it holds.

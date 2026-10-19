@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,7 +127,11 @@ func lockedMemChild(phase string) {
 			fmt.Println("LOCKED-MEM: armed the scrubber without locked memory")
 			os.Exit(1)
 		}
-		fmt.Println(markerFailedClosed + ": scrubber not armed")
+		if got := s.Clean("echo " + fakeLockedMemKey); !strings.HasPrefix(got, Withheld) {
+			fmt.Println("LOCKED-MEM: an unarmed scrubber passed text on as cleaned")
+			os.Exit(1)
+		}
+		fmt.Println(markerFailedClosed + ": scrubber unarmed and withholding")
 		os.Exit(0)
 	}
 	_, err := r.Resolve("anthropic")

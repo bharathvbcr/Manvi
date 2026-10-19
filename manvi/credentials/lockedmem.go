@@ -26,7 +26,10 @@ import (
 // the scrubber's views read as empty strings.
 //
 // Neither outcome is an error a caller can handle, so this package does not
-// let memguard reach it: see guarded. The protection is not relaxed — nothing
+// let memguard reach it: see guarded. Upstream, awnumar/memguard#173 reports
+// the key-mutex deadlock and PR #174 (open) fixes only that one; the coffer
+// deadlock and the panics remain. guarded can go when memguard returns these
+// failures as errors (memguard#175) in a release this module pins. The protection is not relaxed — nothing
 // is ever held in unlocked memory instead. A credential that cannot be locked
 // is a credential this process refuses to hold.
 var ErrLockedMemory = errors.New("credentials: locked memory is unavailable")
@@ -67,6 +70,11 @@ const (
 	enclavePages = coldKeyPages + keyViewPages
 )
 
+// lockedMemoryProbe is probeLockedMemory, as a variable so a test can fail one
+// particular allocation — the scrubber's, after its Open succeeded — which a
+// process-wide limit cannot single out.
+var lockedMemoryProbe = probeLockedMemory
+
 // pagesFor is how many pages memguard locks to hold n bytes.
 func pagesFor(n int) int {
 	page := os.Getpagesize()
@@ -105,7 +113,7 @@ func guarded[T any](pages int, op func() T, discard func(T)) (T, error) {
 	case <-deadline.C:
 		return zero, fmt.Errorf("%w: waited %s for another memguard call to return", ErrLockedMemory, memguardBound)
 	}
-	if err := probeLockedMemory(pages); err != nil {
+	if err := lockedMemoryProbe(pages); err != nil {
 		<-memguardSlot
 		return zero, fmt.Errorf("%w: %d page(s) could not be locked: %w", ErrLockedMemory, pages, err)
 	}
