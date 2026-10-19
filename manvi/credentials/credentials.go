@@ -81,6 +81,10 @@ type Secret struct {
 	// length is cached because reporting it must not require an Open. It is
 	// the one fact about a credential this package prints.
 	length int
+	// err is why a supplied value could not be sealed. Such a secret is
+	// present — a credential was given — but every Reveal returns err, so the
+	// failure surfaces where the key is used rather than as a missing key.
+	err error
 }
 
 // NewSecret seals a value read from source.
@@ -88,15 +92,65 @@ type Secret struct {
 // The caller hands in a string it cannot wipe, which is unavoidable at this
 // boundary — os.LookupEnv has no other shape. That copy is the last unsealed
 // one; everything downstream holds the enclave.
+//
+// Sealing can fail when the process cannot get locked memory (ErrLockedMemory).
+// NewSecret has no error to return, so the failure is carried in the Secret and
+// returned by Reveal and RevealBytes, which every caller already checks. The
+// value is not kept anywhere in that case. Resolve reports the same failure
+// directly.
 func NewSecret(value, source string) Secret {
-	if value == "" {
-		return Secret{source: source}
+	s, err := seal(value, source)
+	if err != nil {
+		return Secret{source: source, length: len(value), err: err}
 	}
-	return Secret{sealed: memguard.NewEnclave([]byte(value)), source: source, length: len(value)}
+	return s
+}
+
+// seal is NewSecret with the failure returned.
+func seal(value, source string) (Secret, error) {
+	if value == "" {
+		return Secret{source: source}, nil
+	}
+	enclave, err := guarded(enclavePages, func() *memguard.Enclave {
+		return memguard.NewEnclave([]byte(value))
+	}, nil)
+	if err != nil {
+		return Secret{}, fmt.Errorf("credentials: sealing the credential from %s: %w", source, err)
+	}
+	return Secret{sealed: enclave, source: source, length: len(value)}, nil
+}
+
+// opened is the result of Enclave.Open, carried through guarded.
+type opened struct {
+	buf *memguard.LockedBuffer
+	err error
+}
+
+// open decrypts the enclave into guarded memory. The caller destroys the
+// buffer.
+func (s Secret) open() (*memguard.LockedBuffer, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	res, err := guarded(pagesFor(s.length)+enclavePages, func() opened {
+		buf, err := s.sealed.Open()
+		return opened{buf: buf, err: err}
+	}, func(late opened) {
+		if late.buf != nil {
+			late.buf.Destroy()
+		}
+	})
+	if err == nil {
+		err = res.err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("credentials: opening the sealed credential from %s: %w", s.source, err)
+	}
+	return res.buf, nil
 }
 
 // Present reports whether a credential was found.
-func (s Secret) Present() bool { return s.sealed != nil }
+func (s Secret) Present() bool { return s.sealed != nil || s.err != nil }
 
 // Source names where the credential came from — an environment variable name,
 // never its contents.
@@ -114,12 +168,12 @@ func (s Secret) Source() string { return s.source }
 // credential, which sends whoever is holding the pager to the wrong place.
 // Every call site is already inside a function that returns an error.
 func (s Secret) Reveal() (string, error) {
-	if s.sealed == nil {
+	if !s.Present() {
 		return "", nil
 	}
-	buf, err := s.sealed.Open()
+	buf, err := s.open()
 	if err != nil {
-		return "", fmt.Errorf("credentials: opening the sealed credential from %s: %w", s.source, err)
+		return "", err
 	}
 	defer buf.Destroy()
 	// string(buf.Bytes()) copies. LockedBuffer.String is a zero-copy view into
@@ -139,12 +193,12 @@ func (s Secret) Reveal() (string, error) {
 // it is unmapped before this returns. Reveal remains for the callers that hand
 // the value to an API taking a string, which is what http.Header.Set is.
 func (s Secret) RevealBytes(fn func([]byte) error) error {
-	if s.sealed == nil {
+	if !s.Present() {
 		return fn(nil)
 	}
-	buf, err := s.sealed.Open()
+	buf, err := s.open()
 	if err != nil {
-		return fmt.Errorf("credentials: opening the sealed credential from %s: %w", s.source, err)
+		return err
 	}
 	defer buf.Destroy()
 	return fn(buf.Bytes())
@@ -401,7 +455,7 @@ func (r *Resolver) Resolve(provider string) (Secret, error) {
 			if strings.TrimSpace(value) == "" {
 				continue
 			}
-			return NewSecret(strings.TrimSpace(value), name), nil
+			return seal(strings.TrimSpace(value), name)
 		}
 	}
 	if req.Optional {
@@ -452,6 +506,11 @@ func (r *Resolver) Statuses() []Status {
 				status.EnvVars = missing.EnvVars
 				status.Doc = missing.Doc
 			}
+		case secret.err != nil:
+			// Supplied, but never sealed (an in-process Set of a NewSecret that
+			// could not get locked memory). Reporting it present with a length
+			// would describe a credential the process cannot use.
+			status.Detail = secret.err.Error()
 		case secret.Present():
 			status.Present = true
 			status.Source = secret.Source()
@@ -514,6 +573,11 @@ func (s *Scrubber) Watch(secret Secret) {
 	defer s.mu.Unlock()
 	// RevealBytes rather than Reveal: the value goes from one guarded buffer
 	// straight into another without a Go string in between.
+	//
+	// Its error is dropped, as it always has been: Watch has no caller to
+	// report to. A secret that cannot be opened, or a value with no locked
+	// memory to hold it (ErrLockedMemory), leaves the scrubber unarmed for that
+	// value rather than holding it in pageable memory.
 	_ = secret.RevealBytes(func(raw []byte) error {
 		for _, existing := range s.values {
 			if existing.EqualTo(raw) {
@@ -524,7 +588,12 @@ func (s *Scrubber) Watch(secret Secret) {
 		// it wipes its source, and the source here is the buffer Enclave.Open
 		// returned, which memguard hands back read-only. Writing to it is a
 		// SIGBUS on a guarded page — a fault at the wipe, not at the mistake.
-		buf := memguard.NewBuffer(len(raw))
+		buf, err := guarded(pagesFor(len(raw)), func() *memguard.LockedBuffer {
+			return memguard.NewBuffer(len(raw))
+		}, func(late *memguard.LockedBuffer) { late.Destroy() })
+		if err != nil {
+			return err
+		}
 		buf.Copy(raw)
 		buf.Freeze()
 		s.values = append(s.values, buf)
