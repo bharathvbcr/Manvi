@@ -14,6 +14,7 @@ func TestWithheldNamesEveryProviderCredentialAHostInjects(t *testing.T) {
 	got := Withheld()
 	for _, name := range []string{
 		"ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_API_KEY_FALLBACK", "ANTHROPIC_WORKSPACE_ID_FALLBACK",
 		"OPENAI_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "LOCAL_API_KEY",
 	} {
 		if !slices.Contains(got, name) {

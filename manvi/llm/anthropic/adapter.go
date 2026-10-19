@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -50,8 +51,14 @@ const (
 )
 
 // WorkspaceHeader names the workspace a request acts in. A key created for one
-// workspace carries it implicitly; a key that is not scoped to one is refused
-// with a 400 on every request that omits it.
+// workspace runs there when the header is omitted; a key that is not scoped to
+// one (a multi-workspace personal or service-account key) is refused with a
+// 400 invalid_request_error on every request that omits it. A header naming a
+// workspace the key cannot reach — including one in a different organisation
+// from the key's — is a 404 not_found_error, "Workspace `<id>` not found."
+// (platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace,
+// read 2026-10-19.) So the header belongs with the key it was issued beside,
+// never with whichever key happens to be in the environment.
 const WorkspaceHeader = "anthropic-workspace-id"
 
 // maxWorkspaceIDLen bounds a configured workspace id. Real ids are around
@@ -97,6 +104,18 @@ type Adapter struct {
 	// harness that leaves it unstated inherits a different behaviour when the
 	// model changes underneath it.
 	Thinking ThinkingMode
+
+	// baseURL is kept so a fallback client is built against the same host.
+	baseURL string
+	// fallback is a second key, in its own organisation and workspace, that a
+	// request is moved to when the primary's organisation is out of credit.
+	// Nil when none is configured. See SetFallback.
+	fallback *transport.Client
+	// failedOver is set the first time the primary is refused for credit, and
+	// never cleared: prepaid credit does not come back mid-session, so asking
+	// the primary again would add one refused request to every turn.
+	failedOver atomic.Bool
+	onFailover func()
 }
 
 // New builds an adapter. The credential is read through a function on every
@@ -140,6 +159,11 @@ func workspaceIDRune(r rune) bool {
 }
 
 func newAdapter(baseURL, workspace string, resolve func() (credentials.Secret, error)) *Adapter {
+	return &Adapter{client: newClient(baseURL, workspace, resolve), DefaultMaxTokens: 8192, Thinking: ThinkingAdaptive, baseURL: baseURL}
+}
+
+// newClient builds the transport for one key and the workspace it acts in.
+func newClient(baseURL, workspace string, resolve func() (credentials.Secret, error)) *transport.Client {
 	client := transport.New(Name, hostRoot(baseURL), func() (http.Header, error) {
 		secret, err := resolve()
 		if err != nil {
@@ -158,7 +182,79 @@ func newAdapter(baseURL, workspace string, resolve func() (credentials.Secret, e
 		return h, nil
 	})
 	client.RequestIDHeader = "request-id"
-	return &Adapter{client: client, DefaultMaxTokens: 8192, Thinking: ThinkingAdaptive}
+	return client
+}
+
+// Fallback is a second key a request moves to when the primary key's
+// organisation has run out of prepaid credit.
+type Fallback struct {
+	// Workspace is the workspace the fallback key acts in, blank for a key
+	// created inside one. It is the fallback's own: the primary's workspace
+	// belongs to the primary's organisation and is a 404 under any other key.
+	Workspace string
+	// Resolve reads the fallback credential on every request, as the primary's
+	// resolver does, so the value is never stored here.
+	Resolve func() (credentials.Secret, error)
+	// OnFailover, if set, runs once, when the first request is moved. It is
+	// told nothing about either key.
+	OnFailover func()
+}
+
+// SetFallback arms request-level failover. It is configuration, to be called
+// before the adapter serves requests, not while it does.
+//
+// Failover happens inside Stream, at the one point where it cannot replay
+// anything: the request was refused outright, so no stream was opened, no
+// content reached the caller, no tool ran, and — the refusal arriving before
+// the model saw the prompt — nothing was billed. Retrying a whole turn from a
+// wrapper outside the harness has none of those properties.
+func (a *Adapter) SetFallback(f Fallback) error {
+	if f.Resolve == nil {
+		return errors.New("anthropic: a fallback needs a credential")
+	}
+	workspace, err := ParseWorkspaceID(f.Workspace)
+	if err != nil {
+		return fmt.Errorf("fallback %w", err)
+	}
+	client := newClient(a.baseURL, workspace, f.Resolve)
+	client.Retry = a.client.Retry
+	client.ResponseHeaderTimeout = a.client.ResponseHeaderTimeout
+	a.fallback, a.onFailover = client, f.OnFailover
+	return nil
+}
+
+// FailedOver reports whether requests are now going to the fallback key.
+func (a *Adapter) FailedOver() bool { return a.fallback != nil && a.failedOver.Load() }
+
+// creditExhausted reports whether a failure is the API refusing a request
+// because the key's organisation has no prepaid credit left: an HTTP 400
+// invalid_request_error whose message says the credit balance is too low.
+//
+// The test is deliberately narrow. The errors reference documents the 400 and
+// its type but not this message, which is quoted from the API's responses, so
+// anything that does not match all three is left alone — a spend limit (also a
+// 400 invalid_request_error) is a ceiling someone set, and a rate limit, a 402
+// billing_error or a 404 workspace are not things another organisation's key
+// should quietly route around. InStream is excluded because a failure inside a
+// 200 is in a response the API accepted, after message_start had metered the
+// prompt.
+func creditExhausted(err error) bool {
+	var failure *transport.Error
+	if !errors.As(err, &failure) || failure.Status != http.StatusBadRequest || failure.InStream() {
+		return false
+	}
+	var body struct {
+		Type  string `json:"type"`
+		Error *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(failure.Body), &body) != nil || body.Type != EventError || body.Error == nil {
+		return false
+	}
+	return body.Error.Type == "invalid_request_error" &&
+		strings.Contains(strings.ToLower(body.Error.Message), "credit balance is too low")
 }
 
 // Name identifies the adapter.
@@ -188,7 +284,8 @@ func (*Adapter) RejectionUnbilled(status int) bool {
 
 // AttemptGateSupported declares that every Messages API attempt, retries
 // included, goes through the shared transport admission gate: Stream's only
-// HTTP call is client.PostStream, which admits each attempt before sending it.
+// HTTP calls are PostStream on the primary or fallback client, which admits
+// each attempt before sending it.
 func (*Adapter) AttemptGateSupported() bool { return true }
 
 // wire request types.
@@ -274,7 +371,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	// frame inside an otherwise healthy stream, "which would normally
 	// correspond to an HTTP 529 in a non-streaming context". The same condition
 	// as a 529 is retried, so it is retried in this form too; see preflight.
-	body2, err := a.client.PostStream(ctx, MessagesPath, body, preflight)
+	client, onFallback := a.client, a.FailedOver()
+	if onFallback {
+		client = a.fallback
+	}
+	body2, err := client.PostStream(ctx, MessagesPath, body, preflight)
+	if err != nil && !onFallback && a.fallback != nil && creditExhausted(err) {
+		// PostStream returned no body, so nothing of this request reached the
+		// caller; sending it again on the other key duplicates nothing. Any
+		// failure from the fallback, credit included, is the answer — the
+		// primary is already known to be empty.
+		if a.failedOver.CompareAndSwap(false, true) && a.onFailover != nil {
+			a.onFailover()
+		}
+		body2, err = a.fallback.PostStream(ctx, MessagesPath, body, preflight)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +395,12 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // SetResponseHeaderTimeout sets how long a request may wait for response
 // headers before it is abandoned and retried. Zero disables the bound; see
 // transport.Client.ResponseHeaderTimeout.
-func (a *Adapter) SetResponseHeaderTimeout(d time.Duration) { a.client.ResponseHeaderTimeout = d }
+func (a *Adapter) SetResponseHeaderTimeout(d time.Duration) {
+	a.client.ResponseHeaderTimeout = d
+	if a.fallback != nil {
+		a.fallback.ResponseHeaderTimeout = d
+	}
+}
 
 // AppliedMaxTokens is the bound this adapter will actually send. Kept apart
 // from Capability.MaxOutputTokens, which is the model's ceiling: this adapter

@@ -141,6 +141,8 @@ held in the harness's credential store ahead of the environment outranks all of 
 |---|---|
 | `ANTHROPIC_BASE_URL` | Host root for the `anthropic` provider (`https://api.anthropic.com`, or a gateway's root), read the way the vendor SDK and Claude Code read it: requests go to `<root>/v1/messages`. A value that already ends in `/v1`, with or without a trailing slash, is accepted and that segment dropped, so `https://api.anthropic.com/v1` still works. Unset means Anthropic's own endpoint. The other providers' base URLs are settings (`llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url`), not variables of this kind. |
 | `ANTHROPIC_WORKSPACE_ID` | Workspace an `anthropic` API key that is not scoped to one acts in (`wrkspc_...`), sent as the `anthropic-workspace-id` header. Unset or blank sends no header. A value that is not letters, digits, `_` and `-`, or is too long, refuses to build the provider, naming the variable, and `manvi providers` reports the key as misconfigured. |
+| `ANTHROPIC_API_KEY_FALLBACK` | A second `anthropic` key, from a different Console organisation. Credit belongs to an organisation and cannot be pooled, so this is how a second funded organisation is used. When the primary key's request is refused with a 400 `invalid_request_error` saying the credit balance is too low, that same request is sent once on this key, and every later request in the process goes straight to it. Nothing else fails over: not a rate limit (429), a spend limit you set (also a 400, with a different message), a 402, a 404 workspace or a 5xx, and never an error that arrives inside a stream the API already accepted, so no tool call or partial response is ever replayed. `manvi run` and `manvi probe` print a line naming the variable when the switch happens; the TUI and `manvi serve` do not surface it yet. `manvi providers` and `manvi doctor` report the key's source and length beneath the `anthropic` row, never its value. Unset means no failover. |
+| `ANTHROPIC_WORKSPACE_ID_FALLBACK` | Workspace the fallback key acts in, under the same rules as `ANTHROPIC_WORKSPACE_ID`. It is the fallback's own: the primary's workspace belongs to the primary's organisation and is a 404 `Workspace not found` under any other key. Set without `ANTHROPIC_API_KEY_FALLBACK`, it is reported as misconfigured. |
 
 **Binaries.** Each names a path and is used as given when set; it is never second-guessed.
 Unset, the harness looks the program up on `PATH`, then in this repository's own
@@ -187,8 +189,9 @@ recorded on a grant issued from the CLI, and `PATH` is program lookup.
 
 <a id="child-processes"></a>**Child processes.** No child of this process inherits a
 provider credential. The names are every variable in the credential catalogue —
-each provider's key variables above plus `ANTHROPIC_WORKSPACE_ID` and
-`ANTHROPIC_AUTH_TOKEN` — and `manvi --version --json` prints them as
+each provider's key variables above plus `ANTHROPIC_WORKSPACE_ID`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY_FALLBACK` and
+`ANTHROPIC_WORKSPACE_ID_FALLBACK` — and `manvi --version --json` prints them as
 `withheld_provider_env` (the serve `hello` repeats it). A host may therefore put a
 key and workspace in this process's environment for the `anthropic` provider
 without git hooks, coding agents or anything else Manvi starts seeing them.

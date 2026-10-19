@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -59,6 +60,9 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", credentials.AnthropicWorkspaceEnv, err)
 		}
+		if err := armAnthropicFallback(adapter, resolver, notes); err != nil {
+			return nil, err
+		}
 		return meterAnthropic(ctx, adapter)
 	case xai.Name:
 		base, _, err := reg.String(flags.LLMXAIBaseURL)
@@ -82,6 +86,37 @@ func buildProvider(ctx context.Context, name string, reg *flags.Registry, resolv
 	default:
 		return nil, fmt.Errorf("unknown provider %q (%s)", name, strings.Join(providerNames(), ", "))
 	}
+}
+
+// armAnthropicFallback gives the adapter the second key when one is set. An
+// unset fallback is the ordinary case and changes nothing; a set one with a
+// malformed workspace is refused here, as the primary's is, rather than found
+// on the turn that needed it.
+func armAnthropicFallback(adapter *anthropic.Adapter, resolver *credentials.Resolver, notes io.Writer) error {
+	secret, err := resolver.Resolve(credentials.AnthropicFallback)
+	var missing *credentials.ErrMissing
+	switch {
+	case errors.As(err, &missing):
+		return nil
+	case err != nil:
+		return err
+	case !secret.Present():
+		return nil
+	}
+	err = adapter.SetFallback(anthropic.Fallback{
+		Workspace: os.Getenv(credentials.AnthropicFallbackWorkspaceEnv),
+		Resolve:   func() (credentials.Secret, error) { return resolver.Resolve(credentials.AnthropicFallback) },
+		OnFailover: func() {
+			if notes != nil {
+				_, _ = fmt.Fprintf(notes, "anthropic: the primary key's organisation is out of credit; "+
+					"this session now sends requests on %s\n", credentials.AnthropicFallbackKeyEnv)
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", credentials.AnthropicFallbackWorkspaceEnv, err)
+	}
+	return nil
 }
 
 // localConfig reads the operator's declarations about their own server.
@@ -670,6 +705,12 @@ func providerRows(reg *flags.Registry) []providerRow {
 	statuses := credentials.NewResolver().Statuses()
 	rows := make([]providerRow, 0, len(statuses))
 	for _, status := range statuses {
+		if status.Provider == credentials.AnthropicFallback {
+			// A second key the anthropic adapter holds, not a backend: it is
+			// reported on the anthropic row, below, rather than counted as a
+			// provider that could be "ready".
+			continue
+		}
 		row := providerRow{name: status.Provider}
 		switch {
 		case status.Provider == local.Name:
@@ -699,12 +740,62 @@ func providerRows(reg *flags.Registry) []providerRow {
 		default:
 			row.state, row.facts = stateUnavailable, []string{status.Detail}
 		}
+		if status.Provider == anthropic.Name {
+			// Outside the Present case so a fallback set beside a missing
+			// primary is still reported, as doctor reports it.
+			if facts, fault := anthropicFallbackFacts(statuses, status.Present); fault != "" {
+				row.state = stateMisconfigured
+				row.facts = append(row.facts, fault)
+			} else {
+				row.facts = append(row.facts, facts...)
+			}
+		}
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i].state == stateReady && rows[j].state != stateReady
 	})
 	return rows
+}
+
+// anthropicFallbackFacts describes the second Anthropic key from the statuses
+// — where it came from, its length and its workspace, never its value — or
+// names the fault that would make buildProvider refuse it. It answers for
+// both `manvi providers` and `manvi doctor`, so the two cannot disagree.
+// primaryPresent says whether the anthropic key itself is set: "no fallback"
+// is worth saying only about a key that could otherwise be used, and a
+// fallback beside no primary is never reached.
+func anthropicFallbackFacts(statuses []credentials.Status, primaryPresent bool) (facts []string, fault string) {
+	var fallback credentials.Status
+	for _, s := range statuses {
+		if s.Provider == credentials.AnthropicFallback {
+			fallback = s
+		}
+	}
+	workspace := os.Getenv(credentials.AnthropicFallbackWorkspaceEnv)
+	if !fallback.Present {
+		switch {
+		case strings.TrimSpace(workspace) != "":
+			return nil, credentials.AnthropicFallbackWorkspaceEnv + " is set but " +
+				credentials.AnthropicFallbackKeyEnv + " is not, so there is no fallback for it to scope"
+		case primaryPresent:
+			return []string{"no fallback key (" + credentials.AnthropicFallbackKeyEnv + ")"}, ""
+		}
+		return nil, ""
+	}
+	if !primaryPresent {
+		return nil, credentials.AnthropicFallbackKeyEnv + " is set but the primary key is not; " +
+			"the fallback is used only after the primary is refused for credit"
+	}
+	id, err := anthropic.ParseWorkspaceID(workspace)
+	if err != nil {
+		return nil, credentials.AnthropicFallbackWorkspaceEnv + ": " + err.Error()
+	}
+	fact := "fallback from " + fallback.Source + " (" + plural(fallback.Length, "char") + ")"
+	if id != "" {
+		fact += " in workspace " + id
+	}
+	return []string{fact}, ""
 }
 
 // providerLines lays the rows out as a table: a status mark, the provider, its

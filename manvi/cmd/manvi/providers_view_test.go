@@ -18,7 +18,8 @@ func providersEnv(t *testing.T, key, workspace string) {
 	t.Helper()
 	t.Setenv("ANTHROPIC_API_KEY", key)
 	t.Setenv(credentials.AnthropicWorkspaceEnv, workspace)
-	for _, v := range []string{"XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"} {
+	for _, v := range []string{"XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+		credentials.AnthropicFallbackKeyEnv, credentials.AnthropicFallbackWorkspaceEnv} {
 		t.Setenv(v, "")
 	}
 }
@@ -61,7 +62,7 @@ func TestProvidersIsATableWithTheRemedyBeneath(t *testing.T) {
 		t.Errorf("anthropic is row %d; the ready provider belongs first:\n%s", first, text)
 	}
 	want := "ready" + strings.Repeat(" ", len("unavailable")-len("ready")) + "  ANTHROPIC_API_KEY · " +
-		plural(len(key), "char") + " · workspace wrkspc_fixture01"
+		plural(len(key), "char") + " · workspace wrkspc_fixture01 · no fallback key (ANTHROPIC_API_KEY_FALLBACK)"
 	if !strings.HasSuffix(anth, want) {
 		t.Errorf("anthropic row = %q, want it to end %q", anth, want)
 	}
@@ -110,6 +111,84 @@ func TestABadWorkspaceIsShownAndRefused(t *testing.T) {
 	if _, err := buildProvider(context.Background(), "anthropic", reg, credentials.NewResolver(), io.Discard, ""); err == nil ||
 		!strings.Contains(err.Error(), credentials.AnthropicWorkspaceEnv) {
 		t.Errorf("buildProvider = %v, want a refusal naming %s", err, credentials.AnthropicWorkspaceEnv)
+	}
+}
+
+// TestTheFallbackKeyIsReportedOnTheAnthropicRow: the second key is a fact
+// about the anthropic provider — its source, length and workspace, never its
+// value — and not a fifth provider counted toward "ready".
+func TestTheFallbackKeyIsReportedOnTheAnthropicRow(t *testing.T) {
+	const key, fallback = "sk-ant-fixture-primary-row", "sk-ant-fixture-fallback-row"
+	providersEnv(t, key, "")
+	t.Setenv(credentials.AnthropicFallbackKeyEnv, fallback)
+	t.Setenv(credentials.AnthropicFallbackWorkspaceEnv, " wrkspc_fallback01 ")
+
+	var out bytes.Buffer
+	if err := showProviders(&out, pinnedTo(t, "http://127.0.0.1:1/v1")); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(text, key) || strings.Contains(text, fallback) {
+		t.Fatalf("the report disclosed a key:\n%s", text)
+	}
+	if strings.Contains(text, credentials.AnthropicFallback+" ") || !strings.HasPrefix(text, "providers  1 of 4 ready") {
+		t.Fatalf("the fallback was reported as a provider of its own:\n%s", text)
+	}
+	want := "ANTHROPIC_API_KEY · " + plural(len(key), "char") + " · fallback from ANTHROPIC_API_KEY_FALLBACK (" +
+		plural(len(fallback), "char") + ") in workspace wrkspc_fallback01"
+	if !strings.Contains(text, want) {
+		t.Errorf("anthropic row does not report the fallback; want %q in:\n%s", want, text)
+	}
+
+	doctor := doctorText(t, nil)
+	if strings.Contains(doctor, key) || strings.Contains(doctor, fallback) {
+		t.Fatalf("doctor disclosed a key: %s", doctor)
+	}
+	if !strings.Contains(doctor, "anthropic credential from ANTHROPIC_API_KEY ("+plural(len(key), "char")+") "+
+		"fallback from ANTHROPIC_API_KEY_FALLBACK ("+plural(len(fallback), "char")+") in workspace wrkspc_fallback01") {
+		t.Errorf("doctor does not report both keys beneath anthropic: %s", doctor)
+	}
+	if strings.Contains(doctor, credentials.AnthropicFallback+" ") {
+		t.Errorf("doctor listed the fallback as a provider: %s", doctor)
+	}
+}
+
+// TestABadFallbackWorkspaceIsShownAndRefused: a fallback workspace the API
+// would refuse, or one with no fallback key to scope, is a misconfiguration
+// the report names, and a run refuses to build the adapter around it.
+func TestABadFallbackWorkspaceIsShownAndRefused(t *testing.T) {
+	for name, tc := range map[string]struct{ primary, key, workspace, want string }{
+		"malformed": {"sk-ant-fixture-primary-ok", "sk-ant-fixture-fallback-bad", "wrkspc 1",
+			"ANTHROPIC_WORKSPACE_ID_FALLBACK: workspace id contains ' '"},
+		"orphaned workspace": {"sk-ant-fixture-primary-ok", "", "wrkspc_fallback01",
+			"ANTHROPIC_WORKSPACE_ID_FALLBACK is set but ANTHROPIC_API_KEY_FALLBACK is not"},
+		"no primary": {"", "sk-ant-fixture-fallback-alone", "",
+			"ANTHROPIC_API_KEY_FALLBACK is set but the primary key is not"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			providersEnv(t, tc.primary, "")
+			t.Setenv(credentials.AnthropicFallbackKeyEnv, tc.key)
+			t.Setenv(credentials.AnthropicFallbackWorkspaceEnv, tc.workspace)
+			reg := pinnedTo(t, "http://127.0.0.1:1/v1")
+
+			var out bytes.Buffer
+			if err := showProviders(&out, reg); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "anthropic  misconfigured") || !strings.Contains(out.String(), tc.want) {
+				t.Errorf("report does not name the fault %q:\n%s", tc.want, out.String())
+			}
+			if doctor := doctorText(t, nil); !strings.Contains(doctor, "MISCONFIGURED: "+tc.want) {
+				t.Errorf("doctor does not name the fault %q: %s", tc.want, doctor)
+			}
+			if tc.key == "" || tc.primary == "" {
+				return // nothing to arm, or no provider to arm it on
+			}
+			if _, err := buildProvider(context.Background(), "anthropic", reg, credentials.NewResolver(), io.Discard, ""); err == nil ||
+				!strings.Contains(err.Error(), credentials.AnthropicFallbackWorkspaceEnv) {
+				t.Errorf("buildProvider = %v, want a refusal naming %s", err, credentials.AnthropicFallbackWorkspaceEnv)
+			}
+		})
 	}
 }
 

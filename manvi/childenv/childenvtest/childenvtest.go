@@ -19,6 +19,9 @@ var parent = map[string]string{ // #nosec G101 -- fake values that exist only to
 	"ANTHROPIC_WORKSPACE_ID": "wrkspc_childenvtest_parent",
 	"ANTHROPIC_AUTH_TOKEN":   "bearer-childenvtest-parent",
 	"OPENAI_API_KEY":         "sk-openai-childenvtest-parent",
+
+	"ANTHROPIC_API_KEY_FALLBACK":      "sk-ant-childenvtest-fallback",
+	"ANTHROPIC_WORKSPACE_ID_FALLBACK": "wrkspc_childenvtest_fallback",
 }
 
 // SetParent puts provider credentials, a PATH and a HOME into this test's

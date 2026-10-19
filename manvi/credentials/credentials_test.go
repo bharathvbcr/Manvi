@@ -278,3 +278,50 @@ func mustReveal(t *testing.T, s Secret) string {
 	}
 	return v
 }
+
+// TestTheFallbackKeyIsWithheldAndScrubbed: a second Anthropic key is a
+// credential like the first. It must never reach a child process, must be
+// scrubbed from anything logged, must not be disclosed by a status report, and
+// must not be mistaken for the primary.
+func TestTheFallbackKeyIsWithheldAndScrubbed(t *testing.T) {
+	const fallback = "sk-ant-fallback-do-not-log-9876543210"
+	withheld := "," + strings.Join(ProviderEnv(), ",") + ","
+	for _, name := range []string{AnthropicFallbackKeyEnv, AnthropicFallbackWorkspaceEnv} {
+		if !strings.Contains(withheld, ","+name+",") {
+			t.Errorf("%s is not in ProviderEnv; a child process would inherit it", name)
+		}
+	}
+
+	r := resolverWith(map[string]string{"ANTHROPIC_API_KEY": probe, AnthropicFallbackKeyEnv: fallback})
+	primary, err := r.Resolve("anthropic")
+	if err != nil || mustReveal(t, primary) != probe {
+		t.Fatalf("primary = %v, want ANTHROPIC_API_KEY's value", err)
+	}
+	second, err := r.Resolve(AnthropicFallback)
+	if err != nil || mustReveal(t, second) != fallback || second.Source() != AnthropicFallbackKeyEnv {
+		t.Fatalf("fallback from %q (%v), want %s's value", second.Source(), err, AnthropicFallbackKeyEnv)
+	}
+
+	encoded, err := json.Marshal(r.Statuses())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), fallback) {
+		t.Fatalf("a status report disclosed the fallback key: %s", encoded)
+	}
+
+	s := NewScrubber()
+	s.WatchAll(r)
+	if s.Count() != 2 {
+		t.Fatalf("scrubbing %d values, want both keys", s.Count())
+	}
+	if cleaned := s.Clean("echoed: " + fallback); strings.Contains(cleaned, fallback) {
+		t.Fatalf("the scrubber missed the fallback key: %s", cleaned)
+	}
+
+	// Unset is not a fault: it means no failover, and is reported as missing
+	// with the variable that would supply it.
+	if _, err := resolverWith(nil).Resolve(AnthropicFallback); !errors.As(err, new(*ErrMissing)) {
+		t.Fatalf("an unset fallback resolved as %v, want *ErrMissing", err)
+	}
+}

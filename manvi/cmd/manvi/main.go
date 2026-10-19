@@ -102,6 +102,9 @@ Environment:
   MANVI_MODEL          model id for 'manvi tui' (see: manvi providers)
   MANVI_TUI_THEME      dark | light | plain
   ANTHROPIC_WORKSPACE_ID  workspace for an API key not scoped to one (wrkspc_...)
+  ANTHROPIC_API_KEY_FALLBACK       key from a second organisation, used when the
+                                   first is out of credit
+  ANTHROPIC_WORKSPACE_ID_FALLBACK  workspace for that key, if it needs one
   MANVI_<FLAG>         any setting from 'manvi flags'
 
 Settings resolve lowest-first: the catalogue default, then

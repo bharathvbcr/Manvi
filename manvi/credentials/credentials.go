@@ -187,7 +187,8 @@ func (s *Secret) UnmarshalJSON([]byte) error {
 
 // Requirement describes one provider's credential.
 type Requirement struct {
-	// Provider is the adapter name, matching llm.Provider.Name.
+	// Provider is the adapter name, matching llm.Provider.Name — or, for
+	// AnthropicFallback, the name of a second credential an adapter holds.
 	Provider string
 	// EnvVars are the environment variables consulted, in order. The first one
 	// set wins, and the winner's name is recorded as the source.
@@ -216,6 +217,28 @@ type Requirement struct {
 // scoped to one acts in. It is not a secret, but it routes the key's spend,
 // so it is withheld from children with the key.
 const AnthropicWorkspaceEnv = "ANTHROPIC_WORKSPACE_ID"
+
+// AnthropicFallback is the requirement for a second Anthropic key, in another
+// organisation, that the anthropic adapter moves a request to when the primary
+// key's organisation has run out of prepaid credit. Credit lives in an
+// organisation and cannot be pooled across two, so two funded organisations
+// are two keys.
+//
+// It is a requirement of its own, not a second variable on "anthropic",
+// because Resolve's "first variable set wins" would then pick one key and
+// never both. Being in the catalogue is what withholds it from children
+// (ProviderEnv) and arms the scrubber against it (WatchAll). It is not an
+// adapter: buildProvider constructs no provider by this name.
+const AnthropicFallback = "anthropic-fallback"
+
+// AnthropicFallbackKeyEnv and AnthropicFallbackWorkspaceEnv carry the fallback
+// key and the workspace it acts in. The workspace is the fallback's own: the
+// primary's ANTHROPIC_WORKSPACE_ID belongs to the primary's organisation and
+// is a 404 under any other key.
+const (
+	AnthropicFallbackKeyEnv       = "ANTHROPIC_API_KEY_FALLBACK"
+	AnthropicFallbackWorkspaceEnv = "ANTHROPIC_WORKSPACE_ID_FALLBACK"
+)
 
 // ProviderEnv names every environment variable that carries a provider
 // credential or scopes one — each requirement's EnvVars and Related — sorted,
@@ -293,6 +316,12 @@ func DefaultRequirements() []Requirement {
 			// Claude Code read for a gateway. This harness does not use it,
 			// but a child that inherited it would bill the account it names.
 			Related: []string{AnthropicWorkspaceEnv, "ANTHROPIC_AUTH_TOKEN"},
+		},
+		{
+			Provider: AnthropicFallback,
+			EnvVars:  []string{AnthropicFallbackKeyEnv},
+			Doc:      "a key from a second Console organisation, used when the first is out of credit (https://console.anthropic.com/settings/keys)",
+			Related:  []string{AnthropicFallbackWorkspaceEnv},
 		},
 		{
 			Provider: "xai",

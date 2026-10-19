@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
@@ -162,7 +163,8 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 	reportDevMap(out, ctx, mapClient(projectRoot()))
 
 	_, _ = fmt.Fprintln(out)
-	for _, status := range credentials.NewResolver().Statuses() {
+	statuses := credentials.NewResolver().Statuses()
+	for _, status := range statuses {
 		// Reported below instead, under its own heading. A loopback server
 		// needs no key, so "local — no credential" is a true statement about
 		// nothing, printed directly above the line that answers the question
@@ -170,11 +172,25 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 		if status.Provider == local.Name {
 			continue
 		}
+		// The second Anthropic key is a fact about the anthropic provider, so
+		// it is printed beneath that line rather than as a provider of its own.
+		if status.Provider == credentials.AnthropicFallback {
+			continue
+		}
 		if status.Present {
 			_, _ = fmt.Fprintf(out, "  %-15s credential from %s (%d chars)\n",
 				status.Provider, status.Source, status.Length)
 		} else {
 			_, _ = fmt.Fprintf(out, "  %-15s no credential — %s\n", status.Provider, status.Detail)
+		}
+		if status.Provider == anthropic.Name {
+			facts, fault := anthropicFallbackFacts(statuses, status.Present)
+			if fault != "" {
+				_, _ = fmt.Fprintf(out, "  %-15s MISCONFIGURED: %s\n", "", fault)
+			}
+			for _, fact := range facts {
+				_, _ = fmt.Fprintf(out, "  %-15s %s\n", "", fact)
+			}
 		}
 	}
 
