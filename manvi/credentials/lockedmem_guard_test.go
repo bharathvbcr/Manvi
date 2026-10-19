@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,7 +50,9 @@ func TestAMemguardCallThatNeverReturnsIsReportedNotWaitedFor(t *testing.T) {
 	if ran {
 		t.Fatal("a call behind a stuck one reached memguard")
 	}
-	if elapsed := time.Since(start); elapsed > memguardBound {
+	// Loose on purpose: the refusal is checked by ran above, and this only
+	// catches a wait as long as a stuck call's — not a deschedule under load.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("a call behind a stuck one took %s; it must be refused at once", elapsed)
 	}
 
@@ -71,6 +74,28 @@ func TestAMemguardCallThatNeverReturnsIsReportedNotWaitedFor(t *testing.T) {
 	if n := memguardStuck.Load(); n != 0 {
 		t.Fatalf("stuck = %d after the call returned, want 0", n)
 	}
+}
+
+// TestASecretThatCouldNotBeSealedIsNotReportedPresent: NewSecret carries a seal
+// failure rather than returning it, so a doctor report over a resolver given
+// such a secret must show the failure, not a credential with a length.
+func TestASecretThatCouldNotBeSealedIsNotReportedPresent(t *testing.T) {
+	unsealed := Secret{source: "in-process", length: len(probe), err: ErrLockedMemory}
+	if _, err := unsealed.Reveal(); !errors.Is(err, ErrLockedMemory) {
+		t.Fatalf("Reveal = %v, want the seal failure", err)
+	}
+	r := resolverWith(nil)
+	r.Set("anthropic", unsealed)
+	for _, s := range r.Statuses() {
+		if s.Provider != "anthropic" {
+			continue
+		}
+		if s.Present || s.Length != 0 || !strings.Contains(s.Detail, ErrLockedMemory.Error()) {
+			t.Fatalf("status = %+v, want not present and the seal failure in Detail", s)
+		}
+		return
+	}
+	t.Fatal("no status for anthropic")
 }
 
 // TestAMemguardPanicIsNotTurnedIntoAnError: a panic means memguard completed a

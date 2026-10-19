@@ -506,6 +506,11 @@ func (r *Resolver) Statuses() []Status {
 				status.EnvVars = missing.EnvVars
 				status.Doc = missing.Doc
 			}
+		case secret.err != nil:
+			// Supplied, but never sealed (an in-process Set of a NewSecret that
+			// could not get locked memory). Reporting it present with a length
+			// would describe a credential the process cannot use.
+			status.Detail = secret.err.Error()
 		case secret.Present():
 			status.Present = true
 			status.Source = secret.Source()
