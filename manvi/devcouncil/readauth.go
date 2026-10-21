@@ -58,23 +58,6 @@ func (r *Registry) readRefusal(rel string) string {
 	return ""
 }
 
-// siblingReadRefusal is readRefusal for a path whose parent directories a
-// caller has already judged with readRefusal for a sibling: what is left to ask
-// is the path's own spelling and its link count. It exists because readRefusal
-// lists each directory on the way down, which is a listing of the whole
-// directory per file when a caller reads every file in a large one. It never
-// answers "readable" for a path readRefusal would refuse on those two counts,
-// and it is not a substitute for readRefusal on the first path of a directory.
-func (r *Registry) siblingReadRefusal(rel string) string {
-	if policy.SecretPathSpelling(rel) {
-		return string(policy.RuleSecretRead)
-	}
-	if len(aliasedPaths(r.deps.Root, []string{rel})) > 0 {
-		return ruleAliasedRead
-	}
-	return ""
-}
-
 // withholdDiff removes from a working-tree diff every file section the read
 // gate refuses, by the names git wrote into it. It is applied to what a model
 // is shown and not to what the verifier scans: the secret scanner has to see

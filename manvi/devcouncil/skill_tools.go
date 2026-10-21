@@ -3,10 +3,6 @@ package devcouncil
 import (
 	"context"
 	"fmt"
-	"io/fs"
-	"os"
-	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/harness"
@@ -20,44 +16,15 @@ import (
 // cannot displace the task.
 const maxSkillBodyRunes = 32_000
 
-// skillReader is the reader a single skill is read with: the repository's
-// contained reader, behind the full read gate. A skill file is judged the way
-// read_file judges any path, so a skill that is a hard link to something the
-// gate withholds is refused here exactly as it would be there.
+// skillReader is the one reader every skill is read with, listing and single
+// lookup alike: the repository's contained reader behind the full read gate, with
+// no lighter path for any caller. A skill file is judged the way read_file
+// judges any path, so a skill whose directory is named for a secret, or that
+// is a hard link to something the gate withholds, is refused here exactly as it
+// would be there.
 func (r *Registry) skillReader(ctx context.Context) harness.ReadFunc {
 	return func(rel string, limit int64) ([]byte, error) {
 		if why := r.readRefusal(rel); why != "" {
-			return nil, fmt.Errorf("%s is withheld by %s", rel, why)
-		}
-		return readContained(ctx, r.deps.Root, rel, limit)
-	}
-}
-
-// listingReader is skillReader for reading a whole directory of skills.
-//
-// The full read gate lists every directory on the path to find the on-disk
-// spelling of each name, and the one that matters here, .agents/skills, is the
-// directory with all the skills in it: a read per skill is a listing of every
-// skill per skill. Measured on a hostile tree of 10,000 skill directories that
-// was 3.3 s for 200 reads, on every prompt assembly. So the full gate judges the
-// first read, which settles the shared prefix (.agents and .agents/skills are
-// not links to somewhere withheld), and each later read is judged by what can
-// still differ between siblings: the spelling of its own path and its link
-// count. A skill directory that is itself a symbolic link, or whose state
-// cannot be read, gets the full gate again.
-func (r *Registry) listingReader(ctx context.Context) harness.ReadFunc {
-	prefixJudged := false
-	return func(rel string, limit int64) ([]byte, error) {
-		fi, err := os.Lstat(filepath.Join(r.deps.Root, filepath.FromSlash(path.Dir(rel))))
-		linked := err != nil || fi.Mode()&fs.ModeSymlink != 0
-		var why string
-		if !prefixJudged || linked {
-			prefixJudged = true
-			why = r.readRefusal(rel)
-		} else {
-			why = r.siblingReadRefusal(rel)
-		}
-		if why != "" {
 			return nil, fmt.Errorf("%s is withheld by %s", rel, why)
 		}
 		return readContained(ctx, r.deps.Root, rel, limit)
@@ -68,7 +35,7 @@ func (r *Registry) listingReader(ctx context.Context) harness.ReadFunc {
 // for the prompt's always-on listing. The names the model is shown here and the
 // names devcouncil_load_skill accepts come from the same loader.
 func (r *Registry) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
-	return harness.LoadSkills(r.deps.Root, r.listingReader(ctx))
+	return harness.LoadSkills(r.deps.Root, r.skillReader(ctx))
 }
 
 // loadSkill returns the body of one repository skill as a tool result.
