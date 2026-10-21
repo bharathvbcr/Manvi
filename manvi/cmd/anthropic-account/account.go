@@ -266,7 +266,7 @@ func (s securityCLI) run(verb string, args ...string) ([]byte, error) {
 		return nil, errItemMissing
 	}
 	if err != nil {
-		return nil, fmt.Errorf("security %s: %w: %s", verb, err,strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("security %s: %w: %s", verb, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
