@@ -21,8 +21,9 @@ func TestRouteOverEveryShippedRole(t *testing.T) {
 	}
 	expect := map[string]want{
 		// Read-only roles: the role's own floor makes readOnly=false irrelevant.
-		"research": {verdict: TierLite, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},
-		"planner":  {verdict: TierLite, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},
+		"research":  {verdict: TierLite, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},
+		"planner":   {verdict: TierLite, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},
+		"reflector": {verdict: TierLite, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},
 		// The critic is the one role whose ceiling reaches advisor, and it
 		// reaches it only when asked for a verdict.
 		"critic": {verdict: TierAdvisor, writing: TierLite, wideW: TierBasic, narrowRO: TierLite, wideRO: TierBasic},

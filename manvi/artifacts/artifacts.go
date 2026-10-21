@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -128,6 +130,9 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSize(clean, content); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,10 +178,93 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	return art, nil
 }
 
+// Sentinels a caller can branch on. Their text is unchanged from the messages
+// they were added to, so nothing that matched on the words stops matching.
+var (
+	// ErrExists is Create's answer when the name is taken.
+	ErrExists = errors.New("already exists")
+	// ErrNotFound is Get's answer for a name with no readable artifact.
+	ErrNotFound = errors.New("not found")
+	// ErrRevisionConflict is UpdateIfRevision's answer when the artifact is no
+	// longer at the revision the caller read.
+	ErrRevisionConflict = errors.New("revision conflict")
+	// ErrLocked is an update's answer when another writer held the entry's lock
+	// for longer than lockWait.
+	ErrLocked = errors.New("locked by another writer")
+)
+
 // Update updates an existing artifact's content and metadata, incrementing its revision.
 func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) {
+	return s.update(name, content, meta, 0)
+}
+
+// UpdateIfRevision is Update as a compare-and-swap: it writes only if the
+// artifact is still at revision expected, and returns ErrRevisionConflict if
+// another writer, in this process or another, got there first. A caller that
+// derives the new content from what it read (a revision that appends to a
+// history) must use it, because Update would write its derivation over a
+// revision it never saw.
+func (s *Store) UpdateIfRevision(name, content string, meta *Metadata, expected int) (*Artifact, error) {
+	if expected < 1 {
+		return nil, fmt.Errorf("artifacts: UpdateIfRevision needs the revision the caller read (>= 1), got %d", expected)
+	}
+	return s.update(name, content, meta, expected)
+}
+
+// lockNonce makes an entry's lock file take the shape of the store's own
+// temporary siblings (".<base>.<16 hex>.tmp"), which List skips and sanitizeName
+// reserves, so the lock is neither listed as an artifact nor nameable as one.
+const lockNonce = "0000000000000000"
+
+// Bounds on the cross-process entry lock. The lock is held for the few
+// milliseconds an update takes, so a lock older than lockStaleAfter was left by
+// a writer that died; lockWait bounds how long a live contender queues.
+const (
+	lockStaleAfter = 30 * time.Second
+	lockWait       = 10 * time.Second
+)
+
+// lockEntry takes the cross-process lock for the entry at cPath: a file created
+// with O_CREATE|O_EXCL beside it, which every filesystem arbitrates, rather
+// than flock or LockFileEx, which differ by platform. The in-process mutex
+// cannot serve two processes, and two Stores in one process do not share it.
+//
+// A lock past lockStaleAfter is removed and taken. That is racy in principle
+// (two contenders can both judge it stale) and the age is what bounds the
+// harm: a live holder finishes in milliseconds, so only a crashed one is ever
+// old enough, and the revision compare in update still refuses a write over a
+// revision the writer did not read.
+func lockEntry(cPath string) (func(), error) {
+	lockPath := filepath.Join(filepath.Dir(cPath), "."+filepath.Base(cPath)+"."+lockNonce+".tmp")
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := safefile.OpenNoFollow(nil, lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(cPath), err)
+		}
+		if info, statErr := os.Lstat(lockPath); statErr == nil && time.Since(info.ModTime()) > lockStaleAfter {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("artifacts: %q is %w for more than %s", filepath.Base(cPath), ErrLocked, lockWait)
+		}
+		var jitter [1]byte
+		_, _ = rand.Read(jitter[:])
+		time.Sleep(2*time.Millisecond + time.Duration(jitter[0]%16)*time.Millisecond)
+	}
+}
+
+func (s *Store) update(name, content string, meta *Metadata, expected int) (*Artifact, error) {
 	clean, err := s.sanitizeName(name)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkSize(clean, content); err != nil {
 		return nil, err
 	}
 
@@ -191,6 +279,16 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if err != nil {
 		return nil, err
 	}
+	// Update modifies what exists, so the entry's directory exists whenever
+	// there is anything to lock; when it does not, the existence check below
+	// answers and no lock file is made.
+	if info, statErr := os.Lstat(cPath); statErr == nil && info.Mode().IsRegular() {
+		unlock, lockErr := lockEntry(cPath)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		defer unlock()
+	}
 
 	// Update modifies an artifact that exists; it never creates one, and it
 	// never invents a history for one whose record it cannot read. Resetting
@@ -199,7 +297,19 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if info, err := os.Lstat(cPath); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
 	}
-	metaData, err := os.ReadFile(mPath)
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	}
+	metaData, err := readContained(root, clean+metaSuffix, maxSidecarBytes, true)
+	var nameErr error
+	if err == nil {
+		nameErr = requireOnDiskName(root, clean)
+	}
+	_ = root.Close()
+	if nameErr != nil {
+		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable, so its revision history cannot be continued: %w", clean, err)
 	}
@@ -209,6 +319,10 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	}
 	if existing.Revision < 1 || existing.CreatedAt.IsZero() {
 		return nil, fmt.Errorf("artifacts: the metadata of %q has no revision history to continue", clean)
+	}
+	if expected > 0 && existing.Revision != expected {
+		return nil, fmt.Errorf("artifacts: %q is at revision %d, not the %d the caller read: %w",
+			clean, existing.Revision, expected, ErrRevisionConflict)
 	}
 
 	existing.Name = clean
@@ -248,67 +362,239 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cPath := s.contentPath(clean)
-	contentBytes, err := os.ReadFile(cPath)
+	root, err := os.OpenRoot(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
+		}
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
 	}
+	defer func() { _ = root.Close() }()
 
-	var art Artifact
-	mPath := s.metaPath(clean)
-	if metaBytes, err := os.ReadFile(mPath); err == nil {
-		_ = json.Unmarshal(metaBytes, &art)
+	art, err := readArtifact(root, clean, s.contentPath(clean), true)
+	if err == nil {
+		err = requireOnDiskName(root, clean)
 	}
-
-	art.Name = clean
-	art.Path = cPath
-	art.Content = string(contentBytes)
-	return &art, nil
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
+		}
+		return nil, err
+	}
+	return art, nil
 }
 
-// List returns all artifacts in the store.
+// requireOnDiskName fails with fs.ErrNotExist unless every component of clean
+// is spelled on disk exactly as requested. On a case-insensitive filesystem
+// (APFS and NTFS by default) "PLAN.md" opens plan.md, and an artifact reported
+// under a name List never returns is a second identity for one file. The store
+// already treats the sidecar namespace as case-blind; it does not treat names
+// as case-blind, so a spelling that differs is not that artifact.
+func requireOnDiskName(root *os.Root, clean string) error {
+	dir := "."
+	for _, part := range strings.Split(filepath.ToSlash(clean), "/") {
+		d, err := root.Open(filepath.FromSlash(dir))
+		if err != nil {
+			return err
+		}
+		entries, err := d.ReadDir(-1)
+		_ = d.Close()
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, e := range entries {
+			if e.Name() == part {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fs.ErrNotExist
+		}
+		dir = path.Join(dir, part)
+	}
+	return nil
+}
+
+// maxArtifactBytes bounds one artifact's content, on write and on read.
+// Artifacts are plans, notes and lessons read whole into memory by tools; the
+// store had no bound, so a sparse or planted file could be read to exhaustion.
+//
+// maxSidecarBytes bounds a sidecar on read. A sidecar embeds the artifact's
+// content as JSON, which escaping can expand up to six-fold, so it is not
+// bounded by the content limit itself.
+const (
+	maxArtifactBytes = 4 << 20
+	maxSidecarBytes  = 8 * maxArtifactBytes
+)
+
+// checkSize refuses content the store would then refuse to read back.
+func checkSize(clean, content string) error {
+	if len(content) > maxArtifactBytes {
+		return fmt.Errorf("artifacts: refusing %q: %d bytes exceeds the %d-byte artifact limit", clean, len(content), maxArtifactBytes)
+	}
+	return nil
+}
+
+// EntryError names one store entry List could not return and why.
+type EntryError struct {
+	Name   string
+	Reason string
+}
+
+// PartialListError is what List returns beside the artifacts it could read when
+// it had to leave entries out: a link, a corrupt sidecar, an oversized or
+// unreadable file. One bad entry must not hide every good one (a repository can
+// commit a symlink under the artifacts directory), and it must not be hidden
+// either, so each skipped entry is carried here with its reason.
+type PartialListError struct{ Skipped []EntryError }
+
+func (e *PartialListError) Error() string {
+	parts := make([]string, len(e.Skipped))
+	for i, s := range e.Skipped {
+		parts[i] = s.Name + ": " + s.Reason
+	}
+	return fmt.Sprintf("artifacts: %d entries could not be listed: %s", len(e.Skipped), strings.Join(parts, "; "))
+}
+
+// readArtifact reads an artifact's content and sidecar through root. A missing
+// sidecar is an artifact with no recorded history (revision 0); a sidecar that
+// is present but cannot be trusted (a link, not a regular file, unreadable,
+// corrupt) is an error, as it is for Update, never revision 0. A missing
+// content file is returned as fs.ErrNotExist for the caller to word.
+//
+// With withContent false the content file is still opened and checked (so a
+// link, a hard link, a non-regular or oversized file is refused) but not read,
+// and Content is empty.
+func readArtifact(root *os.Root, clean, fullPath string, withContent bool) (*Artifact, error) {
+	contentBytes, err := readContained(root, clean, maxArtifactBytes, withContent)
+	if err != nil {
+		return nil, err
+	}
+	art := &Artifact{}
+	metaBytes, err := readContained(root, clean+metaSuffix, maxSidecarBytes, true)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(metaBytes, art); err != nil {
+			return nil, fmt.Errorf("artifacts: the metadata of %q is corrupt: %w", clean, err)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable: %w", clean, err)
+	}
+	art.Name = clean
+	art.Path = fullPath
+	art.Content = string(contentBytes)
+	return art, nil
+}
+
+// readContained reads the regular file rel beneath root through the same
+// no-follow open the writes use (safefile.OpenNoFollow): no component below the
+// root is followed if it is a link, the leaf is opened O_NOFOLLOW (and
+// O_NONBLOCK, so a FIFO planted at the name cannot hang the read), and the
+// handle itself, not a separate lstat, is checked to be a regular file. The
+// A file with more than one hard link is refused too (as the DevCouncil
+// untracked-diff reader does): O_NOFOLLOW does not see a hard link to a file
+// outside the store, and a published artifact has exactly one name. A file over
+// limit bytes is refused. The error names the path; only a name that is absent
+// altogether wraps fs.ErrNotExist.
+func readContained(root *os.Root, rel string, limit int64, load bool) ([]byte, error) {
+	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
+	if err != nil {
+		// os.Root can answer "does not exist" for a dangling link it resolved
+		// itself; a name that is present as anything is a refusal, not an
+		// absence, so that case must not wrap fs.ErrNotExist.
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("artifacts: refusing to read %q (a dangling symbolic link): %s", rel, err.Error())
+		}
+		return nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: inspecting %q: %w", rel, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
+	}
+	links, err := safefile.LinkCount(f)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: counting the links of %q: %w", rel, err)
+	}
+	if links != 1 {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: it has %d hard links, so it may be a file outside the store", rel, links)
+	}
+	if info.Size() > limit {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: %d bytes exceeds the %d-byte limit", rel, info.Size(), limit)
+	}
+	if !load {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: reading %q: %w", rel, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: it grew past the %d-byte limit", rel, limit)
+	}
+	return data, nil
+}
+
+// List returns the artifacts in the store, sorted by name, with their metadata
+// but not their content (Content is empty: the one production caller discards
+// it, and loading every artifact whole to list them is the cost the read cap
+// exists to bound; use Get for content). Every entry is still opened and
+// checked as Get would.
+//
+// An entry that cannot be returned (a link, a hard link, a corrupt sidecar, an
+// oversized or unreadable file) does not hide the others: the artifacts that
+// could be read are returned together with a *PartialListError naming each
+// skipped entry and why. A failure on the store directory itself returns no
+// artifacts and a plain error.
 func (s *Store) List() ([]*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var arts []*Artifact
-	err := filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
 		}
-		if strings.HasSuffix(d.Name(), metaSuffix) || isStoreTemp(d.Name()) {
-			return nil
-		}
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	}
+	defer func() { _ = root.Close() }()
 
-		rel, err := filepath.Rel(s.dir, p)
+	var (
+		arts    []*Artifact
+		skipped []EntryError
+	)
+	err = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
+			if p == s.dir {
+				return fmt.Errorf("artifacts: walking %s: %w", p, err)
+			}
+			skipped = append(skipped, EntryError{Name: relName(s.dir, p), Reason: err.Error()})
 			return nil
 		}
-		clean := filepath.ToSlash(rel)
+		if d.IsDir() || isSidecarName(d.Name()) || isStoreTemp(d.Name()) {
+			return nil
+		}
 
-		contentBytes, err := os.ReadFile(p)
+		name := relName(s.dir, p)
+		art, err := readArtifact(root, name, p, false)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil // removed while the walk was running
+			}
+			skipped = append(skipped, EntryError{Name: name, Reason: err.Error()})
 			return nil
 		}
-
-		art := &Artifact{
-			Name:    clean,
-			Path:    p,
-			Content: string(contentBytes),
-		}
-
-		mPath := s.metaPath(clean)
-		if metaBytes, err := os.ReadFile(mPath); err == nil {
-			_ = json.Unmarshal(metaBytes, art)
-			art.Name = clean
-			art.Path = p
-			art.Content = string(contentBytes)
-		}
-
 		arts = append(arts, art)
 		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +602,20 @@ func (s *Store) List() ([]*Artifact, error) {
 	sort.Slice(arts, func(i, j int) bool {
 		return arts[i].Name < arts[j].Name
 	})
-
+	if len(skipped) > 0 {
+		sort.Slice(skipped, func(i, j int) bool { return skipped[i].Name < skipped[j].Name })
+		return arts, &PartialListError{Skipped: skipped}
+	}
 	return arts, nil
+}
+
+// relName is p's slash-separated name relative to the store directory dir.
+func relName(dir, p string) string {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return p
+	}
+	return filepath.ToSlash(rel)
 }
 
 // --- containment ---
@@ -396,7 +694,7 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 			return fmt.Errorf("artifacts: refusing %q: that name is a symbolic link", base)
 		}
 		if exclusive {
-			return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+			return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("artifacts: refusing to write %s: not a regular file", base)
@@ -443,7 +741,7 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 	if exclusive {
 		if err := os.Link(tmp, full); err != nil {
 			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+				return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
 			}
 			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 		}
