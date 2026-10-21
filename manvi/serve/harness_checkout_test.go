@@ -137,6 +137,9 @@ func TestEnterCheckoutRefusesOnceWhenTheDeadRunsBlockWasEdited(t *testing.T) {
 	first := &managedJob{done: make(chan struct{})}
 	r.jobs["a"] = first
 	err := r.enterCheckout(first, managedRun{Cwd: root})
+	if err == nil {
+		t.Fatal("enterCheckout admitted a checkout carrying a modified harness block")
+	}
 	var typed *harnessMaterialiseError
 	if !errors.As(err, &typed) || !strings.Contains(err.Error(), "modified harness block") {
 		t.Fatalf("enterCheckout = %v, want the typed modified-block refusal", err)

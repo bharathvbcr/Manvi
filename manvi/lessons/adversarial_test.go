@@ -267,7 +267,10 @@ func TestAdvSaveRevisionKeepsEarlierSessionBroken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	art, _ := s.Get(name)
+	art, err := s.Get(name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(art.Content, "session-one") {
 		t.Fatalf("revision 2 forgot the session that produced revision 1:\n%s", art.Content)
 	}

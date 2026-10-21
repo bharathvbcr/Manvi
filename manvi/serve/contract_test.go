@@ -268,7 +268,12 @@ func TestServeContractDeclaresTheHarnessPlaneAdditively(t *testing.T) {
 		{"HarnessResolveParams", "root"},
 		{"HarnessResolveResult", "notes"},
 	} {
-		field := committed.Types[c.typ].Fields[c.field]
+		typ, ok := committed.Types[c.typ]
+		if !ok || typ == nil {
+			t.Errorf("%s is not a type in the committed contract", c.typ)
+			continue
+		}
+		field := typ.Fields[c.field]
 		if field == nil {
 			t.Errorf("%s.%s is not in the committed contract", c.typ, c.field)
 		} else if field.Required {

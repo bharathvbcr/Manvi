@@ -279,8 +279,12 @@ func Parse(answer string) (Result, error) {
 			if pendingBlnk {
 				sep = "\n\n"
 			}
-			if !fields[currentKey].add(sep + trimmed) {
-				return refuse("%s is over the %d limit", currentKey, fields[currentKey].limit)
+			buf, ok := fields[currentKey]
+			if !ok || buf == nil {
+				return refuse("continuation of unknown field %q", currentKey)
+			}
+			if !buf.add(sep + trimmed) {
+				return refuse("%s is over the %d limit", currentKey, buf.limit)
 			}
 			pendingBlnk = false
 		}

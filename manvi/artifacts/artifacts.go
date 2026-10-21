@@ -372,16 +372,22 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	defer func() { _ = root.Close() }()
 
 	art, err := readArtifact(root, clean, s.contentPath(clean), true)
-	if err == nil {
-		err = requireOnDiskName(root, clean)
-	}
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
-		}
-		return nil, err
+		return nil, notFoundOr(clean, err)
+	}
+	if err := requireOnDiskName(root, clean); err != nil {
+		return nil, notFoundOr(clean, err)
 	}
 	return art, nil
+}
+
+// notFoundOr words a missing artifact as ErrNotFound and passes every other
+// error through unchanged.
+func notFoundOr(clean string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
+	}
+	return err
 }
 
 // requireOnDiskName fails with fs.ErrNotExist unless every component of clean

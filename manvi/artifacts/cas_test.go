@@ -22,7 +22,10 @@ func TestUpdateIfRevisionRefusesAStaleRevision(t *testing.T) {
 	if !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("a write over a revision the caller did not read: %v", err)
 	}
-	got, _ := store.Get("a.md")
+	got, err := store.Get("a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Content != "two" || got.Revision != 2 {
 		t.Fatalf("the refused write changed the artifact: %+v", got)
 	}

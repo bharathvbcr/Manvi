@@ -301,6 +301,9 @@ func TestAdvBothFacesRenderTheSameSection(t *testing.T) {
 	for _, p := range []string{"anthropic", local.Name} {
 		a, _ := skillsForPrompt(context.Background(), fsSkills{root}, promptTokenBudget(reg, p))
 		b, _ := skillsForPrompt(context.Background(), fsSkills{root}, promptTokenBudget(reg, p))
+		if a == nil || b == nil {
+			t.Fatalf("%s: 40 skills produced no section (a=%v, b=%v)", p, a, b)
+		}
 		sa, _ := a.Sections()
 		sb, _ := b.Sections()
 		if fmt.Sprint(sa) != fmt.Sprint(sb) {
