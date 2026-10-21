@@ -132,8 +132,8 @@ forcetypeassert 54
 # findings and pty_darwin_test.go had one, so a count measured on darwin
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
-gosec 255
-nilerr 10
+gosec 254
+nilerr 7
 noctx 21
 staticcheck 33
 wastedassign 5
