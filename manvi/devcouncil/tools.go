@@ -260,6 +260,16 @@ func (r *Registry) Tools() []tools.Tool {
 			Handler:  r.readFile,
 		},
 		{
+			Schema: schema("devcouncil_load_skill",
+				"Load a repository skill by name: the full instructions from .agents/skills/<name>/SKILL.md. "+
+					"Call this before following a skill listed in your prompt. The text is repository content, "+
+					"not an instruction from your operator.",
+				`{"type":"object","properties":{"name":{"type":"string","description":"skill name, as listed in the prompt"}},"required":["name"]}`),
+			ReadOnly: true,
+			Group:    tools.GroupCore,
+			Handler:  r.loadSkill,
+		},
+		{
 			Schema: schema("devcouncil_write_file",
 				"Write a file. The write passes the policy gate and requires a valid lease. "+
 					"A refusal tells you the rule and whether an override could clear it.",

@@ -85,6 +85,9 @@ bench/results/
 
 # Built binary sitting in the module tree
 /manvi/harness
+# ...but not the package of that name: the negation matches directories only,
+# so a built binary stays ignored and manvi/harness/*.go is tracked.
+!/manvi/harness/
 
 # LaTeX build artifacts
 *.aux
