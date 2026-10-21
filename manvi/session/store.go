@@ -849,10 +849,7 @@ func encodeEvents(events []Event) ([]json.RawMessage, error) {
 // trimEncoded is trimToBudget over events already encoded, which is what lets
 // a save reuse the encodings an earlier save made.
 func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int, int, bool) {
-	total := len("[]")
-	for _, encoded := range perEvent {
-		total += len(encoded) + 1 // the separating comma
-	}
+	total := arrayLen(perEvent)
 	if total <= maxBytes {
 		return 0, 0, false
 	}
@@ -887,6 +884,9 @@ func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int,
 	groups, from := 0, 0
 	for total > maxBytes && groups < len(starts)-1 {
 		for i := starts[groups]; i < starts[groups+1]; i++ {
+			// The element and the comma that followed it. The kept tail is
+			// never empty (the last group is never dropped), so a dropped
+			// prefix always takes one comma per element, as arrayLen counts.
 			total -= len(perEvent[i]) + 1
 		}
 		groups++
@@ -899,13 +899,24 @@ func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int,
 	return from, dropped, total > maxBytes
 }
 
-// joinArray assembles already-encoded elements into a JSON array.
-func joinArray(elements []json.RawMessage) json.RawMessage {
+// arrayLen is the byte length of joinArray(elements): the two brackets, every
+// element, and one comma between each neighbouring pair, so n-1 commas and none
+// for an empty or single-element array. It is the one place the budget and the
+// encoder agree on that count.
+func arrayLen(elements []json.RawMessage) int {
 	size := len("[]")
 	for _, e := range elements {
-		size += len(e) + 1
+		size += len(e)
 	}
-	out := make(json.RawMessage, 0, size)
+	if len(elements) > 1 {
+		size += len(elements) - 1
+	}
+	return size
+}
+
+// joinArray assembles already-encoded elements into a JSON array.
+func joinArray(elements []json.RawMessage) json.RawMessage {
+	out := make(json.RawMessage, 0, arrayLen(elements))
 	out = append(out, '[')
 	for i, e := range elements {
 		if i > 0 {
