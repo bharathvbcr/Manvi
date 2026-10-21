@@ -134,7 +134,8 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	// validated, never for this process's working directory: GitPulse launches
 	// the sidecar in a scratch directory.
 	forRoot := func(root string) serve.DevmapClient { return mapClient(root) }
-	modules := []serve.Module{serve.DevmapModule{ForRoot: forRoot}}
+	resolver := serveHarnessResolver(reg)
+	modules := []serve.Module{serve.DevmapModule{ForRoot: forRoot}, serve.HarnessModule{Resolver: resolver}}
 	var runner *serve.EnhancementRunner
 	var managed *serve.ManagedRunner
 	var scan *serve.ScanRunner
@@ -194,6 +195,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := managed.SetHarness(resolver); err != nil {
+			return err
+		}
 		scan, err = serve.NewScanRunner(serve.ScanDeps{
 			// Every client is built for the root the scan validated, never for
 			// this process's working directory.
@@ -201,6 +205,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			Text:   func(root string) serve.ScanText { return grepClient(root) },
 			Gaps:   scanGapSource,
 			Board:  client,
+			Busy:   managed.HarnessBusy,
 		})
 		if err != nil {
 			return err
@@ -215,6 +220,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 			CoverageFile:   os.Getenv("MANVI_COVERAGE"),
 			Devmap:         func(worktree string) serve.DevmapClient { return mapClient(worktree) },
+			Busy:           managed.HarnessBusy,
 		})
 		if err != nil {
 			return err
@@ -248,6 +254,22 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	// After Shutdown, so the drain sees anything the drain logged.
 	_, _ = gussetcheck.DrainLogs(os.Stderr)
 	return err
+}
+
+// serveHarnessResolver is what harness.resolve and a managed attempt's harness
+// resolve against: the section names and token limits of this process's own
+// prompt assembler, so a host-supplied spec is judged by the rules the prompt
+// itself keeps. Nothing here is a list of its own.
+func serveHarnessResolver(reg *flags.Registry) *serve.HarnessResolver {
+	return &serve.HarnessResolver{
+		Reserved: func(provider string) []string {
+			return reservedPromptNames(reg, PromptOptions{Provider: provider})
+		},
+		Budget: func(provider string) serve.HarnessBudget {
+			budget := promptTokenBudget(reg, provider)
+			return serve.HarnessBudget{Prompt: budget, Skills: budget / skillsBudgetShare}
+		},
+	}
 }
 
 func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementConfiguration, error) {

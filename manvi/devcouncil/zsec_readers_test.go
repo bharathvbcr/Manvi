@@ -155,12 +155,25 @@ func TestEveryContentReaderAppliesTheReadGate(t *testing.T) {
 	run(t, f.root, "commit", "-qm", "history holds secrets")
 	write(t, f.root, "untracked.env", "")
 	write(t, f.root, ".env.local", secretBody)
+	// A skill whose SKILL.md is a hard link to a secret file. Its own path is not
+	// secret-shaped, so only the read gate's alias check stands between the
+	// skill loader and the credential; the file is well-formed so a refusal
+	// cannot come from the frontmatter parser instead.
+	write(t, f.root, ".env.skill", "---\nname: leak\ndescription: d\n---\n"+secretBody)
+	if err := os.MkdirAll(filepath.Join(f.root, ".agents", "skills", "leak"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(f.root, ".env.skill"),
+		filepath.Join(f.root, ".agents", "skills", "leak", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
 
 	probes := map[string]map[string]any{
-		"devcouncil_read_file": {"path": ".env"},
-		"devcouncil_grep":      {"pattern": "API_KEY", "include_ignored": true},
-		"devcouncil_get_diff":  {},
-		"devcouncil_git_show":  {"object": "HEAD"},
+		"devcouncil_load_skill": {"name": "leak"},
+		"devcouncil_read_file":  {"path": ".env"},
+		"devcouncil_grep":       {"pattern": "API_KEY", "include_ignored": true},
+		"devcouncil_get_diff":   {},
+		"devcouncil_git_show":   {"object": "HEAD"},
 	}
 	// graph_query returns source spans from the index, which needs the DevMap
 	// binary; its gate is asserted at the source below.

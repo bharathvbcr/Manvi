@@ -45,6 +45,14 @@ var contractTypes = map[string]reflect.Type{
 	"VerifyResult":       reflect.TypeFor[VerifyResult](),
 	"SuggestParams":      reflect.TypeFor[SuggestParams](),
 	"SuggestResult":      reflect.TypeFor[SuggestResult](),
+	// The harness plane. PrepareParams and PrepareResult are the chat plane's
+	// existing shapes, declared here for the first time so that the optional
+	// harness_digest and prefix_moved fields are part of what a host mirrors.
+	"HarnessResolveParams": reflect.TypeFor[HarnessResolveParams](),
+	"HarnessResolveResult": reflect.TypeFor[HarnessResolveResult](),
+	"ManagedPrepareParams": reflect.TypeFor[ManagedPrepareParams](),
+	"PrepareParams":        reflect.TypeFor[PrepareParams](),
+	"PrepareResult":        reflect.TypeFor[PrepareResult](),
 }
 
 type contractField struct {
@@ -169,6 +177,7 @@ func currentContract(t *testing.T) serveContract {
 	full := opsOf(t, Options{Modules: []Module{
 		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Verify: verify, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{ForRoot: func(string) DevmapClient { return &fakeDevmap{} }},
+		HarnessModule{Resolver: &HarnessResolver{Reserved: func(string) []string { return nil }}},
 	}})
 	var optional []string
 	for _, op := range full {
@@ -224,6 +233,75 @@ func TestServeContractMatchesGoTypes(t *testing.T) {
 		t.Fatalf("%s no longer matches the Go types in manvi/serve.\n"+
 			"Regenerate: MANVI_UPDATE_CONTRACT=1 go test ./serve -run TestServeContractMatchesGoTypes, "+
 			"then refresh contracts/CHECKSUMS and re-vendor into GitPulse.", contractPath)
+	}
+}
+
+// harness.resolve is an optional op and every field this change added to an
+// existing shape is optional: it is declared in the committed contract, under
+// ops.optional and never ops.always, with its params and result types. Store-free,
+// so it reads the committed file and the Go types and nothing else.
+func TestServeContractDeclaresTheHarnessPlaneAdditively(t *testing.T) {
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed serveContract
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(committed.Ops.Optional, OpHarnessResolve) {
+		t.Fatalf("%s is not under ops.optional in the committed contract (regenerate it, then refresh contracts/CHECKSUMS)", OpHarnessResolve)
+	}
+	if slices.Contains(committed.Ops.Always, OpHarnessResolve) {
+		t.Fatalf("%s is under ops.always: an op added within protocol 1 is optional, so a host without it degrades to no harness", OpHarnessResolve)
+	}
+	if committed.Protocol != ProtocolVersion || ProtocolVersion != 1 {
+		t.Fatalf("protocol = %d: this change is additive and does not move it", committed.Protocol)
+	}
+	for _, c := range []struct{ typ, field string }{
+		{"PrepareParams", "harness_digest"},
+		{"PrepareResult", "prefix_moved"},
+		{"PrepareResult", "prefix_note"},
+		{"ManagedPrepared", "harness_digest"},
+		{"ManagedPrepared", "harness_recovery"},
+		{"ManagedPrepareParams", "harness"},
+		{"HarnessResolveParams", "root"},
+		{"HarnessResolveResult", "notes"},
+	} {
+		typ, ok := committed.Types[c.typ]
+		if !ok || typ == nil {
+			t.Errorf("%s is not a type in the committed contract", c.typ)
+			continue
+		}
+		field := typ.Fields[c.field]
+		if field == nil {
+			t.Errorf("%s.%s is not in the committed contract", c.typ, c.field)
+		} else if field.Required {
+			t.Errorf("%s.%s is required: a field added within protocol 1 is optional", c.typ, c.field)
+		}
+	}
+	params := committed.Types["HarnessResolveParams"]
+	if params == nil || params.Fields["spec"] == nil || params.Fields["spec"].Fields["kind"] == nil || params.Fields["session_id"] == nil {
+		t.Fatalf("HarnessResolveParams does not declare session_id and spec.kind: %+v", params)
+	}
+	result := committed.Types["HarnessResolveResult"]
+	for _, name := range []string{"sections", "roles", "skills", "digest", "rejected"} {
+		if result == nil || result.Fields[name] == nil {
+			t.Errorf("HarnessResolveResult does not declare %q", name)
+		}
+	}
+	// The generated contract and the Go types agree about this plane, with no
+	// store: the types a host reads are the ones the server decodes into.
+	for name, typ := range map[string]reflect.Type{
+		"HarnessResolveParams": reflect.TypeFor[HarnessResolveParams](),
+		"HarnessResolveResult": reflect.TypeFor[HarnessResolveResult](),
+		"ManagedPrepareParams": reflect.TypeFor[ManagedPrepareParams](),
+	} {
+		want, _ := json.Marshal(describeType(typ))
+		got, _ := json.Marshal(committed.Types[name])
+		if !bytes.Equal(want, got) {
+			t.Errorf("%s in the committed contract differs from the Go type:\n got  %s\n want %s", name, got, want)
+		}
 	}
 }
 

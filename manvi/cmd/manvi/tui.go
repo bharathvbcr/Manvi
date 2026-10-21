@@ -102,6 +102,11 @@ type tuiSession struct {
 	gate     *gate.Gate
 	native   *devcouncil.Registry
 	pipeline *tools.Registry
+	// turn keeps what the per-turn skills and harness-spec resolution carries
+	// between turns: the faults of the last turn, so a standing condition is
+	// reported once and not on every turn of the session, and the roles a spec
+	// registered, so the next spec replaces them.
+	turn turnState
 	// subMeter totals what this session's sub-agents have spent, so the usage
 	// this face reports is the whole bill rather than the dispatching agent's
 	// share of it.
@@ -879,7 +884,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return errors.New("no model provider is attached to this session")
 	}
 
-	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(s, sessionID, at)
+	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(ctx, s, sessionID, at)
 	if err != nil {
 		return err
 	}
@@ -946,7 +951,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 // re-attached to the session's current provider, model and effort — and
 // returns the prompt, the runner and whether the turn is narrowed to the core
 // tools.
-func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
+func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
 	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
 	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
 	if dynamic {
@@ -962,6 +967,9 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
+	spec := resolveTurnInputs(ctx, h.reg, turnInputs{
+		skills: s.native, repoRead: s.native.RepoReader, roles: s.native.Roles(), pipeline: s.pipeline,
+	}, &s.turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
 	// Surfaced in the transcript rather than on stderr. Under the alternate
 	// screen stderr goes nowhere a person can read, which is how a prompt
@@ -973,8 +981,8 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 			Text: "system prompt: " + fault,
 		})
 	}
-	if err := recordPromptAssembly(s.log, promptReport,
-		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+	if err := recordPromptAssembly(s.log, promptReport, systemPrompt,
+		promptTokenBudget(h.reg, at.provider.Name()), spec); err != nil {
 		return "", nil, false, err
 	}
 

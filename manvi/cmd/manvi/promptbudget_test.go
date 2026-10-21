@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -132,7 +134,7 @@ func TestPromptAssemblyIsRecorded(t *testing.T) {
 		Omitted:  []prompt.Omitted{{Name: "working-method", Reason: "dropped: over budget"}},
 		Tokens:   1234,
 	}
-	if err := recordPromptAssembly(log, report, 4096); err != nil {
+	if err := recordPromptAssembly(log, report, "the assembled prompt", 4096, specIdentity{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,16 +157,60 @@ func TestPromptAssemblyIsRecorded(t *testing.T) {
 		if len(d.Dropped) != 1 || !strings.Contains(d.Dropped[0], "working-method") {
 			t.Fatalf("dropped = %v, want the section and its reason", d.Dropped)
 		}
+		sum := sha256.Sum256([]byte("the assembled prompt"))
+		if want := hex.EncodeToString(sum[:]); d.Digest != want {
+			t.Fatalf("digest = %q, want the hex sha256 of the assembled text %q", d.Digest, want)
+		}
 	}
 	if !found {
 		t.Fatal("the assembly left no trace in the log")
 	}
 }
 
+// recordedDigest records one assembly of text and returns the digest the log
+// holds for it.
+func recordedDigest(t *testing.T, text string) string {
+	t.Helper()
+	log := session.NewLog()
+	if err := recordPromptAssembly(log, prompt.Report{Tokens: 1}, text, 0, specIdentity{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range log.Events() {
+		if e.Type != session.PromptAssembled {
+			continue
+		}
+		var d session.PromptAssembledData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Digest
+	}
+	t.Fatal("the assembly left no trace in the log")
+	return ""
+}
+
+// The digest is what says a prompt-cache prefix went cold, so it has to be a
+// function of the text alone and has to move on a single changed byte.
+func TestPromptDigestTracksTheTextByteForByte(t *testing.T) {
+	a := recordedDigest(t, "you are a builder")
+	if a == "" {
+		t.Fatal("no digest was recorded")
+	}
+	if b := recordedDigest(t, "you are a builder"); a != b {
+		t.Errorf("identical assemblies digest differently: %s vs %s", a, b)
+	}
+	if c := recordedDigest(t, "you are a builder."); a == c {
+		t.Error("one added byte left the digest unchanged")
+	}
+	if d := recordedDigest(t, "you are a Builder"); a == d {
+		t.Error("one changed byte left the digest unchanged")
+	}
+}
+
 // A nil log is the case where nothing is recording, and it must not be an
 // error: the assembly still happened and the turn still runs.
 func TestPromptAssemblyRecordingToleratesNoLog(t *testing.T) {
-	if err := recordPromptAssembly(nil, prompt.Report{}, 0); err != nil {
+	if err := recordPromptAssembly(nil, prompt.Report{}, "", 0, specIdentity{}); err != nil {
 		t.Fatalf("recording to no log returned %v", err)
 	}
 }

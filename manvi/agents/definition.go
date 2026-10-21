@@ -221,6 +221,31 @@ func NewRegistry() *Registry {
 	})
 
 	_ = r.register(true, Definition{
+		Name:        "reflector",
+		Role:        "Session Reflector & Lesson Attributor",
+		Description: "Reads an evidence packet built from one session's log and attributes outcomes to harness changes, then proposes at most one lesson or none.",
+		SystemPrompt: "You are a specialized reflection subagent. Your only input is the evidence packet in your instructions, " +
+			"built from one session's log. Attribute each change you can see evidence of as helped, hurt, no observed " +
+			"effect or confounded, preferring confounded when one run is all there is, and only then propose at most one " +
+			"lesson, or answer NO_ENTRY. Answer in the exact format you are given; an answer that does not parse is " +
+			"discarded. Do not look for more evidence than the packet holds and do not infer what a reviewer concluded.",
+		Tier:           TierLite,
+		EnableMCPTools: false,
+		// Read-only and with no write exception, unlike the planner it is
+		// modelled on. `manvi reflect` parses the answer and stores it itself,
+		// so the lesson only reaches the artifact store through the strict
+		// parser; a role that could call devcouncil_create_artifact would be a
+		// second door into lessons/ that skips it.
+		EnableWriteTools: false,
+		// One harmless read. The packet is the whole of the evidence by design,
+		// and the read tools the floor leaves a read-only child could open the
+		// session store, which holds the checkpoint critic's verdict the packet
+		// withholds. Naming the artifact index narrows the child to a tool that
+		// cannot reach it.
+		AllowedTools: []string{"devcouncil_list_artifacts"},
+	})
+
+	_ = r.register(true, Definition{
 		Name:             "stress_tester",
 		Role:             "Adversarial Stress Tester & Hardener",
 		Description:      "Rigorously stress-tests logic, probes edge cases (empty, nil, concurrent, timeout), and disrupts assumptions prior to deployment.",
@@ -270,6 +295,21 @@ func (r *Registry) register(builtIn bool, def Definition) error {
 	if builtIn {
 		r.builtIn[def.Name] = true
 	}
+	return nil
+}
+
+// Unregister removes a role a host registered, which is how a role that came
+// from a harness spec leaves when the spec does. A shipped role is refused: the
+// catalogue an operator reviewed is not something a caller may subtract from.
+// A name that is not registered is not an error; the registry already holds
+// what the caller wanted.
+func (r *Registry) Unregister(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.builtIn[name] {
+		return fmt.Errorf("agents: %q is a shipped role and cannot be unregistered", name)
+	}
+	delete(r.defs, name)
 	return nil
 }
 

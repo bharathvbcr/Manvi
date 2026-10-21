@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
@@ -60,6 +62,21 @@ type PromptOptions struct {
 	// Areas is the repository's own shape, from the code map, used to orient
 	// the model instead of asking it to go and discover the layout.
 	Areas []repomap.AreaSummary
+	// Skills is the repository's skills listing, resolved once for the turn by
+	// skillsForPrompt beside the project instructions. Nil means there are no
+	// skills to list, or none could be read; SkillNotices says which.
+	Skills prompt.Source
+	// SkillNotices are the faults of that resolution, surfaced with the
+	// assembly's own faults.
+	SkillNotices []string
+	// SpecSources are the sections of the harness spec the session runs with,
+	// resolved once for the turn by resolveTurnInputs. They are never Essential
+	// and sit at Order 60 or later, so a spec cannot displace a fixed section
+	// and is the first thing a budget drops. Nil means no spec applies;
+	// SpecNotices says why when one was named.
+	SpecSources []prompt.Source
+	// SpecNotices are the faults of that resolution.
+	SpecNotices []string
 }
 
 // assemblePromptReported builds the system prompt and keeps the account of how
@@ -73,7 +90,9 @@ type PromptOptions struct {
 // in every resumed session, exactly like one that carried them — and the
 // evidence trail could not explain the difference in behaviour.
 func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, prompt.Report, []string) {
-	return assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+	text, report, faults := assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+	faults = append(faults, opts.SkillNotices...)
+	return text, report, append(faults, opts.SpecNotices...)
 }
 
 // recordPromptAssembly writes what a turn's prompt actually carried into the
@@ -82,11 +101,19 @@ func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, pr
 // Failure to record is returned rather than swallowed. This is the event that
 // explains a turn behaving unlike the prompt an operator believes it sent, and
 // a log missing it is a log that will be read as though the prompt were whole.
-func recordPromptAssembly(log *session.Log, report prompt.Report, budget int) error {
+//
+// text is the exact system prompt the report describes. Its digest is recorded
+// beside the section list because the list cannot show a changed byte, and a
+// changed byte is what makes a provider's prefix cache go cold.
+func recordPromptAssembly(log *session.Log, report prompt.Report, text string, budget int, spec specIdentity) error {
 	if log == nil {
 		return nil
 	}
-	data := session.PromptAssembledData{Tokens: report.Tokens, Budget: budget}
+	sum := sha256.Sum256([]byte(text))
+	data := session.PromptAssembledData{
+		Tokens: report.Tokens, Budget: budget, Digest: hex.EncodeToString(sum[:]),
+		SpecName: spec.Name, SpecDigest: spec.Digest,
+	}
 	for _, in := range report.Included {
 		data.Included = append(data.Included, in.Name)
 	}
@@ -411,6 +438,15 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	if pSrc, ok := projectInstructionsSource(promptTokenBudget(reg, provider)); ok {
 		r.Add(pSrc)
 	}
+	if opts.Skills != nil {
+		r.Add(opts.Skills)
+	}
+	// Last, so a spec's section is the final thing registered as well as the
+	// final thing ordered. The assembler refuses a name already registered, so
+	// a spec section that reuses a fixed name loses to it.
+	for _, src := range opts.SpecSources {
+		r.Add(src)
+	}
 	return r
 }
 
@@ -419,7 +455,7 @@ func projectInstructionsSource(budget int) (prompt.Source, bool) {
 		data, err := os.ReadFile(name)
 		if err == nil && len(bytes.TrimSpace(data)) > 0 {
 			body := boundProjectInstructions(strings.TrimSpace(string(data)), budget)
-			return prompt.Static("project-instructions", 35, false,
+			return prompt.Static(projectInstructionsName, 35, false,
 				fmt.Sprintf("Project instructions (%s):\n%s", name, body)), true
 		}
 	}

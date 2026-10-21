@@ -61,6 +61,14 @@ func NewAgentView(id, title string) *AgentView {
 
 // Apply folds a harness event into the view.
 func (v *AgentView) Apply(ev ui.Event) {
+	// Wire-only kinds touch nothing here: not the transcript, not the status
+	// accumulation below, which would otherwise fold a verify.report's Degraded
+	// into the "unrun" chip and flip the session non-strict for a check the
+	// terminal never draws. Nor lastActivity: they trail visible activity, so
+	// they add nothing the dashboard's timing column does not already have.
+	if ev.Kind.WireOnly() {
+		return
+	}
 	v.Scroll.Append(ev)
 	v.lastActivity = time.Now()
 	if v.firstActivity.IsZero() {

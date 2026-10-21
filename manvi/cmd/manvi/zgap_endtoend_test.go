@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
 // The gap this file closes: every other test in this tree drives the loop
@@ -38,6 +40,9 @@ type e2eModel struct {
 	// reply returns the streamed deltas for the nth turn, 1-based. Returning
 	// a tool call keeps the loop going; returning content ends it.
 	reply func(turn int) (delta map[string]any, finish string)
+	// usage, when set, rides on every turn's closing chunk the way a server
+	// that reports usage sends it. Nil sends none, as before.
+	usage map[string]any
 }
 
 type e2eRequest struct {
@@ -83,9 +88,13 @@ func (m *e2eModel) start(t *testing.T) string {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		closing := map[string]any{"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}}
+		if m.usage != nil {
+			closing["usage"] = m.usage
+		}
 		for _, chunk := range []map[string]any{
 			{"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": nil}}},
-			{"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}},
+			closing,
 		} {
 			encoded, err := json.Marshal(chunk)
 			if err != nil {
@@ -188,9 +197,16 @@ func e2eRepo(t *testing.T) string {
 // combined output and the exit status.
 func e2eRun(t *testing.T, repo, baseURL, prompt string, extraEnv ...string) (string, int) {
 	t.Helper()
+	return e2eRunWith(t, false, repo, baseURL, []string{"run", "-p", prompt}, extraEnv...)
+}
+
+// e2eRunWith runs the binary with args. stdoutOnly returns just stdout, which is
+// what a caller parsing --json reads; stderr carries the prose around it.
+func e2eRunWith(t *testing.T, stdoutOnly bool, repo, baseURL string, args []string, extraEnv ...string) (string, int) {
+	t.Helper()
 	// #nosec G204 -- the binary is the one this package just built into its
-	// own temp directory, and prompt comes from the test that called this.
-	cmd := exec.CommandContext(t.Context(), e2eBinary(t), "run", "-p", prompt)
+	// own temp directory, and args come from the test that called this.
+	cmd := exec.CommandContext(t.Context(), e2eBinary(t), args...)
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		// Init writes workspace guides into the repository; a run under test
@@ -201,7 +217,13 @@ func e2eRun(t *testing.T, repo, baseURL, prompt string, extraEnv ...string) (str
 		"MANVI_LLM_LOCAL_MODEL=mock-model",
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
-	out, err := cmd.CombinedOutput()
+	var out []byte
+	var err error
+	if stdoutOnly {
+		out, err = cmd.Output()
+	} else {
+		out, err = cmd.CombinedOutput()
+	}
 
 	status := 0
 	if err != nil {
@@ -266,6 +288,76 @@ func TestHeadlessRunAppliesTheModelsWriteAndFeedsTheResultBack(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the run does not report %q, so a demoted allow is indistinguishable from a clean one:\n%s", want, out)
 		}
+	}
+}
+
+// TestHeadlessJSONRunCarriesPerStepUsageAndTheVerifyVerdict is the criterion
+// the observability work exists for: a caller reading `manvi run --json` sees
+// what each step spent, how the prompt was assembled and what the end-of-turn
+// check concluded, without parsing prose or opening the session log.
+func TestHeadlessJSONRunCarriesPerStepUsageAndTheVerifyVerdict(t *testing.T) {
+	model := &e2eModel{
+		usage: map[string]any{"prompt_tokens": 11, "completion_tokens": 3},
+		reply: func(turn int) (map[string]any, string) {
+			if turn == 1 {
+				return toolCall("devcouncil_write_file", map[string]any{
+					"path": "hello.txt", "content": "written by the loop\n",
+				})
+			}
+			return map[string]any{"content": "Wrote hello.txt."}, "stop"
+		},
+	}
+	base := model.start(t)
+	repo := e2eRepo(t)
+
+	out, status := e2eRunWith(t, true, repo, base, []string{"run", "-p", "write hello.txt", "--json"})
+	if status != 0 {
+		t.Fatalf("a turn that completed exited %d, want 0\n%s", status, out)
+	}
+
+	var steps, reports, assembled int
+	var turnUsage []ui.Event
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var e ui.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("stdout is not NDJSON: %v\n%s", err, line)
+		}
+		switch e.Kind {
+		case ui.KindStepUsage:
+			steps++
+			if e.InputTokens != 11 || e.OutputTokens != 3 {
+				t.Errorf("step.usage = %d in / %d out, want what the server reported, 11 / 3", e.InputTokens, e.OutputTokens)
+			}
+		case ui.KindVerifyReport:
+			reports++
+			if e.Verdict == "" || e.Source == "" {
+				t.Errorf("verify.report lacks a verdict or a source: %+v", e)
+			}
+		case ui.KindDiagnostic:
+			if e.Type == string(session.PromptAssembled) {
+				assembled++
+				var d session.PromptAssembledData
+				if err := json.Unmarshal(e.Data, &d); err != nil || len(d.Digest) != 64 {
+					t.Errorf("prompt diagnostic digest = %q (%v), want 64 hex characters", d.Digest, err)
+				}
+			}
+		case ui.KindUsage:
+			turnUsage = append(turnUsage, e)
+		}
+	}
+	if steps != 2 {
+		t.Errorf("%d step.usage lines, want one per step (2)\n%s", steps, out)
+	}
+	if reports < 1 {
+		t.Errorf("no verify.report line; a write was made and the check's verdict never reached the wire\n%s", out)
+	}
+	if assembled != 1 {
+		t.Errorf("%d prompt-assembly diagnostics, want 1\n%s", assembled, out)
+	}
+	// The per-step lines are not the turn's usage: turn.usage stays the one
+	// event consumers sum, and it still carries the total.
+	if len(turnUsage) != 1 || turnUsage[0].InputTokens != 22 {
+		t.Errorf("turn.usage = %+v, want exactly one carrying the 22 input tokens of both steps", turnUsage)
 	}
 }
 

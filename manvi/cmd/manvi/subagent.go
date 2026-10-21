@@ -408,6 +408,46 @@ func (r *subAgentRunner) config(req devcouncil.SubAgentRequest) (*subAgentConfig
 	return cfg, nil
 }
 
+// forwardChildEvents is the log observer that carries a child's evidence to the
+// parent's sink, attributed to the child.
+func forwardChildEvents(sink ui.Sink, label string) func(session.Event) {
+	return func(e session.Event) {
+		// Assistant chunks are the child's prose stream, and the child's
+		// answer already returns through the tool result. Forwarding them
+		// would interleave two transcripts in the terminal for no gain.
+		// Everything else is evidence about what the child's tools and the
+		// gate actually did, which is exactly what was being lost.
+		if e.Type == session.AssistantChunk {
+			return
+		}
+		for _, out := range ui.Project(e) {
+			// Filtered on the *projected* kind, not the session type,
+			// because the projection is where the damage is: a child's
+			// UserMessage becomes KindTurnStart and its TurnEnd becomes
+			// KindTurnEnd. Forwarding those put four turn.start and four
+			// turn.end lines inside one turn on the NDJSON stream — whose
+			// documented contract is that a CI job can delimit turns by
+			// kind — and rendered each child's prompt in the terminal with
+			// the same ▌ banner a user submission gets.
+			//
+			// A child's turn is not a turn of this session. Its evidence
+			// belongs here; its frame does not.
+			//
+			// Nor its step.usage. The children's tokens already reach the
+			// parent's turn.usage through the usage meter, and consumers sum
+			// that event, so forwarding each child step would count them a
+			// second time. verify.report and diagnostic are evidence, not
+			// totals, and are forwarded with the agent's label.
+			if out.Kind == ui.KindTurnStart || out.Kind == ui.KindTurnEnd ||
+				out.Kind == ui.KindStepUsage {
+				continue
+			}
+			out.Agent = label
+			sink.Emit(out)
+		}
+	}
+}
+
 // prepare builds one child's turn under cfg — its tool surface, its log, where
 // it runs and the loop it runs in — and sends nothing.
 func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentRequest) (childTurn, error) {
@@ -480,35 +520,7 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 	// answering calls it never made.
 	log := newSessionLog()
 	if cfg.sink != nil {
-		label := req.Label
-		log.Observe(func(e session.Event) {
-			// Assistant chunks are the child's prose stream, and the child's
-			// answer already returns through the tool result. Forwarding them
-			// would interleave two transcripts in the terminal for no gain.
-			// Everything else is evidence about what the child's tools and the
-			// gate actually did, which is exactly what was being lost.
-			if e.Type == session.AssistantChunk {
-				return
-			}
-			for _, out := range ui.Project(e) {
-				// Filtered on the *projected* kind, not the session type,
-				// because the projection is where the damage is: a child's
-				// UserMessage becomes KindTurnStart and its TurnEnd becomes
-				// KindTurnEnd. Forwarding those put four turn.start and four
-				// turn.end lines inside one turn on the NDJSON stream — whose
-				// documented contract is that a CI job can delimit turns by
-				// kind — and rendered each child's prompt in the terminal with
-				// the same ▌ banner a user submission gets.
-				//
-				// A child's turn is not a turn of this session. Its evidence
-				// belongs here; its frame does not.
-				if out.Kind == ui.KindTurnStart || out.Kind == ui.KindTurnEnd {
-					continue
-				}
-				out.Agent = label
-				cfg.sink.Emit(out)
-			}
-		})
+		log.Observe(forwardChildEvents(cfg.sink, req.Label))
 	}
 
 	placed, err := r.place(cfg, req)
@@ -532,7 +544,8 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 	}
 
 	loop, err := newTurnLoop(turnFace{
-		maxSteps: maxSubAgentSteps,
+		maxSteps:  maxSubAgentSteps,
+		maxTokens: req.MaxTokens,
 		// ReadOnly narrows the schemas the child is offered to match the
 		// registry it actually has. Both are needed and they answer different
 		// questions: this one stops the model wasting steps asking for tools

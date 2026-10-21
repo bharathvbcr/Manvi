@@ -1,0 +1,449 @@
+package serve
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"regexp"
+	"strings"
+
+	dc "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/harness"
+)
+
+// Materialising a harness into a managed checkout.
+//
+// A managed run is an external CLI over a checkout (see managed.go); Manvi does
+// not compose its system prompt, so a spec reaches it the one way the CLI takes
+// instructions: as text in the instruction file it reads.
+//
+// Which file is a fact about the CLI and not a choice here:
+//
+//   - codex reads AGENTS.md. The adapter starts `codex app-server` over the
+//     checkout (codexArgs) and AGENTS.md is the file that CLI documents.
+//   - claude reads CLAUDE.md. The adapter launches it with `--setting-sources
+//     user`, which measurably leaves the project CLAUDE.md unloaded (see
+//     claudeArgs), and managedTurn therefore tells the agent to read the
+//     repository's AGENTS.md and CLAUDE.md itself. CLAUDE.md is Claude Code's own
+//     file, so it is the one a later launch without that flag would load, and
+//     when a harness is materialised the turn names it as well.
+//
+// What is written is one delimited block appended at the tail of that file.
+// Manvi writes it, not the agent, so it goes through the gate with internal=true
+// and through the pinned writer: a symbolic link or a file with more than one
+// name is refused, not followed. The block is taken out again when the run
+// ends, by whatever way, so the checkout's own diff never carries it.
+//
+// What makes the removal safe is that Manvi recognises its own bytes and nothing
+// else:
+//
+//   - Every block carries a fresh 128-bit nonce in its BEGIN and END lines. Text
+//     that merely looks like a block, in a repository's docs or in an agent's
+//     edit, has no nonce Manvi issued and is ordinary content: never matched,
+//     never removed, never a reason to refuse a run.
+//   - What was appended is recorded, byte for byte, with the offset it was
+//     appended at, before it is written: in memory for the run, and in a small
+//     file under the checkout's .devcouncil tool-state directory for a crash. A
+//     restore removes spans byte-identical to the recorded bytes and nothing
+//     else; it never strips a newline or a marker line by pattern. Everything
+//     else in the file, the agent's edits included, stays exactly as it is.
+//   - A block the agent edited inside is not Manvi's bytes any more. Restore
+//     refuses with a typed reason and leaves the file alone, and the record is
+//     kept so the next Prepare on the checkout reports it, once, and clears it.
+//     It never guesses where a modified block ends.
+//
+// Skills: a spec's skills are a name filter over skills the repository already
+// has (see harness.Spec.Skills), so there is nothing to write under
+// .agents/skills; a spec that carried skill bodies would have to be written
+// there, and this release's spec cannot.
+
+const (
+	// harnessBeginMarker and harnessEndMarker open and close the block. A
+	// section's text may not contain either prefix.
+	harnessBeginMarker = "<!-- BEGIN MANVI HARNESS"
+	harnessEndMarker   = "<!-- END MANVI HARNESS"
+	// maxInstructionFileBytes bounds the file read before and after a run. An
+	// instruction file past it is refused rather than truncated.
+	maxInstructionFileBytes = 4 << 20
+	// harnessPendingFile records the block a run has written until it is taken
+	// out. It is under .devcouncil, the tool-state directory every verification
+	// diff already leaves out, and not under .devcouncil/harness, where specs are.
+	harnessPendingFile = ".devcouncil/managed-harness-pending.json"
+	// maxPendingBytes bounds the record: the appended bytes in base64 plus a
+	// small envelope.
+	maxPendingBytes = maxInstructionFileBytes*2 + 4096
+)
+
+// ErrHarnessMaterialise is the typed reason a managed run was aborted because
+// its harness could not be written into the checkout, or taken out of it.
+const ErrHarnessMaterialise = "E_HARNESS_MATERIALISE"
+
+type harnessMaterialiseError struct{ cause error }
+
+func (e *harnessMaterialiseError) Error() string {
+	return ErrHarnessMaterialise + ": " + e.cause.Error()
+}
+func (e *harnessMaterialiseError) Unwrap() error { return e.cause }
+
+func materialiseFailure(format string, args ...any) error {
+	return &harnessMaterialiseError{cause: fmt.Errorf(format, args...)}
+}
+
+// newHarnessNonce issues the nonce of one block: 128 random bits as hex. A
+// variable so a test can fix it.
+var newHarnessNonce = func() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+var nonceForm = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// harnessInstructionFile is the file provider's CLI reads, repository-relative.
+func harnessInstructionFile(provider string) (string, bool) {
+	switch provider {
+	case "claude":
+		return "CLAUDE.md", true
+	case "codex":
+		return "AGENTS.md", true
+	}
+	return "", false
+}
+
+func isInstructionFile(name string) bool { return name == "CLAUDE.md" || name == "AGENTS.md" }
+
+// harnessFileFor is the file a harness would be written to for an attempt, ""
+// when it names none or the provider has no such file.
+func harnessFileFor(ref ManagedHarness, provider string) string {
+	if ref == (ManagedHarness{}) {
+		return ""
+	}
+	file, _ := harnessInstructionFile(provider)
+	return file
+}
+
+// withHarnessNote adds, to a managed turn, one paragraph saying where the
+// harness block is, so the agent is told to follow it and not left to find it.
+// It goes after the turn's first paragraph, the agent's identity and the
+// conditions of an unattended turn, and before everything that says what to do.
+// A turn for an attempt with no harness (harnessFile "") is returned as it is.
+//
+// What the paragraph says is what is true of the block: Manvi wrote it for this
+// run, it sits between the BEGIN and END markers at the end of the file, and it
+// binds the agent as the rest of that file does and no further. It widens
+// nothing: the permission mode and the host's approval queue are unchanged.
+func withHarnessNote(turn, harnessFile string) string {
+	if harnessFile == "" {
+		return turn
+	}
+	note := "Manvi added a harness for this run: a block at the end of " + harnessFile +
+		" between the lines beginning \"" + harnessBeginMarker + "\" and \"" + harnessEndMarker +
+		"\". Read it and follow it with the rest of that file. It is removed when the run ends; do not edit it."
+	head, rest, found := strings.Cut(turn, "\n\n")
+	if !found {
+		return turn + "\n\n" + note
+	}
+	return head + "\n\n" + note + "\n\n" + rest
+}
+
+// renderHarnessBlock is the block for a spec: BEGIN and END lines naming the
+// nonce, the spec and its digest, then each section under its own heading, in
+// digest order. It returns "" for a spec with no sections, which has nothing to
+// say to the CLI.
+func renderHarnessBlock(spec harness.Spec, nonce string) (string, error) {
+	n := spec.Normalized()
+	if len(n.Sections) == 0 {
+		return "", nil
+	}
+	tag := fmt.Sprintf("nonce=%s name=%s digest=%s", nonce, spec.Name, spec.Digest())
+	var b strings.Builder
+	b.WriteString(harnessBeginMarker + " " + tag + " -->\n")
+	b.WriteString("<!-- Written by Manvi for this managed run and removed when it ends. -->\n")
+	for _, sec := range n.Sections {
+		if strings.Contains(sec.Text, harnessBeginMarker) || strings.Contains(sec.Text, harnessEndMarker) {
+			return "", materialiseFailure("section %q contains a harness block marker, which would make the block's end ambiguous", sec.Name)
+		}
+		b.WriteString("\n## " + sec.Name + "\n\n")
+		b.WriteString(strings.TrimRight(sec.Text, "\n") + "\n")
+	}
+	b.WriteString(harnessEndMarker + " " + tag + " -->\n")
+	return b.String(), nil
+}
+
+// separator is what is put between a file's own content and the block: a
+// newline when the content does not end in one, then a blank line. Nothing for
+// an empty file. It is part of what is recorded and removed, so a restore never
+// has to decide whether a newline was Manvi's.
+func separator(before []byte) []byte {
+	if len(before) == 0 {
+		return nil
+	}
+	if before[len(before)-1] != '\n' {
+		return []byte("\n\n")
+	}
+	return []byte("\n")
+}
+
+// pendingRestore is everything needed to take one block out: written to disk
+// before the block is, so a crash leaves a record and never a block with none.
+type pendingRestore struct {
+	Version int    `json:"version"`
+	Nonce   string `json:"nonce"`
+	File    string `json:"file"`
+	// Existed is whether the file was there before the block was.
+	Existed bool `json:"existed"`
+	// Offset is where Appended was put, the length of the file's own content.
+	Offset int `json:"offset"`
+	// Appended is the exact bytes added: the separator and the block.
+	Appended []byte `json:"appended"`
+}
+
+// valid says whether a record, which sits in a directory an agent under a
+// relaxed posture can write, can be acted on. A record that could name any
+// path, or any bytes, would be an instruction to delete; this one can name two
+// files and a span that is framed by its own nonce'd lines.
+func (p pendingRestore) valid() error {
+	switch {
+	case p.Version != 1:
+		return fmt.Errorf("record version %d is not one this build reads", p.Version)
+	case !nonceForm.MatchString(p.Nonce):
+		return errors.New("the nonce is not 128 bits of lowercase hex")
+	case !isInstructionFile(p.File):
+		return fmt.Errorf("%q is not an instruction file Manvi writes a harness into", p.File)
+	case p.Offset < 0 || p.Offset > maxInstructionFileBytes:
+		return errors.New("the offset is out of range")
+	case len(p.Appended) == 0 || len(p.Appended) > maxInstructionFileBytes:
+		return errors.New("the recorded bytes are empty or over the limit")
+	}
+	body := bytes.TrimLeft(p.Appended, "\n")
+	if len(p.Appended)-len(body) > 2 {
+		return errors.New("the recorded bytes do not start as a block does")
+	}
+	tag := "nonce=" + p.Nonce + " "
+	begin, end := []byte(harnessBeginMarker+" "+tag), []byte(harnessEndMarker+" "+tag)
+	if !bytes.HasPrefix(body, begin) || bytes.Count(p.Appended, begin) != 1 || bytes.Count(p.Appended, end) != 1 {
+		return errors.New("the recorded bytes are not one block carrying this nonce")
+	}
+	lastLine := body[bytes.LastIndex(body[:len(body)-1], []byte("\n"))+1:]
+	if !bytes.HasPrefix(lastLine, end) || !bytes.HasSuffix(lastLine, []byte("-->\n")) {
+		return errors.New("the recorded bytes do not end with the block's END line")
+	}
+	return nil
+}
+
+// harnessWriter judges and performs the writes of one materialisation.
+type harnessWriter struct {
+	root string
+}
+
+// write judges the write through the same file gate an agent's write meets, as
+// an internal write (Manvi's own, so the restricted-path rung does not apply)
+// with the hard rules on, then performs it through the pinned writer. The host
+// posture's demotion of a taskless soft denial applies, as on policy.check.file;
+// a hard denial is a refusal.
+func (w harnessWriter) write(rel string, op dc.Operation, data []byte) error {
+	if err := w.judge(rel, op); err != nil {
+		return err
+	}
+	if err := devcouncil.WritePinned(w.root, rel, data, 0o644); err != nil {
+		return materialiseFailure("writing %s: %v", rel, err)
+	}
+	return nil
+}
+
+func (w harnessWriter) remove(rel string) error {
+	if err := w.judge(rel, dc.OpDelete); err != nil {
+		return err
+	}
+	if err := devcouncil.RemovePinned(w.root, rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return materialiseFailure("removing %s: %v", rel, err)
+	}
+	return nil
+}
+
+func (w harnessWriter) judge(rel string, op dc.Operation) error {
+	gate := policy.FileGate{Root: w.root, HardRules: true}
+	d := PostureHost.demote(gate.EvaluateFileChange(rel, nil, op, true), "managed harness: Manvi's own write, no task model")
+	if d.Action == policy.Deny {
+		return materialiseFailure("the write gate refused %s (%s): %s", rel, d.Rule, d.Reason)
+	}
+	return nil
+}
+
+// harnessMaterialisation is one written block and what takes it out.
+type harnessMaterialisation struct {
+	harnessWriter
+	// File is the instruction file the block was written to.
+	File    string
+	pending pendingRestore
+}
+
+// materialiseHarness writes spec's block into the provider's instruction file
+// under root and returns what restores it. It returns nil, nil when there is
+// nothing to write: a spec with no sections has nothing to say to the CLI. A
+// provider with no instruction file is refused. Nothing already in the file is
+// read as a block: content that looks like one is content. A failure leaves the
+// file as it found it.
+func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMaterialisation, error) {
+	rel, ok := harnessInstructionFile(provider)
+	if !ok {
+		return nil, materialiseFailure("provider %q has no instruction file Manvi knows how to write a harness into", provider)
+	}
+	nonce, err := newHarnessNonce()
+	if err != nil {
+		return nil, materialiseFailure("issuing a block nonce: %v", err)
+	}
+	block, err := renderHarnessBlock(spec, nonce)
+	if err != nil || block == "" {
+		return nil, err
+	}
+	w := harnessWriter{root: root}
+	before, err := devcouncil.ReadPinned(root, rel, maxInstructionFileBytes)
+	existed := err == nil
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		before = nil
+	default:
+		return nil, materialiseFailure("reading %s: %v", rel, err)
+	}
+	appended := append(separator(before), block...)
+	m := &harnessMaterialisation{harnessWriter: w, File: rel, pending: pendingRestore{
+		Version: 1, Nonce: nonce, File: rel, Existed: existed, Offset: len(before), Appended: appended,
+	}}
+	if err := m.pending.valid(); err != nil {
+		return nil, materialiseFailure("the block Manvi would write is not one it can later recognise: %v", err)
+	}
+	record, err := json.Marshal(m.pending)
+	if err != nil {
+		return nil, materialiseFailure("recording the block: %v", err)
+	}
+	op := dc.OpModify
+	if !existed {
+		op = dc.OpCreate
+	}
+	// The record first: a crash between the two writes leaves a record of a
+	// block that is not there, which restores as nothing, and never a block with
+	// no record.
+	if err := w.write(harnessPendingFile, dc.OpWrite, record); err != nil {
+		return nil, err
+	}
+	if err := w.write(rel, op, append(append([]byte(nil), before...), appended...)); err != nil {
+		return nil, errors.Join(err, w.remove(harnessPendingFile))
+	}
+	return m, nil
+}
+
+// Restore takes the block out and clears the record. See restoreRecorded.
+func (m *harnessMaterialisation) Restore() error {
+	if m == nil {
+		return nil
+	}
+	return restoreRecorded(m.harnessWriter, m.pending)
+}
+
+// restoreRecorded removes, from the file the record names, every span
+// byte-identical to the recorded bytes, and nothing else; the bytes around it
+// are left exactly as they are, so an agent's edits survive and a file with no
+// trailing newline stays without one. Cases:
+//
+//   - the recorded bytes are in the file (more than once if the agent copied the
+//     block): they are removed, and a file Manvi created is deleted if nothing
+//     else is left in it;
+//   - they are not, and no line carries the nonce: the agent removed the block
+//     itself and there is nothing to undo;
+//   - they are not, and a line carries the nonce: the agent edited inside the
+//     block. It is refused, typed, the file is left as it is and the record is
+//     kept, so the next Prepare on the checkout reports it, once.
+func restoreRecorded(w harnessWriter, p pendingRestore) error {
+	if err := p.valid(); err != nil {
+		return materialiseFailure("the record of the harness block is not usable: %v", err)
+	}
+	current, err := devcouncil.ReadPinned(w.root, p.File, maxInstructionFileBytes)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		return w.remove(harnessPendingFile) // the agent deleted the file, block and all
+	default:
+		return materialiseFailure("reading %s to restore it: %v", p.File, err)
+	}
+	remainder, removed := cutSpans(current, p.Appended, p.Offset)
+	if removed == 0 {
+		if bytes.Contains(current, []byte("MANVI HARNESS nonce="+p.Nonce+" ")) {
+			return materialiseFailure("the checkout carries a modified harness block in %s: the agent edited inside it, so Manvi did "+
+				"not guess where it ends and left the file as it is; remove the block from %s by hand", p.File, p.File)
+		}
+		return w.remove(harnessPendingFile) // the agent removed the block itself
+	}
+	if !p.Existed && len(bytes.TrimSpace(remainder)) == 0 {
+		if err := w.remove(p.File); err != nil {
+			return err
+		}
+	} else if err := w.write(p.File, dc.OpModify, remainder); err != nil {
+		return err
+	}
+	return w.remove(harnessPendingFile)
+}
+
+// cutSpans removes every non-overlapping occurrence of span from content and
+// says how many it removed. hint is where the span was put; it is tried first,
+// which is only a shortcut, since an agent's edit before the block moves it.
+func cutSpans(content, span []byte, hint int) ([]byte, int) {
+	var out []byte
+	removed := 0
+	rest := content
+	if hint >= 0 && hint+len(span) <= len(content) && bytes.Equal(content[hint:hint+len(span)], span) {
+		out = append(out, content[:hint]...)
+		rest = content[hint+len(span):]
+		removed++
+	}
+	for {
+		i := bytes.Index(rest, span)
+		if i < 0 {
+			break
+		}
+		out = append(out, rest[:i]...)
+		rest = rest[i+len(span):]
+		removed++
+	}
+	if removed == 0 {
+		return content, 0
+	}
+	return append(out, rest...), removed
+}
+
+// recoverPendingHarness applies a record a run left behind, for a checkout no
+// live run holds. It returns a note saying what it did (empty when there was
+// nothing), or the typed error when the block could not be taken out: the
+// record is cleared in that case too, so the refusal is made once and the next
+// attempt is not wedged by it.
+func recoverPendingHarness(root string) (string, error) {
+	w := harnessWriter{root: root}
+	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	default:
+		return "", materialiseFailure("reading the record of a harness block a run left behind: %v", err)
+	}
+	var p pendingRestore
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return "", errors.Join(materialiseFailure("the record of a harness block a run left behind is unreadable (%v); it was removed", err),
+			w.remove(harnessPendingFile))
+	}
+	if err := restoreRecorded(w, p); err != nil {
+		return "", errors.Join(err, w.remove(harnessPendingFile))
+	}
+	return fmt.Sprintf("took the harness block of a run that never finished out of %s", p.File), nil
+}

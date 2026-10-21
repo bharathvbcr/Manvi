@@ -19,6 +19,9 @@ const (
 
 	fallbackWorkspace = "wrkspc_01FallbackWorkspace"
 
+	// maxRequestBody bounds how much of a request body the test server reads.
+	maxRequestBody = 1 << 20
+
 	// creditExhaustedBody is the body the Messages API returns, with a 400, to a key
 	// whose organisation has run out of prepaid credit.
 	creditExhaustedBody = `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},"request_id":"req_011credit"}`
@@ -36,7 +39,12 @@ func keyedServer(t *testing.T, answer func(key string) (int, string)) (string, f
 	var mu sync.Mutex
 	var log []seen
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+		if err != nil {
+			t.Errorf("reading the request body: %v", err)
+			http.Error(w, "unreadable request body", http.StatusBadRequest)
+			return
+		}
 		key := r.Header.Get(APIKeyHeader)
 		mu.Lock()
 		log = append(log, seen{key: key, workspace: r.Header.Get(WorkspaceHeader), body: string(body)})

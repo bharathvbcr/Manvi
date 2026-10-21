@@ -50,6 +50,7 @@ Usage:
   manvi issues                      Report open GitHub issues, newest activity first
   manvi watch [--json]              Render the event stream: a terminal face, or NDJSON for CI
   manvi run [-p] PROMPT             Drive one turn with no terminal: scripts, CI, benchmarks
+  manvi reflect --session ID        Turn one finished session into at most one lesson, filed under .devcouncil/artifacts/lessons/
   manvi tui                         Full-screen face: transcript, composer, approvals, dashboard
   manvi map build                   Index the repository for navigation and the neighbour rule
   manvi map rebuild                 Discard the index and rebuild it, when its analysis is in doubt
@@ -61,7 +62,7 @@ Usage:
   manvi version --json              The same as JSON, with the provider env no child inherits
   manvi help, -h, --help            Show this help
 
-Commands that keep state — the face, run, serve, watch, doctor, tool, allow,
+Commands that keep state — the face, run, reflect, serve, watch, doctor, tool, allow,
 lease, and map build/rebuild — first prepare the repository they are standing
 in: the state directory the harness writes into and, inside a git working tree,
 the .gitignore rules that keep that directory out of a commit. It is
@@ -409,6 +410,8 @@ func run(out, notes io.Writer, args []string) error {
 		return showLocal(context.Background(), out, reg, args[1:])
 	case "pull", "push", "issues":
 		return runQuickAction(context.Background(), out, projectRoot(), args[0], args[1:], osQuickCommandRunner{})
+	case "reflect":
+		return reflectCommand(out, notes, reg, args[1:])
 	case "watch":
 		return watch(out, reg, args[1:])
 	case "run":
@@ -467,7 +470,7 @@ func preparesRepository(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "tui", "run", "serve", "watch", "doctor":
+	case "tui", "run", "serve", "watch", "doctor", "reflect":
 		return true
 	case "tool", "allow":
 		// Each needs an argument to do anything; without one it is a usage

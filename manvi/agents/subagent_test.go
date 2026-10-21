@@ -8,7 +8,7 @@ func TestDynamicSubagentRegistry(t *testing.T) {
 	reg := NewRegistry()
 
 	// Verify defaults exist
-	for _, name := range []string{"research", "builder", "critic", "planner", "stress_tester", "self"} {
+	for _, name := range []string{"research", "builder", "critic", "planner", "reflector", "stress_tester", "self"} {
 		def, ok := reg.Get(name)
 		if !ok {
 			t.Errorf("expected default subagent %q to exist", name)
@@ -37,8 +37,8 @@ func TestDynamicSubagentRegistry(t *testing.T) {
 	}
 
 	all := reg.List()
-	if len(all) != 7 {
-		t.Errorf("expected 7 subagents, got %d", len(all))
+	if len(all) != 8 {
+		t.Errorf("expected 8 subagents, got %d", len(all))
 	}
 }
 

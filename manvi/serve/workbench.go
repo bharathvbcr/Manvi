@@ -228,5 +228,15 @@ func workbenchHostError(dependency string, err error) *Error {
 	if errors.As(err, &refusal) {
 		return &Error{Code: refusal.Code, Message: refusal.Message}
 	}
+	// A typed refusal from this package, a harness one for instance, keeps its
+	// code: a host branches on it, and E_DEPENDENCY would say the wrong thing.
+	var typed *Error
+	if errors.As(err, &typed) && typed != nil {
+		return typed
+	}
+	var materialise *harnessMaterialiseError
+	if errors.As(err, &materialise) {
+		return &Error{Code: ErrHarnessMaterialise, Message: materialise.cause.Error()}
+	}
 	return dependencyError(dependency, err)
 }

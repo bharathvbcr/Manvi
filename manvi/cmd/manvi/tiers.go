@@ -87,11 +87,17 @@ func newRegistry(repoConfig string) (*flags.Registry, error) {
 	if err := refuseRepositoryTiers(repoConfig); err != nil {
 		return nil, err
 	}
+	if err := refuseRepositoryHarnessSpec(repoConfig); err != nil {
+		return nil, err
+	}
 	reg, err := flags.NewHarnessRegistry(repoConfig)
 	if err != nil {
 		return nil, err
 	}
 	if err := reg.Define(tierFlagDefs()...); err != nil {
+		return nil, err
+	}
+	if err := reg.Define(harnessFlagDefs()...); err != nil {
 		return nil, err
 	}
 	path, err := userConfigPath()

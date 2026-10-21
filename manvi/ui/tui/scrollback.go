@@ -139,6 +139,11 @@ func (s *Scrollback) Selected() *Entry {
 // its own entry would make the transcript unnavigable and the fold state
 // meaningless.
 func (s *Scrollback) Append(ev ui.Event) {
+	// Not drawn. These kinds exist for the NDJSON face, and without this each
+	// would become an entry with nothing to render; see ui.Kind.WireOnly.
+	if ev.Kind.WireOnly() {
+		return
+	}
 	if ev.Kind == ui.KindText && len(s.entries) > 0 {
 		last := s.entries[len(s.entries)-1]
 		if last.Event.Kind == ui.KindText {

@@ -285,6 +285,9 @@ type Loop struct {
 	// after tool registration, because it reads the registry to learn which
 	// tools are allowed to mutate.
 	progress *progressTracker
+	// spent is what the open step has cost, written to its step/end. Reset when
+	// a step opens and when it closes.
+	spent session.StepEndData
 	// effortPlan is the ladder this loop may climb when a turn goes in
 	// circles, resolved once against the model's declared levels.
 	effortPlan EffortPlan
@@ -539,11 +542,11 @@ func (l *Loop) reportMalformed(response llm.Response) error {
 	var b strings.Builder
 	b.WriteString("Your last message contained tool call(s) this harness could not read:\n")
 	for _, m := range response.Malformed {
-		name := m.Name
+		name := boundField(m.Name)
 		if name == "" {
 			name = "(unnamed)"
 		}
-		fmt.Fprintf(&b, "  - %s: %s\n", name, m.Reason)
+		fmt.Fprintf(&b, "  - %s: %s\n", name, boundField(m.Reason))
 	}
 	if l.hitOutputCap(response) {
 		b.WriteString("\nThe response hit its output limit, which is what cut them off. ")
@@ -554,7 +557,7 @@ func (l *Loop) reportMalformed(response llm.Response) error {
 
 	for _, m := range response.Malformed {
 		if _, err := l.log.Append(session.MalformedToolCall, session.MalformedCallData{
-			ToolCallID: m.ID, Tool: m.Name, Reason: m.Reason,
+			ToolCallID: llm.CallID(boundField(string(m.ID))), Tool: boundField(m.Name), Reason: boundField(m.Reason),
 		}); err != nil {
 			return err
 		}
@@ -864,9 +867,17 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 	return out, nil
 }
 
-// endStep closes the open step in the log.
+// endStep closes the open step in the log, recording what the step spent. A
+// step that never received a response — an early exit closing the boundaries —
+// records zero usage marked NoResponse, because nothing was spent and, unlike
+// an unpriced step, there was nothing to price.
 func (l *Loop) endStep() error {
-	if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+	// Taken and cleared before the append, so a refused append cannot leave
+	// this step's figures behind for the next one. stepOpen stays true on a
+	// refusal, as it always did: the step is still open in the log.
+	spent := l.spent
+	l.spent = session.StepEndData{}
+	if _, err := l.log.Append(session.StepEnd, spent); err != nil {
 		return err
 	}
 	l.stepOpen = false
@@ -953,22 +964,54 @@ func (l *Loop) enterStep(ctx context.Context, turn, step int) ([]llm.Message, er
 	if _, err := l.log.Append(session.StepStart, nil); err != nil {
 		return nil, err
 	}
+	// Per step, so a step that ends without a response cannot inherit the
+	// previous step's figures. It reads as having had no response until
+	// absorbResponse replaces it.
+	l.spent = session.StepEndData{NoResponse: true}
 	l.stepOpen = true
 	return messages, nil
 }
 
 // price adds one step's charge to the outcome, or counts the step as unpriced.
-func (l *Loop) price(out *Outcome, usage llm.Usage) {
+// It returns the charge it added and whether the step was priced, which is what
+// the step's own log record carries: the outcome and the record are fed by this
+// one call, so they cannot disagree.
+func (l *Loop) price(out *Outcome, usage llm.Usage) (int64, bool) {
 	if l.cfg.Price == nil {
 		out.UnpricedSteps++
-		return
+		return 0, false
 	}
 	charge, err := l.cfg.Price(usage)
 	if err != nil || charge < 0 || out.CostNanoUSD > math.MaxInt64-charge {
 		out.UnpricedSteps++
-		return
+		return 0, false
 	}
 	out.CostNanoUSD += charge
+	return charge, true
+}
+
+// finiteRate returns v when it is a finite, non-negative rate and zero — "the
+// server did not say" — otherwise.
+func finiteRate(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return v
+}
+
+// maxMalformedField bounds the model-supplied strings of a malformed call.
+const maxMalformedField = 256
+
+// boundField cuts s to at most maxMalformedField runes and says that it cut.
+// A tool name or call id comes off the wire from the model's server and is not
+// capped by the adapter; it is recorded in the log and repeated on the NDJSON
+// stream, so an unbounded one becomes an unbounded record in both.
+func boundField(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxMalformedField {
+		return s
+	}
+	return string(runes[:maxMalformedField]) + "… (truncated)"
 }
 
 // absorbResponse folds one step's response into the outcome: its usage, its
@@ -982,7 +1025,15 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
 	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
 	out.Usage.CacheWriteTokens += response.Usage.CacheWriteTokens
-	l.price(out, response.Usage)
+	charge, priced := l.price(out, response.Usage)
+	// Throughput is a server-reported float, and the log encodes JSON, which
+	// has no NaN or Inf: one such value from a server would fail the append and
+	// with it an answered, paid step. The record carries a rate only when it is
+	// a usable one.
+	recorded := response.Usage
+	recorded.OutputTokensPerSecond = finiteRate(recorded.OutputTokensPerSecond)
+	recorded.PromptTokensPerSecond = finiteRate(recorded.PromptTokensPerSecond)
+	l.spent = session.StepEndData{Usage: recorded, CostNanoUSD: charge, Priced: priced}
 	// Throughput is a rate, not a total: the last step's is what an
 	// operator wants to see, and summing them would be meaningless.
 	if response.Usage.OutputTokensPerSecond > 0 {

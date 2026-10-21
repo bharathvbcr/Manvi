@@ -14,9 +14,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
-	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
@@ -170,63 +168,12 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		}
 	}()
 
-	providerName, _, err := reg.String(flags.LLMDefaultProvider)
+	env, err := buildRunEnv(ctx, notes, reg, pipeline)
 	if err != nil {
 		return err
 	}
-	resolver := credentials.NewResolver()
-	provider, err := buildProvider(ctx, providerName, reg, resolver, notes, "")
-	if err != nil {
-		return err
-	}
-	// Before the model is contacted: a tier the provider cannot serve, price or
-	// run at its effort is a configuration mistake, and found here it names the
-	// tier instead of arriving as a refused request mid-way through a fan-out.
-	tiers, err := checkTiers(reg, providerName)
-	if err != nil {
-		return err
-	}
-	if set := tiers.inactiveOverrides(); len(set) > 0 {
-		if _, err := fmt.Fprintf(notes, "manvi: %s set, but the tier profile applies on %s only and this run is on %s\n",
-			strings.Join(set, ", "), anthropic.Name, providerName); err != nil {
-			return err
-		}
-	}
-	registry, err := registerSessionLLM(pipeline, provider)
-	if err != nil {
-		return err
-	}
-
-	model, _, err := resolveModelFor(ctx, providerName, provider, reg)
-	if err != nil {
-		return err
-	}
-	effort, _, _, err := mainEffort(reg, providerName)
-	if err != nil {
-		return err
-	}
-	effortCeiling, _, err := reg.String(flags.LLMEffortCeiling)
-	if err != nil {
-		return err
-	}
-	if effort != "" || effortCeiling != "" {
-		// Checked here rather than at request time for the reason the TUI
-		// checks it at attach: an effort the model does not accept is a
-		// configuration mistake, and found now it names the setting instead of
-		// arriving as a refused request after the run has started.
-		if capability, ok := provider.Capability(model); ok {
-			if verr := capability.Validate(llm.Request{Model: model, Effort: effort}); verr != nil {
-				return verr
-			}
-			// The same plan the loop builds, from the same function, so a
-			// ceiling accepted here cannot be one the turn then refuses.
-			if _, verr := agent.PlanEffort(capability, effort, effortCeiling); verr != nil {
-				return fmt.Errorf("%s=%s: %w", flags.EnvKey(flags.LLMEffortCeiling), effortCeiling, verr)
-			}
-		}
-	}
-
-	scrubber := newArmedScrubber(resolver)
+	providerName, provider, registry := env.providerName, env.provider, env.models
+	model, effort, effortCeiling, scrubber := env.model, env.effort, env.effortCeiling, env.scrubber
 
 	var sink ui.Sink
 	switch {
@@ -305,14 +252,18 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
+	var turn turnState
+	spec := resolveTurnInputs(ctx, reg, turnInputs{
+		skills: native, repoRead: native.RepoReader, roles: native.Roles(), pipeline: pipeline,
+	}, &turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {
 		_, _ = fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)
 	}
 	// Recorded before the turn runs, so a log that explains the turn is
 	// complete by the time anything reads it.
-	if err := recordPromptAssembly(log, promptReport,
-		promptTokenBudget(reg, provider.Name())); err != nil {
+	if err := recordPromptAssembly(log, promptReport, systemPrompt,
+		promptTokenBudget(reg, provider.Name()), spec); err != nil {
 		return err
 	}
 
@@ -325,21 +276,10 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// wide; see the floor predicate in subagent.go.
 	meter := &subAgentMeter{}
 	if runner := subRunner; runner != nil {
-		runner.attach(subAgentConfig{
-			provider:        provider,
-			models:          registry,
-			model:           model,
-			effort:          effort,
-			effortCeiling:   effortCeiling,
-			tiers:           tiers.Profile(),
-			registry:        pipeline,
-			native:          native,
-			meter:           meter,
-			coreToolsOnly:   coreOnly,
-			assertInvariant: assertInvariant(reg),
-			systemPrompt:    systemPrompt,
-			sink:            sink,
-		})
+		cfg := env.subAgentConfig(reg, pipeline, native, meter, coreOnly)
+		cfg.systemPrompt = systemPrompt
+		cfg.sink = sink
+		runner.attach(cfg)
 	}
 
 	loop, err := newTurnLoop(turnFace{

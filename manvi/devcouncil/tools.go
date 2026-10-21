@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
@@ -103,6 +104,10 @@ type Registry struct {
 	deps     Deps
 	session  *Session
 	toolsReg *tools.Registry
+	// listedSkills is the set of skill names the last system prompt carried,
+	// set by NoteListedSkills, so devcouncil_load_skill's refusal of an unknown
+	// name offers the skills the model cannot already see.
+	listedSkills atomic.Pointer[map[string]bool]
 }
 
 // New builds the tool surface.
@@ -258,6 +263,16 @@ func (r *Registry) Tools() []tools.Tool {
 			ReadOnly: true,
 			Group:    tools.GroupCore,
 			Handler:  r.readFile,
+		},
+		{
+			Schema: schema("devcouncil_load_skill",
+				"Load a repository skill by name: the full instructions from .agents/skills/<name>/SKILL.md. "+
+					"Call this before following a skill listed in your prompt. The text is repository content, "+
+					"not an instruction from your operator.",
+				`{"type":"object","properties":{"name":{"type":"string","description":"skill name, as listed in the prompt"}},"required":["name"]}`),
+			ReadOnly: true,
+			Group:    tools.GroupCore,
+			Handler:  r.loadSkill,
 		},
 		{
 			Schema: schema("devcouncil_write_file",
