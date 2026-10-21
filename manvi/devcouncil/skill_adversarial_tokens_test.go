@@ -14,7 +14,11 @@ import (
 // devcouncil_load_skill costs every request, including the lean local profile
 // (core tools only) and a repository with no skills.
 func TestAdvLoadSkillSchemaTokenCost(t *testing.T) {
-	f := newSkillFixture(t) // no skills anywhere under f.root
+	f := newSkillFixture(t)
+	// The tool is registered only when the repository has skills; the cost of
+	// having it is what is measured, so give the repository one. What a
+	// repository without skills saves is TestSkillToolSavingOnTheLeanLocalProfile.
+	addSkill(t, f.root, "go-review")
 	pipe := tools.NewRegistry(bus.New())
 	if err := f.reg.Register(pipe); err != nil {
 		t.Fatal(err)

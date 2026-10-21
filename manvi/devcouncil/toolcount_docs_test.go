@@ -26,6 +26,10 @@ import (
 // weaken the test.
 func TestDocumentedToolCountMatchesRegistry(t *testing.T) {
 	want := registryToolCount(t)
+	core := coreToolCount(t)
+	if core != want-1 {
+		t.Fatalf("a session with no skills registers %d tools against a catalogue of %d: devcouncil_load_skill must be the only conditional tool counted here", core, want)
+	}
 
 	root := repoRoot(t)
 	// Every doc location that states the count, and the pattern that finds it.
@@ -39,8 +43,18 @@ func TestDocumentedToolCountMatchesRegistry(t *testing.T) {
 		{"README.md", `\| All (\d+) native tools in Go and Rust \|`},
 		{"docs/README.md", `Category summary of all (\d+) native tools`},
 		{"docs/CLI_AND_CONFIGURATION.md", `List all (\d+) native tools`},
-		{"docs/TOOLS_REFERENCE.md", `natively in Go and Rust — \*\*(\d+) tools\*\*`},
+		{"docs/TOOLS_REFERENCE.md", `\((\d+) with it\)`},
 		{"docs/TOOLS_REFERENCE.md", `sum to the (\d+) tools ` + "`manvi tools`" + ` reports`},
+	}
+
+	// The count a repository with no skills sees: the catalogue less the one
+	// tool registered only when the repository has skills.
+	body := readFile(t, filepath.Join(root, "docs/TOOLS_REFERENCE.md"))
+	const corePattern = `natively in Go and Rust — \*\*(\d+) core tools\*\*`
+	if m := regexp.MustCompile(corePattern).FindStringSubmatch(body); m == nil {
+		t.Errorf("docs/TOOLS_REFERENCE.md: no core count matched %q — the sentence stating the tool count was reworded or removed; re-point this guard at it", corePattern)
+	} else if got, err := strconv.Atoi(m[1]); err != nil || got != core {
+		t.Errorf("docs/TOOLS_REFERENCE.md: documents %q core tools, a session with no skills registers %d", m[1], core)
 	}
 
 	for _, s := range sites {
@@ -202,6 +216,15 @@ func freshRegistry(t *testing.T) *tools.Registry {
 	return reg
 }
 
+// coreToolCount is what a session registers in a repository with no skills,
+// through Register itself: the count `manvi tools` reports there.
+func coreToolCount(t *testing.T) int {
+	t.Helper()
+	f := newSkillFixture(t)
+	return len(f.openSession(t).Schemas())
+}
+
+// registryToolCount is the whole catalogue, the conditional tool included.
 func registryToolCount(t *testing.T) int {
 	t.Helper()
 	return len(freshRegistry(t).Schemas())

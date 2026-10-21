@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -47,8 +48,71 @@ func (r *Registry) RepoReader(ctx context.Context) harness.ReadFunc { return r.s
 // LoadSkills reads the repository's skills, at most harness.MaxSkills of them,
 // for the prompt's always-on listing. The names the model is shown here and the
 // names devcouncil_load_skill accepts come from the same loader.
+//
+// A session that opened without the skill tool lists no skills for its whole
+// life: a listing that tells the model to call a tool it does not have would be
+// worse than none, and a skill added mid-session is picked up by the next
+// session, with the rest of its tool surface, so the prompt-cache prefix does
+// not change under a running one.
 func (r *Registry) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
+	if r.skillSurface.Load() == skillToolWithheld {
+		return harness.SkillSet{}, nil
+	}
+	return r.readSkills(ctx)
+}
+
+func (r *Registry) readSkills(ctx context.Context) (harness.SkillSet, error) {
 	return harness.LoadSkills(r.deps.Root, r.skillReader(ctx))
+}
+
+// loadSkillToolName is the one tool whose registration depends on the
+// repository.
+const loadSkillToolName = "devcouncil_load_skill"
+
+const (
+	skillToolUndecided int32 = iota
+	skillToolOffered
+	skillToolWithheld
+)
+
+// skillOpenTimeout bounds the one skills read a session's open makes, so a
+// repository whose skills directory blocks cannot stall opening the session.
+const skillOpenTimeout = 10 * time.Second
+
+// decideSkillTool takes the session's decision and records it.
+func (r *Registry) decideSkillTool() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), skillOpenTimeout)
+	defer cancel()
+	offer := r.skillToolOffered(ctx)
+	if offer {
+		r.skillSurface.Store(skillToolOffered)
+	} else {
+		r.skillSurface.Store(skillToolWithheld)
+	}
+	return offer
+}
+
+// skillToolOffered reports whether this session's surface carries
+// devcouncil_load_skill: when the repository has at least one skill, or at
+// least one skill directory the loader rejected, so a model told a skill was
+// refused can still ask why. A repository with neither never pays the schema's
+// tokens.
+//
+// It is decided once, at session open, and never per turn: the tool list is
+// part of the prompt-cache prefix, and a surface that changed when someone
+// added a skill would invalidate the prefix mid-session. The cost is that a
+// skill added mid-session is invisible until the next session.
+//
+// A read that fails, a cancelled or timed-out one included, offers the tool.
+// The failure is not evidence that there are no skills, and the tool is how
+// the model sees the fault: it answers with the reason instead of the surface
+// silently lacking a tool the repository may well have.
+func (r *Registry) skillToolOffered(ctx context.Context) bool {
+	set, err := r.readSkills(ctx)
+	if err != nil {
+		return true
+	}
+	return len(set.Skills) > 0 || len(set.Rejected) > 0 || set.RejectedOmitted > 0 || set.NotExamined > 0
 }
 
 // NoteListedSkills records the skill names the system prompt just carried, in
