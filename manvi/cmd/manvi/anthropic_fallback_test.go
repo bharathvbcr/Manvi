@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -83,7 +85,7 @@ func TestBuildProviderArmsTheFallbackFromTheEnvironment(t *testing.T) {
 	defer func() { _ = stream.Close() }()
 	for {
 		if _, err := stream.Next(); err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				t.Fatalf("stream ended with %v", err)
 			}
 			break
@@ -95,7 +97,7 @@ func TestBuildProviderArmsTheFallbackFromTheEnvironment(t *testing.T) {
 	if strings.Join(keys, ",") != primary+","+fallback {
 		t.Fatalf("requests carried keys %v, want the primary then the fallback", keys)
 	}
-	if workspaces[0] != "wrkspc_primary01" || workspaces[1] != "wrkspc_fallback01" {
+	if !slices.Equal(workspaces, []string{"wrkspc_primary01", "wrkspc_fallback01"}) {
 		t.Errorf("workspaces = %v, want each key sent with its own", workspaces)
 	}
 	if !strings.Contains(notes.String(), credentials.AnthropicFallbackKeyEnv) {

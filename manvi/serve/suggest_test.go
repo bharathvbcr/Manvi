@@ -53,7 +53,7 @@ func (f *suggestFakeStore) Workbench(_ context.Context, method string, input jso
 		if f.listErr != nil {
 			return nil, f.listErr
 		}
-		var column []map[string]any
+		column := make([]map[string]any, 0, len(f.items))
 		for _, it := range f.items {
 			if it["status"] == in.Status {
 				c := map[string]any{}
