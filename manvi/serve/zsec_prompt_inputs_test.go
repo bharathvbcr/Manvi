@@ -11,7 +11,8 @@ import (
 // devcouncil/zsec_prompt_inputs_test.go) and a host's own writer must still be
 // able to: the managed plane materialises instructions through the internal
 // path, and that is the only door the protection leaves open.
-var promptInputs = []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", "mcp.json", ".mcp.json", ".agents/skills/x/SKILL.md"}
+var promptInputs = []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", "mcp.json", ".mcp.json", ".agents/skills/x/SKILL.md",
+	"pkg/.claude/skills/x/SKILL.md", "plugins/a/plugin.json", ".devcouncil/plugins/a/openplugin.json"}
 
 // internalFileCheck is fileCheck with the Internal flag a host's own writer sets.
 func internalFileCheck(t *testing.T, id, root, path string, internal bool) Request {

@@ -82,9 +82,16 @@ type FileCheckParams struct {
 	// Op is create, modify, delete, or write. Empty means write — the
 	// unspecialised form a tool reports when it does not know which it is.
 	Op string `json:"op,omitempty"`
-	// Internal exempts the caller from the restricted-path rung, for writes
-	// the harness itself makes into its own state directory. A host should
-	// leave it false; it is not a general escape hatch.
+	// Internal exempts the caller from the restricted-path rung and from the
+	// prompt-input rung (AGENTS.md, CLAUDE.md, GEMINI.md, mcp.json, plugin
+	// manifests, skill roots), for writes the harness itself makes: its own
+	// state directory, and the host-side materialisation of instructions. It
+	// is a host-trust assertion, not a property of the path: the host that sets
+	// it vouches that neither the flag nor the path came from model output, so
+	// a value derived from anything a model produced must never reach it. It
+	// does not exempt the secret-path rung, and a command's redirections are
+	// always judged with it false. A host should otherwise leave it false; it
+	// is not a general escape hatch.
 	Internal bool `json:"internal,omitempty"`
 	// Scope is the task this write belongs to, as the host declares it.
 	//

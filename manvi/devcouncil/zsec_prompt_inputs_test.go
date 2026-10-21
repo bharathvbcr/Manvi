@@ -92,7 +92,9 @@ func TestAgentCannotWriteNestedPromptInputs(t *testing.T) {
 // an agent could otherwise write the skill it then loads. Reads stay allowed.
 func TestGateRefusesPromptInputsUnderEveryPosture(t *testing.T) {
 	names := append(append([]string{}, promptInputNames...),
-		"docs/AGENTS.md", ".agents/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".cursor/skills/x/SKILL.md")
+		"docs/AGENTS.md", ".agents/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".cursor/skills/x/SKILL.md",
+		"pkg/.claude/skills/x/SKILL.md", "plugins/a/plugin.json", ".mcp/plugins/a/openplugin.json",
+		".devcouncil/plugins/a/plugin.json")
 	for _, posture := range []string{flags.PostureStrict, flags.PostureDev, flags.PostureYolo} {
 		reg := flags.New()
 		if err := flags.DefineHarnessFlags(reg); err != nil {
