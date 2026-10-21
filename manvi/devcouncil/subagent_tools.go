@@ -799,6 +799,11 @@ func refuseRetiredRoleKeys(call tools.Call) *tools.Result {
 type SubAgentRequest struct {
 	// Label names the work in the fan-out report.
 	Label string
+	// MaxTokens is the output bound the child's requests name. Zero leaves it
+	// to the adapter, as it is for every dispatch a model makes; a harness
+	// command that knows how long its answer can be sets it, so a runaway
+	// generation is cut by the provider instead of being read to the end.
+	MaxTokens int
 	// Prompt is the instruction the sub-agent is to carry out. It is the whole
 	// point of the call: a dispatch that does not deliver it has not delegated
 	// anything.

@@ -544,7 +544,8 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 	}
 
 	loop, err := newTurnLoop(turnFace{
-		maxSteps: maxSubAgentSteps,
+		maxSteps:  maxSubAgentSteps,
+		maxTokens: req.MaxTokens,
 		// ReadOnly narrows the schemas the child is offered to match the
 		// registry it actually has. Both are needed and they answer different
 		// questions: this one stops the model wasting steps asking for tools

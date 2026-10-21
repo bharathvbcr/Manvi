@@ -159,12 +159,13 @@ flowchart TB
 
     Research["research<br/>read-only, MCP allowed"]
     Planner["planner<br/>read-only, MCP allowed"]
+    Reflector["reflector<br/>read-only, no MCP, no writes"]
     Critic["critic<br/>read-only, MCP denied"]
     Builder["builder<br/>writes, MCP allowed"]
     Stress["stress_tester<br/>writes, MCP allowed"]
     Self["self<br/>inherits parent config"]
 
-    Parent --> Research & Planner & Critic
+    Parent --> Research & Planner & Critic & Reflector
     Parent --> Builder & Stress & Self
 ```
 
@@ -174,6 +175,7 @@ flowchart TB
 | `builder` | Full-Stack Feature Builder | heavy | Yes | Yes | Builds on existing core functions without duplication, characterizes baseline behavior with tests first, verifies gap resolution. |
 | `critic` | Adversarial Code & Security Reviewer | advisor | No | **No** | Audits proposed changes against invariants, edge cases (empty, nil, concurrent, timeout), credential safety, and regression risk. |
 | `planner` | Problem Deconstructor & Hypothesis Architect | lite | No | Yes | Deconstructs requirements, formulates verifiable hypotheses, drafts structured plans under `.devcouncil/artifacts/` without code mutations. |
+| `reflector` | Session Reflector & Lesson Attributor | lite | No | **No** | Reads one session's evidence packet, attributes each harness change as helped, hurt, no observed effect or confounded, and proposes at most one lesson or `NO_ENTRY`. Has no write exception: `manvi reflect` parses its answer and files it. Tools narrowed to the artifact index. |
 | `stress_tester` | Adversarial Stress Tester & Hardener | heavy | Yes | Yes | Attacks solutions with boundary conditions, concurrent races, malformed inputs, and timeouts. |
 | `self` | Autonomous Pair Subagent | heavy | Yes | Yes | Inherits the parent's configuration, tools, and system prompt for delegated concurrent work. |
 

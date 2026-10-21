@@ -53,7 +53,7 @@ func TestPlannerCannotReachRepositoryWritesOrCommands(t *testing.T) {
 // silently across the catalogue would be exactly the kind nobody reviews.
 func TestNoOtherShippedRoleCarriesAWriteException(t *testing.T) {
 	reg := NewRegistry()
-	for _, name := range []string{"research", "builder", "critic", "stress_tester", "self"} {
+	for _, name := range []string{"research", "builder", "critic", "reflector", "stress_tester", "self"} {
 		def, ok := reg.Get(name)
 		if !ok {
 			t.Fatalf("%s is not registered", name)
