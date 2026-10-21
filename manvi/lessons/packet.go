@@ -66,6 +66,7 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 		droppedSeen                                    = map[string]bool{}
 		droppedOrder                                   []string
 		digests                                        []string
+		specs                                          []string
 		stepRows                                       []string
 		bounded                                        = func(s string) string { return oneLine(s, maxLineRunes) }
 	)
@@ -173,6 +174,12 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 					digests = append(digests, short)
 				}
 			}
+			if d.SpecName != "" || d.SpecDigest != "" {
+				row := fmt.Sprintf("spec=%s digest=%s", oneLine(d.SpecName, 80), oneLine(d.SpecDigest, digestShown))
+				if len(specs) == 0 || specs[len(specs)-1] != row {
+					specs = append(specs, row)
+				}
+			}
 		}
 	}
 
@@ -199,6 +206,7 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 		{"Prompt assembly: sections the budget dropped (unique)", droppedOrder, maxDroppedUnique},
 		{"Prompt assembly: per turn", assemblies, maxVerifyRows},
 		{"System-prompt digests, in order (a change means the cache went cold)", digests, maxVerifyRows},
+		{"Harness spec behind each prompt assembly, in order (absent when no spec was used)", specs, maxVerifyRows},
 		{"Per-step usage", stepRows, maxStepRows},
 	}
 

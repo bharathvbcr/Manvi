@@ -611,20 +611,20 @@ const maxLoadBytes = 8 * DefaultMaxBytes
 // between the two is refused too. A missing file returns the plain not-exist
 // error, which readCurrent retries on.
 func readBounded(path string) ([]byte, error) {
-	linkInfo, err := os.Lstat(path)
+	// Inspected and opened through a root on the session directory, so neither
+	// can leave it whatever the name resolves to.
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	linkInfo, err := root.Lstat(filepath.Base(path))
 	if err != nil {
 		return nil, err
 	}
 	if !linkInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("session: refusing %s: it is not a regular file (a symbolic link or special file is not a session)", path)
 	}
-	// Opened through a root on the session directory, so the open cannot leave
-	// it whatever the name resolves to.
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
 	f, err := root.Open(filepath.Base(path))
 	if err != nil {
 		return nil, err

@@ -112,6 +112,28 @@ func TestPacketIsBoundedAndSaysWhatItCut(t *testing.T) {
 	}
 }
 
+func TestPacketCarriesSpecIdentityWhenRecordedAndOmitsItCleanlyOtherwise(t *testing.T) {
+	log := session.NewLog()
+	mustAppend(t, log, session.TurnStart, nil)
+	mustAppend(t, log, session.PromptAssembled, session.PromptAssembledData{Included: []string{"core"}, SpecName: "strict-review", SpecDigest: "0123456789abcdef0123"})
+	mustAppend(t, log, session.PromptAssembled, session.PromptAssembledData{Included: []string{"core"}, SpecName: "strict-review", SpecDigest: "0123456789abcdef0123"})
+	mustAppend(t, log, session.PromptAssembled, session.PromptAssembledData{Included: []string{"core"}, SpecName: "lenient", SpecDigest: "fedcba98765432100000"})
+	p, err := BuildPacket("s", log.Events())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(p, "spec=strict-review digest=0123456789ab") != 1 || !strings.Contains(p, "spec=lenient digest=fedcba987654") {
+		t.Errorf("spec identity missing or not de-duplicated:\n%s", p)
+	}
+	none := session.NewLog()
+	mustAppend(t, none, session.TurnStart, nil)
+	mustAppend(t, none, session.PromptAssembled, session.PromptAssembledData{Included: []string{"core"}})
+	p, _ = BuildPacket("s", none.Events())
+	if strings.Contains(p, "Harness spec") {
+		t.Errorf("a session with no spec grew a spec section:\n%s", p)
+	}
+}
+
 func TestPacketRefusesAnEmptyLog(t *testing.T) {
 	if _, err := BuildPacket("none", nil); err == nil {
 		t.Fatal("a session with no events produced a packet")

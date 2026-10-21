@@ -145,7 +145,7 @@ func TestASubAgentsEvidenceReachesTheOperator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(caller, "sink:") {
+		if !strings.Contains(caller, "sink:") && !strings.Contains(caller, "cfg.sink = sink") {
 			t.Errorf("%s attaches the sub-agent runner without a sink, so children run there "+
 				"with their evidence still going nowhere", f)
 		}

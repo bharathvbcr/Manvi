@@ -15,10 +15,10 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/artifacts"
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/lessons"
 	"github.com/bharathvbcr/Manvi/manvi/session"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
 
@@ -173,6 +173,11 @@ func reflectCommand(out, notes io.Writer, reg *flags.Registry, args []string) er
 		return err
 	}
 
+	native, pipeline, err := nativeToolsWith(reg, nil)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
 	stop := make(chan os.Signal, 1)
@@ -186,7 +191,7 @@ func reflectCommand(out, notes io.Writer, reg *flags.Registry, args []string) er
 		}
 	}()
 
-	answer, scrub, err := runReflector(ctx, notes, reg, lessons.Prompt(packet))
+	answer, scrub, err := runReflector(ctx, notes, reg, native, pipeline, lessons.Prompt(packet))
 	if err != nil {
 		return err
 	}
@@ -253,65 +258,27 @@ func truncateForNotes(s string) string {
 // It goes through subAgentRunner, the same machinery the checkpoint critic and
 // the model's own fan-outs run on, so the child gets the role's tool surface,
 // its tier placement, its spend accounting and the sub-agent step ceiling
-// without any of it being reimplemented here. The setup below is the part of
-// runHeadless that builds a provider, a model registry and a runner; it is
-// repeated rather than shared because that function owns the turn it builds
-// them for.
-func runReflector(ctx context.Context, notes io.Writer, reg *flags.Registry, prompt string) (string, func(string) string, error) {
-	native, pipeline, err := nativeToolsWith(reg, nil)
+// without any of it being reimplemented here. The provider, model and runner
+// setup is buildRunEnv's, shared with `manvi run`.
+//
+// native and pipeline are built by the caller before its context exists, as
+// runHeadless does: building them is not cancellable work.
+func runReflector(ctx context.Context, notes io.Writer, reg *flags.Registry,
+	native *devcouncil.Registry, pipeline *tools.Registry, prompt string) (string, func(string) string, error) {
+	env, err := buildRunEnv(ctx, notes, reg, pipeline)
 	if err != nil {
 		return "", nil, err
 	}
-	providerName, _, err := reg.String(flags.LLMDefaultProvider)
-	if err != nil {
-		return "", nil, err
-	}
-	resolver := credentials.NewResolver()
-	provider, err := buildProvider(ctx, providerName, reg, resolver, notes, "")
-	if err != nil {
-		return "", nil, err
-	}
-	tiers, err := checkTiers(reg, providerName)
-	if err != nil {
-		return "", nil, err
-	}
-	models, err := registerSessionLLM(pipeline, provider)
-	if err != nil {
-		return "", nil, err
-	}
-	model, _, err := resolveModelFor(ctx, providerName, provider, reg)
-	if err != nil {
-		return "", nil, err
-	}
-	effort, _, _, err := mainEffort(reg, providerName)
-	if err != nil {
-		return "", nil, err
-	}
-	effortCeiling, _, err := reg.String(flags.LLMEffortCeiling)
-	if err != nil {
-		return "", nil, err
-	}
-	scrubber := newArmedScrubber(resolver)
+	scrubber := env.scrubber
 
 	runner, _ := harnessFor(pipeline)
 	if runner == nil {
 		return "", nil, errors.New("reflect: this build has no sub-agent runner to run the reflector on")
 	}
 	meter := &subAgentMeter{}
-	runner.attach(subAgentConfig{
-		provider:        provider,
-		models:          models,
-		model:           model,
-		effort:          effort,
-		effortCeiling:   effortCeiling,
-		tiers:           tiers.Profile(),
-		registry:        pipeline,
-		native:          native,
-		meter:           meter,
-		coreToolsOnly:   coreToolsOnly(reg, provider.Name()),
-		assertInvariant: assertInvariant(reg),
-		sink:            ui.SinkFunc(func(ui.Event) {}),
-	})
+	cfg := env.subAgentConfig(reg, pipeline, native, meter, coreToolsOnly(reg, env.provider.Name()))
+	cfg.sink = ui.SinkFunc(func(ui.Event) {})
+	runner.attach(cfg)
 
 	def, ok := native.Roles().Get(reflectorRoleName)
 	if !ok {
