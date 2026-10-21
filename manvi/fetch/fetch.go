@@ -205,6 +205,11 @@ func (c *Client) Fetch(ctx context.Context, raw string) (*Document, error) {
 	if !c.Enabled() {
 		return nil, ErrDisabled
 	}
+	// One deadline for the whole operation. http.Client.Timeout covers only Do,
+	// so without this the DNS lookup in vet could outlive the limit. An earlier
+	// caller deadline wins, since WithTimeout takes the sooner of the two.
+	ctx, cancel := context.WithTimeout(ctx, c.limits.Timeout)
+	defer cancel()
 	target, err := c.vet(ctx, raw)
 	if err != nil {
 		return nil, err
@@ -296,6 +301,15 @@ func (c *Client) vetURL(ctx context.Context, u *url.URL) error {
 		return fmt.Errorf("fetch: %q asks for port %s; only the default https port is allowed",
 			host, port)
 	}
+	if numericHost(host) {
+		// 2130706433, 0x7f.1, 0177.0.0.1: some resolvers read these as IPv4
+		// literals and Go's parser does not, so the two would disagree about
+		// the target. Only the canonical form is a literal here; the rest are
+		// refused before anything can interpret them.
+		if _, err := netip.ParseAddr(host); err != nil {
+			return fmt.Errorf("fetch: %q is a non-canonical numeric host", host)
+		}
+	}
 	if !c.allows(host) {
 		return fmt.Errorf("%w: %q (allowed: %s)", ErrNotAllowed, host, strings.Join(c.allowed, ", "))
 	}
@@ -316,6 +330,29 @@ func (c *Client) vetURL(ctx context.Context, u *url.URL) error {
 		}
 	}
 	return nil
+}
+
+// numericHost reports whether a host's last label is a number, in decimal, octal
+// or hex. No public suffix is numeric, so a name like that is an address spelled
+// oddly, never a registered domain. A trailing dot is ignored.
+func numericHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if strings.Contains(host, ":") {
+		return false // an IPv6 literal; netip parses and judges it
+	}
+	last := host[strings.LastIndexByte(host, '.')+1:]
+	if last == "" {
+		return false
+	}
+	if strings.HasPrefix(last, "0x") {
+		return true
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // allows matches a host against the allowlist.
@@ -358,13 +395,17 @@ func (c *Client) dial(ctx context.Context, network, address string) (net.Conn, e
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %q did not resolve: %w", host, err)
 	}
-	var dialer net.Dialer
-	dialer.Timeout = 10 * time.Second
-	var lastErr error
+	// Every address is judged before any is dialled, as vetURL does: a mixed
+	// answer is refused whole, and no socket is opened to its public member.
 	for _, addr := range addrs {
 		if reason, blocked := c.blocked(addr); blocked {
 			return nil, fmt.Errorf("%w: %q resolves to %s (%s)", ErrBlockedAddress, host, addr, reason)
 		}
+	}
+	var dialer net.Dialer
+	dialer.Timeout = 10 * time.Second
+	var lastErr error
+	for _, addr := range addrs {
 		// The literal address, never the name. Handing the name back to the
 		// dialer would be a third lookup and a third chance to get a different
 		// answer.
@@ -388,7 +429,10 @@ func (c *Client) dial(ctx context.Context, network, address string) (net.Conn, e
 // their own docs server on localhost deserves to be told that is the rule
 // rather than left to read a connection error.
 func blockedAddr(addr netip.Addr) (string, bool) {
-	addr = addr.Unmap()
+	// The zone is not part of the address being judged, and Prefix.Contains is
+	// false for any zoned address, so leaving it on would walk a literal such
+	// as 2002:7f00:1::1%eth0 past every entry below.
+	addr = addr.Unmap().WithZone("")
 	switch {
 	case !addr.IsValid():
 		return "not a valid address", true
@@ -422,16 +466,30 @@ var reservedPrefixes = []struct {
 	prefix netip.Prefix
 	reason string
 }{
+	{netip.MustParsePrefix("0.0.0.0/8"), `"this network" — 0.x.y.z reaches the local host on common stacks`},
 	{netip.MustParsePrefix("100.64.0.0/10"), "carrier-grade NAT"},
 	{netip.MustParsePrefix("192.0.0.0/24"), "IETF protocol assignments"},
 	{netip.MustParsePrefix("192.0.2.0/24"), "documentation range"},
+	{netip.MustParsePrefix("192.88.99.0/24"), "deprecated 6to4 relay anycast"},
 	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking range"},
 	{netip.MustParsePrefix("198.51.100.0/24"), "documentation range"},
 	{netip.MustParsePrefix("203.0.113.0/24"), "documentation range"},
 	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
-	{netip.MustParsePrefix("::/128"), "the unspecified address"},
+	// Everything below embeds, or can be made to embed, an IPv4 address. Each is
+	// refused whole rather than decoded: the embedded address is chosen by
+	// whoever controls the DNS answer, none of these carries documentation
+	// traffic, and a decoder is one more parser to get wrong.
+	{netip.MustParsePrefix("::/96"), "IPv4-compatible or unspecified — a deprecated embedding of the v4 space"},
+	{netip.MustParsePrefix("::ffff:0:0:0/96"), "SIIT IPv4-translated — a translation of the v4 space"},
 	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64 — a translation of the v4 space"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64 — a translation of the v4 space"},
+	{netip.MustParsePrefix("2002::/16"), "6to4 — a tunnel to an embedded v4 address"},
+	{netip.MustParsePrefix("2001::/23"), "IETF protocol assignments, including Teredo and ORCHID"},
 	{netip.MustParsePrefix("2001:db8::/32"), "documentation range"},
+	{netip.MustParsePrefix("3fff::/20"), "documentation range"},
+	{netip.MustParsePrefix("100::/64"), "discard-only"},
+	{netip.MustParsePrefix("5f00::/16"), "segment-routing SIDs"},
+	{netip.MustParsePrefix("fec0::/10"), "deprecated site-local"},
 }
 
 // systemResolve is the production lookup.
