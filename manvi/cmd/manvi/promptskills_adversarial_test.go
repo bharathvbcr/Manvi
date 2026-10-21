@@ -24,7 +24,7 @@ type fsSkills struct{ root string }
 func (fsSkills) NoteListedSkills([]string) {}
 
 func (f fsSkills) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
-	return harness.LoadSkills(f.root, func(rel string, limit int64) ([]byte, error) {
+	return harness.LoadSkills(ctx, f.root, func(rel string, limit int64) ([]byte, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -176,7 +176,7 @@ func TestAdvCutSkillsAreDiscoverable(t *testing.T) {
 		for n := range reachable {
 			listed[n] = true
 		}
-		l, err := harness.LookupSkillExcluding(root, func(rel string, _ int64) ([]byte, error) {
+		l, err := harness.LookupSkillExcluding(context.Background(), root, func(rel string, _ int64) ([]byte, error) {
 			return os.ReadFile(filepath.Join(root, rel)) //nolint:gosec // a test fixture path under t.TempDir
 		}, "no-such-skill", listed)
 		if err != nil {

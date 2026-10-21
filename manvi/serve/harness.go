@@ -278,7 +278,7 @@ func (h *HarnessResolver) resolve(ctx context.Context, raw json.RawMessage) (any
 // loader and gated reader the prompt's listing uses, narrowed by the spec and
 // then bounded by the budget the prompt's listing is bounded by.
 func (h *HarnessResolver) listSkills(ctx context.Context, root, provider string, spec harness.Spec, out *HarnessResolveResult) *Error {
-	set, err := harness.LoadSkills(root, devcouncil.RepoReaderAt(ctx, root))
+	set, err := harness.LoadSkills(ctx, root, devcouncil.RepoReaderAt(ctx, root))
 	if err == nil {
 		err = ctx.Err()
 	}
