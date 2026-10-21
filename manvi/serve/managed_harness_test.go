@@ -250,3 +250,31 @@ func TestManagedStopRestoresTheHarness(t *testing.T) {
 		t.Fatalf("the stopped run's diff carries the harness: %q", status)
 	}
 }
+
+// A run that died with Manvi left its block and a record. The next attempt on
+// that checkout, with or without a harness of its own, takes the block out
+// exactly before anything else, and says so in its prepare result.
+func TestManagedPrepareRecoversADeadRunsBlockAndReportsIt(t *testing.T) {
+	root := scanRepo(t, map[string]string{"AGENTS.md": "rules"})
+	if _, err := materialiseHarness(root, "codex", specWithSections(t, houseRules)); err != nil {
+		t.Fatal(err)
+	}
+	var atStart atomic.Value
+	var starts atomic.Int32
+	m := harnessLifecycle(t, root, "codex", &atStart, &starts)
+	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prepared.HarnessRecovery, "AGENTS.md") {
+		t.Fatalf("the recovery was not reported: %+v", prepared)
+	}
+	if started, _ := atStart.Load().(string); started != "rules" {
+		t.Fatalf("the process started before the dead run's block was out: %q", started)
+	}
+	activate(t, m, prepared)
+	m.finished()
+	if got := readFile(t, root, "AGENTS.md"); got != "rules" {
+		t.Fatalf("the checkout is not as it was: %q", got)
+	}
+}

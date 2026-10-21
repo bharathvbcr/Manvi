@@ -71,27 +71,290 @@ func TestMaterialiseWritesOnlyTheMarkedTailBlock(t *testing.T) {
 	}
 }
 
-func TestMaterialiseIsIdempotentAndReplacesAStaleBlock(t *testing.T) {
+// A block Manvi did not write in this run, whatever it looks like and whatever
+// it carries, is the file's own content: it is not replaced, not stripped and
+// not restored away. Each materialisation takes out its own bytes only.
+func TestEachMaterialisationRemovesOnlyItsOwnBytes(t *testing.T) {
 	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
-	if _, err := materialiseHarness(root, "codex", specWithSections(t, houseRules)); err != nil {
-		t.Fatal(err)
-	}
-	// A second run finds the first's block: the residue of a run that never
-	// restored. It is replaced, not stacked, and the new block is the spec now.
-	newer := specWithSections(t, harness.Section{Name: "house-rules", Order: 70, Text: "Changed text.\n"})
-	m, err := materialiseHarness(root, "codex", newer)
+	m1, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
 	if err != nil {
 		t.Fatal(err)
 	}
+	newer := specWithSections(t, harness.Section{Name: "house-rules", Order: 70, Text: "Changed text.\n"})
+	m2, err := materialiseHarness(root, "codex", newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, root, "AGENTS.md"); strings.Count(got, harnessBeginMarker) != 2 {
+		t.Fatalf("the second block replaced the first or was not appended:\n%s", got)
+	}
+	if err := m1.Restore(); err != nil {
+		t.Fatal(err)
+	}
 	got := readFile(t, root, "AGENTS.md")
-	if strings.Count(got, harnessBeginMarker) != 1 || strings.Contains(got, "Prefer small diffs.") || !strings.Contains(got, "Changed text.") {
-		t.Fatalf("a stale block was stacked or kept:\n%s", got)
+	if strings.Contains(got, "Prefer small diffs.") || !strings.Contains(got, "Changed text.") {
+		t.Fatalf("restoring the first run removed the second's block or kept its own:\n%s", got)
+	}
+	if err := m2.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, root, "AGENTS.md"); got != "rules\n" {
+		t.Fatalf("the file is not as it was: %q", got)
+	}
+}
+
+func fixedNonce(t *testing.T, nonces ...string) {
+	t.Helper()
+	saved := newHarnessNonce
+	t.Cleanup(func() { newHarnessNonce = saved })
+	i := 0
+	newHarnessNonce = func() (string, error) {
+		n := nonces[min(i, len(nonces)-1)]
+		i++
+		return n, nil
+	}
+}
+
+func TestEveryBlockCarriesAFreshRandomNonce(t *testing.T) {
+	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
+	seen := map[string]bool{}
+	for range 4 {
+		m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := m.pending.Nonce
+		if !nonceForm.MatchString(n) || seen[n] {
+			t.Fatalf("nonce %q is not a fresh 128-bit hex value", n)
+		}
+		seen[n] = true
+		line := harnessBeginMarker + " nonce=" + n + " "
+		end := harnessEndMarker + " nonce=" + n + " "
+		if got := readFile(t, root, "AGENTS.md"); !strings.Contains(got, "\n"+line) || !strings.Contains(got, "\n"+end) {
+			t.Fatalf("the BEGIN and END lines do not both carry the nonce:\n%s", got)
+		}
+		if err := m.Restore(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Repo content that quotes the markers has no nonce Manvi issued: it is never
+// matched, so it is never removed and never refuses a run.
+func TestUnnoncedLookalikesAreOrdinaryContent(t *testing.T) {
+	original := "# Rules\n" + harnessBeginMarker + " example -->\nimportant repo rule\n" + harnessEndMarker + " example -->\n" +
+		harnessBeginMarker + "FOO is another comment -->\nno end here\n" +
+		harnessBeginMarker + " nonce=" + strings.Repeat("0", 32) + " name=old digest=x -->\nresidue of nobody's run\n"
+	root := scanRepo(t, map[string]string{"AGENTS.md": original})
+	m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+	if err != nil {
+		t.Fatalf("lookalikes refused a run: %v", err)
 	}
 	if err := m.Restore(); err != nil {
 		t.Fatal(err)
 	}
+	if got := readFile(t, root, "AGENTS.md"); got != original {
+		t.Fatalf("lookalike content was changed:\nwant %q\ngot  %q", original, got)
+	}
+}
+
+// What the agent changed inside the block is not Manvi's bytes: restore refuses,
+// typed, leaves the file as it is and keeps the record, and the next Prepare
+// reports it once and is not wedged by it.
+func TestAnEditedBlockIsRefusedNotGuessedAt(t *testing.T) {
+	for name, edit := range map[string]func(live string) string{
+		"END deleted": func(l string) string {
+			return strings.Replace(l, harnessEndMarker, "<!-- gone", 1) + "agent note after\n"
+		},
+		"text edited":       func(l string) string { return strings.Replace(l, "Prefer small diffs.", "Prefer huge diffs.", 1) },
+		"BEGIN line edited": func(l string) string { return strings.Replace(l, "name=team", "name=other", 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
+			m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+			if err != nil {
+				t.Fatal(err)
+			}
+			edited := edit(readFile(t, root, "AGENTS.md"))
+			writeRaw(t, root, "AGENTS.md", edited)
+			rerr := m.Restore()
+			var typed *harnessMaterialiseError
+			if !errors.As(rerr, &typed) || !strings.Contains(rerr.Error(), "modified harness block") {
+				t.Fatalf("restore = %v, want the typed modified-block refusal", rerr)
+			}
+			if got := readFile(t, root, "AGENTS.md"); got != edited {
+				t.Fatalf("restore touched a file it refused:\n%s", got)
+			}
+			if _, err := os.Stat(filepath.Join(root, harnessPendingFile)); err != nil {
+				t.Fatalf("the record of the modified block was not kept: %v", err)
+			}
+			// The next attempt on the checkout reports it once, typed, and clears it.
+			note, err := recoverPendingHarness(root)
+			if !errors.As(err, &typed) || note != "" {
+				t.Fatalf("recovery = %q, %v, want the typed refusal", note, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, harnessPendingFile)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("the refusal was not cleared, so it would be made on every run")
+			}
+			if _, err := materialiseHarness(root, "codex", specWithSections(t, houseRules)); err != nil {
+				t.Fatalf("the modified block wedged the next materialisation: %v", err)
+			}
+			if note, err := recoverPendingHarness(root); err != nil || note == "" {
+				t.Fatalf("a clean record was not applied: %q %v", note, err)
+			}
+		})
+	}
+}
+
+// An agent that copies the block leaves several spans byte-identical to what
+// Manvi wrote, nonce included: all of them are Manvi's bytes and all go.
+func TestACopiedBlockIsRemovedWithTheOriginal(t *testing.T) {
+	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
+	m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := readFile(t, root, "AGENTS.md")
+	writeRaw(t, root, "AGENTS.md", live+"\n"+live[strings.Index(live, harnessBeginMarker):])
+	if err := m.Restore(); err != nil {
+		t.Fatal(err)
+	}
 	if got := readFile(t, root, "AGENTS.md"); got != "rules\n" {
-		t.Fatalf("restore did not return the file to its content outside any block: %q", got)
+		t.Fatalf("a copy of the block survived or the file changed: %q", got)
+	}
+}
+
+// Restore is exact on every shape of file because it removes a recorded span and
+// never strips a newline: no trailing newline, CRLF, a BOM, bytes that are not
+// UTF-8, an empty file, with the agent's own edit before or after the block.
+func TestRestoreIsByteExact(t *testing.T) {
+	bodies := map[string]string{
+		"no trailing newline": "rules",
+		"crlf":                "a\r\nb\r\n",
+		"crlf no final":       "a\r\nb",
+		"bom":                 "\xef\xbb\xbfrules\n",
+		"non-utf8":            "rules \xff\xfe\n",
+		"empty":               "",
+		"blank lines":         "rules\n\n\n",
+	}
+	for name, body := range bodies {
+		for edit, shape := range map[string]func(live, body string) (string, string){
+			"untouched":            func(live, body string) (string, string) { return live, body },
+			"agent edit before":    func(live, body string) (string, string) { return "agent\r\n" + live, "agent\r\n" + body },
+			"agent edit after":     func(live, body string) (string, string) { return live + "tail", body + "tail" },
+			"agent edit both ends": func(live, body string) (string, string) { return "x" + live + "y", "x" + body + "y" },
+		} {
+			t.Run(name+"/"+edit, func(t *testing.T) {
+				root := scanRepo(t, map[string]string{"AGENTS.md": body, "keep": "k"})
+				m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+				if err != nil {
+					t.Fatal(err)
+				}
+				live, want := shape(readFile(t, root, "AGENTS.md"), body)
+				writeRaw(t, root, "AGENTS.md", live)
+				if err := m.Restore(); err != nil {
+					t.Fatal(err)
+				}
+				got, rerr := os.ReadFile(filepath.Join(root, "AGENTS.md")) // #nosec G304 -- a file under this test's own t.TempDir
+				if edit == "untouched" && body == "" {
+					// A file that existed empty is restored empty, not removed.
+					if rerr != nil || string(got) != "" {
+						t.Fatalf("an empty file that existed was not restored empty: %q %v", got, rerr)
+					}
+					return
+				}
+				if rerr != nil || string(got) != want {
+					t.Fatalf("not byte exact: want %q got %q (%v)", want, got, rerr)
+				}
+			})
+		}
+	}
+}
+
+// A record that could be forged into an instruction to delete is not acted on:
+// it can name two files and one nonce'd block, nothing else.
+func TestAForgedRecordCannotNameAnythingButABlock(t *testing.T) {
+	good := func() pendingRestore {
+		nonce := strings.Repeat("a", 32)
+		tag := "nonce=" + nonce + " name=x digest=y -->\n"
+		return pendingRestore{Version: 1, Nonce: nonce, File: "AGENTS.md", Offset: 0,
+			Appended: []byte(harnessBeginMarker + " " + tag + "text\n" + harnessEndMarker + " " + tag)}
+	}
+	if err := good().valid(); err != nil {
+		t.Fatalf("a well-formed record was refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*pendingRestore){
+		"path":          func(p *pendingRestore) { p.File = ".env" },
+		"traversal":     func(p *pendingRestore) { p.File = "../AGENTS.md" },
+		"short nonce":   func(p *pendingRestore) { p.Nonce = "abc" },
+		"other nonce":   func(p *pendingRestore) { p.Nonce = strings.Repeat("b", 32) },
+		"arbitrary":     func(p *pendingRestore) { p.Appended = []byte("the whole file") },
+		"empty":         func(p *pendingRestore) { p.Appended = nil },
+		"version":       func(p *pendingRestore) { p.Version = 2 },
+		"offset":        func(p *pendingRestore) { p.Offset = -1 },
+		"leading text":  func(p *pendingRestore) { p.Appended = append([]byte("secret\n"), p.Appended...) },
+		"trailing text": func(p *pendingRestore) { p.Appended = append(p.Appended, "more\n"...) },
+	} {
+		p := good()
+		mutate(&p)
+		if err := p.valid(); err == nil {
+			t.Errorf("%s: a record that names more than one block was accepted", name)
+		}
+	}
+}
+
+func TestRecoveryAppliesARecordOfADeadRunAndReportsIt(t *testing.T) {
+	root := scanRepo(t, map[string]string{"AGENTS.md": "rules"})
+	if _, err := materialiseHarness(root, "codex", specWithSections(t, houseRules)); err != nil {
+		t.Fatal(err)
+	}
+	// Manvi dies here: no Restore. The next attempt on the checkout recovers.
+	note, err := recoverPendingHarness(root)
+	if err != nil || !strings.Contains(note, "AGENTS.md") {
+		t.Fatalf("recovery = %q, %v", note, err)
+	}
+	if got := readFile(t, root, "AGENTS.md"); got != "rules" {
+		t.Fatalf("the dead run's block was not taken out exactly: %q", got)
+	}
+	if note, err := recoverPendingHarness(root); err != nil || note != "" {
+		t.Fatalf("a second recovery found something: %q %v", note, err)
+	}
+	if status := gitIn(t, root, "status", "--porcelain"); status != "" {
+		t.Fatalf("recovery left the checkout dirty: %q", status)
+	}
+}
+
+func TestRecoveryOfAnUnreadableRecordIsRefusedOnceAndCleared(t *testing.T) {
+	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
+	if err := os.MkdirAll(filepath.Join(root, ".devcouncil"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, root, harnessPendingFile, `{"version":1,"unknown":true}`)
+	if _, err := recoverPendingHarness(root); err == nil {
+		t.Fatal("an unreadable record was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, harnessPendingFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the unreadable record was kept, so every run would be refused for it")
+	}
+	if got := readFile(t, root, "AGENTS.md"); got != "rules\n" {
+		t.Fatalf("a bad record changed the instruction file: %q", got)
+	}
+}
+
+// Materialising writes the record before the block, so a failed block write
+// leaves neither.
+func TestAFailedBlockWriteLeavesNoRecord(t *testing.T) {
+	root := scanRepo(t, map[string]string{"README.md": "x"})
+	outside := filepath.Join(t.TempDir(), "elsewhere.md")
+	writeRaw(t, filepath.Dir(outside), filepath.Base(outside), "x")
+	if err := os.Symlink(outside, filepath.Join(root, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := materialiseHarness(root, "claude", specWithSections(t, houseRules)); err == nil {
+		t.Fatal("a link was written through")
+	}
+	if _, err := os.Stat(filepath.Join(root, harnessPendingFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a record of a block that was never written was left behind")
 	}
 }
 
@@ -183,16 +446,17 @@ func TestMaterialiseRefusesWhatWouldMakeTheBlockAmbiguous(t *testing.T) {
 	if got := readFile(t, root, "AGENTS.md"); got != "rules\n" {
 		t.Errorf("a refused materialisation changed the file: %q", got)
 	}
-	// A file whose own markers cannot be paired is not guessed about.
-	bad := "x\n" + harnessBeginMarker + " name=old -->\nno end\n"
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(bad), 0o600); err != nil {
+	// The nonce is injectable, so a test can name the lines a block will carry.
+	fixedNonce(t, strings.Repeat("c", 32))
+	m, err := materialiseHarness(root, "codex", specWithSections(t, houseRules))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := materialiseHarness(root, "codex", specWithSections(t, houseRules)); err == nil {
-		t.Error("a file with an unmatched begin marker was written to")
+	if got := readFile(t, root, "AGENTS.md"); !strings.Contains(got, "nonce="+strings.Repeat("c", 32)+" ") {
+		t.Errorf("the injected nonce is not in the block:\n%s", got)
 	}
-	if got := readFile(t, root, "AGENTS.md"); got != bad {
-		t.Errorf("the unmatched file was changed: %q", got)
+	if err := m.Restore(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -241,8 +505,7 @@ func TestMaterialiseRefusesALinkedInstructionFile(t *testing.T) {
 func TestHarnessWriterIsJudgedByTheFileGate(t *testing.T) {
 	root := scanRepo(t, map[string]string{"README.md": "x"})
 	for _, rel := range []string{".env", "../escape.md", "secrets/key.md"} {
-		w := harnessWriter{root: root, rel: rel}
-		err := w.write(dc.OpCreate, []byte("x"))
+		err := harnessWriter{root: root}.write(rel, dc.OpCreate, []byte("x"))
 		var typed *harnessMaterialiseError
 		if !errors.As(err, &typed) {
 			t.Errorf("%s: write error = %v, want the gate's typed refusal", rel, err)
@@ -251,7 +514,7 @@ func TestHarnessWriterIsJudgedByTheFileGate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".env")); !errors.Is(err, os.ErrNotExist) {
 		t.Error(".env was written")
 	}
-	if err := (harnessWriter{root: root, rel: "AGENTS.md"}).write(dc.OpCreate, []byte("ok\n")); err != nil {
+	if err := (harnessWriter{root: root}).write("AGENTS.md", dc.OpCreate, []byte("ok\n")); err != nil {
 		t.Errorf("an ordinary instruction file was refused: %v", err)
 	}
 }

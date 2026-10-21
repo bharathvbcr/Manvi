@@ -377,14 +377,53 @@ refused with `E_HARNESS_REFUSED` and every problem is listed. Params this build 
 are refused for the same reason: a widening a host believes was applied must not be dropped.
 `E_HARNESS_NOT_FOUND` says no such spec exists.
 
-Managed runs take `harness: {kind: "repo"|"named", name}` on `work.runs.managed.prepare`
-(inline is refused there: the text would go into the file an unattended agent obeys, and has
-no reviewed artifact behind it). The sections are written as a block between
-`<!-- BEGIN MANVI HARNESS … -->` and `<!-- END MANVI HARNESS … -->` at the end of `AGENTS.md`
-(Codex) or `CLAUDE.md` (Claude), after the claim and before the process starts, and removed
-when the run ends. A failed write aborts the run with `E_HARNESS_MATERIALISE`.
-`harness_digest` is in the prepare result and in `effective_configuration`. A run that crashes
-with Manvi leaves the block; the next materialisation in that checkout replaces it.
+Bounds, as enforced: a spec document, inline or read from a repository file, is at most
+256 KiB (`harness.MaxSpecBytes`); the request line carrying it is at most 8 MiB (the serve line
+cap). Inside a document: at most 32 sections of at most 16 KiB each, 16 roles, and a total of
+8192 estimated tokens of section text (a quarter of the prompt budget on a provider that has
+one, whichever is less). A document over 256 KiB, or a section over 16 KiB, is refused with
+`E_HARNESS_REFUSED`. The skills listing is the repository's own, at most 200 skills examined, cut to
+the prompt listing's token share where the provider has a budget; what was cut is said in `notes`.
+
+`root` is not confined to any workspace. Like the `root` and `repo_root` of the devmap and scan
+ops, it is whatever absolute path the host names (validated as the top of a git work tree, with
+no symlink), and the host is trusted to name only repositories it may read. A repository spec
+under it is read through the same read gate as `read_file`.
+
+Managed runs take `harness: {kind: "repo"|"named", name}` on `work.runs.managed.prepare`.
+Inline is refused there: the text would go into the file an unattended agent obeys, and has no
+reviewed artifact behind it. The whole prepare request is at most 4096 bytes (so a harness
+member is a name and nothing more), the spec it names is read under the same 256 KiB bound, and
+an instruction file over 4 MiB is refused rather than truncated. The sections are written as
+one block at the end of `AGENTS.md` (Codex) or `CLAUDE.md` (Claude), after the claim and before
+the process starts, and removed when the run ends. A failed write aborts the run with
+`E_HARNESS_MATERIALISE`. `harness_digest` is in the prepare result and in
+`effective_configuration`.
+
+How the block is kept safe:
+
+- Its BEGIN and END lines carry a fresh 128-bit random nonce. Only a span byte-identical to
+  the bytes Manvi appended (separator included) is ever removed; text that merely looks like a
+  block has no nonce Manvi issued and is ordinary content, never matched or removed. Restore
+  does not strip newlines: a file with no trailing newline, CRLF or a BOM comes back byte for
+  byte, and an agent's own edits before or after the block stay.
+- If the agent edited inside the block, restore refuses with `E_HARNESS_MATERIALISE` ("the
+  checkout carries a modified harness block"), leaves the file as it is, and keeps a record
+  under `.devcouncil/managed-harness-pending.json` (tool state, which diffs already leave out).
+  The next prepare on that checkout refuses once with the same typed error and clears the
+  record, so it is never wedged by it.
+- That record is written before the block. A run that dies with Manvi leaves it, and the next
+  `work.runs.managed.prepare` on that checkout, with a harness or not, takes the block out
+  first and reports it in `harness_recovery`.
+- One live harness per checkout: an attempt with a harness is refused with `E_HARNESS_BUSY`
+  while any other managed run is live on the same checkout, and an attempt without one is
+  refused while a run with a harness is, because the block would be in its instruction file and
+  its diff. Attempts without a harness share a checkout as before.
+- `work.verify.task` and `work.scan.gaps` refuse with `E_HARNESS_BUSY` ("a managed harness run
+  is in progress") while a block is live in the worktree, or a record of one has not been
+  applied: a diff taken then would not be the agent's. They refuse rather than exclude the span.
+  A verification that is already running when a harness run starts on the same worktree is not
+  stopped.
 
 ---
 

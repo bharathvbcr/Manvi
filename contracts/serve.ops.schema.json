@@ -600,6 +600,10 @@
           "type": "string",
           "required": false
         },
+        "harness_recovery": {
+          "type": "string",
+          "required": false
+        },
         "id": {
           "type": "string",
           "required": true

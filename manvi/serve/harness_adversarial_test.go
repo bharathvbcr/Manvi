@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,14 +43,19 @@ func TestAdversarialRestoreAfterAgentDeletesEndMarkerLeavesNoHalfBlock(t *testin
 			kept = append(kept, l)
 		}
 	}
-	writeRaw(t, root, "AGENTS.md", strings.Join(kept, "\n")+"agent note after\n")
+	edited := strings.Join(kept, "\n") + "agent note after\n"
+	writeRaw(t, root, "AGENTS.md", edited)
+	// A block the agent edited inside is not Manvi's bytes: restore refuses, typed,
+	// and leaves the file exactly as the agent left it (nothing is guessed at, and
+	// the agent's note survives). That it does not wedge the next run is covered by
+	// TestAnEditedBlockIsRefusedNotGuessedAt.
 	rerr := m.Restore()
-	got := readFile(t, root, "AGENTS.md")
-	if strings.Contains(got, harnessBeginMarker) {
-		t.Fatalf("restore (err=%v) left a half block behind:\n%s", rerr, got)
+	var typed *harnessMaterialiseError
+	if !errors.As(rerr, &typed) {
+		t.Fatalf("restore of a block with its END deleted = %v, want the typed refusal", rerr)
 	}
-	if !strings.Contains(got, "agent note after") {
-		t.Fatalf("the agent's content was destroyed:\n%s", got)
+	if got := readFile(t, root, "AGENTS.md"); got != edited {
+		t.Fatalf("the file was changed by a refused restore:\n%s", got)
 	}
 }
 

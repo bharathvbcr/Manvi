@@ -205,6 +205,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			Text:   func(root string) serve.ScanText { return grepClient(root) },
 			Gaps:   scanGapSource,
 			Board:  client,
+			Busy:   managed.HarnessBusy,
 		})
 		if err != nil {
 			return err
@@ -219,6 +220,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 			CoverageFile:   os.Getenv("MANVI_COVERAGE"),
 			Devmap:         func(worktree string) serve.DevmapClient { return mapClient(worktree) },
+			Busy:           managed.HarnessBusy,
 		})
 		if err != nil {
 			return err

@@ -263,6 +263,7 @@ func TestServeContractDeclaresTheHarnessPlaneAdditively(t *testing.T) {
 		{"PrepareResult", "prefix_moved"},
 		{"PrepareResult", "prefix_note"},
 		{"ManagedPrepared", "harness_digest"},
+		{"ManagedPrepared", "harness_recovery"},
 		{"ManagedPrepareParams", "harness"},
 		{"HarnessResolveParams", "root"},
 		{"HarnessResolveResult", "notes"},

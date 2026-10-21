@@ -113,6 +113,10 @@ type VerifyDeps struct {
 	CoverageFile   string
 	// Devmap returns the code-intelligence client for a worktree.
 	Devmap func(worktree string) DevmapClient
+	// Busy, when set, is asked for the worktree and refuses the verification
+	// with its answer: a managed harness block may be in it. Nil means none is
+	// known (no managed lane). See ManagedRunner.HarnessBusy.
+	Busy func(worktree string) *Error
 	// NewVerifier builds the path verifier for a worktree. Nil uses
 	// devcouncil.NewPathVerifier.
 	NewVerifier func(root, verifierBinary, coverageFile string) (devcouncil.PathChecker, error)
@@ -304,8 +308,16 @@ func (r *VerifyRunner) Start(ctx context.Context, raw json.RawMessage) (VerifyRe
 	}
 	// The worktree is the only root this job reads. It must exist and be the
 	// top of a git work tree; nothing falls back to the process's directory.
-	if _, e := canonicalRepoRoot(ctx, "worktree", params.Worktree); e != nil {
+	root, e := canonicalRepoRoot(ctx, "worktree", params.Worktree)
+	if e != nil {
 		return VerifyResult{}, &store.WorkbenchError{Code: e.Code, Message: e.Message}
+	}
+	// What is verified is the agent's diff. While a managed harness block is in
+	// the worktree the diff is not, so the check refuses and does not judge it.
+	if busy := r.deps.Busy; busy != nil {
+		if e := busy(root); e != nil {
+			return VerifyResult{}, &store.WorkbenchError{Code: e.Code, Message: e.Message}
+		}
 	}
 
 	// One claim at a time. The check-then-write below is not atomic in storage,

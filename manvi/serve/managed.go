@@ -15,6 +15,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 )
 
@@ -54,6 +55,10 @@ type ManagedRunner struct {
 	closed      bool
 	// harness resolves the harness an attempt names; nil until SetHarness.
 	harness *HarnessResolver
+	// checkoutMu makes the conflict check on a checkout and the attempt's
+	// registration on it one step; see enterCheckout. Taken before mu and before
+	// any job's mu.
+	checkoutMu sync.Mutex
 }
 type managedRun struct {
 	ID             string `json:"id"`
@@ -87,6 +92,12 @@ type managedJob struct {
 	harnessDigest string
 	harnessFile   string
 	materialised  *harnessMaterialisation
+	// checkout is the resolved directory this attempt runs in, wantsHarness
+	// whether it asked for a harness, and recovery what Prepare found and
+	// cleared there before anything else (see enterCheckout).
+	checkout     string
+	wantsHarness bool
+	recovery     string
 	// ctx is the job's lifetime and cancel ends it: Stop, Close and the
 	// two-hour bound all act through it. Every provider call derives from it,
 	// so a session that owns no process still ends when the job does.
@@ -123,6 +134,124 @@ type ManagedPrepared struct {
 	// this attempt, absent when none was asked for. A host records it beside the
 	// run; the same digest is in the run's effective configuration.
 	HarnessDigest string `json:"harness_digest,omitempty"`
+	// HarnessRecovery says that this Prepare took, out of the checkout, a harness
+	// block a run that never finished had left, before doing anything else. Absent
+	// when there was nothing to take out.
+	HarnessRecovery string `json:"harness_recovery,omitempty"`
+}
+
+// ErrHarnessBusy means the checkout is held: a managed run with a harness is
+// live on it, or this attempt asks for a harness and another run is. Not
+// retryable until that run ends.
+const ErrHarnessBusy = "E_HARNESS_BUSY"
+
+func harnessBusy(format string, args ...any) *Error {
+	return &Error{Code: ErrHarnessBusy, Message: fmt.Sprintf(format, args...)}
+}
+
+// enterCheckout is what an attempt does about its checkout before anything else
+// touches it, and it does it for every attempt, with a harness or without:
+//
+//   - one live harness per checkout. An attempt that asks for a harness is
+//     refused while any other managed run is live on that checkout, and an
+//     attempt that does not is refused while a run with a harness is, because the
+//     block is in the instruction file and in the checkout's diff until that run
+//     ends, and a second run would read it as repository content and have it in
+//     its own diff. Two attempts without a harness share a checkout as they
+//     always did. The check and the claim are one step under checkoutMu.
+//   - a block a run left behind (Manvi died mid-run) is taken out, by the same
+//     exact-bytes rule as any restore, and reported in the prepare result. A block
+//     that cannot be taken out is refused once, typed, and the record is cleared.
+//
+// A checkout that cannot be resolved has nothing to guard; a harness attempt on
+// one is refused where its spec is read.
+func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
+	wants := job.harnessRef != (ManagedHarness{})
+	resolved, ok := resolvedCheckout(run.Cwd)
+	if !ok {
+		if wants {
+			return badRoot("cwd does not exist or cannot be resolved")
+		}
+		return nil // nothing to guard for an attempt with no harness
+	}
+	r.checkoutMu.Lock()
+	defer r.checkoutMu.Unlock()
+	r.mu.Lock()
+	others := make([]*managedJob, 0, len(r.jobs))
+	for _, o := range r.jobs {
+		if o != job {
+			others = append(others, o)
+		}
+	}
+	r.mu.Unlock()
+	for _, o := range others {
+		select {
+		case <-o.done:
+			continue
+		default:
+		}
+		o.mu.Lock()
+		same, harnessed := o.checkout == resolved, o.wantsHarness
+		o.mu.Unlock()
+		switch {
+		case !same:
+		case wants:
+			return harnessBusy("another managed run is live on this checkout, and an attempt with a harness takes it alone: its block would be in the other run's diff; try again when that run ends")
+		case harnessed:
+			return harnessBusy("a managed run with a harness is live on this checkout: its block is in the instruction file and in the checkout's diff until it ends; try again when that run ends")
+		}
+	}
+	note, err := recoverPendingHarness(resolved)
+	if err != nil {
+		return err
+	}
+	job.mu.Lock()
+	job.checkout, job.wantsHarness, job.recovery = resolved, wants, note
+	job.mu.Unlock()
+	return nil
+}
+
+// resolvedCheckout is a directory with its symbolic links resolved, and whether
+// it could be.
+func resolvedCheckout(dir string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	return resolved, err == nil
+}
+
+// HarnessBusy reports, for a worktree, whether a harness block may be in it: a
+// managed run with a harness is live on it, or one left a record that has not
+// been applied. Anything that captures the worktree's diff asks first and
+// refuses, so no check judges a change the agent did not make. It is refused and
+// not worked around by excluding the span: a refusal is honest about what the
+// diff would have held. Nil means no block is known to be there.
+func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
+	resolved, ok := resolvedCheckout(worktree)
+	if !ok {
+		return nil
+	}
+	r.mu.Lock()
+	jobs := make([]*managedJob, 0, len(r.jobs))
+	for _, j := range r.jobs {
+		jobs = append(jobs, j)
+	}
+	r.mu.Unlock()
+	for _, j := range jobs {
+		select {
+		case <-j.done:
+			continue
+		default:
+		}
+		j.mu.Lock()
+		live := j.checkout == resolved && j.materialised != nil
+		j.mu.Unlock()
+		if live {
+			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
+		}
+	}
+	if _, err := devcouncil.ReadPinned(resolved, harnessPendingFile, maxPendingBytes); err == nil {
+		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out; the next work.runs.managed.prepare on this checkout takes it out and reports it")
+	}
+	return nil
 }
 
 // ManagedHarness names the harness a managed attempt should carry. Only a
@@ -348,7 +477,7 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 	if job.provider == nil {
 		return ManagedPrepared{}, errors.New("managed process is no longer available")
 	}
-	return ManagedPrepared{2, job.id, job.owner, job.session, job.provider.PID(), job.phase, job.harnessDigest}, nil
+	return ManagedPrepared{2, job.id, job.owner, job.session, job.provider.PID(), job.phase, job.harnessDigest, job.recovery}, nil
 }
 func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	defer close(job.ready)
@@ -358,6 +487,9 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	// here and be refused by StartTurn after the process was already claimed.
 	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(withHarnessNote(managedTurn(run.Provider, run.Mode, run.Brief.Markdown), harnessFileFor(job.harnessRef, run.Provider))) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
 		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
+	}
+	if err == nil {
+		err = r.enterCheckout(job, run)
 	}
 	// A harness is resolved and judged before the attempt is claimed, so a
 	// refused one leaves the saved attempt prepared and the host free to

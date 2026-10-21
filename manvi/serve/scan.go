@@ -103,6 +103,10 @@ type ScanDeps struct {
 	// the category is then reported unavailable.
 	Gaps  func(root string) ScanGaps
 	Board ScanBoard
+	// Busy, when set, is asked for the scanned root and refuses the scan with
+	// its answer: a managed harness block may be in the working tree. Nil means
+	// none is known (no managed lane). See ManagedRunner.HarnessBusy.
+	Busy func(root string) *Error
 	// Deadline bounds one scan; zero means 90 s.
 	Deadline time.Duration
 }
@@ -273,6 +277,13 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 	root, e := canonicalRepoRoot(ctx, "repo_root", p.RepoRoot)
 	if e != nil {
 		return nil, e
+	}
+	// A scan reads the working tree and diffs it; with a harness block in it the
+	// proposals would be about text the agent did not write.
+	if busy := r.deps.Busy; busy != nil {
+		if e := busy(root); e != nil {
+			return nil, e
+		}
 	}
 	if p.Since != "" {
 		if !scanRevision.MatchString(p.Since) {

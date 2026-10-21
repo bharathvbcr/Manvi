@@ -48,8 +48,14 @@ under **Unreleased** in the same commit as the code.
   starts, and taken out again when the run ends however it ends. A block that
   cannot be written aborts the run (`E_HARNESS_MATERIALISE`). The digest is in
   the prepare result and in the run's `effective_configuration` as
-  `harness_digest`. A host that does not see `harness.resolve` in `hello.ops`
-  runs with no harness.
+  `harness_digest`. The block's lines carry a per-run 128-bit nonce and only
+  Manvi's own recorded bytes are ever removed (a block the agent edited inside
+  is refused, not guessed at); a record under `.devcouncil/` lets the next
+  prepare on the checkout take out a block a dead run left and report it
+  (`harness_recovery`); one harness per checkout (`E_HARNESS_BUSY`), and
+  `work.verify.task` and `work.scan.gaps` refuse while a block is in the
+  worktree. A host that does not see `harness.resolve` in `hello.ops` runs with
+  no harness.
 
 ## [0.1.0] — 2026-10-17
 
