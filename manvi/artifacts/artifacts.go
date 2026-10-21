@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -199,7 +200,12 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if info, err := os.Lstat(cPath); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
 	}
-	metaData, err := os.ReadFile(mPath)
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	}
+	metaData, err := readContained(root, clean+metaSuffix)
+	_ = root.Close()
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable, so its revision history cannot be continued: %w", clean, err)
 	}
@@ -248,22 +254,82 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cPath := s.contentPath(clean)
-	contentBytes, err := os.ReadFile(cPath)
+	root, err := os.OpenRoot(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+		}
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
 	}
+	defer func() { _ = root.Close() }()
 
-	var art Artifact
-	mPath := s.metaPath(clean)
-	if metaBytes, err := os.ReadFile(mPath); err == nil {
-		_ = json.Unmarshal(metaBytes, &art)
+	art, err := readArtifact(root, clean, s.contentPath(clean))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+		}
+		return nil, err
 	}
+	return art, nil
+}
 
+// readArtifact reads an artifact's content and sidecar through root. A missing
+// sidecar is an artifact with no recorded history (revision 0); a sidecar that
+// is present but cannot be trusted (a link, not a regular file, unreadable,
+// corrupt) is an error, as it is for Update, never revision 0. A missing
+// content file is returned as fs.ErrNotExist for the caller to word.
+func readArtifact(root *os.Root, clean, path string) (*Artifact, error) {
+	contentBytes, err := readContained(root, clean)
+	if err != nil {
+		return nil, err
+	}
+	art := &Artifact{}
+	metaBytes, err := readContained(root, clean+metaSuffix)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(metaBytes, art); err != nil {
+			return nil, fmt.Errorf("artifacts: the metadata of %q is corrupt: %w", clean, err)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable: %w", clean, err)
+	}
 	art.Name = clean
-	art.Path = cPath
+	art.Path = path
 	art.Content = string(contentBytes)
-	return &art, nil
+	return art, nil
+}
+
+// readContained reads the regular file rel beneath root through the same
+// no-follow open the writes use (safefile.OpenNoFollow): no component below the
+// root is followed if it is a link, the leaf is opened O_NOFOLLOW (and
+// O_NONBLOCK, so a FIFO planted at the name cannot hang the read), and the
+// handle itself, not a separate lstat, is checked to be a regular file. The
+// error names the path.
+func readContained(root *os.Root, rel string) ([]byte, error) {
+	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
+	if err != nil {
+		// os.Root can answer "does not exist" for a dangling link it resolved
+		// itself; a name that is present as anything is a refusal, not an absence.
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
+				return nil, err
+			}
+		}
+		return nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: inspecting %q: %w", rel, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: reading %q: %w", rel, err)
+	}
+	return data, nil
 }
 
 // List returns all artifacts in the store.
@@ -271,40 +337,38 @@ func (s *Store) List() ([]*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var arts []*Artifact
-	err := filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
 		}
-		if strings.HasSuffix(d.Name(), metaSuffix) || isStoreTemp(d.Name()) {
+		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Anything the walk cannot account for is an error for the whole call, never
+	// a silent omission: an entry that is a link, a corrupt sidecar or an
+	// unreadable directory means the store is not what it was when published.
+	var arts []*Artifact
+	err = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("artifacts: walking %s: %w", p, err)
+		}
+		if d.IsDir() || isSidecarName(d.Name()) || isStoreTemp(d.Name()) {
 			return nil
 		}
 
 		rel, err := filepath.Rel(s.dir, p)
 		if err != nil {
-			return nil
+			return fmt.Errorf("artifacts: locating %s in the store: %w", p, err)
 		}
-		clean := filepath.ToSlash(rel)
-
-		contentBytes, err := os.ReadFile(p)
+		art, err := readArtifact(root, filepath.ToSlash(rel), p)
 		if err != nil {
-			return nil
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil // removed while the walk was running
+			}
+			return err
 		}
-
-		art := &Artifact{
-			Name:    clean,
-			Path:    p,
-			Content: string(contentBytes),
-		}
-
-		mPath := s.metaPath(clean)
-		if metaBytes, err := os.ReadFile(mPath); err == nil {
-			_ = json.Unmarshal(metaBytes, art)
-			art.Name = clean
-			art.Path = p
-			art.Content = string(contentBytes)
-		}
-
 		arts = append(arts, art)
 		return nil
 	})
