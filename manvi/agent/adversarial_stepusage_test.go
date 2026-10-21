@@ -64,6 +64,7 @@ func sumUsage(a, b llm.Usage) llm.Usage {
 // turn's own Outcome: usage, charge, and the count of unpriced steps.
 func TestAdversarialStepUsageSumsToTheOutcome(t *testing.T) {
 	for seed := int64(0); seed < 400; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		r := rand.New(rand.NewSource(seed))
 		var price func(llm.Usage) (int64, error)
 		switch r.Intn(5) {
@@ -197,7 +198,9 @@ func TestAdversarialCancelAfterResponseKeepsUsage(t *testing.T) {
 
 	// A fresh turn: nothing stale may be emitted by it.
 	before := len(h.log.Events())
-	h.loop.Run(context.Background(), userMsg("again"))
+	if _, err := h.loop.Run(context.Background(), userMsg("again")); err != nil {
+		t.Fatalf("second turn: %v", err)
+	}
 	for _, e := range h.log.Events()[before:] {
 		if e.Type == session.StepEnd {
 			var d session.StepEndData
