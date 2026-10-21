@@ -247,6 +247,11 @@ func (s Spec) normalized() Spec {
 	return n
 }
 
+// Normalized is the spec with every list in the canonical order Canonical and
+// Digest use, as a copy that shares nothing with the original. A reader that
+// hands a spec's sections to a host hands them in the order the digest covers.
+func (s Spec) Normalized() Spec { return s.normalized() }
+
 // Canonical is the one byte form a spec has: struct field order, lists sorted
 // (sections by order then name, roles by name, skills and tool names
 // alphabetically), no insignificant whitespace, no optional field spelled when

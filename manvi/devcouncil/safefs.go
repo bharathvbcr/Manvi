@@ -383,7 +383,7 @@ func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create 
 		// and inspected through the parent descriptor.
 		if !create {
 			return nil, zero, fmt.Errorf(
-				"refusing to %s %q: directory component %q does not exist", op, p.rel, name)
+				"refusing to %s %q: directory component %q does not exist: %w", op, p.rel, name, fs.ErrNotExist)
 		}
 		if err := parent.Mkdir(name, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 			return nil, zero, fmt.Errorf("creating directory %q for %q: %w", name, p.rel, err)
@@ -758,7 +758,7 @@ func (p *pinnedTarget) verifyLeafIdentity(chain *verifiedChain, leaf string) err
 // 0 means unlimited.
 func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 	if !p.targetExisted {
-		return nil, fmt.Errorf("file %s does not exist", p.rel)
+		return nil, fmt.Errorf("file %s does not exist: %w", p.rel, fs.ErrNotExist)
 	}
 	chain, err := p.openVerifiedParent("read", false)
 	if err != nil {
@@ -819,6 +819,19 @@ func ReadPinned(root, rel string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	return pinned.Read(limit)
+}
+
+// WritePinned pins and then writes in one step: the leaf is created or replaced
+// through the verified parent's descriptor, a symlink or a file with more than
+// one name is refused, and an existing file keeps its permission bits (perm is
+// for a file that did not exist). It is the write Manvi makes on its own behalf
+// into a checkout, after the gate has judged the path.
+func WritePinned(root, rel string, data []byte, perm fs.FileMode) error {
+	pinned, err := pinWriteTarget(root, rel)
+	if err != nil {
+		return err
+	}
+	return pinned.Write(data, perm)
 }
 
 // RemovePinned deletes the leaf at a pinned location. The removal is issued

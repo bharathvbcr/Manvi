@@ -26,13 +26,20 @@ type managedLifecycle struct {
 
 func newManagedLifecycle(t *testing.T, build func(context.Context, codingagent.Options) *managedTestSession) *managedLifecycle {
 	t.Helper()
+	return newManagedLifecycleAt(t, t.TempDir(), "claude", build)
+}
+
+// newManagedLifecycleAt is newManagedLifecycle for a run whose checkout is root
+// and whose provider is the one given, for a test that needs the checkout to be
+// a real git work tree.
+func newManagedLifecycleAt(t *testing.T, root, provider string, build func(context.Context, codingagent.Options) *managedTestSession) *managedLifecycle {
+	t.Helper()
 	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(func() { client.Close() })
-	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
 	enhancementCall(t, client, "items.put", `{"id":"t","request_id":"t","expected_revision":0,"title":"Inspect fixture","repository_ids":["r"],"primary_repository_id":"r"}`)
-	prepare := fmt.Sprintf(`{"id":"run","request_id":"prep","expected_revision":0,"kind":"managed","task_id":"t","source_revision":1,"repository_id":"r","repository_revision":1,"provider":"claude","permission_mode":"ask","cwd":%q,"git_dir":%q,"git_common_dir":%q,"head_oid":null}`, root, common, common)
+	prepare := fmt.Sprintf(`{"id":"run","request_id":"prep","expected_revision":0,"kind":"managed","task_id":"t","source_revision":1,"repository_id":"r","repository_revision":1,"provider":%q,"permission_mode":"ask","cwd":%q,"git_dir":%q,"git_common_dir":%q,"head_oid":null}`, provider, root, common, common)
 	enhancementCall(t, client, "runs.prepare", prepare)
 	m := &managedLifecycle{t: t, client: client, prepare: prepare}
 	runner, err := NewManagedRunner(client, func(ctx context.Context, options codingagent.Options) (ManagedSession, error) {

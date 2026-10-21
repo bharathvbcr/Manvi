@@ -33,6 +33,7 @@ manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite
 | `chat.prepare` | Computes token budgets, applies self-calibration, and plans one-way compaction. |
 | `chat.settle` | Parses completed model responses: reclassifies `<think>` tags, recovers tool calls, and handles truncations. |
 | `chat.forget` | Explicitly drops a conversation's compaction and calibration ledger. |
+| `harness.resolve` (optional) | Resolves a harness spec (`repo`, `named` or `inline`) into sections, roles, a bounded skills listing and a digest for the host to compose into its own `System`. Listed in `hello.ops` only when served; a host that does not see it runs with no harness. See [Host harness](#host-harness). |
 | `devmap.status` | Reports devmap host-contract, schema, readiness, freshness, coverage gaps, and command capabilities. |
 | `devmap.query` | Runs a bounded `explore`, `impact`, `trace`, or `affected` query and preserves the producer's completeness envelope. |
 | `work.scan.gaps` / `work.scan.get` / `work.scan.cancel` (with `work.*`) | `work.scan.gaps {repo_root, since?, max_proposals?}` claims a no-model repository gap scan and answers at once with a `scan_id`; `work.scan.get {scan_id}` reads its `coverage`, `complete` flag and `proposals` (each with a `fingerprint`, a `new`/`known`/`attached` status and, for dead code, both signals); `work.scan.cancel` stops it. `repo_root` must be absolute, free of symlinks and the top of a git work tree, else `E_BAD_REQUEST`; an unbuilt or degraded DevMap index is refused with `E_DEPENDENCY` naming `devmap status`. The scan never writes the board: the host files a proposal with its `scan:<fp>` label and the `manvi-scan:` description line, which later scans dedupe on. The claim is in-process (it does not survive a sidecar restart). |
@@ -347,6 +348,43 @@ weakened setting on stderr.
   }
 }
 ```
+
+---
+
+### Host harness
+
+`harness.resolve` is an optional op: a build serves it when its host-plane module is
+configured, and says so in `hello.ops`. A host that does not find it there has no
+harness to resolve and runs without one; it must not guess the op exists.
+
+```json
+{"id":"h1","op":"harness.resolve","params":{"session_id":"sess-abc","provider":"anthropic",
+  "root":"/abs/repo","spec":{"kind":"repo","name":"team"}}}
+```
+
+`kind` is `repo` (`.devcouncil/harness/<name>.json` under `root`, read through the repository's
+gated reader), `named` (a spec the process registered) or `inline` (`spec.inline`, the spec
+document itself). `root` is required for `repo`; when given for any kind it is where the
+skills listing is read. The result is `{sections, roles, skills, digest, rejected, notes?}`:
+the host composes `System` from its own essentials, then `sections` in order. Pass `digest` as
+`chat.prepare`'s `harness_digest`; a change between prepares is reported once as
+`prefix_moved` and leaves the compaction ledger untouched.
+
+A spec only adds text and narrows roles. It is decoded strictly (exact lowercase keys, no
+duplicates, no unknown field) and validated like a repository spec, so a `write_exceptions`,
+flag, tier, posture, MCP, verify or fetch field, or a section named like one the prompt owns, is
+refused with `E_HARNESS_REFUSED` and every problem is listed. Params this build does not know
+are refused for the same reason: a widening a host believes was applied must not be dropped.
+`E_HARNESS_NOT_FOUND` says no such spec exists.
+
+Managed runs take `harness: {kind: "repo"|"named", name}` on `work.runs.managed.prepare`
+(inline is refused there: the text would go into the file an unattended agent obeys, and has
+no reviewed artifact behind it). The sections are written as a block between
+`<!-- BEGIN MANVI HARNESS … -->` and `<!-- END MANVI HARNESS … -->` at the end of `AGENTS.md`
+(Codex) or `CLAUDE.md` (Claude), after the claim and before the process starts, and removed
+when the run ends. A failed write aborts the run with `E_HARNESS_MATERIALISE`.
+`harness_digest` is in the prepare result and in `effective_configuration`. A run that crashes
+with Manvi leaves the block; the next materialisation in that checkout replaces it.
 
 ---
 

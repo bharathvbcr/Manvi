@@ -23,11 +23,18 @@ const maxSkillBodyRunes = 32_000
 // is a hard link to something the gate withholds, is refused here exactly as it
 // would be there.
 func (r *Registry) skillReader(ctx context.Context) harness.ReadFunc {
+	return RepoReaderAt(ctx, r.deps.Root)
+}
+
+// RepoReaderAt is that reader for a root with no Registry: what a host op uses
+// to read a repository spec, judged by the same gate and read through the same
+// pinned path, never by a second, lighter one.
+func RepoReaderAt(ctx context.Context, root string) harness.ReadFunc {
 	return func(rel string, limit int64) ([]byte, error) {
-		if why := r.readRefusal(rel); why != "" {
+		if why := readRefusalAt(root, rel); why != "" {
 			return nil, fmt.Errorf("%s is withheld by %s", rel, why)
 		}
-		return readContained(ctx, r.deps.Root, rel, limit)
+		return readContained(ctx, root, rel, limit)
 	}
 }
 

@@ -1,11 +1,13 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/harness"
 )
 
 // ManagedSession is one provider connection, never an external terminal.
@@ -49,6 +52,8 @@ type ManagedRunner struct {
 	mu          sync.Mutex
 	jobs        map[string]*managedJob
 	closed      bool
+	// harness resolves the harness an attempt names; nil until SetHarness.
+	harness *HarnessResolver
 }
 type managedRun struct {
 	ID             string `json:"id"`
@@ -74,6 +79,14 @@ type managedJob struct {
 	mu                 sync.Mutex
 	id, owner, session string
 	preparation        generationRequest
+	// harnessRef is the harness the host asked this attempt to carry, zero for
+	// none. harnessDigest is the digest of the spec it resolved to, harnessFile
+	// the instruction file its block was written to, and materialised what takes
+	// the block out again; all four are set before the provider exists.
+	harnessRef    ManagedHarness
+	harnessDigest string
+	harnessFile   string
+	materialised  *harnessMaterialisation
 	// ctx is the job's lifetime and cancel ends it: Stop, Close and the
 	// two-hour bound all act through it. Every provider call derives from it,
 	// so a session that owns no process still ends when the job does.
@@ -106,6 +119,112 @@ type ManagedPrepared struct {
 	Session         string `json:"session_id"`
 	PID             int    `json:"process_id"`
 	Phase           string `json:"phase"`
+	// HarnessDigest is the digest of the harness written into the checkout for
+	// this attempt, absent when none was asked for. A host records it beside the
+	// run; the same digest is in the run's effective configuration.
+	HarnessDigest string `json:"harness_digest,omitempty"`
+}
+
+// ManagedHarness names the harness a managed attempt should carry. Only a
+// repository's own spec (.devcouncil/harness/<name>.json in the checkout) or a
+// named spec the process registered is accepted; an inline spec is refused.
+//
+// Inline is refused here although harness.resolve takes it, because over this
+// plane the spec is not advice a host composes but text written into the file an
+// unattended agent obeys. A repository or named spec is an artifact somebody
+// reviewed and can be named again; an inline one would exist nowhere but in one
+// request, whose retry identity and 4 KiB bound it would also have to carry.
+type ManagedHarness struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// ManagedPrepareParams is work.runs.managed.prepare's request.
+type ManagedPrepareParams struct {
+	ID               string `json:"id"`
+	RequestID        string `json:"request_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
+	// Harness is the harness to materialise into the checkout for this attempt.
+	// Optional; absent means the attempt runs as it always has.
+	Harness *ManagedHarness `json:"harness,omitempty"`
+}
+
+// SetHarness gives the runner the means to resolve a harness. Without it an
+// attempt that names one is refused, never run without it.
+func (r *ManagedRunner) SetHarness(h *HarnessResolver) error {
+	if err := h.check(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.harness = h
+	return nil
+}
+
+// harnessRef decodes and checks the optional harness member of a preparation.
+// Absent or null is no harness.
+func (r *ManagedRunner) harnessRef(raw json.RawMessage) (ManagedHarness, *Error) {
+	var ref ManagedHarness
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ref, nil
+	}
+	if e := strictParams(raw, "work.runs.managed.prepare harness", &ref); e != nil {
+		return ref, e
+	}
+	switch ref.Kind {
+	case HarnessKindRepo, HarnessKindNamed:
+	case HarnessKindInline:
+		return ManagedHarness{}, harnessRefused("an inline harness is not accepted over the managed plane: commit the spec to %s or register it as a named spec", harness.SpecsDir)
+	default:
+		return ManagedHarness{}, badRequest("harness kind %q is not one of %s, %s", ref.Kind, HarnessKindRepo, HarnessKindNamed)
+	}
+	if !harness.ValidName(ref.Name) {
+		return ManagedHarness{}, badRequest("harness name %s is not a spec name", harness.QuoteName(ref.Name))
+	}
+	r.mu.Lock()
+	served := r.harness != nil
+	r.mu.Unlock()
+	if !served {
+		return ManagedHarness{}, harnessRefused("this build serves no harness, so the attempt is not started without the one it names")
+	}
+	return ref, nil
+}
+
+// resolveHarness reads and judges the harness for one attempt against the
+// provider the run names, and returns the checkout's root, which the spec is
+// read from and written under. It reads and judges; it writes nothing.
+func (r *ManagedRunner) resolveHarness(ctx context.Context, run managedRun, ref ManagedHarness) (harness.Spec, string, error) {
+	// The run's cwd is where the host put the checkout and may be spelled through
+	// a symlink (/var for /private/var); it is resolved once here, and the
+	// resolved path must still be the top of a git work tree.
+	resolved, err := filepath.EvalSymlinks(run.Cwd)
+	if err != nil {
+		return harness.Spec{}, "", badRoot("cwd does not exist or cannot be resolved: %v", err)
+	}
+	root, e := canonicalRepoRoot(ctx, "cwd", resolved)
+	if e != nil {
+		return harness.Spec{}, "", e
+	}
+	r.mu.Lock()
+	h := r.harness
+	r.mu.Unlock()
+	spec, e := h.resolveSpec(ctx, run.Provider, root, HarnessSpecRef{Kind: ref.Kind, Name: ref.Name})
+	if e != nil {
+		return harness.Spec{}, "", e
+	}
+	return spec, root, nil
+}
+
+// restoreHarness takes the harness block out of the checkout. It is called from
+// finish, once, before the run is recorded finished, so every end of a run
+// (success, failure, cancel, stop, abandonment) leaves the checkout without it
+// and the diff a verifier takes afterwards is the agent's own.
+func (j *managedJob) restoreHarness() error {
+	j.mu.Lock()
+	m := j.materialised
+	j.materialised = nil
+	j.mu.Unlock()
+	return m.Restore()
 }
 
 // managedOwnerID is the owner a managed attempt records:
@@ -152,12 +271,17 @@ func (r *ManagedRunner) run(ctx context.Context, id string) (managedRun, json.Ra
 // native host must inspect the returned PID's OS creation identity, then call
 // Activate. Merely reading a run or its status never starts a model turn.
 func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (ManagedPrepared, error) {
-	if _, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision"); err != nil {
+	fields, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "harness")
+	if err != nil {
 		return ManagedPrepared{}, err
 	}
 	var request generationRequest
 	if json.Unmarshal(raw, &request) != nil || request.ID == "" || request.RequestID == "" || request.ExpectedRevision < 1 {
 		return ManagedPrepared{}, errors.New("managed preparation requires a saved attempt and request identity")
+	}
+	harnessRef, e := r.harnessRef(fields["harness"])
+	if e != nil {
+		return ManagedPrepared{}, e
 	}
 	r.mu.Lock()
 	if r.closed {
@@ -203,10 +327,10 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			return ManagedPrepared{}, err
 		}
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), phase: "preparing", callbacks: make(map[string]*managedCallback)}
+		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), phase: "preparing", callbacks: make(map[string]*managedCallback)}
 		r.jobs[request.ID] = job
 		go r.prepare(jobCtx, job)
-	} else if job.preparation != request {
+	} else if job.preparation != request || job.harnessRef != harnessRef {
 		r.mu.Unlock()
 		return ManagedPrepared{}, errors.New("retry the original managed preparation request")
 	}
@@ -224,7 +348,7 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 	if job.provider == nil {
 		return ManagedPrepared{}, errors.New("managed process is no longer available")
 	}
-	return ManagedPrepared{2, job.id, job.owner, job.session, job.provider.PID(), job.phase}, nil
+	return ManagedPrepared{2, job.id, job.owner, job.session, job.provider.PID(), job.phase, job.harnessDigest}, nil
 }
 func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	defer close(job.ready)
@@ -232,8 +356,21 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	// The bound is checked on the turn the provider will receive, not on the
 	// brief alone: a brief just under the adapter's limit would otherwise pass
 	// here and be refused by StartTurn after the process was already claimed.
-	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(managedTurn(run.Provider, run.Mode, run.Brief.Markdown)) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
+	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(withHarnessNote(managedTurn(run.Provider, run.Mode, run.Brief.Markdown), harnessFileFor(job.harnessRef, run.Provider))) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
 		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
+	}
+	// A harness is resolved and judged before the attempt is claimed, so a
+	// refused one leaves the saved attempt prepared and the host free to
+	// correct it. Nothing is written until the claim has succeeded.
+	var spec harness.Spec
+	var root string
+	if err == nil && job.harnessRef != (ManagedHarness{}) {
+		spec, root, err = r.resolveHarness(ctx, run, job.harnessRef)
+		if err == nil {
+			job.mu.Lock()
+			job.harnessDigest = spec.Digest()
+			job.mu.Unlock()
+		}
 	}
 	claimed := false
 	if err == nil {
@@ -248,6 +385,22 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 			_, err = r.client.Workbench(ctx, "runs.claim", claim)
 			claimed = err == nil
 		}
+	}
+	// The harness is written into the checkout after the claim and before any
+	// process exists, so a failed write aborts the run with nothing running: it
+	// never starts without the spec it was asked to carry. It is taken out again
+	// when the run finishes, by finish, whichever way it ends.
+	aborted := false
+	if err == nil && job.harnessRef != (ManagedHarness{}) {
+		var m *harnessMaterialisation
+		m, err = materialiseHarness(root, run.Provider, spec)
+		aborted = err != nil
+		job.mu.Lock()
+		job.materialised = m
+		if m != nil {
+			job.harnessFile = m.File
+		}
+		job.mu.Unlock()
 	}
 	var provider ManagedSession
 	if err == nil {
@@ -277,7 +430,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		}
 		if claimed {
 			outcome, providerState := "unresolved", "unresolved"
-			if codingagent.NoProcessStarted(err) {
+			if aborted || codingagent.NoProcessStarted(err) {
 				outcome, providerState = "failed", "failed"
 			} else if errors.Is(err, context.Canceled) {
 				// Stop or Close ended the preparation. The factory owns its
@@ -497,7 +650,14 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	configured := false
 	if err == nil {
 		var encoded []byte
-		encoded, err = json.Marshal(job.provider.Effective())
+		// The adapter's own description, flattened, with the digest of the harness
+		// written for this attempt beside it when there is one. The string is
+		// still the effective configuration it always was; the key is additive
+		// and absent without a harness.
+		encoded, err = json.Marshal(struct {
+			codingagent.Effective
+			HarnessDigest string `json:"harness_digest,omitempty"`
+		}{job.provider.Effective(), job.harnessDigest})
 		if err == nil {
 			job.configuration = string(encoded)
 			thread = job.provider.Effective().Thread.ID
@@ -506,7 +666,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 	}
 	if err == nil {
-		err = job.provider.StartTurn(ctx, brief)
+		err = job.provider.StartTurn(ctx, withHarnessNote(brief, job.harnessFile))
 	}
 	var turn *string
 	lastPoll := time.Time{}
@@ -772,6 +932,13 @@ func (r *ManagedRunner) resolve(ctx context.Context, job *managedJob, callback *
 	return err
 }
 func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string) {
+	// Before anything is recorded, and whatever the run's end: the checkout is
+	// given back without the harness block. A restore that fails is part of the
+	// reason the run is recorded with, typed, because a block left behind is a
+	// change in the checkout the agent did not make.
+	if restoreErr := job.restoreHarness(); restoreErr != nil {
+		cause = errors.Join(cause, restoreErr)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	run, _, err := r.run(ctx, job.id)

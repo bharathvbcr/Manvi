@@ -45,14 +45,19 @@ type withheldRead struct {
 // model, or "" when it may. It judges the name through policy's own read
 // classifier and then the file's link count, and it fails closed: a path whose
 // link count cannot be verified is refused.
-func (r *Registry) readRefusal(rel string) string {
-	switch policy.ClassifyRead(r.deps.Root, rel) {
+func (r *Registry) readRefusal(rel string) string { return readRefusalAt(r.deps.Root, rel) }
+
+// readRefusalAt is readRefusal for a repository root that has no Registry: the
+// one judgement, so a caller that only needs a gated reader (a host op reading
+// a spec) cannot judge a path more leniently than read_file does.
+func readRefusalAt(root, rel string) string {
+	switch policy.ClassifyRead(root, rel) {
 	case policy.ReadOutsideRoot:
 		return ruleOutsideRoot
 	case policy.ReadSecretPath:
 		return string(policy.RuleSecretRead)
 	}
-	if len(aliasedPaths(r.deps.Root, []string{rel})) > 0 {
+	if len(aliasedPaths(root, []string{rel})) > 0 {
 		return ruleAliasedRead
 	}
 	return ""

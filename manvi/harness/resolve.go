@@ -51,8 +51,14 @@ func Resolve(name string, inputs ...Input) (Spec, string, error) {
 		}
 		return spec, in.Origin(name), nil
 	}
-	return Spec{}, "", fmt.Errorf("no harness spec named %q", name)
+	return Spec{}, "", &NoSuchSpecError{Name: name}
 }
+
+// NoSuchSpecError is Resolve's answer when no input has the spec: absence, which
+// a host op reports differently from a spec that exists and is refused.
+type NoSuchSpecError struct{ Name string }
+
+func (e *NoSuchSpecError) Error() string { return fmt.Sprintf("no harness spec named %q", e.Name) }
 
 // Catalogue is a process-level set of named specs: what a host registers before
 // a session starts. It is empty by default.

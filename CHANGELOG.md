@@ -31,6 +31,25 @@ under **Unreleased** in the same commit as the code.
   `spec_name` and `spec_digest`. A spec cannot set flags, tiers, posture, the
   verify command, fetch hosts, MCP servers or write exceptions, and a role it
   registers is never wider than the session's own tools.
+- Host-supplied harness over `manvi serve` (additive within protocol 1). The
+  optional op `harness.resolve` takes a `repo`, `named` or `inline` spec and
+  returns its sections, roles, a bounded skills listing, a digest and the
+  skills it rejected; the host composes `System` from the sections after its own
+  essentials. A spec is decoded strictly and validated by the same rules as a
+  repository spec, so a flag, tier, posture, MCP, verify, fetch or
+  write-exception field, or an Essential section name, is refused with
+  `E_HARNESS_REFUSED` listing every problem (`E_HARNESS_NOT_FOUND` when no such
+  spec). `chat.prepare` takes an optional `harness_digest` and notes a change as
+  one prefix move (`prefix_moved`, `prefix_note`) without disturbing the
+  compaction ledger. `work.runs.managed.prepare` takes an optional
+  `harness: {kind: "repo"|"named", name}`: the spec's sections are written as a
+  delimited block at the tail of the file the CLI reads (`AGENTS.md` for Codex,
+  `CLAUDE.md` for Claude) through the gated, pinned writer, before the process
+  starts, and taken out again when the run ends however it ends. A block that
+  cannot be written aborts the run (`E_HARNESS_MATERIALISE`). The digest is in
+  the prepare result and in the run's `effective_configuration` as
+  `harness_digest`. A host that does not see `harness.resolve` in `hello.ops`
+  runs with no harness.
 
 ## [0.1.0] — 2026-10-17
 

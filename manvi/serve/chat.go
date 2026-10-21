@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,11 @@ type ChatSession struct {
 	// lastEstimate is what prepare predicted for the request the host then
 	// sent, held so the next call can pair it with the server's real count.
 	lastEstimate int
+	// harnessDigest is the harness the host last said its System was composed
+	// from, and prefixMoves counts the times it said a different one. See
+	// noteHarness.
+	harnessDigest string
+	prefixMoves   int
 	// lastUsed is when this session was last touched, driving idle eviction.
 	// A host that crashes — or simply abandons a tab without forget — leaves
 	// its ledger here; without a clock this table only ever grows.
@@ -66,6 +72,51 @@ type ChatSession struct {
 
 func newChatSession() *ChatSession {
 	return &ChatSession{compacted: map[llm.CallID]string{}, lastUsed: time.Now()}
+}
+
+// maxHarnessDigestLen bounds the digest a host may state. A digest is 64 hex
+// characters; the bound leaves room for a longer one without letting a host
+// park an arbitrary string in a session.
+const maxHarnessDigestLen = 128
+
+// noteHarness records the harness digest the host composed System from and
+// reports whether it differs from the one it last stated, as a note for the
+// host, "" when it does not.
+//
+// A harness change moves the front of the prompt: System is the first bytes of
+// every request, so a changed System invalidates a server's prefix cache from
+// the first token on, whatever the ledger does. That is a prefix move, and it is
+// recorded as one, once. The ledger itself is deliberately untouched by it:
+// every shortened tool result keeps its recorded text, so the history after the
+// moved prefix is byte-identical to what the host already holds and is not
+// re-shortened to a different string. Reading the changed System as churn would
+// have meant either of the two things a one-way ledger exists to prevent,
+// dropping entries or recomputing them.
+//
+// The first digest a session states is a first statement and not a move. An
+// empty digest is the host saying nothing about its harness (a host that does
+// not use one, or an older one): it changes nothing and is never read as "the
+// harness was removed", because a prepare that did not say must not look like
+// one that said none.
+func (s *ChatSession) noteHarness(digest string) string {
+	if digest == "" || digest == s.harnessDigest {
+		return ""
+	}
+	previous := s.harnessDigest
+	s.harnessDigest = digest
+	if previous == "" {
+		return ""
+	}
+	s.prefixMoves++
+	return fmt.Sprintf("the harness changed from %s to %s: the system prompt prefix moved once; the compaction ledger "+
+		"is unchanged and no already-shortened result is shortened again", shortDigest(previous), shortDigest(digest))
+}
+
+func shortDigest(d string) string {
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
 }
 
 // pruneLedger drops what the ledger no longer needs to remember, given the
@@ -282,6 +333,12 @@ type PrepareParams struct {
 	// that tool results are made of — and an uncorrected estimate compacts a
 	// model down to a fraction of the context it actually had.
 	ObservedPromptTokens int `json:"observed_prompt_tokens,omitempty"`
+
+	// HarnessDigest is the digest harness.resolve returned for the harness this
+	// System was composed from. Optional: a host with no harness leaves it
+	// out. When it differs from the one this session last stated, the result
+	// notes a prefix move, once, and the ledger is left as it is.
+	HarnessDigest string `json:"harness_digest,omitempty"`
 }
 
 // PrepareStep is one tool result to shorten, and the text to shorten it to.
@@ -321,6 +378,12 @@ type PrepareResult struct {
 	// guess with a number attached; the host can say which it has.
 	CalibrationRatio   float64 `json:"calibration_ratio"`
 	CalibrationSamples int     `json:"calibration_samples"`
+	// PrefixMoved reports that the harness digest changed since the last
+	// prepare of this session, so the system prompt prefix moved. PrefixNote
+	// says so in words. Both are absent on every other prepare, and on a host
+	// that states no digest.
+	PrefixMoved bool   `json:"prefix_moved,omitempty"`
+	PrefixNote  string `json:"prefix_note,omitempty"`
 }
 
 // prepare answers OpChatPrepare.
@@ -351,7 +414,12 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 		}
 	}
 
+	if len(p.HarnessDigest) > maxHarnessDigestLen {
+		return nil, badRequest("chat.prepare harness_digest is %d bytes, over the limit of %d", len(p.HarnessDigest), maxHarnessDigestLen)
+	}
+
 	session := s.chat.get(p.SessionID)
+	prefixNote := session.noteHarness(p.HarnessDigest)
 
 	// Drop what this history no longer references before anything reads the
 	// ledger, so both the substitution below and the `already` set built from
@@ -401,6 +469,8 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 		CalibrationRatio:   session.calibrator.Ratio(),
 		CalibrationSamples: session.calibrator.Samples(),
 		Steps:              make([]PrepareStep, 0, len(plan.Steps)),
+		PrefixMoved:        prefixNote != "",
+		PrefixNote:         prefixNote,
 	}
 	for _, step := range plan.Steps {
 		// Recorded here, not only returned. The ledger is what makes the next
