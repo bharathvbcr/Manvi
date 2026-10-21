@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -234,6 +235,7 @@ func (r *Registry) listArtifacts(ctx context.Context, call tools.Call) tools.Res
 	}
 
 	arts, err := store.List()
+	skipped, err := skippedArtifactEntries(err)
 	if err != nil {
 		return tools.Errorf("listing artifacts: %v", err)
 	}
@@ -250,8 +252,34 @@ func (r *Registry) listArtifacts(ctx context.Context, call tools.Call) tools.Res
 		})
 	}
 
-	return ok(map[string]any{
+	result := map[string]any{
 		"count":     len(list),
 		"artifacts": list,
-	})
+	}
+	if len(skipped) > 0 {
+		// An entry the store would not read is named, with the reason, rather
+		// than left out of a list that then looks complete.
+		result["skipped"] = skipped
+		result["complete"] = false
+	}
+	return ok(result)
+}
+
+// skippedArtifactEntries separates the store's partial-list report from a real
+// failure: a *artifacts.PartialListError means the readable artifacts were
+// returned and the entries it names were not, which is a qualified success; any
+// other error is a failure of the listing itself and is passed through.
+func skippedArtifactEntries(err error) ([]map[string]any, error) {
+	if err == nil {
+		return nil, nil
+	}
+	var partial *artifacts.PartialListError
+	if !errors.As(err, &partial) {
+		return nil, err
+	}
+	skipped := make([]map[string]any, len(partial.Skipped))
+	for i, e := range partial.Skipped {
+		skipped[i] = map[string]any{"name": e.Name, "reason": e.Reason}
+	}
+	return skipped, nil
 }

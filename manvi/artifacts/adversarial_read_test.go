@@ -23,7 +23,7 @@ func TestAdversarialTOCTOUContentFlip(t *testing.T) {
 	outside := outsideFile(t)
 	content := filepath.Join(dir, "plan.md")
 	sidecar := filepath.Join(dir, "plan.md.meta.json")
-	realMeta, err := os.ReadFile(sidecar)
+	realMeta, err := os.ReadFile(sidecar) //nolint:gosec // reads a path the test built
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,14 +42,14 @@ func TestAdversarialTOCTOUContentFlip(t *testing.T) {
 			if os.Symlink(outside, lnk) == nil {
 				_ = os.Rename(lnk, content)
 			}
-			if os.WriteFile(reg, []byte("real"), 0o644) == nil {
+			if os.WriteFile(reg, []byte("real"), 0o600) == nil {
 				_ = os.Rename(reg, content)
 			}
 			// sidecar flip too
 			if os.Symlink(outside, lnk) == nil {
 				_ = os.Rename(lnk, sidecar)
 			}
-			if os.WriteFile(reg, realMeta, 0o644) == nil {
+			if os.WriteFile(reg, realMeta, 0o600) == nil { //nolint:gosec // writes a path the test built
 				_ = os.Rename(reg, sidecar)
 			}
 		}
@@ -274,7 +274,7 @@ func TestAdversarialGetHasAReadCap(t *testing.T) {
 	if _, err := store.Create("big.md", "x", Metadata{}); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "big.md"), os.O_WRONLY, 0)
+	f, err := os.OpenFile(filepath.Join(dir, "big.md"), os.O_WRONLY, 0) //nolint:gosec // opens a path the test built
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestAdversarialUpdateNeverWritesThroughContentLinks(t *testing.T) {
 				t.Skipf("%s unavailable: %v", kind, err)
 			}
 			_, _ = store.Update("plan.md", "OVERWRITTEN", nil)
-			b, _ := os.ReadFile(outside)
+			b, _ := os.ReadFile(outside) //nolint:gosec // reads a path the test built
 			if string(b) != outsideSecret {
 				t.Fatalf("Update wrote through the %s: outside now %q", kind, b)
 			}

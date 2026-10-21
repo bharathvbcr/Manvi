@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -129,6 +130,9 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSize(clean, content); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,6 +184,9 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSize(clean, content); err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,8 +211,15 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
 	}
-	metaData, err := readContained(root, clean+metaSuffix)
+	metaData, err := readContained(root, clean+metaSuffix, maxSidecarBytes, true)
+	var nameErr error
+	if err == nil {
+		nameErr = requireOnDiskName(root, clean)
+	}
 	_ = root.Close()
+	if nameErr != nil {
+		return nil, fmt.Errorf("artifacts: artifact %q not found; use Create to make it", clean)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable, so its revision history cannot be continued: %w", clean, err)
 	}
@@ -263,7 +277,10 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	art, err := readArtifact(root, clean, s.contentPath(clean))
+	art, err := readArtifact(root, clean, s.contentPath(clean), true)
+	if err == nil {
+		err = requireOnDiskName(root, clean)
+	}
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
@@ -273,18 +290,96 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	return art, nil
 }
 
+// requireOnDiskName fails with fs.ErrNotExist unless every component of clean
+// is spelled on disk exactly as requested. On a case-insensitive filesystem
+// (APFS and NTFS by default) "PLAN.md" opens plan.md, and an artifact reported
+// under a name List never returns is a second identity for one file. The store
+// already treats the sidecar namespace as case-blind; it does not treat names
+// as case-blind, so a spelling that differs is not that artifact.
+func requireOnDiskName(root *os.Root, clean string) error {
+	dir := "."
+	for _, part := range strings.Split(filepath.ToSlash(clean), "/") {
+		d, err := root.Open(filepath.FromSlash(dir))
+		if err != nil {
+			return err
+		}
+		entries, err := d.ReadDir(-1)
+		_ = d.Close()
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, e := range entries {
+			if e.Name() == part {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fs.ErrNotExist
+		}
+		dir = path.Join(dir, part)
+	}
+	return nil
+}
+
+// maxArtifactBytes bounds one artifact's content, on write and on read.
+// Artifacts are plans, notes and lessons read whole into memory by tools; the
+// store had no bound, so a sparse or planted file could be read to exhaustion.
+//
+// maxSidecarBytes bounds a sidecar on read. A sidecar embeds the artifact's
+// content as JSON, which escaping can expand up to six-fold, so it is not
+// bounded by the content limit itself.
+const (
+	maxArtifactBytes = 4 << 20
+	maxSidecarBytes  = 8 * maxArtifactBytes
+)
+
+// checkSize refuses content the store would then refuse to read back.
+func checkSize(clean, content string) error {
+	if len(content) > maxArtifactBytes {
+		return fmt.Errorf("artifacts: refusing %q: %d bytes exceeds the %d-byte artifact limit", clean, len(content), maxArtifactBytes)
+	}
+	return nil
+}
+
+// EntryError names one store entry List could not return and why.
+type EntryError struct {
+	Name   string
+	Reason string
+}
+
+// PartialListError is what List returns beside the artifacts it could read when
+// it had to leave entries out: a link, a corrupt sidecar, an oversized or
+// unreadable file. One bad entry must not hide every good one (a repository can
+// commit a symlink under the artifacts directory), and it must not be hidden
+// either, so each skipped entry is carried here with its reason.
+type PartialListError struct{ Skipped []EntryError }
+
+func (e *PartialListError) Error() string {
+	parts := make([]string, len(e.Skipped))
+	for i, s := range e.Skipped {
+		parts[i] = s.Name + ": " + s.Reason
+	}
+	return fmt.Sprintf("artifacts: %d entries could not be listed: %s", len(e.Skipped), strings.Join(parts, "; "))
+}
+
 // readArtifact reads an artifact's content and sidecar through root. A missing
 // sidecar is an artifact with no recorded history (revision 0); a sidecar that
 // is present but cannot be trusted (a link, not a regular file, unreadable,
 // corrupt) is an error, as it is for Update, never revision 0. A missing
 // content file is returned as fs.ErrNotExist for the caller to word.
-func readArtifact(root *os.Root, clean, path string) (*Artifact, error) {
-	contentBytes, err := readContained(root, clean)
+//
+// With withContent false the content file is still opened and checked (so a
+// link, a hard link, a non-regular or oversized file is refused) but not read,
+// and Content is empty.
+func readArtifact(root *os.Root, clean, fullPath string, withContent bool) (*Artifact, error) {
+	contentBytes, err := readContained(root, clean, maxArtifactBytes, withContent)
 	if err != nil {
 		return nil, err
 	}
 	art := &Artifact{}
-	metaBytes, err := readContained(root, clean+metaSuffix)
+	metaBytes, err := readContained(root, clean+metaSuffix, maxSidecarBytes, true)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(metaBytes, art); err != nil {
@@ -294,7 +389,7 @@ func readArtifact(root *os.Root, clean, path string) (*Artifact, error) {
 		return nil, fmt.Errorf("artifacts: the metadata of %q is unreadable: %w", clean, err)
 	}
 	art.Name = clean
-	art.Path = path
+	art.Path = fullPath
 	art.Content = string(contentBytes)
 	return art, nil
 }
@@ -304,16 +399,22 @@ func readArtifact(root *os.Root, clean, path string) (*Artifact, error) {
 // root is followed if it is a link, the leaf is opened O_NOFOLLOW (and
 // O_NONBLOCK, so a FIFO planted at the name cannot hang the read), and the
 // handle itself, not a separate lstat, is checked to be a regular file. The
-// error names the path.
-func readContained(root *os.Root, rel string) ([]byte, error) {
+// A file with more than one hard link is refused too (as the DevCouncil
+// untracked-diff reader does): O_NOFOLLOW does not see a hard link to a file
+// outside the store, and a published artifact has exactly one name. A file over
+// limit bytes is refused. The error names the path; only a name that is absent
+// altogether wraps fs.ErrNotExist.
+func readContained(root *os.Root, rel string, limit int64, load bool) ([]byte, error) {
 	f, err := safefile.OpenNoFollow(root, filepath.FromSlash(rel), os.O_RDONLY, 0)
 	if err != nil {
 		// os.Root can answer "does not exist" for a dangling link it resolved
-		// itself; a name that is present as anything is a refusal, not an absence.
+		// itself; a name that is present as anything is a refusal, not an
+		// absence, so that case must not wrap fs.ErrNotExist.
 		if errors.Is(err, fs.ErrNotExist) {
 			if _, lerr := root.Lstat(filepath.FromSlash(rel)); errors.Is(lerr, fs.ErrNotExist) {
 				return nil, err
 			}
+			return nil, fmt.Errorf("artifacts: refusing to read %q (a dangling symbolic link): %s", rel, err.Error())
 		}
 		return nil, fmt.Errorf("artifacts: refusing to read %q (a symbolic link, or not an ordinary path): %w", rel, err)
 	}
@@ -325,14 +426,40 @@ func readContained(root *os.Root, rel string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("artifacts: refusing to read %q: not a regular file", rel)
 	}
-	data, err := io.ReadAll(f)
+	links, err := safefile.LinkCount(f)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: counting the links of %q: %w", rel, err)
+	}
+	if links != 1 {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: it has %d hard links, so it may be a file outside the store", rel, links)
+	}
+	if info.Size() > limit {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: %d bytes exceeds the %d-byte limit", rel, info.Size(), limit)
+	}
+	if !load {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: reading %q: %w", rel, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("artifacts: refusing to read %q: it grew past the %d-byte limit", rel, limit)
 	}
 	return data, nil
 }
 
-// List returns all artifacts in the store.
+// List returns the artifacts in the store, sorted by name, with their metadata
+// but not their content (Content is empty: the one production caller discards
+// it, and loading every artifact whole to list them is the cost the read cap
+// exists to bound; use Get for content). Every entry is still opened and
+// checked as Get would.
+//
+// An entry that cannot be returned (a link, a hard link, a corrupt sidecar, an
+// oversized or unreadable file) does not hide the others: the artifacts that
+// could be read are returned together with a *PartialListError naming each
+// skipped entry and why. A failure on the store directory itself returns no
+// artifacts and a plain error.
 func (s *Store) List() ([]*Artifact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -346,33 +473,34 @@ func (s *Store) List() ([]*Artifact, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	// Anything the walk cannot account for is an error for the whole call, never
-	// a silent omission: an entry that is a link, a corrupt sidecar or an
-	// unreadable directory means the store is not what it was when published.
-	var arts []*Artifact
+	var (
+		arts    []*Artifact
+		skipped []EntryError
+	)
 	err = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return fmt.Errorf("artifacts: walking %s: %w", p, err)
+			if p == s.dir {
+				return fmt.Errorf("artifacts: walking %s: %w", p, err)
+			}
+			skipped = append(skipped, EntryError{Name: relName(s.dir, p), Reason: err.Error()})
+			return nil
 		}
 		if d.IsDir() || isSidecarName(d.Name()) || isStoreTemp(d.Name()) {
 			return nil
 		}
 
-		rel, err := filepath.Rel(s.dir, p)
-		if err != nil {
-			return fmt.Errorf("artifacts: locating %s in the store: %w", p, err)
-		}
-		art, err := readArtifact(root, filepath.ToSlash(rel), p)
+		name := relName(s.dir, p)
+		art, err := readArtifact(root, name, p, false)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil // removed while the walk was running
 			}
-			return err
+			skipped = append(skipped, EntryError{Name: name, Reason: err.Error()})
+			return nil
 		}
 		arts = append(arts, art)
 		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -380,8 +508,20 @@ func (s *Store) List() ([]*Artifact, error) {
 	sort.Slice(arts, func(i, j int) bool {
 		return arts[i].Name < arts[j].Name
 	})
-
+	if len(skipped) > 0 {
+		sort.Slice(skipped, func(i, j int) bool { return skipped[i].Name < skipped[j].Name })
+		return arts, &PartialListError{Skipped: skipped}
+	}
 	return arts, nil
+}
+
+// relName is p's slash-separated name relative to the store directory dir.
+func relName(dir, p string) string {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return p
+	}
+	return filepath.ToSlash(rel)
 }
 
 // --- containment ---
