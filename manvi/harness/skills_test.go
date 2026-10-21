@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
 // rootRead is a stand-in for the repository's contained reader: it reads under
@@ -345,7 +346,7 @@ func TestSkillsSectionCapIsDeclared(t *testing.T) {
 		skills = append(skills, Skill{Name: n, Description: strings.Repeat("w", 100)})
 	}
 	full, _ := SkillsSection(skills, 0)
-	budget := utf8.RuneCountInString(skillsPreamble) + 1 + utf8.RuneCountInString(cutTrailer(6, 6, 0)) + 3*115 + 10
+	budget := prompt.EstimateTokens(full) * 9 / 10
 	capped, ok := SkillsSection(skills, budget)
 	if !ok {
 		t.Fatal("no section")
@@ -353,11 +354,11 @@ func TestSkillsSectionCapIsDeclared(t *testing.T) {
 	if !strings.Contains(capped, "[the skills list was cut here") {
 		t.Fatalf("a capped listing must say so:\n%s", capped)
 	}
-	if !strings.Contains(capped, "3 of 6 skills are not listed") {
-		t.Errorf("cut count missing or wrong:\n%s", capped)
+	if strings.Contains(capped, "- f —") || !strings.Contains(capped, "- a —") {
+		t.Errorf("cut must fall on a line boundary, keeping the first skills whole:\n%s", capped)
 	}
-	if strings.Contains(capped, "- d —") || !strings.Contains(capped, "- c —") {
-		t.Errorf("cut must fall on a line boundary after the last whole skill:\n%s", capped)
+	if !strings.Contains(capped, namesLead) {
+		t.Errorf("the skills that lost their description must be named:\n%s", capped)
 	}
 	if capped == full {
 		t.Error("cap changed nothing")

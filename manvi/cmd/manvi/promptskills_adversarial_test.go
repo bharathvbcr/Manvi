@@ -21,6 +21,8 @@ import (
 // harness.LoadSkills with a ctx-aware read.
 type fsSkills struct{ root string }
 
+func (fsSkills) NoteListedSkills([]string) {}
+
 func (f fsSkills) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
 	return harness.LoadSkills(f.root, func(rel string, limit int64) ([]byte, error) {
 		if err := ctx.Err(); err != nil {
@@ -54,9 +56,10 @@ func TestAdvNoticesForAStandingConditionAreNotRepeatedEveryTurn(t *testing.T) {
 		NotExamined: 4,
 	}}
 	total := 0
+	var once noticeOnce
 	for turn := 0; turn < 5; turn++ {
 		_, notices := skillsForPrompt(context.Background(), loader, 0)
-		total += len(notices)
+		total += len(once.fresh(notices))
 	}
 	if total > 2 { // one rejected line + one not-examined line, once
 		t.Fatalf("5 unchanged turns emitted %d notices; a standing condition should be reported once per session or when the set changes (want <= 2)", total)
@@ -113,7 +116,7 @@ func TestAdvListingNeverExceedsItsShare(t *testing.T) {
 		}
 		budget := 200 + rng.Intn(8000)
 		limit := budget / skillsBudgetShare
-		text, ok := skillsSectionWithin(skills, limit)
+		text, ok := harness.SkillsSection(skills, limit)
 		if ok && prompt.EstimateTokens(text) > limit {
 			t.Fatalf("iter %d: listing is %d tokens against a %d-token share (budget %d, %d skills)",
 				iter, prompt.EstimateTokens(text), limit, budget, n)
@@ -121,9 +124,9 @@ func TestAdvListingNeverExceedsItsShare(t *testing.T) {
 	}
 }
 
-// Attack 3b. The binary search runs every turn; with the loader's maximum of 200
+// Attack 3b. The listing is rendered every turn; with the loader's maximum of 200
 // skills it must stay cheap.
-func TestAdvBinarySearchCostWith200Skills(t *testing.T) {
+func TestAdvListingCostWith200Skills(t *testing.T) {
 	skills := someSkills(harness.MaxSkills)
 	for i := range skills {
 		skills[i].Description = strings.Repeat("a fairly long description with words ", 12)
@@ -131,10 +134,10 @@ func TestAdvBinarySearchCostWith200Skills(t *testing.T) {
 	const turns = 20
 	start := time.Now()
 	for i := 0; i < turns; i++ {
-		skillsSectionWithin(skills, 1024)
+		harness.SkillsSection(skills, 1024)
 	}
 	per := time.Since(start) / turns
-	t.Logf("skillsSectionWithin, 200 skills, 1024-token share: %v per turn", per)
+	t.Logf("SkillsSection, 200 skills, 1024-token share: %v per turn", per)
 	if per > 5*time.Millisecond {
 		t.Fatalf("%v per turn is too slow for a per-turn path", per)
 	}
@@ -145,38 +148,66 @@ func TestAdvBinarySearchCostWith200Skills(t *testing.T) {
 // when given an unknown name, but the refusal lists only MaxListedNames and they
 // are the alphabetically first, which are the ones already listed.
 func TestAdvCutSkillsAreDiscoverable(t *testing.T) {
-	root := t.TempDir()
-	const total = 120
-	for i := 0; i < total; i++ {
-		writeFSSkill(t, root, fmt.Sprintf("skill-%03d", i), "does a thing that is described at some length so the listing has weight")
-	}
-	set, err := fsSkills{root}.LoadSkills(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	budget := promptTokenBudget(routerRegistry(t, nil), local.Name)
-	text, ok := skillsSectionWithin(set.Skills, budget/skillsBudgetShare)
-	if !ok || !strings.Contains(text, "was cut here") {
-		t.Fatalf("setup: expected a cut listing (ok=%v)", ok)
-	}
-	known := map[string]bool{}
-	for _, s := range set.Skills {
-		if strings.Contains(text, "- "+s.Name+" — ") {
-			known[s.Name] = true
+	for _, total := range []int{120, harness.MaxSkills} {
+		root := t.TempDir()
+		for i := 0; i < total; i++ {
+			writeFSSkill(t, root, fmt.Sprintf("skill-%03d", i), "does a thing that is described at some length so the listing has weight")
+		}
+		set, err := fsSkills{root}.LoadSkills(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := promptTokenBudget(routerRegistry(t, nil), local.Name)
+		listing, ok := harness.RenderSkills(set.Skills, budget/skillsBudgetShare)
+		if !ok || !strings.Contains(listing.Text, "was cut here") {
+			t.Fatalf("%d skills: expected a cut listing (ok=%v)", total, ok)
+		}
+		if got := prompt.EstimateTokens(listing.Text); got > budget/skillsBudgetShare {
+			t.Fatalf("%d skills: listing is %d tokens against a %d-token share", total, got, budget/skillsBudgetShare)
+		}
+		reachable := map[string]bool{}
+		for _, n := range listing.Listed {
+			if !strings.Contains(listing.Text, n) {
+				t.Fatalf("%d skills: %s is reported as listed but is not in the text", total, n)
+			}
+			reachable[n] = true
+		}
+		listed := map[string]bool{}
+		for n := range reachable {
+			listed[n] = true
+		}
+		l, err := harness.LookupSkillExcluding(root, func(rel string, _ int64) ([]byte, error) {
+			return os.ReadFile(filepath.Join(root, rel))
+		}, "no-such-skill", listed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range l.Available {
+			if listed[n] {
+				t.Errorf("%d skills: the refusal offers %s, which the prompt already carries", total, n)
+			}
+			reachable[n] = true
+		}
+		unreachable := total - len(reachable)
+		// The notice must state what is true: it may claim that every skill is
+		// named only when no skill is left out, and otherwise must count them.
+		if unnamed := total - len(listing.Listed); unnamed == 0 {
+			if unreachable != 0 {
+				t.Errorf("%d skills: all are named but %d are unreachable", total, unreachable)
+			}
+		} else if !strings.Contains(listing.Text, fmt.Sprintf("%d of those are not named below either", unnamedOf(listing, total))) {
+			t.Errorf("%d skills: the notice does not state how many are named nowhere:\n%s", total, listing.Text)
+		}
+		if total == 120 && unreachable != 0 {
+			t.Fatalf("%d of %d skills are neither listed, named, nor offered by the refusal", unreachable, total)
 		}
 	}
-	l, err := harness.LookupSkill(root, func(rel string, _ int64) ([]byte, error) {
-		return os.ReadFile(filepath.Join(root, rel))
-	}, "no-such-skill")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, n := range l.Available {
-		known[n] = true
-	}
-	if len(known) < total {
-		t.Fatalf("%d of %d skills are neither listed nor named by the unknown-name refusal; the model cannot find them by name", total-len(known), total)
-	}
+}
+
+// unnamedOf is how many skills lost their description and are not named
+// either: the skills with a description are the "- name — " lines.
+func unnamedOf(l harness.SkillsListing, total int) int {
+	return total - len(l.Listed)
 }
 
 // Attack 4. A description cannot forge a new line, header or section in the

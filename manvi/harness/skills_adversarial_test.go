@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
 // Adversarial tests for the skill loader (dh-2).
@@ -108,17 +110,17 @@ func TestAdvSectionNeverExceedsBudget(t *testing.T) {
 	for i := range 200 {
 		skills = append(skills, Skill{Name: fmt.Sprintf("s%03d", i), Description: strings.Repeat("é", MaxDescriptionRunes)})
 	}
-	for _, budget := range []int{50, 400, 2000, 8000, 50_000} {
+	for _, budget := range []int{20, 100, 400, 2000, 8000, 50_000} {
 		out, ok := SkillsSection(skills, budget)
 		if !ok {
 			// A budget under the preamble and its cut notice has no honest listing.
-			if budget >= utf8.RuneCountInString(skillsPreamble)+utf8.RuneCountInString(cutTrailer(len(skills), len(skills), budget)) {
-				t.Fatalf("budget %d: no section although the preamble and notice fit", budget)
+			if min := prompt.EstimateTokens(skillsPreamble + "\n" + cutNotice(len(skills), len(skills), 0)); budget >= min {
+				t.Fatalf("budget %d: no section although the preamble and notice fit (%d)", budget, min)
 			}
 			continue
 		}
-		if n := utf8.RuneCountInString(out); n > budget {
-			t.Errorf("budget %d: section is %d runes (over by %d)", budget, n, n-budget)
+		if n := prompt.EstimateTokens(out); n > budget {
+			t.Errorf("budget %d: section is %d tokens (over by %d)", budget, n, n-budget)
 		}
 	}
 	full, _ := SkillsSection(skills, 0)

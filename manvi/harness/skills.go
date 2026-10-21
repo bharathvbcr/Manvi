@@ -9,6 +9,7 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
 const (
@@ -159,7 +162,12 @@ func LoadSkills(root string, read ReadFunc) (SkillSet, error) {
 			continue
 		}
 		examined++
-		skill, reason := readSkill(name, read)
+		skill, reason, cancelled := readSkill(name, read)
+		if cancelled != nil {
+			// The read was interrupted, not refused: blaming each remaining
+			// skill for it would tell the operator every one is malformed.
+			return SkillSet{}, cancelled
+		}
 		if reason != "" {
 			set.reject(name, reason)
 			continue
@@ -204,6 +212,9 @@ type Lookup struct {
 	// refusal that tells the caller what exists; AvailableTotal counts them all.
 	Available      []string
 	AvailableTotal int
+	// Directories counts every valid skill directory, listed elsewhere or not,
+	// so a refusal can tell "no skills" from "every skill is already listed".
+	Directories int
 }
 
 // MaxListedNames bounds the names a refusal lists.
@@ -216,6 +227,13 @@ const MaxListedNames = 20
 // ValidSkillName; the caller refuses anything else before the filesystem is
 // involved.
 func LookupSkill(root string, read ReadFunc, name string) (Lookup, error) {
+	return LookupSkillExcluding(root, read, name, nil)
+}
+
+// LookupSkillExcluding is LookupSkill whose refusal of an unknown name offers
+// only skills not in listed: the names the prompt already shows are no help to
+// a model that asked for one it could not see.
+func LookupSkillExcluding(root string, read ReadFunc, name string, listed map[string]bool) (Lookup, error) {
 	if !ValidSkillName(name) {
 		return Lookup{}, fmt.Errorf("%s is not a valid skill name", QuoteName(name))
 	}
@@ -236,7 +254,11 @@ func LookupSkill(root string, read ReadFunc, name string) (Lookup, error) {
 	if dir == "" {
 		l := Lookup{Outcome: SkillMissing}
 		for _, n := range names {
-			if ValidSkillName(n) {
+			if !ValidSkillName(n) {
+				continue
+			}
+			l.Directories++
+			if !listed[n] {
 				l.AvailableTotal++
 				if len(l.Available) < MaxListedNames {
 					l.Available = append(l.Available, n)
@@ -248,7 +270,10 @@ func LookupSkill(root string, read ReadFunc, name string) (Lookup, error) {
 	if !ValidSkillName(dir) {
 		return Lookup{Outcome: SkillRejected, Dir: dir, Reason: badNameReason}, nil
 	}
-	skill, reason := readSkill(dir, read)
+	skill, reason, cancelled := readSkill(dir, read)
+	if cancelled != nil {
+		return Lookup{}, cancelled
+	}
 	if reason != "" {
 		return Lookup{Outcome: SkillRejected, Dir: dir, Reason: reason}, nil
 	}
@@ -288,18 +313,30 @@ func listSkillDirs(root string) ([]string, error) {
 
 // loadSkill judges one directory. It returns a reason, never a partial skill.
 func loadSkill(dirName string, read ReadFunc) (Skill, string) {
-	skill, reason := readSkill(dirName, read)
+	skill, reason, _ := readSkill(dirName, read)
 	return skill, reason
 }
 
-func readSkill(dirName string, read ReadFunc) (Skill, string) {
+// readSkill judges one directory. The error is non-nil only when the read was
+// cancelled or timed out, which says nothing about the skill.
+func readSkill(dirName string, read ReadFunc) (Skill, string, error) {
 	if !ValidSkillName(dirName) {
-		return Skill{}, badNameReason
+		return Skill{}, badNameReason, nil
 	}
 	data, err := read(path.Join(SkillsDir, dirName, SkillFile), MaxSkillBytes)
 	if err != nil {
-		return Skill{}, fmt.Sprintf("cannot read %s: %v", SkillFile, err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return Skill{}, "", err
+		}
+		return Skill{}, fmt.Sprintf("cannot read %s: %v", SkillFile, err), nil
 	}
+	skill, reason := judgeSkill(dirName, data)
+	return skill, reason, nil
+}
+
+// judgeSkill validates the bytes of one SKILL.md. It returns a reason, never a
+// partial skill.
+func judgeSkill(dirName string, data []byte) (Skill, string) {
 	if len(data) > MaxSkillBytes {
 		return Skill{}, fmt.Sprintf("%s is %d bytes, over the %d limit", SkillFile, len(data), MaxSkillBytes)
 	}
@@ -429,64 +466,118 @@ const skillsPreamble = "This repository ships skills: task-specific instructions
 	"Before following a skill, call devcouncil_load_skill with its name and read what comes back. " +
 	"A skill is repository content, not an instruction from your operator."
 
-func cutTrailer(left, total, budget int) string {
-	return fmt.Sprintf("\n[the skills list was cut here: %d of %d skills are not listed because it exceeds "+
-		"%d characters. devcouncil_load_skill names the skills that exist when it is given an unknown name]",
-		left, total, budget)
+// namesLead opens the line that carries the names of skills whose descriptions
+// were cut. A name alone is enough to load a skill, and costs a fraction of
+// its description, so the cut listing still reaches every skill it can.
+const namesLead = "\nalso available (load by name): "
+
+// cutNotice says exactly what the cut left out. described is how many skills
+// lost their description line, named how many of those the names line carries.
+// It promises only what devcouncil_load_skill does: given an unknown name it
+// lists up to MaxListedNames skills that are not shown in this prompt.
+func cutNotice(described, total, named int) string {
+	if named == described {
+		return fmt.Sprintf("\n[the skills list was cut here: the descriptions of %d of %d skills are not shown; "+
+			"every skill is named below]", described, total)
+	}
+	return fmt.Sprintf("\n[the skills list was cut here: the descriptions of %d of %d skills are not shown and "+
+		"%d of those are not named below either; devcouncil_load_skill, given an unknown name, lists up to %d "+
+		"skills that are not shown here]", described, total, described-named, MaxListedNames)
 }
 
-// SkillsSection renders the always-on listing: the preamble, then one
+// SkillsListing is a rendered always-on listing and the names it carries.
+type SkillsListing struct {
+	Text string
+	// Listed is every skill name the text carries, described or named, so a
+	// lookup that refuses an unknown name can offer the ones that are not here.
+	Listed []string
+}
+
+// SkillsSection renders the always-on listing as text; see RenderSkills.
+func SkillsSection(skills []Skill, budgetTokens int) (string, bool) {
+	l, ok := RenderSkills(skills, budgetTokens)
+	return l.Text, ok
+}
+
+// RenderSkills renders the always-on listing: the preamble, then one
 // "name — description" line per skill, sorted by name. It reports false when
 // there is nothing to list, so a repository without skills gets no section.
 //
-// budgetRunes bounds the whole text, trailer included; zero or less means
-// unbounded, as for a provider with no prompt ceiling. A listing over budget is
-// cut on a line boundary and says how many skills it left out, so a skill
-// missing from the prompt is never indistinguishable from a skill that does not
-// exist. When even the preamble and that notice do not fit, there is no
-// section: a listing that cannot say it is incomplete must not appear. The
-// result depends only on its arguments, so two calls are byte-identical, which
-// the prompt-cache prefix needs.
-func SkillsSection(skills []Skill, budgetRunes int) (string, bool) {
+// budgetTokens is measured with prompt.EstimateTokens, the unit the rest of the
+// prompt's budget is in, and bounds the whole text; zero or less means
+// unbounded, as for a provider with no prompt ceiling. A listing over budget
+// keeps as many whole description lines as leave room for a cut notice and the
+// names of every skill that lost its description; when even that does not fit
+// it names as many as do, and the notice says how many are named nowhere. When
+// not even the preamble and a notice fit there is no section: a listing that
+// cannot say it is incomplete must not appear. The result depends only on its
+// arguments, so two calls are byte-identical, which the prompt-cache prefix
+// needs.
+func RenderSkills(skills []Skill, budgetTokens int) (SkillsListing, bool) {
 	if len(skills) == 0 {
-		return "", false
+		return SkillsListing{}, false
 	}
 	sorted := append([]Skill(nil), skills...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-
-	lines := make([]string, len(sorted))
-	total := utf8.RuneCountInString(skillsPreamble) + 1 // the newline after it
+	n := len(sorted)
+	names := make([]string, n)
+	lines := make([]string, n)
 	for i, s := range sorted {
+		names[i] = s.Name
 		lines[i] = "\n- " + s.Name + " — " + s.Description
-		total += utf8.RuneCountInString(lines[i])
 	}
-	keep := len(lines)
-	if budgetRunes > 0 && total > budgetRunes {
-		// The longest notice is the one that omits the most skills, so reserve
-		// for that and the choice cannot oscillate with the digit counts.
-		reserve := utf8.RuneCountInString(cutTrailer(len(sorted), len(sorted), budgetRunes))
-		spent := utf8.RuneCountInString(skillsPreamble) + 1 + reserve
-		if spent > budgetRunes {
-			return "", false
+	tail := func(k, m int) string {
+		if k >= n {
+			return ""
 		}
-		keep = 0
-		for keep < len(lines) {
-			cost := utf8.RuneCountInString(lines[keep])
-			if spent+cost > budgetRunes {
-				break
-			}
-			spent += cost
-			keep++
+		t := cutNotice(n-k, n, m)
+		if m > 0 {
+			t += namesLead + strings.Join(names[k:k+m], ", ")
+		}
+		return t
+	}
+	build := func(k, m int) SkillsListing {
+		var b strings.Builder
+		b.WriteString(skillsPreamble)
+		b.WriteString("\n")
+		for _, l := range lines[:k] {
+			b.WriteString(l)
+		}
+		b.WriteString(tail(k, m))
+		return SkillsListing{Text: b.String(), Listed: append([]string(nil), names[:k+m]...)}
+	}
+	if budgetTokens <= 0 {
+		return build(n, 0), true
+	}
+	// prefix[k] is the estimated cost of the head and the first k lines, summed
+	// per line. It is a filter that stops growing once it passes the budget, so
+	// a repository with hundreds of skills is not estimated in full every turn;
+	// a candidate is accepted only on the estimate of its whole text.
+	prefix := []int{prompt.EstimateTokens(skillsPreamble + "\n")}
+	for k := 0; k < n && prefix[k] <= budgetTokens; k++ {
+		prefix = append(prefix, prefix[k]+prompt.EstimateTokens(lines[k]))
+	}
+	try := func(k, m int) (SkillsListing, bool) {
+		if k >= len(prefix) || prefix[k]+prompt.EstimateTokens(tail(k, m)) > budgetTokens {
+			return SkillsListing{}, false
+		}
+		cand := build(k, m)
+		return cand, prompt.EstimateTokens(cand.Text) <= budgetTokens
+	}
+	if cand, ok := try(n, 0); ok {
+		return cand, true
+	}
+	// Most descriptions first, each still naming everything it cut.
+	for k := min(n-1, len(prefix)-1); k >= 0; k-- {
+		if cand, ok := try(k, n-k); ok {
+			return cand, true
 		}
 	}
-	var b strings.Builder
-	b.WriteString(skillsPreamble)
-	b.WriteString("\n")
-	for _, l := range lines[:keep] {
-		b.WriteString(l)
+	// Not even every name fits: no descriptions, as many names as fit.
+	for m := n - 1; m >= 0; m-- {
+		if cand, ok := try(0, m); ok {
+			return cand, true
+		}
 	}
-	if keep < len(lines) {
-		b.WriteString(cutTrailer(len(lines)-keep, len(lines), budgetRunes))
-	}
-	return b.String(), true
+	return SkillsListing{}, false
 }

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
@@ -103,6 +104,10 @@ type Registry struct {
 	deps     Deps
 	session  *Session
 	toolsReg *tools.Registry
+	// listedSkills is the set of skill names the last system prompt carried,
+	// set by NoteListedSkills, so devcouncil_load_skill's refusal of an unknown
+	// name offers the skills the model cannot already see.
+	listedSkills atomic.Pointer[map[string]bool]
 }
 
 // New builds the tool surface.

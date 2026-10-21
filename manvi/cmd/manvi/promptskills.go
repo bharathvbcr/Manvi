@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
-	"unicode/utf8"
+	"sort"
+	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
@@ -26,6 +28,9 @@ const skillsBudgetShare = 4
 // answers from, so the names listed here are the names it accepts.
 type skillLoader interface {
 	LoadSkills(ctx context.Context) (harness.SkillSet, error)
+	// NoteListedSkills tells the loader which names this prompt carries, so a
+	// refusal of an unknown name can offer the ones it does not.
+	NoteListedSkills(names []string)
 }
 
 // skillsForPrompt resolves a turn's skills listing once, for both faces.
@@ -33,14 +38,26 @@ type skillLoader interface {
 // It returns the source to register, nil when there is nothing to list, and the
 // notices to surface through the prompt-fault path: each rejected skill with
 // its reason, the counts past the loader's bounds, and a failed load. A failed
-// load is never an empty section: the turn runs without a listing and says so.
+// load, a cancelled one included, is a single notice and never an empty
+// section: the turn runs without a listing and says so.
 //
 // budgetTokens is the prompt's token budget, zero for an unbounded prompt, in
 // which case only the loader's own hard caps apply.
 func skillsForPrompt(ctx context.Context, loader skillLoader, budgetTokens int) (prompt.Source, []string) {
-	set, err := loader.LoadSkills(ctx)
-	if err != nil {
+	unread := func(err error) (prompt.Source, []string) {
+		loader.NoteListedSkills(nil)
 		return nil, []string{fmt.Sprintf("skills could not be read, so none are listed this turn: %v", err)}
+	}
+	if err := ctx.Err(); err != nil {
+		return unread(err)
+	}
+	set, err := loader.LoadSkills(ctx)
+	if err == nil {
+		// A read cut short by cancellation can come back as a short list.
+		err = ctx.Err()
+	}
+	if err != nil {
+		return unread(err)
 	}
 	var notices []string
 	for _, r := range set.Rejected {
@@ -57,39 +74,41 @@ func skillsForPrompt(ctx context.Context, loader skillLoader, budgetTokens int) 
 	if budgetTokens > 0 {
 		limit = budgetTokens / skillsBudgetShare
 	}
-	text, ok := skillsSectionWithin(set.Skills, limit)
+	listing, ok := harness.RenderSkills(set.Skills, limit)
 	if !ok {
+		loader.NoteListedSkills(nil)
 		if len(set.Skills) > 0 {
 			notices = append(notices, fmt.Sprintf("%d skills exist but the listing does not fit in %d tokens; none are listed",
 				len(set.Skills), limit))
 		}
 		return nil, notices
 	}
-	return prompt.Static("skills", skillsSectionOrder, false, text), notices
+	loader.NoteListedSkills(listing.Listed)
+	return prompt.Static("skills", skillsSectionOrder, false, listing.Text), notices
 }
 
-// skillsSectionWithin renders the listing inside a token limit, zero meaning
-// none. SkillsSection is bounded in runes; the prompt's budget is in
-// prompt.EstimateTokens, the unit boundProjectInstructions already uses, so the
-// rune budget is found as the largest one whose rendering still fits. The
-// result depends only on its arguments, which keeps the prompt-cache prefix
-// byte-identical across assemblies.
-func skillsSectionWithin(skills []harness.Skill, tokens int) (string, bool) {
-	full, ok := harness.SkillsSection(skills, 0)
-	if !ok || tokens <= 0 || prompt.EstimateTokens(full) <= tokens {
-		return full, ok
+// noticeOnce reports a standing condition once rather than on every turn.
+//
+// Both faces resolve the skills listing every turn, and a rejected skill is the
+// same on turn two as on turn one, so printing each notice each turn buries the
+// one turn where something changed. It keeps the digest of the last notice set,
+// sorted so the order of discovery cannot matter, and passes a set through only
+// when it differs from that one. An empty set is remembered too, so a condition
+// that clears and comes back is reported again. The zero value is ready.
+type noticeOnce struct {
+	last [sha256.Size]byte
+	seen bool
+}
+
+// fresh returns notices when the set differs from the last one passed, and nil
+// when it is unchanged.
+func (n *noticeOnce) fresh(notices []string) []string {
+	sorted := append([]string(nil), notices...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+	if n.seen && sum == n.last {
+		return nil
 	}
-	best, found := "", false
-	lo, hi := 1, utf8.RuneCountInString(full)
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		text, fits := harness.SkillsSection(skills, mid)
-		if fits && prompt.EstimateTokens(text) <= tokens {
-			best, found = text, true
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-	return best, found
+	n.last, n.seen = sum, true
+	return notices
 }

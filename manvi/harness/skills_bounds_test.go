@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 	"unicode"
-	"unicode/utf8"
+
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
 func forbiddenRune(r rune) bool {
@@ -36,9 +37,9 @@ func TestSkillsSectionNeverExceedsAnyBudget(t *testing.T) {
 		skills = append(skills, Skill{Name: n, Description: strings.Repeat("é", 37)})
 	}
 	full, _ := SkillsSection(skills, 0)
-	fullRunes := utf8.RuneCountInString(full)
+	fullTokens := prompt.EstimateTokens(full)
 	sections := 0
-	for budget := 1; budget <= fullRunes+20; budget++ {
+	for budget := 1; budget <= fullTokens+20; budget++ {
 		out, ok := SkillsSection(skills, budget)
 		if !ok {
 			if out != "" {
@@ -47,20 +48,20 @@ func TestSkillsSectionNeverExceedsAnyBudget(t *testing.T) {
 			continue
 		}
 		sections++
-		if n := utf8.RuneCountInString(out); n > budget {
-			t.Fatalf("budget %d: %d runes", budget, n)
+		if n := prompt.EstimateTokens(out); n > budget {
+			t.Fatalf("budget %d: %d tokens", budget, n)
 		}
-		if budget < fullRunes && !strings.Contains(out, "was cut here") {
+		if budget < fullTokens && !strings.Contains(out, "was cut here") {
 			t.Fatalf("budget %d: cut without saying so", budget)
 		}
-		if budget >= fullRunes && out != full {
+		if budget >= fullTokens && out != full {
 			t.Fatalf("budget %d: a listing that fits was changed", budget)
 		}
 	}
 	if sections == 0 {
 		t.Fatal("no budget produced a section")
 	}
-	if out, ok := SkillsSection(skills, utf8.RuneCountInString(skillsPreamble)); ok || out != "" {
+	if out, ok := SkillsSection(skills, prompt.EstimateTokens(skillsPreamble)); ok || out != "" {
 		t.Error("a budget that holds the preamble but not the cut notice must produce no section")
 	}
 }

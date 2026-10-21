@@ -38,6 +38,21 @@ func (r *Registry) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
 	return harness.LoadSkills(r.deps.Root, r.skillReader(ctx))
 }
 
+// NoteListedSkills records the skill names the system prompt just carried, in
+// full or by name alone. The refusal of an unknown name in devcouncil_load_skill
+// then offers the skills that are not among them. An empty list clears it.
+func (r *Registry) NoteListedSkills(names []string) {
+	if len(names) == 0 {
+		r.listedSkills.Store(nil)
+		return
+	}
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	r.listedSkills.Store(&set)
+}
+
 // loadSkill returns the body of one repository skill as a tool result.
 //
 // It reads and validates only the requested directory, so its cost does not
@@ -70,7 +85,11 @@ func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result 
 		return tools.Errorf("%s is not a skill name: it must match [a-z0-9][a-z0-9_-]* and be at most %d characters",
 			harness.QuoteName(args.Name), harness.MaxSkillNameLen)
 	}
-	l, err := harness.LookupSkill(r.deps.Root, r.skillReader(ctx), args.Name)
+	var listed map[string]bool
+	if p := r.listedSkills.Load(); p != nil {
+		listed = *p
+	}
+	l, err := harness.LookupSkillExcluding(r.deps.Root, r.skillReader(ctx), args.Name, listed)
 	if err != nil {
 		return unavailable("the skills list", err)
 	}
@@ -83,13 +102,20 @@ func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result 
 		}
 		return tools.Errorf("skill %s was rejected: %s", harness.QuoteName(args.Name), l.Reason)
 	}
-	if l.AvailableTotal == 0 {
+	if l.Directories == 0 {
 		return tools.Errorf("no skill named %s: this repository has no skills under %s", harness.QuoteName(args.Name), harness.SkillsDir)
+	}
+	if l.AvailableTotal == 0 {
+		return tools.Errorf("no skill named %s: every skill this repository has is already named in the system prompt", harness.QuoteName(args.Name))
 	}
 	more := ""
 	if l.AvailableTotal > len(l.Available) {
 		more = fmt.Sprintf(" and %d more", l.AvailableTotal-len(l.Available))
 	}
-	return tools.Errorf("no skill named %s; the skills directories are: %s%s",
-		harness.QuoteName(args.Name), strings.Join(l.Available, ", "), more)
+	shown := "the skills directories are"
+	if listed != nil {
+		shown = "skills not named in the system prompt are"
+	}
+	return tools.Errorf("no skill named %s; %s: %s%s",
+		harness.QuoteName(args.Name), shown, strings.Join(l.Available, ", "), more)
 }

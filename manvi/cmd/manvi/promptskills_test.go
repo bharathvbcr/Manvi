@@ -19,6 +19,7 @@ type fakeSkills struct {
 }
 
 func (f fakeSkills) LoadSkills(context.Context) (harness.SkillSet, error) { return f.set, f.err }
+func (f fakeSkills) NoteListedSkills([]string)                            {}
 
 func someSkills(n int) []harness.Skill {
 	out := make([]harness.Skill, n)

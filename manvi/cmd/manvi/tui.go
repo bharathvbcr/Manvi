@@ -102,6 +102,9 @@ type tuiSession struct {
 	gate     *gate.Gate
 	native   *devcouncil.Registry
 	pipeline *tools.Registry
+	// skillNotices keeps the skills faults of the last turn, so a standing
+	// condition is reported once and not on every turn of the session.
+	skillNotices noticeOnce
 	// subMeter totals what this session's sub-agents have spent, so the usage
 	// this face reports is the whole bill rather than the dispatching agent's
 	// share of it.
@@ -962,7 +965,9 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
-	promptOpts.Skills, promptOpts.SkillNotices = skillsForPrompt(ctx, s.native, promptTokenBudget(h.reg, at.provider.Name()))
+	var skillNotices []string
+	promptOpts.Skills, skillNotices = skillsForPrompt(ctx, s.native, promptTokenBudget(h.reg, at.provider.Name()))
+	promptOpts.SkillNotices = s.skillNotices.fresh(skillNotices)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
 	// Surfaced in the transcript rather than on stderr. Under the alternate
 	// screen stderr goes nowhere a person can read, which is how a prompt
