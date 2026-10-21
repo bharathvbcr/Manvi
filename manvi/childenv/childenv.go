@@ -40,7 +40,8 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 )
 
-// Withheld names the variables no child of this process receives. It is
+// Withheld names the variables no child of this process receives; names compare
+// case-insensitively on Windows, as the OS does. It is
 // credentials.ProviderEnv, re-exported under the name of what this package
 // guarantees, so a host reading `manvi version --json` and a test reading the
 // code see the same list.
@@ -50,7 +51,8 @@ func Withheld() []string { return credentials.ProviderEnv() }
 // it with a provider credential in its environment: `manvi version --json`
 // answers it before the process exists, and the serve `hello` answers it again
 // from the running one. A host checks that every name it intends to inject is
-// in WithheldProviderEnv, not only the boolean — a name this build does not
+// in WithheldProviderEnv (names compare case-insensitively on Windows), not
+// only the boolean — a name this build does not
 // know is a name it does not withhold.
 //
 // Absent is not false. A build that predates the guarantee omits both keys,
@@ -88,6 +90,18 @@ func envKey(name string, fold bool) string {
 		return strings.ToUpper(name)
 	}
 	return name
+}
+
+// Key is the form of an environment variable name that two names share exactly
+// when the host OS treats them as one variable: the name itself on unix, its
+// upper-case on Windows. Every place that compares or de-duplicates names must
+// go through it (or KeyFor), so the comparison has one owner.
+func Key(name string) string { return envKey(name, foldEnvNames) }
+
+// KeyFor is Key with the OS's behaviour chosen by the caller, so a test can
+// exercise the Windows and unix comparisons on any host.
+func KeyFor(fold bool) func(string) string {
+	return func(name string) string { return envKey(name, fold) }
 }
 
 // entryName is the variable name of a "NAME=value" entry. A Windows drive
