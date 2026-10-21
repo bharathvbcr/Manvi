@@ -17,6 +17,14 @@ import (
 // the assembler drops, ahead of every Essential section.
 const skillsSectionOrder = 60
 
+// skillsSourceName and projectInstructionsName are the names of the two sources
+// the per-turn resolution adds to the prompt, named once so the names a spec may
+// not reuse are the names the sources have.
+const (
+	skillsSourceName        = "skills"
+	projectInstructionsName = "project-instructions"
+)
+
 // skillsBudgetShare is the divisor on the prompt's token budget: the listing
 // may take one part in this many of it. A repository with many skills must not
 // be able to crowd out the rules, so the listing is bounded rather than
@@ -84,7 +92,7 @@ func skillsForPrompt(ctx context.Context, loader skillLoader, budgetTokens int) 
 		return nil, notices
 	}
 	loader.NoteListedSkills(listing.Listed)
-	return prompt.Static("skills", skillsSectionOrder, false, listing.Text), notices
+	return prompt.Static(skillsSourceName, skillsSectionOrder, false, listing.Text), notices
 }
 
 // noticeOnce reports a standing condition once rather than on every turn.

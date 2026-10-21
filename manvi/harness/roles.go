@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 
@@ -51,33 +52,58 @@ func (r RoleSpec) Definition(sf Surface) (def agents.Definition, dropped []strin
 	return def, dropped, nil
 }
 
-// Roles tracks the roles a spec registered, so the next spec can replace them
-// and nothing else is ever touched. The zero value is ready.
+// Roles tracks the exact definitions a spec registered, so the next spec can
+// replace them and nothing else is ever touched. The zero value is ready.
+//
+// Ownership is the definition, not the name: devcouncil_define_subagent
+// overwrites any name that is not shipped, so a role a model redefined under a
+// spec's name is the model's from then on. It is left alone, never replaced and
+// never removed, and the spec stops owning it.
 type Roles struct {
 	mu   sync.Mutex
-	mine map[string]bool
+	mine map[string]agents.Definition
 }
 
 // Apply registers the spec's roles on reg and removes the ones a previous Apply
 // registered that the new list does not carry. It returns a notice for each
-// role it did not register and each tool it narrowed away; it never returns an
-// error, because a role that cannot be registered must not stop the turn, and
-// it must not be quiet either.
+// role it did not register, each role it left to its new owner and each tool it
+// narrowed away; it never returns an error, because a role that cannot be
+// registered must not stop the turn, and it must not be quiet either.
 //
-// A role whose name is already held by something Apply did not register — a
-// shipped role, or one a model defined — is refused: a spec does not overwrite.
+// A role whose name is held by anything Apply did not register as it stands — a
+// shipped role, one a model defined, or one a model redefined — is refused: a
+// spec does not overwrite.
 func (t *Roles) Apply(reg *agents.Registry, roles []RoleSpec, sf Surface) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var notices []string
-	next := map[string]bool{}
+	next := map[string]agents.Definition{}
+
+	// owned reports whether the registry still holds exactly what Apply put
+	// there, and says so once when it does not.
+	owned := func(name string) (held agents.Definition, isHeld, ours bool) {
+		held, isHeld = reg.Get(name)
+		want, tracked := t.mine[name]
+		if !tracked {
+			return held, isHeld, false
+		}
+		if isHeld && reflect.DeepEqual(held, want) {
+			return held, true, true
+		}
+		delete(t.mine, name)
+		if isHeld {
+			notices = append(notices, fmt.Sprintf("harness role %q was redefined by something other than the spec and is left as it is", name))
+		}
+		return held, isHeld, false
+	}
+
 	for _, r := range roles {
 		def, dropped, err := r.Definition(sf)
 		if err != nil {
 			notices = append(notices, fmt.Sprintf("harness role %q was not registered: %v", r.Name, err))
 			continue
 		}
-		if _, held := reg.Get(r.Name); held && !t.mine[r.Name] {
+		if _, isHeld, ours := owned(r.Name); isHeld && !ours {
 			notices = append(notices, fmt.Sprintf("harness role %q was not registered: the name is already held by another role, and a spec does not overwrite", r.Name))
 			continue
 		}
@@ -85,17 +111,20 @@ func (t *Roles) Apply(reg *agents.Registry, roles []RoleSpec, sf Surface) []stri
 			notices = append(notices, fmt.Sprintf("harness role %q was not registered: %v", r.Name, err))
 			continue
 		}
-		next[r.Name] = true
+		stored, _ := reg.Get(r.Name)
+		next[r.Name] = stored
 		if len(dropped) > 0 {
 			notices = append(notices, fmt.Sprintf("harness role %q: tools %v are not tools this session has and were dropped from its allowlist", r.Name, dropped))
 		}
 	}
 	for name := range t.mine {
-		if next[name] {
+		if _, listed := next[name]; listed {
 			continue
 		}
-		if err := reg.Unregister(name); err != nil {
-			notices = append(notices, fmt.Sprintf("harness role %q could not be removed: %v", name, err))
+		if _, isHeld, ours := owned(name); isHeld && ours {
+			if err := reg.Unregister(name); err != nil {
+				notices = append(notices, fmt.Sprintf("harness role %q could not be removed: %v", name, err))
+			}
 		}
 	}
 	t.mine = next

@@ -400,6 +400,9 @@ func FuzzDecodeSpec(f *testing.F) {
 	f.Add([]byte(`{"name":"x","roles":[{"name":"r","description":"d","write_exceptions":["a"]}]}`))
 	f.Add([]byte(`{"name":"x","sections":[{"name":"a","order":60,"text":"\u0000"}]}`))
 	f.Add([]byte(`[[[[`))
+	f.Add([]byte(`{"name":"x","roles":[{"name":"r","description":"d","read_only":true,"READ_ONLY":false}]}`))
+	f.Add([]byte(`{"name":"x","skills":["a"],"ſkills":["b"]}`))
+	f.Add([]byte(`{"NAME":"x"}`))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		s, err := DecodeSpec(raw)
 		if err != nil {

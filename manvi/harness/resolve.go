@@ -79,7 +79,7 @@ func (c *Catalogue) Register(s Spec) error {
 	if c.specs == nil {
 		c.specs = map[string]Spec{}
 	}
-	c.specs[s.Name] = s
+	c.specs[s.Name] = s.Clone()
 	return nil
 }
 
@@ -100,7 +100,7 @@ func (c *Catalogue) Lookup(name string) (Spec, bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	s, ok := c.specs[name]
-	return s, ok, nil
+	return s.Clone(), ok, nil
 }
 
 // Origin implements Input.

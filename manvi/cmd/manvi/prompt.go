@@ -455,7 +455,7 @@ func projectInstructionsSource(budget int) (prompt.Source, bool) {
 		data, err := os.ReadFile(name)
 		if err == nil && len(bytes.TrimSpace(data)) > 0 {
 			body := boundProjectInstructions(strings.TrimSpace(string(data)), budget)
-			return prompt.Static("project-instructions", 35, false,
+			return prompt.Static(projectInstructionsName, 35, false,
 				fmt.Sprintf("Project instructions (%s):\n%s", name, body)), true
 		}
 	}

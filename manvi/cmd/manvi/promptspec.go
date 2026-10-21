@@ -7,8 +7,11 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
+	"github.com/bharathvbcr/Manvi/manvi/llm/local"
+	"github.com/bharathvbcr/Manvi/manvi/prompt"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -120,7 +123,6 @@ func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, 
 		opts.SpecSources = spec.Sources()
 		only = spec.Skills
 	}
-	opts.SpecNotices = st.specNotices.fresh(specNotices)
 
 	var skillNotices []string
 	loader := in.skills
@@ -129,7 +131,38 @@ func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, 
 	}
 	opts.Skills, skillNotices = skillsForPrompt(ctx, loader, budget)
 	opts.SkillNotices = st.skillNotices.fresh(skillNotices)
+
+	// Validation was told the names the prompt can own; this is the check
+	// against the sources this turn actually has, last, because the skills
+	// listing is only known now. A spec whose section the assembler would
+	// refuse is not applied at all, so the log never records a spec as applied
+	// for a prompt that lacks part of it.
+	if spec != nil {
+		if clash := collidingSection(reg, *opts, spec); clash != "" {
+			_, why := dropSpec(in, st, fmt.Sprintf("harness spec %q was not applied and the turn runs without it: its section %q "+
+				"collides with a section this turn's prompt already has", spec.Name, clash))
+			specNotices = append(specNotices, why...)
+			opts.SpecSources, id = nil, specIdentity{}
+		}
+	}
+	opts.SpecNotices = st.specNotices.fresh(specNotices)
 	return id
+}
+
+// collidingSection names a section of the spec that shares a name with a source
+// the turn's prompt, without the spec, already registers; "" when none does.
+func collidingSection(reg *flags.Registry, opts PromptOptions, spec *harness.Spec) string {
+	opts.SpecSources = nil
+	taken := map[string]bool{}
+	for _, src := range promptSources(reg, opts) {
+		taken[src.Name()] = true
+	}
+	for _, sec := range spec.Sections {
+		if taken[sec.Name] {
+			return sec.Name
+		}
+	}
+	return ""
 }
 
 // resolveSpec selects, resolves and validates the session's spec, applying its
@@ -175,14 +208,29 @@ func dropSpec(in turnInputs, st *turnState, reasons ...string) (*harness.Spec, [
 // reservedPromptNames are the source and section names the prompt owns without
 // a spec: asked of the assembler's own sources, so a section added to the
 // prompt is protected from collision the day it is added.
+//
+// They are asked of a prompt with every option on, not of this turn's: a source
+// that is conditional today (code-map guidance, documentation lookup, the skills
+// listing, the project instructions, a provider's own sections) would otherwise
+// be a name a spec could take, to be refused at assembly after it validated.
 func reservedPromptNames(reg *flags.Registry, opts PromptOptions) []string {
-	opts.SpecSources = nil
-	var names []string
-	for _, src := range promptSources(reg, opts) {
-		names = append(names, src.Name())
-		if secs, err := src.Sections(); err == nil {
-			for _, s := range secs {
-				names = append(names, s.Name)
+	full := opts
+	full.SpecSources = nil
+	full.TaskToolsOffered, full.DynamicTools = true, true
+	full.CodeMapAvailable, full.DocLookupAvailable = true, true
+	full.ActiveGroups = []string{tools.GroupCore, tools.GroupTask, tools.GroupNav, tools.GroupSubagent,
+		tools.GroupMCP, tools.GroupArtifact, tools.GroupQuestion, tools.GroupWeb}
+	full.Areas = []repomap.AreaSummary{{Name: "area", Files: 1}}
+	full.Skills = prompt.Static(skillsSourceName, skillsSectionOrder, false, "x")
+	names := []string{skillsSourceName, projectInstructionsName}
+	for _, provider := range []string{opts.Provider, local.Name, "anthropic"} {
+		full.Provider = provider
+		for _, src := range promptSources(reg, full) {
+			names = append(names, src.Name())
+			if secs, err := src.Sections(); err == nil {
+				for _, s := range secs {
+					names = append(names, s.Name)
+				}
 			}
 		}
 	}

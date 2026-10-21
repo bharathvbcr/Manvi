@@ -12,6 +12,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 const SchemaVersion = 1
@@ -230,6 +231,24 @@ func DecodeStrict(raw []byte, destination interface{}) error {
 	d.DisallowUnknownFields()
 	return d.Decode(destination)
 }
+
+// foldKey maps a key to the representative of its strings.EqualFold class: each
+// rune becomes the smallest rune of its unicode.SimpleFold orbit, so "ſ" and "s"
+// and "K" (Kelvin) and "k" agree, as they do for encoding/json's field match.
+func foldKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < low {
+				low = f
+			}
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
+}
+
 func uniqueJSON(d *json.Decoder, depth int) error {
 	if depth > 48 {
 		return errors.New("JSON nesting exceeds 48")
@@ -244,7 +263,10 @@ func uniqueJSON(d *json.Decoder, depth int) error {
 	}
 	switch delim {
 	case '{':
-		seen := map[string]bool{}
+		// Keyed by the case-folded name: encoding/json matches an object key to
+		// a field case-insensitively, so {"a":1,"A":2} is one field written
+		// twice and the last spelling would win over the one a reviewer read.
+		seen := map[string]string{}
 		for d.More() {
 			key, err := d.Token()
 			if err != nil {
@@ -254,10 +276,14 @@ func uniqueJSON(d *json.Decoder, depth int) error {
 			if !ok {
 				return errors.New("object key is not a string")
 			}
-			if seen[s] {
-				return fmt.Errorf("duplicate JSON key %q", s)
+			folded := foldKey(s)
+			if first, dup := seen[folded]; dup {
+				if first == s {
+					return fmt.Errorf("duplicate JSON key %q", s)
+				}
+				return fmt.Errorf("duplicate JSON key: %q and %q name the same field", first, s)
 			}
-			seen[s] = true
+			seen[folded] = s
 			if err := uniqueJSON(d, depth+1); err != nil {
 				return err
 			}

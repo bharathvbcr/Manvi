@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -97,6 +99,9 @@ func DecodeSpec(raw []byte) (Spec, error) {
 	if err := refuseForbiddenKeys(raw); err != nil {
 		return Spec{}, err
 	}
+	if err := refuseInexactKeys(raw); err != nil {
+		return Spec{}, err
+	}
 	var s Spec
 	if err := workflow.DecodeStrict(raw, &s); err != nil {
 		return Spec{}, fmt.Errorf("harness spec: %w", err)
@@ -146,6 +151,79 @@ func forbiddenKeyFindings(raw []byte) []string {
 		}
 	}
 	return found
+}
+
+// refuseInexactKeys requires every field to be spelled exactly as the schema
+// spells it. encoding/json would accept "READ_ONLY" for read_only; a spec is a
+// reviewed file, and a spelling that only works because the decoder is lenient
+// is one a reader and a tool can disagree about. The field sets come from the
+// struct tags, so they cannot drift from the types.
+func refuseInexactKeys(raw []byte) error {
+	var found []string
+	check := func(where string, obj map[string]json.RawMessage, t reflect.Type) {
+		fields := jsonFields(t)
+		for key := range obj {
+			if slices.Contains(fields, key) {
+				continue
+			}
+			for _, f := range fields {
+				if strings.EqualFold(key, f) {
+					found = append(found, fmt.Sprintf("%s%q must be spelled %q", where, key, f))
+				}
+			}
+		}
+	}
+	top, isObject := asObject(raw)
+	if !isObject {
+		return nil // not an object: the strict decoder reports it
+	}
+	check("", top, reflect.TypeFor[Spec]())
+	for _, list := range []struct {
+		field string
+		elem  reflect.Type
+	}{{"sections", reflect.TypeFor[Section]()}, {"roles", reflect.TypeFor[RoleSpec]()}} {
+		var items []map[string]json.RawMessage
+		if v, ok := top[list.field]; ok && json.Unmarshal(v, &items) == nil {
+			for i, item := range items {
+				check(fmt.Sprintf("%s[%d]: ", list.field, i), item, list.elem)
+			}
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	return fmt.Errorf("harness spec: %s", strings.Join(found, "; "))
+}
+
+// asObject reads a JSON object's members without decoding them.
+func asObject(raw []byte) (map[string]json.RawMessage, bool) {
+	var m map[string]json.RawMessage
+	err := json.Unmarshal(raw, &m)
+	return m, err == nil
+}
+
+// jsonFields lists the JSON names of a struct's fields.
+func jsonFields(t reflect.Type) []string {
+	var out []string
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// Clone returns a deep copy: no slice is shared with the original.
+func (s Spec) Clone() Spec {
+	c := Spec{Name: s.Name, Lessons: s.Lessons}
+	c.Sections = slices.Clone(s.Sections)
+	for _, r := range s.Roles {
+		r.AllowedTools = slices.Clone(r.AllowedTools)
+		c.Roles = append(c.Roles, r)
+	}
+	c.Skills = slices.Clone(s.Skills)
+	return c
 }
 
 // normalized returns a copy with every list in its canonical order.
