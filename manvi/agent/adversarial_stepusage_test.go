@@ -156,7 +156,9 @@ func TestAdversarialUnpricedCountSeparatesNeverRespondedFromUnpriced(t *testing.
 		if err := json.Unmarshal(e.Data, &d); err != nil {
 			t.Fatal(err)
 		}
-		if !d.Priced {
+		// A step with no response is not an unpriced one; the record says so
+		// with NoResponse and the projection does not count it.
+		if !d.Priced && !d.NoResponse {
 			unpriced++
 		}
 	}

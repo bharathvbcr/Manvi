@@ -256,6 +256,34 @@ func TestAStepEndWithNoPayloadProjectsToNothing(t *testing.T) {
 	}
 }
 
+// A step that ended without a response is not an unpriced one: counting it
+// would overstate Outcome.UnpricedSteps, so it carries its own marker instead.
+func TestAStepWithNoResponseIsNotCountedUnpriced(t *testing.T) {
+	got := Project(record(t, session.StepEnd, session.StepEndData{NoResponse: true}))
+	if len(got) != 1 || got[0].Kind != KindStepUsage {
+		t.Fatalf("got %#v", got)
+	}
+	if !got[0].NoResponse || got[0].UnpricedSteps != 0 {
+		t.Errorf("no-response step = %+v, want no_response set and unpriced_steps 0", got[0])
+	}
+}
+
+// Whatever the producer did, a diagnostic payload over the cap is replaced by
+// its size and the event says so.
+func TestAnOversizeDiagnosticPayloadIsWithheldAndSaysSo(t *testing.T) {
+	huge := strings.Repeat("A", 4<<20)
+	got := Project(record(t, session.MalformedToolCall, session.MalformedCallData{Tool: huge, Reason: "x"}))
+	if len(got) != 1 || got[0].Kind != KindDiagnostic {
+		t.Fatalf("got %d events", len(got))
+	}
+	if len(got[0].Data) > maxDiagnosticData || !json.Valid(got[0].Data) {
+		t.Errorf("data is %d bytes, valid=%v", len(got[0].Data), json.Valid(got[0].Data))
+	}
+	if !strings.Contains(got[0].Text, "withheld") || !strings.Contains(string(got[0].Data), "truncated_bytes") {
+		t.Errorf("the cut is not stated: text %q data %s", got[0].Text, got[0].Data)
+	}
+}
+
 func TestProjectSinkFeedsASink(t *testing.T) {
 	var seen []Event
 	fn := ProjectSink(SinkFunc(func(e Event) { seen = append(seen, e) }))

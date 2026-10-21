@@ -204,6 +204,10 @@ type (
 		CostNanoUSD int64 `json:"cost_nano_usd,omitempty"`
 		// Priced says a price table covered this step's usage.
 		Priced bool `json:"priced,omitempty"`
+		// NoResponse says the step ended without a response — an early exit
+		// closed it — so its zero usage and absent price are not an unpriced
+		// step's. A step that was answered never carries it.
+		NoResponse bool `json:"no_response,omitempty"`
 	}
 	// MessageData carries a whole message.
 	MessageData struct {

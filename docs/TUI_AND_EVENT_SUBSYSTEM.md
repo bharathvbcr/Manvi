@@ -96,6 +96,9 @@ type Event struct {
     ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
     CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
     CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+    // A step.usage for a step that ended without a response sets NoResponse;
+    // its UnpricedSteps stays 0.
+    NoResponse bool `json:"no_response,omitempty"`
 
     // Verify report fields. Bounce is the attempt within the turn; absent
     // means the first.
@@ -183,9 +186,9 @@ twice.
 
 | Kind | From | Carries |
 | --- | --- | --- |
-| `step.usage` | `step/end` | One step's `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_nano_usd`. `unpriced_steps` is `1` when no price table covered the step, and then the cost is not a charge. |
+| `step.usage` | `step/end` | One step's `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_nano_usd`. `unpriced_steps` is `1` when no price table covered the step, and then the cost is not a charge. A step that ended without a response (an early exit) has `no_response: true`, zero usage and `unpriced_steps` 0. Throughput is carried only when finite. |
 | `verify.report` | `verify/report` | `verdict`, `source`, `paths`, `findings`, `degraded` and `bounce`, for every verdict including `passed`. |
-| `diagnostic` | `system/prompt_assembled`, `context/tool_result_compacted`, `context/overflow`, `tool/malformed`, `llm/decoding_compensated` | `type`, the session record's name, and `data`, its payload. For the prompt it holds the included and dropped sections, the token count, the budget and a SHA-256 `digest` of the exact prompt text: a digest that changes between turns means the provider's prompt-cache prefix went cold. A compaction's `data` carries sizes, not the shortened text. |
+| `diagnostic` | `system/prompt_assembled`, `context/tool_result_compacted`, `context/overflow`, `tool/malformed`, `llm/decoding_compensated` | `type`, the session record's name, and `data`, its payload. For the prompt it holds the included and dropped sections, the token count, the budget and a SHA-256 `digest` of the exact prompt text: a digest that changes between turns means the provider's prompt-cache prefix went cold. A compaction's `data` carries sizes, not the shortened text. A payload over 16 KiB is replaced by `{"truncated_bytes":N}` and the event's `text` says so. |
 
 `step.usage` is deliberately not `turn.usage`. `turn.usage` is one event per
 turn covering the turn and its sub-agents, and consumers sum it; the per-step

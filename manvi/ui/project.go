@@ -231,7 +231,12 @@ func Project(e session.Event) []Event {
 		// The same convention turn.usage uses, so a consumer that knows how to
 		// read one reads the other: a step no table covered is counted, never
 		// folded into a zero charge.
-		if !data.Priced {
+		//
+		// Not for a step that had no response: nothing was there to price, so
+		// counting it would overstate Outcome.UnpricedSteps. It says so itself.
+		if data.NoResponse {
+			base.NoResponse = true
+		} else if !data.Priced {
 			base.UnpricedSteps = 1
 		}
 		return []Event{base}
@@ -293,6 +298,9 @@ func Project(e session.Event) []Event {
 	return nil
 }
 
+// maxDiagnosticData is the largest diagnostic payload the wire carries.
+const maxDiagnosticData = 16 << 10
+
 // diagnostic projects a harness record as a diagnostic event carrying its
 // decoded payload. The payload is re-encoded from the typed value the caller
 // just decoded, so what reaches the wire is exactly the shape the log defines.
@@ -303,6 +311,16 @@ func diagnostic(e session.Event, base Event, payload any) []Event {
 	}
 	base.Kind = KindDiagnostic
 	base.Type = string(e.Type)
+	// A bound on the wire that holds whatever the producer did. Some of these
+	// payloads quote strings that came from a model's server, and the stream
+	// repeats them into every consumer's pipe — and a parent's repeats a
+	// child's. Over the cap the payload is replaced by its size and the event
+	// says so, rather than being cut mid-JSON or passed whole.
+	if len(raw) > maxDiagnosticData {
+		base.Text = fmt.Sprintf("diagnostic payload of %d bytes withheld: over the %d-byte cap",
+			len(raw), maxDiagnosticData)
+		raw = json.RawMessage(fmt.Sprintf(`{"truncated_bytes":%d}`, len(raw)))
+	}
 	base.Data = raw
 	return []Event{base}
 }

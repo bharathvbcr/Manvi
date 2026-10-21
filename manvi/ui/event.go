@@ -159,6 +159,9 @@ type Event struct {
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// NoResponse marks a step.usage for a step that ended without a response,
+	// whose zero usage is not an unpriced step's: its UnpricedSteps stays 0.
+	NoResponse bool `json:"no_response,omitempty"`
 
 	// Verify report fields. Degraded, above, is the checks that could not run.
 	// Bounce is the attempt within the turn, and absent means the first.

@@ -216,8 +216,8 @@ func TestAStepClosedByAnEarlyExitCarriesZeroUsage(t *testing.T) {
 	if len(ends) != 1 {
 		t.Fatalf("%d step/end events, want the one closeOpenBoundaries wrote", len(ends))
 	}
-	if ends[0] != (session.StepEndData{}) {
-		t.Errorf("step/end = %+v, want zero usage, no charge, unpriced", ends[0])
+	if ends[0] != (session.StepEndData{NoResponse: true}) {
+		t.Errorf("step/end = %+v, want zero usage, no charge, marked no-response", ends[0])
 	}
 }
 
@@ -237,7 +237,7 @@ func TestUsageDoesNotLeakIntoTheNextStep(t *testing.T) {
 	if len(ends) != 2 {
 		t.Fatalf("%d step/end events, want 2", len(ends))
 	}
-	if ends[1] != (session.StepEndData{}) {
+	if ends[1] != (session.StepEndData{NoResponse: true}) {
 		t.Errorf("second step/end = %+v, want it empty rather than the first step's usage", ends[1])
 	}
 }
