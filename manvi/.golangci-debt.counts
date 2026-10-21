@@ -133,7 +133,7 @@ forcetypeassert 54
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
 gosec 255
-nilerr 10
+nilerr 7
 noctx 21
 staticcheck 33
 wastedassign 5

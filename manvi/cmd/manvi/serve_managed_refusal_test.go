@@ -58,7 +58,15 @@ func managedProviderFixture(t *testing.T, provider, scenario string) string {
 	var line string
 	switch provider {
 	case "claude":
-		line = fmt.Sprintf(`exec '%s' '-test.run=^TestClaudeProtocolChild$' -- 'claude-fixture:%s' "$@"`, providerFixtureBin, scenario)
+		// A native executable, not a wrapper: the managed Claude adapter
+		// refuses a script before launch, because the CLI a script starts
+		// reports a process the host did not. The codingagent test binary
+		// becomes the protocol child when invoked as claude-fixture-<scenario>.
+		link := filepath.Join(t.TempDir(), "claude-fixture-"+scenario)
+		if err := os.Symlink(providerFixtureBin, link); err != nil {
+			t.Fatal(err)
+		}
+		return link
 	case "codex":
 		// The Codex child reads its scenario from the last argument.
 		line = fmt.Sprintf(`exec '%s' '-test.run=^TestProtocolChild$' -- "$@" 'codex-fixture:%s'`, providerFixtureBin, scenario)

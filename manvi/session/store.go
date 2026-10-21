@@ -121,6 +121,20 @@ func (e *ConflictError) Error() string {
 		"refusing to overwrite it", e.ID, e.Detail)
 }
 
+// TooLargeError reports a session whose file would exceed what Load will read.
+// Save refuses it rather than write a file that could never be resumed; the
+// previous generation is left as it was.
+type TooLargeError struct {
+	ID    string
+	Size  int
+	Limit int
+}
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("session %s: the file would be %d bytes, over the %d-byte bound a load will read — "+
+		"not saved; the previous save is unchanged", e.ID, e.Size, e.Limit)
+}
+
 // header is the on-disk document.
 //
 // Events is a raw message on both encode and decode so the checksum covers the
@@ -406,6 +420,12 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 }
 
 // Save writes the log as this session's next generation.
+//
+// The byte budget (maxBytes) bounds the events array only, not the file: the
+// header (id, timestamps, counts, checksum; about 235 bytes) comes on top, so a
+// file can exceed the budget by that much. The hard ceiling on the whole file is
+// maxLoadBytes, the same constant Load enforces; a log that would exceed it is
+// refused with a *TooLargeError and nothing is written.
 func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	if !validID(id) {
 		return SaveReport{}, fmt.Errorf("session: %q is not a valid session id", id)
@@ -475,6 +495,12 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, fmt.Errorf("session: encoding session %s: %w", id, err)
 	}
 	body = append(body, '\n')
+	// Save and Load share one bound. An oversize final turn is kept past the
+	// byte budget, but not past what Load will read: a session that could be
+	// written and never resumed is "resume means start over" by another door.
+	if len(body) > maxLoadBytes {
+		return SaveReport{}, &TooLargeError{ID: id, Size: len(body), Limit: maxLoadBytes}
+	}
 
 	target := filepath.Join(s.dir, name(id, generation+1))
 	if err := writeNew(s.dir, target, body); err != nil {
@@ -849,10 +875,7 @@ func encodeEvents(events []Event) ([]json.RawMessage, error) {
 // trimEncoded is trimToBudget over events already encoded, which is what lets
 // a save reuse the encodings an earlier save made.
 func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int, int, bool) {
-	total := len("[]")
-	for _, encoded := range perEvent {
-		total += len(encoded) + 1 // the separating comma
-	}
+	total := arrayLen(perEvent)
 	if total <= maxBytes {
 		return 0, 0, false
 	}
@@ -887,6 +910,9 @@ func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int,
 	groups, from := 0, 0
 	for total > maxBytes && groups < len(starts)-1 {
 		for i := starts[groups]; i < starts[groups+1]; i++ {
+			// The element and the comma that followed it. The kept tail is
+			// never empty (the last group is never dropped), so a dropped
+			// prefix always takes one comma per element, as arrayLen counts.
 			total -= len(perEvent[i]) + 1
 		}
 		groups++
@@ -899,13 +925,24 @@ func trimEncoded(events []Event, perEvent []json.RawMessage, maxBytes int) (int,
 	return from, dropped, total > maxBytes
 }
 
-// joinArray assembles already-encoded elements into a JSON array.
-func joinArray(elements []json.RawMessage) json.RawMessage {
+// arrayLen is the byte length of joinArray(elements): the two brackets, every
+// element, and one comma between each neighbouring pair, so n-1 commas and none
+// for an empty or single-element array. It is the one place the budget and the
+// encoder agree on that count.
+func arrayLen(elements []json.RawMessage) int {
 	size := len("[]")
 	for _, e := range elements {
-		size += len(e) + 1
+		size += len(e)
 	}
-	out := make(json.RawMessage, 0, size)
+	if len(elements) > 1 {
+		size += len(elements) - 1
+	}
+	return size
+}
+
+// joinArray assembles already-encoded elements into a JSON array.
+func joinArray(elements []json.RawMessage) json.RawMessage {
+	out := make(json.RawMessage, 0, arrayLen(elements))
 	out = append(out, '[')
 	for i, e := range elements {
 		if i > 0 {

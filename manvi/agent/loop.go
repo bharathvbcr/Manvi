@@ -414,7 +414,6 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 			if err := l.reportOverflow(plan); err != nil {
 				return nil, err
 			}
-			l.overflowed = true
 		}
 		return messages, nil
 	}
@@ -442,18 +441,19 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 // compaction. It is an event rather than an error: the turn can still be
 // attempted, and the server's own refusal is more informative than a
 // pre-emptive one — but it must not happen silently.
-// overflowed is set by the compaction path and read once at turn end. It lives
-// on the Loop rather than being threaded through because compaction runs from a
-// helper that has no Outcome in hand, and inventing a return value for it would
-// put the signal on a path that three callers would each have to remember to
-// propagate — which is how it came to be unreported in the first place.
-// reportOverflow records that history still exceeds the window after
-// compaction. It is an event rather than an error: the turn can still be
-// attempted, and the server's own refusal is more informative than a
-// helper that has no Outcome in hand. The Append's own failure, though, is
-// returned: a durable record that silently failed to write is exactly the
-// "must not happen silently" this function exists for.
+//
+// It is the single owner of "this turn overflowed": it appends the log event
+// and sets l.overflowed, which Run copies onto the Outcome at turn end. The flag
+// lives on the Loop rather than being threaded through because compaction runs
+// from a helper that has no Outcome in hand, and a return value would put the
+// signal on a path every caller must remember to propagate — which is how a
+// non-empty insufficient plan came to log the event and leave the flag false.
+// The flag is set before the Append so a log that refuses the write still
+// leaves the turn marked: the overflow happened either way. The Append's own
+// failure is returned, since a record that silently failed to write is exactly
+// the "must not happen silently" this function exists for.
 func (l *Loop) reportOverflow(plan CompactionPlan) error {
+	l.overflowed = true
 	_, err := l.log.Append(session.ContextOverflow, session.OverflowData{
 		EstimatedTokens: plan.After,
 		Threshold:       l.Budget().Threshold(),
