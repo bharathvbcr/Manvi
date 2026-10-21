@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 tools**, as reported by `manvi tools`: 40 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **45 tools**, as reported by `manvi tools`: 41 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -9,7 +9,7 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | Category | Count | Primary Purpose |
 |---|---|---|
 | **Task Lifecycle** | 5 | Discover tasks, manage exclusive SQLite leases, and track progress. |
-| **Guarded Mutation & Workspace** | 9 | Read/write files, apply exact-match patches, run audited commands, and query directories. |
+| **Guarded Mutation & Workspace** | 10 | Read/write files, apply exact-match patches, run audited commands, and query directories. |
 | **Multi-Agent Coordination** | 1 | Dispatch and coordinate concurrent sub-agent execution pools. |
 | **Override Seam** | 1 | Request audited Human or Agent overrides for soft policy denials. |
 | **Verification & Evidence** | 4 | Inspect git diffs, run verification rigor gates, and obtain typed repair actions. |
@@ -27,7 +27,7 @@ it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
 unconfigured harness offers the counted set and a configured one offers exactly
 one more. See [Documentation lookup](#documentation-lookup).
 
-The thirteen rows above sum to the 44 tools `manvi tools` reports.
+The thirteen rows above sum to the 45 tools `manvi tools` reports.
 
 Every tool in every row is specified below, and
 `TestToolsReferenceSpecifiesEveryTool` fails the build if one is added without
@@ -56,6 +56,7 @@ schema means.
 |---|---|---|---|
 | `devcouncil_policy_check_write` | Read-only | `path` (string), `task_id` (string, optional) | Probes the write gate policy without touching the filesystem. Returns decision and rule provenance. |
 | `devcouncil_read_file` | Read-only | `path` (string), `offset` (int, opt), `limit` (int, opt) | Reads file contents safely from within the workspace root. |
+| `devcouncil_load_skill` | Read-only | `name` (string) | Loads one repository skill, the body of `.agents/skills/<name>/SKILL.md`, bounded to 32,000 runes. The name must match `[a-z0-9][a-z0-9_-]*`; an unknown name is refused with the skills that exist, and a skill the loader rejected (no `description:`, `name:` not equal to its directory, over 64 KiB, outside the repository) is refused with the reason. The body is untrusted repository content, like AGENTS.md. |
 | `devcouncil_write_file` | Write | `path` (string), `content` (string), `task_id` (string, optional) | Performs an atomic write passing the 6-rung policy gate. Requires active lease under strict posture. |
 | `devcouncil_patch_file` | Write | `path` (string), `target` (string), `replacement` (string), `start_line` (int), `end_line` (int) | Performs targeted exact-block substring replacement bounded by line numbers. Fails closed on ambiguity. |
 | `devcouncil_delete_file` | Write | `path` (string), `task_id` (string, optional) | Safely deletes a file after passing policy gate and lease checks. |

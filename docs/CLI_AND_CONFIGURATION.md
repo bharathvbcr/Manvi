@@ -24,7 +24,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Task Lease Release** | `manvi lease release TASK TOKEN` | Atomically relinquish a held task lease using its cryptographic token. |
 | **Policy Pre-Check** | `manvi check PATH [--task ID]` | Probe write gate policy for a file path without touching the filesystem; outputs decision, fired rules, and explanation. |
 | **Human Override** | `manvi allow PATH --reason TEXT` | Record an audited human grant in the ledger to unblock a soft policy denial. |
-| **Native Tools List** | `manvi tools` | List all 44 native tools and their parameter schemas. |
+| **Native Tools List** | `manvi tools` | List all 45 native tools and their parameter schemas. |
 | **Direct Tool Execution** | `manvi tool NAME [--json ARGS]` | Execute a native tool directly over the same dispatch path an agent takes. |
 | **Provider Detection** | `manvi providers` | List supported LLM providers and detect present API keys/credentials in environment. |
 | **Sub-agent Roles** | `manvi agents` | Show each sub-agent role, the tier it runs on, and the model that tier resolves to for the default provider (role → tier → model). |
@@ -278,7 +278,7 @@ developing the Gemini adapter and is not part of the shipped binary.
 | `llm.effort.max` | `MANVI_LLM_EFFORT_MAX` | `""` | No | `human` | Highest reasoning effort the agent loop may raise `llm.effort` to within one turn. A tool call refused as a verbatim repeat, or for making no observable progress, raises the tier one rung. Empty never raises it. Requires `llm.effort` to be set, and must be above it. |
 | `llm.xai.base_url` | `MANVI_LLM_XAI_BASE_URL` | `https://api.x.ai/v1` | No | `human` | Base URL for the xAI (Grok) adapter. Overridable for a proxy or gateway — see the warning below. |
 | `llm.gemini.base_url` | `MANVI_LLM_GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | No | `human` | Base URL for the Gemini adapter. Overridable for a proxy or gateway — see the warning below. |
-| `llm.local.dynamic_tools` | `MANVI_LLM_LOCAL_DYNAMIC_TOOLS` | `true` | No | `human` | On-demand tool loading for local models: start from a lean core set and load extended tools via `devcouncil_search_tools` / `devcouncil_activate_tools`. On the shipped registry that is 44 tools and ~5,207 estimated schema tokens reduced to 24 and ~2,550. Unlike `core_tools_only` this is a floor rather than a ceiling — an omitted tool can still be fetched. |
+| `llm.local.dynamic_tools` | `MANVI_LLM_LOCAL_DYNAMIC_TOOLS` | `true` | No | `human` | On-demand tool loading for local models: start from a lean core set and load extended tools via `devcouncil_search_tools` / `devcouncil_activate_tools`. On the shipped registry that is 45 tools and ~5,345 estimated schema tokens reduced to 25 and ~2,688. Unlike `core_tools_only` this is a floor rather than a ceiling — an omitted tool can still be fetched. |
 | `llm.local.guidance_router` | `MANVI_LLM_LOCAL_GUIDANCE_ROUTER` | `true` | No | `human` | Route the system prompt at compact density for local models: the same sections, worded tighter. Measured at ~901 estimated tokens down to ~696. Rules are never compressed or dropped — identity, posture, task rules, the policy rule and the tool contract survive any budget. |
 
 > [!WARNING]

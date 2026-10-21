@@ -14,7 +14,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 | **Policy & Safety Invariants** | `policy-ladder`, `6-rung-ladder`, `5-outcome-states`, `grants-ledger`, `write-gate`, `command-gate` | [Policy & Safety](POLICY_AND_SAFETY.md) · [Hardening Ledger](HARDENING_LEDGER.md) · [Trade-offs](TRADE_OFFS.md) |
 | **Core Architecture & Planes** | `dual-plane`, `go-rust-partition`, `stdio-ipc`, `devcouncil-components`, `zero-cgo`, `gusset` | [Architecture](ARCHITECTURE.md) · [Components & Harness](COMPONENTS_AND_HARNESS.md) · [Visual Guide](04-visual-architecture-guide.html) · [Language Decision](01-language-decision.html) |
 | **Agent Loop & Task Leases** | `turn-loop`, `waterfalls`, `sqlite-leases`, `context-compaction`, `concurrency`, `workbench` | [Agent & Turn Lifecycle](AGENT_AND_TURN_LIFECYCLE.md) · [Workbench](WORKBENCH.md) |
-| **Native Tools, MCP & Desktop** | `native-tools`, `44-tools`, `mcp-client`, `mcp-2.0`, `computer-use`, `tool-discovery` | [Tools Reference](TOOLS_REFERENCE.md) · [Computer-Use Foundations](COMPUTER_USE_FOUNDATIONS.md) |
+| **Native Tools, MCP & Desktop** | `native-tools`, `45-tools`, `mcp-client`, `mcp-2.0`, `computer-use`, `tool-discovery` | [Tools Reference](TOOLS_REFERENCE.md) · [Computer-Use Foundations](COMPUTER_USE_FOUNDATIONS.md) |
 | **Terminal & Developer UI** | `tui`, `elm-loop`, `damage-diffing`, `themes`, `cli`, `exit-codes`, `flag-registry` | [TUI & Events](TUI_AND_EVENT_SUBSYSTEM.md) · [CLI & Configuration](CLI_AND_CONFIGURATION.md) |
 | **Verification & Benchmarks** | `parity-fixtures`, `1031-cases`, `rigor-gates`, `diff-coverage`, `swe-bench`, `paper` | [Verification & Parity](VERIFICATION_AND_PARITY.md) · [Benchmark Paper](../bench/paper/README.md) · [v0.0.6 Release](releases/v0.0.6.md) |
 
@@ -82,7 +82,7 @@ Welcome to the MANVI technical documentation. MANVI (*of Manu*) is a high-perfor
 - [**CLI & Configuration Reference**](CLI_AND_CONFIGURATION.md)  
   Complete CLI subcommand reference, exit codes (`0` through `5`), full flag catalogue, mutability scopes (`human` vs `startup`), `.devcouncil/config.yaml` schema, and posture matrix.
 - [**DevCouncil Native Tool Suite Reference**](TOOLS_REFERENCE.md)  
-  Category summary of all 44 native tools, with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are specified alongside the rest.
+  Category summary of all 45 native tools, with detailed parameter and permission specifications for Task Lifecycle, Guarded Mutation, Multi-Agent, Override Seam, Verification, Code Graph Navigation, Git Integration, and the External CLI Bridge. The dynamically activated groups (tool discovery, sub-agents, artifacts, questions, MCP) are specified alongside the rest.
 
 ---
 

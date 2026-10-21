@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/parity_cases-1%2C031_certified-emerald" alt="Parity Cases">
   <img src="https://img.shields.io/badge/architecture-Go_%2B_Rust_process--boundary-orange" alt="Architecture">
   <img src="https://img.shields.io/badge/local_LLMs-Ollama_·_vLLM_·_LM_Studio-8B5CF6?style=flat" alt="Local LLMs">
-  <img src="https://img.shields.io/badge/tools-44_native_·_MCP_2.0-0EA5E9" alt="Tools">
+  <img src="https://img.shields.io/badge/tools-45_native_·_MCP_2.0-0EA5E9" alt="Tools">
 </p>
 
 A lightweight, high-performance coding-agent harness in pure Go and Rust — purpose-built for local models, customizable for specialized tools and use cases, and embeddable in other applications with dual-plane determinism and zero-runtime overhead.
@@ -21,7 +21,7 @@ A lightweight, high-performance coding-agent harness in pure Go and Rust — pur
 
 **Ownership after DevCouncil Phase 7 (2026-09-10):** Python campaign / live-watch / dashboard / GEPA / FAISS semantic / LLM routing were **retired** in DevCouncil, not reimplemented there. Manvi keeps LLM providers, agent profiles, TUI/`watch`, and multi-agent runs. DevCouncil Go continues to expose lease/verify/diff MCP; Manvi imports `backend/go_orchestrator` unchanged. Recorded decisions: DevCouncil `docs/PHASE7_LONG_TAIL.md`.
 
-**Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 44 native tools (including a native git integration, an MCP 2.0 client, and DevCouncil Go/MCP tools), and the Go↔Rust process boundary — all verified against **1,031 parity cases** (CPython `fnmatch` plus a frozen command-policy snapshot). Everything is certified by `./verify.sh`.
+**Status: runnable & fully certified.** Kernel, ported policy gates, git safety, override seam, flag registry, immutable session log, turn driver, multi-provider seam, Elm-loop TUI, embedded stdio host server (`manvi serve`), 45 native tools (including a native git integration, an MCP 2.0 client, and DevCouncil Go/MCP tools), and the Go↔Rust process boundary — all verified against **1,031 parity cases** (CPython `fnmatch` plus a frozen command-policy snapshot). Everything is certified by `./verify.sh`.
 
 <br clear="left">
 
@@ -32,7 +32,7 @@ A lightweight, high-performance coding-agent harness in pure Go and Rust — pur
 MANVI was created as a new lightweight coding harness designed for local models, customizable for other tools and use cases, and featuring additional capabilities from the architecture:
 
 - **Designed for Local Models**: Sub-30ms auto-discovery across local runners (Ollama, LM Studio, vLLM, llama.cpp, Jan), append-only context compaction preserving KV prefix caching (**1.5s warm vs 120s cold prefill on 27B models**), wire-level parser recovery (Hermes, Qwen3 XML), and prefilled `<think>` sanitization.
-- **Customizable for Other Tools & Use Cases**: Zero-runtime overhead extension model, native tool execution (44 native tools, MCP 2.0 client, and tool bridges), and an embedded stdio host server (`manvi serve`) for embedding into custom IDEs, editors, and external toolchains.
+- **Customizable for Other Tools & Use Cases**: Zero-runtime overhead extension model, native tool execution (45 native tools, MCP 2.0 client, and tool bridges), and an embedded stdio host server (`manvi serve`) for embedding into custom IDEs, editors, and external toolchains.
 - **Additional Architectural Capabilities**: Dual-plane process partition (Go concurrency + Rust CPU determinism, with components reached over a process boundary rather than cgo), a 6-rung non-cheating policy ladder with audited override grants, and SQLite-backed multi-agent task concurrency that survives process termination.
 - **Tested & Optimized Against Sibling Harnesses**: Empirical testing and experiments with lightweight and local harnesses (such as Pi, Oh My Pi, and Kon) informed key harness optimizations — notably replacing naive 24-step cutoffs with a 500-step ceiling backed by progress stall-cost tracking, eliminating volatile in-memory state, and preventing prefix-cache invalidation.
 
@@ -69,7 +69,7 @@ flowchart TB
         Grants["Grants Ledger"]
         Registry["Flags Registry & Posture Engine"]
         Providers["Provider Seam<br/>Anthropic · Gemini · xAI · Local"]
-        Tools["44 Native Tools"]
+        Tools["45 Native Tools"]
     end
 
     subgraph Boundary["Process Boundary — line-delimited JSON over stdio"]
@@ -473,7 +473,7 @@ Full specifications live in [`docs/`](docs/README.md):
 | [Computer-Use Foundations](docs/COMPUTER_USE_FOUNDATIONS.md) | Multimodal observations, image privacy, workflow compiler, native desktop protocol |
 | [Terminal UI & Events](docs/TUI_AND_EVENT_SUBSYSTEM.md) | Elm loop, tabs, themes, damage diffing, ANSI reduction |
 | [CLI & Configuration](docs/CLI_AND_CONFIGURATION.md) | Commands, flag catalogue, mutability scopes, posture matrix |
-| [Native Tool Suite](docs/TOOLS_REFERENCE.md) | All 44 native tools in Go and Rust |
+| [Native Tool Suite](docs/TOOLS_REFERENCE.md) | All 45 native tools in Go and Rust |
 | [Comparison](docs/COMPARISON.md) | MANVI vs SWE-agent, OpenHands, Aider, Claude Code |
 | [Trade-offs](docs/TRADE_OFFS.md) | Write discipline vs shell breadth, two toolchains, zero-cgo costs |
 | [Hardening Ledger](docs/HARDENING_LEDGER.md) | 30+ hardened invariants, bug patterns, test locations |
