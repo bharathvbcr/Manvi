@@ -23,8 +23,6 @@ import (
 
 const advSecret = "SECRET-MARKER-9f3a"
 
-const advGoodSkill = "---\nname: %s\ndescription: d\n---\nBODY\n"
-
 func advLoad(f *skillFixture, name string) tools.Result {
 	return f.call("devcouncil_load_skill", map[string]string{"name": name})
 }

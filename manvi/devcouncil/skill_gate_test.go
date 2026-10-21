@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// advGoodSkill is a minimal valid SKILL.md, formatted with the skill's name. It
+// lives here rather than beside the unix-only adversarial tests because this
+// file uses it too and builds on every platform.
+const advGoodSkill = "---\nname: %s\ndescription: d\n---\nBODY\n"
+
 // A skill directory named for a secret is refused by the real read gate
 // (policy.ClassifyRead matches SecretPathPatterns such as **/secrets/**), both
 // when listing and when loading. There is no lighter path for either.
