@@ -178,8 +178,88 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	return art, nil
 }
 
+// Sentinels a caller can branch on. Their text is unchanged from the messages
+// they were added to, so nothing that matched on the words stops matching.
+var (
+	// ErrExists is Create's answer when the name is taken.
+	ErrExists = errors.New("already exists")
+	// ErrNotFound is Get's answer for a name with no readable artifact.
+	ErrNotFound = errors.New("not found")
+	// ErrRevisionConflict is UpdateIfRevision's answer when the artifact is no
+	// longer at the revision the caller read.
+	ErrRevisionConflict = errors.New("revision conflict")
+	// ErrLocked is an update's answer when another writer held the entry's lock
+	// for longer than lockWait.
+	ErrLocked = errors.New("locked by another writer")
+)
+
 // Update updates an existing artifact's content and metadata, incrementing its revision.
 func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) {
+	return s.update(name, content, meta, 0)
+}
+
+// UpdateIfRevision is Update as a compare-and-swap: it writes only if the
+// artifact is still at revision expected, and returns ErrRevisionConflict if
+// another writer, in this process or another, got there first. A caller that
+// derives the new content from what it read (a revision that appends to a
+// history) must use it, because Update would write its derivation over a
+// revision it never saw.
+func (s *Store) UpdateIfRevision(name, content string, meta *Metadata, expected int) (*Artifact, error) {
+	if expected < 1 {
+		return nil, fmt.Errorf("artifacts: UpdateIfRevision needs the revision the caller read (>= 1), got %d", expected)
+	}
+	return s.update(name, content, meta, expected)
+}
+
+// lockNonce makes an entry's lock file take the shape of the store's own
+// temporary siblings (".<base>.<16 hex>.tmp"), which List skips and sanitizeName
+// reserves, so the lock is neither listed as an artifact nor nameable as one.
+const lockNonce = "0000000000000000"
+
+// Bounds on the cross-process entry lock. The lock is held for the few
+// milliseconds an update takes, so a lock older than lockStaleAfter was left by
+// a writer that died; lockWait bounds how long a live contender queues.
+const (
+	lockStaleAfter = 30 * time.Second
+	lockWait       = 10 * time.Second
+)
+
+// lockEntry takes the cross-process lock for the entry at cPath: a file created
+// with O_CREATE|O_EXCL beside it, which every filesystem arbitrates, rather
+// than flock or LockFileEx, which differ by platform. The in-process mutex
+// cannot serve two processes, and two Stores in one process do not share it.
+//
+// A lock past lockStaleAfter is removed and taken. That is racy in principle
+// (two contenders can both judge it stale) and the age is what bounds the
+// harm: a live holder finishes in milliseconds, so only a crashed one is ever
+// old enough, and the revision compare in update still refuses a write over a
+// revision the writer did not read.
+func lockEntry(cPath string) (func(), error) {
+	lockPath := filepath.Join(filepath.Dir(cPath), "."+filepath.Base(cPath)+"."+lockNonce+".tmp")
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := safefile.OpenNoFollow(nil, lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("artifacts: locking %s: %w", filepath.Base(cPath), err)
+		}
+		if info, statErr := os.Lstat(lockPath); statErr == nil && time.Since(info.ModTime()) > lockStaleAfter {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("artifacts: %q is %w for more than %s", filepath.Base(cPath), ErrLocked, lockWait)
+		}
+		var jitter [1]byte
+		_, _ = rand.Read(jitter[:])
+		time.Sleep(2*time.Millisecond + time.Duration(jitter[0]%16)*time.Millisecond)
+	}
+}
+
+func (s *Store) update(name, content string, meta *Metadata, expected int) (*Artifact, error) {
 	clean, err := s.sanitizeName(name)
 	if err != nil {
 		return nil, err
@@ -198,6 +278,16 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	mPath, err := s.containedPath(clean + metaSuffix)
 	if err != nil {
 		return nil, err
+	}
+	// Update modifies what exists, so the entry's directory exists whenever
+	// there is anything to lock; when it does not, the existence check below
+	// answers and no lock file is made.
+	if info, statErr := os.Lstat(cPath); statErr == nil && info.Mode().IsRegular() {
+		unlock, lockErr := lockEntry(cPath)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		defer unlock()
 	}
 
 	// Update modifies an artifact that exists; it never creates one, and it
@@ -229,6 +319,10 @@ func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) 
 	}
 	if existing.Revision < 1 || existing.CreatedAt.IsZero() {
 		return nil, fmt.Errorf("artifacts: the metadata of %q has no revision history to continue", clean)
+	}
+	if expected > 0 && existing.Revision != expected {
+		return nil, fmt.Errorf("artifacts: %q is at revision %d, not the %d the caller read: %w",
+			clean, existing.Revision, expected, ErrRevisionConflict)
 	}
 
 	existing.Name = clean
@@ -271,7 +365,7 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	root, err := os.OpenRoot(s.dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
 		}
 		return nil, fmt.Errorf("artifacts: opening store dir %s: %w", s.dir, err)
 	}
@@ -283,7 +377,7 @@ func (s *Store) Get(name string) (*Artifact, error) {
 	}
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("artifacts: artifact %q not found", clean)
+			return nil, fmt.Errorf("artifacts: artifact %q %w", clean, ErrNotFound)
 		}
 		return nil, err
 	}
@@ -600,7 +694,7 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 			return fmt.Errorf("artifacts: refusing %q: that name is a symbolic link", base)
 		}
 		if exclusive {
-			return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+			return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("artifacts: refusing to write %s: not a regular file", base)
@@ -647,7 +741,7 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 	if exclusive {
 		if err := os.Link(tmp, full); err != nil {
 			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("artifacts: artifact %q already exists; use Update to modify", base)
+				return fmt.Errorf("artifacts: artifact %q %w; use Update to modify", base, ErrExists)
 			}
 			return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 		}

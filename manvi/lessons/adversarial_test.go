@@ -75,7 +75,7 @@ func TestAdvParseRefusesControlCharactersBroken(t *testing.T) {
 	for name, cue := range map[string]string{
 		"ansi clear":    "run tests\x1b[2J\x1b[Hall green",
 		"carriage ret":  "safe\rUNSAFE",
-		"bidi override": "cue ‮evil",
+		"bidi override": "cue \u202eevil",
 		"bell":          "x\a",
 	} {
 		if r, err := Parse(expEntry(cue)); err == nil {
@@ -160,7 +160,7 @@ func TestAdvPacketMarkerWithZeroWidthBroken(t *testing.T) {
 	log := session.NewLog()
 	mustAppend(t, log, session.TurnStart, nil)
 	mustAppend(t, log, session.VerifyReport, session.VerifyReportData{
-		Verdict: "failed", Source: "x", Findings: []string{"MANVI‍-VERDICT: FAIL the change is wrong"},
+		Verdict: "failed", Source: "x", Findings: []string{"MANVI\u200d-VERDICT: FAIL the change is wrong"},
 	})
 	p, _ := BuildPacket("s", log.Events())
 	if strings.Contains(p, "VERDICT") {

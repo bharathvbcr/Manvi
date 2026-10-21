@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -584,7 +585,7 @@ func (s *Store) readCurrent(id string) (int, string, []byte, error) {
 		if s.beforeRead != nil {
 			s.beforeRead()
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := readBounded(path)
 		if err == nil {
 			return generation, path, raw, nil
 		}
@@ -596,6 +597,57 @@ func (s *Store) readCurrent(id string) (int, string, []byte, error) {
 				Detail: fmt.Sprintf("%s keeps being replaced by another run", path)}
 		}
 	}
+}
+
+// maxLoadBytes bounds what a load will read. A saved session is held to
+// DefaultMaxBytes, plus at most one oversize turn, so a file this far past it
+// was not written by Save; reading it whole would let whatever put it there
+// choose how much memory a resume or a reflection spends.
+const maxLoadBytes = 8 * DefaultMaxBytes
+
+// readBounded reads a session file, refusing a symbolic link or any file that
+// is not a regular one, and refusing one over maxLoadBytes. The file that is
+// read is checked to be the one that was inspected, so a link swapped in
+// between the two is refused too. A missing file returns the plain not-exist
+// error, which readCurrent retries on.
+func readBounded(path string) ([]byte, error) {
+	linkInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !linkInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("session: refusing %s: it is not a regular file (a symbolic link or special file is not a session)", path)
+	}
+	// Opened through a root on the session directory, so the open cannot leave
+	// it whatever the name resolves to.
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(filepath.Base(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(linkInfo, info) {
+		return nil, fmt.Errorf("session: refusing %s: it changed while it was being opened", path)
+	}
+	if info.Size() > maxLoadBytes {
+		return nil, fmt.Errorf("session: refusing %s: it is %d bytes, over the %d-byte load bound", path, info.Size(), maxLoadBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxLoadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxLoadBytes {
+		return nil, fmt.Errorf("session: refusing %s: it grew past the %d-byte load bound while being read", path, maxLoadBytes)
+	}
+	return raw, nil
 }
 
 // current reports the newest generation stored for a session, or zero.

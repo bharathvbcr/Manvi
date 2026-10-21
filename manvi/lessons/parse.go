@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -62,6 +63,13 @@ const (
 	MaxEvidenceRunes = 1200
 	MaxEditRows      = 24
 	MaxEditRunes     = 300
+	// MaxAnswerBytes bounds the whole answer, checked before any of it is read.
+	// A legitimate answer is a few kilobytes; a reader that took whatever a
+	// server sent would let one runaway generation choose how much memory and
+	// time the parser spends on it.
+	MaxAnswerBytes = 64 << 10
+
+	maxConfidenceRunes = 16
 )
 
 // verdictMarkerPrefix is the checkpoint critic's line prefix. An answer that
@@ -69,6 +77,54 @@ const (
 // reflector either saw something it was not given or is inventing a
 // judgement in the critic's voice. Both are refused; see Packet.
 const verdictMarkerPrefix = "MANVI-VERDICT"
+
+// invisible reports runes that render as nothing, or rewrite what is around
+// them, and so can hide or fake text: control characters other than newline
+// and tab (an escape sequence in a cue is executed by the terminal that
+// echoes it), format characters (zero-width joiners, bidi overrides, which
+// split a marker or reorder a line) and private-use characters.
+func invisible(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+}
+
+// ContainsMarker reports whether s carries the checkpoint critic's marker in
+// any case, once the runes that could split it are removed. The packet builder
+// and the parser both ask this one question, so the two sides cannot disagree
+// about what counts.
+func ContainsMarker(s string) bool {
+	var b strings.Builder
+	for _, r := range s {
+		if !invisible(r) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Contains(strings.ToUpper(b.String()), verdictMarkerPrefix)
+}
+
+// fieldBuf is one experience field as it is read. The running rune count is
+// what lets a field be refused the moment it is over its bound, instead of
+// after the rest of the answer has been read into it.
+type fieldBuf struct {
+	text  strings.Builder
+	runes int
+	limit int
+}
+
+func (f *fieldBuf) add(s string) bool {
+	f.runes += utf8.RuneCountInString(s)
+	if f.runes > f.limit {
+		return false
+	}
+	f.text.WriteString(s)
+	return true
+}
+
+var fieldLimits = map[string]int{
+	"cue": MaxCueRunes, "lesson": MaxLessonRunes, "evidence": MaxEvidenceRunes, "confidence": maxConfidenceRunes,
+}
 
 // Edit is one harness change and how the reflector attributes the outcome to it.
 type Edit struct {
@@ -112,11 +168,25 @@ const (
 
 // Parse reads a reflector's answer.
 func Parse(answer string) (Result, error) {
-	if strings.Contains(answer, verdictMarkerPrefix) {
+	if len(answer) > MaxAnswerBytes {
+		return refuse("the answer is %d bytes, over the %d limit", len(answer), MaxAnswerBytes)
+	}
+	if !utf8.ValidString(answer) {
+		return refuse("the answer is not valid UTF-8")
+	}
+	// A CRLF answer is the same answer; a lone carriage return is not, and is
+	// refused below with the other control characters.
+	answer = strings.ReplaceAll(answer, "\r\n", "\n")
+	for _, r := range answer {
+		if invisible(r) {
+			return refuse("the answer contains the invisible or control character U+%04X", r)
+		}
+	}
+	if ContainsMarker(answer) {
 		return refuse("the answer contains %q, which belongs to the checkpoint critic and is never part of the evidence", verdictMarkerPrefix)
 	}
-	if strings.ContainsRune(answer, 0) {
-		return refuse("the answer contains a NUL byte")
+	if strings.Contains(answer, PacketBegin) || strings.Contains(answer, PacketEnd) {
+		return refuse("the answer contains an evidence-packet fence, so it is quoting its input rather than answering it")
 	}
 
 	var (
@@ -125,7 +195,7 @@ func Parse(answer string) (Result, error) {
 		expBlocks   int
 		noEntry     int
 		edits       []Edit
-		fields      = map[string]string{}
+		fields      = map[string]*fieldBuf{}
 		currentKey  string
 		sawField    bool
 		pendingBlnk bool
@@ -155,11 +225,11 @@ func Parse(answer string) (Result, error) {
 				return refuse("%s with no opening tag", trimmed)
 			}
 		case inEdits:
-			switch {
-			case trimmed == "</edits>":
+			switch trimmed {
+			case "</edits>":
 				where = outside
-			case trimmed == "":
-			case trimmed == "<edits>" || trimmed == "<experience>":
+			case "":
+			case "<edits>", "<experience>":
 				return refuse("%s inside <edits>: blocks do not nest", trimmed)
 			default:
 				row, err := parseEditRow(trimmed)
@@ -180,15 +250,18 @@ func Parse(answer string) (Result, error) {
 				return refuse("%s inside <experience>: blocks do not nest", trimmed)
 			}
 			if key, rest, ok := fieldLine(trimmed); ok {
-				switch key {
-				case "cue", "lesson", "evidence", "confidence":
-				default:
+				limit, known := fieldLimits[key]
+				if !known {
 					return refuse("unknown field %q in <experience>", key)
 				}
 				if _, dup := fields[key]; dup {
 					return refuse("field %q appears twice", key)
 				}
-				fields[key] = rest
+				buf := &fieldBuf{limit: limit}
+				if !buf.add(rest) {
+					return refuse("%s is over the %d limit", key, limit)
+				}
+				fields[key] = buf
 				currentKey, sawField, pendingBlnk = key, true, false
 				continue
 			}
@@ -206,7 +279,9 @@ func Parse(answer string) (Result, error) {
 			if pendingBlnk {
 				sep = "\n\n"
 			}
-			fields[currentKey] += sep + trimmed
+			if !fields[currentKey].add(sep + trimmed) {
+				return refuse("%s is over the %d limit", currentKey, fields[currentKey].limit)
+			}
 			pendingBlnk = false
 		}
 	}
@@ -232,11 +307,17 @@ func Parse(answer string) (Result, error) {
 	if editBlocks == 0 || len(edits) == 0 {
 		return refuse("an entry needs an <edits> block with at least one attributed row")
 	}
+	text := func(key string) string {
+		if buf, ok := fields[key]; ok {
+			return strings.TrimSpace(buf.text.String())
+		}
+		return ""
+	}
 	exp := &Experience{
-		Cue:        strings.TrimSpace(fields["cue"]),
-		Lesson:     strings.TrimSpace(fields["lesson"]),
-		Evidence:   strings.TrimSpace(fields["evidence"]),
-		Confidence: strings.ToLower(strings.TrimSpace(fields["confidence"])),
+		Cue:        text("cue"),
+		Lesson:     text("lesson"),
+		Evidence:   text("evidence"),
+		Confidence: strings.ToLower(text("confidence")),
 	}
 	for _, f := range []struct {
 		name, text string

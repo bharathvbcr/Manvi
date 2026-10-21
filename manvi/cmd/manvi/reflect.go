@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
@@ -32,7 +33,7 @@ Options:
   --library NAME       The lesson library to file under: the host application or
                        repository the lesson is about. One path component of
                        a-z, 0-9, _ and -. Defaults to the repository's directory
-                       name.
+                       name, taken from the main repository in a linked worktree.
   --timeout DURATION   Wall-clock bound on the reflection, e.g. 5m (default 10m).
 
 What it does:
@@ -48,13 +49,21 @@ What it does:
   or anything unreadable is refused: nothing is stored, the reason is printed,
   and the status is 1. NO_ENTRY stores nothing and exits 0. An accepted lesson
   is written as Markdown to .devcouncil/artifacts/lessons/<library>/, and its
-  path is printed.
+  path is printed. The text is scrubbed of credential-shaped values first (said
+  in the output when anything was redacted), and a cue seen before revises its
+  entry, keeping the earlier revision as a History row.
 
   Lessons are never put in a prompt automatically. A person reads them and
   promotes the ones worth keeping into AGENTS.md, a skill or a spec.
 `
 
 const defaultReflectTimeout = 10 * time.Minute
+
+// reflectMaxTokens is the output bound the reflector's requests name. An answer
+// is a few edit rows and four short fields, well under a thousand tokens; the
+// headroom is for a reasoning model's thinking, and the bound is what stops a
+// runaway generation being read to the end.
+const reflectMaxTokens = 8192
 
 type reflectOptions struct {
 	session string
@@ -204,17 +213,35 @@ func applyReflection(out, notes io.Writer, store *artifacts.Store, library, sess
 			lessons.NoEntryLine, sessionID)
 		return err
 	}
+	// Scrubbed before anything is stored or printed, and the scrubbed text is
+	// all that goes further: the raw answer is not kept anywhere.
+	result, redacted, err := lessons.Scrub(result, clean)
+	if err != nil {
+		return fmt.Errorf("reflect: nothing was stored: %w", err)
+	}
 	name, revision, err := lessons.Save(store, library, sessionID, result)
 	if err != nil {
 		return fmt.Errorf("reflect: the answer was accepted but could not be stored: %w", err)
 	}
 	_, err = fmt.Fprintf(out, "stored %s (revision %d) in library %s from session %s\n  cue: %s\n",
 		name, revision, library, sessionID, result.Experience.Cue)
+	if err == nil && redacted {
+		_, err = fmt.Fprintf(out, "  credential-shaped text was redacted from the lesson before it was stored\n")
+	}
 	return err
 }
 
 func truncateForNotes(s string) string {
 	const limit = 1500
+	// A refused answer is by definition unchecked, so what is echoed of it has
+	// its control characters removed: an escape sequence in it would otherwise
+	// be run by the terminal this is printed to.
+	s = strings.Map(func(r rune) rune {
+		if r != '\n' && r != '\t' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) {
+			return -1
+		}
+		return r
+	}, s)
 	if r := []rune(s); len(r) > limit {
 		return string(r[:limit]) + "… (truncated)"
 	}
@@ -293,7 +320,7 @@ func runReflector(ctx context.Context, notes io.Writer, reg *flags.Registry, pro
 	if !ok {
 		return "", nil, fmt.Errorf("reflect: the %q role is not in the role catalogue", reflectorRoleName)
 	}
-	req := devcouncil.SubAgentRequest{Label: reflectorRoleName, Prompt: prompt}
+	req := devcouncil.SubAgentRequest{Label: reflectorRoleName, Prompt: prompt, MaxTokens: reflectMaxTokens}
 	// Read-only whatever the role says, as the checkpoint critic's is.
 	devcouncil.ApplyRole(&req, def, true)
 	req.Tier = agents.Route(def, true, false, 1)

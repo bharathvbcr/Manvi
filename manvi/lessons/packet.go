@@ -206,7 +206,7 @@ func BuildPacket(sessionID string, events []session.Event) (string, error) {
 	// The last line of defence, on the finished text. Nothing above is meant
 	// to let the marker through; this is what makes that a checked property
 	// of the output rather than of each field's handling.
-	if strings.Contains(strings.ToUpper(out), verdictMarkerPrefix) {
+	if ContainsMarker(out) {
 		return "", errors.New("lessons: the evidence packet carried a reviewer verdict marker; refusing to hand it to the reflector")
 	}
 	return out, nil
@@ -235,25 +235,34 @@ func assemble(head []string, sections []packetSection) string {
 			fmt.Fprintf(&b, "\n(%s: %d row(s) omitted, no room)\n", s.title, len(s.rows))
 			continue
 		}
-		b.WriteString(title)
-		shown := 0
-		for _, row := range s.rows {
-			if shown >= s.limit || b.Len()+len(row)+1+reserve > MaxPacketBytes {
+		// The latest rows, not the first. A session's outcome is decided at its
+		// end, and the first rows of a long one are the setup the counters
+		// already summarise; a cap that kept them would show the reflector the
+		// part of the run least likely to explain how it went.
+		room := MaxPacketBytes - b.Len() - len(title) - reserve
+		start, used := len(s.rows), 0
+		for i := len(s.rows) - 1; i >= 0 && len(s.rows)-i <= s.limit; i-- {
+			if used+len(s.rows[i])+1 > room {
 				break
 			}
+			used += len(s.rows[i]) + 1
+			start = i
+		}
+		b.WriteString(title)
+		if start > 0 {
+			fmt.Fprintf(&b, "(%d earlier row(s) omitted; showing the latest %d of %d; the counters above cover the whole log)\n",
+				start, len(s.rows)-start, len(s.rows))
+		}
+		for _, row := range s.rows[start:] {
 			b.WriteString(row)
 			b.WriteString("\n")
-			shown++
-		}
-		if cut := len(s.rows) - shown; cut > 0 {
-			fmt.Fprintf(&b, "(%d of %d row(s) omitted; the counters above cover the whole log)\n", cut, len(s.rows))
 		}
 	}
 	out := b.String()
 	if len(out) > MaxPacketBytes {
 		// Only reachable if the head alone is over the bound, which its own
 		// caps make impossible; stated rather than assumed.
-		out = out[:MaxPacketBytes-len("\n(packet truncated)")] + "\n(packet truncated)"
+		out = strings.ToValidUTF8(out[:MaxPacketBytes-len("\n(packet truncated)")], "") + "\n(packet truncated)"
 	}
 	return out
 }
@@ -289,10 +298,28 @@ func toolSummary(counts map[string]int) string {
 
 // oneLine flattens free text from the log to a bounded single line, and
 // withholds it entirely when it carries the reviewer's marker.
+//
+// It also makes the text inert as the reflector's input. Invisible and control
+// runes are dropped (an escape sequence or a joiner inside a marker has no
+// business in evidence), and angle brackets become single guillemets, so log
+// content that quotes the answer format — a finding containing "</edits>
+// <experience> ..." — reaches the reflector as visibly quoted text and cannot
+// spell a tag or a fence line.
 func oneLine(s string, limit int) string {
-	if strings.Contains(strings.ToUpper(s), verdictMarkerPrefix) {
+	if ContainsMarker(s) {
 		return withheld
 	}
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case invisible(r):
+			return -1
+		case r == '<':
+			return '‹'
+		case r == '>':
+			return '›'
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > limit {
 		return string(r[:limit]) + "… (truncated)"

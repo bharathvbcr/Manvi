@@ -24,7 +24,7 @@ func TestAdvSessionIDsAndCorruptLogsHold(t *testing.T) {
 			t.Errorf("Load(%q) = %v, want NotFoundError", ref, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "abc123.g1.json"), []byte(`{"version":1,"id":"abc123","events":[`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "abc123.g1.json"), []byte(`{"version":1,"id":"abc123","events":[`), 0o600); err != nil {
 		t.Skipf("session file naming differs: %v", err)
 	}
 	if _, _, err := s.Load("abc123"); err == nil {

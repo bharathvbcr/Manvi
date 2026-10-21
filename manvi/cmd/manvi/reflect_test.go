@@ -161,6 +161,9 @@ func TestReflectEndToEndStoresAWellFormedEntry(t *testing.T) {
 	if len(seen) == 0 {
 		t.Fatal("the model was never asked")
 	}
+	if seen[0].MaxTokens != reflectMaxTokens {
+		t.Errorf("the reflect request named max_tokens %d, want %d", seen[0].MaxTokens, reflectMaxTokens)
+	}
 	request := marshal(t, seen[0].Messages)
 	if !strings.Contains(request, "EVIDENCE PACKET") || !strings.Contains(request, "hypothesis: over budget") {
 		t.Errorf("the reflector was not shown the packet:\n%s", request)
