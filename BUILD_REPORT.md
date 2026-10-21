@@ -102,4 +102,53 @@ Adversarial passes broke the following, all fixed before merge:
 2. **Should yolo still allow writes to secrets and agent-config trees** (`.env`, `.claude/settings.json` hooks)? This would overturn `TestYoloPostureAlsoDisablesHardRules`. Fable recommends making secret writes posture-independent but keeping agent-config trees writable under yolo.
 3. **Cross-repo consumers of the serve contract.** GitPulse re-vendoring and Jarvis are next; see `.claude/worktrees/agent-ad4ccf9496e65d7b3/tmp/dh3-HANDOVER.md`. Jarvis is still blocked by ft-8e5a8922.
 4. **dh-6:** Python oracle in bench, cost and wall-clock budget, probe isolation.
-5. **Local Go toolchain** to ≥ go1.27.3 (GO-2026-6809). Also, `go.mod` pins `toolchain go1.26.9`.
+5. ~~**Local Go toolchain** to ≥ go1.27.3 (GO-2026-6809). Also, `go.mod` pins `toolchain go1.26.9`.~~ Done on 2026-10-21. Homebrew Go is now go1.27.3, and `go.mod` uses `toolchain go1.26.10` (merge 502ef14). See below.
+
+## Later waves (2026-10-21)
+
+The owner asked Fable to make the pending decisions. Fable's rulings are recorded on each card:
+- **dh-4:** pin to `1ae3bc15` + patch (commit X), not to the `aacffb8` drift.
+- **Yolo:** secret writes become posture-independent (ft-f4dbb1f8); agent-config trees stay writable.
+- **Serve contract:** GitPulse re-vendors now; Jarvis waits for ft-8e5a8922.
+- **dh-6:** Python oracle allowed; $1 and 10 minutes per tuned task; host-provided worktrees for isolation; no live cloud probes without the owner.
+- **Debt:** fix it down, don't re-baseline.
+- **Push:** don't push.
+
+The owner then authorised cloud spend through Claude and a Go upgrade.
+
+| Merge | What landed |
+|---|---|
+| 502ef14 | `toolchain go1.26.10`. It fixes GO-2026-6809 and stays on the 1.26 line that CI and release read from go.mod. That is a patch move, smaller than the go1.27.3 Fable suggested. Verified on go1.26.10: build, vet, tidy, govulncheck 0, core test packages. |
+| f39f5e0 | docs/WORKBENCH.md records the **first live managed Claude run**: Claude Code 2.1.306 on the subscription login, through `manvi serve`, with a repo harness spec. |
+| bee056f | **Main's own gate breaches fixed down** (ft-43c56026): errcheck 196→179, errorlint 3→1, staticcheck 37→33, nilaway 73→70. They traced to a38dc70 (`cmd/anthropic-account`) and 62a22c1. Along the way, `anthropic-account` no longer exits 0 on a closed stdout. **verify.sh: `PASS with gates that did not run`** — 3 skipped tests, no code_graph.json in a fresh worktree, hosted providers scripted only. This was the first real verdict of the run. |
+| 979dcb2 | **wave2:**<br>• ft-447797ec: the overflow flag now has one owner.<br>• ft-ff7dfd1a: the session trim comma off-by-one is fixed, and Save refuses a file Load would refuse.<br>• ft-e58f537b: fetch SSRF ranges, zone and mixed-answer bypasses, end-to-end timeout.<br>• ft-fe6c326d: shell wrappers around `claude` are refused before activation; npm/node launchers are accepted, a correction made in review.<br>• Ratchet lowered: nilerr 7, nilaway 70.<br>• Gate on that tree: every leg passed through the Rust tests and the DevCouncil host build. It stopped at the cgo gusset-engine leg on a cargo-slot wait (`testsupport.DCVerify`). |
+| (this merge) | **wave3:**<br>• ft-de8d7a32: Windows env names compare case-insensitively at one owner, `childenv.Key`, which also serves codingagent's `agentEnv` and `mcp.buildEnv` (class fix).<br>• ft-11cebc9d: the killed-save test is deterministic (write-step seam, mutation-proved, 50/50 under load, portable self-kill).<br>• ft-c9cf8150: `devcouncil_load_skill` is registered only when the repo has skills (−122 schema tokens). The skills listing refuses a non-directory and is bounded by ctx, which closes a FIFO hang that also affected main's per-turn prompt assembly.<br>• ft-d9525675: managed Codex has no process-identity check (code-cited), so the change is docs only. |
+
+**Live cloud** (Claude, key injected per process from the Keychain by `anthropic-account`, never printed):
+- dh-2's cloud criterion passed on `claude-opus-5-5` for $0.10.
+- `manvi probe anthropic` was OK twice; the default probe model is the current `claude-haiku-5-5`.
+- The managed Claude run passed: the harness block was materialised, the agent quoted it, and the file was byte-identical afterwards.
+
+**New cards:**
+- ft-f4dbb1f8: yolo secret writes.
+- ft-fe6c326d: the Claude wrapper (fixed).
+- ft-11cebc9d: the flaky killed-save test (fixed).
+- ft-c9cf8150: conditional skill tool (fixed).
+- ft-d9525675: the Codex launch shape (answered).
+
+**Environment findings, recorded and not bypassed:**
+- **Cargo slots:** this machine's two-slot cargo gate starves store-backed tests (ft-5845a89b).
+- **Lint lock:** golangci-lint's lock is machine-wide, and another project's run can stop the gate.
+- **Load-sensitive Rust test:** `dc-redact`'s scaling test fails at load 33 on 18 cores and passes below 20.
+
+**Still pending:**
+1. **dh-4:** apply the patch in DevCouncil (`tmp/handover/dh4/`), push commit X (owner), then bump the pin.
+2. **The aacffb8 drift bump** (ft-4e03a738), with both `ReadyReport` call sites.
+3. **Other repos:** the GitPulse re-vendor (`tmp/handover/dh3-HANDOVER.md`) and the Jarvis build fix plus its consumer test.
+4. **DevCouncil-owned:** ft-f4dbb1f8, ft-5845a89b and ft-f045f425, and repo naming of `harness.spec`.
+5. **Owner:**
+   - credentials for Gemini and xAI;
+   - Codex/OpenAI spend for ft-2550b25d's managed Codex qualification;
+   - dh-6, still blocked on the bench containment cards;
+   - push main.
+6. **gosec:** it stays at 255 until it is measured on linux with cgo. Darwin reports 247 on both legs.
