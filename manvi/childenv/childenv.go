@@ -34,6 +34,7 @@ package childenv
 
 import (
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
@@ -67,18 +68,53 @@ func Advertised() Capability {
 	return Capability{WithholdsProviderCredentials: len(withheld) > 0, WithheldProviderEnv: withheld}
 }
 
+// foldEnvNames is whether this OS compares environment variable names without
+// regard to case. Windows does, so there `Anthropic_Api_Key` and
+// `ANTHROPIC_API_KEY` are one variable and a child reads either spelling; unix
+// does not. It is a variable rather than a constant so a test can exercise both
+// behaviours on any host; the exported functions read it, the internal ones take
+// it as an argument.
+var foldEnvNames = runtime.GOOS == "windows"
+
+// envKey is the form of an environment variable name that two names share
+// exactly when this OS treats them as the same variable. Folding uses
+// strings.ToUpper, as Windows' own name comparison upper-cases, rather than
+// EqualFold: EqualFold would also join U+212A (Kelvin sign) to K, a name
+// Windows keeps distinct. The cost of a fold wider than the OS's, such as the
+// dotless i, is a withheld variable no real provider uses, which is the safe
+// direction for a filter whose job is to withhold.
+func envKey(name string, fold bool) string {
+	if fold {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+// entryName is the variable name of a "NAME=value" entry. A Windows drive
+// variable such as `=C:=C:\work` has an empty name here and so matches no
+// withheld or overriding name; it passes through untouched.
+func entryName(entry string) string {
+	name, _, _ := strings.Cut(entry, "=")
+	return name
+}
+
 // WithoutProviderCredentials returns environ with every withheld name removed.
+// Names are compared as this OS compares them, so on Windows every spelling of
+// a withheld name is removed, including duplicates that differ only in case.
 // The result is never nil, because os/exec reads a nil Env as "inherit
 // everything" — an empty input would otherwise restore the leak this removes.
 func WithoutProviderCredentials(environ []string) []string {
+	return withoutProviderCredentials(environ, foldEnvNames)
+}
+
+func withoutProviderCredentials(environ []string, fold bool) []string {
 	drop := map[string]bool{}
 	for _, name := range Withheld() {
-		drop[name] = true
+		drop[envKey(name, fold)] = true
 	}
 	env := make([]string, 0, len(environ))
 	for _, entry := range environ {
-		key, _, _ := strings.Cut(entry, "=")
-		if drop[key] {
+		if drop[envKey(entryName(entry), fold)] {
 			continue
 		}
 		env = append(env, entry)
@@ -98,14 +134,17 @@ func Inherit() []string { return WithoutProviderCredentials(os.Environ()) }
 // than the one its caller named; a caller that means to set one passes it in
 // extra.
 func Git(extra ...string) []string {
+	return gitEnv(foldEnvNames, extra)
+}
+
+func gitEnv(fold bool, extra []string) []string {
 	override := map[string]bool{}
 	for _, entry := range extra {
-		key, _, _ := strings.Cut(entry, "=")
-		override[key] = true
+		override[envKey(entryName(entry), fold)] = true
 	}
 	env := make([]string, 0, len(gitAllowlist)+len(extra))
 	for _, name := range gitAllowlist {
-		if override[name] {
+		if override[envKey(name, fold)] {
 			continue
 		}
 		if value, ok := os.LookupEnv(name); ok {
