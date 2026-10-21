@@ -74,7 +74,7 @@ func TestLoadSkillRefusesUnknownWithAvailableNames(t *testing.T) {
 	writeSkillFile(t, f.root, "beta", "---\nname: beta\ndescription: d\n---\nb")
 	writeSkillFile(t, f.root, "alpha", "---\nname: alpha\ndescription: d\n---\nb")
 	res := f.call("devcouncil_load_skill", map[string]string{"name": "gamma"})
-	if !res.IsError || !strings.Contains(res.Text, `no skill named "gamma"`) || !strings.Contains(res.Text, "alpha, beta") {
+	if !res.IsError || !strings.Contains(res.Text, `no skill named "gamma"`) || !strings.Contains(res.Text, "skills directories are: alpha, beta") {
 		t.Errorf("got %v %q", res.IsError, res.Text)
 	}
 }

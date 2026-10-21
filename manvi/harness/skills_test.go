@@ -274,7 +274,7 @@ func TestDeterministicSortedOrder(t *testing.T) {
 	if got := strings.Join(names, ","); got != "alpha,beta,beta2,mid,zeta" {
 		t.Errorf("order: %s", got)
 	}
-	if len(a.Rejected) != 2 || a.Rejected[0].Name != "Bad" || a.Rejected[1].Name != "aaa-bad" {
+	if len(a.Rejected) != 2 || a.Rejected[0].Name != `"Bad"` || a.Rejected[1].Name != "aaa-bad" {
 		t.Errorf("rejected order: %+v", a.Rejected)
 	}
 	if !equalSets(a, b) {
@@ -306,11 +306,8 @@ func TestMaxSkillsBound(t *testing.T) {
 		writeSkill(t, root, n, "---\nname: "+n+"\ndescription: d\n---\nb")
 	}
 	set := load(t, root)
-	if len(set.Skills) != MaxSkills || len(set.Rejected) != 3 {
-		t.Fatalf("skills=%d rejected=%d", len(set.Skills), len(set.Rejected))
-	}
-	if !strings.Contains(set.Rejected[0].Reason, "not examined") {
-		t.Errorf("reason: %q", set.Rejected[0].Reason)
+	if len(set.Skills) != MaxSkills || len(set.Rejected) != 0 || set.NotExamined != 3 {
+		t.Fatalf("skills=%d rejected=%d notExamined=%d", len(set.Skills), len(set.Rejected), set.NotExamined)
 	}
 }
 
@@ -348,7 +345,7 @@ func TestSkillsSectionCapIsDeclared(t *testing.T) {
 		skills = append(skills, Skill{Name: n, Description: strings.Repeat("w", 100)})
 	}
 	full, _ := SkillsSection(skills, 0)
-	budget := utf8.RuneCountInString(skillsPreamble) + 3*115
+	budget := utf8.RuneCountInString(skillsPreamble) + 1 + utf8.RuneCountInString(cutTrailer(6, 6, 0)) + 3*115 + 10
 	capped, ok := SkillsSection(skills, budget)
 	if !ok {
 		t.Fatal("no section")
@@ -394,12 +391,25 @@ func FuzzParseFrontmatter(f *testing.F) {
 			if k != "name" && k != "description" {
 				t.Fatalf("unexpected key %q", k)
 			}
+			for _, r := range v {
+				if forbiddenRune(r) {
+					t.Fatalf("value %q carries U+%04X", v, r)
+				}
+			}
 			if strings.ContainsAny(v, "\n\r") || v != strings.Join(strings.Fields(v), " ") {
 				t.Fatalf("value %q is not a normalised single line", v)
 			}
 		}
 		if len(body) > len(in) {
 			t.Fatalf("body longer than input")
+		}
+		// And what loadSkill would put in the always-on prompt.
+		if s, reason := loadSkill("foo", stubRead(in)); reason == "" {
+			for _, r := range s.Name + s.Description {
+				if forbiddenRune(r) {
+					t.Fatalf("accepted skill carries U+%04X", r)
+				}
+			}
 		}
 	})
 }
