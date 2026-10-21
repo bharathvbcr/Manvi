@@ -530,6 +530,21 @@ closed ("Claude reported a process identity other than the one this host
 started"): the wrapper starts the CLI as a child, so the reported pid is not the
 one the host launched. `MANVI_CLAUDE_BINARY` has to name the CLI executable itself.
 
+Since then the host refuses that case at `work.runs.managed.prepare`, before
+activation and before anything is run. It reads at most eight bytes of the
+configured Claude program (`MANVI_CLAUDE_BINARY`, else `claude` on `PATH`, with
+symlinks resolved) and accepts only a Mach-O (thin or universal), ELF or PE
+image. A `#!` script, an empty or unreadable file, a directory, a FIFO or a file
+without an execute bit is refused with an error that names `MANVI_CLAUDE_BINARY`
+and the resolved path, and the saved attempt stays prepared. The check never runs
+the program. A host therefore has to set `MANVI_CLAUDE_BINARY` to the real CLI
+executable (for an installer that keeps versions, the file under its `versions`
+directory) and put anything a wrapper used to set, such as `CLAUDE_CONFIG_DIR`,
+in the host's own environment. An npm-installed `claude` is a `#!/usr/bin/env
+node` script and is refused the same way. The process-identity check after start
+is unchanged: a reported pid other than the one the host started still ends the
+run, and it remains the backstop for a file swapped after the prepare-time read.
+
 ## Enhancement lifecycle
 
 Schema version four adds durable automation settings and a task enhancement

@@ -31,6 +31,15 @@ const fixtureBuild = "9.9.9-fixture"
 // flag — so every fixture session would fail before starting, for a reason
 // that looks nothing like its cause.
 func TestMain(m *testing.M) {
+	// A host-level test needs a native `claude` it can name in
+	// MANVI_CLAUDE_BINARY — a shell wrapper is refused before launch — so it
+	// links this test binary under "claude-fixture-<scenario>" (see
+	// cmd/manvi managedProviderFixture). Invoked by that name, the binary
+	// becomes the protocol child the adapter's own launch line (--print,
+	// --session-id, ...) is meant for.
+	if scenario, ok := strings.CutPrefix(filepath.Base(os.Args[0]), "claude-fixture-"); ok {
+		os.Args = append([]string{os.Args[0], "-test.run=^TestClaudeProtocolChild$", "--", "claude-fixture:" + scenario}, os.Args[1:]...)
+	}
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" {
 			dumpFixtureEnv("version")

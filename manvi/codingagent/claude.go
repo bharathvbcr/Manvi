@@ -168,6 +168,12 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if !filepath.IsAbs(program) || !filepath.IsAbs(options.Cwd) || strings.ContainsAny(program+options.Cwd, "\x00\r\n") {
 		return nil, beforeStart(errors.New("managed Claude requires an absolute executable and checkout path"))
 	}
+	// Before anything is run, the probe included: a wrapper that starts the CLI
+	// as a child would otherwise fail the process-identity check only after the
+	// run began, without saying why.
+	if err := requireNativeExecutable(program); err != nil {
+		return nil, beforeStart(err)
+	}
 	cwd, err := filepath.EvalSymlinks(options.Cwd)
 	if err != nil {
 		return nil, beforeStart(fmt.Errorf("resolve managed checkout: %w", err))

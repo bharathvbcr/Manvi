@@ -390,6 +390,15 @@ ops, it is whatever absolute path the host names (validated as the top of a git 
 no symlink), and the host is trusted to name only repositories it may read. A repository spec
 under it is read through the same read gate as `read_file`.
 
+A managed Claude run needs a native Claude executable. `work.runs.managed.prepare` refuses, before
+activation, a configured program (`MANVI_CLAUDE_BINARY`, else `claude` on `PATH`; symlinks are
+followed) whose first bytes are not a Mach-O, ELF or PE image: a shell or `#!` wrapper, an
+account-picker or version shim, an npm launcher. The error names `MANVI_CLAUDE_BINARY` and the
+resolved path. A host sets `MANVI_CLAUDE_BINARY` to the real CLI and carries any wrapper-set
+environment (such as `CLAUDE_CONFIG_DIR`) itself. The check reads eight bytes and never runs the
+program; the post-start process-identity check is unchanged and stays fail-closed. See
+`docs/WORKBENCH.md`.
+
 Managed runs take `harness: {kind: "repo"|"named", name}` on `work.runs.managed.prepare`.
 Inline is refused there: the text would go into the file an unattended agent obeys, and has no
 reviewed artifact behind it. The whole prepare request is at most 4096 bytes (so a harness
