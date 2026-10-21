@@ -305,6 +305,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
+	promptOpts.Skills, promptOpts.SkillNotices = skillsForPrompt(ctx, native, promptTokenBudget(reg, provider.Name()))
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {
 		_, _ = fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)

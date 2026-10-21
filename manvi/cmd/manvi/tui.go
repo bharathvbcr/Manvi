@@ -879,7 +879,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 		return errors.New("no model provider is attached to this session")
 	}
 
-	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(s, sessionID, at)
+	systemPrompt, subRunner, coreOnly, err := h.prepareTurn(ctx, s, sessionID, at)
 	if err != nil {
 		return err
 	}
@@ -946,7 +946,7 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 // re-attached to the session's current provider, model and effort — and
 // returns the prompt, the runner and whether the turn is narrowed to the core
 // tools.
-func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
+func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID string, at attached) (string, *subAgentRunner, bool, error) {
 	coreOnly := coreToolsOnly(h.reg, at.provider.Name())
 	dynamic := dynamicToolsEnabled(h.reg, at.provider.Name())
 	if dynamic {
@@ -962,6 +962,7 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
+	promptOpts.Skills, promptOpts.SkillNotices = skillsForPrompt(ctx, s.native, promptTokenBudget(h.reg, at.provider.Name()))
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
 	// Surfaced in the transcript rather than on stderr. Under the alternate
 	// screen stderr goes nowhere a person can read, which is how a prompt

@@ -62,6 +62,13 @@ type PromptOptions struct {
 	// Areas is the repository's own shape, from the code map, used to orient
 	// the model instead of asking it to go and discover the layout.
 	Areas []repomap.AreaSummary
+	// Skills is the repository's skills listing, resolved once for the turn by
+	// skillsForPrompt beside the project instructions. Nil means there are no
+	// skills to list, or none could be read; SkillNotices says which.
+	Skills prompt.Source
+	// SkillNotices are the faults of that resolution, surfaced with the
+	// assembly's own faults.
+	SkillNotices []string
 }
 
 // assemblePromptReported builds the system prompt and keeps the account of how
@@ -75,7 +82,8 @@ type PromptOptions struct {
 // in every resumed session, exactly like one that carried them — and the
 // evidence trail could not explain the difference in behaviour.
 func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, prompt.Report, []string) {
-	return assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+	text, report, faults := assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+	return text, report, append(faults, opts.SkillNotices...)
 }
 
 // recordPromptAssembly writes what a turn's prompt actually carried into the
@@ -419,6 +427,9 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	// push them out.
 	if pSrc, ok := projectInstructionsSource(promptTokenBudget(reg, provider)); ok {
 		r.Add(pSrc)
+	}
+	if opts.Skills != nil {
+		r.Add(opts.Skills)
 	}
 	return r
 }
