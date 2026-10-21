@@ -121,6 +121,20 @@ func (e *ConflictError) Error() string {
 		"refusing to overwrite it", e.ID, e.Detail)
 }
 
+// TooLargeError reports a session whose file would exceed what Load will read.
+// Save refuses it rather than write a file that could never be resumed; the
+// previous generation is left as it was.
+type TooLargeError struct {
+	ID    string
+	Size  int
+	Limit int
+}
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("session %s: the file would be %d bytes, over the %d-byte bound a load will read — "+
+		"not saved; the previous save is unchanged", e.ID, e.Size, e.Limit)
+}
+
 // header is the on-disk document.
 //
 // Events is a raw message on both encode and decode so the checksum covers the
@@ -406,6 +420,12 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 }
 
 // Save writes the log as this session's next generation.
+//
+// The byte budget (maxBytes) bounds the events array only, not the file: the
+// header (id, timestamps, counts, checksum; about 235 bytes) comes on top, so a
+// file can exceed the budget by that much. The hard ceiling on the whole file is
+// maxLoadBytes, the same constant Load enforces; a log that would exceed it is
+// refused with a *TooLargeError and nothing is written.
 func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	if !validID(id) {
 		return SaveReport{}, fmt.Errorf("session: %q is not a valid session id", id)
@@ -475,6 +495,12 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, fmt.Errorf("session: encoding session %s: %w", id, err)
 	}
 	body = append(body, '\n')
+	// Save and Load share one bound. An oversize final turn is kept past the
+	// byte budget, but not past what Load will read: a session that could be
+	// written and never resumed is "resume means start over" by another door.
+	if len(body) > maxLoadBytes {
+		return SaveReport{}, &TooLargeError{ID: id, Size: len(body), Limit: maxLoadBytes}
+	}
 
 	target := filepath.Join(s.dir, name(id, generation+1))
 	if err := writeNew(s.dir, target, body); err != nil {

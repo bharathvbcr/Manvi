@@ -129,8 +129,7 @@ func TestAdvSaveLoadRoundTripAgreesWithTheBudget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("iter %d budget %d: save: %v", iter, budget, err)
 			}
-			_, path, _ := store.current(id)
-			raw, err := os.ReadFile(path)
+			raw, err := readBounded(report.Path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -284,10 +283,13 @@ func TestAdvFileSizeVersusBudget(t *testing.T) {
 	store := NewStore(t.TempDir())
 	store.setLimits(arrayLen(perEvent), 0)
 	id := newID(t)
-	if _, err := store.Save(id, log); err != nil {
+	report, err := store.Save(id, log)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, path, _ := store.current(id)
-	info, _ := os.Stat(path)
+	info, err := os.Stat(report.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("budget %d, file %d bytes (header overhead %d)", arrayLen(perEvent), info.Size(), int(info.Size())-arrayLen(perEvent))
 }
