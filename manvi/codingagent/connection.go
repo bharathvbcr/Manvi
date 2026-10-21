@@ -121,9 +121,16 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 // subscription it is logged in to, whether or not a spend cap is set. Git
 // repository-routing overrides are removed and the Manvi root is replaced.
 func agentEnv(environ []string, cwd string) []string {
+	return agentEnvKeyed(environ, cwd, childenv.Key)
+}
+
+// agentEnvKeyed is agentEnv with the name comparison supplied, so both the
+// Windows (case-insensitive) and unix behaviours are testable on any host.
+func agentEnvKeyed(environ []string, cwd string, nameKey func(string) string) []string {
 	env := make([]string, 0, len(environ)+2)
 	for _, entry := range environ {
-		key, _, _ := strings.Cut(entry, "=")
+		name, _, _ := strings.Cut(entry, "=")
+		key := nameKey(name)
 		switch key {
 		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "DEVCOUNCIL_ROOT", "PWD":
 			continue

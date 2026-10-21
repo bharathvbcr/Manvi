@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // serverError is a JSON-RPC error a server answered a call with. It unwraps to
@@ -207,13 +208,21 @@ var baseEnvAllowlist = []string{
 // quietly restore the leak this replaces instead of producing an empty
 // environment.
 func buildEnv(cfg ServerConfig, workdir string) []string {
+	return buildEnvKeyed(cfg, workdir, childenv.Key)
+}
+
+// buildEnvKeyed is buildEnv with the name comparison supplied. On Windows a
+// declared `Path` and an inherited `PATH` are one variable, and exec's
+// last-wins rule would let the inherited one override the declared one if both
+// were emitted.
+func buildEnvKeyed(cfg ServerConfig, workdir string, nameKey func(string) string) []string {
 	env := make([]string, 0, len(baseEnvAllowlist)+len(cfg.Env)+len(cfg.EnvPassthrough)+1)
 	seen := make(map[string]bool)
 	add := func(k, v string) {
-		if k == "" || seen[k] {
+		if k == "" || seen[nameKey(k)] {
 			return
 		}
-		seen[k] = true
+		seen[nameKey(k)] = true
 		env = append(env, k+"="+v)
 	}
 
