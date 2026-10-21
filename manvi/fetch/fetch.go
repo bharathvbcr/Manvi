@@ -205,6 +205,11 @@ func (c *Client) Fetch(ctx context.Context, raw string) (*Document, error) {
 	if !c.Enabled() {
 		return nil, ErrDisabled
 	}
+	// One deadline for the whole operation. http.Client.Timeout covers only Do,
+	// so without this the DNS lookup in vet could outlive the limit. An earlier
+	// caller deadline wins, since WithTimeout takes the sooner of the two.
+	ctx, cancel := context.WithTimeout(ctx, c.limits.Timeout)
+	defer cancel()
 	target, err := c.vet(ctx, raw)
 	if err != nil {
 		return nil, err
@@ -475,6 +480,7 @@ var reservedPrefixes = []struct {
 	// whoever controls the DNS answer, none of these carries documentation
 	// traffic, and a decoder is one more parser to get wrong.
 	{netip.MustParsePrefix("::/96"), "IPv4-compatible or unspecified — a deprecated embedding of the v4 space"},
+	{netip.MustParsePrefix("::ffff:0:0:0/96"), "SIIT IPv4-translated — a translation of the v4 space"},
 	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64 — a translation of the v4 space"},
 	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64 — a translation of the v4 space"},
 	{netip.MustParsePrefix("2002::/16"), "6to4 — a tunnel to an embedded v4 address"},

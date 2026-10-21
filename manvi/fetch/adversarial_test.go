@@ -22,11 +22,12 @@ import (
 // An ambient proxy must never receive the request. Transport.Proxy is nil, so
 // the dialer must be asked for the target host and never for the proxy.
 func TestAdvProxyEnvironmentIsIgnored(t *testing.T) {
-	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	proxy, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer proxy.Close()
+	defer func() { _ = proxy.Close() }()
 	var hits atomic.Int32
 	go func() {
 		for {
@@ -35,7 +36,7 @@ func TestAdvProxyEnvironmentIsIgnored(t *testing.T) {
 				return
 			}
 			hits.Add(1)
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"} {
@@ -44,7 +45,8 @@ func TestAdvProxyEnvironmentIsIgnored(t *testing.T) {
 	t.Setenv("NO_PROXY", "")
 
 	c := New([]string{"docs.example"}, Limits{Timeout: 2 * time.Second})
-	if tr := c.http.Transport.(*http.Transport); tr.Proxy != nil {
+	tr := transportOf(t, c)
+	if tr.Proxy != nil {
 		t.Fatal("Transport.Proxy is set")
 	}
 	var dialed []string
@@ -52,7 +54,7 @@ func TestAdvProxyEnvironmentIsIgnored(t *testing.T) {
 	c.resolve = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 	}
-	c.http.Transport.(*http.Transport).DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
+	tr.DialContext = func(_ context.Context, _, addr string) (net.Conn, error) {
 		mu.Lock()
 		dialed = append(dialed, addr)
 		mu.Unlock()
@@ -101,7 +103,7 @@ func TestAdvRedirectToHostPrivateOnlyOnRedirectHop(t *testing.T) {
 		}
 		return real(a)
 	}
-	tr := c.http.Transport.(*http.Transport)
+	tr := transportOf(t, c)
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if strings.HasPrefix(addr, "internal.") {
 			t.Errorf("dialled the redirect target %q", addr)
@@ -131,7 +133,7 @@ func TestAdvRedirectTargetsAreAllRefused(t *testing.T) {
 			c := advClient(t, []string{"docs.example"}, func(string) ([]netip.Addr, error) {
 				return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 			})
-			tr := c.http.Transport.(*http.Transport)
+			tr := transportOf(t, c)
 			var dials atomic.Int32
 			tr.DialContext = func(context.Context, string, string) (net.Conn, error) {
 				dials.Add(1)
@@ -139,8 +141,8 @@ func TestAdvRedirectTargetsAreAllRefused(t *testing.T) {
 				go func() { _ = b.Close() }()
 				return a, nil
 			}
-			req, _ := http.NewRequest(http.MethodGet, "https://docs.example/", nil)
-			next, _ := http.NewRequest(http.MethodGet, loc, nil)
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://docs.example/", nil)
+			next, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, loc, nil)
 			if strings.HasPrefix(loc, "//") {
 				next.URL.Host = strings.TrimPrefix(strings.SplitN(loc, "/", 4)[2], "")
 				next.URL.Scheme = "https"
@@ -327,7 +329,7 @@ func TestAdvResolverFailuresFailClosed(t *testing.T) {
 func TestAdvHugeAnswerListWithBadTail(t *testing.T) {
 	var addrs []netip.Addr
 	for i := 0; i < 200000; i++ {
-		addrs = append(addrs, netip.AddrFrom4([4]byte{8, byte(i >> 16), byte(i >> 8), byte(i)}))
+		addrs = append(addrs, netip.AddrFrom4([4]byte{8, byte(i >> 16 & 0xff), byte(i >> 8 & 0xff), byte(i & 0xff)}))
 	}
 	addrs = append(addrs, netip.MustParseAddr("127.0.0.1"))
 	c := advClient(t, []string{"docs.example"}, func(string) ([]netip.Addr, error) { return addrs, nil })
@@ -345,7 +347,7 @@ func TestAdvHugeAnswerListWithBadTail(t *testing.T) {
 func TestAdvDialLoopHonoursContext(t *testing.T) {
 	var addrs []netip.Addr
 	for i := 0; i < 2000; i++ {
-		addrs = append(addrs, netip.AddrFrom4([4]byte{8, 8, byte(i >> 8), byte(i)}))
+		addrs = append(addrs, netip.AddrFrom4([4]byte{8, 8, byte(i >> 8 & 0xff), byte(i & 0xff)}))
 	}
 	c := advClient(t, []string{"docs.example"}, func(string) ([]netip.Addr, error) { return addrs, nil })
 	start := time.Now()
@@ -378,4 +380,17 @@ func cancelled() context.Context {
 	return ctx
 }
 
-func insecureTLS() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
+func insecureTLS() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true} //nolint:gosec // the test server's certificate is self-signed
+}
+
+// transportOf returns the client's transport, failing the test rather than
+// panicking if New ever stops building an *http.Transport.
+func transportOf(t *testing.T, c *Client) *http.Transport {
+	t.Helper()
+	tr, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport is %T, want *http.Transport", c.http.Transport)
+	}
+	return tr
+}
