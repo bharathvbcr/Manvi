@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -40,8 +41,12 @@ func TestSaveKillChild(t *testing.T) {
 	appendTurn(t, log, "the interrupted turn")
 	store.writeStep = func(at string) {
 		if at == step {
-			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
-			select {} // the signal is on its way; never run past the step
+			// SIGKILL on unix, TerminateProcess on Windows: either way no
+			// deferred cleanup runs.
+			if self, err := os.FindProcess(os.Getpid()); err == nil {
+				_ = self.Kill()
+			}
+			select {} // the kill is on its way; never run past the step
 		}
 	}
 	if _, err := store.Save(crashID, log); err != nil {
@@ -93,8 +98,12 @@ func TestASaveKilledPartWayLeavesALoadableSession(t *testing.T) {
 			if !errors.As(err, &exit) {
 				t.Fatalf("the child was not killed: %v", err)
 			}
-			if ws, ok := exit.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
-				t.Fatalf("the child did not die by SIGKILL at step %q: %v", tc.step, exit)
+			// Windows has no signals: TerminateProcess shows as a nonzero
+			// exit, which is all that can be asserted there.
+			if runtime.GOOS != "windows" {
+				if ws, ok := exit.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+					t.Fatalf("the child did not die by SIGKILL at step %q: %v", tc.step, exit)
+				}
 			}
 
 			check := func(label string) int {
