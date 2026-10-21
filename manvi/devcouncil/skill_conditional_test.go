@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -206,9 +205,7 @@ func TestFIFOAsSkillsDirectoryDoesNotBlockTheToolCall(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(f.root, ".agents"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(f.root, harness.SkillsDir), 0o600); err != nil {
-		t.Skipf("mkfifo: %v", err)
-	}
+	mkfifo(t, filepath.Join(f.root, harness.SkillsDir))
 	type out struct {
 		pipe *tools.Registry
 		res  tools.Result

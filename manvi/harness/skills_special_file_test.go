@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -22,9 +21,7 @@ func plantSkillsPath(t *testing.T, mode string) string {
 	p := filepath.Join(root, SkillsDir)
 	switch mode {
 	case "fifo":
-		if err := syscall.Mkfifo(p, 0o600); err != nil {
-			t.Skipf("mkfifo: %v", err)
-		}
+		mkfifo(t, p)
 	case "file":
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -65,9 +62,7 @@ func TestSpecialFileAtSkillsPathIsRefusedWithoutBeingOpened(t *testing.T) {
 func TestSymlinkToFIFOAsSkillsPathIsRefused(t *testing.T) {
 	root := plantSkillsPath(t, "none")
 	fifo := filepath.Join(root, "pipe")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skipf("mkfifo: %v", err)
-	}
+	mkfifo(t, fifo)
 	if err := os.Symlink("../pipe", filepath.Join(root, SkillsDir)); err != nil {
 		t.Fatal(err)
 	}
