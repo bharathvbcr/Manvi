@@ -170,10 +170,10 @@ func TestEveryContentReaderAppliesTheReadGate(t *testing.T) {
 
 	probes := map[string]map[string]any{
 		"devcouncil_load_skill": {"name": "leak"},
-		"devcouncil_read_file": {"path": ".env"},
-		"devcouncil_grep":      {"pattern": "API_KEY", "include_ignored": true},
-		"devcouncil_get_diff":  {},
-		"devcouncil_git_show":  {"object": "HEAD"},
+		"devcouncil_read_file":  {"path": ".env"},
+		"devcouncil_grep":       {"pattern": "API_KEY", "include_ignored": true},
+		"devcouncil_get_diff":   {},
+		"devcouncil_git_show":   {"object": "HEAD"},
 	}
 	// graph_query returns source spans from the index, which needs the DevMap
 	// binary; its gate is asserted at the source below.
