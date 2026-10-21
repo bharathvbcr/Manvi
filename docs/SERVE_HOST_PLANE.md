@@ -401,6 +401,11 @@ environment (such as `CLAUDE_CONFIG_DIR`) itself. The check reads 256 bytes and 
 program; the post-start process-identity check is unchanged and stays fail-closed. See
 `docs/WORKBENCH.md`.
 
+Managed Codex (`MANVI_CODEX_BINARY`, else `codex` on `PATH`) has no such refusal, because Codex
+reports no process identity for the host to compare. Set `MANVI_CODEX_BINARY` to the native
+`codex` executable so the process id the host activates is the one running the model; a
+launcher that starts it as a child is accepted but leaves that id describing the launcher.
+
 Managed runs take `harness: {kind: "repo"|"named", name}` on `work.runs.managed.prepare`.
 Inline is refused there: the text would go into the file an unattended agent obeys, and has no
 reviewed artifact behind it. The whole prepare request is at most 4096 bytes (so a harness

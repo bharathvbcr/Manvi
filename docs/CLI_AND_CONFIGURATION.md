@@ -156,7 +156,7 @@ Unset, the harness looks the program up on `PATH`, then in this repository's own
 | `MANVI_VERIFY_BINARY` | `dcverify` | the end-of-turn check, `manvi serve` verification, `manvi doctor` |
 | `MANVI_GREP_BINARY` | `dcgrep` | repository search |
 | `MANVI_CLAUDE_BINARY` | `claude` | managed Claude coding-agent runs in `manvi serve`; must be the CLI (native, or a node/bun/deno launcher), not a shell wrapper |
-| `MANVI_CODEX_BINARY` | `codex` | managed Codex coding-agent runs in `manvi serve` |
+| `MANVI_CODEX_BINARY` | `codex` | managed Codex coding-agent runs in `manvi serve`; should be the native executable, not a wrapper or node launcher (not enforced) |
 | `MANVI_DEVCOUNCIL_BINARY` | DevCouncil inspect CLI | `devcouncil_dev_inspect` only. An explicit pin, never a `PATH` guess: unset, the tool reports itself unavailable. |
 
 **Project root.** `MANVI_PROJECT_ROOT`, then `MANVI_ROOT`, then `DEVCOUNCIL_ROOT`: the

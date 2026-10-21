@@ -328,7 +328,16 @@ sufficient process evidence remain unresolved; timeout does not prove terminatio
 
 `MANVI_CODEX_BINARY` selects the executable through the existing tool resolver;
 otherwise the host resolves `codex` on PATH. The adapter launches
-`app-server --listen stdio://` with argument arrays, never shell interpolation.
+`codex app-server` (stdio is the default transport; current Codex no longer accepts
+`--listen stdio://`) with argument arrays, never shell interpolation.
+
+Unlike Claude, managed Codex has no launch-shape refusal and no provider-reported process
+identity check: the `initialize` reply is read only for `userAgent`, so a wrapper passes the
+handshake. The process id the host records and the native host observes at activation is the
+process Manvi spawned. Point `MANVI_CODEX_BINARY` at the native `codex` executable (for
+example the standalone install's `~/.codex/packages/standalone/current/bin/codex`) rather than
+a shell wrapper or an npm node launcher: if a launcher runs the native binary as a child, the
+recorded id and start time describe the launcher, not the process running the model.
 It retains the initialized provider user agent and returned effective model,
 provider, approval reviewer, approval policy, sandbox and thread identifiers.
 The observed configuration and provider thread become immutable for this attempt;
