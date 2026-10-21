@@ -1,6 +1,7 @@
 package codingagent
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,9 +36,9 @@ func checkoutRoot(t *testing.T) string {
 
 func requireRefusedBeforeStart(t *testing.T, err error, wantPath, ranMarker string) {
 	t.Helper()
-	var refusal *NotNativeExecutableError
+	var refusal *ClaudeWrapperError
 	if !errors.As(err, &refusal) {
-		t.Fatalf("want *NotNativeExecutableError, got %v", err)
+		t.Fatalf("want *ClaudeWrapperError, got %v", err)
 	}
 	if !NoProcessStarted(err) {
 		t.Fatalf("refusal was not certified as before any process: %v", err)
@@ -99,7 +100,7 @@ func TestStartClaudeNamesWhereASymlinkedScriptLeads(t *testing.T) {
 func TestAMissingClaudeBinaryKeepsItsExistingError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	_, err := StartClaude(t.Context(), Options{Program: missing, Cwd: checkoutRoot(t), Mode: "ask"})
-	var refusal *NotNativeExecutableError
+	var refusal *ClaudeWrapperError
 	if err == nil || errors.As(err, &refusal) || !NoProcessStarted(err) || !strings.Contains(err.Error(), "resolve managed Claude executable") {
 		t.Fatalf("a missing binary changed its error: %v", err)
 	}
@@ -110,14 +111,14 @@ func TestANativeExecutableAndASymlinkToOneAreAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := requireNativeExecutable(bin); err != nil {
+	if err := requireLaunchableClaude(bin); err != nil {
 		t.Fatalf("the test binary itself was refused: %v", err)
 	}
 	link := filepath.Join(t.TempDir(), "claude")
 	if err := os.Symlink(bin, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireNativeExecutable(link); err != nil {
+	if err := requireLaunchableClaude(link); err != nil {
 		t.Fatalf("a symlink to a native executable was refused: %v", err)
 	}
 }
@@ -132,7 +133,7 @@ func writeFile(t *testing.T, name string, mode os.FileMode, content []byte) stri
 	return path
 }
 
-func TestRequireNativeExecutableByHeader(t *testing.T) {
+func TestRequireLaunchableClaudeByHeader(t *testing.T) {
 	javaClass := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x41}
 	universal := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x02, 0x01}
 	for _, tc := range []struct {
@@ -148,16 +149,30 @@ func TestRequireNativeExecutableByHeader(t *testing.T) {
 		{"java-class-shares-the-universal-magic", javaClass, false},
 		{"truncated-universal", []byte{0xca, 0xfe, 0xba, 0xbe}, false},
 		{"sh-script", []byte("#!/bin/sh\necho\n"), false},
-		{"env-node-script", []byte("#!/usr/bin/env node\n"), false},
+		{"npm-env-node-script", []byte("#!/usr/bin/env node\nimport './cli.js'\n"), true},
+		{"env-S-node-flags", []byte("#!/usr/bin/env -S node --no-warnings --max-old-space-size=4096\n"), true},
+		{"direct-node-path", []byte("#!/usr/local/bin/node\n"), true},
+		{"bun-and-deno", []byte("#!/usr/bin/env bun\n"), true},
+		{"deno-direct", []byte("#!/opt/homebrew/bin/deno run\n"), true},
+		{"crlf-node", []byte("#!/usr/bin/env node\r\n"), true},
+		{"zsh-direct", []byte("#!/bin/zsh\nexec real\n"), false},
+		{"env-bash", []byte("#!/usr/bin/env bash\n"), false},
+		{"env-S-sh", []byte("#!/usr/bin/env -S sh -e\n"), false},
+		{"env-with-assignment-then-zsh", []byte("#!/usr/bin/env FOO=1 zsh\n"), false},
+		{"env-python", []byte("#!/usr/bin/env python3\n"), false},
+		{"bare-env", []byte("#!/usr/bin/env\n"), false},
+		{"empty-shebang", []byte("#!\n"), false},
+		{"unterminated-long-line", append([]byte("#!/usr/bin/env node "), bytes.Repeat([]byte("x"), 400)...), false},
 		{"bom-before-shebang", []byte("\xef\xbb\xbf#!/bin/sh\n"), false},
+		{"bom-before-node-shebang", []byte("\xef\xbb\xbf#!/usr/bin/env node\n"), false},
 		{"leading-space-shebang", []byte(" #!/bin/sh\n"), false},
 		{"zero-bytes", nil, false},
 		{"one-byte", []byte("M"), false},
 		{"text", []byte("not a program"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := requireNativeExecutable(writeFile(t, "claude", 0o700, tc.content))
-			var refusal *NotNativeExecutableError
+			err := requireLaunchableClaude(writeFile(t, "claude", 0o700, tc.content))
+			var refusal *ClaudeWrapperError
 			switch {
 			case tc.accept && err != nil:
 				t.Fatalf("a native header was refused: %v", err)
@@ -168,20 +183,24 @@ func TestRequireNativeExecutableByHeader(t *testing.T) {
 	}
 }
 
-func TestRequireNativeExecutableRefusesWhatIsNotAnExecutableRegularFile(t *testing.T) {
-	var refusal *NotNativeExecutableError
-	if err := requireNativeExecutable(t.TempDir()); !errors.As(err, &refusal) {
+func TestRequireLaunchableClaudeRefusesWhatIsNotAnExecutableRegularFile(t *testing.T) {
+	var refusal *ClaudeWrapperError
+	if err := requireLaunchableClaude(t.TempDir()); !errors.As(err, &refusal) {
 		t.Fatalf("a directory was not refused: %v", err)
 	}
 	if runtime.GOOS != "windows" {
 		plain := writeFile(t, "claude", 0o600, []byte("\x7fELF\x02\x01\x01\x00"))
-		if err := requireNativeExecutable(plain); !errors.As(err, &refusal) || !strings.Contains(err.Error(), "not marked executable") {
+		err := requireLaunchableClaude(plain)
+		if !errors.As(err, &refusal) {
 			t.Fatalf("a non-executable file was not refused: %v", err)
+		}
+		if !strings.Contains(refusal.Reason, "not marked executable") {
+			t.Fatalf("wrong reason: %q", refusal.Reason)
 		}
 	}
 }
 
-func TestRequireNativeExecutableReadsABoundedPrefixOfAHugeFile(t *testing.T) {
+func TestRequireLaunchableClaudeReadsABoundedPrefixOfAHugeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude")
 	// #nosec G302,G304 -- a sparse test file in a temp dir that must be executable.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o700)
@@ -198,8 +217,8 @@ func TestRequireNativeExecutableReadsABoundedPrefixOfAHugeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	var refusal *NotNativeExecutableError
-	if err := requireNativeExecutable(path); !errors.As(err, &refusal) {
+	var refusal *ClaudeWrapperError
+	if err := requireLaunchableClaude(path); !errors.As(err, &refusal) {
 		t.Fatalf("a huge script was not refused: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {

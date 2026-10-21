@@ -390,12 +390,14 @@ ops, it is whatever absolute path the host names (validated as the top of a git 
 no symlink), and the host is trusted to name only repositories it may read. A repository spec
 under it is read through the same read gate as `read_file`.
 
-A managed Claude run needs a native Claude executable. `work.runs.managed.prepare` refuses, before
-activation, a configured program (`MANVI_CLAUDE_BINARY`, else `claude` on `PATH`; symlinks are
-followed) whose first bytes are not a Mach-O, ELF or PE image: a shell or `#!` wrapper, an
-account-picker or version shim, an npm launcher. The error names `MANVI_CLAUDE_BINARY` and the
-resolved path. A host sets `MANVI_CLAUDE_BINARY` to the real CLI and carries any wrapper-set
-environment (such as `CLAUDE_CONFIG_DIR`) itself. The check reads eight bytes and never runs the
+A managed Claude run needs the Claude Code CLI itself, not a wrapper that starts it as a child
+process. `work.runs.managed.prepare` refuses, before activation, a configured program
+(`MANVI_CLAUDE_BINARY`, else `claude` on `PATH`; symlinks are followed) that is a shell script
+(an account picker, an nvm or asdf shim) or a script under any interpreter other than `node`,
+`bun` or `deno`. A native executable and an npm-installed `#!/usr/bin/env node` launcher are
+accepted. The error names `MANVI_CLAUDE_BINARY` and the resolved path. A host behind a shell
+wrapper sets `MANVI_CLAUDE_BINARY` to the Claude Code executable and carries any wrapper-set
+environment (such as `CLAUDE_CONFIG_DIR`) itself. The check reads 256 bytes and never runs the
 program; the post-start process-identity check is unchanged and stays fail-closed. See
 `docs/WORKBENCH.md`.
 

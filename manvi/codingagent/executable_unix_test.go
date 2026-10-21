@@ -10,16 +10,16 @@ import (
 	"time"
 )
 
-func TestRequireNativeExecutableDoesNotBlockOnAFIFO(t *testing.T) {
+func TestRequireLaunchableClaudeDoesNotBlockOnAFIFO(t *testing.T) {
 	fifo := filepath.Join(t.TempDir(), "claude")
 	if err := syscall.Mkfifo(fifo, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- requireNativeExecutable(fifo) }()
+	go func() { done <- requireLaunchableClaude(fifo) }()
 	select {
 	case err := <-done:
-		var refusal *NotNativeExecutableError
+		var refusal *ClaudeWrapperError
 		if !errors.As(err, &refusal) {
 			t.Fatalf("a FIFO was not refused: %v", err)
 		}

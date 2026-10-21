@@ -531,19 +531,28 @@ started"): the wrapper starts the CLI as a child, so the reported pid is not the
 one the host launched. `MANVI_CLAUDE_BINARY` has to name the CLI executable itself.
 
 Since then the host refuses that case at `work.runs.managed.prepare`, before
-activation and before anything is run. It reads at most eight bytes of the
+activation and before anything is run. It reads at most 256 bytes of the
 configured Claude program (`MANVI_CLAUDE_BINARY`, else `claude` on `PATH`, with
-symlinks resolved) and accepts only a Mach-O (thin or universal), ELF or PE
-image. A `#!` script, an empty or unreadable file, a directory, a FIFO or a file
-without an execute bit is refused with an error that names `MANVI_CLAUDE_BINARY`
-and the resolved path, and the saved attempt stays prepared. The check never runs
-the program. A host therefore has to set `MANVI_CLAUDE_BINARY` to the real CLI
-executable (for an installer that keeps versions, the file under its `versions`
-directory) and put anything a wrapper used to set, such as `CLAUDE_CONFIG_DIR`,
-in the host's own environment. An npm-installed `claude` is a `#!/usr/bin/env
-node` script and is refused the same way. The process-identity check after start
-is unchanged: a reported pid other than the one the host started still ends the
-run, and it remains the backstop for a file swapped after the prepare-time read.
+symlinks resolved). A Mach-O (thin or universal), ELF or PE image is accepted. A
+`#!` script is judged by its interpreter line alone: `node`, `bun` or `deno`
+(directly or through `env`, including `env -S`) is accepted, because the kernel
+runs the interpreter in place under the same pid, which is what an npm-installed
+`claude` is. A shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `csh`, `tcsh`)
+is refused as a wrapper, and any other interpreter is refused as a launch shape
+Manvi cannot verify, naming the interpreter. An empty or unreadable file, a
+directory, a FIFO, a file without an execute bit or a file with a byte before the
+`#!` is refused too. The error names `MANVI_CLAUDE_BINARY` and the resolved path,
+and the saved attempt stays prepared. The check never runs the program.
+
+A host whose `claude` is a shell wrapper therefore has to set `MANVI_CLAUDE_BINARY`
+to the Claude Code executable itself (for an installer that keeps versions, the
+file under its `versions` directory) and put anything the wrapper used to set,
+such as `CLAUDE_CONFIG_DIR`, in the host's own environment. The check is early
+help, not the security property: the process-identity check after start is
+unchanged and fail-closed, a reported pid other than the one the host started
+still ends the run (now with a message that names the likely wrapper cause), and
+it is the backstop for a file swapped after the prepare-time read and for a
+launcher the interpreter line does not reveal.
 
 ## Enhancement lifecycle
 
