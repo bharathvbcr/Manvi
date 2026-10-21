@@ -168,6 +168,13 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if !filepath.IsAbs(program) || !filepath.IsAbs(options.Cwd) || strings.ContainsAny(program+options.Cwd, "\x00\r\n") {
 		return nil, beforeStart(errors.New("managed Claude requires an absolute executable and checkout path"))
 	}
+	// Before anything is run, the probe included: a wrapper that starts the CLI
+	// as a child would otherwise fail the process-identity check only after the
+	// run began, without saying why. A script the kernel runs in place (an
+	// npm install's node launcher) keeps its pid and is accepted.
+	if err := requireLaunchableClaude(program); err != nil {
+		return nil, beforeStart(err)
+	}
 	cwd, err := filepath.EvalSymlinks(options.Cwd)
 	if err != nil {
 		return nil, beforeStart(fmt.Errorf("resolve managed checkout: %w", err))
@@ -321,7 +328,12 @@ func (s *Claude) Initialize(ctx context.Context) error {
 		return errors.New("invalid Claude initialization reply")
 	}
 	if identity.PID != s.wire.pid {
-		return errors.New("Claude reported a process identity other than the one this host started")
+		// Still refused, exactly as before. The usual cause is a wrapper that
+		// started the CLI as a child, which the launch-time check cannot see
+		// when the wrapper is not a script it recognises, so say so.
+		return errors.New("Claude reported a process identity other than the one this host started; " +
+			"the usual cause is a wrapper that runs the Claude CLI as a child process, so set " +
+			ClaudeBinaryVariable + " to the Claude Code executable itself")
 	}
 	if identity.Mode != s.reported {
 		return fmt.Errorf("Claude negotiated permission mode %q for a run that requested %q", identity.Mode, s.reported)
