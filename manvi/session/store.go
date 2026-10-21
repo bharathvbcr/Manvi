@@ -221,6 +221,9 @@ type Store struct {
 	// production.
 	afterList  func()
 	beforeRead func()
+	// writeStep is called as a save passes each named step of writeNew, so a
+	// test can stop the process at exactly that point. Nil in production.
+	writeStep func(step string)
 }
 
 // NewStore returns a store over dir. The directory is created on first save.
@@ -503,7 +506,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	}
 
 	target := filepath.Join(s.dir, name(id, generation+1))
-	if err := writeNew(s.dir, target, body); err != nil {
+	if err := writeNew(s.dir, target, body, s.writeStep); err != nil {
 		return SaveReport{}, err
 	}
 	s.seen[id] = digest(body)
@@ -540,22 +543,30 @@ func (s *Store) rememberMeta(id string, m headerMeta) {
 // disk before the name that will be read points at them. Link rather than
 // rename because rename replaces: if another run already published this
 // generation, this one must fail rather than quietly win.
-func writeNew(dir, target string, body []byte) error {
+func writeNew(dir, target string, body []byte, step func(string)) error {
+	at := func(name string) {
+		if step != nil {
+			step(name)
+		}
+	}
 	tmp, err := os.CreateTemp(dir, ".session-*.tmp")
 	if err != nil {
 		return fmt.Errorf("session: creating a temporary file in %s: %w", dir, err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
+	at("created")
 
 	if _, err := tmp.Write(body); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("session: writing %s: %w", tmpName, err)
 	}
+	at("written")
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("session: syncing %s: %w", tmpName, err)
 	}
+	at("synced")
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("session: closing %s: %w", tmpName, err)
 	}
@@ -567,6 +578,7 @@ func writeNew(dir, target string, body []byte) error {
 		}
 		return fmt.Errorf("session: publishing %s: %w", target, err)
 	}
+	at("linked")
 	// Syncing the file put the bytes on the disk; syncing the directory is what
 	// puts the *name* there. Without this the log survives a crash only as an
 	// unreferenced inode: the generation that was published reads back as
@@ -575,6 +587,7 @@ func writeNew(dir, target string, body []byte) error {
 	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("session: syncing %s after publishing %s: %w", dir, target, err)
 	}
+	at("published")
 	return nil
 }
 

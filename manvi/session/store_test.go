@@ -431,10 +431,10 @@ func TestPublishingAGenerationTwiceIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, name("abcdef0123456789", 1))
 
-	if err := writeNew(dir, target, []byte("{}\n")); err != nil {
+	if err := writeNew(dir, target, []byte("{}\n"), nil); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	err := writeNew(dir, target, []byte("{}\n"))
+	err := writeNew(dir, target, []byte("{}\n"), nil)
 	if err == nil {
 		t.Fatal("publishing over an existing generation must fail rather than replace it")
 	}
