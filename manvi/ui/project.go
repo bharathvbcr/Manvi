@@ -17,9 +17,11 @@ import (
 // stream would drift the first time an event was emitted on one and not the
 // other, and the drift would be invisible: both would look plausible.
 //
-// Events with no visible form — step boundaries, the system prompt, the
+// Events with no visible form — step starts, the system prompt, the
 // assembled assistant message that the streamed chunks already displayed —
-// return nothing rather than a placeholder.
+// return nothing rather than a placeholder. The harness's own records (step
+// usage, verify reports, diagnostics) do project, as kinds only the NDJSON face
+// shows; see Kind.WireOnly.
 func Project(e session.Event) []Event {
 	base := Event{At: e.At}
 
@@ -207,8 +209,102 @@ func Project(e session.Event) []Event {
 			"%d message(s) replayed without their reasoning: %s has no way to carry its own back",
 			len(data.Drops), model)
 		return []Event{base}
+
+	case session.StepEnd:
+		// An old log's step/end has no payload at all. That is a step whose
+		// usage was never recorded, which has nothing to report; a payload that
+		// is present and unreadable is a hole and is reported as one.
+		if len(e.Data) == 0 {
+			return nil
+		}
+		var data session.StepEndData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		base.Kind = KindStepUsage
+		base.InputTokens = data.Usage.InputTokens
+		base.OutputTokens = data.Usage.OutputTokens
+		base.ReasoningTokens = data.Usage.ReasoningTokens
+		base.CacheReadTokens = data.Usage.CacheReadTokens
+		base.CacheWriteTokens = data.Usage.CacheWriteTokens
+		base.CostNanoUSD = data.CostNanoUSD
+		// The same convention turn.usage uses, so a consumer that knows how to
+		// read one reads the other: a step no table covered is counted, never
+		// folded into a zero charge.
+		if !data.Priced {
+			base.UnpricedSteps = 1
+		}
+		return []Event{base}
+
+	case session.VerifyReport:
+		var data session.VerifyReportData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		// Every verdict, the passing ones included: a caller that sees only the
+		// failures cannot tell a clean run from one whose check never ran.
+		base.Kind = KindVerifyReport
+		base.Verdict = data.Verdict
+		base.Source = data.Source
+		base.Paths = data.Paths
+		base.Findings = data.Findings
+		base.Degraded = data.Degraded
+		base.Bounce = data.Bounce
+		return []Event{base}
+
+	case session.PromptAssembled:
+		var data session.PromptAssembledData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		return diagnostic(e, base, data)
+
+	case session.ToolResultCompacted:
+		var data session.CompactionData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		// The shortened text is the model's copy of a result tool.result
+		// already carried whole; the sizes are what the diagnostic is for.
+		data.Text = ""
+		return diagnostic(e, base, data)
+
+	case session.ContextOverflow:
+		var data session.OverflowData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		return diagnostic(e, base, data)
+
+	case session.MalformedToolCall:
+		var data session.MalformedCallData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		return diagnostic(e, base, data)
+
+	case session.DecodingCompensated:
+		var data session.DecodingData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return []Event{decodeFailure(e, err)}
+		}
+		return diagnostic(e, base, data)
 	}
 	return nil
+}
+
+// diagnostic projects a harness record as a diagnostic event carrying its
+// decoded payload. The payload is re-encoded from the typed value the caller
+// just decoded, so what reaches the wire is exactly the shape the log defines.
+func diagnostic(e session.Event, base Event, payload any) []Event {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return []Event{decodeFailure(e, err)}
+	}
+	base.Kind = KindDiagnostic
+	base.Type = string(e.Type)
+	base.Data = raw
+	return []Event{base}
 }
 
 func describeDrop(d llm.Drop) string {

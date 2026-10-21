@@ -311,7 +311,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	}
 	// Recorded before the turn runs, so a log that explains the turn is
 	// complete by the time anything reads it.
-	if err := recordPromptAssembly(log, promptReport,
+	if err := recordPromptAssembly(log, promptReport, systemPrompt,
 		promptTokenBudget(reg, provider.Name())); err != nil {
 		return err
 	}

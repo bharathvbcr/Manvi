@@ -183,6 +183,27 @@ type (
 		Dropped []string `json:"dropped,omitempty"`
 		Tokens  int      `json:"tokens"`
 		Budget  int      `json:"budget,omitempty"`
+		// Digest is the hex SHA-256 of the exact system-prompt text this
+		// assembly produced. A provider's prefix cache is keyed on an unchanged
+		// prefix, so a digest that moves between turns says the cache went cold,
+		// which the section list alone cannot: two assemblies can name the same
+		// sections and differ in a byte. Empty on logs written before it existed.
+		Digest string `json:"digest,omitempty"`
+	}
+	// StepEndData is what one step spent. It is the step's own figure, not a
+	// running total: the turn's sum is the sum of these.
+	//
+	// A step/end with no payload is what logs written before this existed
+	// contain, and reads as a step whose usage was not recorded. A step that
+	// ended without a response — an early exit closing the boundaries — carries
+	// the zero value, which is a valid record of having spent nothing.
+	StepEndData struct {
+		Usage llm.Usage `json:"usage"`
+		// CostNanoUSD is the step's charge in billionths of a dollar. It is
+		// meaningful only when Priced is true; an unpriced step is not a free one.
+		CostNanoUSD int64 `json:"cost_nano_usd,omitempty"`
+		// Priced says a price table covered this step's usage.
+		Priced bool `json:"priced,omitempty"`
 	}
 	// MessageData carries a whole message.
 	MessageData struct {

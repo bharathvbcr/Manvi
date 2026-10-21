@@ -49,7 +49,33 @@ const (
 	// resumed session, or an evidence report — says the person asked for
 	// something they never said.
 	KindHarnessMessage Kind = "harness.message"
+	// KindStepUsage is what one step spent, projected from the step's own
+	// session record. It is not KindUsage: turn.usage is one event per turn
+	// and consumers sum it, so a per-step event under that kind would count
+	// every token twice.
+	KindStepUsage Kind = "step.usage"
+	// KindVerifyReport is the end-of-turn check's structured verdict, emitted
+	// for every verdict including a pass. It is what a headless caller reads
+	// instead of parsing the notice outcomeNotices writes for a bad one.
+	KindVerifyReport Kind = "verify.report"
+	// KindDiagnostic is a record of the harness itself: how the prompt was
+	// assembled, what was compacted, which compensations an adapter made. Type
+	// names the session record it came from and Data carries its fields.
+	KindDiagnostic Kind = "diagnostic"
 )
+
+// WireOnly reports whether a kind exists for the NDJSON face and not the
+// terminal. A terminal already says what these carry — outcomeNotices
+// summarises a bad verdict and a degraded run in prose, and turn.usage prints
+// the cost — so rendering them as well would say it twice. Every terminal face
+// consults this rather than keeping its own list.
+func (k Kind) WireOnly() bool {
+	switch k {
+	case KindStepUsage, KindVerifyReport, KindDiagnostic:
+		return true
+	}
+	return false
+}
 
 // Event is one thing that happened, in terms both faces understand.
 //
@@ -127,6 +153,26 @@ type Event struct {
 	// agent and every sub-agent it dispatched — so a turn whose children ran on
 	// other models can still be priced line by line.
 	ByModel []ModelUsage `json:"by_model,omitempty"`
+	// A step.usage event also carries the rest of the step's usage. Its
+	// UnpricedSteps is 1 when no price table covered the step and 0 when one
+	// did, so CostNanoUSD is the step's charge only when that is 0.
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+
+	// Verify report fields. Degraded, above, is the checks that could not run.
+	// Bounce is the attempt within the turn, and absent means the first.
+	Verdict  string   `json:"verdict,omitempty"`
+	Source   string   `json:"source,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	Findings []string `json:"findings,omitempty"`
+	Bounce   int      `json:"bounce,omitempty"`
+
+	// Diagnostic fields. Type is the session record's name ("system/prompt_assembled",
+	// "context/overflow", ...) and Data is that record's own payload, so the
+	// wire carries exactly what the log holds and cannot drift from it.
+	Type string          `json:"type,omitempty"`
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // ModelUsage is one model's share of a usage event.

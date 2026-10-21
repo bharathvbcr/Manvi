@@ -150,6 +150,112 @@ func TestProjectSurfacesAMalformedRecordRatherThanSkippingIt(t *testing.T) {
 	}
 }
 
+// TestProjectCoversTheRecordsHeadlessCallersNeverSaw is one case per record
+// type that used to project to nothing, so `manvi run --json` never carried it.
+func TestProjectCoversTheRecordsHeadlessCallersNeverSaw(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     session.Type
+		payload any
+		kind    Kind
+		check   func(t *testing.T, e Event)
+	}{
+		{"step end", session.StepEnd, session.StepEndData{
+			Usage:       llm.Usage{InputTokens: 10, OutputTokens: 2, ReasoningTokens: 3, CacheReadTokens: 4, CacheWriteTokens: 5},
+			CostNanoUSD: 77, Priced: true,
+		}, KindStepUsage, func(t *testing.T, e Event) {
+			if e.InputTokens != 10 || e.OutputTokens != 2 || e.ReasoningTokens != 3 ||
+				e.CacheReadTokens != 4 || e.CacheWriteTokens != 5 || e.CostNanoUSD != 77 || e.UnpricedSteps != 0 {
+				t.Errorf("step usage = %+v", e)
+			}
+		}},
+		{"unpriced step end", session.StepEnd, session.StepEndData{
+			Usage: llm.Usage{InputTokens: 1},
+		}, KindStepUsage, func(t *testing.T, e Event) {
+			if e.UnpricedSteps != 1 || e.CostNanoUSD != 0 {
+				t.Errorf("an unpriced step reads as %+v", e)
+			}
+		}},
+		{"verify passed", session.VerifyReport, session.VerifyReportData{
+			Verdict: "passed", Source: "command", Paths: []string{"a.go"},
+			Findings: []string{"ok"}, Degraded: []string{"lint"}, Bounce: 2,
+		}, KindVerifyReport, func(t *testing.T, e Event) {
+			if e.Verdict != "passed" || e.Source != "command" || len(e.Paths) != 1 ||
+				len(e.Findings) != 1 || len(e.Degraded) != 1 || e.Bounce != 2 {
+				t.Errorf("verify report = %+v", e)
+			}
+		}},
+		{"prompt assembled", session.PromptAssembled, session.PromptAssembledData{
+			Included: []string{"identity"}, Dropped: []string{"x: over budget"},
+			Tokens: 9, Budget: 100, Digest: "abc",
+		}, KindDiagnostic, func(t *testing.T, e Event) { wantData(t, e, "system/prompt_assembled", "abc") }},
+		{"compaction", session.ToolResultCompacted, session.CompactionData{
+			ToolCallID: "c1", Text: "SHORT-FORM", FromBytes: 900, ToBytes: 90,
+		}, KindDiagnostic, func(t *testing.T, e Event) {
+			wantData(t, e, "context/tool_result_compacted", "900")
+			// The compacted text is the tool result's own and already on the
+			// wire as tool.result; repeating it would double the largest field.
+			if strings.Contains(string(e.Data), "SHORT-FORM") {
+				t.Errorf("compaction diagnostic repeats the result text: %s", e.Data)
+			}
+		}},
+		{"overflow", session.ContextOverflow, session.OverflowData{
+			EstimatedTokens: 5000, Threshold: 4000, ContextWindow: 4096,
+		}, KindDiagnostic, func(t *testing.T, e Event) { wantData(t, e, "context/overflow", "5000") }},
+		{"malformed call", session.MalformedToolCall, session.MalformedCallData{
+			ToolCallID: "c1", Tool: "write", Reason: "cut off",
+		}, KindDiagnostic, func(t *testing.T, e Event) { wantData(t, e, "tool/malformed", "cut off") }},
+		{"decoding", session.DecodingCompensated, session.DecodingData{
+			FallbackFormat: "xml", PrefillDisproved: true,
+		}, KindDiagnostic, func(t *testing.T, e Event) { wantData(t, e, "llm/decoding_compensated", "xml") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Project(record(t, tc.typ, tc.payload))
+			if len(got) != 1 {
+				t.Fatalf("projected %d events, want 1: %#v", len(got), got)
+			}
+			if got[0].Kind != tc.kind {
+				t.Fatalf("kind = %q, want %q", got[0].Kind, tc.kind)
+			}
+			tc.check(t, got[0])
+		})
+	}
+}
+
+func wantData(t *testing.T, e Event, typ, contains string) {
+	t.Helper()
+	if e.Type != typ {
+		t.Errorf("type = %q, want %q", e.Type, typ)
+	}
+	if !json.Valid(e.Data) || !strings.Contains(string(e.Data), contains) {
+		t.Errorf("data = %s, want valid JSON containing %q", e.Data, contains)
+	}
+}
+
+// A record the projection newly reads and cannot decode is an error on the
+// wire, as every other malformed record is, not a silent gap.
+func TestMalformedObservabilityRecordsProjectToAnError(t *testing.T) {
+	for _, typ := range []session.Type{
+		session.StepEnd, session.VerifyReport, session.PromptAssembled,
+		session.ToolResultCompacted, session.ContextOverflow,
+		session.MalformedToolCall, session.DecodingCompensated,
+	} {
+		got := Project(session.Event{Seq: 3, Type: typ, Data: json.RawMessage(`{"nope":`)})
+		if len(got) != 1 || got[0].Kind != KindError {
+			t.Errorf("%s with a truncated payload projected to %#v, want one error", typ, got)
+		}
+	}
+}
+
+// Logs written before step/end carried a payload hold it with no data at all.
+// That is a step whose usage was not recorded, not a malformed record.
+func TestAStepEndWithNoPayloadProjectsToNothing(t *testing.T) {
+	if got := Project(session.Event{Seq: 1, Type: session.StepEnd}); len(got) != 0 {
+		t.Fatalf("an old step/end projected to %#v", got)
+	}
+}
+
 func TestProjectSinkFeedsASink(t *testing.T) {
 	var seen []Event
 	fn := ProjectSink(SinkFunc(func(e Event) { seen = append(seen, e) }))

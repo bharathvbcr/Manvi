@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
@@ -82,11 +84,18 @@ func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, pr
 // Failure to record is returned rather than swallowed. This is the event that
 // explains a turn behaving unlike the prompt an operator believes it sent, and
 // a log missing it is a log that will be read as though the prompt were whole.
-func recordPromptAssembly(log *session.Log, report prompt.Report, budget int) error {
+//
+// text is the exact system prompt the report describes. Its digest is recorded
+// beside the section list because the list cannot show a changed byte, and a
+// changed byte is what makes a provider's prefix cache go cold.
+func recordPromptAssembly(log *session.Log, report prompt.Report, text string, budget int) error {
 	if log == nil {
 		return nil
 	}
-	data := session.PromptAssembledData{Tokens: report.Tokens, Budget: budget}
+	sum := sha256.Sum256([]byte(text))
+	data := session.PromptAssembledData{
+		Tokens: report.Tokens, Budget: budget, Digest: hex.EncodeToString(sum[:]),
+	}
 	for _, in := range report.Included {
 		data.Included = append(data.Included, in.Name)
 	}

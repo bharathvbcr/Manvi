@@ -285,6 +285,9 @@ type Loop struct {
 	// after tool registration, because it reads the registry to learn which
 	// tools are allowed to mutate.
 	progress *progressTracker
+	// spent is what the open step has cost, written to its step/end. Reset when
+	// a step opens and when it closes.
+	spent session.StepEndData
 	// effortPlan is the ladder this loop may climb when a turn goes in
 	// circles, resolved once against the model's declared levels.
 	effortPlan EffortPlan
@@ -864,11 +867,14 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 	return out, nil
 }
 
-// endStep closes the open step in the log.
+// endStep closes the open step in the log, recording what the step spent. A
+// step that never received a response — an early exit closing the boundaries —
+// records the zero value, because nothing was spent and nothing was priced.
 func (l *Loop) endStep() error {
-	if _, err := l.log.Append(session.StepEnd, nil); err != nil {
+	if _, err := l.log.Append(session.StepEnd, l.spent); err != nil {
 		return err
 	}
+	l.spent = session.StepEndData{}
 	l.stepOpen = false
 	return nil
 }
@@ -953,22 +959,29 @@ func (l *Loop) enterStep(ctx context.Context, turn, step int) ([]llm.Message, er
 	if _, err := l.log.Append(session.StepStart, nil); err != nil {
 		return nil, err
 	}
+	// Per step, so a step that ends without a response cannot inherit the
+	// previous step's figures.
+	l.spent = session.StepEndData{}
 	l.stepOpen = true
 	return messages, nil
 }
 
 // price adds one step's charge to the outcome, or counts the step as unpriced.
-func (l *Loop) price(out *Outcome, usage llm.Usage) {
+// It returns the charge it added and whether the step was priced, which is what
+// the step's own log record carries: the outcome and the record are fed by this
+// one call, so they cannot disagree.
+func (l *Loop) price(out *Outcome, usage llm.Usage) (int64, bool) {
 	if l.cfg.Price == nil {
 		out.UnpricedSteps++
-		return
+		return 0, false
 	}
 	charge, err := l.cfg.Price(usage)
 	if err != nil || charge < 0 || out.CostNanoUSD > math.MaxInt64-charge {
 		out.UnpricedSteps++
-		return
+		return 0, false
 	}
 	out.CostNanoUSD += charge
+	return charge, true
 }
 
 // absorbResponse folds one step's response into the outcome: its usage, its
@@ -982,7 +995,8 @@ func (l *Loop) absorbResponse(out *Outcome, step int, response llm.Response) err
 	out.Usage.ReasoningTokens += response.Usage.ReasoningTokens
 	out.Usage.CacheReadTokens += response.Usage.CacheReadTokens
 	out.Usage.CacheWriteTokens += response.Usage.CacheWriteTokens
-	l.price(out, response.Usage)
+	charge, priced := l.price(out, response.Usage)
+	l.spent = session.StepEndData{Usage: response.Usage, CostNanoUSD: charge, Priced: priced}
 	// Throughput is a rate, not a total: the last step's is what an
 	// operator wants to see, and summing them would be meaningless.
 	if response.Usage.OutputTokensPerSecond > 0 {

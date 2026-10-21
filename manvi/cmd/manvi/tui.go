@@ -973,7 +973,7 @@ func (h *harnessHost) prepareTurn(s *tuiSession, sessionID string, at attached) 
 			Text: "system prompt: " + fault,
 		})
 	}
-	if err := recordPromptAssembly(s.log, promptReport,
+	if err := recordPromptAssembly(s.log, promptReport, systemPrompt,
 		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
 		return "", nil, false, err
 	}

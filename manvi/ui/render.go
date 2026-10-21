@@ -54,6 +54,15 @@ func CleanEvent(e Event, clean func(string) string) Event {
 	// next writer will forget.
 	e.EncodeError = clean(e.EncodeError)
 	e.Arguments = CleanJSON(e.Arguments, clean)
+	// The verify report's own words and the diagnostic payload: findings are a
+	// checker's output and dropped-section reasons are assembler output, and
+	// either can quote a file that held a credential.
+	e.Verdict = clean(e.Verdict)
+	e.Source = clean(e.Source)
+	e.Paths = cleanStrings(e.Paths, clean)
+	e.Findings = cleanStrings(e.Findings, clean)
+	e.Type = clean(e.Type)
+	e.Data = CleanJSON(e.Data, clean)
 	return e
 }
 
@@ -346,6 +355,13 @@ func (r *Renderer) Emit(e Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p := r.palette
+
+	// Before attribution, not in the switch below: the prefix is written ahead
+	// of it, so a skipped kind from a child would still leave "[label] "
+	// dangling on the line. See Kind.WireOnly for why these are not rendered.
+	if e.Kind.WireOnly() {
+		return
+	}
 
 	// Attribution first, on its own, so the line that follows is read as the
 	// child's. Event.Agent's doc states the condition this satisfies: two

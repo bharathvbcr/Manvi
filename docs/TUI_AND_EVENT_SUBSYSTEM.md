@@ -91,6 +91,24 @@ type Event struct {
     UnpricedSteps int   `json:"unpriced_steps,omitempty"`
     // The same usage split by the model that spent it.
     ByModel []ModelUsage `json:"by_model,omitempty"`
+    // A step.usage event also carries the rest of the step's usage. Its
+    // UnpricedSteps is 1 when no price table covered the step.
+    ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+    CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+    CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+
+    // Verify report fields. Bounce is the attempt within the turn; absent
+    // means the first.
+    Verdict  string   `json:"verdict,omitempty"`
+    Source   string   `json:"source,omitempty"`
+    Paths    []string `json:"paths,omitempty"`
+    Findings []string `json:"findings,omitempty"`
+    Bounce   int      `json:"bounce,omitempty"`
+
+    // Diagnostic fields. Type names the session record the event came from and
+    // Data is that record's own payload.
+    Type string          `json:"type,omitempty"`
+    Data json.RawMessage `json:"data,omitempty"`
 }
 
 type ModelUsage struct {
@@ -154,6 +172,29 @@ On the NDJSON stream the same numbers are `cost_nano_usd`, `unpriced_steps` and
 `by_model[]`; `cost_nano_usd / 1e9` is dollars. Each child's own figures, with
 its `model`, `cache_write_tokens`, `cost_nano_usd` and `unpriced_steps`, also
 travel back to the dispatching agent in the fan-out tool's per-child `usage`.
+
+### Kinds that exist only on the NDJSON stream
+
+Three kinds are projected from the session log for `manvi run --json` and are
+**not drawn** by the line renderer or the TUI (`ui.Kind.WireOnly`). A terminal
+already says what they carry: `outcomeNotices` summarises a failed or degraded
+check in prose and `turn.usage` prints the cost, so rendering both would say it
+twice.
+
+| Kind | From | Carries |
+| --- | --- | --- |
+| `step.usage` | `step/end` | One step's `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_nano_usd`. `unpriced_steps` is `1` when no price table covered the step, and then the cost is not a charge. |
+| `verify.report` | `verify/report` | `verdict`, `source`, `paths`, `findings`, `degraded` and `bounce`, for every verdict including `passed`. |
+| `diagnostic` | `system/prompt_assembled`, `context/tool_result_compacted`, `context/overflow`, `tool/malformed`, `llm/decoding_compensated` | `type`, the session record's name, and `data`, its payload. For the prompt it holds the included and dropped sections, the token count, the budget and a SHA-256 `digest` of the exact prompt text: a digest that changes between turns means the provider's prompt-cache prefix went cold. A compaction's `data` carries sizes, not the shortened text. |
+
+`step.usage` is deliberately not `turn.usage`. `turn.usage` is one event per
+turn covering the turn and its sub-agents, and consumers sum it; the per-step
+lines are the breakdown of the parent's own steps and are not to be added to it.
+A sub-agent's `step.usage` is not forwarded, because its tokens already reach
+the parent's `turn.usage`. Its `verify.report` and `diagnostic` events are
+forwarded, labelled with `agent`. A session log written before `step/end` carried
+a payload yields no `step.usage`; a payload that cannot be read yields an
+`error` event, as every unreadable record does.
 
 ---
 

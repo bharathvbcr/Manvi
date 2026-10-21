@@ -7,6 +7,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
+	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 	"strings"
 	"sync"
@@ -161,6 +162,39 @@ func (s *capturingSink) Emit(e ui.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, e)
+}
+
+// TestAChildsStepUsageIsDroppedAndItsVerifyReportIsForwarded. The children's
+// tokens already reach the parent's turn.usage through the meter, and consumers
+// sum that event, so a forwarded child step.usage would count them twice. A
+// child's verify report is evidence and is forwarded under the child's label.
+func TestAChildsStepUsageIsDroppedAndItsVerifyReportIsForwarded(t *testing.T) {
+	sink := &capturingSink{}
+	observe := forwardChildEvents(sink, "child-1")
+
+	feed := func(typ session.Type, payload any) {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observe(session.Event{Seq: 1, Type: typ, Data: raw})
+	}
+	feed(session.StepEnd, session.StepEndData{Usage: llm.Usage{InputTokens: 50}, Priced: true})
+	feed(session.VerifyReport, session.VerifyReportData{Verdict: "passed", Source: "command"})
+	feed(session.ContextOverflow, session.OverflowData{EstimatedTokens: 9, Threshold: 8, ContextWindow: 10})
+	feed(session.TurnEnd, nil)
+
+	var kinds []ui.Kind
+	for _, e := range sink.events {
+		if e.Agent != "child-1" {
+			t.Errorf("a forwarded %s is not attributed to the child: %+v", e.Kind, e)
+		}
+		kinds = append(kinds, e.Kind)
+	}
+	if len(kinds) != 2 || kinds[0] != ui.KindVerifyReport || kinds[1] != ui.KindDiagnostic {
+		t.Fatalf("forwarded kinds = %v, want [verify.report diagnostic]", kinds)
+	}
 }
 
 // TestAChildsGateRefusalReachesTheSink drives a real child turn and asserts the
