@@ -513,7 +513,22 @@ Nine canonical Rust tests cover expiry, changed identities/repositories/tasks,
 one-use claims, questions, notification privacy/validity, capacity and atomic
 migration/receipt failure. A Go test crosses the real process boundary and
 rejects modified payloads and replay after restarting the client. These checks
-qualify the binding contract; live managed provider delivery remains unverified.
+qualify the binding contract.
+
+Live managed provider delivery was exercised once, on 2026-10-21, through
+`manvi serve --workbench-db` against the installed Claude Code 2.1.306 on its
+own subscription login, in a throwaway git repository with a `repo` harness spec.
+One inspect-mode run was prepared with that harness, activated and driven to
+`exited` / `completed`. The harness block was in `CLAUDE.md` before the process
+started, the agent's reply quoted the spec's section, the file was byte-identical
+(same sha256) and `git status` clean afterwards, and `harness_digest` matched in
+the prepare result, the effective configuration and `harness.resolve`. This
+covers Claude only; it was one run, in inspect mode, with no approval, question or
+file callback and no Codex. The CLI reported no cost or usage, so none is
+recorded. The first attempt, through the `claude` shell wrapper on `PATH`, failed
+closed ("Claude reported a process identity other than the one this host
+started"): the wrapper starts the CLI as a child, so the reported pid is not the
+one the host launched. `MANVI_CLAUDE_BINARY` has to name the CLI executable itself.
 
 ## Enhancement lifecycle
 
