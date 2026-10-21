@@ -189,6 +189,12 @@ type (
 		// which the section list alone cannot: two assemblies can name the same
 		// sections and differ in a byte. Empty on logs written before it existed.
 		Digest string `json:"digest,omitempty"`
+		// SpecName and SpecDigest identify the harness spec whose sections this
+		// prompt carried: its name, and the hex SHA-256 of its canonical form.
+		// Both are empty when no spec applied, and on logs written before they
+		// existed. The digest is what shows a spec edited between two turns.
+		SpecName   string `json:"spec_name,omitempty"`
+		SpecDigest string `json:"spec_digest,omitempty"`
 	}
 	// StepEndData is what one step spent. It is the step's own figure, not a
 	// running total: the turn's sum is the sum of these.

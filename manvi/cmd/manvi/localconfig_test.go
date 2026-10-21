@@ -27,6 +27,10 @@ func registryWith(t *testing.T, settings map[string]string) *flags.Registry {
 	if err := flags.DefineHarnessFlags(reg); err != nil {
 		t.Fatal(err)
 	}
+	// As newRegistry defines it: the per-turn spec resolution reads this key.
+	if err := reg.Define(harnessFlagDefs()...); err != nil {
+		t.Fatal(err)
+	}
 	if settings != nil {
 		if err := reg.LoadConfig(settings); err != nil {
 			t.Fatal(err)

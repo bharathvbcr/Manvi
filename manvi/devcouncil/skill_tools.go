@@ -31,6 +31,12 @@ func (r *Registry) skillReader(ctx context.Context) harness.ReadFunc {
 	}
 }
 
+// RepoReader is the same contained, gated reader, handed out for the other
+// repository text that reaches a prompt: harness specs under
+// .devcouncil/harness. There is one reader for repository bytes; a second one
+// for specs would be a second place the read gate could be forgotten.
+func (r *Registry) RepoReader(ctx context.Context) harness.ReadFunc { return r.skillReader(ctx) }
+
 // LoadSkills reads the repository's skills, at most harness.MaxSkills of them,
 // for the prompt's always-on listing. The names the model is shown here and the
 // names devcouncil_load_skill accepts come from the same loader.

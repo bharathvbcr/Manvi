@@ -273,6 +273,21 @@ func (r *Registry) register(builtIn bool, def Definition) error {
 	return nil
 }
 
+// Unregister removes a role a host registered, which is how a role that came
+// from a harness spec leaves when the spec does. A shipped role is refused: the
+// catalogue an operator reviewed is not something a caller may subtract from.
+// A name that is not registered is not an error; the registry already holds
+// what the caller wanted.
+func (r *Registry) Unregister(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.builtIn[name] {
+		return fmt.Errorf("agents: %q is a shipped role and cannot be unregistered", name)
+	}
+	delete(r.defs, name)
+	return nil
+}
+
 // IsBuiltIn reports whether a name is one of the roles this harness ships.
 //
 // The shipped roles are the catalogue an operator has already reviewed: critic

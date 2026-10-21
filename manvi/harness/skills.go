@@ -363,6 +363,13 @@ func judgeSkill(dirName string, data []byte) (Skill, string) {
 	return Skill{Name: dirName, Description: desc, Body: body}, ""
 }
 
+// unrenderable reports a control, format or private-use rune: one that would
+// reach the model and the terminal unrendered. Skills and harness specs share
+// this one definition of text that is refused.
+func unrenderable(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+}
+
 // ParseFrontmatter reads the leading "---" block of a SKILL.md and returns its
 // name and description (the only keys anyone here uses) and the text after it.
 //
@@ -430,7 +437,7 @@ func scalar(v string) (string, error) {
 	}
 	v = strings.Join(strings.Fields(v), " ")
 	for _, r := range v {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r) {
+		if unrenderable(r) {
 			return "", fmt.Errorf("contains U+%04X, a control, format or private-use character", r)
 		}
 	}

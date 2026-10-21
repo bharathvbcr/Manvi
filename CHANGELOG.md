@@ -21,6 +21,17 @@ under **Unreleased** in the same commit as the code.
 
 ## [Unreleased]
 
+### Added
+
+- Harness specs. `harness.spec` (operator scope, empty by default) selects a
+  named spec: prompt sections after the fixed ones, a skills selection, a
+  lessons library name and sub-agent roles, from a process catalogue or
+  `.devcouncil/harness/<name>.json`. A spec is validated (every problem listed),
+  digested, and resolved once per turn by both faces; `prompt/assembled` gains
+  `spec_name` and `spec_digest`. A spec cannot set flags, tiers, posture, the
+  verify command, fetch hosts, MCP servers or write exceptions, and a role it
+  registers is never wider than the session's own tools.
+
 ## [0.1.0] — 2026-10-17
 
 ### Added

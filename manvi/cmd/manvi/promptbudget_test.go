@@ -134,7 +134,7 @@ func TestPromptAssemblyIsRecorded(t *testing.T) {
 		Omitted:  []prompt.Omitted{{Name: "working-method", Reason: "dropped: over budget"}},
 		Tokens:   1234,
 	}
-	if err := recordPromptAssembly(log, report, "the assembled prompt", 4096); err != nil {
+	if err := recordPromptAssembly(log, report, "the assembled prompt", 4096, specIdentity{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +172,7 @@ func TestPromptAssemblyIsRecorded(t *testing.T) {
 func recordedDigest(t *testing.T, text string) string {
 	t.Helper()
 	log := session.NewLog()
-	if err := recordPromptAssembly(log, prompt.Report{Tokens: 1}, text, 0); err != nil {
+	if err := recordPromptAssembly(log, prompt.Report{Tokens: 1}, text, 0, specIdentity{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range log.Events() {
@@ -210,7 +210,7 @@ func TestPromptDigestTracksTheTextByteForByte(t *testing.T) {
 // A nil log is the case where nothing is recording, and it must not be an
 // error: the assembly still happened and the turn still runs.
 func TestPromptAssemblyRecordingToleratesNoLog(t *testing.T) {
-	if err := recordPromptAssembly(nil, prompt.Report{}, "", 0); err != nil {
+	if err := recordPromptAssembly(nil, prompt.Report{}, "", 0, specIdentity{}); err != nil {
 		t.Fatalf("recording to no log returned %v", err)
 	}
 }

@@ -102,9 +102,11 @@ type tuiSession struct {
 	gate     *gate.Gate
 	native   *devcouncil.Registry
 	pipeline *tools.Registry
-	// skillNotices keeps the skills faults of the last turn, so a standing
-	// condition is reported once and not on every turn of the session.
-	skillNotices noticeOnce
+	// turn keeps what the per-turn skills and harness-spec resolution carries
+	// between turns: the faults of the last turn, so a standing condition is
+	// reported once and not on every turn of the session, and the roles a spec
+	// registered, so the next spec replaces them.
+	turn turnState
 	// subMeter totals what this session's sub-agents have spent, so the usage
 	// this face reports is the whole bill rather than the dispatching agent's
 	// share of it.
@@ -965,9 +967,9 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
-	var skillNotices []string
-	promptOpts.Skills, skillNotices = skillsForPrompt(ctx, s.native, promptTokenBudget(h.reg, at.provider.Name()))
-	promptOpts.SkillNotices = s.skillNotices.fresh(skillNotices)
+	spec := resolveTurnInputs(ctx, h.reg, turnInputs{
+		skills: s.native, repoRead: s.native.RepoReader, roles: s.native.Roles(), pipeline: s.pipeline,
+	}, &s.turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
 	// Surfaced in the transcript rather than on stderr. Under the alternate
 	// screen stderr goes nowhere a person can read, which is how a prompt
@@ -980,7 +982,7 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 		})
 	}
 	if err := recordPromptAssembly(s.log, promptReport, systemPrompt,
-		promptTokenBudget(h.reg, at.provider.Name())); err != nil {
+		promptTokenBudget(h.reg, at.provider.Name()), spec); err != nil {
 		return "", nil, false, err
 	}
 

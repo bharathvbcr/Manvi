@@ -69,6 +69,14 @@ type PromptOptions struct {
 	// SkillNotices are the faults of that resolution, surfaced with the
 	// assembly's own faults.
 	SkillNotices []string
+	// SpecSources are the sections of the harness spec the session runs with,
+	// resolved once for the turn by resolveTurnInputs. They are never Essential
+	// and sit at Order 60 or later, so a spec cannot displace a fixed section
+	// and is the first thing a budget drops. Nil means no spec applies;
+	// SpecNotices says why when one was named.
+	SpecSources []prompt.Source
+	// SpecNotices are the faults of that resolution.
+	SpecNotices []string
 }
 
 // assemblePromptReported builds the system prompt and keeps the account of how
@@ -83,7 +91,8 @@ type PromptOptions struct {
 // evidence trail could not explain the difference in behaviour.
 func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, prompt.Report, []string) {
 	text, report, faults := assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
-	return text, report, append(faults, opts.SkillNotices...)
+	faults = append(faults, opts.SkillNotices...)
+	return text, report, append(faults, opts.SpecNotices...)
 }
 
 // recordPromptAssembly writes what a turn's prompt actually carried into the
@@ -96,13 +105,14 @@ func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, pr
 // text is the exact system prompt the report describes. Its digest is recorded
 // beside the section list because the list cannot show a changed byte, and a
 // changed byte is what makes a provider's prefix cache go cold.
-func recordPromptAssembly(log *session.Log, report prompt.Report, text string, budget int) error {
+func recordPromptAssembly(log *session.Log, report prompt.Report, text string, budget int, spec specIdentity) error {
 	if log == nil {
 		return nil
 	}
 	sum := sha256.Sum256([]byte(text))
 	data := session.PromptAssembledData{
 		Tokens: report.Tokens, Budget: budget, Digest: hex.EncodeToString(sum[:]),
+		SpecName: spec.Name, SpecDigest: spec.Digest,
 	}
 	for _, in := range report.Included {
 		data.Included = append(data.Included, in.Name)
@@ -430,6 +440,12 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	}
 	if opts.Skills != nil {
 		r.Add(opts.Skills)
+	}
+	// Last, so a spec's section is the final thing registered as well as the
+	// final thing ordered. The assembler refuses a name already registered, so
+	// a spec section that reuses a fixed name loses to it.
+	for _, src := range opts.SpecSources {
+		r.Add(src)
 	}
 	return r
 }

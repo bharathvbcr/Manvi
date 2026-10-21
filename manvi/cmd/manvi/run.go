@@ -305,7 +305,10 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		DocLookupAvailable: caps.DocLookup,
 		Areas:              caps.Areas,
 	}
-	promptOpts.Skills, promptOpts.SkillNotices = skillsForPrompt(ctx, native, promptTokenBudget(reg, provider.Name()))
+	var turn turnState
+	spec := resolveTurnInputs(ctx, reg, turnInputs{
+		skills: native, repoRead: native.RepoReader, roles: native.Roles(), pipeline: pipeline,
+	}, &turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {
 		_, _ = fmt.Fprintf(notes, "manvi: system prompt: %s\n", fault)
@@ -313,7 +316,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// Recorded before the turn runs, so a log that explains the turn is
 	// complete by the time anything reads it.
 	if err := recordPromptAssembly(log, promptReport, systemPrompt,
-		promptTokenBudget(reg, provider.Name())); err != nil {
+		promptTokenBudget(reg, provider.Name()), spec); err != nil {
 		return err
 	}
 
