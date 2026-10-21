@@ -89,9 +89,30 @@ const usage = `usage:
   anthropic-account list [--json]
   anthropic-account doctor`
 
+// diag writes a diagnostic to a stream the launcher has no better place to
+// report a failure on: the write that fails here is the one that would carry
+// the failure, so the error is dropped by design.
+func diag(w io.Writer, format string, a ...any) {
+	_, _ = fmt.Fprintf(w, format, a...)
+}
+
+// printer writes a command's results and keeps the first write error, so a
+// closed pipe or full disk turns the command's exit status non-zero instead of
+// reading as a clean run with truncated output.
+type printer struct {
+	w   io.Writer
+	err error
+}
+
+func (p *printer) printf(format string, a ...any) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintf(p.w, format, a...)
+	}
+}
+
 func run(args []string, d deps) int {
 	if len(args) == 0 {
-		fmt.Fprintln(d.stderr, usage)
+		diag(d.stderr, "%s\n", usage)
 		return 2
 	}
 	var err error
@@ -105,10 +126,14 @@ func run(args []string, d deps) int {
 	case "doctor":
 		err = runDoctor(args[1:], d)
 	case "-h", "--help", "help":
-		fmt.Fprintln(d.stdout, usage)
-		return 0
+		out := printer{w: d.stdout}
+		out.printf("%s\n", usage)
+		if out.err == nil {
+			return 0
+		}
+		err = out.err
 	default:
-		fmt.Fprintf(d.stderr, "anthropic-account: unknown command %q\n%s\n", args[0], usage)
+		diag(d.stderr, "anthropic-account: unknown command %q\n%s\n", args[0], usage)
 		return 2
 	}
 	var usageErr *usageError
@@ -116,10 +141,10 @@ func run(args []string, d deps) int {
 	case err == nil:
 		return 0
 	case errors.As(err, &usageErr):
-		fmt.Fprintf(d.stderr, "anthropic-account: %v\n%s\n", err, usage)
+		diag(d.stderr, "anthropic-account: %v\n%s\n", err, usage)
 		return 2
 	default:
-		fmt.Fprintln(d.stderr, "anthropic-account:", err)
+		diag(d.stderr, "anthropic-account: %v\n", err)
 		return 1
 	}
 }
@@ -196,7 +221,7 @@ func runExec(args []string, d deps) error {
 		// `anthropic-account doctor` is where it fails.
 		fallbackKey, err = readKey(d.keychain, *chosen.Fallback)
 		if err != nil {
-			fmt.Fprintf(d.stderr, "anthropic-account: warning: no fallback key, continuing on %s alone: %v\n", chosen.Account.Name, err)
+			diag(d.stderr, "anthropic-account: warning: no fallback key, continuing on %s alone: %v\n", chosen.Account.Name, err)
 			fallbackKey = ""
 		}
 	}
@@ -247,14 +272,15 @@ func runWhich(args []string, d deps) error {
 	if *asJSON {
 		return json.NewEncoder(d.stdout).Encode(report)
 	}
-	fmt.Fprintf(d.stdout, "account    %s\nsource     %s\n", report.Account, report.Source)
-	fmt.Fprintf(d.stdout, "workspace  %s\n", orNone(report.Workspace))
+	out := printer{w: d.stdout}
+	out.printf("account    %s\nsource     %s\n", report.Account, report.Source)
+	out.printf("workspace  %s\n", orNone(report.Workspace))
 	if report.Fallback != nil {
-		fmt.Fprintf(d.stdout, "fallback   %s\n", report.Fallback.Name)
+		out.printf("fallback   %s\n", report.Fallback.Name)
 	} else {
-		fmt.Fprintf(d.stdout, "fallback   none\n")
+		out.printf("fallback   none\n")
 	}
-	return nil
+	return out.err
 }
 
 func runList(args []string, d deps) error {
@@ -273,14 +299,15 @@ func runList(args []string, d deps) error {
 	if *asJSON {
 		return json.NewEncoder(d.stdout).Encode(accounts)
 	}
+	out := printer{w: d.stdout}
 	for i, a := range accounts {
 		mark := ""
 		if i == 0 {
 			mark = "  (default)"
 		}
-		fmt.Fprintf(d.stdout, "%s  %s%s\n", a.Name, orNone(a.Workspace), mark)
+		out.printf("%s  %s%s\n", a.Name, orNone(a.Workspace), mark)
 	}
-	return nil
+	return out.err
 }
 
 // runDoctor checks every listed account has its Keychain item, without
@@ -294,7 +321,8 @@ func runDoctor(args []string, d deps) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(d.stdout, "registry  %s (%d accounts)\n", path, len(accounts))
+	out := printer{w: d.stdout}
+	out.printf("registry  %s (%d accounts)\n", path, len(accounts))
 	missing := 0
 	for _, a := range accounts {
 		service := keychainPrefix + a.Name
@@ -302,18 +330,18 @@ func runDoctor(args []string, d deps) error {
 		switch {
 		case err != nil:
 			missing++
-			fmt.Fprintf(d.stdout, "FAIL  %s  could not check %s: %v\n", a.Name, service, err)
+			out.printf("FAIL  %s  could not check %s: %v\n", a.Name, service, err)
 		case !ok:
 			missing++
-			fmt.Fprintf(d.stdout, "FAIL  %s  no Keychain item %s\n", a.Name, service)
+			out.printf("FAIL  %s  no Keychain item %s\n", a.Name, service)
 		default:
-			fmt.Fprintf(d.stdout, "ok    %s  %s\n", a.Name, service)
+			out.printf("ok    %s  %s\n", a.Name, service)
 		}
 	}
 	if missing > 0 {
 		return fmt.Errorf("%d of %d accounts have no usable Keychain item", missing, len(accounts))
 	}
-	return nil
+	return out.err
 }
 
 func orNone(s string) string {

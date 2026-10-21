@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,8 @@ type harness struct {
 	launched *launch
 	stdout   bytes.Buffer
 	stderr   bytes.Buffer
+	// failStdout replaces stdout with a writer that always errors.
+	failStdout bool
 }
 
 func newHarness(t *testing.T, registry string) *harness {
@@ -97,6 +100,10 @@ func (h *harness) run(cwd string, args ...string) int {
 	if cwd == "" {
 		cwd = h.home
 	}
+	var stdout io.Writer = &h.stdout
+	if h.failStdout {
+		stdout = brokenWriter{}
+	}
 	return run(args, deps{
 		home:     h.home,
 		cwd:      cwd,
@@ -108,9 +115,27 @@ func (h *harness) run(cwd string, args ...string) int {
 			h.launched = &launch{path: path, argv: argv, env: env}
 			return nil
 		},
-		stdout: &h.stdout,
+		stdout: stdout,
 		stderr: &h.stderr,
 	})
+}
+
+// brokenWriter is a stdout whose reader has gone away.
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// TestStdoutWriteFailureIsAFailedRun: a command whose answer could not be
+// written must not exit 0, or a host reading the pipe takes silence for a
+// complete answer.
+func TestStdoutWriteFailureIsAFailedRun(t *testing.T) {
+	for _, args := range [][]string{{"list"}, {"which"}, {"doctor"}, {"help"}} {
+		h := newHarness(t, "main\nalt\n")
+		h.failStdout = true
+		if code := h.run("", args...); code != 1 || !strings.Contains(h.stderr.String(), "broken pipe") {
+			t.Errorf("%v: exit %d, stderr %q, want exit 1 naming the write failure", args, code, h.stderr.String())
+		}
+	}
 }
 
 func envMap(env []string) map[string]string {

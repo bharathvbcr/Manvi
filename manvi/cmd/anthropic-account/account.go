@@ -70,7 +70,8 @@ func loadRegistry(home string) ([]account, string, error) {
 	if err != nil {
 		return nil, path, err
 	}
-	defer f.Close()
+	// Read-only: a close failure cannot change bytes already read.
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxRegistryBytes+1))
 	if err != nil {
 		return nil, path, err
@@ -213,7 +214,8 @@ func readSmall(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	// Read-only: a close failure cannot change bytes already read.
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
@@ -245,10 +247,10 @@ type securityCLI struct {
 	timeout time.Duration
 }
 
-func (s securityCLI) run(args ...string) ([]byte, error) {
+func (s securityCLI) run(verb string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/usr/bin/security", args...)
+	cmd := exec.CommandContext(ctx, "/usr/bin/security", append([]string{verb}, args...)...)
 	// security reads the Keychain, not a provider key: it gets none of the ones
 	// this process may hold.
 	cmd.Env = childenv.Inherit()
@@ -256,7 +258,7 @@ func (s securityCLI) run(args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf("Keychain read timed out after %s", s.timeout)
+		return nil, fmt.Errorf("reading the Keychain timed out after %s", s.timeout)
 	}
 	var exit *exec.ExitError
 	// 44 is errSecItemNotFound as security(1) reports it.
@@ -264,7 +266,7 @@ func (s securityCLI) run(args ...string) ([]byte, error) {
 		return nil, errItemMissing
 	}
 	if err != nil {
-		return nil, fmt.Errorf("security %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("security %s: %w: %s", verb, err,strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
@@ -289,17 +291,17 @@ func readKey(kc keychain, a account) (string, error) {
 	service := keychainPrefix + a.Name
 	raw, err := kc.read(service)
 	if errors.Is(err, errItemMissing) {
-		return "", fmt.Errorf("Keychain has no item %q for account %s; add it with: security add-generic-password -a \"$USER\" -s %s -w", service, a.Name, service)
+		return "", fmt.Errorf("the Keychain has no item %q for account %s; add it with: security add-generic-password -a \"$USER\" -s %s -w", service, a.Name, service)
 	}
 	if err != nil {
 		return "", fmt.Errorf("account %s: %w", a.Name, err)
 	}
 	key := strings.TrimRight(raw, "\r\n")
 	if key == "" {
-		return "", fmt.Errorf("Keychain item %q is empty", service)
+		return "", fmt.Errorf("the Keychain item %q is empty", service)
 	}
 	if len(key) > maxKeyBytes || strings.ContainsAny(key, " \t\r\n") {
-		return "", fmt.Errorf("Keychain item %q does not hold a single API key", service)
+		return "", fmt.Errorf("the Keychain item %q does not hold a single API key", service)
 	}
 	return key, nil
 }
