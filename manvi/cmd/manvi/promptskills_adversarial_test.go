@@ -28,7 +28,7 @@ func (f fsSkills) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return os.ReadFile(filepath.Join(f.root, rel))
+		return os.ReadFile(filepath.Join(f.root, rel)) //nolint:gosec // a test fixture path under t.TempDir
 	})
 }
 
@@ -101,7 +101,7 @@ func TestAdvListingDigestIsStableAcrossTurnsAndMtime(t *testing.T) {
 // Attack 3a. The listing never exceeds its share, for any skill set, multibyte
 // descriptions included.
 func TestAdvListingNeverExceedsItsShare(t *testing.T) {
-	rng := rand.New(rand.NewSource(7))
+	rng := rand.New(rand.NewSource(7)) //nolint:gosec // a seeded generator for reproducible test inputs
 	alphabets := [][]rune{[]rune("abc def"), []rune("日本語のテキスト 説明"), []rune("é ü ñ 😀 x"), []rune("a")}
 	for iter := 0; iter < 300; iter++ {
 		n := 1 + rng.Intn(80)
@@ -177,7 +177,7 @@ func TestAdvCutSkillsAreDiscoverable(t *testing.T) {
 			listed[n] = true
 		}
 		l, err := harness.LookupSkillExcluding(root, func(rel string, _ int64) ([]byte, error) {
-			return os.ReadFile(filepath.Join(root, rel))
+			return os.ReadFile(filepath.Join(root, rel)) //nolint:gosec // a test fixture path under t.TempDir
 		}, "no-such-skill", listed)
 		if err != nil {
 			t.Fatal(err)
@@ -255,7 +255,7 @@ func TestAdvUnreadableSkillsDirIsAFaultNotASection(t *testing.T) {
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // a directory must stay searchable so TempDir can remove it
 	reg := routerRegistry(t, nil)
 	text, _, faults := assembleWithSkills(t, reg, "anthropic", fsSkills{root})
 	if text == "" || strings.Contains(text, "devcouncil_load_skill") {
