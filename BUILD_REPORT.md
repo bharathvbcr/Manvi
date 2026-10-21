@@ -1,98 +1,105 @@
-# Build report
+# Build report: dynamic harness
 
-Date: 2026-10-13. Repository: Manvi, main at `01c6241`. No merge, no push, no card marked done.
+Dates: 2026-10-20 to 2026-10-21.
 
-`dev gate status` from the earlier session reported `verification_mode: off` (origin default). Done is evidence-gated and was not requested. `dev verify` was not run. The full suite was not run as one gate. GitPulse does not see the Grok worktrees (`REPOSITORY_TRUST_REQUIRED` on those checkouts); collision scans only the main checkout.
+The run worked the GitPulse **Dynamic harness 0/6–6/6** cards (the user asked to focus on these). The base was main `9bea4d9`, and integration happened on the non-default branch `dh-stack`. The owner authorised the merge to main on 2026-10-21 ("if done commit and merge to main"). Nothing was pushed.
 
-## In review
+Every card stays in **review** and none were requested **done**. Manvi's evidence gate has not passed: `./verify.sh` does not reach a verdict on main either (see Verification).
 
-Opus approved these. They stay in review because verification did not pass a Manvi gate.
+## Process
+- **Orientation and roles.** Each wave started with GitPulse insights or collision risk, then DevMap status, impact and affected-tests.
+  - GitPulse facets often deferred under git-spawn load. Those were treated as unknown, not clean.
+  - DevMap answers were usually `walk_incomplete` or truncated, so the full suite was used as the gate.
+- **Per card.** Each card went through the same steps:
+  - an Opus brief;
+  - a Sonnet implementer in its own worktree;
+  - a separate Sonnet adversarial pass;
+  - an Opus review, which sent work back each time something broke;
+  - an independent re-run in a pinned layout (`tmp/env/`: DevCouncil at pin `1ae3bc1` and gusset at pin `984209b` beside a Manvi worktree, so that both the Go `replace` lines and the `crates/` symlinks resolve to the pins).
+- **Fable** ruled on sequencing and judgment calls. Owner decisions were asked once and recorded on the cards.
 
-| Item | Revision | Branch | Head | What landed |
-|---|---|---|---|---|
-| ft-530b2386 | 3 | hx/wave2-quick-git-env | b90dda9 | `/pull` and `/push` use `childenv.Git()`. `gh` issues stay on `Inherit()`. No `core.hooksPath`. HOME and `SSH_AUTH_SOCK` stay. |
-| ft-871861f4 | 3 | hx/wave1-broker-cancel | e38af08 | After a write starts, cancel calls `stop`. The pre-write slot wait still returns `ctx.Err()` and leaves the client usable. |
-| ft-d366f0d0 | 5 | hx/wave1-git-stdout | 472abe9 | `git diff` and `git show` withhold model-visible stdout on success, non-zero exit, and timeout. The verifier scan stays unfiltered. |
-| ft-074e1445 | 3 | hx/wave1-truncated-args | c076630 | A truncated tool argument is not dispatched. Withhold matches the prefix `the arguments were cut off mid-value`. |
-| ft-5bf532700481c97fc4dda3710b43f24c | 3 | hx/wave2-redirect-order | 1b63242 | `checkCommand` matches the gate. Precise hard returns first; redirects are judged for an unreadable hard denial; the marker is stamped only when those redirects pass. |
-| ft-6eb61e482a0142db909f88d8c177cec4 | 3 | hx/wave2-bwrap-fork | cd847be | Worker cBPF denies fork and non-thread clone with EPERM, clone3 returns ENOSYS, kill of another pid returns EPERM. |
-| ft-4712431ba5726bfb3d7566ba9ac95e4a | 5 | hx/wave2-header-timeout | 81c11d6 | A late header timer does not discard a 200. A caller that is already canceled does not receive one either. |
-| ft-cf1ec230de71a27c30592bbcbebe6f93 | 5 | hx/wave1-git-stdout | cc21e94 | A substitution that would execute a git diff is refused before `runShell`. Git is not run a second time. `echo $(git diff)` still runs once and withholds. |
-| ft-f505b844726ef552ba44f7feb9e1136d | 3 | hx/wave3-session-sync | 82d498d | A directory flush error after `os.Link` is still returned, and `seen` records that generation so the next `Save` is not a conflict. |
-| ft-0b338d23500b424ac153026f23692b0f | 3 | hx/wave3-local-discovery | 8f1d89e | `SupportsImages` stays false. A cancelled model or dimension probe is not cached for `DiscoveryTTL`. A real HTTP error still is. |
+## Merged to main (via `dh-stack`): in review
 
-ft-074e1445 tests, this session: `go test -C manvi ./llm/openaicompat/ -count=1 -timeout 180s` ok in 2.489s. Agent tests `TestAdversarialSiblingDispatch`, `TestAdversarialOutputCapWithholdsEveryCall`, `TestACutOffResponseDoesNotRunACompleteLookingCall`, and `TestACancelledRun` ok. The re-attack commit `c076630` is parented on the fix `7e345e8` and its message is test-only. The three earlier misses (a `}` inside a string, the cut-off phrase inside a permanently invalid payload, an unclosed array dispatched as its inner object) passed on that tree.
+| Card | Branch → head | What landed |
+|---|---|---|
+| ft-aa63dcc6 dh-0 | dh-0-observability `4dc1efd` | Per-step usage on every `step/end`, as `StepEndData` including `NoResponse`. A sha256 digest of the exact System text on `system/prompt_assembled`. New wire-only NDJSON kinds `step.usage`, `verify.report` and `diagnostic`: terminal faces and TUI status skip them, children's `step.usage` is dropped, all text is scrubbed, and diagnostics are capped at 16 KiB. |
+| ft-35d054f0 dh-2 | dh-2-skills `9f4cebd` + dh-int `a6c2752` | `manvi/harness` skill loader for `.agents/skills`, plus the `devcouncil_load_skill` tool. The loader goes through the one read gate and has a strict frontmatter parser. A budgeted always-on listing appears in both TUI and headless prompts, with cut skills named. Notices are emitted once per change. |
+| ft-42089a55 dh-1 | dh-1-spec `9760289` | `HarnessSpec` with strict decode (forbidden and case-fold-duplicate keys refused) and `Validate` that lists every problem. Digest, Catalogue and repo specs. Roles can never be wider than the session. `spec_name`/`spec_digest` are logged. Operator-scope `harness.spec` flag. `workflow.DecodeStrict` was fixed at the owner for every caller. |
+| ft-396e4995 dh-3 | dh-3-serve `2a0e8da` | `harness.resolve` under `ops.optional`. Sections are returned and the host composes System (owner decision). `chat.prepare` gains `harness_digest` and `prefix_moved`. Managed runs materialise the spec into CLAUDE.md or AGENTS.md (owner decision): nonce'd, byte-exact, restored on exit or stop, crash-recoverable, one per checkout, and verify refuses while a block is live. The contract diff is additive only (CHECKSUMS updated). |
+| ft-7e483ef4 dh-5 | dh-5-reflect-v2 `21b2a26` | `manvi reflect`. A read-only reflector. An evidence packet built from structured log records only, with no MANVI-VERDICT text. A fail-closed parser. Lessons stored in `artifacts/lessons/<library>/` with CAS revisions, history and scrubbing. `runenv.go` dedupes run and reflect setup. |
+| ft-89c22437 artifacts | artifacts-nofollow-read `a1c99b9` | Get, List and Update read no-follow: links, hard links, FIFOs and case aliases are refused, and there is a 4 MiB cap. List returns partial results with skipped entries named. |
+| ft-13799305 lint | lint-failover-limitreader `c91cb64` | Main's enforced-lint failure (unbounded ReadAll in `failover_test.go:39`, from 62a22c1). |
+| (integration) | dh-stack `576041b`, `301129c`, `f458573`, `46e73aa` | The Windows test build: a constant moved out of a unix-only file. A `devcouncil_load_skill` probe in the content-reader security invariant, mutation-checked to fail when the read path is bypassed. gofmt. No new nilaway findings: `Store.Get` error flow, a `lessons.Parse` guard, and tests that check errors. |
 
-## Wave 2
+Adversarial passes broke the following, all fixed before merge:
+- dh-0: 4
+- dh-2: 8
+- the dh-2 wiring: 3
+- dh-1: 4
+- dh-3: 6 (materialisation)
+- dh-5: 8 tests
+- artifacts: 4
+- dh-4: aliasing and command rungs
 
-Redirect, bwrap, the header timer, and the exec follow-up are in review above. Nothing in this wave is still open.
+## Prepared, not merged
+- **ft-d4be683f dh-4 (security).** Branch `dh-4-prompt-inputs` `dab94d9` holds Manvi tests only. They are red until the DevCouncil pin moves, so the branch is not merged.
+  - The DevCouncil patch (11 files) and HANDOVER.md are in `.claude/worktrees/agent-addf660a74529f65e/tmp/dh4/`.
+  - It adds a posture-independent, write-only `PromptInputPatterns` rung (`RuleRestrictedPath`). It covers AGENTS.md, CLAUDE.md, GEMINI.md, mcp.json and .mcp.json at any depth, skill roots, and plugin declarations. It checks lexical and identity aliases.
+  - Fable accepted documented residuals: interpreters, archives, and git reset/merge/am under every posture.
+- **ft-e112a743 dh-6.** Deferred by the owner. Its open questions are recorded on the card.
 
-After the wave, GitPulse insights on main: branch `main`, 11 dirty files, 0 live Claude or Codex sessions, collisions ok, overlapping files 0, scanned worktrees 1. Grok worktrees stay invisible to that scan. DevMap status generation 656, `repository.root` matched, `is_fresh` true. GitPulse's codeintel facet on the same generation said `is_fresh` false (`stored extraction payload is obsolete`). That disagreement is not a clean index. `devmap_impact` for `redactGitStdout` returned no indexed start: the symbol is not on main. Gap `exec-stdout-redact-unmerged` is recorded. The git-stdout worktree has no `devmap.sqlite`.
+## Verification (pinned layout, full `./verify.sh` on `dh-stack`)
+- **Passed:**
+  - Release leg.
+  - gofmt, and `go vet` on windows, linux and darwin.
+  - **Full Go suite: 4,958 tests**, with the same 3 skips as main (4,146 on main).
+  - Statement coverage 84.1% (main 83.7%).
+  - `go mod tidy`, dependency surface with cgo off and on.
+  - Enforced lint 0 with cgo off and on.
+- **Debt ratchet.** Main itself breaches `.golangci-debt.counts`: errcheck 196/179, errorlint 3/1, staticcheck 37/33. `dh-stack` has identical counts on those linters and fewer findings overall (612 against 617; gosec 255→254 and 247 cgo, nilerr 10→7). Recorded on ft-43c56026.
+- **govulncheck.** It fails on main and on the stack with go1.27.2, on stdlib GO-2026-6809 (crypto/x509, fixed in go1.27.3). With `GOTOOLCHAIN=go1.27.3` it is clean on the stack. This is the local toolchain, not the code.
+- **nilaway.** Main reports 73 against a ceiling of 71. `dh-stack` reports 73, identical file for file, after the stack's 12 new findings were fixed.
+- **Not run on any tree, main included:**
+  - the legs after nilaway (Rust fmt, clippy and test; parity fixtures; the cgo gusset-engine leg; store and Python interop; bench);
+  - `-race` on `cmd/manvi` and `serve`, which needs a libgusset build.
+- **Blocked by cargo slots.** Store-backed tests time out whenever this machine's cargo-slot-gate (two slots) is held by other sessions' long jobs (ft-5845a89b). Three full runs passed when slots were free; the last run, after a toolchain switch forced rebuilds, did not.
+- **Benchmarks.** dh-4's write-evaluation rung costs +10.9% (235.6 → 261.2 µs, +23 allocs). That is justified as a security rung at about 26 µs per evaluation, on a loaded machine. No other touched hot path has a benchmark (`endStep` and `Log.Append` were unchanged).
+- **Live runs.**
+  - Local (ollama `qwen3.8:27b-mlx`): the skills listing was in the prompt and the model loaded a skill on demand, including a cut one. `manvi reflect` on a real session gave `NO_ENTRY`.
+  - Cloud providers: not verifiable, because no anthropic, gemini or xai credential is configured.
 
+## New and updated cards
+- **ft-5845a89b:** store-backed Go tests starve behind the cargo-slot-gate (DevCouncil testsupport).
+- **ft-13799305:** main's enforced-lint failure (fixed and merged).
+- **ft-f045f425:** DevCouncil `onDiskSpelling` re-lists directories on every call.
+- **ft-4e03a738 (updated):** sibling DevCouncil drift now breaks the build: `ReadyReport(ctx, store.ReadyMode)`.
+- **ft-43c56026 (updated):** main breaches the re-baselined debt counts.
 
-## Wave 3 started
+## Decisions
+**Fable:**
+- wave order;
+- new NDJSON kinds rather than reusing `notice`/`turn.usage`;
+- dh-4 posture-independent, write-only;
+- any-depth prompt-input names;
+- reuse `RuleRestrictedPath` (no verdict-contract change);
+- unmodelled programs as a documented residual.
 
-Session sync `ft-f505b844` is in review. Fix `c1c6186`, attack tests `82d498d`. Package `ok` in 3.209s on the attacker's run. The parent did not re-run it. Impact of `manvi/session/store.go` was truncated (30 of 302, depth cap) and `devmap_affected_tests` fail-closed on an obsolete extraction payload. Gap `session-store-blast-truncated` is recorded. The edit stayed in `manvi/session`. No benchmark exists for `Save`. None was added.
+**Owner:**
+- dh-3 returns sections and the host composes System;
+- dh-3 materialises into managed checkouts;
+- dh-6 deferred;
+- the pin bump needs a fresh ask with deltas;
+- merge to main.
 
-Local discovery `ft-0b338d23` is in review. Fix `97a35f1`, attack tests `8f1d89e`. Package `ok` in 13.301s on the attacker's run. The parent did not re-run it. `SupportsImages` stays false. A cancelled probe is not cached. An HTTP 400 still is. No discovery benchmark exists. None was added.
-
-`ft-4dab6997` and `ft-447797ec` stay deferred. Their files are held by unmerged branches.
-
-## Deferred or blocked
-
-- ft-b08f884e, review revision 4. Outside-root half needs DevCouncil `policy/file.go`, which is dirty in the sibling checkout, along with `command_operands.go`. Criterion 7 stays open. Commit-scan stays on `commitscan.go` for a later wave. `manvi/serve/policy.go` is not this card.
-- ft-039385c0d4f9298cc2f40920abdc3213 (MCP initialize, review). Not reopened. ft-80a33c14 (review) also plans `manvi/mcp/client.go`.
-- ft-447797ec3b950dbd07db0e3c4d6126cc (context-overflow flag, ready). Not started. hx/wave1-truncated-args still holds `manvi/agent/loop.go`.
-- ft-9bff2fd4 plans `loop.go` and stays untouched while that file is held.
-- Inbox spikes ft-2550b25d and ft-10d901e9 are not implementation work.
-- ft-4dab6997ff3ce430f5823ac76c21d69f stays in review (revision 3). Its open criteria need `bench/stress_test.py`, which the unmerged bwrap branch also edits, and `bench/mh/rpc.py` is on its planned-file list. This loop does not merge, so that card is not reopened in parallel.
-
-## Benchmarks
-
-No benchmark exists for the computer client, exec stdout, or quick-git spawn. Those are process launches.
-
-`BenchmarkRepairJSONLiterals` was not edited by ft-074e1445's last fix. `-benchtime=50ms -count=3`, 3 allocs/op:
-
-| size | ns/op |
-|---|---|
-| 4096 | 22664, 22565, 22141 |
-| 8192 | 44043, 45349, 46884 |
-| 16384 | 91004, 93297, 92311 |
-
-Prior steady band was about 22348–22597, 43836–44542, and 89504–89980. One 8192-byte sample is about 5.3% over that ceiling. The other two are within 2%. A 50ms sample on an unmodified function. Not counted as a regression of the truncation change.
-
-No benchmark exists for the serve policy check, the bwrap argv builder, the header-timer claim, or exec stdout. None was added. The bwrap change is process setup. The header change is one atomic claim on a path that already had no benchmark. Exec stdout is a process launch.
-
-## New and updated tasks
-
-ft-cf1ec230de71a27c30592bbcbebe6f93 (`gp-audit-2026-10-13-exec-diff-bypass`) was filed for the leaks ft-d366f0d0 did not cover, then overwritten at revision 2 to add `env -- git diff`, `command -p git diff`, `$'git' diff`, and a backslash-newline between `git` and `diff`. It is in review at revision 5 (sequence 4170, `verification` null). It stays on the git-stdout branch and is not folded back into ft-d366f0d0. No new task was filed from the second attack: the residuals did not print the secret.
-
-## Fable's decisions
-
-- Wave 1 started as desktop cancel, truncated tool arguments, and git stdout. Quick git took the fourth slot because its files did not overlap.
-- ft-b08f884e stays deferred. Do not edit DevCouncil from this loop.
-- The four extra git-stdout leaks are not a send-back of ft-d366f0d0. Policy's `argumentCommandWord` returns -1 when `env` or `command` is followed by an option, on purpose. They are the follow-up card, and that card stops if it needs a DevCouncil edit.
-- Truncation was sent back twice: `strings.Contains` withheld every invalid payload, then a closer inside a string and an unclosed array were misread. The third implementation was re-attacked and approved.
-- Broker cancel does not stop the client while it is waiting for the pre-write slot. `KillGroup` is not exercised when `cmd.Process` is nil. That limit is recorded, not a send-back.
-- Quick git does not case-fold `GIT` on Windows. That stays ft-de8d7a32.
-- An apostrophe in prefix prose (`don't {"a":1}`) is plain invalid under the same string scan as `repairJSONLiterals`. It does not dispatch a shorter call and does not withhold a sibling. Accepted.
-- Wave 2 is the four cards above. MCP init and the overflow flag wait. Linux bwrap cannot be executed here. The C6 claim is not dropped.
-- Redirect order is approved. A whitespace redirect ahead of `.env` is reported as `path.outside_root`; the command is still denied.
-- bwrap `kill(0)` stays allowed. That is the process group, wider than seatbelt's target-self. `--new-session` and `--unshare-pid` keep it off the checker, and `kill(getppid())` stays EPERM. Not a send-back. `tgkill` is filtered on the thread-group id only; the kernel check was not executed.
-- ft-4dab6997 is not reopened while its planned `stress_test.py` and `rpc.py` sit on the unmerged bwrap branch.
-- Header timeout was sent back once. The accept path must return `ctx.Err()` when the parent is already canceled, and must not relabel that as `ErrHeaderTimeout`. A RoundTripper that returns both a response and an error is out of scope. If the timer claims first and RoundTrip returns that cause, `ErrHeaderTimeout` stands. If the timer has already claimed and the parent then cancels and RoundTrip still returns `(200, nil)`, `send` closes the body and returns `context.Canceled`. That case is accepted.
-- Exec follow-up 0000b8c was sent back because `recoverExecutedPatch` re-ran git. The replacement refuses `echo $( $(git diff) )` before `runShell`. `git diff | cat` still runs once and withholds. `git diff | cat | sed` stays refused. `git diff | cat --` is refused too; that is fail-closed. A pipe inside `$( )` is stopped by the command gate before this filter. `sh -lc` replaces `PATH`, so the git-count wrapper does not see that one shape. Approved at review revision 5. Not done.
-- Git hooks stay enabled. HOME and `SSH_AUTH_SOCK` stay on `childenv.Git`.
-- Local `SupportsImages` stays false. The owner question on ft-0b338d23 was declined. The encoder is not taught to send images. A cancelled discovery is still not cached.
+**Opus (review):**
+- `harness.spec` is operator-only (a repo naming one needs a DevCouncil catalogue change);
+- the reflector role is fully read-only;
+- inline specs are refused on the managed plane;
+- one read gate only (a second, lighter gate was rejected).
 
 ## Owner decisions still pending
-
-- ft-530b2386: whether quick git should disable hooks. Not built. The card shipped with hooks left on.
-- ft-cf1ec230: if the six leftover shapes need a DevCouncil parser change, stop. Do not edit DevCouncil until that is accepted.
-- ft-b08f884e: outside-root credential reads stay a hard rule. The DevCouncil files are dirty, so the card is blocked.
-- ft-6eb61e48: the ban is implemented, not dropped from the suite. A Linux C6 run is still unexecuted on this machine.
-- Windows env-case (ft-de8d7a32) stays low and was not folded into quick git.
-
-## Unverified
-
-Full suite, flake check, `dev verify`, Linux, and Windows. The parent did not re-run the worktree suites: `go test -C` with an absolute worktree path is blocked by the harness. Agent results are cited above. DevMap file-level impact was truncated on the earlier wave-2 targets, and `redactGitStdout` has no indexed start on main. Main's dirty files were not touched except untracked `BUILD_REPORT.md`: the docs, `verify.go` and its path tests, `managed_stop_test.go`, `verify_checks.go`, `verify_test.go`, and untracked `AUDIT_REPORT.md`.
+1. **Apply the dh-4 DevCouncil patch** from a DevCouncil-rooted session, then **bump `scripts/module-pins.txt`**. The bump also pulls in the existing drift (sibling `aacffb8` against pin `1ae3bc1`), and Manvi must adopt `ReadyReport(ctx, store.ReadyMode)` in the same change (ft-4e03a738).
+2. **Should yolo still allow writes to secrets and agent-config trees** (`.env`, `.claude/settings.json` hooks)? This would overturn `TestYoloPostureAlsoDisablesHardRules`. Fable recommends making secret writes posture-independent but keeping agent-config trees writable under yolo.
+3. **Cross-repo consumers of the serve contract.** GitPulse re-vendoring and Jarvis are next; see `.claude/worktrees/agent-ad4ccf9496e65d7b3/tmp/dh3-HANDOVER.md`. Jarvis is still blocked by ft-8e5a8922.
+4. **dh-6:** Python oracle in bench, cost and wall-clock budget, probe isolation.
+5. **Local Go toolchain** to ≥ go1.27.3 (GO-2026-6809). Also, `go.mod` pins `toolchain go1.26.9`.
