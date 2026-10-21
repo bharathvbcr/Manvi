@@ -145,8 +145,8 @@ type ReadFunc func(rel string, limit int64) ([]byte, error)
 // symbolic links (a README, say) are not skills and are left alone; a symbolic
 // link is judged by the reader, which refuses one that leaves the repository.
 // A name that cannot be a skill costs no read.
-func LoadSkills(root string, read ReadFunc) (SkillSet, error) {
-	names, err := listSkillDirs(root)
+func LoadSkills(ctx context.Context, root string, read ReadFunc) (SkillSet, error) {
+	names, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return SkillSet{}, err
 	}
@@ -226,18 +226,18 @@ const MaxListedNames = 20
 // case-sensitive filesystem would otherwise report as absent. name must pass
 // ValidSkillName; the caller refuses anything else before the filesystem is
 // involved.
-func LookupSkill(root string, read ReadFunc, name string) (Lookup, error) {
-	return LookupSkillExcluding(root, read, name, nil)
+func LookupSkill(ctx context.Context, root string, read ReadFunc, name string) (Lookup, error) {
+	return LookupSkillExcluding(ctx, root, read, name, nil)
 }
 
 // LookupSkillExcluding is LookupSkill whose refusal of an unknown name offers
 // only skills not in listed: the names the prompt already shows are no help to
 // a model that asked for one it could not see.
-func LookupSkillExcluding(root string, read ReadFunc, name string, listed map[string]bool) (Lookup, error) {
+func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name string, listed map[string]bool) (Lookup, error) {
 	if !ValidSkillName(name) {
 		return Lookup{}, fmt.Errorf("%s is not a valid skill name", QuoteName(name))
 	}
-	names, err := listSkillDirs(root)
+	names, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -283,12 +283,50 @@ func LookupSkillExcluding(root string, read ReadFunc, name string, listed map[st
 // listSkillDirs returns the sorted names of candidate skill entries. The
 // listing goes through os.Root, which refuses a skills directory that is a
 // symbolic link out of the repository.
-func listSkillDirs(root string) ([]string, error) {
+//
+// The path is judged before it is opened: a FIFO, socket, device or plain file
+// at .agents/skills is refused as a listing error, because opening a FIFO
+// blocks until a writer appears and a repository can plant one. The open and
+// the read are also bounded by ctx, since the judgement and the open are two
+// steps and a hung filesystem has no type to judge; a cancelled or timed-out
+// listing takes the same error path as any other listing failure.
+func listSkillDirs(ctx context.Context, root string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing %s: %w", SkillsDir, err)
+	}
+	type outcome struct {
+		names []string
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		names, err := readSkillDirs(root)
+		done <- outcome{names, err}
+	}()
+	select {
+	case o := <-done:
+		return o.names, o.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("listing %s: %w", SkillsDir, ctx.Err())
+	}
+}
+
+func readSkillDirs(root string) ([]string, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, fmt.Errorf("opening repository root: %w", err)
 	}
 	defer func() { _ = r.Close() }()
+	info, err := r.Stat(SkillsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("examining %s: %w", SkillsDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory (%s), so it is not opened", SkillsDir, info.Mode().Type())
+	}
 	dir, err := r.Open(SkillsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

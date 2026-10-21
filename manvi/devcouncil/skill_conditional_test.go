@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
@@ -197,6 +199,41 @@ func TestUnreadableSkillsDirectoryOffersTheToolAndReportsTheFault(t *testing.T) 
 	}
 }
 
+// A FIFO at .agents/skills must not block the tool call any more than the
+// session open: the tool is offered and answers with the refusal at once.
+func TestFIFOAsSkillsDirectoryDoesNotBlockTheToolCall(t *testing.T) {
+	f := newSkillFixture(t)
+	if err := os.MkdirAll(filepath.Join(f.root, ".agents"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(f.root, harness.SkillsDir), 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	type out struct {
+		pipe *tools.Registry
+		res  tools.Result
+		err  error
+	}
+	done := make(chan out, 1)
+	go func() {
+		pipe := tools.NewRegistry(bus.New())
+		err := f.reg.Register(pipe)
+		done <- out{pipe, runSkill(pipe, "anything"), err}
+	}()
+	select {
+	case o := <-done:
+		if o.err != nil {
+			t.Fatal(o.err)
+		}
+		requirePresent(t, o.pipe)
+		if !o.res.IsError || !strings.Contains(o.res.Text, "not a directory") {
+			t.Fatalf("tool call = %v %q, want the not-a-directory refusal", o.res.IsError, o.res.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("opening a session and calling the tool blocked on a FIFO at the skills path")
+	}
+}
+
 func TestSkillsPathThatIsAFileOffersTheTool(t *testing.T) {
 	f := newSkillFixture(t)
 	writeRepoFile(t, f.root, harness.SkillsDir, "not a directory")
@@ -215,14 +252,15 @@ func TestCancelledOpenWithSkillsOffersTheTool(t *testing.T) {
 	}
 }
 
-// With no skills directory there is nothing to read, so cancellation has
-// nothing to interrupt and the answer is still the true one.
-func TestCancelledOpenWithoutSkillsStillWithholds(t *testing.T) {
+// The listing is bounded by the context too, so a cancelled open cannot tell
+// whether the repository has skills, even when it has none: the same failed
+// read, the same answer.
+func TestCancelledOpenWithoutSkillsOffersTheToolToo(t *testing.T) {
 	f := newSkillFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if f.reg.skillToolOffered(ctx) {
-		t.Fatal("a repository with no skills was offered the tool")
+	if !f.reg.skillToolOffered(ctx) {
+		t.Fatal("a cancelled listing was read as proof that there are no skills")
 	}
 }
 

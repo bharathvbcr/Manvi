@@ -62,7 +62,7 @@ func (r *Registry) LoadSkills(ctx context.Context) (harness.SkillSet, error) {
 }
 
 func (r *Registry) readSkills(ctx context.Context) (harness.SkillSet, error) {
-	return harness.LoadSkills(r.deps.Root, r.skillReader(ctx))
+	return harness.LoadSkills(ctx, r.deps.Root, r.skillReader(ctx))
 }
 
 // loadSkillToolName is the one tool whose registration depends on the
@@ -166,7 +166,7 @@ func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result 
 	if p := r.listedSkills.Load(); p != nil {
 		listed = *p
 	}
-	l, err := harness.LookupSkillExcluding(r.deps.Root, r.skillReader(ctx), args.Name, listed)
+	l, err := harness.LookupSkillExcluding(ctx, r.deps.Root, r.skillReader(ctx), args.Name, listed)
 	if err != nil {
 		return unavailable("the skills list", err)
 	}

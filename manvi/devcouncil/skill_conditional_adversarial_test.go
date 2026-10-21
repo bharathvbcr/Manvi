@@ -31,7 +31,7 @@ func registerWithin(t *testing.T, f *skillFixture, fifo string, limit time.Durat
 		done <- out{pipe, f.reg.Register(pipe)}
 	}()
 	t.Cleanup(func() {
-		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil { //nolint:gosec // G304: the test's own FIFO path
 			_ = w.Close()
 		}
 	})
@@ -98,7 +98,7 @@ func TestAdversarialUnreadableSkillsDirectoryOffersToolThatReportsTheFault(t *te
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: a directory, not a file; 0600 would make it unremovable
 	pipe := f.openSession(t)
 	requirePresent(t, pipe)
 	res := runSkill(pipe, "anything")
