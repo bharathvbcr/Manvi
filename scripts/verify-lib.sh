@@ -40,6 +40,54 @@ gate_release_check() {
   return "$status"
 }
 
+# gate_store_ok <dcstore> [dcstore args…]
+#
+# Runs the dcstore binary and prints its reply, but only when the reply is a JSON
+# object with `"ok": true`. dcstore reports a refusal it chose to make (a task
+# that is not a workbench item, a lease that is held) as `{"ok":false,…}` with
+# exit status 0, so a caller that judges the exit status alone treats a store
+# that did nothing as a store that did it, and the gate then fails several
+# steps later on a symptom that no longer names the cause. The reply is parsed
+# rather than searched for a substring so that a refusal whose text happens to
+# contain `"ok":true` is still a refusal. On refusal the reply goes to stderr,
+# so the caller's `|| fail "…"` carries the store's own words, and nothing goes
+# to stdout. A non-zero exit from the binary is that status, 1 if it was 0.
+gate_store_ok() {
+  local reply status=0
+  reply="$(mktemp)" || { printf 'gate_store_ok: mktemp failed; dcstore did not run\n' >&2; return 1; }
+  "$@" >"$reply" || status=$?
+  if (( status == 0 )) && ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if isinstance(d, dict) and d.get("ok") is True else 1)' "$reply" 2>/dev/null; then
+    status=2
+  fi
+  if (( status != 0 )); then
+    printf 'dcstore did not answer ok (status %d): ' "$status" >&2
+    cat "$reply" >&2
+    rm -f "$reply"
+    return "$status"
+  fi
+  cat "$reply"
+  rm -f "$reply"
+}
+
+# gate_seed_task <dcstore> <db> <task-id>
+#
+# Makes <task-id> a ready workbench item of the local repository in <db>, the
+# way DevCouncil's own testsupport.SeedTask does, so it can be leased. Since
+# store schema 10 a task that is not a workbench item of the repository is
+# refused at acquire, so a gate that acquires a lease on a made-up id has to
+# seed it first. Every call goes through gate_store_ok: a seed the store
+# declined must not look like a seed.
+gate_seed_task() {
+  local bin="$1" db="$2" id="$3"
+  gate_store_ok "$bin" --db "$db" local-repository >/dev/null || return $?
+  gate_store_ok "$bin" --db "$db" work --method items.put --input \
+    "{\"request_id\":\"seed-${id}\",\"id\":\"${id}\",\"expected_revision\":0,\"title\":\"${id}\",\"status\":\"ready\",\"repository_ids\":[\"this-repo\"],\"primary_repository_id\":\"this-repo\",\"scope\":{}}" \
+    >/dev/null
+}
+
 # gate_count_passes <module-dir> <grep-pattern> <go test args…>
 #
 # Runs `go test -count=1 -v <args>` in the module, and prints how many output
