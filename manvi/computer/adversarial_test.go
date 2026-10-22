@@ -7,7 +7,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRecorderCannotRewriteRetainedEventsAndObservations(t *testing.T) {
@@ -21,8 +20,7 @@ func TestRecorderCannotRewriteRetainedEventsAndObservations(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -49,8 +47,7 @@ func TestReceiptJournalFailureFencesAndLeavesUnknownOutcome(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -104,8 +101,7 @@ func TestTransientCaptureFailureRetriesBeforeDispatch(t *testing.T) {
 			opts, base := runFixture(t, false)
 			d := &flakyObservationDesktop{testDesktop: base, failures: 2, code: code}
 			opts.Desktop = d
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+			ctx := safetyContext(t)
 			run, err := StartRun(ctx, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -130,8 +126,7 @@ func TestFinalFenceUpdatesSnapshotEpoch(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -152,13 +147,12 @@ func TestFinalFenceUpdatesSnapshotEpoch(t *testing.T) {
 func TestPersistentOcclusionPausesWithoutDispatch(t *testing.T) {
 	opts, base := runFixture(t, false)
 	opts.Desktop = &flakyObservationDesktop{testDesktop: base, failures: 100, code: "window_occluded"}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitPhase(t, ctx, run, workflow.Paused)
+	s := waitFencedPause(t, ctx, run, opts.Session.Epoch)
 	if s.Attempts != opts.Program.Capability().Limits.ObservationAttempts {
 		t.Fatalf("occlusion attempts not bounded: %+v", s)
 	}
@@ -186,8 +180,7 @@ func TestHumanReceiptJournalFailureIsUnknown(t *testing.T) {
 		records <- r
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -241,8 +234,7 @@ func TestProtectedNumericExtractionCannotEscapeThroughTypedOutput(t *testing.T) 
 	d.observation.Nodes[1].Value = &sensitive
 	d.observation.Nodes[1].Bounds = &Bounds{10, 10, 20, 10}
 	opts.Privacy.SensitiveTargets = []Selector{{Name: "Balance"}}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

@@ -13,7 +13,6 @@ import (
 	"image/png"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
@@ -177,8 +176,7 @@ func TestVisualRunPublishesMatchAndReapprovesChangedPixels(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -250,8 +248,7 @@ func TestImportedVisualAnchorCannotProbeProtectedPixels(t *testing.T) {
 	}
 	d := &visualDesktop{testDesktop: base}
 	opts.Desktop = d
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

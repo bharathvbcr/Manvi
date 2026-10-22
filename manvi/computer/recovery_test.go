@@ -9,9 +9,26 @@ import (
 
 func waitPhase(t *testing.T, ctx context.Context, r *Run, phase workflow.Phase) workflow.State {
 	t.Helper()
+	return waitPhaseAbove(t, ctx, r, phase, 0)
+}
+
+// waitFencedPause waits for the run to pause AND finish fencing the desktop.
+// An automation-initiated pause publishes Paused first and only then bumps the
+// epoch (apply "receipt", then Desktop.Control "pause", then apply "pause" in
+// Run.execute). A control sent with the epoch read in that window is refused as
+// a stale epoch, and the run then waits forever for a control that already went
+// by. The fence moves the epoch past base (the epoch the run started at), so
+// Paused with Epoch > base is the state a control can actually be addressed to.
+func waitFencedPause(t *testing.T, ctx context.Context, r *Run, base uint64) workflow.State {
+	t.Helper()
+	return waitPhaseAbove(t, ctx, r, workflow.Paused, base)
+}
+
+func waitPhaseAbove(t *testing.T, ctx context.Context, r *Run, phase workflow.Phase, above uint64) workflow.State {
+	t.Helper()
 	for {
 		s := r.Snapshot()
-		if s.Phase == phase {
+		if s.Phase == phase && s.Epoch > above {
 			return s
 		}
 		if s.Terminal() {
@@ -19,7 +36,7 @@ func waitPhase(t *testing.T, ctx context.Context, r *Run, phase workflow.Phase) 
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+			t.Fatalf("waiting for phase %s (now %s): %v", phase, s.Phase, context.Cause(ctx))
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -30,8 +47,7 @@ func TestAssistedRecoveryIsOptInBoundedAndRecorded(t *testing.T) {
 	d.observation.Nodes = append(d.observation.Nodes, Node{ID: "back", Name: "Back", Role: "button", Enabled: true, Actions: []string{"press"}})
 	records := make(chan Record, 64)
 	opts.OnRecord = func(r Record) error { records <- r; return nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 	"testing"
-	"time"
 )
 
 type revalidationDesktop struct {
@@ -56,8 +55,7 @@ func TestApprovalRevalidatesEquivalentFormAgainstFreshObservation(t *testing.T) 
 	opts.Desktop = d
 	records := make(chan Record, 64)
 	opts.OnRecord = func(r Record) error { records <- r; return nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +99,7 @@ func TestApprovalDetectsChangedPrivateValueBehindRedaction(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
