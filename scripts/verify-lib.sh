@@ -29,7 +29,7 @@
 # `notcovered` runs in this shell and its NOT_COVERED survives the loop.
 gate_release_check() {
   local err line status=0 prefix='check-release: NOT COVERED: '
-  err="$(mktemp)"
+  err="$(mktemp)" || { printf 'gate_release_check: mktemp failed; check-release did not run\n' >&2; return 1; }
   node scripts/check-release.mjs "$@" 2>"$err" || status=$?
   cat "$err" >&2
   while IFS= read -r line || [[ -n "$line" ]]; do
