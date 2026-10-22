@@ -209,9 +209,9 @@ if have node; then
   # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
   # is an unbound variable that fails the gate before it checks anything.
   if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then
-    node scripts/check-release.mjs --require-pins || fail "release checks"
+    gate_release_check --require-pins || fail "release checks"
   else
-    node scripts/check-release.mjs || fail "release checks"
+    gate_release_check || fail "release checks"
   fi
 else
   notcovered "node not on PATH — release notes and workflow were not checked"
