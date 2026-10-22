@@ -46,7 +46,7 @@ func (f *fixture) payloadAs(sess *Session, name string, args any) map[string]any
 // which lease it held, which is what the write gate and the verifier read.
 func TestOneChildsCheckoutIsInvisibleToItsSiblings(t *testing.T) {
 	f := newFixture(t)
-	insertTask(t, storeBinary(t), f.db, "TASK-002", `[{"path":"src/other.go","allowed_change":"modify"}]`)
+	insertTask(t, f.db, "TASK-002", `[{"path":"src/other.go","allowed_change":"modify"}]`)
 
 	root := f.reg.RootSession()
 	first := root.NewChildSession(nil)
@@ -80,7 +80,7 @@ func TestConcurrentChildCheckoutsDoNotRace(t *testing.T) {
 	f := newFixture(t)
 	ids := []string{"TASK-001", "TASK-R2", "TASK-R3", "TASK-R4"}
 	for _, id := range ids[1:] {
-		insertTask(t, storeBinary(t), f.db, id, `[{"path":"src/calc.go","allowed_change":"modify"}]`)
+		insertTask(t, f.db, id, `[{"path":"src/calc.go","allowed_change":"modify"}]`)
 	}
 
 	root := f.reg.RootSession()
