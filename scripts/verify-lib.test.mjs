@@ -348,3 +348,40 @@ test("the guard script fails a deep-mode log with an unlisted NOT COVERED line",
   const missing = spawnSync(path.join(HERE, "check-verify-log.sh"), [log, "ubuntu-latest", "race"], { encoding: "utf8" });
   assert.equal(missing.status, 1);
 });
+
+// ---------------------------------------------------------------- release pins
+
+const NOTCOVERED_DEF = `NOT_COVERED=""\nnotcovered() { NOT_COVERED="\${NOT_COVERED}\n    - $1"; }`;
+const DRIFT = "DevCouncil is at 0123456789ab, pinned fedcba987654 (3 ahead, 0 behind), clean. The release builds the pin.";
+
+test("a sibling off its pin is carried into NOT_COVERED, not left in mid-run stderr", () => {
+  const r = gate(`${NOTCOVERED_DEF}\ngate_release_check\nprintf 'NC=[%s]\\n' "$NOT_COVERED"`, {
+    node: `echo 'check-release: NOT COVERED: ${DRIFT}' >&2\nexit 0`,
+  });
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.out, /NC=\[\n {4}- DevCouncil is at 0123456789ab, pinned fedcba987654 \(3 ahead, 0 behind\), clean\./, r.out);
+  // The line is still shown where it happened.
+  assert.match(r.err, /check-release: NOT COVERED: DevCouncil is at/);
+});
+
+test("siblings at their pins leave NOT_COVERED empty", () => {
+  const r = gate(`${NOTCOVERED_DEF}\ngate_release_check\nprintf 'NC=[%s]\\n' "$NOT_COVERED"`, {
+    node: `echo 'check-release: ok' >&2\nexit 0`,
+  });
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.out, /^NC=\[\]$/m, r.out);
+});
+
+test("a check-release failure still fails, and its NOT COVERED lines are still recorded", () => {
+  const r = gate(
+    `${NOTCOVERED_DEF}\nset +e\ngate_release_check --require-pins\nst=$?\nset -e\nprintf 'st=%s NC=[%s]\\n' "$st" "$NOT_COVERED"`,
+    { node: `echo 'check-release: NOT COVERED: ${DRIFT}' >&2\necho 'check-release: release notes missing' >&2\nexit 1` },
+  );
+  assert.match(r.out, /^st=1 NC=\[\n {4}- DevCouncil is at/m, r.out);
+  assert.match(r.err, /release notes missing/);
+});
+
+test("arguments reach check-release unchanged", () => {
+  const r = gate(`${NOTCOVERED_DEF}\ngate_release_check --require-pins`, { node: `printf 'args=%s\\n' "$*" >&2` });
+  assert.match(r.err, /args=scripts\/check-release\.mjs --require-pins/);
+});

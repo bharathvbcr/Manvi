@@ -15,6 +15,31 @@
 # `|| fail "…"` decides the message, and so a `$(…)` capture cannot swallow an
 # exit.
 
+# gate_release_check [check-release args…]
+#
+# Runs scripts/check-release.mjs and keeps its stderr visible. With
+# --allow-unpinned (or MANVI_ALLOW_UNPINNED_MODULES=1) a sibling that is off its
+# pin is not an error there: it is a `check-release: NOT COVERED: <line>` on
+# stderr and exit 0. Left at that, the line scrolls past mid-run and the run
+# ends in a plain PASS, so each such line is also handed to the caller's
+# `notcovered`, which reprints it beside the verdict. check-release's own exit
+# status is the function's status, so a real failure still fails, and under
+# --require-pins the drift is an error there and never reaches this routing.
+# The stderr goes to a file and is read back by a redirect rather than a pipe, so
+# `notcovered` runs in this shell and its NOT_COVERED survives the loop.
+gate_release_check() {
+  local err line status=0 prefix='check-release: NOT COVERED: '
+  err="$(mktemp)"
+  node scripts/check-release.mjs "$@" 2>"$err" || status=$?
+  cat "$err" >&2
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == "$prefix"* ]] || continue
+    notcovered "${line#"$prefix"}"
+  done <"$err"
+  rm -f "$err"
+  return "$status"
+}
+
 # gate_count_passes <module-dir> <grep-pattern> <go test args…>
 #
 # Runs `go test -count=1 -v <args>` in the module, and prints how many output
