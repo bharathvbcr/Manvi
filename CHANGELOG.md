@@ -77,6 +77,14 @@ under **Unreleased** in the same commit as the code.
   through `ReadyReport(ctx, store.ReadyEnforce)`. The `manvi serve` contract
   adds `work.runs.managed.follow` and `work.runs.managed.wake`.
 
+### Fixed
+
+- A managed Claude run whose stream carries a tool result that does not decode
+  now fails with `invalid Claude user message`, as an undecodable assistant
+  message already did. It used to skip the frame and end the run as completed
+  with that result lost. A user frame with no message, or with plain-string
+  content, is still skipped.
+
 ## [0.1.0] — 2026-10-17
 
 ### Added
