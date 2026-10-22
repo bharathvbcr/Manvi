@@ -40,7 +40,7 @@ func TestExternalInteractionSuspendsAndExplicitResumeUsesFreshAttempt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitFencedPause(t, ctx, run, opts.Session.Epoch)
+	s := waitPhase(t, ctx, run, workflow.Paused)
 	if s.Epoch <= opts.Session.Epoch || s.ActionAttempt != 1 {
 		t.Fatalf("external interaction was not fenced with a fresh attempt: %+v", s)
 	}
@@ -87,7 +87,7 @@ func TestExternalInteractionAfterSentActionOnlyResumesObservation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitFencedPause(t, ctx, run, opts.Session.Epoch)
+	s := waitPhase(t, ctx, run, workflow.Paused)
 	if s.ResumePhase != workflow.PostAction {
 		t.Fatalf("sent action reconciliation phase lost: %+v", s)
 	}

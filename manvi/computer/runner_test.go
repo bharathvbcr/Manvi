@@ -195,8 +195,8 @@ func TestApprovalIsRequiredAndOldEpochCannotDispatch(t *testing.T) {
 		}
 	}
 	s := run.Snapshot()
-	if err := run.Send(ctx, Control{Kind: "approve", Epoch: 0, ActionID: s.ActionID(opts.Program), ObservationID: s.Observation.ID}); err != nil {
-		t.Fatal(err)
+	if err := run.Send(ctx, Control{Kind: "approve", Epoch: 0, ActionID: s.ActionID(opts.Program), ObservationID: s.Observation.ID}); !errors.Is(err, ErrStaleControlEpoch) {
+		t.Fatalf("stale approval returned %v, want ErrStaleControlEpoch", err)
 	}
 	// The run records the refusal in the same step that drops the control, so
 	// waiting for that record (not for time to pass) is what proves the fence

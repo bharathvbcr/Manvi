@@ -152,7 +152,7 @@ func TestPersistentOcclusionPausesWithoutDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := waitFencedPause(t, ctx, run, opts.Session.Epoch)
+	s := waitPhase(t, ctx, run, workflow.Paused)
 	if s.Attempts != opts.Program.Capability().Limits.ObservationAttempts {
 		t.Fatalf("occlusion attempts not bounded: %+v", s)
 	}

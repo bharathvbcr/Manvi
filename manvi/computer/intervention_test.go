@@ -48,7 +48,7 @@ func TestTakeoverSetsHumanController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFencedPause(t, ctx, run, opts.Session.Epoch)
+	waitPhase(t, ctx, run, workflow.Paused)
 	s := run.Snapshot()
 	if err := run.Send(ctx, Control{Kind: "takeover", Epoch: s.Epoch}); err != nil {
 		t.Fatal(err)

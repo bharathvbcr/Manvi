@@ -190,7 +190,7 @@ func TestHumanRevalidationRefusesChangesAndLateInput(t *testing.T) {
 				cleanup, finish := context.WithTimeout(context.Background(), safetyTimeout)
 				defer finish()
 				if !run.Snapshot().Terminal() {
-					if err := run.Send(cleanup, Control{Kind: "cancel", Epoch: run.Snapshot().Epoch}); err != nil {
+					if err := run.Send(cleanup, Control{Kind: "cancel", Epoch: run.Snapshot().Epoch}); err != nil && !errors.Is(err, ErrRunEnded) {
 						t.Error(err)
 					}
 				}
