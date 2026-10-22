@@ -68,6 +68,14 @@ under **Unreleased** in the same commit as the code.
   left a run waiting on it forever. The signature is unchanged, and it is still
   bounded by the caller's context. An automation pause also no longer publishes
   `Paused` with the epoch from before the fence.
+- The DevCouncil pin moves from `1ae3bc15` to `3cfe283c` and gusset from
+  `984209b5` to `320c56c2`. DevCouncil's store is now at schema 10 with
+  workbench 14: workbench items are the one task source, and the legacy
+  `tasks` table is retired when a store is opened. A store or profile written
+  by this build cannot be read by a Manvi, DevCouncil or GitPulse that predates
+  these schemas. `devcouncil_next_task` and `manvi watch` read ready tasks
+  through `ReadyReport(ctx, store.ReadyEnforce)`. The `manvi serve` contract
+  adds `work.runs.managed.follow` and `work.runs.managed.wake`.
 
 ## [0.1.0] — 2026-10-17
 
