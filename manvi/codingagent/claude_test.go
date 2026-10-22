@@ -240,6 +240,22 @@ func TestClaudeProtocolChild(t *testing.T) {
 				emit(`{"type":"user","session_id":%q,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"listed","is_error":false}]},"uuid":"u2"}`, session)
 				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"listed","terminal_reason":"completed","uuid":"u-result"}`, session)
 				continue
+			case "user-bad-result", "user-string", "user-no-message":
+				// Only the user frame differs, then a success result: the first
+				// carries a real tool_result that cannot be decoded, the other
+				// two carry no results at all.
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"uuid":"u1"}`, session)
+				switch scenario {
+				case "user-bad-result":
+					emit(`{"type":"user","session_id":%q,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":7}]},"uuid":"u2"}`, session)
+				case "user-string":
+					emit(`{"type":"user","session_id":%q,"message":{"role":"user","content":"hello"},"uuid":"u2"}`, session)
+				default:
+					emit(`{"type":"user","session_id":%q,"uuid":"u2"}`, session)
+				}
+				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"done","terminal_reason":"completed","uuid":"u-result"}`, session)
+				continue
 			default:
 				initFrame("default")
 				emit(`{"type":"rate_limit_event","session_id":%q,"rate_limit_info":{"status":"allowed"},"uuid":"u0"}`, session)
@@ -494,7 +510,7 @@ func TestClaudeApprovalRoundTripsAndIsSingleUse(t *testing.T) {
 }
 
 func TestClaudeRefusesFramesThatDoNotBelongToThisRun(t *testing.T) {
-	for _, scenario := range []string{"foreign-session", "foreign-cwd", "drifted-mode", "drifted-build", "reinit", "flood", "dialog", "duplicate", "orphan-callback"} {
+	for _, scenario := range []string{"foreign-session", "foreign-cwd", "drifted-mode", "drifted-build", "reinit", "flood", "dialog", "duplicate", "orphan-callback", "user-bad-result"} {
 		t.Run(scenario, func(t *testing.T) {
 			s := openFixture(t, scenario, "ask")
 			if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
@@ -580,6 +596,44 @@ func TestClaudeReportsAnAbortedTurnAsInterrupted(t *testing.T) {
 	}
 	if _, status, _ := collect(t, s); status != "interrupted" {
 		t.Fatalf("aborted_tools reported as %q", status)
+	}
+}
+
+// A user frame carries tool results only as an array. A string content or a
+// missing message is a frame with nothing to deliver and is skipped, but an
+// array that does not decode is a real result lost, so it must fail the run
+// the way an undecodable assistant message does instead of completing.
+func TestClaudeSkipsUserFramesWithoutResults(t *testing.T) {
+	for _, scenario := range []string{"user-string", "user-no-message"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := openFixture(t, scenario, "ask")
+			if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
+				t.Fatal(err)
+			}
+			if _, status, _ := collect(t, s); status != "completed" {
+				t.Fatalf("%s ended %q", scenario, status)
+			}
+		})
+	}
+}
+
+func TestClaudeUndecodableToolResultFailsTheRunByName(t *testing.T) {
+	s := openFixture(t, "user-bad-result", "ask")
+	if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	for i := 0; err == nil && i < 8; i++ {
+		ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+		var e Event
+		e, err = s.Next(ctx)
+		stop()
+		if err == nil && e.Status != "" {
+			t.Fatalf("a lost tool_result ended the run as %q", e.Status)
+		}
+	}
+	if err == nil || err.Error() != "invalid Claude user message" {
+		t.Fatalf("error = %v, want invalid Claude user message", err)
 	}
 }
 
