@@ -40,6 +40,23 @@ func schemaOf(t *testing.T, db string) int {
 	return n
 }
 
+// currentWorkbenchSchema is the schema the store under test gives a profile it
+// creates: an upgrade must land there, whatever number DevCouncil is at.
+func currentWorkbenchSchema(t *testing.T) int {
+	t.Helper()
+	db := filepath.Join(t.TempDir(), "fresh.sqlite")
+	client := store.New(testsupport.DCStore(t), db)
+	defer client.Close()
+	if _, err := client.Workbench(t.Context(), "repositories.put", json.RawMessage(`{"request_id":"r","id":"r","expected_revision":0,"name":"Manvi","identity_key":"local:r"}`)); err != nil {
+		t.Fatal(err)
+	}
+	current := schemaOf(t, db)
+	if current <= 11 {
+		t.Fatalf("a fresh profile is at schema %d, not past the aged 11: the upgrade tests would prove nothing", current)
+	}
+	return current
+}
+
 // agedProfile is a profile one schema behind the store under test, holding a
 // repository and a task so an upgrade has something to lose.
 func agedProfile(t *testing.T) (db string, client *store.Client) {
@@ -101,7 +118,7 @@ func TestServeWriteAndTheExplicitOpUpgradeAnOlderProfileAfterABackup(t *testing.
 			if !responses[0].OK {
 				t.Fatalf("%s: %+v", via, responses[0])
 			}
-			if got := schemaOf(t, db); got != 13 {
+			if got := schemaOf(t, db); got != currentWorkbenchSchema(t) {
 				t.Fatalf("schema after %s = %d", via, got)
 			}
 			backup := db + ".pre-schema-11.bak"

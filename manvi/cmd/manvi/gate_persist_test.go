@@ -109,8 +109,10 @@ func TestWatchNamesALeaseTheStoreCouldNotRead(t *testing.T) {
 	if _, err := storeClient().ActiveLeases(t.Context()); err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	seed := "INSERT INTO tasks (id,title,description,planned_files_json,status) VALUES ('TASK-BAD','t','d','[]','ready');" +
-		"INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +
+	testsupport.SeedTask(t, db, testsupport.TaskSeed{ID: "TASK-BAD", Title: "t"})
+	// The unparseable expiry is the point of the test, so the lease goes in
+	// directly rather than through the store.
+	seed := "INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +
 		"VALUES ('L-BAD','TASK-BAD','someone','tok','active','2026-01-01T00:00:00Z','not a timestamp');"
 	seedCmd := exec.CommandContext(t.Context(), testsupport.Tool(t, "sqlite3"), db, seed) // #nosec G204 -- test seeds a temp db; argv is constant except the t.TempDir path
 	if out, err := seedCmd.CombinedOutput(); err != nil {

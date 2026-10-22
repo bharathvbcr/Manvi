@@ -88,7 +88,7 @@ func newFixtureFull(t testing.TB, settings map[string]string, runner SubAgentRun
 	if _, err := client.ActiveLeases(context.Background()); err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	insertTask(t, binary, db, "TASK-001", `[{"path":"src/calc.go","allowed_change":"modify"}]`)
+	insertTask(t, db, "TASK-001", `[{"path":"src/calc.go","allowed_change":"modify"}]`)
 
 	regFlags := flags.New()
 	if err := flags.DefineHarnessFlags(regFlags); err != nil {
@@ -133,16 +133,13 @@ func storeBinary(t testing.TB) string {
 	return testsupport.DCStore(t)
 }
 
-// insertTask writes a task row with sqlite3 if available, else via the store's
-// own connection through a tiny helper invocation.
-func insertTask(t testing.TB, binary, db, id, plannedJSON string) {
+// insertTask plants a ready task through the store's own `work` surface: a
+// task is a workbench item, and seeding its storage directly would test a
+// private copy of that definition.
+func insertTask(t testing.TB, db, id, plannedJSON string) {
 	t.Helper()
-	sql := "INSERT INTO tasks (id,title,description,planned_files_json,status) VALUES ('" +
-		id + "','t','d','" + strings.ReplaceAll(plannedJSON, "'", "''") + "','ready');"
-	cmd := exec.Command(testsupport.Tool(t, "sqlite3"), db, sql)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("seeding a task failed: %v %s", err, out)
-	}
+	testsupport.SeedTask(t, db, testsupport.TaskSeed{ID: id, Title: "t",
+		Scope: `{"planned_files":` + plannedJSON + `}`})
 }
 
 func (f *fixture) call(name string, args any) tools.Result {
@@ -1271,7 +1268,7 @@ func TestAWhollyFailedFanOutIsAnErrorResult(t *testing.T) {
 // check that could not finish, read as the answer of one that did.
 func TestNextTaskNamesALeaseTheStoreCouldNotRead(t *testing.T) {
 	f := newFixture(t)
-	insertTask(t, storeBinary(t), f.db, "TASK-BAD", `[]`)
+	insertTask(t, f.db, "TASK-BAD", `[]`)
 	seed := "INSERT INTO task_leases (id,task_id,owner,lease_token,status,created_at,expires_at) " +
 		"VALUES ('L-BAD','TASK-BAD','someone','tok','active','2026-01-01T00:00:00Z','not a timestamp');"
 	seedCmd := exec.CommandContext(t.Context(), testsupport.Tool(t, "sqlite3"), f.db, seed) // #nosec G204 -- test seeds a temp db; argv is constant except the t.TempDir path
