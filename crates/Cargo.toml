@@ -10,7 +10,7 @@ members = ["dc-glob", "dc-grep", "dc-store", "dc-verify", "dc-evidence", "dc-pro
 # is the one check. It compares them with DevCouncil at the commit
 # scripts/module-pins.txt pins and fails the build on a difference.
 [workspace.package]
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 # dc-grep inherits this from DevCouncil's workspace (the pinned toolchain,
 # 1.99), so the mirror must define it or the whole workspace fails to load.
