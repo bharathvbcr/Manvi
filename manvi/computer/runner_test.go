@@ -114,8 +114,7 @@ func TestRunnerCompletesWithFreshObservationAndNoModel(t *testing.T) {
 	opts, d := runFixture(t, false)
 	var records []Record
 	opts.OnRecord = func(r Record) error { records = append(records, r); return nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -144,8 +143,7 @@ func TestPauseRemainsResponsiveDuringBlockedAction(t *testing.T) {
 	opts, d := runFixture(t, false)
 	d.block = true
 	d.entered = make(chan struct{}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -184,8 +182,7 @@ func TestApprovalIsRequiredAndOldEpochCannotDispatch(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -198,8 +195,8 @@ func TestApprovalIsRequiredAndOldEpochCannotDispatch(t *testing.T) {
 		}
 	}
 	s := run.Snapshot()
-	if err := run.Send(ctx, Control{Kind: "approve", Epoch: 0, ActionID: s.ActionID(opts.Program), ObservationID: s.Observation.ID}); err != nil {
-		t.Fatal(err)
+	if err := run.Send(ctx, Control{Kind: "approve", Epoch: 0, ActionID: s.ActionID(opts.Program), ObservationID: s.Observation.ID}); !errors.Is(err, ErrStaleControlEpoch) {
+		t.Fatalf("stale approval returned %v, want ErrStaleControlEpoch", err)
 	}
 	// The run records the refusal in the same step that drops the control, so
 	// waiting for that record (not for time to pass) is what proves the fence

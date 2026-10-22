@@ -149,7 +149,7 @@ func TestAttachmentReadinessCancellationInterruptsBackoff(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(safetyTimeout):
 		t.Fatal("cancelled attachment waited for its backoff")
 	}
 }
@@ -202,8 +202,7 @@ func TestStartRunWaitsForAFocusedNativeWindowWhenTheSessionIsUnattached(t *testi
 	opts, _ := runFixture(t, false)
 	opts.Desktop = c
 	opts.Session = Session{RunID: "run", Window: Window{PID: 42}}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

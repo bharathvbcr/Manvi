@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
@@ -100,8 +99,7 @@ func TestHumanControlClickReobservesUnchangedFormBeforeInput(t *testing.T) {
 	opts.Desktop = d
 	records := make(chan Record, 64)
 	opts.OnRecord = func(r Record) error { records <- r; return nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -182,17 +180,17 @@ func TestHumanRevalidationRefusesChangesAndLateInput(t *testing.T) {
 				records <- r
 				return nil
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), safetyTimeout)
 			defer cancel()
 			run, err := StartRun(ctx, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() {
-				cleanup, finish := context.WithTimeout(context.Background(), time.Second)
+				cleanup, finish := context.WithTimeout(context.Background(), safetyTimeout)
 				defer finish()
 				if !run.Snapshot().Terminal() {
-					if err := run.Send(cleanup, Control{Kind: "cancel", Epoch: run.Snapshot().Epoch}); err != nil {
+					if err := run.Send(cleanup, Control{Kind: "cancel", Epoch: run.Snapshot().Epoch}); err != nil && !errors.Is(err, ErrRunEnded) {
 						t.Error(err)
 					}
 				}
@@ -260,7 +258,7 @@ func TestHumanRevalidationRefusesChangesAndLateInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "cancelled_focus" {
-				cleanup, finish := context.WithTimeout(context.Background(), time.Second)
+				cleanup, finish := context.WithTimeout(context.Background(), safetyTimeout)
 				defer finish()
 				_, _ = run.Wait(cleanup)
 			} else {

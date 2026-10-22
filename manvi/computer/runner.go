@@ -34,6 +34,9 @@ type Control struct {
 	ObservationID string `json:"observation_id,omitempty"`
 	Epoch         uint64 `json:"epoch"`
 	Action        Action `json:"action"`
+	// reply carries the run's verdict on admission: nil once the control passed
+	// the epoch fence, ErrStaleControlEpoch if it was dropped. Set by Run.Send.
+	reply chan<- error
 }
 type Record struct {
 	Kind          string          `json:"kind"`
@@ -193,20 +196,42 @@ func (r *Run) finishInterventionLocked(status string) {
 		}
 	}
 }
+
+// ErrStaleControlEpoch is returned by Send when the run refused the control
+// because its epoch is not the run's current one. The control was dropped; read
+// Snapshot again and resend with the epoch it now carries.
+var ErrStaleControlEpoch = errors.New("stale control epoch")
+
+// ErrRunEnded is returned by Send when the run finished before it could answer.
+var ErrRunEnded = errors.New("run has ended")
+
+// Send delivers a control to the run and waits for the run's verdict on its
+// epoch. A nil return means the control passed the epoch fence and is being
+// acted on; later refusals (for example resume of a run that is not idle) are
+// still reported through OnRecord only.
 func (r *Run) Send(ctx context.Context, control Control) error {
 	control.Action = ownedAction(control.Action)
+	reply := make(chan error, 1)
+	control.reply = reply
 	select {
 	case <-r.done:
-		return errors.New("run has ended")
+		return ErrRunEnded
 	default:
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-r.done:
-		return errors.New("run has ended")
+		return ErrRunEnded
 	case r.control <- control:
-		return nil
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.done:
+		return ErrRunEnded
 	}
 }
 func (r *Run) Snapshot() workflow.State {
@@ -374,7 +399,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		}
 		return e
 	}
-	apply = func(event workflow.Event) ([]workflow.Command, error) {
+	// step reduces one event into s without publishing it. apply is step plus
+	// publish; the automation pause below uses step so that Paused is published
+	// only once the fence has moved the epoch.
+	step := func(event workflow.Event) ([]workflow.Command, error) {
 		clock()
 		event.Sequence = s.Sequence + 1
 		event.RunID = s.RunID
@@ -403,6 +431,13 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			r.emitStuckIntervention(opts.Program, s)
 		} else {
 			interventionStart = time.Time{}
+		}
+		return commands, nil
+	}
+	apply = func(event workflow.Event) ([]workflow.Command, error) {
+		commands, err := step(event)
+		if err != nil {
+			return nil, err
 		}
 		publish()
 		return commands, nil
@@ -589,12 +624,19 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					}
 				}
 			}
-			commands, err := apply(result.event)
+			// The reduced state is not published until the epoch is final: a
+			// Paused snapshot must never carry the pre-fence epoch, because a
+			// client resumes with the epoch it reads and the fence would
+			// refuse it. The desktop is still stopped before anything is
+			// published or launched, so the fence loses nothing by going first.
+			commands, err := step(result.event)
 			if err != nil {
 				executionErr = err
 				continue
 			}
-			if s.Phase == workflow.Paused {
+			if s.Phase != workflow.Paused {
+				publish()
+			} else {
 				fenceCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 				updated, fenceErr := opts.Desktop.Control(fenceCtx, session, "pause")
 				cancel()
@@ -613,10 +655,16 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			}
 		case control := <-r.control:
 			if control.Epoch != s.Epoch {
+				if control.reply != nil {
+					control.reply <- ErrStaleControlEpoch
+				}
 				if err := record(Record{Kind: "control_refused", Epoch: s.Epoch, Reason: "stale control epoch"}); err != nil {
 					executionErr = err
 				}
 				continue
+			}
+			if control.reply != nil {
+				control.reply <- nil
 			}
 			switch control.Kind {
 			case "approve", "deny":

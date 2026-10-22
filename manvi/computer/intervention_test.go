@@ -11,22 +11,12 @@ import (
 func TestInterventionEmittedOnPause(t *testing.T) {
 	opts, d := runFixture(t, false)
 	d.observation.Nodes = []Node{} // force resolve failure → pause
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if run.Snapshot().Phase == workflow.Paused {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if run.Snapshot().Phase != workflow.Paused {
-		t.Fatalf("expected pause, got %s", run.Snapshot().Phase)
-	}
+	waitPhase(t, ctx, run, workflow.Paused)
 	list := run.Interventions()
 	if len(list) == 0 {
 		t.Fatal("expected InterventionRequest")
