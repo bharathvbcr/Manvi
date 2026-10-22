@@ -385,3 +385,66 @@ test("arguments reach check-release unchanged", () => {
   const r = gate(`${NOTCOVERED_DEF}\ngate_release_check --require-pins`, { node: `printf 'args=%s\\n' "$*" >&2` });
   assert.match(r.err, /args=scripts\/check-release\.mjs --require-pins/);
 });
+
+// ---------------------------------------------------------------- store replies
+
+const REFUSED = `{"ok":false,"code":"no_such_task","task_id":"VERIFY-1","error":"task VERIFY-1 is not a workbench item of this repository"}`;
+const storeStub = (reply, exit = 0) => `printf '%s\\n' '${reply}'\nexit ${exit}`;
+
+test("a store reply of ok:false is a refusal even when the binary exited 0", () => {
+  const r = gate(capture(`gate_store_ok dcstore --db x acquire --task VERIFY-1`), { dcstore: storeStub(REFUSED) });
+  assert.match(r.out, /^status=2$/m, r.out + r.err);
+  assert.doesNotMatch(r.out, /no_such_task/, "a refused reply is not output the caller can mistake for a lease");
+  assert.match(r.err, /is not a workbench item of this repository/);
+});
+
+test("a store reply that is not a JSON object with ok:true is a refusal", () => {
+  for (const reply of ["not json at all", "[1,2]", `"ok"`, `{"ok":"true"}`, `{"lease":{}}`]) {
+    const r = gate(capture(`gate_store_ok dcstore acquire`), { dcstore: storeStub(reply) });
+    assert.match(r.out, /^status=2$/m, `${reply}: ${r.out}${r.err}`);
+  }
+  const empty = gate(capture(`gate_store_ok dcstore acquire`), { dcstore: "exit 0" });
+  assert.match(empty.out, /^status=2$/m, empty.out + empty.err);
+});
+
+test("a store that exited non-zero is a refusal even if its reply says ok", () => {
+  const r = gate(capture(`gate_store_ok dcstore acquire`), { dcstore: storeStub(`{"ok":true}`, 3) });
+  assert.match(r.out, /^status=[1-9]/m, r.out + r.err);
+  assert.doesNotMatch(r.out, /^status=0$/m);
+});
+
+test("an ok:true store reply is passed through unchanged", () => {
+  const reply = `{"ok":true,"lease":{"token":"abc"}}`;
+  const r = gate(capture(`gate_store_ok dcstore acquire`), { dcstore: storeStub(reply) });
+  assert.match(r.out, /^status=0$/m, r.out + r.err);
+  assert.match(r.out, /^\{"ok":true,"lease":\{"token":"abc"\}\}$/m);
+});
+
+test("a seeded task is the local repository, then a ready workbench item of it", () => {
+  const r = gate(`gate_seed_task dcstore "$PWD/s.sqlite" VERIFY-1 >/dev/null\ncat calls.log`, {
+    dcstore: `printf '%s\\n' "$*" >> calls.log\nprintf '%s\\n' '{"ok":true}'`,
+  });
+  assert.equal(r.status, 0, r.err);
+  const [first, second, ...rest] = r.out.trim().split("\n");
+  assert.deepEqual(rest, []);
+  assert.match(first, /^--db \S+\/s\.sqlite local-repository$/);
+  assert.match(second, /^--db \S+\/s\.sqlite work --method items\.put --input /);
+  const input = JSON.parse(second.slice(second.indexOf("--input ") + "--input ".length));
+  assert.deepEqual(input, {
+    request_id: "seed-VERIFY-1",
+    id: "VERIFY-1",
+    expected_revision: 0,
+    title: "VERIFY-1",
+    status: "ready",
+    repository_ids: ["this-repo"],
+    primary_repository_id: "this-repo",
+    scope: {},
+  });
+});
+
+test("seeding a task the store refuses is an error", () => {
+  const r = gate(capture(`gate_seed_task dcstore "$PWD/s.sqlite" VERIFY-1`), {
+    dcstore: `if [ "$3" = work ]; then printf '%s\\n' '${REFUSED}'; else printf '%s\\n' '{"ok":true}'; fi`,
+  });
+  assert.match(r.out, /^status=2$/m, r.out + r.err);
+});

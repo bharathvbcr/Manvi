@@ -653,7 +653,11 @@ if crates/target/debug/dcstore --db "$(mktemp -d)/absent.sqlite" health >/dev/nu
 fi
 printf '    covered: health refuses a store that does not exist rather than creating one\n'
 
-crates/target/debug/dcstore --db "$tmpdb" acquire --task VERIFY-1 --owner gate --ttl-seconds 60 >/dev/null \
+# Since store schema 10 a lease is refused for a task that is not a workbench
+# item of the repository, and the refusal is an `{"ok":false,…}` reply with exit
+# status 0. So the task is seeded first, and every call is judged by its reply.
+gate_seed_task crates/target/debug/dcstore "$tmpdb" VERIFY-1 || fail "dcstore could not seed VERIFY-1"
+gate_store_ok crates/target/debug/dcstore --db "$tmpdb" acquire --task VERIFY-1 --owner gate --ttl-seconds 60 >/dev/null \
   || fail "dcstore acquire"
 crates/target/debug/dcstore --db "$tmpdb" health >/dev/null || fail "dcstore health"
 if command -v sqlite3 >/dev/null; then
@@ -676,7 +680,8 @@ fi
 # a conflicting one by the schema itself, Rust releases, Python sees it gone.
 step "Cross-language — Python interop"
 interopdb="$(mktemp -d)/state.sqlite"
-interop_acquire="$(crates/target/debug/dcstore --db "$interopdb" acquire \
+gate_seed_task crates/target/debug/dcstore "$interopdb" INTEROP-1 || fail "dcstore could not seed INTEROP-1"
+interop_acquire="$(gate_store_ok crates/target/debug/dcstore --db "$interopdb" acquire \
   --task INTEROP-1 --owner rust --ttl-seconds 60)" \
   || fail "dcstore could not acquire the interop lease"
 interop_token="$(printf '%s' "$interop_acquire" \
@@ -712,7 +717,7 @@ finally:
 conn.close()
 PY
 printf '    covered: Python reads the lease Rust wrote, and the schema refuses it a second one\n'
-crates/target/debug/dcstore --db "$interopdb" release --task INTEROP-1 --token "$interop_token" >/dev/null \
+gate_store_ok crates/target/debug/dcstore --db "$interopdb" release --task INTEROP-1 --token "$interop_token" >/dev/null \
   || fail "dcstore could not release the interop lease"
 python3 - "$interopdb" <<'PY' || fail "Python still sees an active lease after Rust released it"
 import sqlite3, sys
