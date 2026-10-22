@@ -668,7 +668,7 @@ func (s *Claude) userResults(f claudeFrame) (Event, bool, error) {
 		Content []claudeContent `json:"content"`
 	}
 	if json.Unmarshal(f.Message, &message) != nil {
-		return Event{}, false, nil
+		return Event{}, false, nil //nolint:nilerr // a user frame with no readable results is skipped, not a failed turn; see above
 	}
 	var tools []Tool
 	for _, block := range message.Content {

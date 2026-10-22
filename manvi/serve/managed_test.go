@@ -624,6 +624,9 @@ func TestManagedToolSnapshotIsCheckpointedWhileTheTurnRuns(t *testing.T) {
 	if !strings.Contains(output, "\n[tools]\n") || !strings.Contains(output, `"id":"toolu_1"`) {
 		t.Fatalf("tool snapshot was not checkpointed: %s", output)
 	}
+	if session == nil {
+		t.Fatal("the managed runner never started a provider session")
+	}
 	session.events <- codingagent.Event{Text: "done\n", Status: "completed"}
 	run, raw := m.finished()
 	if run.ProviderState != "completed" {
