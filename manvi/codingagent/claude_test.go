@@ -421,7 +421,7 @@ func TestClaudeToolUseAndResultAreOneSnapshot(t *testing.T) {
 	}
 	var sawUse, sawResult bool
 	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) && !(sawUse && sawResult) {
+	for time.Now().Before(deadline) && (!sawUse || !sawResult) {
 		e, err := s.Next(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -434,7 +434,7 @@ func TestClaudeToolUseAndResultAreOneSnapshot(t *testing.T) {
 				sawResult = true
 			}
 		}
-		if e.Status != "" && !(sawUse && sawResult) {
+		if e.Status != "" && (!sawUse || !sawResult) {
 			break
 		}
 	}

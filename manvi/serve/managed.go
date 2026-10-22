@@ -530,10 +530,8 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	// brief alone: a brief just under the adapter's limit would otherwise pass
 	// here and be refused by StartTurn after the process was already claimed.
 	// A follow-up's turn is the queued message, not the task brief again.
-	turnText := ""
 	if err == nil && job.parentID != "" {
-		var matchErr error
-		turnText, matchErr = r.followMessage(job.parentID, run.Provider, run.Cwd, run.Mode)
+		turnText, matchErr := r.followMessage(job.parentID, run.Provider, run.Cwd, run.Mode)
 		if matchErr != nil {
 			err = matchErr
 		} else if len(withHarnessNote(turnText, harnessFileFor(job.harnessRef, run.Provider))) > 128*1024 || strings.TrimSpace(turnText) == "" {
@@ -642,7 +640,9 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 				// known to be an interruption rather than a failure.
 				providerState = "interrupted"
 			}
-			r.finish(job, outcome, nil, err, providerState)
+			// finish keeps its store error on the job (job.err), which is
+			// where this goroutine's caller reads the run's end from.
+			_ = r.finish(job, outcome, nil, err, providerState)
 		}
 		job.cancel()
 		close(job.done)
@@ -667,7 +667,8 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		job.mu.Unlock()
 		if !activated {
 			_, closeErr := provider.Close()
-			r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted")
+			// The store error, if any, is kept on the job by finish.
+			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted")
 			job.cancel()
 			close(job.done)
 		}
@@ -806,7 +807,8 @@ const managedGuidanceHeading = "\n## Agent guidance\n"
 
 func (r *ManagedRunner) abandon(job *managedJob, cause error) {
 	_, err := job.provider.Close()
-	r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")
+	// The store error, if any, is kept on the job by finish.
+	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")
 	close(job.done)
 }
 
