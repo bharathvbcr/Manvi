@@ -25,6 +25,7 @@ package codingagent
 // Unlike Codex, Claude Code has no sandbox: `Effective.Sandbox` reports that
 // plainly rather than describing a confinement that does not exist.
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -661,17 +662,34 @@ func (s *Claude) assistant(f claudeFrame) (Event, bool, error) {
 }
 
 // userResults keeps tool_result blocks that name the call they finish. A user
-// frame whose results have no tool_use_id — the stream's echo of our own turn,
-// among other things — is skipped, and that skip is not a failed turn.
+// frame that carries no result array is skipped, and that skip is not a failed
+// turn: the message may be absent, or its content a plain string. claudeArgs
+// does not ask for --replay-user-messages, so the stream does not echo our own
+// turn back by default, but nothing guarantees the CLI never sends a string
+// user frame, so one is still tolerated. A results array that does not decode
+// is different: it is a real tool_result that would be lost while the run
+// reports completed, so it fails like an undecodable assistant message does.
 func (s *Claude) userResults(f claudeFrame) (Event, bool, error) {
+	if len(f.Message) == 0 || string(f.Message) == "null" {
+		return Event{}, false, nil
+	}
 	var message struct {
-		Content []claudeContent `json:"content"`
+		Content json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(f.Message, &message) != nil {
-		return Event{}, false, nil //nolint:nilerr // a user frame with no readable results is skipped, not a failed turn; see above
+		return Event{}, false, errors.New("invalid Claude user message")
+	}
+	content := bytes.TrimSpace(message.Content)
+	if len(content) == 0 || string(content) == "null" || content[0] == '"' {
+		// Absent, null or a string: no result array to read or to lose.
+		return Event{}, false, nil
+	}
+	var blocks []claudeContent
+	if json.Unmarshal(content, &blocks) != nil {
+		return Event{}, false, errors.New("invalid Claude user message")
 	}
 	var tools []Tool
-	for _, block := range message.Content {
+	for _, block := range blocks {
 		if block.Type != "tool_result" || !opaque(block.ToolUse) {
 			continue
 		}
