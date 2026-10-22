@@ -265,10 +265,10 @@ with an otherwise identical clone. Launch-time fencing remains required.
 GitPulse's Runs panel now prepares and opens these attempts through its existing
 PTY manager, with private brief files, CLI help negotiation, child environment
 normalization and process outcome receipts. Terminal handoffs delegate requests
-to the provider terminal. Managed Codex has the separate protocol below; complete
+to the provider terminal. Managed Codex and Claude have the separate protocol below; complete
 crash recovery and code review remain open.
 
-## Managed Codex connection
+## Managed provider connection
 
 Schema nine introduced immutable `kind`: `external_terminal` (the default) or `managed`.
 `runs.claim` must specify the same kind; an old terminal adapter cannot claim a
@@ -277,15 +277,19 @@ initialization and permits a failure receipt without an invented thread. Both
 binaries must support schema ten. Its transactional contract-version migration
 preserves existing attempts and does not reclaim unresolved legacy launches.
 
-GitPulse adds `runs.prepare_managed`, `runs.launch_managed` and
-`runs.stop_managed` through its existing native IPC. Preparation reuses the same
-Git checkout validation as terminals; only Codex is supported, with native attempt
-IDs of at most 100 characters. Launch/stop accept only the saved ID. The native
-host serializes launch preparation and supplies the OS-observed process birth;
-renderer-supplied process identity, raw `runs.started`, `runs.finish`,
-`runs.protocol`, and the managed prepare/activate host operations are refused.
+GitPulse adds `runs.prepare_managed`, `runs.launch_managed`,
+`runs.stop_managed` and `runs.follow_managed` through its existing native IPC.
+Preparation reuses the same Git checkout validation as terminals; Codex and
+Claude are supported, with native attempt IDs of at most 100 characters.
+Stop accepts only the saved ID. Launch accepts the saved ID and, only for a
+follow-up, `parent_run_id` of another saved run. Follow accepts the saved ID
+and an optional message, and GitPulse sends it only to a worker that is
+already live. The native host serializes launch preparation and supplies the
+OS-observed process birth; renderer-supplied process identity, a provider
+thread id, raw `runs.started`, `runs.finish`, `runs.protocol`, and the managed
+prepare/activate host operations are refused.
 
-The owning `manvi serve --workbench-db` host advertises three methods:
+The owning `manvi serve --workbench-db` host advertises five methods:
 
 1. `runs.managed.prepare` takes `id`, `request_id`, `expected_revision:1`. It
    consumes the canonical claim and starts only the stdio process. It returns
@@ -302,11 +306,35 @@ The owning `manvi serve --workbench-db` host advertises three methods:
    `process_id` and native `process_start`. It first records the running process,
    then initializes an ephemeral thread, verifies the returned checkout/approval/
    sandbox settings, saves `runs.protocol ready`, and sends one model turn.
+   A follow-up is the exception, and only when prepare named a `parent_run_id`:
+   the new process resumes that saved session and its one turn is the queued
+   message. A first turn is unchanged.
    An uncertain activation consumes its latch;
    it cannot authorize a second turn. GitPulse rechecks the checkout immediately
    before this call and stops the prepared session if activation cannot complete.
 3. `runs.managed.stop` accepts `id` and requests cancellation of the exact locally
    owned session. Its reply confirms the request, not process termination.
+   Cancellation is the job context, which kills the provider process group.
+4. `runs.managed.wake` takes an optional `id`. An empty id wakes every live
+   managed job on this host; an unknown or ended run still answers ok. It does
+   not read the store. The drive loop reads saved decisions when it is woken,
+   and again before it fails a run whose unanswered callback has reached its
+   own deadline. GitPulse calls it after a successful `decisions.decide`, on
+   the worker that is already live.
+5. `runs.managed.follow` takes `id` and an optional `message`. One nonblank
+   message of at most 128 KiB may be queued while that run is still going. A
+   second message while one is pending is refused, not replaced. A body with
+   no message is a status read and does not write the queue. The queue is
+   armed only after the provider process closes cleanly, the protocol records
+   `completed`, `failed`, or `interrupted`, and `runs.finish` succeeds. A
+   timeout is never armed, even when the recorded provider state is `failed`.
+   A queued message whose run settled without arming is reported as not kept,
+   not as still queued. The next `runs.managed.prepare` passes `parent_run_id`
+   (the saved run id, never a thread id). The new process resumes that session
+   (`claude --resume`, or Codex `thread/resume`) and its one StartTurn is the
+   queued message. The queue lives in the sidecar process; when that process
+   exits, a message that was not launched is gone. Bypass on the parent is not
+   copied onto the new attempt.
 
 Executable lookup, validation and spawn errors are classified as known unstarted
 only by the process adapter. They finish as `failed` and release the repository
@@ -326,9 +354,18 @@ evidence to a terminal attempt. Initialized providers continue to own their stat
 through `runs.protocol`. Abandoned preparations and host-crash outcomes without
 sufficient process evidence remain unresolved; timeout does not prove termination.
 
-`MANVI_CODEX_BINARY` selects the executable through the existing tool resolver;
-otherwise the host resolves `codex` on PATH. The adapter launches
-`app-server --listen stdio://` with argument arrays, never shell interpolation.
+`MANVI_CODEX_BINARY` selects the Codex executable through the existing tool resolver;
+otherwise the host resolves `codex` on PATH. `MANVI_CLAUDE_BINARY` does the same
+for Claude, otherwise `claude` on PATH, and it must not be a shell wrapper. The
+Codex adapter launches `app-server` with argument arrays, never shell
+interpolation. stdio is that process's default; `--listen stdio://` is not
+passed, because current Codex exits without a session when it is. The Claude
+adapter launches `claude --print` with stream-json input and output,
+`--permission-prompt-tool stdio`, `--setting-sources user`, and the run's
+permission mode and session id. A new session still passes `--session-id`.
+A follow-up swaps that flag for `--resume` and does not pass both. A follow-up
+Codex launch calls `thread/resume` with the stored thread id and does not mark
+the thread ephemeral.
 It retains the initialized provider user agent and returned effective model,
 provider, approval reviewer, approval policy, sandbox and thread identifiers.
 The observed configuration and provider thread become immutable for this attempt;
@@ -363,12 +400,17 @@ Limits: 64 active managed sessions per runner (`MaxManagedSessions`, equal to
 the store's ceiling, so it never refuses a run the store admitted under the
 host's limit); a 45-minute turn budget; 256 KiB protocol
 frames; 32 MiB stdout per session (cumulative over the whole session and
-counting every frame the provider writes, including tool results the run does
-not record; a session that reads a great deal can reach it, and its failure
+counting every frame the provider writes, including frames the retained record
+does not keep in full; a session that reads a great deal can reach it, and its failure
 reason says so) and 64 KiB discarded stderr; 32 pending callbacks and 2,048
 callback IDs per connection; a 64 KiB complete request; 128 KiB retained output
-and 64 KiB effective configuration. Run history excludes the latter two fields;
-GitPulse loads one detailed record on demand. Output truncation is explicit.
+and 64 KiB effective configuration. The retained output is the turn text. When
+a tool snapshot fits entirely in what remains of that cap it is appended after
+a `[tools]` line as one JSON array, replaced by tool id rather than logged, and
+a snapshot that would be cut mid-JSON is omitted and the record marked
+truncated. A permission denial stays one text line and is not a tool row. Run
+history excludes the output and the effective configuration; GitPulse loads one
+detailed record on demand. Output truncation is explicit.
 
 Verified with installed Codex 0.153.4: ephemeral read-only handshake, canonical
 checkout comparison, one completed marker turn, and the native GitPulse → Manvi

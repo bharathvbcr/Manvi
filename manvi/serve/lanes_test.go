@@ -343,4 +343,10 @@ func TestHelloAdvertisesEachOpsLaneAndDeadline(t *testing.T) {
 	if got := hello.OpLimits["work.runs.managed.prepare"]; got.Lane != "managed" || got.DeadlineMS != 180000 {
 		t.Fatalf("prepare = %+v", got)
 	}
+	if laneFor(opManagedWake) != "" {
+		t.Fatal("wake must be inline so a decision is not queued behind prepare")
+	}
+	if laneFor(opManagedFollow) != "" {
+		t.Fatal("follow must be inline so a queued message is not parked behind the turn")
+	}
 }

@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,9 @@ func (m *managedLifecycle) awaitDecisions(n int) []decisionRow {
 func (m *managedLifecycle) allow(row decisionRow) {
 	m.t.Helper()
 	enhancementCall(m.t, m.client, "decisions.decide", fmt.Sprintf(`{"id":%q,"request_id":"human-%s","expected_revision":%d,"payload_digest":%q,"decision":"allow_once"}`, row.ID, row.ID[:8], row.Revision, row.Digest))
+	if err := m.runner.Wake(nil); err != nil {
+		m.t.Fatal(err)
+	}
 }
 
 func (m *managedLifecycle) finished() (managedRun, json.RawMessage) {
@@ -248,5 +252,136 @@ func TestManagedAnswerToAWithdrawnCallbackDoesNotFailTheRun(t *testing.T) {
 	}
 	if rows := m.decisions(); len(rows) != 1 || rows[0].State != "cancelled" {
 		t.Fatalf("withdrawn callback recorded as %+v", rows)
+	}
+}
+
+func TestFollowTerminalRefusesATimeoutAndArmsACleanFailure(t *testing.T) {
+	if followTerminal("failed", true, true, context.DeadlineExceeded, nil) {
+		t.Fatal("a timeout armed a follow-up")
+	}
+	if followTerminal("failed", true, true, fmt.Errorf("wrapped: %w", context.DeadlineExceeded), nil) {
+		t.Fatal("a wrapped timeout armed a follow-up")
+	}
+	if !followTerminal("failed", true, true, errors.New("provider said no"), nil) {
+		t.Fatal("a provider failure with a clean finish did not arm")
+	}
+	if !followTerminal("interrupted", true, true, context.Canceled, nil) {
+		t.Fatal("a clean stop did not arm")
+	}
+	if followTerminal("completed", false, true, nil, nil) {
+		t.Fatal("armed without a protocol receipt")
+	}
+	if followTerminal("completed", true, false, nil, nil) {
+		t.Fatal("armed after a close error")
+	}
+	if followTerminal("completed", true, true, nil, errors.New("store")) {
+		t.Fatal("armed after the store finish failed")
+	}
+	if followTerminal("running", true, true, nil, nil) {
+		t.Fatal("armed on a non-terminal status")
+	}
+	if !followTerminal("completed", true, true, nil, nil) {
+		t.Fatal("a clean completion did not arm")
+	}
+}
+
+// The closing process keeps the one turn it already had. The queued message
+// becomes the next attempt's only turn, on a new process that resumes the
+// session this run stored.
+func TestManagedFollowArmsAfterTheTurnAndTheNextRunReceivesIt(t *testing.T) {
+	var parent *managedTestSession
+	var resumed codingagent.Options
+	var m *managedLifecycle
+	m = newManagedLifecycle(t, func(ctx context.Context, o codingagent.Options) *managedTestSession {
+		s := m.fixtureSession(ctx, o)
+		s.withRequest = false
+		if parent == nil {
+			parent = s
+			s.leaveOpen = true
+			return s
+		}
+		resumed = o
+		s.leaveOpen = false
+		s.config.Thread.ID = o.Resume
+		s.config.Thread.Ephemeral = false
+		return s
+	})
+	if _, err := m.runner.Prepare(t.Context(), json.RawMessage(`{"id":"forged","request_id":"forged","expected_revision":1,"parent_run_id":"nobody"}`)); err == nil {
+		t.Fatal("a forged parent launched")
+	}
+	m.start("launch")
+	if _, err := m.runner.Follow(json.RawMessage(`{"id":"run","message":"follow-up please"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.runner.Follow(json.RawMessage(`{"id":"run","message":"a second message"}`)); err == nil {
+		t.Fatal("a second follow-up replaced the first")
+	}
+	queued, err := m.runner.Follow(json.RawMessage(`{"id":"run"}`))
+	if err != nil || queued.State != "queued" || queued.Message != "follow-up please" {
+		t.Fatalf("status while the turn is open: %+v %v", queued, err)
+	}
+	// The completion has to follow the turn-id receipt. A status frame sent
+	// before that receipt is a ready→completed transition the store refuses.
+	turnDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(turnDeadline) {
+		current, _, readErr := m.runner.run(t.Context(), "run")
+		if readErr == nil && current.Turn != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	parent.events <- codingagent.Event{Text: "done", Status: "completed"}
+	run, _ := m.finished()
+	if run.State != "exited" || run.ProviderState != "completed" {
+		t.Fatalf("parent did not finish cleanly: %+v", run)
+	}
+	if parent.turns.Load() != 1 {
+		t.Fatalf("the closing process accepted %d turns", parent.turns.Load())
+	}
+	if text, _ := parent.sent.Load().(string); strings.Contains(text, "follow-up please") {
+		t.Fatalf("the queued message was sent on the process that was closing: %q", text)
+	}
+	ready, err := m.runner.Follow(json.RawMessage(`{"id":"run"}`))
+	if err != nil || ready.State != "ready" || ready.ThreadID != "thread" || ready.Message != "follow-up please" {
+		t.Fatalf("armed follow-up: %+v %v", ready, err)
+	}
+	next := strings.ReplaceAll(strings.ReplaceAll(m.prepare, `"id":"run"`, `"id":"run2"`), `"request_id":"prep"`, `"request_id":"prep2"`)
+	enhancementCall(t, m.client, "runs.prepare", next)
+	prepared, err := m.runner.Prepare(t.Context(), json.RawMessage(`{"id":"run2","request_id":"launch2","expected_revision":1,"parent_run_id":"run"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Resume != "thread" {
+		t.Fatalf("factory resume = %q", resumed.Resume)
+	}
+	if _, err := m.runner.Activate(t.Context(), json.RawMessage(fmt.Sprintf(`{"id":"run2","owner_id":%q,"session_id":%q,"process_id":123,"process_start":"fixture-native-observation"}`, prepared.Owner, prepared.Session))); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && m.session.sent.Load() == nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if text, _ := m.session.sent.Load().(string); text != "follow-up please" {
+		t.Fatalf("the next attempt's turn was %q", text)
+	}
+}
+
+func TestManagedTimeoutDoesNotArmAFollow(t *testing.T) {
+	managedTurnBudget = 2 * time.Second
+	t.Cleanup(func() { managedTurnBudget = 45 * time.Minute })
+	var m *managedLifecycle
+	m = newManagedLifecycle(t, func(ctx context.Context, o codingagent.Options) *managedTestSession {
+		s := m.fixtureSession(ctx, o)
+		s.withRequest = false
+		s.leaveOpen = true
+		return s
+	})
+	m.start("launch")
+	if _, err := m.runner.Follow(json.RawMessage(`{"id":"run","message":"must not launch"}`)); err != nil {
+		t.Fatal(err)
+	}
+	m.finished()
+	if _, err := m.runner.Follow(json.RawMessage(`{"id":"run"}`)); err == nil {
+		t.Fatal("a timeout armed a follow-up")
 	}
 }

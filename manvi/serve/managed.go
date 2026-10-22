@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -52,7 +54,13 @@ type ManagedRunner struct {
 	failureText func(error) string
 	mu          sync.Mutex
 	jobs        map[string]*managedJob
-	closed      bool
+	// follows is armed follow-ups keyed by the run that queued them. The record
+	// is process memory: when this sidecar exits, a message that was not yet
+	// launched is gone. taken is set when a later attempt's factory starts, so
+	// two polls cannot launch two processes; a failure before that factory
+	// leaves the record so the host can retry.
+	follows map[string]*armedFollow
+	closed  bool
 	// harness resolves the harness an attempt names; nil until SetHarness.
 	harness *HarnessResolver
 	// checkoutMu makes the conflict check on a checkout and the attempt's
@@ -113,6 +121,27 @@ type managedJob struct {
 	callbacks     map[string]*managedCallback
 	output        strings.Builder
 	truncated     bool
+	// tools is the latest snapshot of each provider tool call, replaced by id.
+	// It is not appended to output until a protocol write, so the text the turn
+	// is still producing stays text. wake is a buffered hint that a decision
+	// was saved; a nil channel means nobody is listening and a nudge is a no-op.
+	tools []codingagent.Tool
+	wake  chan struct{}
+	// pending is set by Wake and cleared when decisions() runs, so a hint that
+	// arrives in the same moment as a provider frame is still applied.
+	pending atomic.Bool
+	// followSet is one message queued while this run is still going. It is
+	// read once, after finish releases the checkout. providerName, cwd and mode
+	// are copied from the saved attempt so the next attempt can be checked
+	// against them. parentID, when set, is the run whose armed follow-up this
+	// attempt continues, and turnText is that message.
+	followSet     bool
+	followMessage string
+	providerName  string
+	cwd, mode     string
+	parentID      string
+	turnText      string
+	settled       bool
 }
 type managedCallback struct {
 	request  codingagent.Request
@@ -374,7 +403,7 @@ func NewManagedRunner(client *store.Client, factory ManagedFactory, failureText 
 	if client == nil || factory == nil || failureText == nil {
 		return nil, errors.New("managed runner requires a store, provider factory and error scrubber")
 	}
-	return &ManagedRunner{client: client, factory: factory, failureText: failureText, jobs: make(map[string]*managedJob)}, nil
+	return &ManagedRunner{client: client, factory: factory, failureText: failureText, jobs: make(map[string]*managedJob), follows: make(map[string]*armedFollow)}, nil
 }
 func (r *ManagedRunner) run(ctx context.Context, id string) (managedRun, json.RawMessage, error) {
 	input, err := json.Marshal(struct {
@@ -400,13 +429,25 @@ func (r *ManagedRunner) run(ctx context.Context, id string) (managedRun, json.Ra
 // native host must inspect the returned PID's OS creation identity, then call
 // Activate. Merely reading a run or its status never starts a model turn.
 func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (ManagedPrepared, error) {
-	fields, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "harness")
+	fields, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "harness", "parent_run_id")
 	if err != nil {
 		return ManagedPrepared{}, err
 	}
 	var request generationRequest
 	if json.Unmarshal(raw, &request) != nil || request.ID == "" || request.RequestID == "" || request.ExpectedRevision < 1 {
 		return ManagedPrepared{}, errors.New("managed preparation requires a saved attempt and request identity")
+	}
+	parentID, err := followParent(fields["parent_run_id"])
+	if err != nil {
+		return ManagedPrepared{}, err
+	}
+	if parentID == request.ID {
+		return ManagedPrepared{}, errors.New("a follow-up names the run it continues")
+	}
+	if parentID != "" {
+		if err := r.followAvailable(parentID); err != nil {
+			return ManagedPrepared{}, err
+		}
 	}
 	harnessRef, e := r.harnessRef(fields["harness"])
 	if e != nil {
@@ -456,10 +497,10 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			return ManagedPrepared{}, err
 		}
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), phase: "preparing", callbacks: make(map[string]*managedCallback)}
+		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, parentID: parentID, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), wake: make(chan struct{}, 1), phase: "preparing", callbacks: make(map[string]*managedCallback)}
 		r.jobs[request.ID] = job
 		go r.prepare(jobCtx, job)
-	} else if job.preparation != request || job.harnessRef != harnessRef {
+	} else if job.preparation != request || job.harnessRef != harnessRef || job.parentID != parentID {
 		r.mu.Unlock()
 		return ManagedPrepared{}, errors.New("retry the original managed preparation request")
 	}
@@ -482,9 +523,25 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	defer close(job.ready)
 	run, _, err := r.run(ctx, job.id)
+	if err == nil {
+		job.providerName, job.cwd, job.mode = run.Provider, run.Cwd, run.Mode
+	}
 	// The bound is checked on the turn the provider will receive, not on the
 	// brief alone: a brief just under the adapter's limit would otherwise pass
 	// here and be refused by StartTurn after the process was already claimed.
+	// A follow-up's turn is the queued message, not the task brief again.
+	turnText := ""
+	if err == nil && job.parentID != "" {
+		var matchErr error
+		turnText, matchErr = r.followMessage(job.parentID, run.Provider, run.Cwd, run.Mode)
+		if matchErr != nil {
+			err = matchErr
+		} else if len(withHarnessNote(turnText, harnessFileFor(job.harnessRef, run.Provider))) > 128*1024 || strings.TrimSpace(turnText) == "" {
+			err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
+		} else {
+			job.turnText = turnText
+		}
+	}
 	if err == nil && (run.State != "prepared" || run.Kind != "managed" || !codingagent.IsManagedProvider(run.Provider) || run.Revision != job.preparation.ExpectedRevision || len(withHarnessNote(managedTurn(run.Provider, run.Mode, run.Brief.Markdown), harnessFileFor(job.harnessRef, run.Provider))) > 128*1024 || strings.TrimSpace(run.Brief.Markdown) == "") {
 		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
 	}
@@ -535,8 +592,22 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		job.mu.Unlock()
 	}
 	var provider ManagedSession
+	resume := ""
+	if err == nil && job.parentID != "" {
+		thread, ok := r.takeFollow(job.parentID)
+		if !ok {
+			err = errors.New("that follow-up is already being launched")
+		} else {
+			resume = thread
+		}
+	}
 	if err == nil {
-		provider, err = r.factory(ctx, codingagent.Options{Provider: run.Provider, Cwd: run.Cwd, Mode: run.Mode, AcknowledgeBypass: run.Bypass})
+		provider, err = r.factory(ctx, codingagent.Options{Provider: run.Provider, Cwd: run.Cwd, Mode: run.Mode, AcknowledgeBypass: run.Bypass, Resume: resume})
+	}
+	// The slot was taken so a second poll cannot start a second process. A
+	// factory that never started one gives the slot back; the host can retry.
+	if job.parentID != "" && resume != "" && err != nil && codingagent.NoProcessStarted(err) {
+		r.releaseFollow(job.parentID, resume)
 	}
 	// A failing factory owns its startup cleanup. Its error may contain a typed
 	// nil session; never dereference an error result or infer that no process ran.
@@ -631,6 +702,9 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	if job.provider == nil || job.err != nil || in.Owner != job.owner || in.Session != job.session || in.PID != job.provider.PID() {
 		return nil, errors.New("activation does not match the prepared process")
 	}
+	if job.parentID != "" && strings.TrimSpace(job.turnText) == "" {
+		return nil, errors.New("the follow-up has no message")
+	}
 	if job.activated {
 		if len(job.activation) > 0 {
 			return append(json.RawMessage(nil), job.activation...), nil
@@ -672,7 +746,13 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	job.activation = append(json.RawMessage(nil), result...)
 	job.phase = "running"
 	launched = true
-	go r.drive(job, managedTurn(run.Provider, run.Mode, run.Brief.Markdown))
+	// A follow-up's session already has the task. Sending the brief again would
+	// repeat the first turn. The queued message is the one turn this process gets.
+	brief := managedTurn(run.Provider, run.Mode, run.Brief.Markdown)
+	if job.parentID != "" {
+		brief = job.turnText
+	}
+	go r.drive(job, brief)
 	return result, nil
 }
 
@@ -747,6 +827,7 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 	if err != nil {
 		return err
 	}
+	output, truncated := savedOutput(job)
 	input, err := json.Marshal(struct {
 		ID            string  `json:"id"`
 		Request       string  `json:"request_id"`
@@ -759,7 +840,7 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 		Configuration string  `json:"effective_configuration"`
 		Output        string  `json:"output"`
 		Truncated     bool    `json:"output_truncated"`
-	}{job.id, id, run.Revision, job.owner, job.session, thread, turn, state, job.configuration, job.output.String(), job.truncated})
+	}{job.id, id, run.Revision, job.owner, job.session, thread, turn, state, job.configuration, output, truncated})
 	if err != nil {
 		return err
 	}
@@ -774,7 +855,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	// decision round-trips for any ManagedSession, not only one whose reads die
 	// with its child process. The 45-minute bound is the model turn's
 	// active-time budget on top of that.
-	ctx, cancel := context.WithTimeout(job.ctx, 45*time.Minute)
+	ctx, cancel := context.WithTimeout(job.ctx, managedTurnBudget)
 	defer cancel()
 	err := job.provider.Initialize(ctx)
 	status := "failed"
@@ -801,38 +882,55 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		err = job.provider.StartTurn(ctx, withHarnessNote(brief, job.harnessFile))
 	}
 	var turn *string
-	lastPoll := time.Time{}
+	lastCheckpoint := time.Time{}
 	for err == nil {
-		for _, callback := range job.callbacks {
-			if !callback.delivered && !time.Now().Before(callback.request.ExpiresAt) {
-				err = errors.New("the managed provider request expired without confirmation")
-				break
-			}
-		}
-		if err != nil {
-			break
-		}
-		if time.Since(lastPoll) >= 500*time.Millisecond {
-			err = r.decisions(ctx, job)
-			lastPoll = time.Now()
-			if err != nil {
-				break
-			}
-		}
-		observe, stop := context.WithTimeout(ctx, 250*time.Millisecond)
-		e, readErr := job.provider.Next(observe)
-		stop()
-		if errors.Is(readErr, context.DeadlineExceeded) && ctx.Err() == nil {
-			continue
-		}
+		e, readErr := r.await(ctx, job)
 		if readErr != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				break
+			}
+			// A decision was saved, or the earliest unanswered callback reached
+			// its own deadline. Read decisions before declaring the expiry, so
+			// one that landed in time is delivered.
+			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+				if err = r.decisions(ctx, job); err != nil {
+					break
+				}
+				if err = callbackExpiry(job); err != nil {
+					break
+				}
+				continue
+			}
 			err = readErr
 			break
 		}
+		changed := false
+		if e.Text != "" {
+			remaining := maxManagedOutput - job.output.Len()
+			text := e.Text
+			if len(text) > remaining {
+				text = text[:remaining]
+				for !utf8.ValidString(text) && len(text) > 0 {
+					text = text[:len(text)-1]
+				}
+				job.truncated = true
+			}
+			if text != "" {
+				job.output.WriteString(text)
+				changed = true
+			}
+		}
+		if noteTools(job, e.Tools) {
+			changed = true
+		}
+		checkpointed := false
 		if e.TurnID != "" && turn == nil {
 			v := e.TurnID
 			turn = &v
 			err = r.protocol(ctx, job, "running", thread, turn)
+			checkpointed = true
+			lastCheckpoint = time.Now()
 			if err != nil {
 				break
 			}
@@ -842,6 +940,8 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 				v := e.Request.TurnID
 				turn = &v
 				err = r.protocol(ctx, job, "running", thread, turn)
+				checkpointed = true
+				lastCheckpoint = time.Now()
 				if err != nil {
 					break
 				}
@@ -862,6 +962,10 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 				break
 			}
 			job.callbacks[e.Request.ID] = &managedCallback{request: *e.Request, captured: capture}
+			// A decision can already be saved by the time the row exists.
+			if err = r.decisions(ctx, job); err != nil {
+				break
+			}
 		}
 		if e.ResolvedID != "" {
 			callback := job.callbacks[e.ResolvedID]
@@ -881,21 +985,20 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 				delete(job.callbacks, e.CancelledID)
 			}
 		}
-		if e.Text != "" {
-			remaining := 131072 - job.output.Len()
-			text := e.Text
-			if len(text) > remaining {
-				text = text[:remaining]
-				for !utf8.ValidString(text) && len(text) > 0 {
-					text = text[:len(text)-1]
-				}
-				job.truncated = true
+		if job.pending.Load() {
+			if err = r.decisions(ctx, job); err != nil {
+				break
 			}
-			job.output.WriteString(text)
 		}
 		if e.Status != "" {
 			status = e.Status
 			break
+		}
+		if configured && turn != nil && changed && !checkpointed && time.Since(lastCheckpoint) >= outputCheckpoint {
+			if err = r.protocol(ctx, job, "running", thread, turn); err != nil {
+				break
+			}
+			lastCheckpoint = time.Now()
 		}
 	}
 	exit, closeErr := job.provider.Close()
@@ -920,9 +1023,12 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 	}
 	finalState := status
+	protocolOK := false
 	if configured {
 		if protocolErr := r.protocol(receiptCtx, job, status, thread, turn); protocolErr != nil {
 			err = errors.Join(err, protocolErr)
+		} else {
+			protocolOK = true
 		}
 		finalState = "" // The protocol record owns the initialized provider state.
 	}
@@ -937,9 +1043,406 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			code = &v
 		}
 	}
-	r.finish(job, outcome, code, err, finalState)
+	finishErr := r.finish(job, outcome, code, err, finalState)
+	// Arm only after finish has released the checkout, and never for a timeout.
+	// A provider-reported failure and a clean stop both arm. The queued message
+	// is snapshotted here: a follow that arrives after this is refused.
+	if followTerminal(status, protocolOK, closeErr == nil, err, finishErr) {
+		r.armFollow(job, thread)
+	} else {
+		job.mu.Lock()
+		job.settled = true
+		job.mu.Unlock()
+	}
 }
+
+// outputCheckpoint is how often a still-running turn writes its text and tool
+// snapshot. The final protocol at Close is not gated by it. Tests shorten it.
+var outputCheckpoint = time.Second
+
+// managedTurnBudget is the model turn's active-time limit. Tests shorten it.
+// Serve tests do not use t.Parallel.
+var managedTurnBudget = 45 * time.Minute
+
+const (
+	maxManagedOutput = 131072
+	maxManagedTools  = 64
+	toolsMarker      = "\n[tools]\n"
+)
+
+// await blocks on the provider until the next frame, a decision wake, or the
+// earliest unanswered callback's own deadline. With no callback open there is
+// no timer: the read waits on the provider. A nil wake channel never fires.
+func (r *ManagedRunner) await(ctx context.Context, job *managedJob) (codingagent.Event, error) {
+	deadline := time.Time{}
+	for _, callback := range job.callbacks {
+		if callback.delivered {
+			continue
+		}
+		if deadline.IsZero() || callback.request.ExpiresAt.Before(deadline) {
+			deadline = callback.request.ExpiresAt
+		}
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return codingagent.Event{}, context.DeadlineExceeded
+	}
+	observe, stop := context.WithCancel(ctx)
+	defer stop()
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		observe, cancel = context.WithDeadline(observe, deadline)
+		defer cancel()
+	}
+	if job.wake != nil {
+		go func() {
+			select {
+			case <-job.wake:
+				stop()
+			case <-observe.Done():
+			}
+		}()
+	}
+	return job.provider.Next(observe)
+}
+
+func callbackExpiry(job *managedJob) error {
+	now := time.Now()
+	for _, callback := range job.callbacks {
+		if !callback.delivered && !now.Before(callback.request.ExpiresAt) {
+			return errors.New("the managed provider request expired without confirmation")
+		}
+	}
+	return nil
+}
+
+// savedOutput is the record written by runs.protocol. The tool snapshot is
+// appended only when the whole suffix fits in the existing output cap; a
+// snapshot that would have to be cut mid-JSON is omitted and the record is
+// marked truncated. The in-memory text is left unchanged.
+func savedOutput(job *managedJob) (string, bool) {
+	text := job.output.String()
+	truncated := job.truncated
+	if len(job.tools) == 0 {
+		return text, truncated
+	}
+	payload, err := json.Marshal(job.tools)
+	if err != nil {
+		return text, true
+	}
+	suffix := toolsMarker + string(payload)
+	if len(text)+len(suffix) > maxManagedOutput {
+		return text, true
+	}
+	return text + suffix, truncated
+}
+
+// noteTools merges this frame's tools into the job snapshot, replacing by id
+// and keeping a prior field when the new one is empty. Past maxManagedTools,
+// further new ids are dropped and the output is marked truncated.
+func noteTools(job *managedJob, incoming []codingagent.Tool) bool {
+	changed := false
+	for _, tool := range incoming {
+		tool, ok := codingagent.BoundTool(tool)
+		if !ok {
+			continue
+		}
+		idx := -1
+		for i := range job.tools {
+			if job.tools[i].ID == tool.ID {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			merged := mergeTool(job.tools[idx], tool)
+			if merged != job.tools[idx] {
+				job.tools[idx] = merged
+				changed = true
+			}
+			continue
+		}
+		if len(job.tools) >= maxManagedTools {
+			job.truncated = true
+			continue
+		}
+		job.tools = append(job.tools, tool)
+		changed = true
+	}
+	return changed
+}
+
+func mergeTool(prev, next codingagent.Tool) codingagent.Tool {
+	if next.Name == "" {
+		next.Name = prev.Name
+	}
+	if next.Status == "" {
+		next.Status = prev.Status
+	}
+	if next.ParentID == "" {
+		next.ParentID = prev.ParentID
+	}
+	if next.Input == "" {
+		next.Input = prev.Input
+	}
+	if next.Output == "" {
+		next.Output = prev.Output
+	}
+	return next
+}
+
+func nudge(job *managedJob) {
+	if job == nil {
+		return
+	}
+	job.pending.Store(true)
+	if job.wake == nil {
+		return
+	}
+	select {
+	case job.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Wake asks the drive loop of a live run to read decisions now. An unknown or
+// ended run is a no-op, and an empty id wakes every live job: a decision
+// payload names the callback, not the run. It never fails the decision that
+// triggered it.
+func (r *ManagedRunner) Wake(raw json.RawMessage) error {
+	var in struct {
+		ID string `json:"id"`
+	}
+	if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &in) != nil {
+		return errors.New("wake requires a managed run identity")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if in.ID == "" {
+		for _, job := range r.jobs {
+			nudge(job)
+		}
+		return nil
+	}
+	nudge(r.jobs[in.ID])
+	return nil
+}
+
+// maxFollowMessage is the same bound StartTurn already enforces. The body cap
+// leaves room for the JSON around that message.
+const maxFollowMessage = 128 * 1024
+
+// armedFollow is one queued message waiting for a new process. It is keyed by
+// the run that queued it. The sidecar is the only copy: when that process
+// exits, a message that was not launched is gone.
+type armedFollow struct {
+	threadID, message, provider, cwd, mode string
+	taken                                  bool
+}
+
+type followResult struct {
+	State    string `json:"state"`
+	ThreadID string `json:"thread_id,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+}
+
+// followTerminal reports whether a queued follow-up may be armed. A timeout is
+// never armed, even when the provider state was recorded as failed. A
+// provider-reported failure and a clean stop both arm when the close, the
+// protocol receipt, and the store finish all succeeded.
+func followTerminal(status string, protocolOK, closeOK bool, cause, finishErr error) bool {
+	if !protocolOK || !closeOK || finishErr != nil {
+		return false
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return false
+	}
+	switch status {
+	case "completed", "failed", "interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedID(s string) bool {
+	return strings.TrimSpace(s) != "" && len(s) <= 256 && !strings.ContainsRune(s, '\x00')
+}
+
+func followParent(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var id string
+	if json.Unmarshal(raw, &id) != nil || !managedID(id) {
+		return "", errors.New("a follow-up names the run it continues")
+	}
+	return id, nil
+}
+
+func (r *ManagedRunner) followAvailable(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.follows[id]
+	if f == nil {
+		return errors.New("no follow-up is armed for that run")
+	}
+	if f.taken {
+		return errors.New("that follow-up is already being launched")
+	}
+	return nil
+}
+
+func (r *ManagedRunner) followMessage(id, provider, cwd, mode string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.follows[id]
+	if f == nil {
+		return "", errors.New("no follow-up is armed for that run")
+	}
+	if f.taken {
+		return "", errors.New("that follow-up is already being launched")
+	}
+	if f.provider != provider || f.cwd != cwd || f.mode != mode {
+		return "", errors.New("the follow-up does not match this attempt")
+	}
+	return f.message, nil
+}
+
+func (r *ManagedRunner) takeFollow(id string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.follows[id]
+	if f == nil || f.taken || !managedID(f.threadID) {
+		return "", false
+	}
+	f.taken = true
+	return f.threadID, true
+}
+
+func (r *ManagedRunner) releaseFollow(id, thread string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.follows[id]
+	if f != nil && f.threadID == thread {
+		f.taken = false
+	}
+}
+
+func (r *ManagedRunner) armFollow(job *managedJob, thread string) {
+	job.mu.Lock()
+	set, message := job.followSet, job.followMessage
+	provider, cwd, mode := job.providerName, job.cwd, job.mode
+	job.settled = true
+	job.mu.Unlock()
+	if !set || strings.TrimSpace(message) == "" || !managedID(thread) {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.follows == nil {
+		r.follows = make(map[string]*armedFollow)
+	}
+	if r.follows[job.id] != nil {
+		return
+	}
+	r.follows[job.id] = &armedFollow{threadID: thread, message: message, provider: provider, cwd: cwd, mode: mode}
+}
+
+// Follow queues one message on a live run, or reports that queue. A second
+// message while one is pending is refused. An empty message is a status read.
+// The message is not sent on the process that is closing; the next attempt's
+// StartTurn receives it after this run has released the checkout.
+func (r *ManagedRunner) Follow(raw json.RawMessage) (followResult, error) {
+	if len(raw) > maxFollowMessage+1024 || !utf8.Valid(raw) {
+		return followResult{}, errors.New("a follow-up accepts one bounded, nonblank message")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var in struct {
+		ID      string  `json:"id"`
+		Message *string `json:"message"`
+	}
+	if err := dec.Decode(&in); err != nil || !managedID(in.ID) {
+		return followResult{}, errors.New("follow-up requires a managed run identity")
+	}
+	var trail json.RawMessage
+	if err := dec.Decode(&trail); !errors.Is(err, io.EOF) {
+		return followResult{}, errors.New("follow-up requires a managed run identity")
+	}
+	if in.Message == nil {
+		return r.followStatus(in.ID)
+	}
+	message := *in.Message
+	if strings.TrimSpace(message) == "" || len(message) > maxFollowMessage {
+		return followResult{}, errors.New("a follow-up accepts one bounded, nonblank message")
+	}
+	return r.queueFollow(in.ID, message)
+}
+
+func (r *ManagedRunner) queueFollow(id, message string) (followResult, error) {
+	r.mu.Lock()
+	closed := r.closed
+	job := r.jobs[id]
+	armed := r.follows[id]
+	r.mu.Unlock()
+	if closed {
+		return followResult{}, errors.New("managed runner is closed")
+	}
+	if armed != nil {
+		return followResult{}, errors.New("a follow-up is already queued for this run")
+	}
+	if job == nil {
+		return followResult{}, errors.New("this host does not own the managed run")
+	}
+	select {
+	case <-job.done:
+		return followResult{}, errors.New("a follow-up can only be queued while the managed run is still going")
+	default:
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.settled {
+		return followResult{}, errors.New("a follow-up can only be queued while the managed run is still going")
+	}
+	if job.followSet {
+		return followResult{}, errors.New("a follow-up is already queued for this run")
+	}
+	job.followSet = true
+	job.followMessage = message
+	return followResult{State: "queued", Message: message}, nil
+}
+
+func (r *ManagedRunner) followStatus(id string) (followResult, error) {
+	r.mu.Lock()
+	f := r.follows[id]
+	job := r.jobs[id]
+	r.mu.Unlock()
+	if f != nil {
+		state := "ready"
+		if f.taken {
+			state = "launching"
+		}
+		return followResult{State: state, ThreadID: f.threadID, Message: f.message, Provider: f.provider, Cwd: f.cwd, Mode: f.mode}, nil
+	}
+	if job != nil {
+		job.mu.Lock()
+		set, settled, message := job.followSet, job.settled, job.followMessage
+		job.mu.Unlock()
+		if set && !settled {
+			return followResult{State: "queued", Message: message}, nil
+		}
+		if set && settled {
+			return followResult{}, errors.New("the follow-up was not kept; this run did not end in a way that can resume")
+		}
+	}
+	return followResult{}, errors.New("no follow-up is queued for this run")
+}
+
 func (r *ManagedRunner) decisions(ctx context.Context, job *managedJob) error {
+	job.pending.Store(false)
 	if len(job.callbacks) == 0 {
 		return nil
 	}
@@ -1063,7 +1566,7 @@ func (r *ManagedRunner) resolve(ctx context.Context, job *managedJob, callback *
 	_, err = r.client.Workbench(ctx, "decisions.resolve", input)
 	return err
 }
-func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string) {
+func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string) error {
 	// Before anything is recorded, and whatever the run's end: the checkout is
 	// given back without the harness block. A restore that fails is part of the
 	// reason the run is recorded with, typed, because a block left behind is a
@@ -1105,10 +1608,12 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 			}
 		}
 	}
+	storeErr := err
 	job.mu.Lock()
 	job.phase = outcome
-	job.err = errors.Join(cause, err)
+	job.err = errors.Join(cause, storeErr)
 	job.mu.Unlock()
+	return storeErr
 }
 func (r *ManagedRunner) Stop(raw json.RawMessage) error {
 	if _, err := enhancementObject(raw, 1024, "id"); err != nil {

@@ -43,6 +43,10 @@ type managedTestSession struct {
 	withdraw      bool
 	validateErr   error
 	completeAfter time.Duration
+	// prelude is emitted after the turn id and before the completion, and
+	// leaveOpen withholds that completion so a test can observe the checkpoint.
+	prelude   []codingagent.Tool
+	leaveOpen bool
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {
@@ -63,6 +67,9 @@ func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	s.sent.Store(turn)
 	s.turns.Add(1)
 	s.events <- codingagent.Event{TurnID: "turn"}
+	if len(s.prelude) > 0 {
+		s.events <- codingagent.Event{Tools: s.prelude}
+	}
 	if s.withRequest {
 		ids, expires := s.requestIDs, s.expires
 		if len(ids) == 0 {
@@ -84,7 +91,7 @@ func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 				s.events <- codingagent.Event{Text: "Fixture result", Status: "completed"}
 			})
 		}
-	} else {
+	} else if !s.leaveOpen {
 		s.events <- codingagent.Event{Text: "Inspected the fixture", Status: "completed"}
 	}
 	return nil
@@ -287,6 +294,9 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 					t.Fatal("live callback not persisted")
 				}
 				enhancementCall(t, client, "decisions.decide", fmt.Sprintf(`{"id":%q,"request_id":"human","expected_revision":%d,"payload_digest":%q,"decision":"allow_once"}`, item.ID, item.Revision, item.Digest))
+				if err := runner.Wake(nil); err != nil {
+					t.Fatal(err)
+				}
 			}
 			runner.mu.Lock()
 			job := runner.jobs["run"]
@@ -536,5 +546,95 @@ func TestManagedUncertainFactoryFailureRetainsItsClaimWithoutCallingANilSession(
 	}
 	if run.State != "unresolved" {
 		t.Fatalf("uncertain start released its claim: %s", run.State)
+	}
+}
+
+func TestSavedOutputKeepsAFittingSnapshotAndDropsOneThatDoesNot(t *testing.T) {
+	job := &managedJob{}
+	job.output.WriteString("hello")
+	job.tools = []codingagent.Tool{{ID: "toolu_1", Name: "Bash", Status: "started"}}
+	out, truncated := savedOutput(job)
+	if truncated || !strings.Contains(out, "hello\n[tools]\n") || !strings.Contains(out, `"id":"toolu_1"`) {
+		t.Fatalf("snapshot = %q truncated %v", out, truncated)
+	}
+	if job.output.String() != "hello" {
+		t.Fatal("savedOutput mutated the turn text")
+	}
+	job.output.Reset()
+	job.output.WriteString(strings.Repeat("x", maxManagedOutput-8))
+	out, truncated = savedOutput(job)
+	if !truncated || strings.Contains(out, "[tools]") {
+		t.Fatal("a snapshot that does not fit was written or not marked truncated")
+	}
+	job = &managedJob{}
+	noteTools(job, []codingagent.Tool{{ID: "toolu_1", Name: "Bash", Status: "started", Input: "ls"}})
+	noteTools(job, []codingagent.Tool{{ID: "toolu_1", Status: "completed", Output: "ok"}})
+	if len(job.tools) != 1 || job.tools[0].Name != "Bash" || job.tools[0].Input != "ls" || job.tools[0].Output != "ok" || job.tools[0].Status != "completed" {
+		t.Fatalf("merge = %+v", job.tools)
+	}
+	for i := 0; i < maxManagedTools+1; i++ {
+		noteTools(job, []codingagent.Tool{{ID: fmt.Sprintf("extra-%d", i), Name: "Bash", Status: "started"}})
+	}
+	if len(job.tools) != maxManagedTools || !job.truncated {
+		t.Fatalf("cap = %d truncated %v", len(job.tools), job.truncated)
+	}
+}
+
+func TestManagedToolSnapshotIsCheckpointedWhileTheTurnRuns(t *testing.T) {
+	previous := outputCheckpoint
+	outputCheckpoint = 0
+	t.Cleanup(func() { outputCheckpoint = previous })
+	var session *managedTestSession
+	m := newManagedLifecycle(t, func(ctx context.Context, options codingagent.Options) *managedTestSession {
+		config := codingagent.Effective{Cwd: options.Cwd, ApprovalPolicy: "on-request", ApprovalsReviewer: "user", Sandbox: codingagent.Sandbox{Type: "readOnly"}, Model: "fixture", ModelProvider: "fixture"}
+		config.Thread.ID = "thread"
+		config.Thread.Cwd = options.Cwd
+		session = &managedTestSession{
+			ctx: ctx, config: config, events: make(chan codingagent.Event, 8),
+			leaveOpen: true,
+			prelude: []codingagent.Tool{{
+				ID: "toolu_1", Name: "Bash", Status: "started", Input: `{"command":"ls"}`,
+			}},
+		}
+		return session
+	})
+	m.start("launch")
+	deadline := time.Now().Add(5 * time.Second)
+	var output string
+	for time.Now().Before(deadline) {
+		_, raw, err := m.runner.run(m.t.Context(), "run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row struct {
+			Item struct {
+				Output        string `json:"output"`
+				ProviderState string `json:"provider_state"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(raw, &row) != nil {
+			t.Fatalf("bad run: %s", raw)
+		}
+		output = row.Item.Output
+		if strings.Contains(output, "\n[tools]\n") && strings.Contains(output, `"id":"toolu_1"`) && row.Item.ProviderState == "running" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(output, "\n[tools]\n") || !strings.Contains(output, `"id":"toolu_1"`) {
+		t.Fatalf("tool snapshot was not checkpointed: %s", output)
+	}
+	session.events <- codingagent.Event{Text: "done\n", Status: "completed"}
+	run, raw := m.finished()
+	if run.ProviderState != "completed" {
+		t.Fatalf("turn did not finish: %s %v", raw, run)
+	}
+	var row struct {
+		Item struct {
+			Output string `json:"output"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(raw, &row) != nil || !strings.Contains(row.Item.Output, "done\n") || !strings.Contains(row.Item.Output, `"id":"toolu_1"`) {
+		t.Fatalf("final output lost the snapshot: %s", raw)
 	}
 }

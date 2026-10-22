@@ -33,7 +33,25 @@ func TestProtocolChild(t *testing.T) {
 		switch in.Method {
 		case "initialize":
 			fmt.Printf("{\"id\":%s,\"result\":{\"userAgent\":\"fixture/1\",\"platformOs\":\"fixture\"}}\n", in.ID)
+		case "thread/resume":
+			if scenario != "resume" {
+				os.Exit(9)
+			}
+			var resumed struct {
+				ThreadID  string `json:"threadId"`
+				Cwd       string `json:"cwd"`
+				Approval  string `json:"approvalPolicy"`
+				Reviewer  string `json:"approvalsReviewer"`
+				Ephemeral *bool  `json:"ephemeral"`
+			}
+			if json.Unmarshal(in.Params, &resumed) != nil || resumed.ThreadID == "" || resumed.Ephemeral != nil {
+				os.Exit(4)
+			}
+			fmt.Printf("{\"id\":%s,\"result\":{\"cwd\":%q,\"approvalPolicy\":%q,\"approvalsReviewer\":%q,\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":false},\"model\":\"fixture-model\",\"modelProvider\":\"fixture\",\"thread\":{\"id\":%q,\"cwd\":%q,\"ephemeral\":false}}}\n", in.ID, resumed.Cwd, resumed.Approval, resumed.Reviewer, resumed.ThreadID, resumed.Cwd)
 		case "thread/start":
+			if scenario == "resume" {
+				os.Exit(9)
+			}
 			var p struct {
 				Cwd      string `json:"cwd"`
 				Approval string `json:"approvalPolicy"`
@@ -130,6 +148,37 @@ func fixture(t *testing.T, scenario string) *Codex {
 	return s
 }
 
+func TestCodexResumeKeepsTheStoredThread(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	t.Cleanup(cancel)
+	s, err := openCodex(ctx, Options{Program: bin, Cwd: root, Mode: "ask", Resume: "thr_saved"}, []string{"-test.run=^TestProtocolChild$", "--", "codex-fixture:resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if s.Effective().Thread.ID != "thr_saved" || s.Effective().Thread.Ephemeral {
+		t.Fatalf("resume identity: %+v", s.Effective().Thread)
+	}
+	if err := s.StartTurn(ctx, "follow-up please"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartTurn(ctx, "again"); err == nil {
+		t.Fatal("a resumed connection accepted a second turn")
+	}
+}
+
 func TestStartedCodexWaitsForExplicitInitializationAndRetainsFailedProcess(t *testing.T) {
 	for _, scenario := range []string{"normal", "widened-policy"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -215,14 +264,23 @@ func TestCodexFullFileRequestRequiresOneExactResponseAndProviderResolution(t *te
 		t.Fatal(err)
 	}
 	var request Request
+	sawTool := false
 	for request.ID == "" {
 		e, err := s.Next(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
+		for _, tool := range e.Tools {
+			if tool.ID == "item" && tool.Name == "fileChange" {
+				sawTool = true
+			}
+		}
 		if e.Request != nil {
 			request = *e.Request
 		}
+	}
+	if !sawTool {
+		t.Fatal("file change was not reported as a tool")
 	}
 	if !strings.Contains(request.Payload, `-old\n+new`) || request.Kind != "permission" {
 		t.Fatalf("incomplete review payload: %s", request.Payload)

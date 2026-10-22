@@ -13,7 +13,10 @@ import (
 // --- task lifecycle ---
 
 func (r *Registry) nextTask(ctx context.Context, call tools.Call) tools.Result {
-	ids, unreadable, err := r.deps.Store.ReadyReport(ctx)
+	// ReadyEnforce is the store's required gate mode. This tool does not carry a
+	// separate verification-mode snapshot, and the store refuses a caller that
+	// guesses the permissive one: a task with a blocking gap is not offered.
+	ids, unreadable, err := r.deps.Store.ReadyReport(ctx, store.ReadyEnforce)
 	if err != nil {
 		return unavailable("ready tasks", err)
 	}
@@ -21,7 +24,14 @@ func (r *Registry) nextTask(ctx context.Context, call tools.Call) tools.Result {
 	// is named here so the absence is explained: a lease with an unreadable
 	// expiry fails closed for its own task, which is a different fact from the
 	// task not existing or not being ready.
-	if len(ids) == 0 {
+	var picked *store.ReadyTask
+	for i := range ids {
+		if ids[i].ReadyToCheckout {
+			picked = &ids[i]
+			break
+		}
+	}
+	if picked == nil {
 		payload := map[string]any{
 			"task_id": nil,
 			"message": "no unheld ready tasks",
@@ -32,11 +42,17 @@ func (r *Registry) nextTask(ctx context.Context, call tools.Call) tools.Result {
 		}
 		return ok(payload)
 	}
-	task, err := r.deps.Store.Task(ctx, ids[0])
+	task, err := r.deps.Store.Task(ctx, picked.ID)
 	if err != nil {
 		return unavailable("task scope", err)
 	}
-	payload := map[string]any{"task_id": ids[0], "task": task, "ready_count": len(ids)}
+	readyCount := 0
+	for _, item := range ids {
+		if item.ReadyToCheckout {
+			readyCount++
+		}
+	}
+	payload := map[string]any{"task_id": picked.ID, "task": task, "ready_count": readyCount}
 	if len(unreadable) > 0 {
 		payload["unreadable_leases"] = unreadable
 	}

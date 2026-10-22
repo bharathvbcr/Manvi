@@ -112,6 +112,25 @@ func (m WorkbenchModule) Configure(r *Router) error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Register(opManagedWake, func(_ context.Context, raw json.RawMessage) (any, *Error) {
+			if err := m.Managed.Wake(raw); err != nil {
+				return nil, workbenchHostError("managed wake", err)
+			}
+			return struct {
+				OK bool `json:"ok"`
+			}{true}, nil
+		}); err != nil {
+			return err
+		}
+		if err := r.Register(opManagedFollow, func(_ context.Context, raw json.RawMessage) (any, *Error) {
+			result, err := m.Managed.Follow(raw)
+			if err != nil {
+				return nil, workbenchHostError("managed follow", err)
+			}
+			return result, nil
+		}); err != nil {
+			return err
+		}
 	}
 	if err := r.Register(OpTasksSuggest, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
 		result, err := Suggest(ctx, m.Client, raw)

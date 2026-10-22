@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const MaxFrameBytes = 256 * 1024
@@ -28,6 +29,10 @@ type Options struct {
 	Provider           string
 	Program, Cwd, Mode string
 	AcknowledgeBypass  bool
+	// Resume, when set, continues a provider session this host already
+	// recorded. The new process still accepts exactly one turn. Callers pass
+	// the id the adapter stored, never a value a renderer invented.
+	Resume string
 }
 
 // ManagedProviders are the providers with a managed adapter in this package.
@@ -90,8 +95,61 @@ type Response struct {
 	Answers  map[string][]string
 }
 
+// Tool is one provider tool call as the host last saw it. A later event for the
+// same ID replaces the row; empty fields keep what was already known. This is a
+// snapshot, not a log: the host retains at most maxTools of them inside the
+// same output budget as the turn text.
+type Tool struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	Status   string `json:"status,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+	Input    string `json:"input,omitempty"`
+	Output   string `json:"output,omitempty"`
+}
+
+const (
+	maxTools      = 64
+	maxToolInput  = 4096
+	maxToolOutput = 8192
+)
+
+// BoundTool drops a tool whose id is not an opaque provider identity and caps
+// the fields the record is willing to keep. A name, status, or parent that is
+// not opaque is omitted rather than failing the turn.
+func BoundTool(t Tool) (Tool, bool) {
+	if !opaque(t.ID) {
+		return Tool{}, false
+	}
+	t.Name = boundOpaque(t.Name)
+	t.Status = boundOpaque(t.Status)
+	t.ParentID = boundOpaque(t.ParentID)
+	t.Input = boundText(t.Input, maxToolInput)
+	t.Output = boundText(t.Output, maxToolOutput)
+	return t, true
+}
+
+func boundOpaque(s string) string {
+	if s == "" || opaque(s) {
+		return s
+	}
+	return ""
+}
+
+func boundText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for !utf8.ValidString(s) && len(s) > 0 {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
 // Event carries provider evidence. Status is turn completion, not task acceptance
 // or process termination. A resolved callback does not prove its tool succeeded.
+// Tools is the snapshot carried by this frame only; the host merges it by id.
 type Event struct {
 	Request                  *Request
 	ResolvedID, Text, Status string
@@ -100,6 +158,7 @@ type Event struct {
 	// delivered. Only Claude reports it (control_cancel_request); the host
 	// resolves the decision row as cancelled and stops awaiting a person.
 	CancelledID string
+	Tools       []Tool
 }
 
 // ErrCallbackWithdrawn is returned for an answer to a callback the provider
@@ -212,17 +271,32 @@ func (s *Codex) Initialize(ctx context.Context) error {
 	if err = s.wire.send(ready, packet{Method: "initialized", Params: json.RawMessage(`{}`)}); err != nil {
 		return err
 	}
-	params, err := json.Marshal(struct {
-		Cwd       string `json:"cwd"`
-		Approval  string `json:"approvalPolicy"`
-		Reviewer  string `json:"approvalsReviewer"`
-		Sandbox   string `json:"sandbox"`
-		Ephemeral bool   `json:"ephemeral"`
-	}{options.Cwd, approval, reviewer, sandbox, true})
+	var params []byte
+	method := "thread/start"
+	if opaque(options.Resume) {
+		// A resumed thread is the one the previous process stored. Do not send
+		// ephemeral:true: that would ask Codex to mint a new thread.
+		method = "thread/resume"
+		params, err = json.Marshal(struct {
+			ThreadID string `json:"threadId"`
+			Cwd      string `json:"cwd"`
+			Approval string `json:"approvalPolicy"`
+			Reviewer string `json:"approvalsReviewer"`
+			Sandbox  string `json:"sandbox"`
+		}{options.Resume, options.Cwd, approval, reviewer, sandbox})
+	} else {
+		params, err = json.Marshal(struct {
+			Cwd       string `json:"cwd"`
+			Approval  string `json:"approvalPolicy"`
+			Reviewer  string `json:"approvalsReviewer"`
+			Sandbox   string `json:"sandbox"`
+			Ephemeral bool   `json:"ephemeral"`
+		}{options.Cwd, approval, reviewer, sandbox, true})
+	}
 	if err != nil {
 		return err
 	}
-	result, err := s.call(ready, "thread/start", params)
+	result, err := s.call(ready, method, params)
 	if err != nil {
 		return err
 	}
@@ -260,7 +334,12 @@ func (s *Codex) verify(o Options, sandbox, approval, reviewer string) error {
 	e := s.effective
 	actual, err := filepath.EvalSymlinks(e.Cwd)
 	threadRoot, threadErr := filepath.EvalSymlinks(e.Thread.Cwd)
-	if err != nil || threadErr != nil || actual != o.Cwd || threadRoot != o.Cwd || !opaque(e.Thread.ID) || !e.Thread.Ephemeral || !opaque(e.Model) || !opaque(e.ModelProvider) || e.ApprovalPolicy != approval || e.ApprovalsReviewer != reviewer {
+	resumed := opaque(o.Resume)
+	threadOK := opaque(e.Thread.ID) && e.Thread.Ephemeral
+	if resumed {
+		threadOK = e.Thread.ID == o.Resume && !e.Thread.Ephemeral
+	}
+	if err != nil || threadErr != nil || actual != o.Cwd || threadRoot != o.Cwd || !threadOK || !opaque(e.Model) || !opaque(e.ModelProvider) || e.ApprovalPolicy != approval || e.ApprovalsReviewer != reviewer {
 		return errors.New("Codex effective thread, checkout or approval settings differ from the requested run")
 	}
 	expected := map[string]string{"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"}[sandbox]
@@ -473,10 +552,29 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		}
 		if p.Method == "item/completed" {
 			delete(s.items, item.ID)
+			// A completed agent message is the turn's text. It is not also a
+			// tool row, and neither is each outputDelta below.
 			if item.Type == "agentMessage" {
 				return Event{Text: item.Text}, true, nil
 			}
 		}
+		var described struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(v.Item, &described)
+		status := described.Status
+		if !opaque(status) {
+			if p.Method == "item/completed" {
+				status = "completed"
+			} else {
+				status = "started"
+			}
+		}
+		tool, ok := BoundTool(Tool{ID: item.ID, Name: item.Type, Status: status, Input: string(v.Item)})
+		if !ok {
+			return Event{}, false, nil
+		}
+		return Event{Tools: []Tool{tool}}, true, nil
 	case "item/commandExecution/outputDelta":
 		return Event{Text: v.Delta}, true, nil
 	}

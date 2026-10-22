@@ -53,12 +53,26 @@ func TestMain(m *testing.M) {
 // sessionArg reads the session identity the adapter chose out of the child's
 // own argv, which is how the fixture can echo the id it is required to use.
 func sessionArg() string {
+	session, resume := "", ""
 	for i, a := range os.Args {
-		if a == "--session-id" && i+1 < len(os.Args) {
-			return os.Args[i+1]
+		if i+1 >= len(os.Args) {
+			continue
+		}
+		switch a {
+		case "--session-id":
+			session = os.Args[i+1]
+		case "--resume":
+			resume = os.Args[i+1]
 		}
 	}
-	return ""
+	// A launch that carries both flags is a new session and a resume at once.
+	if session != "" && resume != "" {
+		os.Exit(9)
+	}
+	if resume != "" {
+		return resume
+	}
+	return session
 }
 
 func TestClaudeProtocolChild(t *testing.T) {
@@ -75,6 +89,20 @@ func TestClaudeProtocolChild(t *testing.T) {
 	dumpFixtureEnv("session")
 	scenario := marker
 	session := sessionArg()
+	if scenario == "resume" {
+		sawResume := false
+		for _, a := range os.Args {
+			if a == "--session-id" {
+				os.Exit(9)
+			}
+			if a == "--resume" {
+				sawResume = true
+			}
+		}
+		if !sawResume || session == "" {
+			os.Exit(9)
+		}
+	}
 	cwd, _ := os.Getwd()
 	emit := func(format string, a ...any) { fmt.Printf(format+"\n", a...) }
 	build := fixtureBuild
@@ -206,6 +234,12 @@ func TestClaudeProtocolChild(t *testing.T) {
 				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]},"uuid":"u2"}`, session)
 				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo hi"},"tool_use_id":"toolu_1","decision_reason_type":"rule"}}`)
 				continue
+			case "tools":
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"},"parent_tool_use_id":"toolu_parent"}]},"uuid":"u1"}`, session)
+				emit(`{"type":"user","session_id":%q,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"listed","is_error":false}]},"uuid":"u2"}`, session)
+				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"listed","terminal_reason":"completed","uuid":"u-result"}`, session)
+				continue
 			default:
 				initFrame("default")
 				emit(`{"type":"rate_limit_event","session_id":%q,"rate_limit_info":{"status":"allowed"},"uuid":"u0"}`, session)
@@ -267,6 +301,9 @@ func collect(t *testing.T, s *Claude) (string, string, *Request) {
 			t.Fatalf("next: %v", err)
 		}
 		text.WriteString(e.Text)
+		if strings.Contains(e.Text, "permission denied") && len(e.Tools) > 0 {
+			t.Fatal("a permission denial was recorded as a tool row")
+		}
 		if e.Request != nil {
 			request = e.Request
 		}
@@ -371,6 +408,38 @@ func TestClaudeTurnReportsTextTurnIdentityAndCompletion(t *testing.T) {
 	// the CLI does not offer before a turn exists.
 	if e := s.Effective(); e.Model != "claude-sonnet-5" || e.ProviderUserAgent != "claude-code/"+fixtureBuild {
 		t.Fatalf("init frame did not complete the configuration: %+v", e)
+	}
+}
+
+func TestClaudeToolUseAndResultAreOneSnapshot(t *testing.T) {
+	s := openFixture(t, "tools", "ask")
+	if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartTurn(t.Context(), "Second turn"); err == nil {
+		t.Fatal("a managed connection accepted a second turn")
+	}
+	var sawUse, sawResult bool
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && !(sawUse && sawResult) {
+		e, err := s.Next(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range e.Tools {
+			if tool.ID == "toolu_1" && tool.Name == "Bash" && tool.Status == "started" && tool.ParentID == "toolu_parent" && strings.Contains(tool.Input, "ls") {
+				sawUse = true
+			}
+			if tool.ID == "toolu_1" && tool.Status == "completed" && tool.Output == "listed" {
+				sawResult = true
+			}
+		}
+		if e.Status != "" && !(sawUse && sawResult) {
+			break
+		}
+	}
+	if !sawUse || !sawResult {
+		t.Fatalf("tool snapshot incomplete: use %v result %v", sawUse, sawResult)
 	}
 }
 
@@ -579,6 +648,60 @@ func TestClaudeLaunchLineKeepsItsApprovalSurfaceAndScopesRepositorySettings(t *t
 	}
 	if strings.Contains(joined, "project") || strings.Contains(joined, "local") {
 		t.Fatalf("repository-controlled settings were re-enabled: %s", joined)
+	}
+}
+
+func TestClaudeResumeArgsSwapsOnlyTheSessionFlag(t *testing.T) {
+	original := claudeArgs("manual", "session-1")
+	resumed, err := claudeResumeArgs(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(original, "\x00") != strings.Join(claudeArgs("manual", "session-1"), "\x00") {
+		t.Fatal("claudeArgs was rewritten")
+	}
+	joined := strings.Join(resumed, " ")
+	if strings.Contains(joined, "--session-id") || !strings.Contains(joined, "--resume session-1") {
+		t.Fatalf("resume line: %s", joined)
+	}
+	if !strings.Contains(joined, "--permission-prompt-tool stdio") || !strings.Contains(joined, "--setting-sources user") {
+		t.Fatalf("resume dropped a load-bearing flag: %s", joined)
+	}
+	if _, err := claudeResumeArgs([]string{"--print"}); err == nil {
+		t.Fatal("resume without a session flag was accepted")
+	}
+}
+
+func TestClaudeResumeUsesTheSavedSessionAndNotANewOne(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const saved = "11111111-1111-4111-8111-111111111111"
+	s, err := startClaude(t.Context(), Options{Program: bin, Cwd: root, Mode: "ask", Resume: saved}, fixtureArgs("resume"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := s.Initialize(t.Context()); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if s.Effective().Thread.ID != saved || s.Effective().Thread.Ephemeral {
+		t.Fatalf("resume identity: %+v", s.Effective().Thread)
+	}
+	if err := s.StartTurn(t.Context(), "follow-up please"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartTurn(t.Context(), "again"); err == nil {
+		t.Fatal("a resumed connection accepted a second turn")
 	}
 }
 

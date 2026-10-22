@@ -11,8 +11,9 @@ import (
 // Dispatch model.
 //
 // The read loop never runs an operation that can block. Cheap operations —
-// hello, the policy checks, chat bookkeeping, and stopping a managed run — are
-// answered inline, in arrival order. Everything else runs on a lane: one
+// hello, the policy checks, chat bookkeeping, stopping a managed run, and
+// waking one — are answered inline, in arrival order. Everything else runs on
+// a lane: one
 // goroutine per operation family, taking its requests in arrival order.
 //
 // This replaced fully serial dispatch, under which one slow call held every
@@ -46,7 +47,7 @@ const laneQueue = 32
 func laneFor(op string) string {
 	switch op {
 	case OpHello, OpPolicyCheckFile, OpPolicyCheckCommand, OpChatPrepare, OpChatSettle, OpChatForget,
-		opManagedStop:
+		opManagedStop, opManagedWake, opManagedFollow:
 		return ""
 	case OpCapabilityProbe, OpLocalScan:
 		return "local"
@@ -83,6 +84,15 @@ func (s *Server) laneOf(op string) string {
 // opManagedStop is answered inline: it is an instant cancel, and the request it
 // exists to interrupt may be the one occupying the managed lane.
 const opManagedStop = "work.runs.managed.stop"
+
+// opManagedWake is answered inline for the same reason. It only signals a live
+// drive loop; queueing it behind prepare would deliver an approval late.
+const opManagedWake = "work.runs.managed.wake"
+
+// opManagedFollow is answered inline. It only records a message on a live job,
+// or reports whether that message is armed. Queueing it behind prepare would
+// miss the moment the turn ends.
+const opManagedFollow = "work.runs.managed.follow"
 
 // deadlineFor bounds one lane request. A variable so a test can shorten it.
 var deadlineFor = opDeadline

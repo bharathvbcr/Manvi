@@ -184,15 +184,28 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if err != nil {
 		return nil, beforeStart(err)
 	}
-	session, err := claudeSessionID()
-	if err != nil {
-		return nil, beforeStart(err)
+	session := options.Resume
+	if !opaque(session) {
+		var sessionErr error
+		session, sessionErr = claudeSessionID()
+		if sessionErr != nil {
+			return nil, beforeStart(sessionErr)
+		}
 	}
 	build, err := claudeBuild(ctx, program)
 	if err != nil {
 		return nil, beforeStart(err)
 	}
-	wire, err := startConnection(ctx, program, argv(mode, session), cwd, validateClaudeFrame)
+	args := argv(mode, session)
+	if opaque(options.Resume) {
+		// argv is claudeArgs for a real launch. Swap its session flag here so
+		// claudeArgs itself stays the new-session line every other test pins.
+		args, err = claudeResumeArgs(args)
+		if err != nil {
+			return nil, beforeStart(err)
+		}
+	}
+	wire, err := startConnection(ctx, program, args, cwd, validateClaudeFrame)
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +246,29 @@ func claudeArgs(mode, session string) []string {
 		"--setting-sources", "user",
 		"--session-id", session,
 	}
+}
+
+// claudeResumeArgs is claudeArgs with `--session-id` replaced by `--resume`.
+// The two flags are not combined: a resume that also passed `--session-id`
+// would mint a second session. The input slice is not modified.
+func claudeResumeArgs(args []string) ([]string, error) {
+	out := append([]string(nil), args...)
+	swapped := false
+	for i := 0; i < len(out)-1; i++ {
+		if out[i] == "--session-id" {
+			out[i] = "--resume"
+			swapped = true
+		}
+	}
+	if !swapped {
+		return nil, errors.New("managed Claude resume requires the session-id launch flag")
+	}
+	for _, arg := range out {
+		if arg == "--session-id" {
+			return nil, errors.New("managed Claude resume must not also pass --session-id")
+		}
+	}
+	return out, nil
 }
 
 func (s *Claude) PID() int { return s.wire.pid }
@@ -477,9 +513,12 @@ func (s *Claude) event(raw []byte) (Event, bool, error) {
 		return s.result(f)
 	case "control_cancel_request":
 		return s.withdraw(f.RequestID)
-	case "user", "stream_event", "rate_limit_event", "control_response":
-		// Tool results, partial deltas, rate-limit notices and answers to our
-		// own control requests carry nothing the managed run records.
+	case "user":
+		return s.userResults(f)
+	case "stream_event", "rate_limit_event", "control_response":
+		// Partial deltas, rate-limit notices and answers to our own control
+		// requests carry nothing the managed run records. Tool results arrive
+		// on user frames and are kept; a user frame with no tool_use_id is not.
 		return Event{}, false, nil
 	default:
 		// Additive protocol: an unknown frame type is not an error, because a
@@ -552,13 +591,35 @@ func (s *Claude) system(f claudeFrame) (Event, bool, error) {
 	return Event{}, false, nil
 }
 
+// claudeContent is one block of an assistant or user message. A block that is
+// neither text nor a tool call is ignored: an unknown block is not a failed turn.
+type claudeContent struct {
+	Type    string          `json:"type"`
+	Text    string          `json:"text"`
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	ToolUse string          `json:"tool_use_id"`
+	Parent  string          `json:"parent_tool_use_id"`
+	Content json.RawMessage `json:"content"`
+	IsError bool            `json:"is_error"`
+}
+
+func claudeRaw(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return string(raw)
+}
+
 func (s *Claude) assistant(f claudeFrame) (Event, bool, error) {
 	var message struct {
-		ID      string `json:"id"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		ID      string          `json:"id"`
+		Content []claudeContent `json:"content"`
 	}
 	if json.Unmarshal(f.Message, &message) != nil {
 		return Event{}, false, errors.New("invalid Claude assistant message")
@@ -573,18 +634,59 @@ func (s *Claude) assistant(f claudeFrame) (Event, bool, error) {
 		turn = message.ID
 	}
 	text := strings.Builder{}
+	var tools []Tool
 	for _, block := range message.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			text.WriteString(block.Text)
+		case "tool_use":
+			if tool, ok := BoundTool(Tool{
+				ID: block.ID, Name: block.Name, Status: "started",
+				ParentID: block.Parent, Input: claudeRaw(block.Input),
+			}); ok {
+				tools = append(tools, tool)
+			}
 		}
 	}
 	if text.Len() > 0 {
 		s.sawText = true
 	}
-	if turn == "" && text.Len() == 0 {
+	// A tool-only message still has to be delivered. Dropping it would leave
+	// the host with no row for the call, and a reader that stops only on a
+	// request or a status would never see the request that follows it.
+	if turn == "" && text.Len() == 0 && len(tools) == 0 {
 		return Event{}, false, nil
 	}
-	return Event{TurnID: turn, Text: text.String()}, true, nil
+	return Event{TurnID: turn, Text: text.String(), Tools: tools}, true, nil
+}
+
+// userResults keeps tool_result blocks that name the call they finish. A user
+// frame whose results have no tool_use_id — the stream's echo of our own turn,
+// among other things — is skipped, and that skip is not a failed turn.
+func (s *Claude) userResults(f claudeFrame) (Event, bool, error) {
+	var message struct {
+		Content []claudeContent `json:"content"`
+	}
+	if json.Unmarshal(f.Message, &message) != nil {
+		return Event{}, false, nil
+	}
+	var tools []Tool
+	for _, block := range message.Content {
+		if block.Type != "tool_result" || !opaque(block.ToolUse) {
+			continue
+		}
+		status := "completed"
+		if block.IsError {
+			status = "error"
+		}
+		if tool, ok := BoundTool(Tool{ID: block.ToolUse, Status: status, Output: claudeRaw(block.Content)}); ok {
+			tools = append(tools, tool)
+		}
+	}
+	if len(tools) == 0 {
+		return Event{}, false, nil
+	}
+	return Event{Tools: tools}, true, nil
 }
 
 func (s *Claude) result(f claudeFrame) (Event, bool, error) {

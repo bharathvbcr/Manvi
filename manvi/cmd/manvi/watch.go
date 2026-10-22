@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
@@ -73,7 +74,9 @@ func watch(out io.Writer, reg *flags.Registry, args []string) (err error) {
 		})
 	}
 
-	ready, unreadable, err := client.ReadyReport(ctx)
+	// The store requires the gate mode. This report has no separate verification
+	// snapshot, so it asks for enforce rather than the permissive list.
+	ready, unreadable, err := client.ReadyReport(ctx, store.ReadyEnforce)
 	if err != nil {
 		return err
 	}
