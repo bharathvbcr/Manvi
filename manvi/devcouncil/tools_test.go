@@ -166,9 +166,27 @@ func (f *fixture) payload(name string, args any) map[string]any {
 	return out
 }
 
-// TestEveryToolIsRegistered pins the surface an agent sees.
+// reopenSession registers the tool surface again on a fresh pipe, the way a new
+// session does, so a test sees what a session opened after its setup would see.
+// devcouncil_load_skill in particular is decided when a session opens.
+func (f *fixture) reopenSession() {
+	f.t.Helper()
+	pipe := tools.NewRegistry(bus.New())
+	if err := f.reg.Register(pipe); err != nil {
+		f.t.Fatal(err)
+	}
+	f.pipe = pipe
+}
+
+// TestEveryToolIsRegistered pins the surface an agent sees. The skill tool is
+// conditional: absent in a repository with no skills, present once it has one.
 func TestEveryToolIsRegistered(t *testing.T) {
 	f := newFixture(t)
+	if f.pipe.Has("devcouncil_load_skill") {
+		t.Error("devcouncil_load_skill is registered in a repository with no skills")
+	}
+	addSkill(t, f.root, "present")
+	f.reopenSession()
 	for _, name := range []string{
 		"devcouncil_next_task", "devcouncil_get_task", "devcouncil_checkout_task",
 		"devcouncil_renew_lease", "devcouncil_release_task",

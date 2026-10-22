@@ -167,6 +167,9 @@ func TestEveryContentReaderAppliesTheReadGate(t *testing.T) {
 		filepath.Join(f.root, ".agents", "skills", "leak", "SKILL.md")); err != nil {
 		t.Fatal(err)
 	}
+	// The skill tool is decided when a session opens, so open one after the
+	// skill exists; otherwise the tool is absent and its probe proves nothing.
+	f.reopenSession()
 
 	probes := map[string]map[string]any{
 		"devcouncil_load_skill": {"name": "leak"},
