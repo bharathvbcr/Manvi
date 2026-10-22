@@ -330,6 +330,9 @@ func TestManagedFollowArmsAfterTheTurnAndTheNextRunReceivesIt(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if parent == nil {
+		t.Fatal("the parent run never started a provider session")
+	}
 	parent.events <- codingagent.Event{Text: "done", Status: "completed"}
 	run, _ := m.finished()
 	if run.State != "exited" || run.ProviderState != "completed" {
