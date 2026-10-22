@@ -371,6 +371,14 @@ provider, approval reviewer, approval policy, sandbox and thread identifiers.
 The observed configuration and provider thread become immutable for this attempt;
 a turn ID can be filled once. No global permission preference is changed.
 
+Unlike Claude, managed Codex has no launch-shape refusal and no provider-reported process
+identity check: the `initialize` reply is read only for `userAgent`, so a wrapper passes the
+handshake. The process id the host records and the native host observes at activation is the
+process Manvi spawned. Point `MANVI_CODEX_BINARY` at the native `codex` executable (for
+example the standalone install's `~/.codex/packages/standalone/current/bin/codex`) rather than
+a shell wrapper or an npm node launcher: if a launcher runs the native binary as a child, the
+recorded id and start time describe the launcher, not the process running the model.
+
 Requested modes map to Codex's advertised protocol settings. Inspect uses
 read-only/never; Ask uses read-only/on-request; Edit uses workspace-write/on-request;
 Preapproved uses workspace-write/never; Automatic review uses

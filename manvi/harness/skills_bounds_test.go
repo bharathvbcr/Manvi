@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,26 +74,26 @@ func TestLookupSkill(t *testing.T) {
 	writeSkill(t, root, "Foo", "---\nname: Foo\ndescription: d\n---\nB")
 	read := rootRead(root)
 
-	l, err := LookupSkill(root, read, "good")
+	l, err := LookupSkill(context.Background(), root, read, "good")
 	if err != nil || l.Outcome != SkillFound || l.Skill.Body != "B" {
 		t.Fatalf("good: %+v %v", l, err)
 	}
-	l, _ = LookupSkill(root, read, "nodesc")
+	l, _ = LookupSkill(context.Background(), root, read, "nodesc")
 	if l.Outcome != SkillRejected || !strings.Contains(l.Reason, "no description") {
 		t.Errorf("nodesc: %+v", l)
 	}
-	l, _ = LookupSkill(root, read, "absent")
+	l, _ = LookupSkill(context.Background(), root, read, "absent")
 	if l.Outcome != SkillMissing || l.AvailableTotal != 2 || strings.Join(l.Available, ",") != "good,nodesc" {
 		t.Errorf("absent: %+v", l)
 	}
 	// "foo" differs from the directory "Foo" only in case. Whether the
 	// filesystem folds case or not, the caller must be told Foo exists and why
 	// it was refused.
-	l, _ = LookupSkill(root, read, "foo")
+	l, _ = LookupSkill(context.Background(), root, read, "foo")
 	if l.Outcome != SkillRejected || l.Dir != "Foo" {
 		t.Errorf("case variant: %+v", l)
 	}
-	if _, err := LookupSkill(root, read, "../x"); err == nil {
+	if _, err := LookupSkill(context.Background(), root, read, "../x"); err == nil {
 		t.Error("an invalid name must be refused before any lookup")
 	}
 }
@@ -107,10 +108,10 @@ func TestLookupSkillReadsAtMostOne(t *testing.T) {
 		reads++
 		return rootRead(root)(rel, limit)
 	}
-	if _, err := LookupSkill(root, read, "sa"); err != nil {
+	if _, err := LookupSkill(context.Background(), root, read, "sa"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LookupSkill(root, read, "nope"); err != nil {
+	if _, err := LookupSkill(context.Background(), root, read, "nope"); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 1 {
@@ -126,7 +127,7 @@ func TestRejectionsAreBoundedAndCounted(t *testing.T) {
 		}
 	}
 	reads := 0
-	set, err := LoadSkills(root, func(string, int64) ([]byte, error) { reads++; return nil, nil })
+	set, err := LoadSkills(context.Background(), root, func(string, int64) ([]byte, error) { reads++; return nil, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

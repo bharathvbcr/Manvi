@@ -87,8 +87,7 @@ func TestNotSentRetriesPauseAtBoundAndCannotResumePastBudget(t *testing.T) {
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -143,8 +142,7 @@ func TestUncertainOrUnclassifiedDispatchFailuresNeverRetry(t *testing.T) {
 			opts, base := runFixture(t, false)
 			d := &changedBeforeDispatchDesktop{testDesktop: base, failures: 100, code: tc.code, delivery: tc.delivery, receiptDelivery: tc.receipt}
 			opts.Desktop = d
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+			ctx := safetyContext(t)
 			run, err := StartRun(ctx, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -174,11 +172,11 @@ func TestCancellationDuringRecoveryFocusDoesNotDispatchAgain(t *testing.T) {
 	}
 	select {
 	case <-d.focusEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(safetyTimeout):
 		t.Fatal("recovery focus not attempted")
 	}
 	cancel()
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), safetyTimeout)
 	defer waitCancel()
 	result, err := run.Wait(waitCtx)
 	if errors.Is(err, context.DeadlineExceeded) || !result.State.Terminal() {
@@ -197,8 +195,7 @@ func TestNotSentStateChangeReobservesAndUsesNewAttemptID(t *testing.T) {
 			opts, base := runFixture(t, false)
 			d := &changedBeforeDispatchDesktop{testDesktop: base, failures: 1, code: code, delivery: "not_sent"}
 			opts.Desktop = d
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
+			ctx := safetyContext(t)
 			run, err := StartRun(ctx, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -233,8 +230,7 @@ func TestNotSentChangeRequiresAnotherHumanApproval(t *testing.T) {
 	opts, base := runFixture(t, true)
 	d := &changedBeforeDispatchDesktop{testDesktop: base, failures: 1, code: "state_changed", delivery: "not_sent"}
 	opts.Desktop = d
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ func writeSkill(t *testing.T, root, dir, content string) {
 
 func load(t *testing.T, root string) SkillSet {
 	t.Helper()
-	set, err := LoadSkills(root, rootRead(root))
+	set, err := LoadSkills(context.Background(), root, rootRead(root))
 	if err != nil {
 		t.Fatalf("LoadSkills: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestSymlinkedSkillsDirOutsideRootIsAnError(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, SkillsDir)); err != nil {
 		t.Skip("symlinks unavailable:", err)
 	}
-	if _, err := LoadSkills(root, rootRead(root)); err == nil {
+	if _, err := LoadSkills(context.Background(), root, rootRead(root)); err == nil {
 		t.Fatal("a skills directory that escapes the repository must be an error, not 'no skills'")
 	}
 }
@@ -241,7 +242,7 @@ func TestOverlongDescriptionRejected(t *testing.T) {
 }
 
 func TestMissingSkillsDirIsNoSkills(t *testing.T) {
-	set, err := LoadSkills(t.TempDir(), rootRead(t.TempDir()))
+	set, err := LoadSkills(context.Background(), t.TempDir(), rootRead(t.TempDir()))
 	if err != nil || len(set.Skills) != 0 || len(set.Rejected) != 0 {
 		t.Fatalf("got %+v, %v", set, err)
 	}
@@ -255,7 +256,7 @@ func TestSkillsDirThatIsAFileIsAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, SkillsDir), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadSkills(root, rootRead(root)); err == nil {
+	if _, err := LoadSkills(context.Background(), root, rootRead(root)); err == nil {
 		t.Fatal("an unlistable skills directory must be an error")
 	}
 }

@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **45 tools**, as reported by `manvi tools`: 41 `devcouncil_*` tools plus 4 `mcp_*` tools. That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 core tools**, as reported by `manvi tools` in a repository with no skills: 40 `devcouncil_*` tools plus 4 `mcp_*` tools, plus `devcouncil_load_skill` when the repository has skills (45 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -27,7 +27,20 @@ it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
 unconfigured harness offers the counted set and a configured one offers exactly
 one more. See [Documentation lookup](#documentation-lookup).
 
-The thirteen rows above sum to the 45 tools `manvi tools` reports.
+The thirteen rows above sum to the 45 tools `manvi tools` reports when the repository has skills: the 44 core tools, plus `devcouncil_load_skill`.
+
+`devcouncil_load_skill` is the one tool counted above that is **registered only
+when the repository has skills**. It is decided once, when a session opens: the
+tool is registered when `.agents/skills` holds at least one skill, or at least
+one directory the loader rejected (so the model can ask why a skill was
+refused), and when the skills read itself fails (so the model sees the fault
+through the tool). A repository with neither does not pay its schema, about 120
+estimated tokens, in every request, and its prompt has no skills section. A
+skill added mid-session appears at the next session, with the tool, so the tool
+list the prompt cache is keyed on does not change under a running session; a
+session that opened without the tool lists no skills for its whole life.
+Sub-agents inherit their parent's surface, so a child of such a session does
+not get the tool either.
 
 Every tool in every row is specified below, and
 `TestToolsReferenceSpecifiesEveryTool` fails the build if one is added without
@@ -56,7 +69,7 @@ schema means.
 |---|---|---|---|
 | `devcouncil_policy_check_write` | Read-only | `path` (string), `task_id` (string, optional) | Probes the write gate policy without touching the filesystem. Returns decision and rule provenance. |
 | `devcouncil_read_file` | Read-only | `path` (string), `offset` (int, opt), `limit` (int, opt) | Reads file contents safely from within the workspace root. |
-| `devcouncil_load_skill` | Read-only | `name` (string) | Loads one repository skill, the body of `.agents/skills/<name>/SKILL.md`, bounded to 32,000 runes. The name must match `[a-z0-9][a-z0-9_-]*`; an unknown name is refused with the skill directories that exist (at most 20 named), and a skill the loader rejected (no `description:`, `name:` not equal to its directory, a control or format character in a value, over 64 KiB, outside the repository) is refused with the reason. The body is untrusted repository content, like AGENTS.md. Agents cannot author skills under the strict and dev postures (`.agents/**` is write-denied), but under yolo they can, because that rule is switched off with the hard rules; this holds until dh-4 (ft-d4be683f) makes the protection posture-independent. |
+| `devcouncil_load_skill` | Read-only | `name` (string) | Registered only when the repository has skills (decided at session open; see above). Loads one repository skill, the body of `.agents/skills/<name>/SKILL.md`, bounded to 32,000 runes. The name must match `[a-z0-9][a-z0-9_-]*`; an unknown name is refused with the skill directories that exist (at most 20 named), and a skill the loader rejected (no `description:`, `name:` not equal to its directory, a control or format character in a value, over 64 KiB, outside the repository) is refused with the reason. The body is untrusted repository content, like AGENTS.md. Agents cannot author skills under the strict and dev postures (`.agents/**` is write-denied), but under yolo they can, because that rule is switched off with the hard rules; this holds until dh-4 (ft-d4be683f) makes the protection posture-independent. |
 | `devcouncil_write_file` | Write | `path` (string), `content` (string), `task_id` (string, optional) | Performs an atomic write passing the 6-rung policy gate. Requires active lease under strict posture. |
 | `devcouncil_patch_file` | Write | `path` (string), `target` (string), `replacement` (string), `start_line` (int), `end_line` (int) | Performs targeted exact-block substring replacement bounded by line numbers. Fails closed on ambiguity. |
 | `devcouncil_delete_file` | Write | `path` (string), `task_id` (string, optional) | Safely deletes a file after passing policy gate and lease checks. |

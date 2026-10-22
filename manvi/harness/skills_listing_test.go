@@ -76,7 +76,7 @@ func TestLoadSkillsCancellationIsAFailureNotRejections(t *testing.T) {
 	}
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		read := func(string, int64) ([]byte, error) { return nil, fmt.Errorf("reading: %w", cause) }
-		set, err := LoadSkills(root, read)
+		set, err := LoadSkills(context.Background(), root, read)
 		if err == nil || len(set.Rejected) != 0 {
 			t.Fatalf("%v: err=%v rejected=%v", cause, err, set.Rejected)
 		}
@@ -93,7 +93,7 @@ func TestLookupSkillExcludingOffersOnlyUnlistedNames(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		listed[fmt.Sprintf("s%02d", i)] = true
 	}
-	l, err := LookupSkillExcluding(root, stubRead(""), "nope", listed)
+	l, err := LookupSkillExcluding(context.Background(), root, stubRead(""), "nope", listed)
 	if err != nil {
 		t.Fatal(err)
 	}

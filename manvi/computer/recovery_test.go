@@ -19,7 +19,7 @@ func waitPhase(t *testing.T, ctx context.Context, r *Run, phase workflow.Phase) 
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+			t.Fatalf("waiting for phase %s (now %s): %v", phase, s.Phase, context.Cause(ctx))
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -30,8 +30,7 @@ func TestAssistedRecoveryIsOptInBoundedAndRecorded(t *testing.T) {
 	d.observation.Nodes = append(d.observation.Nodes, Node{ID: "back", Name: "Back", Role: "button", Enabled: true, Actions: []string{"press"}})
 	records := make(chan Record, 64)
 	opts.OnRecord = func(r Record) error { records <- r; return nil }
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

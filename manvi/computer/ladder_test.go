@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
@@ -56,8 +55,7 @@ func TestLadderWalkRecordsStrategyIndex(t *testing.T) {
 			return nil
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +133,7 @@ func TestDeclaredRecoveryExecutesAndRecordsRecoveryID(t *testing.T) {
 		Program: p, Desktop: d, Session: Session{ID: "session", RunID: "run", Epoch: 1, Window: o.Window},
 		OnRecord: func(r Record) error { records = append(records, r); return nil },
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := safetyContext(t)
 	run, err := StartRun(ctx, opts)
 	if err != nil {
 		t.Fatal(err)

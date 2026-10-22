@@ -38,7 +38,7 @@ func TestBlockedNativeWriteCannotIgnoreCancellation(t *testing.T) {
 		if err == nil {
 			t.Fatal("cancelled write returned success")
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(safetyTimeout):
 		p.Close()
 		<-returned
 		t.Fatal("blocked write ignored cancellation")

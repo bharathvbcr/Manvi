@@ -57,6 +57,18 @@ under **Unreleased** in the same commit as the code.
   worktree. A host that does not see `harness.resolve` in `hello.ops` runs with
   no harness.
 
+### Changed
+
+- `computer.Run.Send` now waits until the run loop admits the control, at most
+  one loop step (for example a 3s pause fence), and returns the run's verdict.
+  It returns nil once the control passed the epoch check, `ErrStaleControlEpoch`
+  for a control addressed to an old epoch, and `ErrRunEnded` (the same "run has
+  ended" text as before, now an exported sentinel) when the run has finished.
+  It used to return nil on enqueue, and a stale control was then dropped, which
+  left a run waiting on it forever. The signature is unchanged, and it is still
+  bounded by the caller's context. An automation pause also no longer publishes
+  `Paused` with the epoch from before the fence.
+
 ## [0.1.0] — 2026-10-17
 
 ### Added

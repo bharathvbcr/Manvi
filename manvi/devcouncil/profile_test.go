@@ -71,6 +71,11 @@ func allNames(f *fixture) []string {
 // resolve inside the smallest profile the harness offers.
 func TestNoToolNamesAToolTheCoreProfileDoesNotOffer(t *testing.T) {
 	f := newFixture(t)
+	// devcouncil_load_skill is offered only in a repository with skills, and
+	// every string that names it is shown only there too, so the references are
+	// judged against a session opened in such a repository.
+	addSkill(t, f.root, "present")
+	f.reopenSession()
 	core := coreNames(f)
 	registered := schemaNames(f.pipe.Schemas())
 
