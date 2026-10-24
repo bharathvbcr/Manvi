@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -274,7 +275,21 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			req.MaxTokens = cap.MaxOutputTokens
 		}
 	}
+	applyLocalKeepAlive(&req)
 	return a.Adapter.Stream(ctx, req)
+}
+
+// applyLocalKeepAlive copies MANVI_LLM_LOCAL_KEEP_ALIVE onto a request that
+// did not name one. The field is json:"-" on llm.Request and is emitted only
+// by the OpenAI-compatible wire body, so an Anthropic request never sends it.
+// A blank value leaves the field unset, and the wire tag omits it.
+func applyLocalKeepAlive(req *llm.Request) {
+	if strings.TrimSpace(req.KeepAlive) != "" {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv("MANVI_LLM_LOCAL_KEEP_ALIVE")); v != "" {
+		req.KeepAlive = v
+	}
 }
 
 // validate is the pre-send check. Unlike Capability it distinguishes the two

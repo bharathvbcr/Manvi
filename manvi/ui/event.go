@@ -126,6 +126,11 @@ type Event struct {
 	// the operator's response to each is different.
 	Weakened   []string `json:"weakened,omitempty"`
 	ApprovalID string   `json:"approval_id,omitempty"`
+	// Choices and MultiSelect are set on approval.request when the request is a
+	// question. The decision line answers these options; a face that cannot
+	// draw them still has them on the wire.
+	Choices     []string `json:"choices,omitempty"`
+	MultiSelect bool     `json:"multi_select,omitempty"`
 
 	// EncodeError marks a line the JSON face could not write whole.
 	//
@@ -137,9 +142,12 @@ type Event struct {
 	EncodeError string `json:"encode_error,omitempty"`
 
 	// Session fields.
-	TaskID  string `json:"task_id,omitempty"`
-	Posture string `json:"posture,omitempty"`
-	Model   string `json:"model,omitempty"`
+	// SessionID is the session this run appends to. session.start carries it so
+	// a consumer can join the stream to the id printed on stderr.
+	SessionID string `json:"session_id,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	Posture   string `json:"posture,omitempty"`
+	Model     string `json:"model,omitempty"`
 
 	// Usage.
 	InputTokens  int `json:"input_tokens,omitempty"`

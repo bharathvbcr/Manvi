@@ -11,7 +11,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Interactive TUI** | `manvi` or `manvi tui` | Launch the modern full-screen Elm-loop TUI (tab strip, live theme switcher, session switcher, rich markdown & diff rendering). |
 | **Build Identity** | `manvi --version [--json]` (or `version`) | Print which build this is: version and where it came from, Git revision and tree state, commit time, toolchain, platform. `--json` prints the same as one object (`name`, `version`, `version_from`, `revision`, `tree_state`, `committed`, `module`, `go`, `platform`; an identity fact the binary does not record is omitted) plus `withholds_provider_credentials` (boolean) and `withheld_provider_env` (sorted array of variable names): the provider credentials no child of this build inherits. A host deciding whether to start `manvi` with a credential in its environment checks that every name it would inject is in `withheld_provider_env`; a build that omits the two keys predates the guarantee and does not withhold. See [Child processes](#child-processes). |
 | **System Diagnostics** | `manvi doctor` | Validate active configuration, verify SQLite store reachability, and detect weakened security gates. |
-| **Headless Turn** | `manvi run -p "PROMPT"` | Drive a single agent turn without terminal interaction. Ideal for scripts, CI, and benchmarks.<br/>• `--json`: Output structured JSON turn summary.<br/>• `--max-steps N`: Cap maximum execution steps (default 500).<br/>• `--timeout D`: Bounded turn duration (e.g. `10m`).<br/>• `--quiet`: Suppress streaming prose. |
+| **Headless Turn** | `manvi run -p "PROMPT"` | Drive a single agent turn without terminal interaction. Ideal for scripts, CI, and benchmarks.<br/>• `--json`: Emit the event stream as NDJSON. The first event is `session.start` and its `session_id` is the id printed on stderr.<br/>• `--approve-fd N`: With `--json` only. After each `approval.request`, read one JSON decision line from file descriptor N (3 or higher; 0, 1 and 2 are stdio). Absent, no approver is installed and a soft block is refused.<br/>• `--image PATH`: Attach an image to the user message. Repeatable, at most 4, each at most 8 MiB, sniffed as png, jpeg, gif or webp. A bad image exits 1 before a provider is contacted.<br/>• `--chat-only`: Offer the model no tools. The turn still runs. Absent, tools stay on, and `manvi run` does not infer the flag from the model.<br/>• `--max-steps N`: Cap maximum execution steps (default 500).<br/>• `--timeout D`: Bounded turn duration (e.g. `10m`).<br/>• `--quiet`: Suppress streaming prose. |
 | **Settings Inspection** | `manvi flags [--all]` | Display all configuration flags, active values, safety ratings, and origin layers. |
 | **Runtime Flag Modification** | `manvi flags set KEY VALUE` | Set a configuration value for the current process. Fails closed if the flag is marked `startup`-only or moves a safety setting illegally. |
 | **Local LLM Discovery** | `manvi local [--resolve]` | Scan loopback ports to discover active local LLM servers (Ollama, MLX, vLLM, llama.cpp, LM Studio, Jan). `--resolve` displays the chosen candidate with origin annotations. |
@@ -54,6 +54,26 @@ work as if it were finished. `manvi run --help` prints the same list.
 | `3` | **Output Cap Reached** | The output cap cut the final answer off mid-sentence. Read the answer before acting: one that was going somewhere wants a larger `llm.local.max_output_tokens`; one that was repeating itself was being held in check. Kept apart from `2` because the fix differs. |
 | `4` | **No Answer** | The turn ended with no text and no tool call. Neither ceiling was reached, so raising one fixes nothing. |
 | `5` | **Unfinished** | There is an answer, but the stream did not end on a stop reason meaning the work was done — a dropped connection, an unmapped status, or a refusal. stderr says which. Retrying helps the first and not the last. |
+
+### Headless session, approvals, and images
+
+`manvi run` with none of `--approve-fd` or `--image` does not wait on a pipe and does not attach images. The prompt is still `-p`, a positional argument, or stdin, capped at 1 MiB. Stderr still prints `manvi: session <id>`.
+
+With `--json`, the first event is `session.start`. Its `session_id` is that same id. `choices` and `multi_select` are carried on `approval.request` when the request is a question.
+
+`--approve-fd N` is refused unless `--json` is also set, and refused when N is below 3. The process emits `approval.request` (`text` is the reason, plus `rule`, `severity`, `path`, `task_id`, `grantable`, `approval_id`, and for a question `choices` and `multi_select`), then reads one JSON object from that descriptor:
+
+```json
+{"approval_id":"<id>","allow":false,"chosen":[],"write_in":"","reason":""}
+```
+
+`approval_id` may be omitted; when it is present it must match the request. A question is an answer only when `allow` is true and `chosen` or `write_in` is non-empty. Anything else, including `allow: false`, a mismatched id, malformed JSON, a closed descriptor, or a cancelled turn, is a refusal and is never treated as consent. CI and `manvi run -p` without the flag do not read a descriptor.
+
+`--image` may be repeated. More than four images, a file over 8 MiB, a directory, a missing path, or bytes that are not png, jpeg, gif, or webp is exit 1 before the provider is contacted. Accepted images are appended to the user message after the text block. A model that rejects an image fails that request; the image is not dropped.
+
+`--chat-only` offers the model no tools. The native tool set is still constructed, so the harness can still read the session and the repository, but the model is not given a schema it can call and therefore cannot spawn a child. Absent, the turn is unchanged and tools stay on. A host that already knows the model cannot call tools passes the flag. `manvi run` does not turn it on by itself.
+
+`MANVI_LLM_LOCAL_KEEP_ALIVE`, when set to a non-empty value, is sent as `keep_alive` on a local OpenAI-compatible request whose own keep-alive is empty. An empty value omits the field. Anthropic requests never send it. There is no configuration flag for it; a host sets the variable only for an Ollama turn.
 
 ### Pre-Check Exit Codes (`manvi check`)
 

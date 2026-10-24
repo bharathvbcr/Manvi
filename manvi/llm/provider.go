@@ -51,6 +51,11 @@ type Request struct {
 	Seed *int `json:"seed,omitempty"`
 	// Stop sequences that terminate generation early.
 	Stop []string `json:"stop,omitempty"`
+	// KeepAlive is how long a local server keeps the model loaded. It is not
+	// part of the neutral JSON form: Anthropic has no such field, and only
+	// the OpenAI-compatible wire body emits it. The local adapter fills it
+	// from MANVI_LLM_LOCAL_KEEP_ALIVE when the caller left it empty.
+	KeepAlive string `json:"-"`
 }
 
 // Capability describes what a model can actually do, so an impossible request

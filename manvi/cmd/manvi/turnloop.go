@@ -32,6 +32,9 @@ type turnFace struct {
 	// only a sub-agent does: its written paths return to the parent through
 	// SubAgentResult.Wrote, and the parent's check covers them.
 	check *sensor
+	// chatOnly offers the model no tools. The zero value keeps a child
+	// tool-capable. A chat-only parent has no schemas, so it cannot spawn.
+	chatOnly bool
 }
 
 // turnDeps is what every face supplies the same way.
@@ -72,6 +75,7 @@ func newTurnLoop(face turnFace, deps turnDeps) (*agent.Loop, error) {
 		MaxSteps:        face.maxSteps,
 		MaxTokens:       face.maxTokens,
 		ReadOnly:        face.readOnly,
+		ChatOnly:        face.chatOnly,
 		CoreToolsOnly:   deps.coreToolsOnly,
 		AssertInvariant: deps.assertInvariant,
 		Price:           stepPrice(deps.provider, deps.model),

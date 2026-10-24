@@ -290,6 +290,43 @@ func TestOpenAICompatSamplingParametersInWirePayload(t *testing.T) {
 	if receivedBody["repetition_penalty"] != 1.1 {
 		t.Errorf("expected repetition_penalty 1.1, got %v", receivedBody["repetition_penalty"])
 	}
+	if _, present := receivedBody["keep_alive"]; present {
+		t.Errorf("empty keep_alive was sent: %v", receivedBody["keep_alive"])
+	}
+}
+
+func TestKeepAliveIsOmittedUnlessSet(t *testing.T) {
+	adapter := New(Options{
+		Name:     "local",
+		BaseURL:  "http://127.0.0.1:11434/v1",
+		Validate: func(req llm.Request) error { return nil },
+		Header:   func() (http.Header, error) { return http.Header{}, nil },
+	})
+	empty, err := adapter.buildRequest(llm.Request{Model: "qwen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "keep_alive") {
+		t.Fatalf("empty keep_alive was encoded: %s", raw)
+	}
+	set, err := adapter.buildRequest(llm.Request{Model: "qwen", KeepAlive: "10m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.KeepAlive != "10m" {
+		t.Fatalf("keep_alive = %q", set.KeepAlive)
+	}
+	raw, err = json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"keep_alive":"10m"`) {
+		t.Fatalf("keep_alive missing from %s", raw)
+	}
 }
 
 func TestOpenAICompatFragmentedThinkTagStreaming(t *testing.T) {

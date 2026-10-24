@@ -32,6 +32,26 @@ func (f *fixture) withApprover(a ui.Approver) *fixture {
 	return f
 }
 
+func TestAttachApproverWiresAndClearsTheSeam(t *testing.T) {
+	f := newFixture(t)
+	if f.reg.deps.Approver != nil || f.reg.deps.QuestionAsker != nil {
+		t.Fatal("fixture started with an approver; the nil case was not what was tested")
+	}
+	ap := &recordingApprover{decision: ui.Decision{Allow: false, Reason: "no"}}
+	f.reg.AttachApprover(ap)
+	if f.reg.deps.Approver != ap {
+		t.Fatal("AttachApprover did not install the approver")
+	}
+	asker, ok := f.reg.deps.QuestionAsker.(ApproverAsker)
+	if !ok || asker.Approver != ap {
+		t.Fatal("AttachApprover did not point the question seam at the same approver")
+	}
+	f.reg.AttachApprover(nil)
+	if f.reg.deps.Approver != nil || f.reg.deps.QuestionAsker != nil {
+		t.Fatal("AttachApprover(nil) left a seam in place")
+	}
+}
+
 func TestNoApproverMeansABlockStaysABlock(t *testing.T) {
 	// Every headless run and the whole CLI take this path. Attaching the seam
 	// must not have changed what happens when nothing is attached.

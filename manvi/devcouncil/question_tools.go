@@ -40,6 +40,21 @@ type QuestionAsker interface {
 // never rendered the card.
 var ErrQuestionDeclined = errors.New("devcouncil: the question was dismissed without an answer")
 
+// AttachApprover installs the human seam after the surface has been built.
+//
+// manvi run --approve-fd cannot pass the approver into New: the JSON sink it
+// writes to is created only after the provider env exists, and the tool
+// surface is what that env is registered on. Nil clears the seam, which is
+// the unattended run. Call it before the turn starts.
+func (r *Registry) AttachApprover(a ui.Approver) {
+	r.deps.Approver = a
+	if a == nil {
+		r.deps.QuestionAsker = nil
+		return
+	}
+	r.deps.QuestionAsker = ApproverAsker{Approver: a}
+}
+
 // ApproverAsker puts questions to whoever answers this run's approvals.
 //
 // It exists so pairing does not stand up a second way to reach the operator.

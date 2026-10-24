@@ -241,6 +241,11 @@ type Config struct {
 	// deliberate choice for a model that picks badly from a long list rather
 	// than something to turn on for the saving alone.
 	CoreToolsOnly bool
+	// ChatOnly offers the model no tools. The native tool set is still
+	// constructed, so Session, RepoReader, and Roles stay available; an empty
+	// schema list is what stops the model from calling them. The zero value
+	// leaves tools on.
+	ChatOnly bool
 	// AssertInvariant enables the model-visible-means-logged check before every
 	// dispatch. Mirrors flags.LogModelVisibleAssert.
 	AssertInvariant bool
@@ -572,6 +577,9 @@ func (l *Loop) reportMalformed(response llm.Response) error {
 }
 
 func (l *Loop) schemas() []llm.ToolSchema {
+	if l.cfg.ChatOnly {
+		return nil
+	}
 	if l.tools == nil {
 		return nil
 	}
