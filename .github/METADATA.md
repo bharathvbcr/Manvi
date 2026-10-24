@@ -19,7 +19,7 @@ This document specifies the canonical repository metadata, search tags, and SEO 
 > Short, search-optimized description for the GitHub **About** section (under 350 characters):
 
 ```text
-High-performance coding-agent harness in Go and Rust — engineered for local LLMs, dual-plane process determinism, 6-rung policy safety, 44 native tools & MCP 2.0.
+High-performance coding-agent harness in Go and Rust — engineered for local LLMs, dual-plane process determinism, 6-rung policy safety, 44 core native tools (45 with repository skills) & MCP 2.0.
 ```
 
 ---

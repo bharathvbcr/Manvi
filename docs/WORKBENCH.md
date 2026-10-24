@@ -32,7 +32,7 @@ operations in `hello.ops`. The operation set describes the host handlers;
 successful storage requests additionally require a compatible `dcstore` binary.
 An old or unavailable binary produces an error, never an empty successful board.
 A `dcstore` build that reports its profile schema answers `dcstore --version`
-with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":13}`;
+with `{"ok":true,"id":"dcstore","component":"dc-store","version":"…","workbench_schema":14}`;
 earlier builds print the same object without `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
@@ -611,7 +611,7 @@ queue to the version-three worker ownership and version-two proposal lifecycle.
 Migration preserves existing tasks, revisions, groups and leases; it does not
 queue existing tasks. Unknown versions and failed migrations are errors. Upgrade
 every host's store together: an older binary refuses a newer profile with
-`schema_unsupported`. The current schema is thirteen. Five through eight add the
+`schema_unsupported`. The current schema is fourteen. Five through eight add the
 terminal attempts, activity inbox, native notification records and structured
 agent requests described above. Nine and ten change no tables: nine adds the
 managed/terminal run kinds and their claim/protocol invariants, and ten
@@ -634,6 +634,12 @@ changes no table, and is a hard fence because a schema twelve host would replay
 the short receipt verbatim as the response. Receipts stored in full by schema
 twelve keep replaying as written. Manvi's release pin moved to a DevCouncil that
 carries thirteen; a Manvi built before that move refuses an upgraded profile.
+Fourteen gives items a validated `scope` (planned files, forbidden changes,
+allowed commands, expected tests, requirement links). It changes no table, and
+is a hard fence because a host that builds an item body without it would erase
+the scope of every task it saves. The release pin (`scripts/module-pins.txt`,
+DevCouncil `3cfe283c`) carries workbench 14 with `dc-store` 10, as recorded in
+`CHANGELOG.md`; a Manvi built before that move refuses an upgraded profile.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank
