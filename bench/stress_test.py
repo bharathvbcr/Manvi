@@ -755,6 +755,28 @@ if containment_backend() in ("sandbox-exec", "bwrap"):
     check("C6 a worker with no network still returns the checker's verdict", ok, out[:200])
 _lsn.close()
 
+print("C6 a worker write that loses the race with the checker's close keeps the candidate's output")
+# Intermittent under load (1 in ~300 on a saturated host): the checker has its
+# verdict and closes the pipe, the worker's last frame hits the closed socket, and
+# `_fatal` os._exit()s without flushing the block-buffered stdout -- so the worker
+# report the record carries came back empty although the verdict was a pass.
+_RACE = (
+    "import sys, socket\n"
+    "sys.path.insert(0, %r)\n"
+    "from mh import rpc\n"
+    "a, b = socket.socketpair()\n"
+    "a.close()\n"
+    "ep = rpc.Endpoint('w', b, '/', 5, True)\n"
+    "print('MH_BUFFERED_LINE')\n"
+    "ep._send({'k': 'hello'})\n"
+) % (os.path.dirname(os.path.abspath(__file__)),)
+_rp = subprocess.run([sys.executable, "-I", "-B", "-c", _RACE],
+                     capture_output=True, text=True, timeout=30)
+check("C6 a worker write to a closed pipe still dies loudly", _rp.returncode == 1
+      and "send failed" in _rp.stderr, f"rc={_rp.returncode} {_rp.stderr[:120]}")
+check("C6 and its buffered stdout is flushed, not lost",
+      "MH_BUFFERED_LINE" in _rp.stdout, repr(_rp.stdout))
+
 print("C6 the verdict channel cannot be forged across the process split")
 # Each payload is overlaid on the BROKEN candidate and must NOT turn the failing
 # verification into a pass. This is the AUDIT C1 property, checked at the wire:
