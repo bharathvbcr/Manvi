@@ -45,6 +45,8 @@ func CleanEvent(e Event, clean func(string) string) Event {
 	e.Degraded = cleanStrings(e.Degraded, clean)
 	e.Weakened = cleanStrings(e.Weakened, clean)
 	e.ApprovalID = clean(e.ApprovalID)
+	e.Choices = cleanStrings(e.Choices, clean)
+	e.SessionID = clean(e.SessionID)
 	e.TaskID = clean(e.TaskID)
 	e.Posture = clean(e.Posture)
 	e.Model = clean(e.Model)

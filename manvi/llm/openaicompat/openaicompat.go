@@ -222,6 +222,9 @@ type wireRequest struct {
 	FrequencyPenalty    *float64 `json:"frequency_penalty,omitempty"`
 	Seed                *int     `json:"seed,omitempty"`
 	Stop                []string `json:"stop,omitempty"`
+	// KeepAlive is an Ollama field. omitempty drops it for every other server
+	// when the caller did not set one.
+	KeepAlive string `json:"keep_alive,omitempty"`
 }
 
 type streamOpts struct {
@@ -313,6 +316,7 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 		FrequencyPenalty:    req.FrequencyPenalty,
 		Seed:                req.Seed,
 		Stop:                req.Stop,
+		KeepAlive:           req.KeepAlive,
 	}
 	if req.System != "" {
 		out.Messages = append(out.Messages, wireMessage{Role: "system", Content: req.System})

@@ -60,6 +60,18 @@ Options:
                        at N. The summary says which of the two happened.
   --timeout DURATION   Wall-clock bound on the whole turn, e.g. 10m (default 30m).
   --json               Emit the event stream as NDJSON on stdout instead of prose.
+                       The first event is session.start and carries session_id,
+                       the same id this command prints on stderr.
+  --approve-fd N       With --json only. Read one approval decision per request
+                       from file descriptor N. N must be 3 or higher; 0, 1 and
+                       2 are stdio. Absent, nothing is asked and a soft block
+                       is refused.
+  --image PATH         Attach an image to the user message. Repeatable, at most
+                       four, each at most 8 MiB, and only png, jpeg, gif or
+                       webp. A bad image exits 1 before a provider is contacted.
+  --chat-only          Offer the model no tools. The turn still runs. Absent,
+                       tools stay on. manvi run does not infer this from the
+                       model.
   --quiet              Print only the model's final message.
 
 Sessions:
@@ -100,6 +112,14 @@ type runOptions struct {
 	resume string
 	// continueLast asks for the most recently saved session.
 	continueLast bool
+	// approveFD is consulted only when approveFDSet. Zero is not a sentinel:
+	// descriptor 0 is stdin, and it is refused rather than meaning "unset".
+	approveFD    int
+	approveFDSet bool
+	images       []llm.ImageBlock
+	// chatOnly offers the model no tools. The zero value leaves tools on,
+	// which is what `manvi run` does when the flag is absent.
+	chatOnly bool
 }
 
 func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err error) {
@@ -141,10 +161,11 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 		}
 	}()
 
-	// The pipeline is built with no approver: there is nobody to ask. A soft
-	// block is therefore a refusal the model must route around or report, which
-	// is exactly what an unattended run should do rather than blocking forever
-	// on a prompt no one will answer.
+	// The pipeline is built with no approver. --approve-fd installs one only
+	// after the JSON sink exists, below: a decision has to be on the stream
+	// before the descriptor is read, and the sink is what writes it. Absent
+	// the flag this stays nil, so a soft block is a refusal rather than a
+	// prompt nobody will answer.
 	native, pipeline, err := nativeToolsWith(reg, nil)
 	if err != nil {
 		return err
@@ -184,18 +205,23 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	default:
 		sink = ui.NewRenderer(out, scrubber)
 	}
+	if opts.approveFDSet {
+		approver, approverErr := approverForRun(opts, sink)
+		if approverErr != nil {
+			return approverErr
+		}
+		native.AttachApprover(approver)
+	}
 
 	// The face reads the log rather than a stream emitted beside it, so what is
 	// printed is by construction what the model saw. Restored events are not
 	// replayed through it: the caller asked to continue a session, not to have
-	// the whole of it reprinted.
+	// the whole of it reprinted. session.start below is therefore the first
+	// event a --json consumer reads.
 	log.Observe(ui.ProjectSink(sink))
 
 	posture, _, _ := reg.String(flags.HarnessPosture)
-	sink.Emit(ui.Event{
-		Kind: ui.KindSessionStart, At: time.Now().UTC(),
-		Posture: posture, Model: providerName + "/" + model,
-	})
+	emitSessionStart(sink, time.Now().UTC(), posture, providerName+"/"+model, sessionID)
 	if weak := reg.Weakened(); len(weak) > 0 {
 		names := make([]string, 0, len(weak))
 		for _, v := range weak {
@@ -284,6 +310,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 
 	loop, err := newTurnLoop(turnFace{
 		maxSteps: opts.maxSteps,
+		chatOnly: opts.chatOnly,
 		check: &sensor{
 			native: native, log: log, flags: reg,
 			runner:  subRunner,
@@ -304,7 +331,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 
 	outcome, err := loop.Run(ctx, llm.Message{
 		Role:    llm.RoleUser,
-		Content: []llm.ContentBlock{llm.TextBlock{Text: opts.prompt}},
+		Content: userContent(opts.prompt, opts.images),
 	})
 	if err != nil {
 		return fmt.Errorf("the turn failed: %s", scrubber.Clean(err.Error()))
@@ -588,6 +615,27 @@ func checkoutFor(ctx context.Context, pipeline *tools.Registry, task string) err
 	return nil
 }
 
+// emitSessionStart is the session.start line. sessionID is the id openSession
+// returned; stderr has already printed the same value.
+func emitSessionStart(sink ui.Sink, at time.Time, posture, model, sessionID string) {
+	sink.Emit(ui.Event{
+		Kind: ui.KindSessionStart, At: at,
+		Posture: posture, Model: model, SessionID: sessionID,
+	})
+}
+
+// userContent is the user message: the prompt text, then each image in order.
+// An image the model will not accept stays on the message; request validation
+// fails that turn rather than this function dropping the block.
+func userContent(prompt string, images []llm.ImageBlock) []llm.ContentBlock {
+	content := make([]llm.ContentBlock, 1, 1+len(images))
+	content[0] = llm.TextBlock{Text: prompt}
+	for _, img := range images {
+		content = append(content, img)
+	}
+	return content
+}
+
 func textOf(msg llm.Message) string {
 	var b strings.Builder
 	for _, block := range msg.Content {
@@ -611,6 +659,7 @@ func parseRunArgs(reg *flags.Registry, args []string, stdin *os.File) (runOption
 	opts := runOptions{maxSteps: maxSteps(reg), timeout: 30 * time.Minute}
 
 	var positional []string
+	var imagePaths []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		next := func() (string, error) {
@@ -654,6 +703,23 @@ func parseRunArgs(reg *flags.Registry, args []string, stdin *os.File) (runOption
 				}
 				opts.timeout = d
 			}
+		case arg == "--approve-fd":
+			var raw string
+			if raw, err = next(); err == nil {
+				n, convErr := strconv.Atoi(raw)
+				if convErr != nil {
+					return runOptions{}, fmt.Errorf("--approve-fd must be an integer file descriptor, got %q", raw)
+				}
+				opts.approveFD = n
+				opts.approveFDSet = true
+			}
+		case arg == "--image":
+			var path string
+			if path, err = next(); err == nil {
+				imagePaths = append(imagePaths, path)
+			}
+		case arg == "--chat-only":
+			opts.chatOnly = true
 		case strings.HasPrefix(arg, "-"):
 			// Refused rather than ignored: a mistyped flag that is silently
 			// dropped runs the turn with settings the caller did not choose.
@@ -694,6 +760,19 @@ func parseRunArgs(reg *flags.Registry, args []string, stdin *os.File) (runOption
 	if opts.resume != "" && strings.TrimSpace(opts.resume) == "" {
 		return runOptions{}, errors.New("--resume needs a session id, or a unique prefix of one")
 	}
+	if opts.approveFDSet && !opts.asJSON {
+		return runOptions{}, errors.New("--approve-fd is only valid with --json")
+	}
+	if opts.approveFDSet && opts.approveFD < 3 {
+		return runOptions{}, fmt.Errorf("--approve-fd must be 3 or higher (0, 1 and 2 are stdio), got %d", opts.approveFD)
+	}
+	// Images are read here, before the caller builds a provider. A bad file
+	// exits 1 from parse rather than after a handshake.
+	images, err := loadRunImages(imagePaths)
+	if err != nil {
+		return runOptions{}, err
+	}
+	opts.images = images
 	return opts, nil
 }
 

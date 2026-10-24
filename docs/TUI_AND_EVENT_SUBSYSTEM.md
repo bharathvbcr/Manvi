@@ -70,6 +70,9 @@ type Event struct {
     Degraded   []string `json:"degraded,omitempty"`
     Weakened   []string `json:"weakened,omitempty"`
     ApprovalID string   `json:"approval_id,omitempty"`
+    // Set on approval.request when the request is a question.
+    Choices     []string `json:"choices,omitempty"`
+    MultiSelect bool     `json:"multi_select,omitempty"`
 
     // Set only by the NDJSON sink, on a line standing in for an event whose
     // fields would not all marshal. It names what that line is missing, so the
@@ -77,10 +80,11 @@ type Event struct {
     // like an event that never happened.
     EncodeError string `json:"encode_error,omitempty"`
 
-    // Session fields.
-    TaskID  string `json:"task_id,omitempty"`
-    Posture string `json:"posture,omitempty"`
-    Model   string `json:"model,omitempty"`
+    // Session fields. session.start carries session_id, the id printed on stderr.
+    SessionID string `json:"session_id,omitempty"`
+    TaskID    string `json:"task_id,omitempty"`
+    Posture   string `json:"posture,omitempty"`
+    Model     string `json:"model,omitempty"`
 
     // Usage.
     InputTokens  int `json:"input_tokens,omitempty"`
