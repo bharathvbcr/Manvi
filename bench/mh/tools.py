@@ -246,23 +246,30 @@ def git_guard_roots(*starts):
     which reads the same bytes out of <repo>/.git/objects, nor about another
     worktree or the main checkout of this repository. So each enclosing git
     dir, its common dir, and every other worktree registered in that common
-    dir are protected too. A worktree that CONTAINS a start is skipped: it is
-    the one the benchmark runs in, and masking it would mask the benchmark's
-    own toolchain. Only paths that exist are returned (a bwrap tmpfs mask needs
-    a mount point). A `.git` pointer that cannot be parsed protects its whole
-    worktree rather than none of it.
+    dir are protected too. Only the checkout the benchmark actually runs in
+    (the first work tree reached walking up from each start) is skipped:
+    masking it would mask the benchmark's own toolchain. Every OTHER registered
+    checkout is guarded even when it geometrically contains a start. That is
+    the nested layout -- a worktree under the main checkout's gitignored tmp/
+    -- where the main checkout's work tree tracks the same hidden tests and
+    used to be dropped from the guard for "containing" the bench. Only paths
+    that exist are returned (a bwrap tmpfs mask needs a mount point). A `.git`
+    pointer that cannot be parsed protects its whole worktree rather than none
+    of it.
     """
     starts = [os.path.realpath(p) for p in starts if p]
 
-    def contains_start(path):
-        return any(s == path or s.startswith(path + os.sep) for s in starts)
-
     roots = set()
+    own = set()
     for start in starts:
         cur = start
+        owned = False
         while True:
             dotgit = os.path.join(cur, ".git")
             if os.path.lexists(dotgit):
+                if not owned:
+                    own.add(cur)
+                    owned = True
                 try:
                     if os.path.isdir(dotgit):
                         gitdir = common = os.path.realpath(dotgit)
@@ -287,7 +294,7 @@ def git_guard_roots(*starts):
                 break
             cur = parent
     return tuple(sorted(r for r in roots
-                        if os.path.exists(r) and not contains_start(r)))
+                        if os.path.exists(r) and r not in own))
 
 
 def default_protected_roots():
