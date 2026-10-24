@@ -437,7 +437,19 @@ class Endpoint:
         # must not be catchable by the hidden test. The checker owns the exit
         # code; the worker just dies and the checker sees the pipe close.
         sys.stderr.write(f"[mh-rpc {self.side}] fatal: {why}\n")
-        sys.stderr.flush()
+        # os._exit skips the buffered-stdout flush a normal exit does. On a pipe
+        # stdout is block-buffered, so a worker whose reply races the checker's
+        # close (the verdict already in) would lose everything the candidate
+        # printed, and the worker report the record carries would read empty.
+        # Flushing changes no verdict: the checker's exit code alone decides it.
+        # Only the worker's stdout is flushed: the checker's is the hidden
+        # test's own output, which a fatal exit must keep discarding.
+        streams = (sys.stdout, sys.stderr) if self.side == "w" else (sys.stderr,)
+        for s in streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
         os._exit(FATAL_EXIT if self.side == "c" else 1)
 
     # ---- reader / lane dispatch ------------------------------------------- #
