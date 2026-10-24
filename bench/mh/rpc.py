@@ -959,14 +959,18 @@ def _seatbelt(write_dirs, read_dirs, guard_roots, no_signal_fork, deny_write_dir
     for p in _temp_roots():
         if os.path.exists(p):
             lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
-    for p in write_dirs:
-        if p:
-            lines.append(f'(allow file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
     for p in guard_roots:
         if p:
             q = _sbpl(os.path.realpath(p))
             lines.append(f'(deny file-read* (subpath "{q}"))')
             lines.append(f'(deny file-write* (subpath "{q}"))')
+    # The private scratch dirs are fresh mkdtemp directories the harness made
+    # for this process, so they are re-allowed AFTER the guard denies: a guarded
+    # work tree that contains TMPDIR (the nested-checkout layout) must not take
+    # the worker's own scratch space with it. bwrap already orders its binds so.
+    for p in write_dirs:
+        if p:
+            lines.append(f'(allow file-read* file-write* (subpath "{_sbpl(os.path.realpath(p))}"))')
     # Deny writes to the sandbox explicitly, after the temp-root allows: in a
     # test layout the sandbox lives under /tmp, which those allows would
     # otherwise re-open. The worker may read the candidate's source but never

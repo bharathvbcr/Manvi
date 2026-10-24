@@ -933,6 +933,60 @@ else:
     check("C5 git side-door probes need a backend and git, or an explicit opt-out",
           containment_backend() in ("off", None))
 
+print("C5 a bench checkout nested inside another checkout does not unguard the outer one")
+# Layout under test: the main checkout R tracks bench/tasks/x/hidden_test.py, and
+# a worktree of R lives under R's gitignored tmp/. R's work tree CONTAINS the
+# nested bench, which git_guard_roots used to treat as "the checkout the bench
+# runs in" and drop from the guard -- leaving every tracked hidden test in R
+# readable by a sandboxed shell. Built in a temp dir so it does not depend on
+# where this file's own checkout sits.
+if shutil.which("git"):
+    from mh.tools import git_guard_roots
+    def _ng(*args, cwd):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout
+    nrepo = os.path.realpath(tmpdir())
+    os.makedirs(os.path.join(nrepo, "bench", "tasks", "x"))
+    open(os.path.join(nrepo, "bench", "tasks", "x", "hidden_test.py"), "w").write(
+        "NESTED_SECRET = 'nested-hidden-test'\n")
+    open(os.path.join(nrepo, ".gitignore"), "w").write("tmp/\n")
+    _ng("init", "-q", cwd=nrepo)
+    _ng("add", "-f", ".", cwd=nrepo)
+    _ng("commit", "-q", "-m", "tracked-hidden", cwd=nrepo)
+    nwt = os.path.join(nrepo, "tmp", "lane")
+    _ng("worktree", "add", "-q", "-b", "lane", nwt, cwd=nrepo)
+    nbench = os.path.join(nwt, "bench")
+    nroots = git_guard_roots(nbench)
+    check("C5 nested: the outer checkout's work tree is guarded",
+          nrepo in nroots, str(nroots))
+    check("C5 nested: the outer checkout's git dir is guarded",
+          os.path.join(nrepo, ".git") in nroots, str(nroots))
+    check("C5 nested: the checkout the bench runs in is not masked",
+          nwt not in nroots, str(nroots))
+    # And the plain, non-nested layout is unchanged: own tree open, git dir guarded.
+    flat = os.path.realpath(tmpdir())
+    os.makedirs(os.path.join(flat, "bench"))
+    _ng("init", "-q", cwd=flat)
+    froots = git_guard_roots(os.path.join(flat, "bench"))
+    check("C5 flat: the bench's own checkout stays unmasked, its git dir guarded",
+          flat not in froots and os.path.join(flat, ".git") in froots, str(froots))
+    if containment_backend() in ("sandbox-exec", "bwrap"):
+        nsand = os.path.join(nwt, ".work", "run0")
+        os.makedirs(nsand)
+        nsb = Sandbox(nsand, protected_roots=(nbench,) + git_guard_roots(nbench, nsand))
+        victim = os.path.join(nrepo, "bench", "tasks", "x", "hidden_test.py")
+        host = subprocess.run(["/bin/sh", "-c", f"cat {victim}"],
+                              capture_output=True, text=True).stdout
+        check("C5 nested precondition: the outer hidden test leaks when uncontained",
+              "nested-hidden-test" in host, host[:120])
+        got = nsb.run_shell(cmd=f"cat {victim}")
+        check("C5 nested: the outer checkout's hidden test is unreadable from the shell",
+              "nested-hidden-test" not in got, got[:200])
+        check("C5 nested: the sandbox is still writable inside a guarded outer tree",
+              "inside" in nsb.run_shell(cmd="echo inside > ok.txt && cat ok.txt"))
+    shutil.rmtree(nwt, ignore_errors=True)
+
 print("output caps are measured in bytes")
 body, trunc = cap_output("漢" * 40_000, 30_000)
 check("cap counts bytes, not characters",
