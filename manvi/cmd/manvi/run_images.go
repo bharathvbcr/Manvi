@@ -36,12 +36,16 @@ func loadRunImages(paths []string) ([]llm.ImageBlock, error) {
 	return out, nil
 }
 
-func loadRunImage(path string) (llm.ImageBlock, error) {
-	f, err := os.Open(path)
+func loadRunImage(path string) (block llm.ImageBlock, err error) {
+	f, err := os.Open(path) // #nosec G304 -- the operator named this --image path; it is read and sniffed, never executed
 	if err != nil {
 		return llm.ImageBlock{}, fmt.Errorf("--image %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			block, err = llm.ImageBlock{}, fmt.Errorf("--image %s: %w", path, closeErr)
+		}
+	}()
 
 	info, err := f.Stat()
 	if err != nil {

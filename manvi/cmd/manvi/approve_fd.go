@@ -55,7 +55,7 @@ type approvalDecisionLine struct {
 
 func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, error) {
 	if err := ctx.Err(); err != nil {
-		return declineDecision("cancelled"), nil
+		return declineDecision("cancelled"), nil //nolint:nilerr // a cancelled turn is a refusal, never consent and never an approver error
 	}
 	a.sink.Emit(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
@@ -65,7 +65,7 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 		Choices: req.Choices, MultiSelect: req.MultiSelect,
 	})
 	if err := ctx.Err(); err != nil {
-		return declineDecision("cancelled"), nil
+		return declineDecision("cancelled"), nil //nolint:nilerr // a cancelled turn is a refusal, never consent and never an approver error
 	}
 	line, err := a.readLine(ctx)
 	if err != nil {
@@ -77,7 +77,7 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 	}
 	parsed, err := parseDecisionLine(line)
 	if err != nil {
-		return declineDecision("the approval decision was not one JSON object"), nil
+		return declineDecision("the approval decision was not one JSON object"), nil //nolint:nilerr // a malformed decision line is a refusal, never consent
 	}
 	if parsed.ApprovalID != nil && *parsed.ApprovalID != req.ID {
 		return declineDecision("approval_id does not match the request"), nil

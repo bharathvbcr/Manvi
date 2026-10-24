@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,14 +95,9 @@ func TestParseRunArgsApproveFDRequiresJSONAndANonStdioFD(t *testing.T) {
 }
 
 func TestFDApproverBlocksUntilAnAnsweredQuestion(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer read.Close()
-	defer write.Close()
+	read, write := approvalPipe(t)
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	ap := newFDApprover(read, ui.NewJSONSink(&buf, nil))
 	req := ui.Request{
 		ID: "QUESTION-0001", Reason: "which database?", Rule: "pair.questions.enabled",
@@ -142,7 +139,7 @@ func TestFDApproverBlocksUntilAnAnsweredQuestion(t *testing.T) {
 	default:
 	}
 
-	if _, err := write.Write([]byte("{\"approval_id\":\"QUESTION-0001\",\"allow\":true,\"chosen\":[\"sqlite\",\"postgres\"],\"reason\":\"both\"}\n")); err != nil {
+	if _, err := write.WriteString("{\"approval_id\":\"QUESTION-0001\",\"allow\":true,\"chosen\":[\"sqlite\",\"postgres\"],\"reason\":\"both\"}\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -195,13 +192,8 @@ func TestFDApproverDeclinesAnythingThatIsNotAnAnswer(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			read, write, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer read.Close()
-			defer write.Close()
-			if _, err := write.Write([]byte(tc.line)); err != nil {
+			read, write := approvalPipe(t)
+			if _, err := write.WriteString(tc.line); err != nil {
 				t.Fatal(err)
 			}
 			d, err := newFDApprover(read, ui.Discard).Approve(context.Background(), tc.req)
@@ -219,13 +211,8 @@ func TestFDApproverDeclinesAnythingThatIsNotAnAnswer(t *testing.T) {
 }
 
 func TestFDApproverWriteInAnswers(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer read.Close()
-	defer write.Close()
-	if _, err := write.Write([]byte("{\"allow\":true,\"write_in\":\"neither\"}\n")); err != nil {
+	read, write := approvalPipe(t)
+	if _, err := write.WriteString("{\"allow\":true,\"write_in\":\"neither\"}\n"); err != nil {
 		t.Fatal(err)
 	}
 	d, err := newFDApprover(read, ui.Discard).Approve(context.Background(), ui.Request{
@@ -240,12 +227,7 @@ func TestFDApproverWriteInAnswers(t *testing.T) {
 }
 
 func TestFDApproverCancelledContextRefuses(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer read.Close()
-	defer write.Close()
+	read, _ := approvalPipe(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -257,13 +239,8 @@ func TestFDApproverCancelledContextRefuses(t *testing.T) {
 		t.Fatalf("cancelled decision = %+v", d)
 	}
 
-	read2, write2, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer read2.Close()
-	defer write2.Close()
-	var buf bytes.Buffer
+	read2, _ := approvalPipe(t)
+	var buf lockedBuffer
 	ap := newFDApprover(read2, ui.NewJSONSink(&buf, nil))
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done := make(chan ui.Decision, 1)
@@ -293,12 +270,10 @@ func TestFDApproverCancelledContextRefuses(t *testing.T) {
 }
 
 func TestFDApproverClosedFDRefuses(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
+	read, write := approvalPipe(t)
+	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	defer read.Close()
-	write.Close()
 	d, err := newFDApprover(read, ui.Discard).Approve(context.Background(), ui.Request{ID: "1"})
 	if err != nil {
 		t.Fatal(err)
@@ -309,15 +284,10 @@ func TestFDApproverClosedFDRefuses(t *testing.T) {
 }
 
 func TestFDApproverReadsOneLineAtATime(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer read.Close()
-	defer write.Close()
-	if _, err := write.Write([]byte(
+	read, write := approvalPipe(t)
+	if _, err := write.WriteString(
 		"{\"approval_id\":\"Q1\",\"allow\":true,\"chosen\":[\"a\"]}\n" +
-			"{\"approval_id\":\"Q2\",\"allow\":true,\"write_in\":\"other\"}\n")); err != nil {
+			"{\"approval_id\":\"Q2\",\"allow\":true,\"write_in\":\"other\"}\n"); err != nil {
 		t.Fatal(err)
 	}
 	ap := newFDApprover(read, ui.Discard)
@@ -363,10 +333,10 @@ func TestParseRunArgsLoadsTwoImages(t *testing.T) {
 	dir := t.TempDir()
 	png := filepath.Join(dir, "a.png")
 	jpeg := filepath.Join(dir, "b.jpg")
-	if err := os.WriteFile(png, []byte("\x89PNG\x0D\x0A\x1A\x0A"), 0o644); err != nil {
+	if err := os.WriteFile(png, []byte("\x89PNG\x0D\x0A\x1A\x0A"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(jpeg, []byte("\xFF\xD8\xFF"), 0o644); err != nil {
+	if err := os.WriteFile(jpeg, []byte("\xFF\xD8\xFF"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	opts, err := parseRunArgs(newTestRegistry(t), []string{
@@ -382,11 +352,11 @@ func TestParseRunArgsLoadsTwoImages(t *testing.T) {
 	if _, ok := blocks[0].(llm.TextBlock); !ok {
 		t.Fatalf("first block = %T", blocks[0])
 	}
-	if got := blocks[1].(llm.ImageBlock).MediaType; got != "image/png" {
-		t.Fatalf("first media = %s", got)
+	if img, ok := blocks[1].(llm.ImageBlock); !ok || img.MediaType != "image/png" {
+		t.Fatalf("first block = %#v, want image/png", blocks[1])
 	}
-	if got := blocks[2].(llm.ImageBlock).MediaType; got != "image/jpeg" {
-		t.Fatalf("second media = %s", got)
+	if img, ok := blocks[2].(llm.ImageBlock); !ok || img.MediaType != "image/jpeg" {
+		t.Fatalf("second block = %#v, want image/jpeg", blocks[2])
 	}
 }
 
@@ -405,7 +375,7 @@ func TestLoadRunImagesRejectsBeforeAProviderWouldBeContacted(t *testing.T) {
 	}
 
 	over := filepath.Join(dir, "big.png")
-	f, err := os.Create(over)
+	f, err := os.Create(over) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,14 +390,14 @@ func TestLoadRunImagesRejectsBeforeAProviderWouldBeContacted(t *testing.T) {
 	}
 
 	text := filepath.Join(dir, "note.txt")
-	if err := os.WriteFile(text, []byte("hello"), 0o644); err != nil {
+	if err := os.WriteFile(text, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadRunImages([]string{text}); err == nil {
 		t.Fatal("a non-image was accepted")
 	}
 	bmp := filepath.Join(dir, "x.bmp")
-	if err := os.WriteFile(bmp, []byte("BM..."), 0o644); err != nil {
+	if err := os.WriteFile(bmp, []byte("BM..."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadRunImages([]string{bmp}); err == nil {
@@ -436,10 +406,10 @@ func TestLoadRunImagesRejectsBeforeAProviderWouldBeContacted(t *testing.T) {
 
 	gif := filepath.Join(dir, "g.gif")
 	webp := filepath.Join(dir, "w.webp")
-	if err := os.WriteFile(gif, []byte("GIF89a..."), 0o644); err != nil {
+	if err := os.WriteFile(gif, []byte("GIF89a..."), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(webp, []byte("RIFF\x00\x00\x00\x00WEBPVP"), 0o644); err != nil {
+	if err := os.WriteFile(webp, []byte("RIFF\x00\x00\x00\x00WEBPVP"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, err := loadRunImages([]string{gif, webp})
@@ -451,11 +421,11 @@ func TestLoadRunImagesRejectsBeforeAProviderWouldBeContacted(t *testing.T) {
 	}
 
 	exact := filepath.Join(dir, "exact.png")
-	ef, err := os.Create(exact)
+	ef, err := os.Create(exact) // #nosec G304 -- a path under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ef.Write([]byte("\x89PNG\x0D\x0A\x1A\x0A")); err != nil {
+	if _, err := ef.WriteString("\x89PNG\x0D\x0A\x1A\x0A"); err != nil {
 		t.Fatal(err)
 	}
 	if err := ef.Truncate(maxImageBytes); err != nil {
@@ -477,4 +447,47 @@ func TestParseRunArgsFifthImageErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("parse accepted a fifth image")
 	}
+}
+
+// lockedBuffer is the JSON sink's output in a test that polls it while
+// Approve, on another goroutine, is still writing.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// approvalPipe is the descriptor --approve-fd reads. Both ends close at
+// cleanup; one a test already closed is not an error.
+func approvalPipe(t *testing.T) (read, write *os.File) {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []*os.File{read, write} {
+		t.Cleanup(func() {
+			if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				t.Errorf("close %s: %v", f.Name(), err)
+			}
+		})
+	}
+	return read, write
 }
