@@ -442,7 +442,10 @@ class Endpoint:
         # close (the verdict already in) would lose everything the candidate
         # printed, and the worker report the record carries would read empty.
         # Flushing changes no verdict: the checker's exit code alone decides it.
-        for s in (sys.stdout, sys.stderr):
+        # Only the worker's stdout is flushed: the checker's is the hidden
+        # test's own output, which a fatal exit must keep discarding.
+        streams = (sys.stdout, sys.stderr) if self.side == "w" else (sys.stderr,)
+        for s in streams:
             try:
                 s.flush()
             except Exception:
