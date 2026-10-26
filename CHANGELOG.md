@@ -88,6 +88,40 @@ under **Unreleased** in the same commit as the code.
   together. The linked command gate adds the hard rule `command.harness_only`,
   which refuses review recording in agent shells. `contracts/verdict.schema.json`
   now lists that rule, matching DevCouncil at the pin. gusset stays at `320c56c2`.
+- `manvi serve`'s verification critic (`work.verify.task`) now runs on the
+  advisor tier, read-only, through the same provider, tier and effort setup as
+  `manvi run`. It used to inherit the session's model, bypassing the tier
+  profile. With the default profile that is `claude-fable-5-1`, about 2.5 times
+  the session model's price per verification. A tier profile or model this
+  binary cannot run no longer stops anything at startup: serve starts as before,
+  and each verification is refused with the tier error `manvi run` gives.
+- The commit tool's secret scan reads only what a commit adds. Binary files, by
+  git's own verdict with attributes included, are streamed from the object store
+  and searched for known credential values, so a binary copy of a secret is
+  refused and a large binary is committed rather than refused for size.
+  Credential values are collected from the secret-path file's HEAD and index
+  versions as well as the working tree. A limit the agent cannot cure (a line
+  over 1 MiB, more than 1,048,576 values, 64 MiB in all, or an unreadable
+  working-tree copy) is reported as a `scan_notes` entry on the result and in
+  its degraded list, with exact copies still refused by blob id. It is never a
+  refusal. Staged content beyond the 1 GiB stream budget or the commit's
+  deadline is refused, naming the blob.
+- The MCP client's `initialize` is single-flight. A call that times out while it
+  is outstanding leaves it running, later callers wait for the same handshake,
+  and a late reply is adopted once with one `notifications/initialized`. A
+  handshake that ends with the session in an unknown state ends the client: the
+  request failed locally, the server answered with a protocol revision this
+  client does not speak, or `initialized` could not be written. The Manager then
+  starts a fresh server. `Client.Alive` is false as soon as the client is
+  closed.
+- The pre-turn baseline is recorded beside the first model request instead of
+  before it, and a turn's first tool call waits for it. `agent` publishes two new
+  events, `ToolsDispatching` before a response's tool calls run and `TurnEnded`
+  on every exit of a turn whose `TurnStarting` was published. The end-of-turn
+  diff starts from the baseline's index instead of re-hashing the worktree.
+  Benchmarks: time to the first request with the sensor attached went from about
+  50 ms to under 0.1 ms, and the scoped diff went from 63 to 47 ms.
+- `artifacts` exports `ErrPublishedUnsynced` and `NewStoreWithDirSync`.
 
 ### Fixed
 
@@ -101,6 +135,29 @@ under **Unreleased** in the same commit as the code.
   are read as git reads them, and a worktree admin directory with no `gitdir`,
   an own `.git` or `commondir` naming nothing, and a byte-order mark are
   refused too, each of which used to drop the other checkouts silently.
+- An artifact whose directory flush failed after it was published is reported
+  as saved with its durability unconfirmed (`ErrPublishedUnsynced` beside the
+  artifact; the tools answer `durability: "unconfirmed"`). It used to be
+  reported as not written, and a retry then failed with `ErrExists`.
+- Directory flushes have one owner, `internal/syncdir`, which does nothing on
+  Windows, where a directory handle cannot be flushed. Session saves, artifact
+  writes and pinned file writes called it unconditionally there. The Windows
+  failure is inferred from the ledger's own note, not observed.
+- The budget ledger reclaims a reservation whose process exited with code 259
+  on Windows. That code is also STILL_ACTIVE, so the process used to be taken
+  as alive forever. Liveness is now confirmed with a zero-wait on the process.
+- The seeded pre-turn baseline index kept the time it was copied, not the
+  index's own, which defeated git's racy-timestamp check. A same-size edit made
+  in the same second as the index write could be recorded as unchanged.
+- The commit tool no longer locks the agent out of committing.
+  - A 20 MiB binary, a large binary deletion or rename, a large file at a
+    secret path, and a tracked secret file missing from the working tree used
+    to refuse with a remedy the agent could not perform.
+  - A secret copied before its tracked file was replaced by a symlink,
+    directory or FIFO is now caught.
+- The MCP client could send a second `initialize` while the first was still
+  outstanding: after a timeout, or after a malformed frame failed every pending
+  call.
 - `policy.check.command` now marks a hard refusal for an unreadable construct
   (`cd`, `git -C`, a heredoc, a substitution) with `policy.unreadable_only` once
   the line's redirections have been judged and passed, as the harness gate
