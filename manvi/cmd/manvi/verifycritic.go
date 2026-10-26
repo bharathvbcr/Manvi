@@ -11,14 +11,8 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
-	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 )
-
-// criticRole is the built-in role the verification op judges with. It is named
-// rather than hard-coded to a model so the router can place it on whichever
-// tier it assigns that role; this file makes no placement decision.
-const criticRole = "critic"
 
 // criticBuildTimeout bounds resolving the provider and model for the critic.
 const criticBuildTimeout = 30 * time.Second
@@ -43,8 +37,15 @@ type serveCritic struct {
 	build func(context.Context) (*criticRuntime, error)
 }
 
-func newServeCritic(reg *flags.Registry) *serveCritic {
-	return &serveCritic{build: func(ctx context.Context) (*criticRuntime, error) { return buildCriticRuntime(ctx, reg) }}
+// newServeCritic refuses a tier profile the session could not run before the
+// host starts, the same check `manvi run` makes before it contacts anyone. The
+// runtime itself is built lazily, on the first verification, because building
+// it resolves credentials and reaches the provider.
+func newServeCritic(reg *flags.Registry) (*serveCritic, error) {
+	if err := checkDefaultTiers(reg); err != nil {
+		return nil, err
+	}
+	return &serveCritic{build: func(ctx context.Context) (*criticRuntime, error) { return buildCriticRuntime(ctx, reg) }}, nil
 }
 
 // get builds the runtime once it succeeds. A failure is not cached: a provider
@@ -70,17 +71,15 @@ func (c *serveCritic) Judge(ctx context.Context, prompt string, criteria int) (s
 	if err != nil {
 		return "", err
 	}
-	prompt = strings.TrimSpace(prompt)
-	result, err := runtime.runner.RunSubAgent(ctx, devcouncil.SubAgentRequest{
-		Label:    "verify-critic",
-		Prompt:   prompt,
-		ReadOnly: true,
-		// The role's own placement, unparsed: the runner resolves it, and a
-		// router that places roles later changes what this means, not this line.
-		ModelSpec:    runtime.def.Model,
-		SystemPrompt: strings.TrimRight(runtime.def.SystemPrompt, "\n") + "\n\n" + devcouncil.CriterionVerdictInstruction(criteria),
-		Surface:      runtime.def.Surface(),
-	})
+	req := devcouncil.SubAgentRequest{Label: "verify-critic", Prompt: strings.TrimSpace(prompt)}
+	// The role's own placement, prompt and surface, read-only whatever the role
+	// says: the same policy the checkpoint critic runs under.
+	devcouncil.ApplyRole(&req, runtime.def, true)
+	req.SystemPrompt = strings.TrimRight(runtime.def.SystemPrompt, "\n") + "\n\n" + devcouncil.CriterionVerdictInstruction(criteria)
+	// A verdict goes to the advisor tier. Without a tier the child inherits the
+	// session's model, which is the tier profile bypassed.
+	req.Tier = agents.Route(runtime.def, true, true, 1)
+	result, err := runtime.runner.RunSubAgent(ctx, req)
 	if err != nil {
 		return "", err
 	}
@@ -92,35 +91,19 @@ func (c *serveCritic) Judge(ctx context.Context, prompt string, criteria int) (s
 func buildCriticRuntime(ctx context.Context, reg *flags.Registry) (*criticRuntime, error) {
 	ctx, cancel := context.WithTimeout(ctx, criticBuildTimeout)
 	defer cancel()
-	def, ok := agents.NewRegistry().Get(criticRole)
+	def, ok := agents.NewRegistry().Get(criticRoleName)
 	if !ok {
-		return nil, fmt.Errorf("the built-in %q role is not registered", criticRole)
+		return nil, fmt.Errorf("the built-in %q role is not registered", criticRoleName)
 	}
 	native, pipeline, err := nativeToolsWith(reg, nil) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
 	if err != nil {
 		return nil, err
 	}
-	providerName, _, err := reg.String(flags.LLMDefaultProvider)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := buildProvider(ctx, providerName, reg, credentials.NewResolver(), io.Discard, "")
-	if err != nil {
-		return nil, err
-	}
-	models, err := registerSessionLLM(pipeline, provider)
-	if err != nil {
-		return nil, err
-	}
-	model, _, err := resolveModelFor(ctx, providerName, provider, reg)
-	if err != nil {
-		return nil, err
-	}
-	effort, _, err := reg.String(flags.LLMEffort)
-	if err != nil {
-		return nil, err
-	}
-	effortCeiling, _, err := reg.String(flags.LLMEffortCeiling)
+	// The provider, tier profile, model and effort checks are buildRunEnv's, the
+	// one owner `manvi run` and `manvi reflect` build through, so a bad profile
+	// is refused here with the same error and the critic is placed on the
+	// advisor tier rather than the session's model.
+	env, err := buildRunEnv(ctx, io.Discard, reg, pipeline)
 	if err != nil {
 		return nil, err
 	}
@@ -128,12 +111,6 @@ func buildCriticRuntime(ctx context.Context, reg *flags.Registry) (*criticRuntim
 	if runner == nil {
 		return nil, errors.New("the harness built no sub-agent runner")
 	}
-	runner.attach(subAgentConfig{
-		provider: provider, models: models, model: model,
-		effort: effort, effortCeiling: effortCeiling,
-		registry: pipeline, native: native, meter: &subAgentMeter{},
-		coreToolsOnly:   coreToolsOnly(reg, provider.Name()),
-		assertInvariant: assertInvariant(reg),
-	})
+	runner.attach(env.subAgentConfig(reg, pipeline, native, &subAgentMeter{}, coreToolsOnly(reg, env.provider.Name())))
 	return &criticRuntime{runner: runner, def: def}, nil
 }
