@@ -141,9 +141,22 @@ func seedScratchIndex(ctx context.Context, root, dst string) bool {
 	if !filepath.IsAbs(src) {
 		src = filepath.Join(root, src)
 	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return false
+	}
 	raw, err := os.ReadFile(src) // #nosec G304 -- the path is git's own answer for this repository
 	if err != nil {
 		return false
 	}
-	return os.WriteFile(dst, raw, 0o600) == nil
+	if os.WriteFile(dst, raw, 0o600) != nil {
+		return false
+	}
+	// The copy keeps the original's modified time. Git decides whether an
+	// entry's stat data can be trusted by comparing it to the index file's own
+	// time, so a copy stamped "now" turns every entry written in the last second
+	// before the original into one that looks settled — and a same-sized edit
+	// made in that second is then hashed as the old content. A seed that cannot
+	// be stamped is not taken: the cold route is slower and has no such state.
+	return os.Chtimes(dst, info.ModTime(), info.ModTime()) == nil
 }
