@@ -82,10 +82,18 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan *Response
 
-	initMu       sync.Mutex
-	initResult   *InitializeResult
-	initErr      error
-	initTried    bool
+	// initMu guards the three fields below and is only ever held for a few
+	// instructions, never across a request: a second Initialize caller must be
+	// able to wait on its own context, and it cannot while queued on a mutex.
+	initMu sync.Mutex
+	// initResult is set once, by the flight that completed the handshake and
+	// sent notifications/initialized. It is never cleared.
+	initResult *InitializeResult
+	// initFatal is the error that ended the session's handshake for good. See
+	// Initialize.
+	initFatal error
+	// initFlight is the handshake in progress, nil when none is.
+	initFlight   *initFlight
 	closed       atomic.Bool
 	doneCh       chan struct{}
 	stderrDone   chan struct{}
@@ -798,20 +806,50 @@ func renderID(v any) string {
 // would freeze the whole tool surface, and nothing in this protocol is worth
 // waiting forever for.
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callCeiling())
+		defer cancel()
+	}
+
+	id, respCh, err := c.send(ctx, method, params)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		c.forget(id)
+		c.cancelRequest(id, method, ctx.Err())
+		// Whatever the server said about itself travels with the timeout. A
+		// wedge whose cause was recorded on stderr and then discarded is how
+		// "the tool call hung" became the whole of an operator's evidence.
+		return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+	case <-c.doneCh:
+		return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+	case resp, ok := <-respCh:
+		return c.replyResult(method, resp, ok, result)
+	}
+}
+
+// callCeiling is the bound on a wait whose caller set none.
+func (c *Client) callCeiling() time.Duration {
+	if c.cfg.Timeout > 0 {
+		return c.cfg.Timeout
+	}
+	return defaultCallTimeout
+}
+
+// send registers a pending entry for a new request and writes it. It is the
+// half of Call that does not wait, so the handshake can issue a request whose
+// life is not tied to any one caller's context. ctx only bounds the post-failure
+// wait for the server's explanation; it does not outlive the write.
+func (c *Client) send(ctx context.Context, method string, params any) (int64, chan *Response, error) {
 	if c.closed.Load() {
-		return c.closedReason()
+		return 0, nil, c.closedReason()
 	}
 	if !c.Alive() {
-		return fmt.Errorf("mcp: server %s has exited%s", c.cfg.Name, c.diagnosticsSuffix())
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		ceiling := c.cfg.Timeout
-		if ceiling <= 0 {
-			ceiling = defaultCallTimeout
-		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ceiling)
-		defer cancel()
+		return 0, nil, fmt.Errorf("mcp: server %s has exited%s", c.cfg.Name, c.diagnosticsSuffix())
 	}
 
 	id := c.reqCounter.Add(1)
@@ -820,7 +858,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	if params != nil {
 		raw, err := json.Marshal(params)
 		if err != nil {
-			return fmt.Errorf("mcp: encoding params for %s: %w", method, err)
+			return 0, nil, fmt.Errorf("mcp: encoding params for %s: %w", method, err)
 		}
 		paramsRaw = raw
 	}
@@ -834,7 +872,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 
 	data, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("mcp: encoding request for %s: %w", method, err)
+		return 0, nil, fmt.Errorf("mcp: encoding request for %s: %w", method, err)
 	}
 	data = append(data, '\n')
 
@@ -844,44 +882,41 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	c.pendingMu.Unlock()
 
 	if writeErr := c.writeFrame(data); writeErr != nil {
-		c.pendingMu.Lock()
-		delete(c.pending, id)
-		c.pendingMu.Unlock()
+		c.forget(id)
 		// A write that fails because the child stopped reading is usually a
 		// child that is exiting, and what it said on the way out is still in
 		// flight. Returning now made the same failure read differently
 		// depending on whether stderr had been drained yet.
 		c.awaitExit(ctx)
-		return fmt.Errorf("mcp: writing request %s to %s: %w%s", method, c.cfg.Name, writeErr, c.diagnosticsSuffix())
+		return 0, nil, fmt.Errorf("mcp: writing request %s to %s: %w%s", method, c.cfg.Name, writeErr, c.diagnosticsSuffix())
 	}
+	return id, respCh, nil
+}
 
-	select {
-	case <-ctx.Done():
-		c.pendingMu.Lock()
-		delete(c.pending, id)
-		c.pendingMu.Unlock()
-		c.cancelRequest(id, method, ctx.Err())
-		// Whatever the server said about itself travels with the timeout. A
-		// wedge whose cause was recorded on stderr and then discarded is how
-		// "the tool call hung" became the whole of an operator's evidence.
-		return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
-	case <-c.doneCh:
-		return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
-	case resp, ok := <-respCh:
-		if !ok || resp == nil {
-			return fmt.Errorf("mcp: server %s closed connection before replying to %s%s",
-				c.cfg.Name, method, c.diagnosticsSuffix())
-		}
-		if resp.Error != nil {
-			return &serverError{server: c.cfg.Name, rpc: resp.Error}
-		}
-		if result != nil && len(resp.Result) > 0 {
-			if err := json.Unmarshal(resp.Result, result); err != nil {
-				return fmt.Errorf("mcp: unmarshaling %s result from %s: %w", method, c.cfg.Name, err)
-			}
-		}
-		return nil
+// forget drops a request's pending entry, after which a reply to it is recorded
+// by dispatch as "no longer pending" and delivered nowhere.
+func (c *Client) forget(id int64) {
+	c.pendingMu.Lock()
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+}
+
+// replyResult turns what arrived on a request's channel into Call's result. A
+// closed channel (ok false) is the read loop flushing it at end of stream.
+func (c *Client) replyResult(method string, resp *Response, ok bool, result any) error {
+	if !ok || resp == nil {
+		return fmt.Errorf("mcp: server %s closed connection before replying to %s%s",
+			c.cfg.Name, method, c.diagnosticsSuffix())
 	}
+	if resp.Error != nil {
+		return &serverError{server: c.cfg.Name, rpc: resp.Error}
+	}
+	if result != nil && len(resp.Result) > 0 {
+		if err := json.Unmarshal(resp.Result, result); err != nil {
+			return fmt.Errorf("mcp: unmarshaling %s result from %s: %w", method, c.cfg.Name, err)
+		}
+	}
+	return nil
 }
 
 // cancelRequest tells the server a request this client issued is abandoned.
@@ -1032,19 +1067,112 @@ func (c *Client) Notify(method string, params any) error {
 	return c.writeFrame(data)
 }
 
-// Initialize performs the MCP handshake.
+// initFlight is one handshake in progress. Its request is not owned by any
+// caller: it ends when the server answers, when the transport ends, or when the
+// client is closed.
+type initFlight struct {
+	done      chan struct{} // closed once res and err are final
+	abort     chan struct{} // closed by Close
+	abortOnce sync.Once
+	res       *InitializeResult
+	err       error
+}
+
+func (f *initFlight) abortNow() { f.abortOnce.Do(func() { close(f.abort) }) }
+
+// Initialize performs the MCP handshake, once per session, however many callers
+// ask.
 //
-// A failed attempt does not poison the client: the handshake is retried on the
-// next call. The sync.Once this replaced kept the first error forever — a
-// single cancelled context during startup would have left every later call
-// failing with a stale failure even after the server came up.
+// The initialize request is single-flight and belongs to the client, not to the
+// first caller: it is never cancelled (the spec forbids cancelling it, and
+// Call's cancelRequest skips it), so a caller whose context ends does not
+// abandon it. It stays pending until the server answers, the server's stdout
+// ends or the client is closed, and a reply that arrives after every caller has
+// gone is still adopted — validated, recorded, and answered with exactly one
+// notifications/initialized — because a server that has answered considers the
+// session initialized whether or not anybody was waiting. Callers wait on the
+// shared result under their own context (or, with none, the call ceiling), and
+// one whose context ends gets its own error without disturbing the handshake.
+//
+// A handshake that fails is retryable, and only after it has resolved: an error
+// reply, an unusable revision, or a transport that died. initialize is never
+// re-sent while a previous one is outstanding at the server, because two
+// initialize requests on one session is a protocol violation and a late reply
+// could then be matched to the wrong attempt. The exception is a failed
+// notifications/initialized, which ends the handshake for the session: the
+// server did answer, a second initialize on the same stream is not allowed, and
+// a write that failed means the stream is gone — the Manager replaces the client.
+//
+// Spec: modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle (the
+// client MUST send initialized after a successful initialize) and
+// .../basic/utilities/cancellation (the initialize request MUST NOT be
+// cancelled by clients).
 func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 	c.initMu.Lock()
-	defer c.initMu.Unlock()
-	if c.initTried && c.initErr == nil {
-		return c.initResult, nil
+	switch {
+	case c.initResult != nil:
+		res := c.initResult
+		c.initMu.Unlock()
+		return res, nil
+	case c.initFatal != nil:
+		err := c.initFatal
+		c.initMu.Unlock()
+		return nil, err
 	}
+	f := c.initFlight
+	if f == nil {
+		f = &initFlight{done: make(chan struct{}), abort: make(chan struct{})}
+		c.initFlight = f
+		// Detached from the caller: the handshake outlives it. WithoutCancel keeps
+		// the context's values and drops its cancellation and deadline.
+		go c.runInitialize(context.WithoutCancel(ctx), f)
+	}
+	c.initMu.Unlock()
 
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callCeiling())
+		defer cancel()
+	}
+	select {
+	case <-f.done:
+		return f.res, f.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("mcp: initialize on %s: %w%s", c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+	}
+}
+
+// runInitialize drives one flight to its end and publishes the outcome.
+func (c *Client) runInitialize(ctx context.Context, f *initFlight) {
+	res, err := c.handshake(ctx, f)
+	var end *handshakeEnded
+	fatal := errors.As(err, &end)
+
+	c.initMu.Lock()
+	switch {
+	case err == nil:
+		c.initResult = res
+	case fatal:
+		c.initFatal = err
+	}
+	c.initFlight = nil
+	c.initMu.Unlock()
+
+	f.res, f.err = res, err
+	close(f.done)
+}
+
+// handshakeEnded marks a handshake failure that is not retryable on this
+// session. It unwraps, so callers see the underlying error unchanged.
+type handshakeEnded struct{ err error }
+
+func (e *handshakeEnded) Error() string { return e.err.Error() }
+func (e *handshakeEnded) Unwrap() error { return e.err }
+
+// handshake sends initialize, waits for its resolution however long that takes,
+// and completes the handshake. A failure is retryable unless it is a
+// *handshakeEnded.
+func (c *Client) handshake(ctx context.Context, f *initFlight) (*InitializeResult, error) {
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersionLatest,
 		// No roots capability: nothing here serves roots/list, and a server
@@ -1057,32 +1185,42 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 		},
 	}
 
-	var res InitializeResult
-	if err := c.Call(ctx, "initialize", params, &res); err != nil {
-		c.initErr = err
-		c.initTried = false // a later call may retry; the server may recover
+	id, respCh, err := c.send(ctx, "initialize", params)
+	if err != nil {
 		return nil, err
 	}
-	if !slices.Contains(handshakeVersions, res.ProtocolVersion) {
+
+	var resp *Response
+	var ok bool
+	select {
+	case resp, ok = <-respCh:
+	case <-c.doneCh:
+		// A reply that landed in the same instant is still a reply.
+		select {
+		case resp, ok = <-respCh:
+		default:
+			return nil, fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+		}
+	case <-f.abort:
+		c.forget(id)
+		return nil, c.closedReason()
+	}
+
+	var out InitializeResult
+	if err := c.replyResult("initialize", resp, ok, &out); err != nil {
+		return nil, err
+	}
+	if !slices.Contains(handshakeVersions, out.ProtocolVersion) {
 		// Not cached: the next call asks again, and a server that was
 		// misconfigured for a moment is not condemned for the session.
-		c.initErr = fmt.Errorf("mcp: %s answered initialize with protocol revision %q, which this client does not speak (it speaks %s)",
-			c.cfg.Name, res.ProtocolVersion, strings.Join(handshakeVersions, ", "))
-		c.initTried = false
-		return nil, c.initErr
+		return nil, fmt.Errorf("mcp: %s answered initialize with protocol revision %q, which this client does not speak (it speaks %s)",
+			c.cfg.Name, out.ProtocolVersion, strings.Join(handshakeVersions, ", "))
 	}
-	c.initResult = &res
-	c.initErr = nil
-	c.initTried = true
 
-	// Send initialized notification
 	if err := c.Notify("notifications/initialized", map[string]any{}); err != nil {
-		c.initErr = err
-		c.initTried = false
-		return nil, fmt.Errorf("mcp: notifying initialization to %s: %w", c.cfg.Name, err)
+		return nil, &handshakeEnded{fmt.Errorf("mcp: notifying initialization to %s: %w", c.cfg.Name, err)}
 	}
-
-	return c.initResult, nil
+	return &out, nil
 }
 
 // ListTools returns all tools offered by the MCP server, after checking that
@@ -1218,6 +1356,15 @@ func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceConten
 func (c *Client) Close() error {
 	if c.closed.Swap(true) {
 		return nil
+	}
+
+	// Release a handshake in flight and everybody waiting on it. closed is set
+	// first, so a flight that starts after this read fails in send.
+	c.initMu.Lock()
+	f := c.initFlight
+	c.initMu.Unlock()
+	if f != nil {
+		f.abortNow()
 	}
 
 	// Close stdin to signal EOF to server
