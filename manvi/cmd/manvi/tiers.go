@@ -441,18 +441,6 @@ func checkTiers(reg *flags.Registry, provider string) (tierTable, error) {
 	return planTiers(table, anthropicTiers{}, capped, strings.TrimSpace(ceiling))
 }
 
-// checkDefaultTiers checks the profile for the provider the registry defaults
-// to, for a host that must refuse a profile its sessions could not run before
-// it builds any session: checkTiers, with the provider read from the registry.
-func checkDefaultTiers(reg *flags.Registry) error {
-	provider, _, err := reg.String(flags.LLMDefaultProvider)
-	if err != nil {
-		return err
-	}
-	_, err = checkTiers(reg, provider)
-	return err
-}
-
 // inactiveOverrides lists tier values an operator set that this session will
 // not apply, so a run off anthropic can say so instead of looking configured.
 func (t tierTable) inactiveOverrides() []string {

@@ -237,3 +237,27 @@ func TestServeCriticWithNoTierProfileStaysOnTheSessionModel(t *testing.T) {
 		t.Fatal("the critic's write tool ran")
 	}
 }
+
+// An advisor tier this binary cannot run must not stop serve starting: the
+// sidecar also serves the board, the code graph and scans. Serve constructs the
+// critic as it always did, and verification is what degrades, naming the tier on
+// every call because a failed build is not cached. Nothing listens at the base
+// URL, so a transport error here would mean the provider was contacted before
+// the profile was refused.
+func TestServeCriticStartsOnABadTierAndEveryVerificationNamesIt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-fixture-critic")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("MANVI_MODEL", "")
+	t.Setenv(flags.EnvKey(flags.LLMDefaultProvider), anthropic.Name)
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierAdvisor)), "claude-fable-9")
+
+	critic := newServeCritic(tierRegistry(t))
+	if critic == nil {
+		t.Fatal("newServeCritic produced no critic")
+	}
+	for call := 1; call <= 2; call++ {
+		_, err := critic.Judge(context.Background(), "judge the change", 1)
+		requireTierRefusal(t, err, agents.TierAdvisor, "claude-fable-9", "catalogue")
+	}
+}

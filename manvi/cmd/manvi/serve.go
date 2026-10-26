@@ -213,13 +213,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		// The verification op runs the operator's command and nothing a request
 		// names: both the command and the dcverify binary come from operator
 		// scope (environment), the same sources the end-of-turn sensor uses.
-		critic, err := newServeCritic(reg)
-		if err != nil {
-			return err
-		}
 		verify, err = serve.NewVerifyRunner(serve.VerifyDeps{
 			Client:         client,
-			Critic:         critic,
+			Critic:         newServeCritic(reg),
 			Command:        operatorVerifyCommand(),
 			VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 			CoverageFile:   os.Getenv("MANVI_COVERAGE"),

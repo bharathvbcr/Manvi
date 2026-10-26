@@ -37,15 +37,13 @@ type serveCritic struct {
 	build func(context.Context) (*criticRuntime, error)
 }
 
-// newServeCritic refuses a tier profile the session could not run before the
-// host starts, the same check `manvi run` makes before it contacts anyone. The
-// runtime itself is built lazily, on the first verification, because building
-// it resolves credentials and reaches the provider.
-func newServeCritic(reg *flags.Registry) (*serveCritic, error) {
-	if err := checkDefaultTiers(reg); err != nil {
-		return nil, err
-	}
-	return &serveCritic{build: func(ctx context.Context) (*criticRuntime, error) { return buildCriticRuntime(ctx, reg) }}, nil
+// newServeCritic never fails. The host serves the board, the code graph, the
+// harness and scans besides verification, so a tier profile or model this
+// binary cannot run must not stop it starting: it degrades the one op that
+// needs the critic instead. The runtime is built on the first verification,
+// where buildRunEnv refuses the profile with the error `manvi run` gives.
+func newServeCritic(reg *flags.Registry) *serveCritic {
+	return &serveCritic{build: func(ctx context.Context) (*criticRuntime, error) { return buildCriticRuntime(ctx, reg) }}
 }
 
 // get builds the runtime once it succeeds. A failure is not cached: a provider
