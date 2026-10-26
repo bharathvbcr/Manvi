@@ -713,6 +713,20 @@ func (s *Scrubber) Clean(text string) string {
 
 func withheld(reason error) string { return Withheld + ": " + reason.Error() + "]" }
 
+// MaxLen is the length in bytes of the longest value being scrubbed, zero when
+// there is none. A caller that searches a stream for these values in windows
+// needs it: a window must overlap the next by one byte less than this for a
+// value that straddles the edge to be found whole. values is sorted longest
+// first (see Watch), so it is the first one's size.
+func (s *Scrubber) MaxLen() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.values) == 0 {
+		return 0
+	}
+	return s.values[0].Size()
+}
+
 // Count reports how many distinct values are being scrubbed, so a run report
 // can say the backstop is armed without describing what it holds.
 func (s *Scrubber) Count() int {

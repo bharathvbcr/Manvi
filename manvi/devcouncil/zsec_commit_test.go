@@ -1,12 +1,17 @@
 package devcouncil
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
+	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
 // cp .env notes.txt, stage, commit: the staged name matches no secret pattern.
@@ -78,6 +83,138 @@ func TestCommitStillAcceptsOrdinaryContent(t *testing.T) {
 	res := f.call("devcouncil_git_commit", map[string]any{"message": "app"})
 	if res.IsError {
 		t.Fatalf("an ordinary commit was refused: %s", res.Text)
+	}
+}
+
+// requireCommitRefusedUnchecked asserts the commit was refused because the
+// content check could not run — not because it found a leak — and that the
+// refusal says why, and that nothing landed.
+func requireCommitRefusedUnchecked(t *testing.T, f *fixture, res tools.Result, reason ...string) {
+	t.Helper()
+	if !res.IsError {
+		t.Fatalf("the commit went through although the content check could not run: %s", res.Text)
+	}
+	for _, want := range append([]string{"the check did not run"}, reason...) {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("the refusal does not say %q: %s", want, res.Text)
+		}
+	}
+	if strings.Contains(res.Text, "AUDITsecretVALUE") {
+		t.Errorf("the refusal carries the value: %s", res.Text)
+	}
+	if head := f.call("devcouncil_git_log", map[string]any{"max": 5}); strings.Contains(head.Text, "innocent") {
+		t.Fatalf("the commit landed: %s", head.Text)
+	}
+}
+
+func stageAndCommit(t *testing.T, f *fixture, path string) tools.Result {
+	t.Helper()
+	if st := f.call("devcouncil_git_stage", map[string]any{"paths": []string{path}}); st.IsError {
+		t.Fatalf("staging %q was refused: %s", path, st.Text)
+	}
+	return f.call("devcouncil_git_commit", map[string]any{"message": "innocent"})
+}
+
+// A secret-path file the check cannot stat is a file whose working-tree copy it
+// never read. That was a silent skip; it is a note now, and the commit still
+// goes through because the agent cannot cure it and git holds the file's blobs.
+func TestCommitNotesASecretPathFileThatCannotBeStatted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through a mode-0 directory")
+	}
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+	write(t, f.root, "secrets/token.txt", secretBody)
+	run(t, f.root, "add", "secrets/token.txt")
+	run(t, f.root, "commit", "-qm", "track the secret")
+	checkout(t, f)
+	write(t, f.root, "app.js", "const mode = 'development';\n")
+	if st := f.call("devcouncil_git_stage", map[string]any{"paths": []string{"app.js"}}); st.IsError {
+		t.Fatalf("staging was refused: %s", st.Text)
+	}
+	dir := filepath.Join(f.root, "secrets")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: a directory, not a file; 0600 would make it unremovable
+
+	res := f.call("devcouncil_git_commit", map[string]any{"message": "innocent"})
+	requireNoted(t, res, "unreadable_worktree", "secrets/token.txt")
+}
+
+// A working-tree secret file this process cannot open is kept out of the hash
+// batch and noted: the commit goes on, and the note says nothing else holds an
+// untracked file.
+func TestCommitNotesAnUntrackedSecretPathFileThatCannotBeOpened(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+	write(t, f.root, ".env", secretBody)
+	checkout(t, f)
+	f.reg.scan.openFile = func(string) (io.ReadCloser, error) { return nil, errors.New("input/output error") }
+	write(t, f.root, "app.js", "const mode = 'development';\n")
+	res := stageAndCommit(t, f, "app.js")
+	requireNoted(t, res, "unreadable_worktree", ".env")
+	if !strings.Contains(res.Text, "input/output error") || !strings.Contains(res.Text, "the file is untracked") {
+		t.Errorf("the note should carry the cause and say the file is untracked: %s", res.Text)
+	}
+}
+
+// A binary file has no added lines in a plain patch, so a value inside one — or
+// a copy of a secret file with a NUL appended, which has a new blob id — was
+// never looked at.
+func TestCommitRefusesABinaryCarryingASecretValue(t *testing.T) {
+	const value = "sk-live-AUDITsecretVALUE0123456789"
+	cases := []struct {
+		name, file, body, attributes string
+	}{
+		{"edited copy with a trailing NUL", "copy.bin", secretBody + "\x00", ""},
+		{"value inside binary data", "blob.bin", "\x00\x01\x02\xff" + value + "\x00\x03", ""},
+		{"value on a line of binary data", "data.bin", "\x89PNG\r\n\x1a\n\x00\x00\nkey=" + value + "\n\x00", ""},
+		{"file marked binary by gitattributes", "notes.dat", "# notes\n" + secretBody, "*.dat binary\n"},
+		{"file marked -diff by gitattributes", "notes.dat", "# notes\n" + secretBody, "*.dat -diff\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+			write(t, f.root, ".env", secretBody)
+			if c.attributes != "" {
+				write(t, f.root, ".gitattributes", c.attributes)
+			}
+			checkout(t, f)
+			write(t, f.root, c.file, c.body)
+			res := stageAndCommit(t, f, c.file)
+			if !res.IsError || res.Rule != string(policy.RuleSecretPath) || res.Severity != string(policy.Hard) {
+				t.Fatalf("a binary carrying the secret was committed: %+v", res)
+			}
+			if !strings.Contains(res.Text, c.file) || !strings.Contains(res.Text, "contains a value assigned in .env") ||
+				strings.Contains(res.Text, "AUDITsecretVALUE") {
+				t.Fatalf("the refusal should name the path and the reason, never the value: %s", res.Text)
+			}
+		})
+	}
+}
+
+// A symlink at a secret path stores its target's name in git, not the secret,
+// and has no bytes of its own to read; it is skipped, not refused.
+func TestCommitIgnoresASymlinkAtASecretPath(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+	write(t, f.root, "real.txt", secretBody)
+	if err := os.Symlink("real.txt", filepath.Join(f.root, ".env")); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	checkout(t, f)
+	write(t, f.root, "app.js", "const mode = 'development';\n")
+	if res := stageAndCommit(t, f, "app.js"); res.IsError {
+		t.Fatalf("a symlink at a secret path refused an ordinary commit: %s", res.Text)
+	}
+}
+
+// Showing binaries as text must not turn an ordinary binary into a refusal.
+func TestCommitStillAcceptsACleanBinary(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+	write(t, f.root, ".env", secretBody)
+	checkout(t, f)
+	write(t, f.root, "logo.bin", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01\x02\n\xff\xfe")
+	if res := stageAndCommit(t, f, "logo.bin"); res.IsError {
+		t.Fatalf("a clean binary was refused: %s", res.Text)
 	}
 }
 
