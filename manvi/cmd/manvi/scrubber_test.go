@@ -155,3 +155,23 @@ func TestWatchValueSkipsShortAndDuplicateValues(t *testing.T) {
 		t.Fatalf("Clean = %q", got)
 	}
 }
+
+// The commit check sizes its search windows by the longest value the scrubber
+// watches, so MaxLen must follow the values — including ones armed mid-session
+// — and be zero when there are none.
+func TestScrubberMaxLenFollowsTheLongestWatchedValue(t *testing.T) {
+	s := credentials.NewScrubber()
+	maxLen := knownSecretMaxLenIn(s, credentials.NewResolver())
+	if got := s.MaxLen(); got != 0 {
+		t.Fatalf("MaxLen of an empty scrubber = %d", got)
+	}
+	s.WatchValue("0123456789abcdef", "x")
+	s.WatchValue("0123456789abcdefghijklmn", "y")
+	s.WatchValue("short", "z")
+	if got := s.MaxLen(); got != 24 {
+		t.Fatalf("MaxLen = %d, want 24", got)
+	}
+	if got := maxLen(); got < 24 {
+		t.Fatalf("knownSecretMaxLenIn = %d, want at least 24 (it also arms the resolver's credentials)", got)
+	}
+}

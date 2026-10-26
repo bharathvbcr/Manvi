@@ -8,11 +8,12 @@ import (
 
 // The provider, tier, model and effort setup has one owner. `manvi reflect`
 // once carried its own copy that omitted the effort validation `manvi run`
-// had; this pins that neither command spells the setup out again, so a check
-// added to buildRunEnv reaches both.
+// had; this pins that neither command, nor the serve verification critic,
+// spells the setup out again, so a check added to buildRunEnv reaches all
+// three.
 func TestRunAndReflectShareOneRunEnvSetup(t *testing.T) {
 	owned := []string{"agent.PlanEffort(", "checkTiers(", "registerSessionLLM(", "resolveModelFor(", "mainEffort(", "buildProvider("}
-	for _, file := range []string{"run.go", "reflect.go"} {
+	for _, file := range []string{"run.go", "reflect.go", "verifycritic.go"} {
 		// #nosec G304 -- fixed names in this package's own directory.
 		raw, err := os.ReadFile(file)
 		if err != nil {

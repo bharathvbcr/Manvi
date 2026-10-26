@@ -89,6 +89,44 @@ type TurnStarting struct {
 	Turn int
 }
 
+// TurnEnded is published when Run returns, on every way out of a turn whose
+// TurnStarting was published: a natural stop, an error from the provider or the
+// log, a cancelled context, a listener's refusal and a panic. It is the end of
+// the scope TurnStarting opens.
+//
+// It exists so a listener that started work at TurnStarting — the pre-turn
+// baseline is recorded that way — can stop and collect it. Without it the work
+// outlived any turn that failed before the terminal checkpoint, with its child
+// processes still running after Run had returned. It is dispatched with a
+// context that is never cancelled, because the turn's own may be the reason the
+// turn ended, and a listener's errors are not the turn's: the turn is already
+// over, and there is nobody left to hand one to.
+type TurnEnded struct {
+	Turn int
+}
+
+// ToolsDispatching is published before a response's tool calls run, once per
+// response that carries any. It is the last point at which nothing the turn
+// asked for has touched the world.
+//
+// It exists for a listener that started work at TurnStarting and let the turn
+// go on without it. The pre-turn baseline is taken that way, so the first model
+// request is not held behind it; the price is that the baseline must still be a
+// photograph of the tree before any tool of the turn has run, and this is where
+// that is enforced. A listener that returns an error ends the turn, as it does
+// at TurnStarting: a listener that could not hold the line must not have its
+// silence read as permission.
+//
+// PreStep cannot serve: it runs before a step's request, so the first tool call
+// of a turn is dispatched before any PreStep that could wait for it. And the
+// tool pipeline's own bus is not this one — it outlives the turn, where a
+// listener here dies with the loop that registered it.
+type ToolsDispatching struct {
+	Turn  int
+	Step  int
+	Calls int
+}
+
 type TurnStopping struct {
 	Turn     int
 	Steps    int
@@ -316,6 +354,10 @@ type Loop struct {
 	// step/start with no matching end yet. Run's deferred closer reads them so
 	// every exit, including a failing one, leaves the log balanced.
 	turnOpen, stepOpen bool
+	// announced is the turn whose TurnStarting has been published and whose
+	// TurnEnded has not, zero when there is none. Run's deferred closer reads
+	// it, so the pair is balanced on every exit however early the turn failed.
+	announced int
 }
 
 // NewLoop builds a driver.
@@ -762,6 +804,7 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 	// Run returns is untouched: closing is best-effort and only runs when the
 	// normal path did not already end the turn.
 	defer l.closeOpenBoundaries()
+	defer l.announceTurnEnd(ctx)
 	currentTurn, err := l.openTurn(ctx, prompt)
 	if err != nil {
 		return Outcome{}, err
@@ -830,6 +873,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		}
 
 		calls := response.Message.ToolCalls()
+		if len(calls) > 0 {
+			if err := bus.Serial(l.bus, ctx, &ToolsDispatching{
+				Turn: currentTurn, Step: step, Calls: len(calls),
+			}); err != nil {
+				return out, err
+			}
+		}
 		tally, err := l.dispatchCalls(ctx, &out, calls)
 		if err != nil {
 			return out, err
@@ -913,6 +963,17 @@ func (l *Loop) closeOpenBoundaries() {
 	}
 }
 
+// announceTurnEnd publishes TurnEnded for the turn TurnStarting announced, once.
+func (l *Loop) announceTurnEnd(ctx context.Context) {
+	turn := l.announced
+	if turn == 0 {
+		return
+	}
+	l.announced = 0
+	// Listener errors are dropped by design; see TurnEnded.
+	_ = bus.Serial(l.bus, context.WithoutCancel(ctx), &TurnEnded{Turn: turn})
+}
+
 // openTurn resets the per-turn state, opens the turn in the log and records
 // the prompt that starts it. It returns the turn's number.
 func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
@@ -930,6 +991,10 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	// listener that could not establish a baseline would otherwise have its
 	// silence read as "nothing had changed yet", which is the same shape as the
 	// defect it exists to fix.
+	//
+	// Recorded before the dispatch, not after: a listener that started work and
+	// then a later one that refused leaves the turn needing its end announced.
+	l.announced = currentTurn
 	if err := bus.Serial(l.bus, ctx, &TurnStarting{Turn: currentTurn}); err != nil {
 		return 0, err
 	}

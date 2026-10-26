@@ -228,13 +228,78 @@ def shell_body(out, err, limit):
 # --- OS containment ----------------------------------------------------------
 
 
-def _read_git_pointer(path):
-    """The directory a `.git` file or `gitdir`/`commondir` file points at."""
-    with open(path, encoding="utf-8") as f:
-        line = f.read().strip()
-    if line.startswith("gitdir:"):
-        line = line[len("gitdir:"):].strip()
-    return os.path.realpath(os.path.join(os.path.dirname(path), line))
+class GitGuardError(ContainmentUnavailable):
+    """A git pointer in the walk could not be read or parsed.
+
+    Guarding the checkouts around the benchmark means following every `.git`
+    file, `commondir` and registered worktree's `gitdir`. One that cannot be
+    followed leaves a checkout that tracks hidden tests and reference solutions
+    unguarded, and an unguarded checkout is indistinguishable from "there was
+    nothing to guard" -- so the guard refuses instead of guessing. It is a
+    ContainmentUnavailable: containment that cannot be set up is the same
+    refusal whichever part could not be set up. `path` is the offending file.
+    """
+
+    def __init__(self, path, reason):
+        self.path = path
+        super().__init__(
+            f"cannot work out which git checkouts to guard: {path}: {reason}. "
+            f"Refusing to run: an unguarded checkout would leave hidden tests "
+            f"and reference solutions readable to the model. Repair or remove "
+            f"that path.")
+
+
+def _read_git_pointer(path, *, dotgit=False, optional=False, must_exist=False):
+    """The directory a `.git` file or `gitdir`/`commondir` file points at.
+
+    Parsed the way git parses it (checked against git 2.54: each variant below
+    makes `git status` fail with "invalid gitfile format" or "not a git
+    repository"). A `.git` file is exactly `gitdir: <path>` -- the literal
+    prefix with its space, the rest of the file taken as the path with only the
+    trailing newline dropped, so an extra line becomes part of the path. A UTF-8
+    byte-order mark, leading whitespace and more than one line are refused in
+    every pointer: git cannot follow them, and a pointer git cannot follow names
+    a checkout this guard cannot name.
+
+    Raises GitGuardError when the file cannot be read, is not UTF-8, or names
+    nothing. With `optional`, only a file that does not exist (or whose parent
+    is not a directory) returns None: "no such file" is a fact about the
+    repository, whereas an unreadable one is not. With `must_exist`, a target
+    that is not a directory raises too: the own `.git` file and `commondir`
+    point at the repository this guard is protecting, and a target that is not
+    there leaves the whole guard set empty. A sibling worktree's `gitdir` does
+    not set it, because its target is the sibling's checkout, which is
+    legitimately gone once removed.
+    """
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+    except (FileNotFoundError, NotADirectoryError) as e:
+        if optional:
+            return None
+        raise GitGuardError(path, f"{type(e).__name__}: {e.strerror}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise GitGuardError(path, f"{type(e).__name__}: {e}") from e
+    if text.startswith("\ufeff"):
+        raise GitGuardError(path, "it begins with a UTF-8 byte-order mark, "
+                                  "which git does not accept")
+    if dotgit:
+        if not text.startswith("gitdir: "):
+            raise GitGuardError(path, "a .git file must start with 'gitdir: '")
+        line = text[len("gitdir: "):].rstrip("\r\n")
+    else:
+        line = text.rstrip()
+    if not line:
+        raise GitGuardError(path, "the pointer names no directory")
+    if line != line.lstrip():
+        raise GitGuardError(path, "the pointer starts with whitespace")
+    if "\n" in line or "\r" in line:
+        raise GitGuardError(path, "the pointer spans more than one line")
+    target = os.path.realpath(os.path.join(os.path.dirname(path), line))
+    if must_exist and not os.path.isdir(target):
+        raise GitGuardError(path, f"it points at {target}, which is not a "
+                                  f"directory")
+    return target
 
 
 def git_guard_roots(*starts):
@@ -253,9 +318,19 @@ def git_guard_roots(*starts):
     the nested layout -- a worktree under the main checkout's gitignored tmp/
     -- where the main checkout's work tree tracks the same hidden tests and
     used to be dropped from the guard for "containing" the bench. Only paths
-    that exist are returned (a bwrap tmpfs mask needs a mount point). A `.git`
-    pointer that cannot be parsed protects its whole worktree rather than none
-    of it.
+    that exist are returned (a bwrap tmpfs mask needs a mount point), so a
+    pruned worktree whose pointer is readable but whose target is gone is
+    simply absent.
+
+    Fails closed: a `.git` pointer, `commondir`, or any registered worktree's
+    `gitdir` that cannot be read or parsed raises GitGuardError naming it, and
+    so does a worktree admin directory with no `gitdir` (its checkout is live)
+    and an own `.git` or `commondir` that leads nowhere. Only a sibling's
+    well-formed `gitdir` naming a checkout that is gone is let through. It
+    must not be skipped or answered with the start itself -- the start is the
+    checkout the benchmark runs in and is filtered out, so that would silently
+    drop every sibling. Callers that need this to fail once, at start-up, call
+    it before anything runs (run.py:require_containment does).
     """
     starts = [os.path.realpath(p) for p in starts if p]
 
@@ -270,25 +345,40 @@ def git_guard_roots(*starts):
                 if not owned:
                     own.add(cur)
                     owned = True
+                if os.path.isdir(dotgit):
+                    gitdir = common = os.path.realpath(dotgit)
+                else:
+                    gitdir = common = _read_git_pointer(dotgit, dotgit=True,
+                                                        must_exist=True)
+                    cdir = _read_git_pointer(os.path.join(gitdir, "commondir"),
+                                             optional=True, must_exist=True)
+                    if cdir is not None:
+                        common = cdir
+                roots.update((gitdir, common))
+                wtroot = os.path.join(common, "worktrees")
                 try:
-                    if os.path.isdir(dotgit):
-                        gitdir = common = os.path.realpath(dotgit)
-                    else:
-                        gitdir = common = _read_git_pointer(dotgit)
-                        cdir = os.path.join(gitdir, "commondir")
-                        if os.path.exists(cdir):
-                            common = _read_git_pointer(cdir)
-                    roots.update((gitdir, common))
-                    wtroot = os.path.join(common, "worktrees")
-                    if os.path.isdir(wtroot):
-                        for name in os.listdir(wtroot):
-                            ptr = os.path.join(wtroot, name, "gitdir")
-                            if os.path.exists(ptr):
-                                roots.add(os.path.dirname(_read_git_pointer(ptr)))
-                    if os.path.basename(common) == ".git":
-                        roots.add(os.path.dirname(common))
-                except (OSError, UnicodeDecodeError):
-                    roots.add(cur)
+                    names = os.listdir(wtroot)
+                except (FileNotFoundError, NotADirectoryError):
+                    names = []      # a repository with no linked worktrees
+                except OSError as e:
+                    raise GitGuardError(wtroot, f"{type(e).__name__}: {e}") from e
+                for name in names:
+                    entry = os.path.join(wtroot, name)
+                    try:
+                        is_entry = stat.S_ISDIR(os.stat(entry).st_mode)
+                    except FileNotFoundError:
+                        continue    # removed while we were listing
+                    except OSError as e:
+                        raise GitGuardError(entry, f"{type(e).__name__}: {e}") from e
+                    if not is_entry:
+                        continue    # a stray file (.DS_Store), not an admin dir
+                    # An admin directory is a live checkout until git prunes
+                    # the whole directory; one with no readable `gitdir` is a
+                    # checkout this guard cannot name, not an absent one.
+                    roots.add(os.path.dirname(_read_git_pointer(
+                        os.path.join(entry, "gitdir"))))
+                if os.path.basename(common) == ".git":
+                    roots.add(os.path.dirname(common))
             parent = os.path.dirname(cur)
             if parent == cur:
                 break

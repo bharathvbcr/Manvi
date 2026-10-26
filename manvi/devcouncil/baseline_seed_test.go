@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The baseline's scratch index is seeded from the repository's own so that
@@ -201,5 +202,54 @@ func TestSeededBaselineSpawnBound(t *testing.T) {
 	}
 	if got := procSpawns.Load() - before; got > 3 {
 		t.Fatalf("the seeded baseline spawned %d git processes, bound is 3", got)
+	}
+}
+
+// Git trusts an entry's stat data unless the entry is as new as the index file
+// that holds it — the racy-timestamp rule, which is how a same-sized edit made
+// in the second the index was written is ever noticed. The rule reads the index
+// file's own modified time, so a copy stamped "now" erases it: the entry looks
+// settled and the edit is hashed as the old content. The seeded baseline copies
+// the index, so the copy has to keep the original's time.
+//
+// The fixture makes the situation exact rather than waiting for a second
+// boundary: the file and the index are both stamped an hour back, stat checking
+// is reduced to mtime and size, and the file is rewritten to the same size with
+// the same mtime. Only the racy rule can tell the two contents apart.
+func TestSeededBaselineSeesASameSizedEditMadeInTheSecondTheIndexWasWritten(t *testing.T) {
+	root := t.TempDir()
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "config", "core.checkStat", "minimal")
+	gitIn(t, root, "config", "core.trustctime", "false")
+	past := time.Now().Add(-time.Hour)
+
+	stamp := func(path string) {
+		t.Helper()
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, root, "f.dat", "aaaaaa")
+	stamp(filepath.Join(root, "f.dat"))
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-qm", "seed")
+	stamp(filepath.Join(root, ".git", "index"))
+
+	write(t, root, "f.dat", "bbbbbb")
+	stamp(filepath.Join(root, "f.dat"))
+
+	r := benchRegistry(root)
+	ctx := context.Background()
+	cold, err := r.worktreeTree(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := r.worktreeTree(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded != cold {
+		t.Fatalf("the seeded baseline recorded %s but the working tree is %s: it hashed the edited file as its old content",
+			seeded, cold)
 	}
 }

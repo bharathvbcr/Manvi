@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,9 @@ func FuzzDispatchNeverAnswersUnderSomeoneElsesID(f *testing.F) {
 		`{"jsonrpc":"2.0","id":9223372036854775808,"result":{}}`,
 		`{"jsonrpc":"2.0","method":"notifications/message","params":{}}`,
 		`{"method":"sampling/createMessage","id":1}`,
+		`{"jsonrpc":"2.0","id":7,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":"r-1","method":"roots/list"}`,
+		`{"jsonrpc":"2.0","id":null,"method":"ping"}`,
 		`{"jsonrpc":"2.0","id":1}`,
 		`{"result":{}}`,
 		`{"log":"a server writing structured chatter to stdout"}`,
@@ -82,8 +86,13 @@ func FuzzDispatchNeverAnswersUnderSomeoneElsesID(f *testing.F) {
 	inFlight := []int64{1, 2, 3, 17}
 
 	f.Fuzz(func(t *testing.T, line string) {
+		// A real stdin, so a reply the client writes is observable. With none,
+		// answerServerFrame's write failed into a diagnostic and the target
+		// could not tell a request that was answered from one that was not.
+		in := &recordingStdin{}
 		c := &Client{
 			cfg:     ServerConfig{Name: "fuzz-server"},
+			stdin:   in,
 			pending: make(map[int64]chan *Response, len(inFlight)),
 		}
 		// Buffered with room for one, which is what Call allocates and what
@@ -96,6 +105,8 @@ func FuzzDispatchNeverAnswersUnderSomeoneElsesID(f *testing.F) {
 		}
 
 		c.dispatch([]byte(line))
+
+		checkServerRequestAnswered(t, line, in.frames())
 
 		resolved := []int64{}
 		for _, id := range inFlight {
@@ -159,6 +170,52 @@ func FuzzDispatchNeverAnswersUnderSomeoneElsesID(f *testing.F) {
 		}
 
 	})
+}
+
+// checkServerRequestAnswered asserts the other half of dispatch's contract: a
+// server-initiated request — a method and a non-null id, in a frame the client
+// can decode at all — is answered exactly once, under the id it carried, and
+// nothing else is ever written. A server waits on its own request forever
+// otherwise, and a reply written for a notification or for somebody's reply
+// would be a frame the server never asked for.
+func checkServerRequestAnswered(t *testing.T, line string, frames []string) {
+	t.Helper()
+	var probe struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	var envelope Response
+	isRequest := json.Unmarshal([]byte(line), &probe) == nil &&
+		json.Unmarshal([]byte(line), &envelope) == nil &&
+		probe.Method != "" && len(probe.ID) > 0 && string(probe.ID) != "null"
+
+	if !isRequest {
+		if len(frames) != 0 {
+			t.Fatalf("dispatch(%q) wrote %q for a frame that is not a server request", line, frames)
+		}
+		return
+	}
+	if len(frames) != 1 {
+		t.Fatalf("dispatch(%q) is a server request and was answered %d times: %q", line, len(frames), frames)
+	}
+	var reply struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  *RPCError       `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(frames[0]), &reply); err != nil {
+		t.Fatalf("dispatch(%q) wrote a reply that is not JSON: %q", line, frames[0])
+	}
+	var wantID, gotID any
+	if json.Unmarshal(probe.ID, &wantID) != nil || json.Unmarshal(reply.ID, &gotID) != nil || !reflect.DeepEqual(wantID, gotID) {
+		t.Fatalf("dispatch(%q) answered under id %s, want %s", line, reply.ID, probe.ID)
+	}
+	if (reply.Result == nil) == (reply.Error == nil) {
+		t.Fatalf("dispatch(%q) wrote a reply with neither or both of result and error: %q", line, frames[0])
+	}
+	if probe.Method == "ping" && reply.Error != nil {
+		t.Fatalf("dispatch(%q): ping must get the empty result, got %q", line, frames[0])
+	}
 }
 
 // decodedID returns the raw id a frame carries, decoded the way Response

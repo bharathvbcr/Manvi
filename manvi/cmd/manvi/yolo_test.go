@@ -170,7 +170,7 @@ func gitWorkTree(t *testing.T) string {
 }
 
 // gitIn runs one git command in dir and fails the test if it does.
-func gitIn(t *testing.T, dir string, args ...string) string {
+func gitIn(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	// #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid"}, args...)...).CombinedOutput()

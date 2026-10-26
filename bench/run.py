@@ -79,11 +79,20 @@ def require_containment():
     that is where the real sandboxes live (inside the protected benchmark tree,
     the layout bwrap's bind order exists for).
 
-    Returns the backend. Refuses (SystemExit) on any failed probe, and on a
-    host with no backend. The one way past is the existing explicit opt-out,
-    MH_UNCONTAINED_SHELL=1, which is announced, and stamped on every episode by
-    the harness.
+    Returns the backend. Refuses (SystemExit) on any failed probe, on a host
+    with no backend, and when the git checkouts to guard cannot be worked out
+    (GitGuardError) -- including under the opt-out, since the guard set is
+    computed regardless of backend. The one way past a failed probe or a host
+    with no backend is the explicit opt-out, MH_UNCONTAINED_SHELL=1, which is
+    announced, and stamped on every episode by the harness.
     """
+    # The guard set is computed again for every shell and every verification,
+    # so an unreadable git pointer must refuse here, once, with the path named,
+    # and not as a crash inside whichever tool call reaches it first.
+    try:
+        toolmod.default_protected_roots()
+    except toolmod.GitGuardError as e:
+        raise SystemExit(f"[runner] {e}")
     os.makedirs(WORK, exist_ok=True)
     probe = tempfile.mkdtemp(prefix="containment-probe-", dir=WORK)
     try:
