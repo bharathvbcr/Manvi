@@ -36,6 +36,11 @@ type procSpec struct {
 	// refuses a spec without one. childenv builds every value used here.
 	env   []string
 	stdin io.Reader
+	// stdout, when set, receives the child's stdout as it is written instead of
+	// a capture: the way to read an output too large to hold, such as a blob.
+	// It then owns bounding what it takes; stdoutLimit and combined do not
+	// apply, and procResult.stdout is empty. A write error ends the child.
+	stdout io.Writer
 	// timeout bounds the call on top of whatever deadline ctx carries. Zero
 	// leaves the bound to ctx, which must then have a deadline.
 	timeout time.Duration
@@ -122,6 +127,9 @@ func runProc(ctx context.Context, spec procSpec) procResult {
 		stderr = newCapture(spec.stderrLimit)
 	}
 	cmd.Stdout = stdout
+	if spec.stdout != nil {
+		cmd.Stdout = spec.stdout
+	}
 	cmd.Stderr = stderr
 
 	var exitCode int

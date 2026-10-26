@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -26,22 +25,32 @@ import (
 // patterns and past .gitignore. What identifies the file is its bytes, so the
 // commit is also judged by them. A staged blob is refused when
 //
-//   - its object id is the id of a file the working tree holds under a secret
-//     path (an exact copy, whatever it is now called),
-//   - an added line contains a value assigned in one of those files (an edited
+//   - its object id is the id of a secret-path file (an exact copy, whatever it
+//     is now called) — the file as the index, HEAD and the working tree hold it,
+//   - what it adds contains a value assigned in one of those files (an edited
 //     copy), or
-//   - an added line contains a credential this process knows (a provider key, a
+//   - what it adds contains a credential this process knows (a provider key, a
 //     forwarded token — Deps.KnownSecret).
 //
-// It fails closed: anything that cannot be statted, read, listed or hashed, a
-// secret file too large to read for its values, and a staged patch too large to
-// scan are each a refusal that names which and says the check did not run,
-// never a clean pass. Only a symlink at a secret path is skipped: git stores its
-// target's name, so it has no bytes of its own to hold a value.
+// What a text blob adds is read from the staged patch's `+` lines. Git does not
+// print a binary's bytes there, so a binary — by git's own verdict, attributes
+// included — is read whole from the object store in bounded windows.
+//
+// It fails closed, and every refusal names a remedy the agent can perform or
+// says who can: anything that cannot be read, listed, hashed or scanned within
+// its bounds is a refusal that says the check did not run, never a clean pass.
+// A secret file that is gone from the working tree is still judged by the
+// blobs git holds for it, a working-tree entry that is not a regular file (a
+// symlink, a directory, a FIFO) is judged by those blobs alone, and neither is
+// a failure.
+//
+// Residuals, accepted and named: a modified binary whose HEAD version already
+// held a value is refused on every touch, since its bytes still hold it; an
+// untracked, ignored secret file that was deleted is nothing the check can
+// enumerate; and KnownSecret is asked once per window, not per line, because
+// each call re-arms the credential scrubber.
 
 const (
-	// maxSecretFileBytes bounds one secret-path file read for its values.
-	maxSecretFileBytes = 256 << 10
 	// maxSecretFiles bounds how many secret-path files one commit check hashes.
 	// A tree holding more than this is not one whose credentials this check
 	// can enumerate, and says so.
@@ -92,12 +101,110 @@ type stagedLeak struct {
 	Reason []string `json:"matched"`
 }
 
-// secretFileSet lists the files the working tree holds under a secret path,
-// with their git blob ids and the values they assign.
+// secretFileSet is what the commit check knows of the secret-path files: the
+// git blob ids of every version of them, and the values they assign.
 type secretFileSet struct {
-	files  []string
 	blobs  map[string]string // object id -> path
 	values map[string]string // value -> path
+}
+
+// trackedBlob is one version of a tracked secret-path file that git holds.
+type trackedBlob struct {
+	id, source string
+}
+
+// literalSpecs spells paths as pathspecs that match themselves: a file named
+// `we*rd` is a path, not a glob.
+func literalSpecs(paths []string) []string {
+	specs := make([]string, len(paths))
+	for i, p := range paths {
+		specs[i] = ":(literal)" + p
+	}
+	return specs
+}
+
+// headExists reports whether HEAD names a commit. An unborn branch is a state,
+// not a failure; any other way `rev-parse` can fail is.
+func (r *Registry) headExists(ctx context.Context) (bool, error) {
+	res := runProc(ctx, func() procSpec {
+		spec := gitSpec(r.deps.Root, "", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
+		spec.stdoutLimit = maxGitStderrBytes
+		spec.stderrLimit = maxGitStderrBytes
+		return spec
+	}())
+	switch {
+	case res.timedOut:
+		return false, errors.New("git rev-parse HEAD: timed out")
+	case res.failedToRun():
+		return false, fmt.Errorf("git rev-parse HEAD: %w", res.err)
+	case res.exitCode == 0:
+		return true, nil
+	case res.exitCode == 1 && len(strings.TrimSpace(string(res.stderr))) == 0:
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse HEAD: exit %d: %s", res.exitCode, strings.TrimSpace(string(res.stderr)))
+}
+
+// trackedSecretBlobs finds every version of each secret-path file that git
+// holds — the index's and HEAD's — keyed by path. Only regular blobs: a symlink
+// is its target's name, not bytes that hold a value, and a submodule is a
+// commit id.
+func (r *Registry) trackedSecretBlobs(ctx context.Context, secret []string) (map[string][]trackedBlob, error) {
+	isSecret := make(map[string]bool, len(secret))
+	for _, p := range secret {
+		isSecret[p] = true
+	}
+	found := map[string][]trackedBlob{}
+	take := func(listing, source string, withType bool) error {
+		for _, rec := range strings.Split(listing, "\x00") {
+			if rec == "" {
+				continue
+			}
+			meta, path, ok := strings.Cut(rec, "\t")
+			fields := strings.Fields(meta)
+			if !ok || len(fields) != 3 {
+				return fmt.Errorf("git answered an unreadable record for %s: %q", source, rec)
+			}
+			if !isSecret[path] {
+				continue
+			}
+			mode, id := fields[0], fields[1]
+			if withType {
+				if fields[1] != "blob" {
+					continue
+				}
+				id = fields[2]
+			}
+			if mode != "100644" && mode != "100755" {
+				continue
+			}
+			found[path] = append(found[path], trackedBlob{id: id, source: source})
+		}
+		return nil
+	}
+
+	specs := literalSpecs(secret)
+	staged, err := runGit(ctx, r.deps.Root, append([]string{"ls-files", "-s", "-z", "--"}, specs...)...)
+	if err != nil {
+		return nil, fmt.Errorf("reading the index versions of the secret-path files: %w", err)
+	}
+	if err := take(staged, "the index", false); err != nil {
+		return nil, err
+	}
+	born, err := r.headExists(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if born {
+		head, err := runGit(ctx, r.deps.Root, append([]string{"ls-tree", "-r", "-z", "HEAD", "--"}, specs...)...)
+		if err != nil {
+			return nil, fmt.Errorf("reading the HEAD versions of the secret-path files: %w", err)
+		}
+		if err := take(head, "HEAD", true); err != nil {
+			return nil, err
+		}
+	}
+	return found, nil
 }
 
 func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error) {
@@ -165,90 +272,130 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		return set, fmt.Errorf("the tree holds %d files under secret paths, more than the %d this check can enumerate",
 			len(secret), maxSecretFiles)
 	}
+	if len(secret) == 0 {
+		return set, nil
+	}
+
+	// What git holds for them: the index's and HEAD's versions, whose ids need
+	// no hashing and whose bytes do not depend on the working tree.
+	tracked, err := r.trackedSecretBlobs(ctx, secret)
+	if err != nil {
+		return set, err
+	}
+
+	// The working-tree copy, when there is one. A file gone from the working
+	// tree is judged by the blobs above; so is an entry that is not a regular
+	// file (a symlink stores its target's name, and a directory or FIFO has no
+	// bytes to hold a value — and reading a FIFO would block). Any other
+	// failure to look is a refusal: the copy may be there and unread.
+	var worktree []string
 	for _, p := range secret {
 		info, err := os.Lstat(filepath.Join(r.deps.Root, filepath.FromSlash(p)))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			// Listed from the index but gone from the working tree. Its blob id
-			// and values are what a staged copy under another name is judged
-			// against, so skipping it would let that copy through.
-			return set, fmt.Errorf("the secret-path file %s is tracked but missing from the working tree, so its values were not scanned; "+
-				"restore it (git restore), then retry: %w", p, err)
+			continue
 		case err != nil:
-			return set, fmt.Errorf("could not stat the secret-path file %s, so its values were not scanned: %w", p, err)
+			return set, fmt.Errorf("could not stat the working-tree copy of the secret-path file %s, so its values were not scanned "+
+				"(the harness user must be able to reach it; fix its permissions outside this session): %w", p, err)
 		case !info.Mode().IsRegular():
-			// A symlink is stored by git as its target's name, not the target's
-			// bytes, and a directory or device has no value to read.
 			continue
 		}
-		set.files = append(set.files, p)
-	}
-	if len(set.files) == 0 {
-		return set, nil
+		worktree = append(worktree, p)
 	}
 
-	args := append([]string{"hash-object", "--"}, set.files...)
-	out, err := runGit(ctx, r.deps.Root, args...)
-	if err != nil {
-		return set, fmt.Errorf("hashing secret-path files: %w", err)
-	}
-	ids := strings.Fields(out)
-	if len(ids) != len(set.files) {
-		return set, fmt.Errorf("hash-object answered %d ids for %d files", len(ids), len(set.files))
-	}
-	for i, id := range ids {
-		set.blobs[id] = set.files[i]
-	}
-
-	read := r.readSecretFile
-	if read == nil {
-		read = readCappedFile
-	}
-	for _, p := range set.files {
-		data, err := read(filepath.Join(r.deps.Root, filepath.FromSlash(p)), maxSecretFileBytes)
+	// Every version's id is an exact-copy match. The working-tree copies are
+	// hashed because an unstaged edit's exact copy matches neither the index nor
+	// HEAD.
+	wtID := map[string]string{}
+	if len(worktree) > 0 {
+		out, err := runGit(ctx, r.deps.Root, append([]string{"hash-object", "--"}, worktree...)...)
 		if err != nil {
-			return set, fmt.Errorf("could not read the secret-path file %s after hashing it, so its values were not scanned: %w", p, err)
+			return set, fmt.Errorf("hashing secret-path files: %w", err)
 		}
-		if len(data) > maxSecretFileBytes {
-			return set, fmt.Errorf("the secret-path file %s is over the %d-byte cap this check reads for its values, "+
-				"so its values were not scanned; shrink it below the cap or keep it outside the repository, then retry",
-				p, maxSecretFileBytes)
+		ids := strings.Fields(out)
+		if len(ids) != len(worktree) {
+			return set, fmt.Errorf("hash-object answered %d ids for %d files", len(ids), len(worktree))
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			m := assignedValue.FindStringSubmatch(line)
-			if m == nil {
-				continue
+		for i, id := range ids {
+			set.blobs[id] = worktree[i]
+			wtID[worktree[i]] = id
+		}
+	}
+
+	limits := r.scan.limits.resolved()
+	values := &valueScan{set: &set, limits: limits}
+	var items []batchItem
+	read := map[string]bool{}
+	for _, p := range secret {
+		for _, b := range tracked[p] {
+			set.blobs[b.id] = p
+			if !read[b.id] {
+				read[b.id] = true
+				items = append(items, batchItem{id: b.id, label: p})
 			}
-			value := strings.Trim(m[2], `"'`)
-			if looksCredential(m[1], value) {
-				set.values[value] = p
-			}
+		}
+	}
+	// HEAD's version, the index's version and the working tree's, each judged
+	// for its own values: staging an edit that drops a key from .env must not
+	// let a staged copy of that key's old value through.
+	if err := r.streamBlobs(ctx, items, func(item batchItem) blobSink { return values.sink(item.label) }); err != nil {
+		return set, err
+	}
+	for _, p := range worktree {
+		if read[wtID[p]] {
+			continue
+		}
+		if err := r.readValues(values, p, filepath.Join(r.deps.Root, filepath.FromSlash(p))); err != nil {
+			return set, err
 		}
 	}
 	return set, nil
 }
 
-// readCappedFile reads at most limit+1 bytes of path: one byte past the limit is
-// how a caller tells a file that fits from one that was cut, without a separate
-// size check that a file growing in between would defeat.
-func readCappedFile(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+// stagedEntry is one path the index changes, from `diff --cached --raw`.
+type stagedEntry struct {
+	path, mode, id, status string
+}
+
+// content reports whether the entry adds bytes a scan can read: not a deletion
+// (nothing is added), not a submodule (a commit id, not a blob).
+func (e stagedEntry) content() bool {
+	return e.status != "D" && e.mode != "160000" && strings.Trim(e.id, "0") != ""
+}
+
+// stagedBinaries is the set of staged paths git itself calls binary: numstat
+// prints "-\t-" for them, a verdict that already folds in gitattributes
+// (`binary`, `-diff`) and diff.<driver>.binary — which is why this is asked of
+// git and not guessed from the bytes.
+func (r *Registry) stagedBinaries(ctx context.Context) (map[string]bool, error) {
+	out, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--numstat", "-z", "--no-renames", "--no-textconv", "--no-ext-diff")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("classifying the staged files as text or binary: %w", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(f, limit+1))
-	if closeErr := f.Close(); readErr == nil {
-		readErr = closeErr
+	binary := map[string]bool{}
+	for _, rec := range strings.Split(out, "\x00") {
+		if rec == "" {
+			continue
+		}
+		parts := strings.SplitN(rec, "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("git answered an unreadable numstat record: %q", rec)
+		}
+		if parts[0] == "-" && parts[1] == "-" {
+			binary[parts[2]] = true
+		}
 	}
-	return data, readErr
+	return binary, nil
 }
 
 // stagedContentLeaks judges what is staged by its content. A nil result with a
-// nil error means the check ran and found nothing.
-func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error) {
+// nil error means the check ran and found nothing; the notes it returns are
+// degradations that did not change that answer (see below), for the caller to
+// report.
+func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []string, error) {
 	set, err := r.collectSecretFiles(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	leaks := map[string]map[string]bool{}
@@ -258,12 +405,14 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error)
 		}
 		leaks[path][reason] = true
 	}
+	var notes []string
 
 	raw, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev")
 	if err != nil {
-		return nil, fmt.Errorf("reading the staged blobs: %w", err)
+		return nil, nil, fmt.Errorf("reading the staged blobs: %w", err)
 	}
 	// ":<mode> <mode> <old> <new> <status>\0<path>\0" repeated.
+	var staged []stagedEntry
 	fields := strings.Split(raw, "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
 		meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
@@ -273,40 +422,59 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error)
 		if source, ok := set.blobs[meta[3]]; ok {
 			note(fields[i+1], "identical to "+source)
 		}
+		staged = append(staged, stagedEntry{path: fields[i+1], mode: meta[1], id: meta[3], status: meta[4]})
+	}
+
+	binary, err := r.stagedBinaries(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// The prefixes are spelled out because diff.noprefix and diff.mnemonicPrefix
 	// are repository configuration: with either set, git writes no "b/" and the
 	// name below was never found, which skipped the whole file's content.
 	//
-	// --text shows a binary file's bytes as added lines, which is how a value
-	// inside a binary, or in a secret file's copy with a NUL appended (a new blob
-	// id, so not an exact copy), reaches the value scan. Without it git prints
-	// "Binary files differ" and the file's content is never judged. It also
-	// overrides a gitattributes `binary` or `-diff`, which would hide a file the
-	// same way. The cap below is the one every capture here has; a patch that
-	// outgrows it is a refusal, not a truncation, because the lines past the cut
-	// are content nothing judged.
-	patch, capNote, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, "diff", "--cached", "--text", "--no-renames",
+	// There is no --text: it would make git print a binary's bytes as added
+	// lines, and a patch of that size is refused by the capture cap, which
+	// turned deleting or renaming a large binary into a refused commit. A text
+	// blob's added lines are here; a binary is read from the object store below.
+	patch, capNote, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, "diff", "--cached", "--no-renames",
 		"--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0")
 	if err != nil {
-		return nil, fmt.Errorf("reading the staged patch: %w", err)
+		return nil, nil, fmt.Errorf("reading the staged patch: %w", err)
 	}
-	if capNote != "" {
-		return nil, fmt.Errorf("the staged patch, binary files included, is over the %d-byte cap, so its content was not scanned "+
-			"for credentials (%s); commit fewer or smaller files at a time", maxGitCaptureBytes, capNote)
-	}
-	if err := scanAddedLines(patch, func(path, added string) {
-		for value, source := range set.values {
-			if strings.Contains(added, value) {
-				note(path, "contains a value assigned in "+source)
+	patchWhole := capNote == ""
+	if patchWhole {
+		if err := scanAddedLines(patch, func(path, added string) {
+			for value, source := range set.values {
+				if strings.Contains(added, value) {
+					note(path, "contains a value assigned in "+source)
+				}
 			}
+			if r.deps.KnownSecret != nil && r.deps.KnownSecret(added) {
+				note(path, "contains a credential this process holds")
+			}
+		}); err != nil {
+			return nil, nil, err
 		}
-		if r.deps.KnownSecret != nil && r.deps.KnownSecret(added) {
-			note(path, "contains a credential this process holds")
+	}
+
+	// Whole blobs: every added or modified binary and, when the text patch was
+	// cut by its cap, every added or modified text blob too — a superset of the
+	// `+` lines it lost, so nothing past the cut goes unjudged. Deletions add
+	// nothing; with --no-renames the added half of a rename is an addition.
+	var items []batchItem
+	for _, e := range staged {
+		if e.content() && (binary[e.path] || !patchWhole) {
+			items = append(items, batchItem{id: e.id, label: e.path})
 		}
-	}); err != nil {
-		return nil, err
+	}
+	if err := r.scanBlobs(ctx, set, items, note); err != nil {
+		return nil, nil, err
+	}
+	if !patchWhole && len(items) > 0 {
+		notes = append(notes, fmt.Sprintf("the staged patch is over the %d-byte capture cap (%s), so the staged blobs were scanned whole instead of by their added lines",
+			maxGitCaptureBytes, capNote))
 	}
 
 	var out []stagedLeak
@@ -319,7 +487,43 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error)
 		out = append(out, leak)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	return out, notes, nil
+}
+
+// scanBlobs searches whole staged blobs for the values the check holds, in
+// bounded windows. With nothing to look for there is nothing to read.
+func (r *Registry) scanBlobs(ctx context.Context, set secretFileSet, items []batchItem, hit func(path, reason string)) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var needles []windowNeedle
+	longest := 0
+	for value, source := range set.values {
+		needles = append(needles, windowNeedle{reason: "contains a value assigned in " + source, bytes: []byte(value)})
+		longest = max(longest, len(value))
+	}
+	if r.deps.KnownSecret == nil && len(needles) == 0 {
+		return nil
+	}
+	if r.deps.KnownSecret != nil {
+		known := defaultKnownSecretMaxLen
+		if r.deps.KnownSecretMaxLen != nil {
+			known = r.deps.KnownSecretMaxLen()
+		}
+		longest = max(longest, known)
+	}
+	limits := r.scan.limits.resolved()
+	if limits.scanTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, limits.scanTimeout)
+		defer cancel()
+	}
+	return r.streamBlobs(ctx, items, func(item batchItem) blobSink {
+		return &windowSink{
+			ctx: ctx, label: item.label, chunk: limits.chunkBytes, overlap: max(longest-1, 0),
+			values: needles, known: r.deps.KnownSecret, hit: hit,
+		}
+	})
 }
 
 // contentRefusal refuses a commit whose staged content is a credential under

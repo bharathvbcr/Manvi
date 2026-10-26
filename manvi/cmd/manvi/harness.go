@@ -71,16 +71,17 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		Grep:           grepClient(root),
 		// Operator scope only. See operatorFetchHosts: an allowlist the agent
 		// could write into the repository would not be one.
-		Fetch:            core.fetch,
-		Subsystems:       subsystems,
-		Approver:         approver,
-		QuestionAsker:    questionAsker(approver),
-		Artifacts:        core.artifacts,
-		MCP:              core.mcp,
-		SubagentRegistry: subRegistry,
-		SubagentMgr:      subMgr,
-		SubAgent:         subRunner,
-		KnownSecret:      knownSecretIn(toolScrubber, toolResolver),
+		Fetch:             core.fetch,
+		Subsystems:        subsystems,
+		Approver:          approver,
+		QuestionAsker:     questionAsker(approver),
+		Artifacts:         core.artifacts,
+		MCP:               core.mcp,
+		SubagentRegistry:  subRegistry,
+		SubagentMgr:       subMgr,
+		SubAgent:          subRunner,
+		KnownSecret:       knownSecretIn(toolScrubber, toolResolver),
+		KnownSecretMaxLen: knownSecretMaxLenIn(toolScrubber, toolResolver),
 	})
 	if err != nil {
 		_ = core.plugins.Close()

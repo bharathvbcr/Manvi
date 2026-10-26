@@ -518,7 +518,7 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 	// By content, after the names: a credential copied to an innocent name
 	// matches nothing above. A check that could not run refuses; it is never
 	// reported as a clean pass.
-	contentLeaks, err := r.stagedContentLeaks(ctx)
+	contentLeaks, scanNotes, err := r.stagedContentLeaks(ctx)
 	if err != nil {
 		return unavailable("staged-content secret check", err)
 	}
@@ -535,6 +535,10 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 	extra := map[string]any{"message": args.Message}
 	if len(stagedPaths) > 0 {
 		extra["committed_paths"] = stagedPaths
+	}
+	if len(scanNotes) > 0 {
+		// A degradation of the content check that did not change its answer.
+		extra["scan_notes"] = scanNotes
 	}
 	res := r.gatedGit(ctx, "committing", commandLine, argv, extra)
 

@@ -89,6 +89,16 @@ func knownSecretIn(s *credentials.Scrubber, r *credentials.Resolver) func(string
 	}
 }
 
+// knownSecretMaxLenIn is knownSecretIn's length contract: the longest credential
+// s watches, read after re-arming as knownSecretIn does, so the commit check can
+// size the overlap of the windows it searches binary content in.
+func knownSecretMaxLenIn(s *credentials.Scrubber, r *credentials.Resolver) func() int {
+	return func() int {
+		armScrubber(s, r)
+		return s.MaxLen()
+	}
+}
+
 // armedClean is the tool pipeline's scrubber: re-armed before each result, so
 // a server registered mid-session is covered from its first failure.
 func armedClean(s *credentials.Scrubber, r *credentials.Resolver) func(string) string {

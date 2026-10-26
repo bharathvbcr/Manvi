@@ -97,6 +97,13 @@ type Deps struct {
 	// is in. Nil means the commit check relies on the working tree's
 	// secret-path files alone.
 	KnownSecret func(text string) bool
+	// KnownSecretMaxLen reports the length in bytes of the longest credential
+	// KnownSecret can match, and arms KnownSecret's source as KnownSecret does
+	// (the longest watched value can grow mid-session). The commit check reads
+	// binary content in windows, and a window must overlap the next by one byte
+	// less than that length for a credential straddling the edge to be found.
+	// Nil with a non-nil KnownSecret assumes defaultKnownSecretMaxLen.
+	KnownSecretMaxLen func() int
 }
 
 // Registry holds the tool set and the per-agent session.
@@ -111,11 +118,9 @@ type Registry struct {
 	// skillSurface is the session's decision, taken once by Register, on
 	// whether devcouncil_load_skill is offered. See skillToolOffered.
 	skillSurface atomic.Int32
-	// readSecretFile reads one secret-path file for the commit-time value
-	// scan (see readCappedFile). Nil means the real filesystem; a test sets
-	// it to fail a read that git's own hashing of the same file survived,
-	// which no file permission can arrange for one user.
-	readSecretFile func(path string, limit int64) ([]byte, error)
+	// scan holds the commit content check's bounds and file-open seam; its zero
+	// value is production's. See commitScanSeams.
+	scan commitScanSeams
 }
 
 // New builds the tool surface.

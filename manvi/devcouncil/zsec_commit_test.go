@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,49 +137,7 @@ func TestCommitRefusesWhenASecretPathFileCannotBeStatted(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
 
 	res := f.call("devcouncil_git_commit", map[string]any{"message": "innocent"})
-	requireCommitRefusedUnchecked(t, f, res, "could not stat the secret-path file secrets/token.txt")
-}
-
-// A tracked secret-path file removed from the working tree is still listed by
-// the index, and its blob id and values are what a staged copy under another
-// name is judged against. Skipping it let `cp .env notes.txt; stage; rm .env`
-// commit the copy. Restoring the file lets the check run, and then the copy is
-// refused as a copy and an ordinary file commits.
-func TestCommitRefusesAMissingTrackedSecretUntilItIsRestored(t *testing.T) {
-	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
-	write(t, f.root, ".env", secretBody)
-	run(t, f.root, "add", "-f", ".env")
-	run(t, f.root, "commit", "-qm", "track the secret")
-	checkout(t, f)
-	write(t, f.root, "notes.txt", secretBody)
-	if err := os.Remove(filepath.Join(f.root, ".env")); err != nil {
-		t.Fatal(err)
-	}
-	res := stageAndCommit(t, f, "notes.txt")
-	requireCommitRefusedUnchecked(t, f, res, "the secret-path file .env is tracked but missing from the working tree", "git restore")
-
-	run(t, f.root, "restore", ".env")
-	if res := f.call("devcouncil_git_commit", map[string]any{"message": "innocent"}); !res.IsError ||
-		res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "identical to .env") {
-		t.Fatalf("with the file restored, the copy was not refused as a copy: %+v", res)
-	}
-	run(t, f.root, "reset", "-q", "notes.txt")
-	write(t, f.root, "app.js", "const mode = 'development';\n")
-	if res := stageAndCommit(t, f, "app.js"); res.IsError {
-		t.Fatalf("an ordinary commit was refused with the secret restored: %s", res.Text)
-	}
-}
-
-// A secret file over the read cap had its values skipped, so an edited copy of
-// it sailed through. The refusal names the cap and what to do.
-func TestCommitRefusesWhenASecretPathFileIsOverTheReadCap(t *testing.T) {
-	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
-	write(t, f.root, ".env", secretBody+strings.Repeat("# padding\n", maxSecretFileBytes/len("# padding\n")+1))
-	checkout(t, f)
-	write(t, f.root, "config.txt", "# notes\n"+secretBody+"EXTRA=1\n")
-	res := stageAndCommit(t, f, "config.txt")
-	requireCommitRefusedUnchecked(t, f, res,
-		"the secret-path file .env", fmt.Sprintf("over the %d-byte cap", maxSecretFileBytes), "its values were not scanned")
+	requireCommitRefusedUnchecked(t, f, res, "could not stat the working-tree copy of the secret-path file secrets/token.txt")
 }
 
 // git hashed the file a moment ago; this process then failed to read it.
@@ -186,10 +145,10 @@ func TestCommitRefusesWhenASecretPathFileCannotBeReadAfterHashing(t *testing.T) 
 	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
 	write(t, f.root, ".env", secretBody)
 	checkout(t, f)
-	f.reg.readSecretFile = func(string, int64) ([]byte, error) { return nil, errors.New("input/output error") }
+	f.reg.scan.openFile = func(string) (io.ReadCloser, error) { return nil, errors.New("input/output error") }
 	write(t, f.root, "app.js", "const mode = 'development';\n")
 	res := stageAndCommit(t, f, "app.js")
-	requireCommitRefusedUnchecked(t, f, res, "could not read the secret-path file .env", "input/output error")
+	requireCommitRefusedUnchecked(t, f, res, "could not read the working-tree copy of the secret-path file .env after hashing it", "input/output error")
 }
 
 // A binary file has no added lines in a plain patch, so a value inside one — or
@@ -225,18 +184,6 @@ func TestCommitRefusesABinaryCarryingASecretValue(t *testing.T) {
 			}
 		})
 	}
-}
-
-// A staged patch that does not fit under the capture cap cannot be scanned in
-// full, and a binary is part of the patch now. With values to look for, that is
-// a refusal rather than a clean pass.
-func TestCommitRefusesAStagedBinaryTooLargeToScan(t *testing.T) {
-	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
-	write(t, f.root, ".env", secretBody)
-	checkout(t, f)
-	write(t, f.root, "big.bin", strings.Repeat("\x00", maxGitCaptureBytes+1))
-	res := stageAndCommit(t, f, "big.bin")
-	requireCommitRefusedUnchecked(t, f, res, fmt.Sprintf("over the %d-byte cap", maxGitCaptureBytes), "was not scanned")
 }
 
 // A symlink at a secret path stores its target's name in git, not the secret,
