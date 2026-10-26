@@ -98,8 +98,18 @@ func (r *Registry) CaptureBaseline(ctx context.Context) Baseline {
 // `add -A -- paths` brings exactly them up to date. The tree that comes out is
 // b.Tree everywhere except those paths and the working tree on them, which is
 // the whole of what a diff limited to those paths can see — so the diff is the
-// one the full route gives, byte for byte, while the rest of the tree is not
-// walked, hashed or compared.
+// one the full route gives on every tree whose index flags did not change
+// during the turn, while the rest of the tree is not walked, hashed or compared.
+//
+// It is not the full route's answer when `update-index --assume-unchanged` or
+// `--skip-worktree` is set on an examined path during the turn. The full route
+// seeds from the repository's index as it is at the end of the turn, flag
+// included, and `add` then skips the file, so it misses the turn's edit; this
+// route starts from the index as it was when the baseline was taken, before the
+// flag, and sees it, which is what a cold read of the tree gives. That is the
+// more correct answer. A flag set before the baseline was taken is in both
+// indexes, and both miss the edit; that miss predates this route and is not
+// closed here.
 //
 // The pathspecs are passed exactly as the diff will pass them, not as literals:
 // the two must select the same files, and a diff that reads a name as a glob

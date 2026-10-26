@@ -15,7 +15,8 @@ import (
 // re-reads only the examined paths. The contract is that it answers exactly as
 // the full route does, which is what a baseline without a kept index still
 // takes. These tests hold the two to byte equality over every shape of change
-// the gates have to read.
+// the gates have to read, with the one stated exception in
+// TestScopedDiffSeesAFileFlaggedAssumeUnchangedDuringTheTurn.
 
 // seededTurn is a repository, the baseline taken before a turn, and the turn.
 type seededTurn struct {
@@ -91,7 +92,7 @@ func turnFixture(t *testing.T) seededTurn {
 // full route the incremental one has to agree with.
 func (f seededTurn) withoutSeed() Baseline { return Baseline{Tree: f.baseline.Tree} }
 
-func TestScopedDiffFromTheKeptIndexIsByteIdenticalToTheFullRoute(t *testing.T) {
+func TestScopedDiffFromTheKeptIndexMatchesTheFullRoute(t *testing.T) {
 	f := turnFixture(t)
 	ctx := context.Background()
 
@@ -346,5 +347,45 @@ func TestScopedDiffFromTheKeptIndexSeesASameSizedEditInTheSecondOfTheCapture(t *
 	got, _, err := r.scopedDiff(ctx, []string{"f.dat"}, baseline)
 	if err != nil || got != want {
 		t.Fatalf("the diff from the kept index missed the edit (err %v)\nwant:\n%s\ngot:\n%s", err, want, got)
+	}
+}
+
+// The one place the kept-index route and the full route part, and the kept
+// index is the one that is right. A file flagged assume-unchanged or
+// skip-worktree during the turn is skipped by `git add` when the index it is
+// added to carries the flag. The full route seeds from the repository's index
+// as it stands at the end of the turn, so it carries the flag and misses the
+// edit; the kept index predates the flag and sees it. A cold read of the tree,
+// which trusts no stat data and no flags, is the oracle.
+//
+// A flag set before the baseline was taken is in both indexes and both miss the
+// edit; that is not asserted here because it is not changed here.
+func TestScopedDiffSeesAFileFlaggedAssumeUnchangedDuringTheTurn(t *testing.T) {
+	f := turnFixture(t)
+	ctx := context.Background()
+	gitIn(t, f.root, "update-index", "--assume-unchanged", "mod.txt")
+	gitIn(t, f.root, "update-index", "--skip-worktree", "dir/a.txt")
+	paths := []string{"mod.txt", "dir/a.txt"}
+
+	cold, err := f.r.worktreeTree(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oracle, err := runGit(ctx, f.root, "diff", f.baseline.Tree, cold, "--", "mod.txt", "dir/a.txt")
+	if err != nil || !strings.Contains(oracle, "+TWO") || !strings.Contains(oracle, "+a, edited") {
+		t.Fatalf("the cold oracle does not show the turn's edits (err %v):\n%s", err, oracle)
+	}
+
+	got, notes, err := f.r.scopedDiff(ctx, paths, f.baseline)
+	if err != nil || len(notes) != 0 {
+		t.Fatalf("kept-index route: %v %v", err, notes)
+	}
+	if got != oracle {
+		t.Fatalf("the kept-index route differs from the cold oracle.\ncold:\n%s\nkept index:\n%s", oracle, got)
+	}
+	// Recorded rather than asserted: the full route is expected to miss it, but
+	// that is git's behaviour to change, not this package's contract.
+	if old, _, err := f.r.scopedDiff(ctx, paths, f.withoutSeed()); err == nil && old == oracle {
+		t.Log("the full route now agrees with the cold oracle on flagged files too")
 	}
 }
