@@ -115,9 +115,10 @@ func stageAndCommit(t *testing.T, f *fixture, path string) tools.Result {
 	return f.call("devcouncil_git_commit", map[string]any{"message": "innocent"})
 }
 
-// A secret-path file the check cannot stat is a file whose values it never
-// read. That was a silent skip.
-func TestCommitRefusesWhenASecretPathFileCannotBeStatted(t *testing.T) {
+// A secret-path file the check cannot stat is a file whose working-tree copy it
+// never read. That was a silent skip; it is a note now, and the commit still
+// goes through because the agent cannot cure it and git holds the file's blobs.
+func TestCommitNotesASecretPathFileThatCannotBeStatted(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads through a mode-0 directory")
 	}
@@ -134,21 +135,26 @@ func TestCommitRefusesWhenASecretPathFileCannotBeStatted(t *testing.T) {
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // G302: a directory, not a file; 0600 would make it unremovable
 
 	res := f.call("devcouncil_git_commit", map[string]any{"message": "innocent"})
-	requireCommitRefusedUnchecked(t, f, res, "could not stat the working-tree copy of the secret-path file secrets/token.txt")
+	requireNoted(t, res, "unreadable_worktree", "secrets/token.txt")
 }
 
-// git hashed the file a moment ago; this process then failed to read it.
-func TestCommitRefusesWhenASecretPathFileCannotBeReadAfterHashing(t *testing.T) {
+// A working-tree secret file this process cannot open is kept out of the hash
+// batch and noted: the commit goes on, and the note says nothing else holds an
+// untracked file.
+func TestCommitNotesAnUntrackedSecretPathFileThatCannotBeOpened(t *testing.T) {
 	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
 	write(t, f.root, ".env", secretBody)
 	checkout(t, f)
 	f.reg.scan.openFile = func(string) (io.ReadCloser, error) { return nil, errors.New("input/output error") }
 	write(t, f.root, "app.js", "const mode = 'development';\n")
 	res := stageAndCommit(t, f, "app.js")
-	requireCommitRefusedUnchecked(t, f, res, "could not read the working-tree copy of the secret-path file .env after hashing it", "input/output error")
+	requireNoted(t, res, "unreadable_worktree", ".env")
+	if !strings.Contains(res.Text, "input/output error") || !strings.Contains(res.Text, "the file is untracked") {
+		t.Errorf("the note should carry the cause and say the file is untracked: %s", res.Text)
+	}
 }
 
 // A binary file has no added lines in a plain patch, so a value inside one — or

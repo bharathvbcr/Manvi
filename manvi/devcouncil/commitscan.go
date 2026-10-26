@@ -36,19 +36,40 @@ import (
 // print a binary's bytes there, so a binary — by git's own verdict, attributes
 // included — is read whole from the object store in bounded windows.
 //
-// It fails closed, and every refusal names a remedy the agent can perform or
-// says who can: anything that cannot be read, listed, hashed or scanned within
-// its bounds is a refusal that says the check did not run, never a clean pass.
-// A secret file that is gone from the working tree is still judged by the
-// blobs git holds for it, a working-tree entry that is not a regular file (a
-// symlink, a directory, a FIFO) is judged by those blobs alone, and neither is
-// a failure.
+// It fails closed on what the agent can cure, and every refusal names a remedy
+// the agent can perform or says who can: anything that cannot be listed, hashed
+// or classified, and any staged content that cannot be scanned within its bounds
+// (the 1 GiB stream budget, the commit's deadline), is a refusal that says the
+// check did not run, never a clean pass.
 //
-// Residuals, accepted and named: a modified binary whose HEAD version already
-// held a value is refused on every touch, since its bytes still hold it; an
-// untracked, ignored secret file that was deleted is nothing the check can
-// enumerate; and KnownSecret is asked once per window, not per line, because
-// each call re-arms the credential scrubber.
+// What it does not do is refuse for a bound the agent cannot cure. A secret-path
+// file is write-protected for the agent, so a file with a line over the per-line
+// cap, more values than the value cap, a total past the byte cap, or a
+// working-tree copy that cannot be read would lock every commit out for good.
+// Each of those is a scanNote on the result (and its degraded list, which the
+// session log records) naming the file, the bound, what was still checked and
+// the operator action; values collected before the bound are still matched. A
+// secret file that is gone from the working tree is judged by the blobs git
+// holds for it, and a working-tree entry that is not a regular file (a symlink,
+// a directory, a FIFO) by those blobs alone; neither is a failure.
+//
+// Residuals, accepted and named:
+//   - a modified binary whose HEAD version already held a value is refused on
+//     every touch, since its bytes still hold it;
+//   - a single staged file over the 1 GiB stream budget is refused, and only an
+//     operator can cure that (commit it outside the harness);
+//   - an untracked, ignored secret file that was deleted is nothing the check
+//     can enumerate;
+//   - a value that spans several lines (a PEM, a multi-line string) is split
+//     across `+` lines and matched by none of them, and only KEY=VALUE
+//     assignments are collected from a secret file, so a binary or DER secret
+//     (a .p12, a private key) is matched by exact blob id alone, never by part;
+//   - a secret tracked only in HEAD that `git mv` moved is a rename: its blob id
+//     is still HEAD's, but its values are read only from the paths git lists;
+//   - a value re-encoded (UTF-16LE, base64) or split by NUL bytes is not the
+//     bytes the check searches for; and
+//   - KnownSecret is asked once per window, not per line, because each call
+//     re-arms the credential scrubber.
 
 const (
 	// maxSecretFiles bounds how many secret-path files one commit check hashes.
@@ -106,6 +127,25 @@ type stagedLeak struct {
 type secretFileSet struct {
 	blobs  map[string]string // object id -> path
 	values map[string]string // value -> path
+	notes  []scanNote
+}
+
+// emptyBlobIDs are git's ids for the empty blob under SHA-1 and SHA-256. Every
+// empty file has the same one, so matching it as an "exact copy" of a secret
+// file refuses any new empty file whenever a tracked empty file (a .gitkeep)
+// sits under a secret path — and an empty file has no credential to copy.
+var emptyBlobIDs = map[string]bool{
+	"e69de29bb2d1d6434b8b29ae775ad8c2e48c5391":                         true,
+	"473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813": true,
+}
+
+// addBlob records id as an exact copy of path, except the empty blob (see
+// emptyBlobIDs).
+func (s *secretFileSet) addBlob(id, path string) {
+	if emptyBlobIDs[id] {
+		return
+	}
+	s.blobs[id] = path
 }
 
 // trackedBlob is one version of a tracked secret-path file that git holds.
@@ -283,29 +323,44 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		return set, err
 	}
 
+	limits := r.scan.limits.resolved()
+	values := &valueScan{set: &set, limits: limits}
+
 	// The working-tree copy, when there is one. A file gone from the working
 	// tree is judged by the blobs above; so is an entry that is not a regular
 	// file (a symlink stores its target's name, and a directory or FIFO has no
-	// bytes to hold a value — and reading a FIFO would block). Any other
-	// failure to look is a refusal: the copy may be there and unread.
+	// bytes to hold a value — and reading a FIFO would block). A copy that is
+	// there but cannot be reached or opened is a note (see scanNote) and is kept
+	// out of the hash batch: one unreadable file used to fail the hashing of all
+	// of them, and with it every commit.
 	var worktree []string
 	for _, p := range secret {
-		info, err := os.Lstat(filepath.Join(r.deps.Root, filepath.FromSlash(p)))
+		abs := filepath.Join(r.deps.Root, filepath.FromSlash(p))
+		info, err := os.Lstat(abs)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			continue
 		case err != nil:
-			return set, fmt.Errorf("could not stat the working-tree copy of the secret-path file %s, so its values were not scanned "+
-				"(the harness user must be able to reach it; fix its permissions outside this session): %w", p, err)
+			values.noteUnreadable(p, len(tracked[p]) > 0, err)
+			continue
 		case !info.Mode().IsRegular():
+			continue
+		}
+		probe, err := r.scan.open(abs)
+		if err != nil {
+			values.noteUnreadable(p, len(tracked[p]) > 0, err)
+			continue
+		}
+		if err := probe.Close(); err != nil {
+			values.noteUnreadable(p, len(tracked[p]) > 0, err)
 			continue
 		}
 		worktree = append(worktree, p)
 	}
 
-	// Every version's id is an exact-copy match. The working-tree copies are
-	// hashed because an unstaged edit's exact copy matches neither the index nor
-	// HEAD.
+	// Every version's id is an exact-copy match: the index's and HEAD's from git,
+	// and the working-tree copies hashed — tracked ones too, because an unstaged
+	// edit's exact copy matches neither the index nor HEAD.
 	wtID := map[string]string{}
 	if len(worktree) > 0 {
 		out, err := runGit(ctx, r.deps.Root, append([]string{"hash-object", "--"}, worktree...)...)
@@ -314,22 +369,20 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		}
 		ids := strings.Fields(out)
 		if len(ids) != len(worktree) {
-			return set, fmt.Errorf("hash-object answered %d ids for %d files", len(ids), len(worktree))
+			return set, fmt.Errorf("internal error: hash-object answered %d ids for %d files", len(ids), len(worktree))
 		}
 		for i, id := range ids {
-			set.blobs[id] = worktree[i]
+			set.addBlob(id, worktree[i])
 			wtID[worktree[i]] = id
 		}
 	}
 
-	limits := r.scan.limits.resolved()
-	values := &valueScan{set: &set, limits: limits}
 	var items []batchItem
 	read := map[string]bool{}
 	for _, p := range secret {
 		for _, b := range tracked[p] {
-			set.blobs[b.id] = p
-			if !read[b.id] {
+			set.addBlob(b.id, p)
+			if !read[b.id] && !emptyBlobIDs[b.id] {
 				read[b.id] = true
 				items = append(items, batchItem{id: b.id, label: p})
 			}
@@ -345,10 +398,9 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		if read[wtID[p]] {
 			continue
 		}
-		if err := r.readValues(values, p, filepath.Join(r.deps.Root, filepath.FromSlash(p))); err != nil {
-			return set, err
-		}
+		r.readValues(values, p, filepath.Join(r.deps.Root, filepath.FromSlash(p)), len(tracked[p]) > 0)
 	}
+	set.notes = values.notes
 	return set, nil
 }
 
@@ -392,7 +444,7 @@ func (r *Registry) stagedBinaries(ctx context.Context) (map[string]bool, error) 
 // nil error means the check ran and found nothing; the notes it returns are
 // degradations that did not change that answer (see below), for the caller to
 // report.
-func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []string, error) {
+func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []scanNote, error) {
 	set, err := r.collectSecretFiles(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -405,7 +457,7 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []stri
 		}
 		leaks[path][reason] = true
 	}
-	var notes []string
+	notes := set.notes
 
 	raw, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev")
 	if err != nil {
@@ -473,8 +525,12 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []stri
 		return nil, nil, err
 	}
 	if !patchWhole && len(items) > 0 {
-		notes = append(notes, fmt.Sprintf("the staged patch is over the %d-byte capture cap (%s), so the staged blobs were scanned whole instead of by their added lines",
-			maxGitCaptureBytes, capNote))
+		notes = append(notes, scanNote{
+			Kind: "patch_cap", File: "(staged patch)",
+			Bound:          fmt.Sprintf("the staged text patch is over the %d-byte capture cap (%s)", maxGitCaptureBytes, capNote),
+			StillChecked:   "every added or modified staged blob was scanned whole instead of by its added lines, a superset of them",
+			OperatorAction: "none needed",
+		})
 	}
 
 	var out []stagedLeak
@@ -529,7 +585,7 @@ func (r *Registry) scanBlobs(ctx context.Context, set secretFileSet, items []bat
 // contentRefusal refuses a commit whose staged content is a credential under
 // another name. It carries the secret rung's rule id, like aliasedRefusal,
 // because that is the rung the rename defeats.
-func contentRefusal(leaks []stagedLeak) tools.Result {
+func contentRefusal(leaks []stagedLeak, notes []scanNote) tools.Result {
 	paths := make([]string, 0, len(leaks))
 	for _, l := range leaks {
 		paths = append(paths, l.Path)
@@ -543,6 +599,9 @@ func contentRefusal(leaks []stagedLeak) tools.Result {
 		"reason": "these staged files carry a credential under a name the secret-path check does not " +
 			"match: their content is, or contains, what a secret-path file or a known credential holds. " +
 			"Committing them puts it in history. Unstage them, remove the credential, and retry.",
+	}
+	if len(notes) > 0 {
+		payload["scan_notes"] = notes
 	}
 	data, _ := json.Marshal(payload)
 	return tools.Result{

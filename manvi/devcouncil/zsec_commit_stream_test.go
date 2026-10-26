@@ -17,7 +17,7 @@ import (
 // git over real files; each case that was a lockout or a gap names it.
 
 const (
-	secretValue = "sk-live-AUDITsecretVALUE0123456789"
+	secretValue = "sk-live-AUDITsecretVALUE0123456789" //nolint:gosec // G101: a test fixture, not a credential
 	// prodBody is a tracked secret file's whole content, with a value no other
 	// fixture file shares, so the refusal can name which file it came from.
 	prodValue = "sk-prod-AUDITproductionVALUE9876543210"

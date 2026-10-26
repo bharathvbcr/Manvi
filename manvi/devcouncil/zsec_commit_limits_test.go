@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 )
 
 // The bounds and seams of the commit content check: window overlap, the stream
@@ -61,7 +59,7 @@ func TestWindowSinkFindsAValueAcrossEveryChunkEdge(t *testing.T) {
 // The same, end to end through real git, for both kinds of needle: a value from
 // a secret file, and a credential KnownSecret holds (sized by KnownSecretMaxLen).
 func TestCommitFindsASecretAcrossAChunkEdgeInABinary(t *testing.T) {
-	const token = "ghp_KNOWNtoken0123456789"
+	const token = "ghp_KNOWNtoken0123456789" //nolint:gosec // G101: a test fixture, not a credential
 	t.Run("value from a secret file", func(t *testing.T) {
 		f := scanFixture(t)
 		f.reg.scan.limits.chunkBytes = 16
@@ -95,33 +93,4 @@ func TestCommitRefusesWhenTheScanDeadlineFires(t *testing.T) {
 	write(t, f.root, "big.bin", zeros(4<<20))
 	res := stageAndCommit(t, f, "big.bin")
 	requireCommitRefusedUnchecked(t, f, res, "the scan of the staged blob big.bin was cut off by the deadline after", "commit fewer or smaller files")
-}
-
-// The bounds on reading the secret files themselves each refuse by name rather
-// than drop a line.
-func TestCommitRefusesWhenASecretFileExceedsAReadBound(t *testing.T) {
-	cases := []struct {
-		name   string
-		body   string
-		limits func(*scanLimits)
-		want   []string
-	}{
-		{"line", secretBody + "# " + strings.Repeat("x", 100) + "\n", func(l *scanLimits) { l.secretLineBytes = 64 },
-			[]string{"line 2 of the secret-path file .env", "64-byte per-line cap", "ask the operator"}},
-		{"total", secretBody + secretBody, func(l *scanLimits) { l.secretTotalBytes = 50 },
-			[]string{"more than the 50 bytes", "ask the operator"}},
-		{"values", secretBody + "TOKEN=another-credential-9876543210\n", func(l *scanLimits) { l.secretValues = 1 },
-			[]string{"more than the 1 credential values", "line 2 of .env"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
-			write(t, f.root, ".env", c.body)
-			c.limits(&f.reg.scan.limits)
-			checkout(t, f)
-			write(t, f.root, "app.js", "const mode = 'development';\n")
-			res := stageAndCommit(t, f, "app.js")
-			requireCommitRefusedUnchecked(t, f, res, c.want...)
-		})
-	}
 }

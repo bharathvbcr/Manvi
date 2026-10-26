@@ -523,7 +523,7 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 		return unavailable("staged-content secret check", err)
 	}
 	if len(contentLeaks) > 0 {
-		return contentRefusal(contentLeaks)
+		return contentRefusal(contentLeaks, scanNotes)
 	}
 
 	argv := []string{"commit", "-m", args.Message}
@@ -537,10 +537,15 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 		extra["committed_paths"] = stagedPaths
 	}
 	if len(scanNotes) > 0 {
-		// A degradation of the content check that did not change its answer.
+		// A bound held back part of the content check without refusing the
+		// commit. The payload says which and what was still checked; Degraded is
+		// the list the session log records for a result that is not a clean pass.
 		extra["scan_notes"] = scanNotes
 	}
 	res := r.gatedGit(ctx, "committing", commandLine, argv, extra)
+	if !res.IsError {
+		res.Degraded = append(res.Degraded, degradedList(scanNotes)...)
+	}
 
 	// On success, hand back the new HEAD so the caller can cite what it made
 	// without a second round trip.

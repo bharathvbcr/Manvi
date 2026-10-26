@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,7 +37,7 @@ const (
 	// file for their values.
 	defaultSecretTotalBytes = 64 << 20
 	// defaultSecretValues bounds how many distinct values the check holds.
-	defaultSecretValues = 4096
+	defaultSecretValues = 1 << 20
 	// defaultKnownSecretMaxLen is the overlap assumed for KnownSecret when the
 	// host gave no KnownSecretMaxLen: longer than any provider key.
 	defaultKnownSecretMaxLen = 4096
@@ -90,7 +91,7 @@ func (s commitScanSeams) open(path string) (io.ReadCloser, error) {
 	if s.openFile != nil {
 		return s.openFile(path)
 	}
-	return os.Open(path)
+	return os.Open(filepath.Clean(path))
 }
 
 // blobSink receives one object's bytes. Close is called when the object ended.
@@ -367,13 +368,85 @@ func (s *windowSink) scan() error {
 	return nil
 }
 
+// scanNote records a check that a bound held back without refusing the commit:
+// which bound, on which file, what was still checked, and who can cure it. It is
+// for bounds the agent cannot cure — a secret-path file is write-protected, so
+// the agent can neither shrink nor move it — where a refusal would be a lockout
+// rather than a remedy. It never carries a value.
+type scanNote struct {
+	Kind           string `json:"kind"`
+	File           string `json:"file"`
+	Bound          string `json:"bound"`
+	StillChecked   string `json:"still_checked"`
+	OperatorAction string `json:"operator_action"`
+}
+
+// degraded is the note's entry in tools.Result.Degraded, the list the session
+// log records for a result that is not a clean pass.
+func (n scanNote) degraded() string { return "commit.scan." + n.Kind + ": " + n.File }
+
+// degradedList is every note's degraded entry.
+func degradedList(notes []scanNote) []string {
+	out := make([]string, len(notes))
+	for i, n := range notes {
+		out[i] = n.degraded()
+	}
+	return out
+}
+
+const operatorOnly = "an operator can split the file or move it out of the repository; the agent cannot, because secret paths are write-protected for it"
+
 // valueScan collects the credential-looking assignments of secret-path files
-// into a secretFileSet, within bounds. It never drops a line it cannot take: a
-// line, a total or a count past its bound is an error that names the file.
+// into a secretFileSet, within bounds. A bound it reaches is a scanNote, never
+// a refusal and never a silent drop: what was collected before the bound is
+// still matched, and the note says what the bound cost.
 type valueScan struct {
 	set    *secretFileSet
 	limits scanLimits
 	total  int64
+	// exhausted: the total byte bound is spent; full: the value bound is.
+	exhausted, full bool
+	noted           map[string]bool
+	notes           []scanNote
+}
+
+// noteOnce records one note per kind and file.
+func (v *valueScan) noteOnce(n scanNote) {
+	key := n.Kind + "\x00" + n.File
+	if v.noted == nil {
+		v.noted = map[string]bool{}
+	}
+	if v.noted[key] {
+		return
+	}
+	v.noted[key] = true
+	v.notes = append(v.notes, n)
+}
+
+func (v *valueScan) noteBound(kind, file, bound string) {
+	v.noteOnce(scanNote{
+		Kind: kind, File: file, Bound: bound,
+		StillChecked: fmt.Sprintf("staged blobs are still compared by blob id with every version git holds of this file (exact copies), "+
+			"and searched for the %d value(s) collected before the bound", len(v.set.values)),
+		OperatorAction: operatorOnly,
+	})
+}
+
+// noteUnreadable records a working-tree copy that could not be opened or read.
+// A tracked file is still judged by the versions git holds; an untracked one has
+// nothing else to be judged by.
+func (v *valueScan) noteUnreadable(path string, tracked bool, err error) {
+	still := "nothing: the file is untracked, so neither its blob id nor its values were collected"
+	if tracked {
+		still = "the index and HEAD versions of the file, by blob id and by value; its working-tree copy was neither hashed nor read, " +
+			"so a staged copy of an unstaged edit is not matched by blob id"
+	}
+	v.noteOnce(scanNote{
+		Kind: "unreadable_worktree", File: path,
+		Bound:          fmt.Sprintf("the working-tree copy could not be opened or read (%v)", err),
+		StillChecked:   still,
+		OperatorAction: "make the file readable by the harness user, or restore it; the agent cannot change a secret path's permissions",
+	})
 }
 
 // sink returns the sink that reads one secret file's lines under the name path.
@@ -382,83 +455,93 @@ func (v *valueScan) sink(path string) blobSink {
 }
 
 type valueSink struct {
-	scan   *valueScan
-	path   string
-	line   []byte
-	lineNo int
+	scan      *valueScan
+	path      string
+	line      []byte
+	lineNo    int
+	skipping  bool // inside a line over the cap, dropped to its newline
+	truncated bool // the total bound cut this file mid-stream
 }
 
 func (s *valueSink) Write(p []byte) (int, error) {
 	written := len(p)
-	s.scan.total += int64(len(p))
-	if s.scan.total > s.scan.limits.secretTotalBytes {
-		return 0, fmt.Errorf("the secret-path files hold more than the %d bytes this check reads for their values (it stopped in %s), "+
-			"so their values were not scanned; secret paths are write-protected here, so ask the operator to move the "+
-			"largest out of the repository", s.scan.limits.secretTotalBytes, s.path)
+	sc := s.scan
+	if sc.exhausted {
+		s.truncated = true
+		sc.noteBound("total_cap", s.path, fmt.Sprintf("the secret-path files hold more than the %d bytes this check reads for their values", sc.limits.secretTotalBytes))
+		return written, nil
 	}
+	if room := sc.limits.secretTotalBytes - sc.total; int64(len(p)) > room {
+		p = p[:room]
+		sc.exhausted, s.truncated = true, true
+		sc.noteBound("total_cap", s.path, fmt.Sprintf("the secret-path files hold more than the %d bytes this check reads for their values (reading stopped in %s)", sc.limits.secretTotalBytes, s.path))
+	}
+	sc.total += int64(len(p))
 	for len(p) > 0 {
+		chunk, rest := p, []byte(nil)
 		i := bytes.IndexByte(p, '\n')
-		if i < 0 {
-			s.line = append(s.line, p...)
-			if len(s.line) > s.scan.limits.secretLineBytes {
-				return 0, s.lineTooLong()
+		if i >= 0 {
+			chunk, rest = p[:i], p[i+1:]
+		}
+		if !s.skipping {
+			s.line = append(s.line, chunk...)
+			if len(s.line) > sc.limits.secretLineBytes {
+				s.line, s.skipping = s.line[:0], true
+				sc.noteBound("line_cap", s.path, fmt.Sprintf("line %d is over the %d-byte per-line cap this check reads for values, so that line was not checked", s.lineNo+1, sc.limits.secretLineBytes))
 			}
+		}
+		if i < 0 {
 			break
 		}
-		s.line = append(s.line, p[:i]...)
-		if len(s.line) > s.scan.limits.secretLineBytes {
-			return 0, s.lineTooLong()
+		if s.skipping {
+			s.skipping = false
+			s.lineNo++
+		} else {
+			s.flush()
 		}
-		if err := s.flush(); err != nil {
-			return 0, err
-		}
-		p = p[i+1:]
+		p = rest
 	}
 	return written, nil
 }
 
 func (s *valueSink) Close() error {
-	if len(s.line) > 0 {
-		return s.flush()
+	// A line the total bound cut in half is not a line: its value would be a
+	// prefix of the real one.
+	if len(s.line) > 0 && !s.truncated {
+		s.flush()
 	}
 	return nil
 }
 
-func (s *valueSink) lineTooLong() error {
-	return fmt.Errorf("line %d of the secret-path file %s is over the %d-byte per-line cap this check reads for values, "+
-		"so its values were not scanned; secret paths are write-protected here, so ask the operator to split it or "+
-		"move it out of the repository", s.lineNo+1, s.path, s.scan.limits.secretLineBytes)
-}
-
 // flush reads the assignment on the buffered line, if it is one.
-func (s *valueSink) flush() error {
+func (s *valueSink) flush() {
 	line := s.line
 	s.line = s.line[:0]
 	s.lineNo++
 	m := assignedValue.FindStringSubmatch(string(line))
 	if m == nil {
-		return nil
+		return
 	}
 	value := strings.Trim(m[2], `"'`)
 	if !looksCredential(m[1], value) {
-		return nil
+		return
 	}
-	set := s.scan.set
-	if _, known := set.values[value]; !known && len(set.values) >= s.scan.limits.secretValues {
-		return fmt.Errorf("the secret-path files assign more than the %d credential values this check holds (it stopped at line %d of %s), "+
-			"so the rest were not scanned; secret paths are write-protected here, so ask the operator to trim them",
-			s.scan.limits.secretValues, s.lineNo, s.path)
+	sc := s.scan
+	if _, known := sc.set.values[value]; !known && len(sc.set.values) >= sc.limits.secretValues {
+		sc.full = true
+		sc.noteBound("value_cap", s.path, fmt.Sprintf("the secret-path files assign more than the %d credential values this check holds (reading stopped adding at line %d of %s)", sc.limits.secretValues, s.lineNo, s.path))
+		return
 	}
-	set.values[value] = s.path
-	return nil
+	sc.set.values[value] = s.path
 }
 
 // readValues reads one working-tree secret file's values through the open seam.
-func (r *Registry) readValues(v *valueScan, path, abs string) error {
+// A file that cannot be opened or read is a note, not a refusal: see scanNote.
+func (r *Registry) readValues(v *valueScan, path, abs string, tracked bool) {
 	f, err := r.scan.open(abs)
 	if err != nil {
-		return fmt.Errorf("could not read the working-tree copy of the secret-path file %s after hashing it, so its values were not scanned "+
-			"(the harness user must be able to read it; fix its permissions outside this session): %w", path, err)
+		v.noteUnreadable(path, tracked, err)
+		return
 	}
 	// Read-only: a close that fails has lost nothing that was read.
 	defer func() { _ = f.Close() }()
@@ -468,14 +551,19 @@ func (r *Registry) readValues(v *valueScan, path, abs string) error {
 		n, readErr := f.Read(buf)
 		if n > 0 {
 			if _, err := sink.Write(buf[:n]); err != nil {
-				return err
+				v.noteUnreadable(path, tracked, err)
+				return
 			}
 		}
 		if readErr == io.EOF {
-			return sink.Close()
+			if err := sink.Close(); err != nil {
+				v.noteUnreadable(path, tracked, err)
+			}
+			return
 		}
 		if readErr != nil {
-			return fmt.Errorf("could not read the working-tree copy of the secret-path file %s after hashing it, so its values were not scanned: %w", path, readErr)
+			v.noteUnreadable(path, tracked, readErr)
+			return
 		}
 	}
 }
