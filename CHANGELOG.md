@@ -79,6 +79,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `policy.check.command` now marks a hard refusal for an unreadable construct
+  (`cd`, `git -C`, a heredoc, a substitution) with `policy.unreadable_only` once
+  the line's redirections have been judged and passed, as the harness gate
+  already did. It used to return before the redirect rung, so the marker never
+  reached a host and GitPulse, which softens on it alone, refused every `cd`
+  line. A line whose redirect is refused (`cd x && echo > .env`), one refused
+  for what it does (`cd x && git push --force`), and one whose redirect could
+  not be judged for want of a root keep their refusal unmarked.
 - A managed Claude run whose stream carries a tool result that does not decode
   now fails with `invalid Claude user message`, as an undecodable assistant
   message already did. It used to skip the frame and end the run as completed

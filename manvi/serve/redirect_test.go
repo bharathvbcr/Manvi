@@ -53,6 +53,68 @@ func TestHostPostureRefusesCommandsThatRedirectIntoASecret(t *testing.T) {
 	}
 }
 
+// A hard refusal that only says "the gate could not read this line" carries
+// policy.unreadable_only once its redirections have been judged and passed, as
+// gate.Gate's does. GitPulse softens on that marker and on nothing else; this
+// plane returned before the redirect rung and never attached it, so a `cd` line
+// was refused outright on every host.
+//
+// The marker is a guarantee that nothing else in the line was refused, so it
+// must stay off a line whose redirect is refused, a line the ladder refuses for
+// what it does, and a line whose redirect could not be judged at all.
+func TestUnreadableRefusalCarriesTheMarkerOnlyWhenItsRedirectsPass(t *testing.T) {
+	root := t.TempDir()
+	marked := func(d policy.Decision) bool {
+		for _, entry := range d.Degraded {
+			if entry == policy.DegradedUnreadableOnly {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, tc := range []struct {
+		command string
+		rule    policy.RuleID
+	}{
+		{`cd sub && ls`, policy.RuleCommandDirectoryChange},
+		{`cd sub && echo hi > notes.txt`, policy.RuleCommandDirectoryChange},
+		{"cat <<EOF\nhi\nEOF", policy.RuleCommandHeredoc},
+	} {
+		d := decodeDecision(t, roundTrip(t, hostOpts(), commandCheckIn(t, "1", root, tc.command))[0])
+		if !d.Blocked() || d.Severity != policy.Hard || d.Rule != tc.rule {
+			t.Errorf("%q: want a hard %s refusal, got %s/%s/%s", tc.command, tc.rule, d.Action, d.Rule, d.Severity)
+		}
+		if !marked(d) {
+			t.Errorf("%q: refused only as unreadable with its redirects judged, but carries no %s marker: %v",
+				tc.command, policy.DegradedUnreadableOnly, d.Degraded)
+		}
+	}
+
+	for _, command := range []string{
+		`cd sub && echo hi > .env`,
+		`cd sub && git push --force`,
+		`git push --force`,
+	} {
+		d := decodeDecision(t, roundTrip(t, hostOpts(), commandCheckIn(t, "1", root, command))[0])
+		if !d.Blocked() || d.Severity != policy.Hard {
+			t.Errorf("%q: want a hard refusal, got %s/%s/%s", command, d.Action, d.Rule, d.Severity)
+		}
+		if marked(d) {
+			t.Errorf("%q: something other than readability refused it (%s), yet it carries the %s marker",
+				command, d.Rule, policy.DegradedUnreadableOnly)
+		}
+	}
+
+	// No root: the redirect could not be judged, so the line is refused as it
+	// always was, unmarked, rather than answered with an error it never got.
+	d := decodeDecision(t, roundTrip(t, hostOpts(), commandCheck(t, "1", `cd sub && echo hi > notes.txt`))[0])
+	if !d.Blocked() || d.Rule != policy.RuleCommandDirectoryChange || marked(d) {
+		t.Errorf("rootless cd line with a redirect: want an unmarked directory_change refusal, got %s/%s %v",
+			d.Action, d.Rule, d.Degraded)
+	}
+}
+
 // A root is optional on this surface, and its absence must not read like a
 // check that ran and passed. Without one the redirect rung cannot resolve a
 // path against a repository, so the request is refused rather than answered.

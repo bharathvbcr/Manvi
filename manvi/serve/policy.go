@@ -221,7 +221,7 @@ type CommandCheckParams struct {
 	// on top of it would refuse commands the host's own UI offers, which reads
 	// as a broken feature rather than as a safety decision. What the host gains
 	// with this off is the *hard* command rules — force push, protected-branch
-	// reset, --no-verify — which nothing in a typical host checks and which
+	// reset, --no-gpg-sign — which nothing in a typical host checks and which
 	// destroy the evidence other gates reason about.
 	//
 	// A host that wants the full ladder sets this true and supplies a real
@@ -360,7 +360,15 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 	if !p.EnforceAllowlist {
 		d = s.posture.demote(d, "serve.posture=host: allowlist not enforced (enforce_allowlist=false)")
 	}
-	if d.Blocked() {
+	// A hard refusal for an unreadable construct — `cd`, a heredoc, a
+	// substitution — says the gate could not read the line, not that it forbids
+	// what the line does, and a host may treat it more gently. So, as in
+	// gate.Gate, it goes on to the redirect rung and carries
+	// policy.unreadable_only only if its redirections pass. Returning here for it
+	// left the marker unreachable on this plane, and GitPulse, which softens on
+	// that marker alone, refused every `cd` line outright.
+	unreadable := d.Blocked() && d.Severity == policy.Hard && policy.IsUnreadableRule(d.Rule)
+	if d.Blocked() && !unreadable {
 		return d, nil
 	}
 
@@ -380,10 +388,19 @@ func (s *Server) checkCommand(raw json.RawMessage) (any, *Error) {
 		return s.evaluateHostWrite(p.Root, target, dc.OpWrite, false, p.Scope), nil
 	})
 	if err != nil {
+		if unreadable {
+			// The line was already refused; a redirect that could not be judged
+			// (no root) leaves it refused as before, without the marker that
+			// would vouch for redirects nobody looked at.
+			return d, nil
+		}
 		return nil, badRequest("%v", err)
 	}
 	if refusal.Refused {
 		return refusal.Decision, nil
+	}
+	if unreadable {
+		d = policy.WithUnreadableOnly(d)
 	}
 	return d, nil
 }
