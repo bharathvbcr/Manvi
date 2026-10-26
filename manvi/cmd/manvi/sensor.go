@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
@@ -146,6 +147,9 @@ func attachSensor(b *bus.Bus, s *sensor) error {
 		return err
 	}
 	if _, err := bus.OnSerial(b, s.dispatching); err != nil {
+		return err
+	}
+	if _, err := bus.OnSerial(b, s.ended); err != nil {
 		return err
 	}
 	_, err := bus.OnSerial(b, s.check)
@@ -308,6 +312,11 @@ func (s *sensor) dispatching(ctx context.Context, e *agent.ToolsDispatching) err
 // await returns the baseline of turn once its recording has finished, or
 // ctx's error if ctx ends first. A turn with no recording — its start event
 // never arrived — has nothing to wait for and gets the zero baseline.
+//
+// A cancelled context is an error even when the recording had already finished.
+// The gate relies on that: a select between a finished capture and a cancelled
+// context picks at random, and a cancelled turn must never be the one that
+// dispatches.
 func (s *sensor) await(ctx context.Context, turn int) (devcouncil.Baseline, error) {
 	s.baselineMu.Lock()
 	c := s.capture
@@ -318,20 +327,45 @@ func (s *sensor) await(ctx context.Context, turn int) (devcouncil.Baseline, erro
 	if c == nil {
 		return devcouncil.Baseline{}, nil
 	}
-	// Done wins over a cancelled context when both hold: a finished baseline is
-	// an answer, and a select between two ready cases would pick one at random.
 	select {
 	case <-c.done:
-		return c.baseline, nil
-	default:
-	}
-	select {
-	case <-c.done:
-		return c.baseline, nil
 	case <-ctx.Done():
-		return devcouncil.Baseline{}, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return devcouncil.Baseline{}, err
+	}
+	return c.baseline, nil
+}
+
+// ended is the end of the scope begin opened: it stops the turn's baseline
+// recording and waits for it to be gone, on every way out of the turn. A
+// recording that has finished is left alone; one still running is cancelled,
+// which takes its git children with it, and awaited, so the temp directory it
+// owns has been removed by the time Run returns. The wait is bounded because a
+// capture that ignored its context must not be able to hold a turn's exit.
+func (s *sensor) ended(_ context.Context, e *agent.TurnEnded) error {
+	s.baselineMu.Lock()
+	c := s.capture
+	if s.captureTurn != e.Turn {
+		c = nil
+	}
+	s.baselineMu.Unlock()
+	if c == nil {
+		return nil
+	}
+	c.cancel()
+	select {
+	case <-c.done:
+		return nil
+	case <-time.After(captureStopWait):
+		return fmt.Errorf("the pre-turn baseline capture did not stop within %s of the turn ending", captureStopWait)
 	}
 }
+
+// captureStopWait bounds how long a turn's exit waits for a cancelled baseline
+// capture to finish unwinding. A capture's git children are killed with their
+// process group when its context ends, so this is the time to reap them.
+const captureStopWait = 10 * time.Second
 
 // baselineFor returns the baseline recorded when turn began, waiting for the
 // recording if it is still running. It is keyed by turn and not consumed on

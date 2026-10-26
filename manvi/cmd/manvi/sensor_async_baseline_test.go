@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -34,6 +36,9 @@ type holdVerifier struct {
 	finished chan struct{}
 
 	startOnce, releaseOnce, finishOnce sync.Once
+	// live counts captures that have started and not yet returned: the seam
+	// that says whether a turn left one running.
+	live atomic.Int32
 }
 
 func newHoldVerifier(inner pathVerifier) *holdVerifier {
@@ -49,6 +54,8 @@ func newHoldVerifier(inner pathVerifier) *holdVerifier {
 func (h *holdVerifier) let() { h.releaseOnce.Do(func() { close(h.release) }) }
 
 func (h *holdVerifier) CaptureBaseline(ctx context.Context) devcouncil.Baseline {
+	h.live.Add(1)
+	defer h.live.Add(-1)
 	h.startOnce.Do(func() { close(h.started) })
 	defer h.finishOnce.Do(func() { close(h.finished) })
 	select {
@@ -351,5 +358,127 @@ func TestCheckWaitsForTheTurnsCaptureBeforeTheTurnEnds(t *testing.T) {
 	}
 	if !hold.isFinished() {
 		t.Fatal("the check returned before the capture finished")
+	}
+}
+
+// failingTurn is a recorded response that makes the provider return an error.
+func failingTurn() replay.Turn { return replay.Turn{Err: "the provider is down"} }
+
+// Every way out of a turn ends the baseline capture. The turns here leave
+// before the terminal checkpoint, which is the one place a capture was awaited
+// before: a provider error at the first step, a cancelled context, and a panic.
+// Each is judged by the live-capture count and by whether the capture finished,
+// read the instant Run returns, not after waiting for it.
+func TestEveryExitFromATurnEndsItsBaselineCapture(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange sets up the provider and returns the context to run under.
+		arrange func(p *timingProvider) (context.Context, context.CancelFunc)
+		panics  bool
+	}{
+		{"provider error at the first step", func(p *timingProvider) (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
+		}, false},
+		{"context cancelled at the first request", func(p *timingProvider) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			p.onFirst = cancel
+			return ctx, cancel
+		}, false},
+		{"panic in the provider", func(p *timingProvider) (context.Context, context.CancelFunc) {
+			p.onFirst = func() { panic("the provider panicked") }
+			return context.WithCancel(context.Background())
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := newHoldVerifier(&fakeVerifier{baseline: devcouncil.Baseline{Tree: "pre-turn"}})
+			t.Cleanup(hold.let)
+
+			provider := newTimingProvider(failingTurn(), replayText("never reached"))
+			ctx, cancel := tc.arrange(provider)
+			defer cancel()
+			loopBus := bus.New()
+			log := session.NewLog()
+			loop := newTimedLoop(t, provider, loopBus, log, tools.NewRegistry(loopBus))
+			if err := attachSensor(loopBus, &sensor{native: hold, log: log}); err != nil {
+				t.Fatal(err)
+			}
+
+			var runErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						if !tc.panics {
+							panic(r)
+						}
+						runErr = errors.New("panicked")
+					}
+				}()
+				_, runErr = loop.Run(ctx, llm.Message{
+					Role:    llm.RoleUser,
+					Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}},
+				})
+			}()
+			if runErr == nil {
+				t.Fatal("the turn was expected to fail")
+			}
+			if n := hold.live.Load(); n != 0 || !hold.isFinished() {
+				t.Fatalf("Run returned (%v) with %d baseline capture(s) still running, finished=%v",
+					runErr, n, hold.isFinished())
+			}
+		})
+	}
+}
+
+// The capture's temp directory is gone when Run returns from a turn that failed
+// before any check, with the real verifier and real git children behind it.
+func TestAFailedTurnLeavesNoBaselineTempDirectory(t *testing.T) {
+	root := benchGitRepo(t, 300, 10, 10)
+	inner, err := devcouncil.NewPathVerifier(root, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	t.Setenv("TMPDIR", scratch)
+
+	provider := newTimingProvider(failingTurn())
+	loopBus := bus.New()
+	log := session.NewLog()
+	loop := newTimedLoop(t, provider, loopBus, log, tools.NewRegistry(loopBus))
+	if err := attachSensor(loopBus, &sensor{native: inner, log: log}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loop.Run(context.Background(), llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}},
+	}); err == nil {
+		t.Fatal("the turn was expected to fail")
+	}
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		t.Errorf("%s was left behind by a failed turn", e.Name())
+	}
+}
+
+// The gate never releases a cancelled turn's tools. A finished capture and a
+// cancelled context are both ready here, which is the case a select would
+// resolve at random; the answer has to be the same every time.
+func TestDispatchingNeverReleasesACancelledTurn(t *testing.T) {
+	s, _ := newSensor(t, &fakeVerifier{baseline: devcouncil.Baseline{Tree: "pre-turn"}})
+	if err := s.begin(context.Background(), &agent.TurnStarting{Turn: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.await(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 5000; i++ {
+		if err := s.dispatching(ctx, &agent.ToolsDispatching{Turn: 1}); err == nil {
+			t.Fatalf("a cancelled turn was released to dispatch on attempt %d", i)
+		}
 	}
 }
