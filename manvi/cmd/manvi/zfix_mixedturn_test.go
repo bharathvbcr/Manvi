@@ -73,6 +73,10 @@ func TestBaselineIsCapturedAtTurnStartAndUsedAtTheCheck(t *testing.T) {
 	if err := s.begin(context.Background(), &agent.TurnStarting{Turn: 1}); err != nil {
 		t.Fatal(err)
 	}
+	// The recording runs beside the turn, so it is awaited before it is counted.
+	if _, err := s.await(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
 	if v.captures != 1 {
 		t.Fatalf("the baseline was captured %d times at turn start, want 1", v.captures)
 	}
