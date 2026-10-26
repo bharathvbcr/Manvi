@@ -284,7 +284,25 @@ func supersededRow(prev *artifacts.Artifact) string {
 // read, retried (bounded) when someone else got there first, so no concurrent
 // reflection is lost or overwritten. It returns the artifact name and its
 // revision.
+//
+// An error matching artifacts.ErrPublishedUnsynced comes back WITH the name and
+// revision: the entry is stored and readable, only its durability is
+// unconfirmed. Retrying it would file a second revision of a lesson already
+// filed.
 func Save(store *artifacts.Store, library, sessionID string, r Result) (string, int, error) {
+	return save(store, library, sessionID, r)
+}
+
+// entryStore is the part of *artifacts.Store that Save uses: the seam through
+// which a test makes a write publish with its directory sync unconfirmed,
+// which no real filesystem will do on demand.
+type entryStore interface {
+	Get(name string) (*artifacts.Artifact, error)
+	Create(name, content string, meta artifacts.Metadata) (*artifacts.Artifact, error)
+	UpdateIfRevision(name, content string, meta *artifacts.Metadata, expected int) (*artifacts.Artifact, error)
+}
+
+func save(store entryStore, library, sessionID string, r Result) (string, int, error) {
 	if err := ValidateLibrary(library); err != nil {
 		return "", 0, err
 	}
@@ -314,8 +332,11 @@ func Save(store *artifacts.Store, library, sessionID string, r Result) (string, 
 			last = errors.New("the entry has no recorded revision yet")
 		case err == nil:
 			art, err := store.UpdateIfRevision(name, render(sessionID, r, historyOf(prev)), &meta, prev.Revision)
-			if err == nil {
-				return art.Name, art.Revision, nil
+			if err == nil || errors.Is(err, artifacts.ErrPublishedUnsynced) {
+				// A published write whose directory sync was not confirmed is
+				// stored: it comes back with its name and revision and with
+				// the error, for the caller to report beside them, not retry.
+				return art.Name, art.Revision, err
 			}
 			if !errors.Is(err, artifacts.ErrRevisionConflict) {
 				return "", 0, err
@@ -323,8 +344,11 @@ func Save(store *artifacts.Store, library, sessionID string, r Result) (string, 
 			last = err
 		case errors.Is(err, artifacts.ErrNotFound):
 			art, err := store.Create(name, render(sessionID, r, nil), meta)
-			if err == nil {
-				return art.Name, art.Revision, nil
+			if err == nil || errors.Is(err, artifacts.ErrPublishedUnsynced) {
+				// A published write whose directory sync was not confirmed is
+				// stored: it comes back with its name and revision and with
+				// the error, for the caller to report beside them, not retry.
+				return art.Name, art.Revision, err
 			}
 			if !errors.Is(err, artifacts.ErrExists) {
 				return "", 0, err

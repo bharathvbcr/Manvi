@@ -160,7 +160,7 @@ func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Re
 	}
 
 	art, err := store.Create(args.Name, args.Content, args.Metadata)
-	if err != nil {
+	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("creating artifact: %v", err)
 	}
 
@@ -171,15 +171,7 @@ func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Re
 	// omission, and the one thing downstream must never have to guess is
 	// whether a short list is short because little was written or because
 	// something filtered it.
-	result := ok(map[string]any{
-		"status":   "created",
-		"artifact": art.Name,
-		"revision": art.Revision,
-		"path":     art.Path,
-		"summary":  art.Metadata.Summary,
-	})
-	result.Wrote = []string{art.Path}
-	return annotate(result, decision)
+	return artifactSaved("created", art, err, decision)
 }
 
 func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Result {
@@ -206,7 +198,7 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 	}
 
 	art, err := store.Update(args.Name, args.Content, args.Metadata)
-	if err != nil {
+	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("updating artifact: %v", err)
 	}
 
@@ -217,13 +209,30 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 	// omission, and the one thing downstream must never have to guess is
 	// whether a short list is short because little was written or because
 	// something filtered it.
-	result := ok(map[string]any{
-		"status":   "updated",
+	return artifactSaved("updated", art, err, decision)
+}
+
+// artifactSaved is the result of a Create or Update that wrote the artifact.
+// err is nil, or matches artifacts.ErrPublishedUnsynced: the artifact is
+// published and readable, but syncing its directory failed, so it may not
+// survive a crash. That is reported as a saved artifact carrying a warning in
+// the payload. It is not an error result: the artifact exists, a retry of
+// "create" would only answer that it exists, and a silent success would hide
+// the risk. It is deliberately not Result.Degraded, which feeds the policy
+// outcome "allowed but not on the rules alone" and would misreport this.
+func artifactSaved(status string, art *artifacts.Artifact, err error, decision policy.Decision) tools.Result {
+	payload := map[string]any{
+		"status":   status,
 		"artifact": art.Name,
 		"revision": art.Revision,
 		"path":     art.Path,
 		"summary":  art.Metadata.Summary,
-	})
+	}
+	if err != nil {
+		payload["durability"] = "unconfirmed"
+		payload["warning"] = "the artifact was saved and can be read, but syncing its directory failed, so it may not survive a crash; do not retry the write"
+	}
+	result := ok(payload)
 	result.Wrote = []string{art.Path}
 	return annotate(result, decision)
 }
