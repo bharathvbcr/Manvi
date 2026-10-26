@@ -88,7 +88,7 @@ flowchart TD
 
 | Rule ID | Tier | Default Action | Overridable By | Description |
 |---|---|---|---|---|
-| `path.outside_root` | Hard | **Reject** | *Never* | Traversal attempts (`../`), absolute paths outside workspace. |
+| `path.outside_root` | Hard | **Reject** | *Never* | Traversal attempts (`../`), absolute paths outside workspace. Writes under the temporary directories are allowed unless the root itself lives there. |
 | `path.secret` | Hard | **Block** | *Never* | Matches sensitive files (`.env`, `credentials/`, `secrets/`, `id_ed25519`, `*.pem`). |
 | `path.restricted` | Hard | **Block** | *Never* | Protects `.git`, `.devcouncil` and the agent client config directories (`.claude/`, `.codex/`, `.cursor/`, ...). |
 | `task.forbidden_change` | Hard | **Block** | *Never* | The task lists the path in `forbidden_changes`. |
@@ -113,8 +113,8 @@ the structural refusals (`command.substitution`, `command.heredoc`,
 flowchart TD
     subgraph HardCmdRules["Command Gate Hard Rules"]
         C1["command.force_push: Rejects push -f, push --force-with-lease, +refs/heads/*"]
-        C2["command.bypass_flag: Rejects --no-verify, --no-gpg-sign"]
-        C3["command.git_read_argument: Rejects a read-only git command whose arguments do more than read: an expansion, a path outside the root or a secret path, --output/--no-index/-O, unsafe global options or GIT_* assignments"]
+        C2["command.bypass_flag: Rejects --no-gpg-sign (--no-verify is allowed)"]
+        C3["command.git_read_argument: Rejects a read-only git command whose arguments do more than read: a command substitution, a path outside the root or a secret path, --output/--no-index/-O, a -c key or GIT_* assignment that can run a program or point git elsewhere"]
         C4["command.secret_read: Rejects a command whose operand or input redirection names a secret path"]
         C5["command.protected_reset: Rejects a hard reset of a protected branch"]
     end
@@ -135,8 +135,19 @@ its operands, a `--opt=value` or `rev:path` value, or the target of a `<`
 redirection names a path under the secret patterns. Wildcards are expanded
 against the working tree, so `cat .e*` is judged as `.env`; symlinks inside the
 root are followed; a plain file reader (`cat`, `head`, `cp`, `base64`, ...) given
-an operand only the shell can resolve (`cat $F`) is refused as unjudgeable.
-Operands a command only writes (`cp`'s destination, `tee`, `sed -i`) are the
+an operand a command substitution chooses (`cat $(pick)`) is refused as
+unjudgeable.
+
+Variables are read before any rung runs (DevCouncil `policy/command_bindings.go`).
+A leading `~`, `$HOME`, `$TMPDIR` and every variable the line assigns a literal
+value — `f=x; …`, `export W=…`, each item of a `for` list — are rewritten to their
+values and every reading is judged, so `F=.env; cat $F` is refused and
+`cat ~/notes` is judged as the path it names. A variable the line does not bind
+(`cat $f`, `cp a $W/b`) is judged by its spelling rather than refused; the
+accepted cost is that a parent environment can point it somewhere the gate did
+not see. Writes under the temporary directories (`$TMPDIR`, `/tmp`,
+`/private/tmp`) are allowed although they leave the root, unless the root itself
+lives there. Operands a command only writes (`cp`'s destination, `tee`, `sed -i`) are the
 write rungs' to judge, and commands that only print a name (`echo`, `ls`, `rm`)
 are not reads.
 
@@ -220,7 +231,7 @@ Command policy normalization is pinned across 256 test vectors in `testdata/comm
 - Unwraps `uv run`, `poetry run`, `bundle exec`, `npx`.
 - Decodes shell chaining (`&&`, `||`, `;`, `|`).
 - Detects refspec force pushes (e.g. `git push origin +main:main`).
-- Intercepts `--no-verify` and `--no-gpg-sign` on git commit and push.
+- Intercepts `--no-gpg-sign` on git commit and push (`--no-verify` is allowed).
 
 ---
 

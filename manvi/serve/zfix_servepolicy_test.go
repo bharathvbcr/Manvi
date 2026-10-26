@@ -34,9 +34,12 @@ func TestServeGatesRedirectTargetsUnderTheDevCouncilPosture(t *testing.T) {
 		command string
 		rule    policy.RuleID
 	}{
-		// `~` is an expansion only the shell resolves, so the target cannot be
-		// named and is refused as an unverifiable write.
-		{"git diff > ~/.ssh/authorized_keys", policy.RuleCommandSubstitution},
+		// The tilde resolves to $HOME (DevCouncil's expandBindings), so the
+		// write is judged where it lands: outside the root.
+		{"git diff > ~/.ssh/authorized_keys", policy.RuleOutsideRoot},
+		// A substitution chooses the target, so it cannot be named and is
+		// refused as an unverifiable write.
+		{"echo x > $(echo y)", policy.RuleCommandSubstitution},
 		// Absolute and outside the root the host declared.
 		{"echo x > /etc/sudoers", policy.RuleOutsideRoot},
 		// Inside the root, and a credential path.
@@ -144,13 +147,19 @@ func TestServeCommandsWithoutARedirectAreUnchanged(t *testing.T) {
 		{"ls -la", policy.Allow, policy.RuleCommandNotAllowed},
 		{"git status", policy.Allow, policy.RuleNone},
 		{"git push --force origin main", policy.Deny, policy.RuleCommandForcePush},
-		{"git commit --no-verify -m x", policy.Deny, policy.RuleCommandBypassFlag},
+		// Skipping the repository's hooks is allowed (owner decision,
+		// 2026-10-24): the command is in no allowlist, which the host posture
+		// demotes. Skipping signing is still a hard refusal.
+		{"git commit --no-verify -m x", policy.Allow, policy.RuleCommandNotAllowed},
 		{"git commit --no-gpg-sign -m x", policy.Deny, policy.RuleCommandBypassFlag},
 		// A read-only git command whose arguments do more than read is refused
 		// under its own rule. It used to be reported as command.bypass_flag, so
 		// a host was told an expansion or a secret path was a skipped hook
 		// (DevCouncil e79c2610).
-		{`git log -1 --format=%s "$b"`, policy.Deny, gitReadArgument},
+		{`git log -1 --format=%s "$(pick)"`, policy.Deny, gitReadArgument},
+		// An unbound variable is judged by its spelling (owner decision,
+		// 2026-10-24); a git log of it reads nothing beyond the repository.
+		{`git log -1 --format=%s "$b"`, policy.Allow, policy.RuleCommandNotAllowed},
 		{"git show HEAD:.env", policy.Deny, gitReadArgument},
 		{"git diff --output=x", policy.Deny, gitReadArgument},
 		{"git -c core.pager=sh log", policy.Deny, gitReadArgument},
