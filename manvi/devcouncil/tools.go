@@ -111,6 +111,11 @@ type Registry struct {
 	// skillSurface is the session's decision, taken once by Register, on
 	// whether devcouncil_load_skill is offered. See skillToolOffered.
 	skillSurface atomic.Int32
+	// readSecretFile reads one secret-path file for the commit-time value
+	// scan (see readCappedFile). Nil means the real filesystem; a test sets
+	// it to fail a read that git's own hashing of the same file survived,
+	// which no file permission can arrange for one user.
+	readSecretFile func(path string, limit int64) ([]byte, error)
 }
 
 // New builds the tool surface.

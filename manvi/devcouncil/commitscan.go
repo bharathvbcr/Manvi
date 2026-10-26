@@ -3,7 +3,9 @@ package devcouncil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,8 +33,11 @@ import (
 //   - an added line contains a credential this process knows (a provider key, a
 //     forwarded token — Deps.KnownSecret).
 //
-// It fails closed: anything that cannot be read, listed or hashed is a refusal
-// that says the check did not run, never a clean pass.
+// It fails closed: anything that cannot be statted, read, listed or hashed, a
+// secret file too large to read for its values, and a staged patch too large to
+// scan are each a refusal that names which and says the check did not run,
+// never a clean pass. Only a symlink at a secret path is skipped: git stores its
+// target's name, so it has no bytes of its own to hold a value.
 
 const (
 	// maxSecretFileBytes bounds one secret-path file read for its values.
@@ -162,7 +167,18 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 	}
 	for _, p := range secret {
 		info, err := os.Lstat(filepath.Join(r.deps.Root, filepath.FromSlash(p)))
-		if err != nil || !info.Mode().IsRegular() {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			// Listed from the index but gone from the working tree. Its blob id
+			// and values are what a staged copy under another name is judged
+			// against, so skipping it would let that copy through.
+			return set, fmt.Errorf("the secret-path file %s is tracked but missing from the working tree, so its values were not scanned; "+
+				"restore it (git restore), then retry: %w", p, err)
+		case err != nil:
+			return set, fmt.Errorf("could not stat the secret-path file %s, so its values were not scanned: %w", p, err)
+		case !info.Mode().IsRegular():
+			// A symlink is stored by git as its target's name, not the target's
+			// bytes, and a directory or device has no value to read.
 			continue
 		}
 		set.files = append(set.files, p)
@@ -184,14 +200,19 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		set.blobs[id] = set.files[i]
 	}
 
+	read := r.readSecretFile
+	if read == nil {
+		read = readCappedFile
+	}
 	for _, p := range set.files {
-		info, err := os.Stat(filepath.Join(r.deps.Root, filepath.FromSlash(p)))
-		if err != nil || info.Size() > maxSecretFileBytes {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(r.deps.Root, filepath.FromSlash(p)))
+		data, err := read(filepath.Join(r.deps.Root, filepath.FromSlash(p)), maxSecretFileBytes)
 		if err != nil {
-			continue
+			return set, fmt.Errorf("could not read the secret-path file %s after hashing it, so its values were not scanned: %w", p, err)
+		}
+		if len(data) > maxSecretFileBytes {
+			return set, fmt.Errorf("the secret-path file %s is over the %d-byte cap this check reads for its values, "+
+				"so its values were not scanned; shrink it below the cap or keep it outside the repository, then retry",
+				p, maxSecretFileBytes)
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			m := assignedValue.FindStringSubmatch(line)
@@ -205,6 +226,21 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		}
 	}
 	return set, nil
+}
+
+// readCappedFile reads at most limit+1 bytes of path: one byte past the limit is
+// how a caller tells a file that fits from one that was cut, without a separate
+// size check that a file growing in between would defeat.
+func readCappedFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(f, limit+1))
+	if closeErr := f.Close(); readErr == nil {
+		readErr = closeErr
+	}
+	return data, readErr
 }
 
 // stagedContentLeaks judges what is staged by its content. A nil result with a
@@ -242,10 +278,23 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, error)
 	// The prefixes are spelled out because diff.noprefix and diff.mnemonicPrefix
 	// are repository configuration: with either set, git writes no "b/" and the
 	// name below was never found, which skipped the whole file's content.
-	patch, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--no-renames", "--no-color",
-		"--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0")
+	//
+	// --text shows a binary file's bytes as added lines, which is how a value
+	// inside a binary, or in a secret file's copy with a NUL appended (a new blob
+	// id, so not an exact copy), reaches the value scan. Without it git prints
+	// "Binary files differ" and the file's content is never judged. It also
+	// overrides a gitattributes `binary` or `-diff`, which would hide a file the
+	// same way. The cap below is the one every capture here has; a patch that
+	// outgrows it is a refusal, not a truncation, because the lines past the cut
+	// are content nothing judged.
+	patch, capNote, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, "diff", "--cached", "--text", "--no-renames",
+		"--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0")
 	if err != nil {
 		return nil, fmt.Errorf("reading the staged patch: %w", err)
+	}
+	if capNote != "" {
+		return nil, fmt.Errorf("the staged patch, binary files included, is over the %d-byte cap, so its content was not scanned "+
+			"for credentials (%s); commit fewer or smaller files at a time", maxGitCaptureBytes, capNote)
 	}
 	if err := scanAddedLines(patch, func(path, added string) {
 		for value, source := range set.values {
