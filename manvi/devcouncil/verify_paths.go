@@ -354,7 +354,7 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 	// and a file the turn created is in the second tree, so the untracked
 	// special case below is not needed for this path either.
 	if baseline.Captured() {
-		if after, err := r.writeWorktreeTree(ctx); err == nil {
+		if after, err := r.treeAfter(ctx, baseline, paths); err == nil {
 			args := append([]string{"diff", baseline.Tree, after, "--"}, paths...)
 			out, note, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, args...)
 			if err == nil {
