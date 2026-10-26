@@ -41,6 +41,11 @@ type Response struct {
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *RPCError       `json:"error,omitempty"`
 	Meta    map[string]any  `json:"_meta,omitempty"`
+
+	// synthetic marks a reply this client made up to fail a pending request
+	// (failAllPending), as opposed to one the server wrote. It is never decoded
+	// from the wire.
+	synthetic bool
 }
 
 // Notification is a JSON-RPC 2.0 one-way notification.

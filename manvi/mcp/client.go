@@ -430,10 +430,14 @@ func truncateTo(s string, n int) string {
 }
 
 // Alive reports whether the server process is still producing stdout. A client
-// whose read loop has ended is dead regardless of whether anyone called Close:
-// the Manager uses this to replace a crashed server instead of handing out a
-// corpse to every later call.
+// whose read loop has ended is dead regardless of whether anyone called Close,
+// and a closed client is dead before its read loop has finished noticing: the
+// Manager uses this to replace a crashed or retired server instead of handing
+// out a corpse to every later call.
 func (c *Client) Alive() bool {
+	if c.closed.Load() {
+		return false
+	}
 	select {
 	case <-c.doneCh:
 		return false
@@ -747,8 +751,9 @@ func (c *Client) failAllPending(reason string) {
 		// Every channel is buffered with room for one and is read at most
 		// once, so this cannot block.
 		ch <- &Response{
-			JSONRPC: JSONRPCVersion,
-			Error:   &RPCError{Code: CodeInternalError, Message: reason},
+			JSONRPC:   JSONRPCVersion,
+			Error:     &RPCError{Code: CodeInternalError, Message: reason},
+			synthetic: true,
 		}
 	}
 }
@@ -1094,17 +1099,28 @@ func (f *initFlight) abortNow() { f.abortOnce.Do(func() { close(f.abort) }) }
 // shared result under their own context (or, with none, the call ceiling), and
 // one whose context ends gets its own error without disturbing the handshake.
 //
-// A handshake that fails is retryable, and only after it has resolved: an error
-// reply, an unusable revision, or a transport that died. initialize is never
-// re-sent while a previous one is outstanding at the server, because two
-// initialize requests on one session is a protocol violation and a late reply
-// could then be matched to the wrong attempt. The exception is a failed
-// notifications/initialized, which ends the handshake for the session: the
-// server did answer, a second initialize on the same stream is not allowed, and
-// a write that failed means the stream is gone — the Manager replaces the client.
+// How a handshake ends decides whether it may be tried again. initialize is
+// never re-sent while a previous one may still be outstanding or answered at
+// the server: two initialize requests on one session is a protocol violation,
+// and a late reply could be matched to the wrong attempt.
+//
+//   - A JSON-RPC error reply to our own initialize id is the server's definitive
+//     "no". The flight is cleared and the next call starts a new handshake.
+//   - A transport that ended is already dead: Alive is false and every later
+//     call fails there.
+//   - Anything that leaves the server's view of the session unknown or
+//     inconsistent with ours is terminal for this client: the request was failed
+//     by failAllPending (correlation lost, so the server may still answer it), a
+//     success reply carried a protocol revision this client does not speak, a
+//     success reply could not be decoded, or notifications/initialized could not
+//     be written. Every waiter gets a named error, Initialize keeps returning
+//     it, no further initialize is sent, and the client is closed so that
+//     Alive is false and the Manager replaces it with a fresh process, which is
+//     a fresh session.
 //
 // Spec: modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle (the
-// client MUST send initialized after a successful initialize) and
+// client MUST send initialized after a successful initialize; if it does not
+// support the version in the server's response it SHOULD disconnect) and
 // .../basic/utilities/cancellation (the initialize request MUST NOT be
 // cancelled by clients).
 func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
@@ -1160,10 +1176,18 @@ func (c *Client) runInitialize(ctx context.Context, f *initFlight) {
 
 	f.res, f.err = res, err
 	close(f.done)
+
+	// After the waiters are released: Close waits on the child process.
+	if fatal {
+		_ = c.Close()
+	}
 }
 
-// handshakeEnded marks a handshake failure that is not retryable on this
-// session. It unwraps, so callers see the underlying error unchanged.
+// handshakeEnded marks a handshake that ended in a way that leaves the
+// server's view of the session unknown or inconsistent with ours. It is
+// terminal for the client, which is closed, so that the Manager replaces it with
+// a fresh process and so a fresh session. It unwraps, so callers see the
+// underlying error unchanged.
 type handshakeEnded struct{ err error }
 
 func (e *handshakeEnded) Error() string { return e.err.Error() }
@@ -1171,7 +1195,7 @@ func (e *handshakeEnded) Unwrap() error { return e.err }
 
 // handshake sends initialize, waits for its resolution however long that takes,
 // and completes the handshake. A failure is retryable unless it is a
-// *handshakeEnded.
+// *handshakeEnded. See Initialize for which is which.
 func (c *Client) handshake(ctx context.Context, f *initFlight) (*InitializeResult, error) {
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersionLatest,
@@ -1206,15 +1230,30 @@ func (c *Client) handshake(ctx context.Context, f *initFlight) (*InitializeResul
 		return nil, c.closedReason()
 	}
 
+	if ok && resp != nil && resp.synthetic {
+		// Not the server's answer: failAllPending, because correlation on this
+		// stream was lost. The server may still hold our initialize and may
+		// still answer it.
+		return nil, &handshakeEnded{fmt.Errorf("mcp: the initialize request to %s was failed by this client, not answered by the server (%s); "+
+			"the session is in an unknown state, so the connection was closed and initialize will not be sent again on it",
+			c.cfg.Name, resp.Error.Message)}
+	}
 	var out InitializeResult
 	if err := c.replyResult("initialize", resp, ok, &out); err != nil {
+		if ok && resp != nil && resp.Error == nil {
+			// The server answered with success and this client cannot read it:
+			// the server considers the session initialized.
+			return nil, &handshakeEnded{err}
+		}
 		return nil, err
 	}
 	if !slices.Contains(handshakeVersions, out.ProtocolVersion) {
-		// Not cached: the next call asks again, and a server that was
-		// misconfigured for a moment is not condemned for the session.
-		return nil, fmt.Errorf("mcp: %s answered initialize with protocol revision %q, which this client does not speak (it speaks %s)",
-			c.cfg.Name, out.ProtocolVersion, strings.Join(handshakeVersions, ", "))
+		// The server accepted the handshake on a revision this client does not
+		// speak, so its session is established on terms this client cannot
+		// honour. "If the client does not support the version in the server's
+		// response, it SHOULD disconnect."
+		return nil, &handshakeEnded{fmt.Errorf("mcp: %s answered initialize with protocol revision %q, which this client does not speak (it speaks %s)",
+			c.cfg.Name, out.ProtocolVersion, strings.Join(handshakeVersions, ", "))}
 	}
 
 	if err := c.Notify("notifications/initialized", map[string]any{}); err != nil {

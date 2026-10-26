@@ -350,4 +350,125 @@ func TestAFailedInitializedNotificationDoesNotReinitialize(t *testing.T) {
 	if n := countMethod(&in.recordingStdin, "initialize"); n != 1 {
 		t.Fatalf("initialize re-sent after the server had answered: %d frames", n)
 	}
+	if c.Alive() {
+		t.Fatal("a client whose handshake could not be completed is still reported alive")
+	}
+}
+
+// failAllPending answers a pending initialize with an error the server never
+// sent. Correlation is gone — the server may still hold the request, and may
+// still answer it — so the connection is finished: a second initialize on it
+// would be a second handshake on one session. Only an error reply to our own
+// initialize id is the server's definitive "no".
+func TestFailAllPendingThenRetryDoesNotResendInitialize(t *testing.T) {
+	c, in := newWiredClient()
+	t.Cleanup(func() { _ = c.Close() })
+
+	first := initAsync(c, withTimeout(t, 5*time.Second))
+	waitForMethod(t, in, "initialize", 1)
+	c.dispatch([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse"}}`))
+	if o := receive(t, first, "first caller"); o.err == nil {
+		t.Fatal("first caller was told the handshake succeeded")
+	}
+
+	second := initAsync(c, withTimeout(t, 5*time.Second))
+	c.dispatch(initReply(1))
+	c.dispatch(initReply(2))
+	o := receive(t, second, "second caller")
+	if o.err == nil {
+		t.Fatalf("a connection whose handshake lost correlation reported a clean handshake: %v", o.res)
+	}
+	if n := countMethod(in, "initialize"); n != 1 {
+		t.Fatalf("initialize was sent %d times; the first may still be outstanding at the server: %q", n, in.frames())
+	}
+	if c.Alive() {
+		t.Fatal("a connection whose handshake is in an unknown state is still reported alive")
+	}
+}
+
+// A success reply on a revision this client does not speak leaves the server
+// with a session this client cannot honour. The lifecycle spec says a client
+// that does not support the server's version "SHOULD disconnect", so the
+// handshake is terminal: waiters get the named error, no second initialize is
+// sent, and the client is closed rather than left to be retried.
+func TestAnUnsupportedRevisionEndsTheHandshakeForTheClient(t *testing.T) {
+	c, in := newWiredClient()
+	t.Cleanup(func() { _ = c.Close() })
+
+	first := initAsync(c, withTimeout(t, 5*time.Second))
+	waitForMethod(t, in, "initialize", 1)
+	c.dispatch([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"1999-01-01","capabilities":{}}}`))
+	o := receive(t, first, "first caller")
+	if o.err == nil || !strings.Contains(o.err.Error(), "1999-01-01") {
+		t.Fatalf("first caller: err = %v, want the unsupported revision named", o.err)
+	}
+
+	_, err := c.Initialize(withTimeout(t, time.Second))
+	if err == nil || !strings.Contains(err.Error(), "1999-01-01") {
+		t.Fatalf("a later call: err = %v, want the same terminal error", err)
+	}
+	if n := countMethod(in, "initialize"); n != 1 {
+		t.Fatalf("initialize sent %d times after an unusable revision: %q", n, in.frames())
+	}
+	if n := countMethod(in, "notifications/initialized"); n != 0 {
+		t.Fatalf("initialized was sent for a handshake the client refused: %q", in.frames())
+	}
+	if c.Alive() {
+		t.Fatal("a client that refused the server's revision is still reported alive")
+	}
+}
+
+// An explicit error reply to our own initialize is the server's definitive no:
+// the client stays usable and the next call may handshake afresh.
+func TestAnErrorReplyToInitializeLeavesTheClientAlive(t *testing.T) {
+	c, in := newWiredClient()
+	t.Cleanup(func() { _ = c.Close() })
+
+	first := initAsync(c, withTimeout(t, 5*time.Second))
+	waitForMethod(t, in, "initialize", 1)
+	c.dispatch([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"no"}}`))
+	if o := receive(t, first, "first caller"); o.err == nil {
+		t.Fatal("an error reply was reported as a clean handshake")
+	}
+	if !c.Alive() {
+		t.Fatal("an error reply to initialize retired the client")
+	}
+}
+
+// A client poisoned by its handshake is not handed out again: the Manager sees
+// it is not alive and spawns a fresh process, which is a fresh session. The
+// first process of the fake answers initialize with a revision nobody speaks;
+// the replacement answers properly.
+func TestManagerReplacesAClientWhoseHandshakeWasPoisoned(t *testing.T) {
+	cfg := buildFakeMCPServer(t, "bad_version_once")
+	mgr := NewManager(t.TempDir())
+	if err := mgr.RegisterServer(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	poisoned, err := NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = poisoned.Close() })
+	mgr.mu.Lock()
+	mgr.clients[cfg.Name] = poisoned
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := poisoned.Initialize(ctx); err == nil || !strings.Contains(err.Error(), "1999-01-01") {
+		t.Fatalf("the first handshake: err = %v, want the unsupported revision", err)
+	}
+	if poisoned.Alive() {
+		t.Fatal("the poisoned client still reports alive; the Manager would hand it out")
+	}
+
+	if _, err := mgr.CallTool(ctx, cfg.Name, "ping", nil); err != nil {
+		t.Fatalf("the Manager did not replace the poisoned client: %v", err)
+	}
+	if got, _ := mgr.Client(ctx, cfg.Name); got == poisoned || got == nil {
+		t.Fatalf("the Manager still serves the poisoned client: %v", got)
+	}
+	t.Cleanup(mgr.CloseAll)
 }
