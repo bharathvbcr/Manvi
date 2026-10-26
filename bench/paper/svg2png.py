@@ -17,22 +17,10 @@ try:
 except ImportError:
     sys.exit("svg2png.py needs Pillow: pip install pillow")
 
-SIZE = 2400          # first thumbnail attempt; reduced on clipping
+SIZE = 2400          # thumbnail edge; a figure that clips at it is refused, not shrunk
 # px of white kept around the content. At 8 (about 3 SVG units at this scale)
 # every boxed figure printed with its border on the image edge and read as clipped.
 MARGIN = 32
-MIN_SIZE = 700       # below this we would rather fail than ship a blurry figure
-
-
-def crop_white(im, margin=MARGIN):
-    rgb = im.convert("RGB")
-    bg = Image.new("RGB", rgb.size, (255, 255, 255))
-    bbox = ImageChops.difference(rgb, bg).getbbox()
-    if not bbox:
-        return im, None
-    l, t, r, b = bbox
-    return im.crop((max(l - margin, 0), max(t - margin, 0),
-                    min(r + margin, im.width), min(b + margin, im.height))), bbox
 
 
 def _square_copy(src, d):
@@ -43,7 +31,7 @@ def _square_copy(src, d):
     back whole, on 900x442 it loses its right-hand edge and most of its height.
     Only the outer svg element's width/height/viewBox are rewritten, so the
     drawing itself is untouched and the committed SVG is never modified. The
-    padding this adds is removed again by crop_white().
+    padding this adds is removed again by convert().
     """
     text = io.open(src, encoding="utf-8").read()
     m = re.search(r'<svg\b[^>]*?viewBox="0 0 ([\d.]+) ([\d.]+)"[^>]*>', text)
@@ -92,7 +80,7 @@ def convert(src, dst):
                 "clipped, refusing to write a truncated figure" % (src, bbox, im.size))
         out = im.crop((l - MARGIN, t - MARGIN, r + MARGIN, b + MARGIN))
         out.save(dst, "PNG")
-        return out.size, SIZE
+        return out.size
 
 
 if __name__ == "__main__":
@@ -100,7 +88,6 @@ if __name__ == "__main__":
         if src.endswith(".png"):
             continue
         dst = os.path.splitext(src)[0] + ".png"
-        (w, h), used = convert(src, dst)
-        note = "" if used == SIZE else "  (reduced to -s %d to avoid clipping)" % used
-        print("%-44s -> %s  %dx%d%s" % (os.path.basename(src),
-                                        os.path.basename(dst), w, h, note))
+        w, h = convert(src, dst)
+        print("%-44s -> %s  %dx%d" % (os.path.basename(src),
+                                      os.path.basename(dst), w, h))

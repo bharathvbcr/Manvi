@@ -116,10 +116,6 @@ func isStoreTemp(name string) bool {
 	return err == nil
 }
 
-func (s *Store) metaPath(cleanName string) string {
-	return filepath.Join(s.dir, cleanName+metaSuffix)
-}
-
 func (s *Store) contentPath(cleanName string) string {
 	return filepath.Join(s.dir, cleanName)
 }
