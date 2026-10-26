@@ -45,6 +45,9 @@ type Artifact struct {
 type Store struct {
 	mu  sync.RWMutex
 	dir string
+	// dirSync flushes the directory a write was just published into. Nil means
+	// syncdir.Dir, the one shared owner of the platform rule.
+	dirSync func(dir string) error
 }
 
 // NewStore returns an artifact store over dir. The directory is created on the
@@ -65,11 +68,29 @@ func NewStore(dir string) (*Store, error) {
 // fail. Nothing else assigns it.
 var syncFile = func(f *os.File) error { return f.Sync() }
 
-// syncDir is the directory half of that durability: it flushes the directory
-// a write was just published into, so the name survives a crash. A variable
-// for the same reason as syncFile; it defaults to the one shared owner of the
-// platform rule, which does nothing where a directory cannot be flushed.
-var syncDir = syncdir.Dir
+// NewStoreWithDirSync is NewStore with the directory flush supplied: sync is
+// called with the directory of every write after it is published, in place of
+// syncdir.Dir, and its error is what a write's ErrPublishedUnsynced wraps. It
+// exists so a caller above this package can make a write publish without
+// confirming durability, which no real filesystem will do on demand; a nil sync
+// is NewStore.
+func NewStoreWithDirSync(dir string, sync func(dir string) error) (*Store, error) {
+	s, err := NewStore(dir)
+	if err != nil {
+		return nil, err
+	}
+	s.dirSync = sync
+	return s, nil
+}
+
+// syncDirectory is the directory half of a write's durability: it flushes the
+// directory the write was just published into, so the name survives a crash.
+func (s *Store) syncDirectory(dir string) error {
+	if s.dirSync != nil {
+		return s.dirSync(dir)
+	}
+	return syncdir.Dir(dir)
+}
 
 // sanitizeName ensures an artifact name contains no traversal elements.
 func (s *Store) sanitizeName(name string) (string, error) {
@@ -177,11 +198,11 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	// on to the sidecar: the content is already there, and stopping would leave
 	// it without its record, which Get reads as revision 0 (another writer
 	// mid-create) and which lessons.Save would retry until it gave up.
-	contentErr := writeContained(cPath, []byte(content), 0o644, true)
+	contentErr := s.writeContained(cPath, []byte(content), 0o644, true)
 	if contentErr != nil && !errors.Is(contentErr, ErrPublishedUnsynced) {
 		return nil, contentErr
 	}
-	metaErr := writeContained(metaFull, metaBytes, 0o644, false)
+	metaErr := s.writeContained(metaFull, metaBytes, 0o644, false)
 	if metaErr != nil && !errors.Is(metaErr, ErrPublishedUnsynced) {
 		// This call created the content, so taking it away leaves the store as
 		// it was found.
@@ -379,11 +400,11 @@ func (s *Store) update(name, content string, meta *Metadata, expected int) (*Art
 	//
 	// As in Create, content published without its directory sync confirmed goes
 	// on to the record, so the revision on disk is the revision of the content.
-	contentErr := writeContained(cPath, []byte(content), 0o644, false)
+	contentErr := s.writeContained(cPath, []byte(content), 0o644, false)
 	if contentErr != nil && !errors.Is(contentErr, ErrPublishedUnsynced) {
 		return nil, contentErr
 	}
-	metaErr := writeContained(mPath, metaBytes, 0o644, false)
+	metaErr := s.writeContained(mPath, metaBytes, 0o644, false)
 	if metaErr != nil && !errors.Is(metaErr, ErrPublishedUnsynced) {
 		return nil, metaErr
 	}
@@ -736,7 +757,7 @@ func (s *Store) containedPath(clean string) (string, error) {
 // The sibling is created with O_EXCL and O_NOFOLLOW, so nothing planted at its
 // name is followed; the final name is never opened for writing, so a link
 // swapped in at it cannot redirect a write — rename replaces the link itself.
-func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
+func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
 	base := filepath.Base(full)
 	if info, err := os.Lstat(full); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -798,7 +819,7 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 	}
 
-	if err := syncDir(dir); err != nil {
+	if err := s.syncDirectory(dir); err != nil {
 		return fmt.Errorf("artifacts: %s is published but syncing its directory failed, so it may not survive a crash: %w: %w",
 			base, ErrPublishedUnsynced, err)
 	}

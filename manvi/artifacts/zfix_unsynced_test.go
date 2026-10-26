@@ -6,15 +6,20 @@ import (
 	"testing"
 )
 
-// failDirSync makes every directory sync fail until the test ends or the
-// returned func restores it.
-func failDirSync(t *testing.T) (restore func()) {
+// flakyDirSyncStore is a store whose directory sync fails while *fail is true.
+func flakyDirSyncStore(t *testing.T) (store *Store, fail *bool) {
 	t.Helper()
-	old := syncDir
-	syncDir = func(string) error { return errors.New("injected directory sync failure") }
-	restore = func() { syncDir = old }
-	t.Cleanup(restore)
-	return restore
+	fail = new(bool)
+	store, err := NewStoreWithDirSync(t.TempDir(), func(string) error {
+		if *fail {
+			return errors.New("injected directory sync failure")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, fail
 }
 
 // A write whose name was published but whose directory could not be synced is
@@ -23,8 +28,8 @@ func failDirSync(t *testing.T) (restore func()) {
 // made rather than report "not written", and the sidecar must be written too,
 // or Get would read the entry as revision 0 (another writer mid-create).
 func TestCreateWhoseDirectorySyncFailsIsStillPublished(t *testing.T) {
-	store, _ := newTestStore(t)
-	_ = failDirSync(t)
+	store, fail := flakyDirSyncStore(t)
+	*fail = true
 
 	art, err := store.Create("plan.md", "# plan", Metadata{Summary: "s"})
 	if err == nil {
@@ -62,12 +67,12 @@ func TestCreateWhoseDirectorySyncFailsIsStillPublished(t *testing.T) {
 // one, and what the artifact carried before (created_at, the revision count)
 // is continued, not reset.
 func TestUpdateWhoseDirectorySyncFailsIsStillPublished(t *testing.T) {
-	store, _ := newTestStore(t)
+	store, fail := flakyDirSyncStore(t)
 	first, err := store.Create("plan.md", "v1", Metadata{Summary: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore := failDirSync(t)
+	*fail = true
 
 	art, err := store.Update("plan.md", "v2", &Metadata{Summary: "two"})
 	if err == nil {
@@ -90,7 +95,7 @@ func TestUpdateWhoseDirectorySyncFailsIsStillPublished(t *testing.T) {
 	}
 
 	// The next update continues from revision 2.
-	restore()
+	*fail = false
 	next, err := store.UpdateIfRevision("plan.md", "v3", nil, 2)
 	if err != nil || next.Revision != 3 {
 		t.Fatalf("the update after an unconfirmed one: %+v, %v", next, err)
