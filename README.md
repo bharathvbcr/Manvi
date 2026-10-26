@@ -4,7 +4,7 @@
 
 <p align="left">
   <a href="https://manvi.vbcr.dev/"><img src="https://img.shields.io/badge/website-manvi.vbcr.dev-3B82F6?style=flat&logo=safari&logoColor=white" alt="Website"></a>
-  <a href="https://github.com/bharathvbcr/Manvi/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/bharathvbcr/Manvi/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/parity_cases-1%2C031_certified-emerald" alt="Parity Cases">
   <img src="https://img.shields.io/badge/architecture-Go_%2B_Rust_process--boundary-orange" alt="Architecture">
   <img src="https://img.shields.io/badge/local_LLMs-Ollama_·_vLLM_·_LM_Studio-8B5CF6?style=flat" alt="Local LLMs">

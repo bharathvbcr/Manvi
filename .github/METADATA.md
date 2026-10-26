@@ -10,7 +10,7 @@ This document specifies the canonical repository metadata, search tags, and SEO 
 - **Owner**: `bharathvbcr`
 - **Default Branch**: `main`
 - **Website URL**: [https://manvi.vbcr.dev/](https://manvi.vbcr.dev/)
-- **License**: Apache 2.0 (`Apache-2.0`)
+- **License**: MIT (`MIT`)
 
 ---
 
