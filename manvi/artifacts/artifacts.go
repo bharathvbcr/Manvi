@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 )
 
 // Metadata defines structured artifact properties.
@@ -63,6 +64,12 @@ func NewStore(dir string) (*Store, error) {
 // syncFile is the durability step of a write, a variable so a test can make it
 // fail. Nothing else assigns it.
 var syncFile = func(f *os.File) error { return f.Sync() }
+
+// syncDir is the directory half of that durability: it flushes the directory
+// a write was just published into, so the name survives a crash. A variable
+// for the same reason as syncFile; it defaults to the one shared owner of the
+// platform rule, which does nothing where a directory cannot be flushed.
+var syncDir = syncdir.Dir
 
 // sanitizeName ensures an artifact name contains no traversal elements.
 func (s *Store) sanitizeName(name string) (string, error) {
@@ -751,9 +758,8 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 	}
 
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("artifacts: opening the directory of %s to sync it: %w", base, err)
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("artifacts: syncing the directory of %s: %w", base, err)
 	}
-	return errors.Join(d.Sync(), d.Close())
+	return nil
 }

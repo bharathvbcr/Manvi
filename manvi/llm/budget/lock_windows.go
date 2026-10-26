@@ -48,12 +48,6 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 	}
 }
 
-// syncDir is a no-op on Windows. A directory handle cannot be flushed there
-// (FlushFileBuffers needs write access a directory handle does not have), and
-// NTFS journals the rename's metadata itself. Calling the Unix version would
-// fail every ledger write.
-func syncDir(string) error { return nil }
-
 // processGone reports whether pid names no running process. Only a definite
 // answer counts: a process Windows will not let us open (access denied) is
 // treated as alive, so the attempt it owns is left alone.

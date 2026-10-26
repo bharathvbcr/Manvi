@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
@@ -150,18 +150,4 @@ func publish(root *os.Root, name string, raw []byte, replace bool) error {
 // syncDir flushes a catalog directory's own entries. It is a variable so a
 // test can prove publish calls it and fails when it fails; a crash cannot be
 // reproduced in a test.
-var syncDir = func(root *os.Root) error {
-	if runtime.GOOS == "windows" {
-		// A directory handle cannot be flushed there (see llm/budget/lock_windows.go).
-		return nil
-	}
-	d, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		return err
-	}
-	return d.Close()
-}
+var syncDir = syncdir.Root

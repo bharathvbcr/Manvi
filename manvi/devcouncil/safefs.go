@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 )
 
 // This file closes the check-then-act gap between policy evaluation and
@@ -456,13 +457,7 @@ func (p *pinnedTarget) enterDir(parent *os.Root, i int, name, op string, create 
 var (
 	syncFile  = func(f *os.File) error { return f.Sync() }
 	closeFile = func(f *os.File) error { return f.Close() }
-	syncDir   = func(d *os.Root) error {
-		h, err := d.Open(".")
-		if err != nil {
-			return err
-		}
-		return errors.Join(h.Sync(), h.Close())
-	}
+	syncDir   = syncdir.Root
 )
 
 // leafName is the final component of the pinned path.

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
@@ -335,8 +336,10 @@ func save(path string, s Snapshot) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	// The rename is durable only once the directory entry is.
-	return syncDir(filepath.Dir(path))
+	// The rename is durable only once the directory entry is. Without that a
+	// crash can bring back the previous ledger, and with it lose the record of
+	// money already spent.
+	return syncdir.Dir(filepath.Dir(path))
 }
 
 // reclaimDead retains every in-flight attempt whose owning process has exited.

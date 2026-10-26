@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 )
 
 // Section is one heading in the managed part of .gitignore, with the rules
@@ -740,9 +741,6 @@ func writeAtomic(path, content string, mode os.FileMode) error {
 	}
 	// And sync the directory: syncing the file puts its bytes on disk; only
 	// the directory sync guarantees the NAME is there after a crash.
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
+	_ = syncdir.Dir(dir)
 	return nil
 }
