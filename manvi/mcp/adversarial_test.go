@@ -72,6 +72,15 @@ func main() {
 		}
 		method, _ := q["method"].(string)
 		switch {
+		case method == "initialize" && defect == "bad_version_once":
+			// The first process to run answers with a revision nobody speaks;
+			// every later one, sharing the marker directory, answers properly.
+			if _, err := os.Stat(marker); os.IsNotExist(err) {
+				os.WriteFile(marker, []byte("answered badly"), 0o644)
+				reply(id, map[string]any{"protocolVersion": "1999-01-01"})
+			} else {
+				reply(id, map[string]any{"protocolVersion": "2025-06-18"})
+			}
 		case method == "initialize":
 			reply(id, map[string]any{"protocolVersion": "2025-06-18"})
 		case method == "notifications/initialized" && defect == "stdin_stall":
