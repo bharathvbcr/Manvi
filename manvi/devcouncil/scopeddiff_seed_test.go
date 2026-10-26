@@ -228,7 +228,7 @@ func TestScopedDiffLeavesTheRealIndexAndTheKeptIndexAlone(t *testing.T) {
 	// below must be the one the diff starts from.
 	status := gitIn(t, f.root, "status", "--porcelain")
 	realIndex := filepath.Join(f.root, ".git", "index")
-	before, err := os.ReadFile(realIndex)
+	before, err := os.ReadFile(realIndex) // #nosec G304 -- the test's own fixture repository
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestScopedDiffLeavesTheRealIndexAndTheKeptIndexAlone(t *testing.T) {
 		t.Fatalf("a second look at the same turn differs (err %v)", err)
 	}
 
-	after, err := os.ReadFile(realIndex)
+	after, err := os.ReadFile(realIndex) // #nosec G304 -- the test's own fixture repository
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("the repository's own index changed (err %v)", err)
 	}
