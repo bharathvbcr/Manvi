@@ -76,6 +76,18 @@ under **Unreleased** in the same commit as the code.
   these schemas. `devcouncil_next_task` and `manvi watch` read ready tasks
   through `ReadyReport(ctx, store.ReadyEnforce)`. The `manvi serve` contract
   adds `work.runs.managed.follow` and `work.runs.managed.wake`.
+- The DevCouncil pin moves from `3cfe283c` to `b1a29105` (69 commits), whose
+  gusset CI pin is now the same `320c56c2` this repository builds.
+  DevCouncil's store moves from schema 10 to 11, which adds the `reviews` table
+  and the `review-append` and `reviews` commands that `llm_review` acceptance
+  criteria are discharged from. Workbench stays at 14, and the devmap store
+  stays at 27, with readers accepted from 25. The linked store client now
+  requires a `dcstore` that answers schema 11. `manvi doctor` reports a schema 10
+  `dcstore` as store UNAVAILABLE, and a state database that a schema 11
+  `dcstore` has opened is refused by a schema 10 one, so install the two
+  together. The linked command gate adds the hard rule `command.harness_only`,
+  which refuses review recording in agent shells. `contracts/verdict.schema.json`
+  now lists that rule, matching DevCouncil at the pin. gusset stays at `320c56c2`.
 
 ### Fixed
 

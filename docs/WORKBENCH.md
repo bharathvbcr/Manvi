@@ -638,7 +638,7 @@ Fourteen gives items a validated `scope` (planned files, forbidden changes,
 allowed commands, expected tests, requirement links). It changes no table, and
 is a hard fence because a host that builds an item body without it would erase
 the scope of every task it saves. The release pin (`scripts/module-pins.txt`,
-DevCouncil `3cfe283c`) carries workbench 14 with `dc-store` 10, as recorded in
+DevCouncil `b1a29105`) carries workbench 14 with `dc-store` 11, as recorded in
 `CHANGELOG.md`; a Manvi built before that move refuses an upgraded profile.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,

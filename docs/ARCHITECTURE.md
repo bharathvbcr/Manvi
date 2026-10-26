@@ -76,7 +76,7 @@ Schema eleven separates the archive from Done: `archived` is a task flag
 independent of status, with a store-maintained `completed_at`, checklists,
 typed task links and `items.restore` for deleted tasks. Its upgrade archives
 every Done task, and hosts on schema ten refuse the upgraded profile; Manvi's
-DevCouncil pin (`3cfe283c`) now carries workbench schema fourteen (`CHANGELOG.md`).
+DevCouncil pin (`b1a29105`) carries workbench schema fourteen (`CHANGELOG.md`).
 See [Workbench](WORKBENCH.md) for supported operations, bounds and remaining
 product integration work.
 
