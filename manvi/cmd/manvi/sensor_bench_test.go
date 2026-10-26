@@ -126,9 +126,8 @@ func BenchmarkTurnTimeToFirstRequest(b *testing.B) {
 		loopBus := bus.New()
 		log := session.NewLog()
 		loop := newTimedLoop(b, provider, loopBus, log, tools.NewRegistry(loopBus))
-		s := &sensor{native: verifier, log: log}
 		if withSensor {
-			if err := attachSensor(loopBus, s); err != nil {
+			if err := attachSensor(loopBus, &sensor{native: verifier, log: log}); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -140,14 +139,6 @@ func BenchmarkTurnTimeToFirstRequest(b *testing.B) {
 			b.Fatal(err)
 		}
 		first := (<-provider.first).Sub(start)
-		// A turn that answers without a tool never waits for its baseline, so
-		// the recording may still be running; it is drained here so one
-		// iteration's git children do not load the next iteration's timing.
-		if withSensor {
-			if _, err := s.await(context.Background(), s.captureTurn); err != nil {
-				b.Fatal(err)
-			}
-		}
 		return first
 	}
 

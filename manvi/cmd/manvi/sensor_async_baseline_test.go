@@ -318,3 +318,38 @@ func TestOlderRecordingCannotReplaceANewerTurnsBaseline(t *testing.T) {
 		t.Fatalf("turn 1 still has a baseline after turn 2 began: %+v", got)
 	}
 }
+
+// A turn that answered without touching anything never asked for its baseline,
+// and must still not end with the capture running: the git children it started
+// would be writing into the repository after the caller thinks the turn is over.
+func TestCheckWaitsForTheTurnsCaptureBeforeTheTurnEnds(t *testing.T) {
+	hold := newHoldVerifier(&fakeVerifier{baseline: devcouncil.Baseline{Tree: "pre-turn"}})
+	t.Cleanup(hold.let)
+	s, _ := newSensor(t, hold)
+	if err := s.begin(context.Background(), &agent.TurnStarting{Turn: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	returned := make(chan error, 1)
+	go func() {
+		returned <- s.check(context.Background(), &agent.TurnStopping{Turn: 1})
+	}()
+	select {
+	case <-returned:
+		t.Fatal("the end-of-turn check returned while the baseline capture was still running")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	hold.let()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(asyncWait):
+		t.Fatal("the check did not return once the capture finished")
+	}
+	if !hold.isFinished() {
+		t.Fatal("the check returned before the capture finished")
+	}
+}

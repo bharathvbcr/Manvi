@@ -159,6 +159,14 @@ func attachSensor(b *bus.Bus, s *sensor) error {
 // — which is right for a broken listener and wrong for a failed verification,
 // because a failed verification is exactly the case that wants another step.
 func (s *sensor) check(ctx context.Context, e *agent.TurnStopping) error {
+	// A turn does not end with its own git children still running. A turn that
+	// answered without touching anything never asked for its baseline, so the
+	// recording may still be in flight here, writing objects into a repository
+	// the caller is about to be done with; waiting costs nothing when it has
+	// finished, which after any model round trip it nearly always has. Cancelled
+	// is not a failure of the check: a cancelled turn does not reach it.
+	_, _ = s.await(ctx, e.Turn)
+
 	if e.Turn != s.turn {
 		s.turn = e.Turn
 		s.criticDispatched = false
