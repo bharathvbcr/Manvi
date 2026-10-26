@@ -46,20 +46,6 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 	}
 }
 
-// syncDir makes a rename in dir durable. Without it a crash can bring back the
-// previous ledger, and with it lose the record of money already spent.
-func syncDir(dir string) error {
-	// #nosec G304 G703 -- the directory of the validated ledger path.
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	// A read-only directory handle: durability is decided by Sync, which is
-	// returned; closing it afterwards cannot undo or confirm anything.
-	defer func() { _ = d.Close() }()
-	return d.Sync()
-}
-
 // processGone reports whether pid names no running process. Only a definite
 // "no such process" counts: EPERM means it exists under another user, and any
 // other error is not proof, so the attempt it owns is left alone.

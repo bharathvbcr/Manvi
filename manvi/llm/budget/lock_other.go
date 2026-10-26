@@ -14,7 +14,5 @@ func lockFile(context.Context, string) (func(), error) {
 	return nil, errors.New("budget: no cross-process file lock on this platform; the spend cap cannot be enforced")
 }
 
-func syncDir(string) error { return nil }
-
 // processGone never claims a process is gone where it cannot check.
 func processGone(int) bool { return false }

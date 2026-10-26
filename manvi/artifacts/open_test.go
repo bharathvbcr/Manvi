@@ -16,7 +16,7 @@ func TestKernelNoFollowPreservesExistingTargetContents(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeContained(link, []byte("replacement"), 0600, false); err == nil {
+	if err := (&Store{}).writeContained(link, []byte("replacement"), 0600, false); err == nil {
 		t.Fatal("link write accepted")
 	}
 	raw, err := os.ReadFile(target)
@@ -26,10 +26,10 @@ func TestKernelNoFollowPreservesExistingTargetContents(t *testing.T) {
 }
 func TestVerifiedRegularHandleTruncatesOldSuffix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
-	if err := writeContained(path, []byte("long original content"), 0600, false); err != nil {
+	if err := (&Store{}).writeContained(path, []byte("long original content"), 0600, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeContained(path, []byte("new"), 0600, false); err != nil {
+	if err := (&Store{}).writeContained(path, []byte("new"), 0600, false); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)

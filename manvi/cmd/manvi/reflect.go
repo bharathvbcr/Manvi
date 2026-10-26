@@ -225,11 +225,23 @@ func applyReflection(out, notes io.Writer, store *artifacts.Store, library, sess
 		return fmt.Errorf("reflect: nothing was stored: %w", err)
 	}
 	name, revision, err := lessons.Save(store, library, sessionID, result)
-	if err != nil {
+	unsynced := errors.Is(err, artifacts.ErrPublishedUnsynced)
+	if err != nil && !unsynced {
 		return fmt.Errorf("reflect: the answer was accepted but could not be stored: %w", err)
 	}
-	_, err = fmt.Fprintf(out, "stored %s (revision %d) in library %s from session %s\n  cue: %s\n",
-		name, revision, library, sessionID, result.Experience.Cue)
+	return reportStored(out, name, revision, library, sessionID, result.Experience.Cue, redacted, unsynced)
+}
+
+// reportStored says what was stored. A lesson whose directory sync was not
+// confirmed is stored all the same, so it is reported as stored with a warning
+// and not as an error: an error exit invites a re-run, which would file a
+// second revision of a lesson already filed.
+func reportStored(out io.Writer, name string, revision int, library, sessionID, cue string, redacted, unsynced bool) error {
+	_, err := fmt.Fprintf(out, "stored %s (revision %d) in library %s from session %s\n  cue: %s\n",
+		name, revision, library, sessionID, cue)
+	if err == nil && unsynced {
+		_, err = fmt.Fprintf(out, "  warning: the lesson is saved, but syncing its directory failed, so it may not survive a crash; do not re-run to retry it\n")
+	}
 	if err == nil && redacted {
 		_, err = fmt.Fprintf(out, "  credential-shaped text was redacted from the lesson before it was stored\n")
 	}

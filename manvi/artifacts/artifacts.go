@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 )
 
 // Metadata defines structured artifact properties.
@@ -44,6 +45,9 @@ type Artifact struct {
 type Store struct {
 	mu  sync.RWMutex
 	dir string
+	// dirSync flushes the directory a write was just published into. Nil means
+	// syncdir.Dir, the one shared owner of the platform rule.
+	dirSync func(dir string) error
 }
 
 // NewStore returns an artifact store over dir. The directory is created on the
@@ -63,6 +67,30 @@ func NewStore(dir string) (*Store, error) {
 // syncFile is the durability step of a write, a variable so a test can make it
 // fail. Nothing else assigns it.
 var syncFile = func(f *os.File) error { return f.Sync() }
+
+// NewStoreWithDirSync is NewStore with the directory flush supplied: sync is
+// called with the directory of every write after it is published, in place of
+// syncdir.Dir, and its error is what a write's ErrPublishedUnsynced wraps. It
+// exists so a caller above this package can make a write publish without
+// confirming durability, which no real filesystem will do on demand; a nil sync
+// is NewStore.
+func NewStoreWithDirSync(dir string, sync func(dir string) error) (*Store, error) {
+	s, err := NewStore(dir)
+	if err != nil {
+		return nil, err
+	}
+	s.dirSync = sync
+	return s, nil
+}
+
+// syncDirectory is the directory half of a write's durability: it flushes the
+// directory the write was just published into, so the name survives a crash.
+func (s *Store) syncDirectory(dir string) error {
+	if s.dirSync != nil {
+		return s.dirSync(dir)
+	}
+	return syncdir.Dir(dir)
+}
 
 // sanitizeName ensures an artifact name contains no traversal elements.
 func (s *Store) sanitizeName(name string) (string, error) {
@@ -121,6 +149,10 @@ func (s *Store) contentPath(cleanName string) string {
 }
 
 // Create creates a new artifact, returning an error if it already exists.
+//
+// An error that matches ErrPublishedUnsynced is not a failure: the artifact is
+// written and readable, and the returned *Artifact is non-nil beside it. See
+// that sentinel.
 func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	clean, err := s.sanitizeName(name)
 	if err != nil {
@@ -161,17 +193,26 @@ func (s *Store) Create(name, content string, meta Metadata) (*Artifact, error) {
 	// creators (two processes over one directory) cannot both succeed and the
 	// loser cannot overwrite the winner. A name that is a symbolic link is
 	// refused outright rather than reported as merely existing.
-	if err := writeContained(cPath, []byte(content), 0o644, true); err != nil {
-		return nil, err
+	//
+	// A write that published but could not confirm its directory sync carries
+	// on to the sidecar: the content is already there, and stopping would leave
+	// it without its record, which Get reads as revision 0 (another writer
+	// mid-create) and which lessons.Save would retry until it gave up.
+	contentErr := s.writeContained(cPath, []byte(content), 0o644, true)
+	if contentErr != nil && !errors.Is(contentErr, ErrPublishedUnsynced) {
+		return nil, contentErr
 	}
-	if err := writeContained(metaFull, metaBytes, 0o644, false); err != nil {
+	metaErr := s.writeContained(metaFull, metaBytes, 0o644, false)
+	if metaErr != nil && !errors.Is(metaErr, ErrPublishedUnsynced) {
 		// This call created the content, so taking it away leaves the store as
 		// it was found.
 		_ = os.Remove(cPath)
-		return nil, err
+		return nil, metaErr
 	}
 
-	return art, nil
+	// Both are published. The error, if any, is the unconfirmed sync of one or
+	// both, and it travels with the artifact, never instead of it.
+	return art, errors.Join(contentErr, metaErr)
 }
 
 // Sentinels a caller can branch on. Their text is unchanged from the messages
@@ -187,9 +228,27 @@ var (
 	// ErrLocked is an update's answer when another writer held the entry's lock
 	// for longer than lockWait.
 	ErrLocked = errors.New("locked by another writer")
+	// ErrPublishedUnsynced reports a write that is committed whose durability
+	// is not confirmed: the content and its record were published, and the
+	// sync of their directory failed, so after a crash the new name might not
+	// be there.
+	//
+	// It is a distinct sentinel because the distinction is the whole point. A
+	// caller that reads it as "not written" and retries gets ErrExists from
+	// Create, or a second revision from Update; one that reads it as plain
+	// success hides a durability risk. Nothing is rolled back: the artifact is
+	// readable by Get and List now, and taking it away would trade an
+	// unconfirmed write for a certain loss.
+	//
+	// Create, Update and UpdateIfRevision return it WITH a non-nil *Artifact,
+	// the one that was written, which departs from the usual error-or-value
+	// shape on purpose. The error text names the cause.
+	ErrPublishedUnsynced = errors.New("published, durability unconfirmed")
 )
 
-// Update updates an existing artifact's content and metadata, incrementing its revision.
+// Update updates an existing artifact's content and metadata, incrementing its
+// revision. An error that matches ErrPublishedUnsynced is not a failure: the
+// new revision is written, and the *Artifact returned beside it is non-nil.
 func (s *Store) Update(name, content string, meta *Metadata) (*Artifact, error) {
 	return s.update(name, content, meta, 0)
 }
@@ -338,14 +397,19 @@ func (s *Store) update(name, content string, meta *Metadata, expected int) (*Art
 	// the new content under the previous revision number, which is the
 	// direction that still tells the truth about which revision was last
 	// recorded.
-	if err := writeContained(cPath, []byte(content), 0o644, false); err != nil {
-		return nil, err
+	//
+	// As in Create, content published without its directory sync confirmed goes
+	// on to the record, so the revision on disk is the revision of the content.
+	contentErr := s.writeContained(cPath, []byte(content), 0o644, false)
+	if contentErr != nil && !errors.Is(contentErr, ErrPublishedUnsynced) {
+		return nil, contentErr
 	}
-	if err := writeContained(mPath, metaBytes, 0o644, false); err != nil {
-		return nil, err
+	metaErr := s.writeContained(mPath, metaBytes, 0o644, false)
+	if metaErr != nil && !errors.Is(metaErr, ErrPublishedUnsynced) {
+		return nil, metaErr
 	}
 
-	return &existing, nil
+	return &existing, errors.Join(contentErr, metaErr)
 }
 
 // Get retrieves an artifact by name.
@@ -686,10 +750,14 @@ func (s *Store) containedPath(clean string) (string, error) {
 // taken). A symbolic link at the final component is refused, and the directory
 // is synced so the name survives a crash.
 //
+// A failure of that last step comes back wrapping ErrPublishedUnsynced: by then
+// the name is published, so the write is neither undone nor reported as not
+// written.
+//
 // The sibling is created with O_EXCL and O_NOFOLLOW, so nothing planted at its
 // name is followed; the final name is never opened for writing, so a link
 // swapped in at it cannot redirect a write — rename replaces the link itself.
-func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
+func (s *Store) writeContained(full string, data []byte, perm os.FileMode, exclusive bool) (result error) {
 	base := filepath.Base(full)
 	if info, err := os.Lstat(full); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -751,9 +819,9 @@ func writeContained(full string, data []byte, perm os.FileMode, exclusive bool) 
 		return fmt.Errorf("artifacts: publishing %s: %w", base, err)
 	}
 
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("artifacts: opening the directory of %s to sync it: %w", base, err)
+	if err := s.syncDirectory(dir); err != nil {
+		return fmt.Errorf("artifacts: %s is published but syncing its directory failed, so it may not survive a crash: %w: %w",
+			base, ErrPublishedUnsynced, err)
 	}
-	return errors.Join(d.Sync(), d.Close())
+	return nil
 }

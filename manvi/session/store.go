@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 )
 
 // A session that only exists in memory is a session that can be driven exactly
@@ -584,24 +586,11 @@ func writeNew(dir, target string, body []byte, step func(string)) error {
 	// unreferenced inode: the generation that was published reads back as
 	// missing, and a log whose last turns can vanish is not the record the
 	// projection is allowed to assume it is.
-	if err := syncDir(dir); err != nil {
+	if err := syncdir.Dir(dir); err != nil {
 		return fmt.Errorf("session: syncing %s after publishing %s: %w", dir, target, err)
 	}
 	at("published")
 	return nil
-}
-
-// syncDir flushes a directory's own entries.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		return err
-	}
-	return d.Close()
 }
 
 // readAttempts bounds how often readCurrent re-lists after the generation it
