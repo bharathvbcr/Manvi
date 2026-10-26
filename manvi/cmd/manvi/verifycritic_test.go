@@ -7,9 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/replay"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -20,12 +22,24 @@ import (
 // it was asked to judge would do.
 func criticFixture(t *testing.T, wrote *atomic.Bool) (*serveCritic, *replay.Provider) {
 	t.Helper()
-	provider := replay.New(replay.Fixture{
-		Provider: "replay",
-		Capabilities: []llm.Capability{{
-			Provider: "replay", Model: "m", ContextWindow: 32768,
+	return criticFixtureOn(t, wrote, nil)
+}
+
+// criticFixtureOn is criticFixture on a session whose model is "m" and whose
+// tier profile is tiers. The provider serves "m" and every tier model a test
+// names, so a request's Model says which one the critic was placed on.
+func criticFixtureOn(t *testing.T, wrote *atomic.Bool, tiers agents.TierProfile) (*serveCritic, *replay.Provider) {
+	t.Helper()
+	served := []llm.Capability{}
+	for _, model := range []string{"m", "advisor-model", "claude-opus-5-5"} {
+		served = append(served, llm.Capability{
+			Provider: "replay", Model: model, ContextWindow: 32768,
 			MaxOutputTokens: 4096, SupportsTools: true, SupportsStreaming: true,
-		}},
+		})
+	}
+	provider := replay.New(replay.Fixture{
+		Provider:     "replay",
+		Capabilities: served,
 		Turns: []replay.Turn{
 			{
 				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
@@ -66,10 +80,10 @@ func criticFixture(t *testing.T, wrote *atomic.Bool) (*serveCritic, *replay.Prov
 	}
 	runner := &subAgentRunner{}
 	runner.attach(subAgentConfig{
-		provider: provider, models: models, model: "m",
+		provider: provider, models: models, model: "m", tiers: tiers,
 		registry: registry, systemPrompt: "parent", meter: &subAgentMeter{},
 	})
-	def, ok := agents.NewRegistry().Get(criticRole)
+	def, ok := agents.NewRegistry().Get(criticRoleName)
 	if !ok {
 		t.Fatal("no built-in critic role")
 	}
@@ -159,5 +173,91 @@ func TestServeCriticDoesNotCacheABuildFailure(t *testing.T) {
 	}
 	if _, err := critic.Judge(context.Background(), "judge", 1); err != nil {
 		t.Fatalf("the failure was cached: %v", err)
+	}
+}
+
+// requireCriticModel asserts every request the critic made went to want.
+func requireCriticModel(t *testing.T, provider *replay.Provider, want string) {
+	t.Helper()
+	seen := provider.Requests()
+	if len(seen) == 0 {
+		t.Fatal("the critic made no request")
+	}
+	for i, req := range seen {
+		if req.Model != want {
+			t.Errorf("critic request %d went to %q, want %q", i, req.Model, want)
+		}
+	}
+}
+
+// The verification critic is a verdict, so the router places it on the advisor
+// tier. It was dispatched with no tier, and a child with no tier runs on the
+// session's model, which left the owner's tier profile bypassed.
+func TestServeCriticRunsOnTheAdvisorTierNotTheSessionModel(t *testing.T) {
+	var wrote atomic.Bool
+	critic, provider := criticFixtureOn(t, &wrote, agents.TierProfile{
+		agents.TierAdvisor: {Model: "advisor-model"},
+		agents.TierLite:    {Model: "claude-opus-5-5"},
+	})
+	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	requireCriticModel(t, provider, "advisor-model")
+	if wrote.Load() {
+		t.Fatal("the critic's write tool ran on the advisor tier")
+	}
+}
+
+// An operator's advisor override, read through the same profile `manvi run`
+// reads, is where the critic runs: nothing here names a model.
+func TestServeCriticHonoursAnOperatorAdvisorOverride(t *testing.T) {
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierAdvisor)), "claude-opus-5-5")
+	table, err := checkTiers(tierRegistry(t), anthropic.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrote atomic.Bool
+	critic, provider := criticFixtureOn(t, &wrote, table.Profile())
+	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	requireCriticModel(t, provider, "claude-opus-5-5")
+}
+
+// A session with no profile (a provider the tiers do not apply on) keeps the
+// critic on the session's model, read-only all the same.
+func TestServeCriticWithNoTierProfileStaysOnTheSessionModel(t *testing.T) {
+	var wrote atomic.Bool
+	critic, provider := criticFixtureOn(t, &wrote, nil)
+	if _, err := critic.Judge(context.Background(), "judge the change", 1); err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	requireCriticModel(t, provider, "m")
+	if wrote.Load() {
+		t.Fatal("the critic's write tool ran")
+	}
+}
+
+// An advisor tier this binary cannot run must not stop serve starting: the
+// sidecar also serves the board, the code graph and scans. Serve constructs the
+// critic as it always did, and verification is what degrades, naming the tier on
+// every call because a failed build is not cached. Nothing listens at the base
+// URL, so a transport error here would mean the provider was contacted before
+// the profile was refused.
+func TestServeCriticStartsOnABadTierAndEveryVerificationNamesIt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-fixture-critic")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+	t.Setenv("MANVI_MODEL", "")
+	t.Setenv(flags.EnvKey(flags.LLMDefaultProvider), anthropic.Name)
+	t.Setenv(flags.EnvKey(tierModelKey(agents.TierAdvisor)), "claude-fable-9")
+
+	critic := newServeCritic(tierRegistry(t))
+	if critic == nil {
+		t.Fatal("newServeCritic produced no critic")
+	}
+	for call := 1; call <= 2; call++ {
+		_, err := critic.Judge(context.Background(), "judge the change", 1)
+		requireTierRefusal(t, err, agents.TierAdvisor, "claude-fable-9", "catalogue")
 	}
 }
