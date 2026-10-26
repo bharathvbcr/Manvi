@@ -19,7 +19,7 @@ import (
 // These benchmarks measure the subprocess cost of the tool surface. Run them
 // with
 //
-//	go test ./devcouncil -run '^$' -bench 'Baseline|GitDiffUntrackedScaling|ReadClassify|SecretPatternMatch|GrepSearch|FindFiles$' -benchtime=20x -count=5
+//	go test ./devcouncil -run '^$' -bench 'Baseline|TurnPhases|GitDiffUntrackedScaling|ReadClassify|SecretPatternMatch|GrepSearch|FindFiles$' -benchtime=20x -count=5
 //
 // and take the minimum of the count, not the mean: a loaded machine only ever
 // adds time. Each benchmark that compares an old path with a new one runs them
@@ -100,6 +100,76 @@ func BenchmarkCaptureBaseline(b *testing.B) {
 	}
 	b.ReportMetric(float64(cold)/1e6, "cold-min-ms")
 	b.ReportMetric(float64(seeded)/1e6, "shipped-min-ms")
+}
+
+// turnEdits applies what one agent turn typically does to the tree after the
+// baseline was taken — three edits, two new files, one deletion — and returns
+// the paths a check would examine.
+func turnEdits(tb testing.TB, root string) []string {
+	tb.Helper()
+	write := func(rel, body string) {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o600); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	write("pkg1/file1.go", "package p\n\nfunc F1() int { return 100 }\n")
+	write("pkg2/file2.go", "package p\n\nfunc F2() int { return 200 }\n")
+	write("pkg3/file3.go", "package p\n\nfunc F3() int { return 300 }\n")
+	write("new/turn_a.go", "package n\n\nfunc TurnA() {}\n")
+	write("new/turn_b.go", "package n\n\nfunc TurnB() {}\n")
+	if err := os.Remove(filepath.Join(root, "pkg4/file4.go")); err != nil {
+		tb.Fatal(err)
+	}
+	return []string{
+		"pkg1/file1.go", "pkg2/file2.go", "pkg3/file3.go",
+		"new/turn_a.go", "new/turn_b.go", "pkg4/file4.go",
+	}
+}
+
+// BenchmarkTurnPhases measures the two phases of a turn that run in the
+// harness rather than in the model: the pre-turn baseline capture and the
+// end-of-turn scoped diff taken against it. The fixture is a 1,200-file tree
+// with untracked and ignored content, and the diff runs after a turn's worth of
+// edits, so both phases see the working set a real turn leaves.
+//
+// The two phases alternate inside one loop and the minimum of each is
+// reported, so drift in machine load lands on both. Spawn counts are the
+// number of git children each phase starts.
+func BenchmarkTurnPhases(b *testing.B) {
+	root := benchRepo(b, 1200, 40, 200)
+	r := benchRegistry(root)
+	ctx := context.Background()
+	before := r.CaptureBaseline(ctx)
+	if !before.Captured() {
+		b.Fatalf("no baseline: %s", before.Note)
+	}
+	paths := turnEdits(b, root)
+
+	var capture, scoped, captureSpawns, scopedSpawns int64
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s0, t0 := procSpawns.Load(), nowNano()
+		if got := r.CaptureBaseline(ctx); !got.Captured() {
+			b.Fatalf("no baseline: %s", got.Note)
+		}
+		s1, t1 := procSpawns.Load(), nowNano()
+		diff, notes, err := r.scopedDiff(ctx, paths, before)
+		if err != nil || len(notes) != 0 || !strings.Contains(diff, "turn_a.go") || !strings.Contains(diff, "file4.go") {
+			b.Fatalf("scoped diff: err=%v notes=%v\n%s", err, notes, diff)
+		}
+		s2, t2 := procSpawns.Load(), nowNano()
+		if capture == 0 || t1-t0 < capture {
+			capture = t1 - t0
+		}
+		if scoped == 0 || t2-t1 < scoped {
+			scoped = t2 - t1
+		}
+		captureSpawns, scopedSpawns = s1-s0, s2-s1
+	}
+	b.ReportMetric(float64(capture)/1e6, "baseline-min-ms")
+	b.ReportMetric(float64(scoped)/1e6, "scoped-diff-min-ms")
+	b.ReportMetric(float64(captureSpawns), "baseline-spawns")
+	b.ReportMetric(float64(scopedSpawns), "scoped-diff-spawns")
 }
 
 // BenchmarkGitDiffUntrackedScaling renders N untracked files by the batch and
