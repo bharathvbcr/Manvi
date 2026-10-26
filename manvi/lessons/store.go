@@ -280,7 +280,7 @@ func supersededRow(prev *artifacts.Artifact) string {
 // contract cannot panic a save.
 func stored(name string, art *artifacts.Artifact, err error) (string, int, error) {
 	if art == nil {
-		return "", 0, fmt.Errorf("lessons: %s was reported as published but the store returned no artifact (%v)", name, err)
+		return "", 0, errors.Join(fmt.Errorf("lessons: %s was reported as published but the store returned no artifact", name), err)
 	}
 	return art.Name, art.Revision, err
 }
