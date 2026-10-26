@@ -273,6 +273,18 @@ func supersededRow(prev *artifacts.Artifact) string {
 		strings.Join(verdicts, " "), oneLine(evidence.String(), 300)), maxHistoryRowRune)
 }
 
+// stored is the outcome of a write the store reported as published: the
+// artifact's name and revision, with err (nil or ErrPublishedUnsynced) beside
+// them. The store's contract is a non-nil artifact in both cases; a nil one is
+// refused as an error here, not dereferenced, so a store that broke the
+// contract cannot panic a save.
+func stored(name string, art *artifacts.Artifact, err error) (string, int, error) {
+	if art == nil {
+		return "", 0, fmt.Errorf("lessons: %s was reported as published but the store returned no artifact (%v)", name, err)
+	}
+	return art.Name, art.Revision, err
+}
+
 // Save stores an accepted result, and only an accepted result with an entry in
 // it: NO_ENTRY and the zero Result are errors, so a caller cannot store nothing
 // by accident and report it as a lesson.
@@ -336,7 +348,7 @@ func save(store entryStore, library, sessionID string, r Result) (string, int, e
 				// A published write whose directory sync was not confirmed is
 				// stored: it comes back with its name and revision and with
 				// the error, for the caller to report beside them, not retry.
-				return art.Name, art.Revision, err
+				return stored(name, art, err)
 			}
 			if !errors.Is(err, artifacts.ErrRevisionConflict) {
 				return "", 0, err
@@ -348,7 +360,7 @@ func save(store entryStore, library, sessionID string, r Result) (string, int, e
 				// A published write whose directory sync was not confirmed is
 				// stored: it comes back with its name and revision and with
 				// the error, for the caller to report beside them, not retry.
-				return art.Name, art.Revision, err
+				return stored(name, art, err)
 			}
 			if !errors.Is(err, artifacts.ErrExists) {
 				return "", 0, err

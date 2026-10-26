@@ -163,6 +163,11 @@ func (r *Registry) createArtifact(ctx context.Context, call tools.Call) tools.Re
 	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("creating artifact: %v", err)
 	}
+	if art == nil {
+		// Create returns the artifact beside ErrPublishedUnsynced; a store that
+		// did not is refused here rather than dereferenced.
+		return tools.Errorf("creating artifact: the store reported a published write but returned no artifact (%v)", err)
+	}
 
 	// The artifact's path is reported like any other write. Whether an
 	// end-of-turn check has anything useful to say about a plan document is
@@ -200,6 +205,11 @@ func (r *Registry) updateArtifact(ctx context.Context, call tools.Call) tools.Re
 	art, err := store.Update(args.Name, args.Content, args.Metadata)
 	if err != nil && !errors.Is(err, artifacts.ErrPublishedUnsynced) {
 		return tools.Errorf("updating artifact: %v", err)
+	}
+	if art == nil {
+		// Update returns the artifact beside ErrPublishedUnsynced; a store that
+		// did not is refused here rather than dereferenced.
+		return tools.Errorf("updating artifact: the store reported a published write but returned no artifact (%v)", err)
 	}
 
 	// The artifact's path is reported like any other write. Whether an
