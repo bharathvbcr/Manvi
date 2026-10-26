@@ -482,6 +482,11 @@ func TestBaselineFollowsTheTurnNumber(t *testing.T) {
 		baseline: devcouncil.Baseline{Tree: "turn1"}}
 	s, _ := newSensor(t, v)
 	_ = s.begin(context.Background(), &agent.TurnStarting{Turn: 1})
+	// Turn 1's recording runs beside the test; it is awaited before the fake it
+	// reads is changed for turn 2.
+	if _, err := s.await(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
 	v.baseline = devcouncil.Baseline{Tree: "turn2"}
 	_ = s.begin(context.Background(), &agent.TurnStarting{Turn: 2})
 	_ = s.check(context.Background(), &agent.TurnStopping{Turn: 2, Mutated: true, Wrote: []string{"a.go"}})

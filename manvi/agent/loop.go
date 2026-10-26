@@ -89,6 +89,28 @@ type TurnStarting struct {
 	Turn int
 }
 
+// ToolsDispatching is published before a response's tool calls run, once per
+// response that carries any. It is the last point at which nothing the turn
+// asked for has touched the world.
+//
+// It exists for a listener that started work at TurnStarting and let the turn
+// go on without it. The pre-turn baseline is taken that way, so the first model
+// request is not held behind it; the price is that the baseline must still be a
+// photograph of the tree before any tool of the turn has run, and this is where
+// that is enforced. A listener that returns an error ends the turn, as it does
+// at TurnStarting: a listener that could not hold the line must not have its
+// silence read as permission.
+//
+// PreStep cannot serve: it runs before a step's request, so the first tool call
+// of a turn is dispatched before any PreStep that could wait for it. And the
+// tool pipeline's own bus is not this one — it outlives the turn, where a
+// listener here dies with the loop that registered it.
+type ToolsDispatching struct {
+	Turn  int
+	Step  int
+	Calls int
+}
+
 type TurnStopping struct {
 	Turn     int
 	Steps    int
@@ -830,6 +852,13 @@ func (l *Loop) Run(ctx context.Context, prompt llm.Message) (Outcome, error) {
 		}
 
 		calls := response.Message.ToolCalls()
+		if len(calls) > 0 {
+			if err := bus.Serial(l.bus, ctx, &ToolsDispatching{
+				Turn: currentTurn, Step: step, Calls: len(calls),
+			}); err != nil {
+				return out, err
+			}
+		}
 		tally, err := l.dispatchCalls(ctx, &out, calls)
 		if err != nil {
 			return out, err

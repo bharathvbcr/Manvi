@@ -63,6 +63,8 @@ type timingProvider struct {
 	*replay.Provider
 	once  sync.Once
 	first chan time.Time
+	// onFirst, when set, runs on the first request before it is answered.
+	onFirst func()
 }
 
 func newTimingProvider(turns ...replay.Turn) *timingProvider {
@@ -81,8 +83,26 @@ func newTimingProvider(turns ...replay.Turn) *timingProvider {
 }
 
 func (p *timingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	p.once.Do(func() { p.first <- time.Now() })
+	p.once.Do(func() {
+		p.first <- time.Now()
+		if p.onFirst != nil {
+			p.onFirst()
+		}
+	})
 	return p.Provider.Stream(ctx, req)
+}
+
+// newTimedLoop is a loop over a timing provider, with no sensor attached.
+func newTimedLoop(tb testing.TB, provider *timingProvider, b *bus.Bus, log *session.Log, registry *tools.Registry) *agent.Loop {
+	tb.Helper()
+	loop, err := agent.NewLoop(agent.Config{
+		Provider: provider, Model: "m", SystemPrompt: "you are a builder",
+		MaxSteps: 8, MaxTokens: 1024,
+	}, b, log, registry)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return loop
 }
 
 // BenchmarkTurnTimeToFirstRequest measures how long a turn takes to issue its
@@ -105,15 +125,10 @@ func BenchmarkTurnTimeToFirstRequest(b *testing.B) {
 		provider := newTimingProvider(replayText("ok"))
 		loopBus := bus.New()
 		log := session.NewLog()
-		loop, err := agent.NewLoop(agent.Config{
-			Provider: provider, Model: "m", SystemPrompt: "you are a builder",
-			MaxSteps: 4, MaxTokens: 1024,
-		}, loopBus, log, tools.NewRegistry(loopBus))
-		if err != nil {
-			b.Fatal(err)
-		}
+		loop := newTimedLoop(b, provider, loopBus, log, tools.NewRegistry(loopBus))
+		s := &sensor{native: verifier, log: log}
 		if withSensor {
-			if err := attachSensor(loopBus, &sensor{native: verifier, log: log}); err != nil {
+			if err := attachSensor(loopBus, s); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -124,7 +139,16 @@ func BenchmarkTurnTimeToFirstRequest(b *testing.B) {
 		}); err != nil {
 			b.Fatal(err)
 		}
-		return (<-provider.first).Sub(start)
+		first := (<-provider.first).Sub(start)
+		// A turn that answers without a tool never waits for its baseline, so
+		// the recording may still be running; it is drained here so one
+		// iteration's git children do not load the next iteration's timing.
+		if withSensor {
+			if _, err := s.await(context.Background(), s.captureTurn); err != nil {
+				b.Fatal(err)
+			}
+		}
+		return first
 	}
 
 	var without, with time.Duration

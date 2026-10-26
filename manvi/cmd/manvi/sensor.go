@@ -74,14 +74,15 @@ type sensor struct {
 	// command is the operator's own verification command. See
 	// operatorVerifyCommand for why it may only come from operator scope.
 	command string
-	// baseline is the tree recorded when baselineTurn began. It is read by
-	// every end-of-turn check of that turn (a bounce re-checks inside the same
-	// turn with no new start event) and replaced by the next turn's start.
-	// Guarded because the two events reach this listener on the bus and
-	// nothing promises they arrive on one goroutine.
-	baselineMu   sync.Mutex
-	baseline     devcouncil.Baseline
-	baselineTurn int
+	// capture is the baseline of the turn captureTurn, recorded in the
+	// background from the turn's start event: it is read by every end-of-turn
+	// check of that turn (a bounce re-checks inside the same turn with no new
+	// start event) and replaced by the next turn's start. Guarded because the
+	// events reach this listener on the bus and nothing promises they arrive on
+	// one goroutine.
+	baselineMu  sync.Mutex
+	capture     *baselineCapture
+	captureTurn int
 	// criticDispatched bounds the escalation to one critic per turn. A second
 	// critic on the same turn would be asked the same question about the same
 	// tree, and would cost a full child turn to produce the answer already in
@@ -142,6 +143,9 @@ func attachSensor(b *bus.Bus, s *sensor) error {
 		return nil
 	}
 	if _, err := bus.OnSerial(b, s.begin); err != nil {
+		return err
+	}
+	if _, err := bus.OnSerial(b, s.dispatching); err != nil {
 		return err
 	}
 	_, err := bus.OnSerial(b, s.check)
@@ -218,34 +222,123 @@ func (s *sensor) check(ctx context.Context, e *agent.TurnStopping) error {
 	return nil
 }
 
-// begin records the tree before the turn changes anything.
+// baselineCapture is one turn's baseline while it is being recorded and after.
+// It is written once, by the goroutine that records it, before done is closed;
+// readers wait on done, so it needs no lock of its own. A late finisher can
+// therefore only ever fill its own turn's capture, never a newer one.
+type baselineCapture struct {
+	done     chan struct{}
+	cancel   context.CancelFunc
+	baseline devcouncil.Baseline
+}
+
+// begin starts recording the tree before the turn changes anything.
 //
 // It runs on the turn-start event rather than lazily at check time for the one
 // reason that matters: by check time the changes have happened, and a baseline
 // captured then is a photograph of the finish line.
+//
+// The recording runs beside the turn instead of in front of it, which keeps it
+// off the path to the first model request. That is safe only because no tool of
+// the turn can run before the recording is finished: dispatching holds the
+// turn there, see dispatching. Nothing else the loop does between this event
+// and its first tool call touches the working tree — it appends to the in-memory
+// log, compacts history, and asks the model — and what runs before the loop
+// (harness scaffolding, a task checkout) is already in the tree being recorded.
+//
+// The recording is bound to the turn's context, and so are the git children it
+// starts: a cancelled turn takes them with it. A newer turn's start cancels an
+// older recording that nobody waited for.
 func (s *sensor) begin(ctx context.Context, e *agent.TurnStarting) error {
-	if s.native == nil {
+	native := s.native
+	if native == nil {
 		return nil
 	}
-	b := s.native.CaptureBaseline(ctx)
+	captureCtx, cancel := context.WithCancel(ctx)
+	c := &baselineCapture{done: make(chan struct{}), cancel: cancel}
+	go func() {
+		defer cancel()
+		defer close(c.done)
+		// A panic in the capture is a baseline that could not be recorded, said
+		// as such; left alone it would take the process down from a goroutine
+		// nothing above can recover.
+		defer func() {
+			if r := recover(); r != nil {
+				c.baseline = devcouncil.Baseline{Note: fmt.Sprintf(
+					"the pre-turn baseline could not be recorded (%v), so this turn's changes are "+
+						"attributed against the last commit and may include work that was already "+
+						"in the tree", r)}
+			}
+		}()
+		c.baseline = native.CaptureBaseline(captureCtx)
+	}()
+
 	s.baselineMu.Lock()
-	s.baseline, s.baselineTurn = b, e.Turn
+	previous := s.capture
+	s.capture, s.captureTurn = c, e.Turn
 	s.baselineMu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
 	return nil
 }
 
-// baselineFor returns the baseline recorded when turn began. It is keyed by
-// turn and not consumed on read: a failed check bounces and the loop re-checks
-// inside the same turn, and that re-check, the one whose result matters, must
-// see the same tree. A turn whose start event never arrived gets an uncaptured
-// baseline, and is told so, rather than inheriting an earlier turn's tree,
-// which would attribute this turn's changes to a state two turns old.
-func (s *sensor) baselineFor(turn int) devcouncil.Baseline {
+// dispatching holds a turn's tool calls until its baseline is recorded.
+//
+// This is the gate that makes recording the baseline beside the turn correct
+// rather than merely fast. It returns at once when the recording is already
+// done, which after the first model response it nearly always is. An error ends
+// the turn: dispatching a tool over a baseline still being taken would let the
+// tool's own change into the photograph of the tree before it.
+func (s *sensor) dispatching(ctx context.Context, e *agent.ToolsDispatching) error {
+	if _, err := s.await(ctx, e.Turn); err != nil {
+		return fmt.Errorf("the pre-turn baseline was not recorded before this turn's tools were due to run: %w", err)
+	}
+	return nil
+}
+
+// await returns the baseline of turn once its recording has finished, or
+// ctx's error if ctx ends first. A turn with no recording — its start event
+// never arrived — has nothing to wait for and gets the zero baseline.
+func (s *sensor) await(ctx context.Context, turn int) (devcouncil.Baseline, error) {
 	s.baselineMu.Lock()
-	defer s.baselineMu.Unlock()
-	var b devcouncil.Baseline
-	if s.baselineTurn == turn {
-		b = s.baseline
+	c := s.capture
+	if s.captureTurn != turn {
+		c = nil
+	}
+	s.baselineMu.Unlock()
+	if c == nil {
+		return devcouncil.Baseline{}, nil
+	}
+	// Done wins over a cancelled context when both hold: a finished baseline is
+	// an answer, and a select between two ready cases would pick one at random.
+	select {
+	case <-c.done:
+		return c.baseline, nil
+	default:
+	}
+	select {
+	case <-c.done:
+		return c.baseline, nil
+	case <-ctx.Done():
+		return devcouncil.Baseline{}, ctx.Err()
+	}
+}
+
+// baselineFor returns the baseline recorded when turn began, waiting for the
+// recording if it is still running. It is keyed by turn and not consumed on
+// read: a failed check bounces and the loop re-checks inside the same turn, and
+// that re-check, the one whose result matters, must see the same tree. A turn
+// whose start event never arrived gets an uncaptured baseline, and is told so,
+// rather than inheriting an earlier turn's tree, which would attribute this
+// turn's changes to a state two turns old.
+func (s *sensor) baselineFor(ctx context.Context, turn int) devcouncil.Baseline {
+	b, err := s.await(ctx, turn)
+	if err != nil {
+		return devcouncil.Baseline{Note: fmt.Sprintf(
+			"the pre-turn baseline was still being recorded when the check stopped waiting for it (%v), "+
+				"so this turn's changes are attributed against the last commit and may include work "+
+				"that was already in the tree", err)}
 	}
 	if !b.Captured() && b.Note == "" {
 		b.Note = "no pre-turn baseline was recorded, so this turn's changes are attributed " +
@@ -263,7 +356,7 @@ func (s *sensor) run(ctx context.Context, e *agent.TurnStopping) devcouncil.Path
 		}
 	}
 
-	report := devcouncil.VerifyPresent(ctx, s.native, e.Wrote, s.command, s.baselineFor(e.Turn))
+	report := devcouncil.VerifyPresent(ctx, s.native, e.Wrote, s.command, s.baselineFor(ctx, e.Turn))
 
 	// A turn that changed something through a command is a turn whose effects no
 	// handler could enumerate. The operator's own command still covers it;
