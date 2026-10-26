@@ -97,7 +97,10 @@ under **Unreleased** in the same commit as the code.
   itself, which the final filter dropped as the bench's own checkout, so the
   main checkout and every sibling worktree (hidden tests, reference solutions)
   became readable to the model. It now raises `GitGuardError` naming the file,
-  and `run.py` refuses to start on it, before the containment probe.
+  and `run.py` refuses to start on it, before the containment probe. Pointers
+  are read as git reads them, and a worktree admin directory with no `gitdir`,
+  an own `.git` or `commondir` naming nothing, and a byte-order mark are
+  refused too, each of which used to drop the other checkouts silently.
 - `policy.check.command` now marks a hard refusal for an unreadable construct
   (`cd`, `git -C`, a heredoc, a substitution) with `policy.unreadable_only` once
   the line's redirections have been judged and passed, as the harness gate

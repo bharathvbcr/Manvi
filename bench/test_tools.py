@@ -498,6 +498,135 @@ check("the repaired layout guards the full set again",
 check("GitGuardError is a ContainmentUnavailable, so every existing refusal path handles it",
       issubclass(toolmod.GitGuardError, toolmod.ContainmentUnavailable))
 
+# G2. Review findings: a pointer that parses but names the wrong thing is as
+# unguarded as one that does not parse.
+print("git_guard_roots validates what a pointer names (G2)")
+
+
+def put(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def variant(label, path, data, who=None):
+    """Write `data` to `path`, expect GitGuardError naming `who` (default: path)."""
+    saved = open(path, "rb").read()
+    try:
+        put(path, data)
+        err = guard_error(start)
+    finally:
+        put(path, saved)
+    check(label, err is not None and (who or path) in str(err), str(err))
+
+
+base = tmpdir()
+main, wts = make_repo(base, ["wt_a", "wt_b", "wt_c"])
+start = os.path.join(wts["wt_a"], "bench")
+full = ["main", "main/.git", "main/.git/worktrees/wt_a", "wt_b", "wt_c"]
+admin = os.path.join(main, ".git", "worktrees")
+own = os.path.join(wts["wt_a"], ".git")
+own_text = open(own, "rb").read()
+cdir = os.path.join(admin, "wt_a", "commondir")
+sib = os.path.join(admin, "wt_b", "gitdir")
+sib_text = open(sib, "rb").read()
+
+# B1: the admin directory is there, so the checkout is live; its `gitdir` is
+# what names it. Only a stray non-directory entry is skippable.
+saved = open(sib, "rb").read()
+os.remove(sib)
+err = guard_error(start)
+check("a worktree admin directory with no gitdir file raises (live checkout, unnameable)",
+      err is not None and sib in str(err), str(err))
+put(sib, saved)
+# A directory entry that is not a worktree at all still has to be named.
+os.makedirs(os.path.join(admin, "empty_entry"))
+err = guard_error(start)
+check("an empty directory entry under worktrees/ raises too",
+      err is not None and os.path.join(admin, "empty_entry") in str(err), str(err))
+os.rmdir(os.path.join(admin, "empty_entry"))
+check("with the pointer restored the full guard set is back",
+      rel(base, toolmod.git_guard_roots(start)) == full)
+
+# B2(a): the own `.git` file must lead to a directory that exists.
+variant("own .git -> a nonexistent admin directory raises",
+        own, b"gitdir: /nonexistent/admin\n")
+saved_dir = os.path.join(base, "saved_admin_a")
+shutil.move(os.path.join(admin, "wt_a"), saved_dir)
+err = guard_error(start)
+check("own admin directory removed while the checkout survives raises",
+      err is not None and own in str(err), str(err))
+shutil.move(saved_dir, os.path.join(admin, "wt_a"))
+# B2(b): a present commondir must lead to a directory that exists.
+variant("a commondir naming a nonexistent directory raises",
+        cdir, b"../../nonexistent\n")
+open(os.path.join(main, ".git", "HEAD"), "w").close()
+variant("a commondir naming a file raises", cdir, b"../../HEAD\n")
+# B2(c): a `.git` file is `gitdir: <rest of file>`, as git reads it (git 2.54
+# fails "not a git repository" on all of these), so an extra line is part of
+# the path and the result does not exist.
+variant("a .git file with a trailing extra line raises", own, own_text + b"extra\n")
+variant("a .git file with trailing spaces raises", own, own_text.rstrip(b"\n") + b"   \n")
+variant("a .git file with two spaces after the colon raises",
+        own, own_text.replace(b"gitdir: ", b"gitdir:  "))
+variant("a .git file without the space after the colon raises",
+        own, own_text.replace(b"gitdir: ", b"gitdir:"))
+variant("a .git file with a leading blank line raises", own, b"\n" + own_text)
+variant("a .git file in upper case raises", own, own_text.replace(b"gitdir", b"GITDIR"))
+for label, text in (("CRLF", own_text.rstrip(b"\n") + b"\r\n"),
+                    ("no trailing newline", own_text.rstrip(b"\n"))):
+    put(own, text)
+    check(f"a .git file with {label} still parses (git accepts it)",
+          rel(base, toolmod.git_guard_roots(start)) == full)
+put(own, own_text)
+
+# U1: git rejects a byte-order mark ("invalid gitfile format" on .git, "Invalid
+# path" on commondir), so a pointer carrying one is refused, not read leniently.
+bom = b"\xef\xbb\xbf"
+variant("a BOM in a sibling gitdir raises (it used to drop the sibling silently)",
+        sib, bom + sib_text)
+variant("a BOM in the own .git raises", own, bom + own_text)
+variant("a BOM in commondir raises", cdir, bom + open(cdir, "rb").read())
+variant("a sibling gitdir spanning two lines raises", sib, sib_text + b"junk\n")
+variant("a sibling gitdir starting with whitespace raises", sib, b" " + sib_text)
+check("a sibling gitdir pointing at a removed checkout is still exempt (pruned)",
+      (put(sib, os.path.join(base, "removed_wt", ".git").encode() + b"\n"),
+       rel(base, toolmod.git_guard_roots(start)))[1]
+      == ["main", "main/.git", "main/.git/worktrees/wt_a", "wt_c"])
+put(sib, sib_text)
+
+# The same layout as real git writes it: the hand-built one above must not
+# drift from what `git worktree add` produces.
+if shutil.which("git"):
+    def git(*args, cwd):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True)
+    gbase = tmpdir()
+    gmain = os.path.join(gbase, "main")
+    os.makedirs(gmain)
+    git("init", "-q", cwd=gmain)
+    open(os.path.join(gmain, "f"), "w").close()
+    git("add", "f", cwd=gmain)
+    git("commit", "-q", "-m", "i", cwd=gmain)
+    for n in ("a", "b"):
+        git("worktree", "add", "-q", os.path.join(gbase, n), "-b", n, cwd=gmain)
+    gstart = os.path.join(gbase, "a", "bench")
+    os.makedirs(gstart)
+    check("real git worktrees: main, its git dir, the admin dir and the sibling are guarded",
+          rel(gbase, toolmod.git_guard_roots(gstart))
+          == ["b", "main", "main/.git", "main/.git/worktrees/a"],
+          str(rel(gbase, toolmod.git_guard_roots(gstart))))
+    gsib = os.path.join(gmain, ".git", "worktrees", "b", "gitdir")
+    os.remove(gsib)
+    st = subprocess.run(["git", "status", "-s"], cwd=os.path.join(gbase, "b"),
+                        capture_output=True, text=True)
+    err = guard_error(gstart)
+    check("real git: a sibling whose gitdir file is gone still runs git, and the guard refuses",
+          st.returncode == 0 and err is not None and gsib in str(err),
+          f"git rc={st.returncode} {err}")
+    shutil.rmtree(gbase, ignore_errors=True)
+shutil.rmtree(base, ignore_errors=True)
+
 nbase = tmpdir()
 nmain, nwts = make_repo(nbase, ["wt_b"], nested=["lane"])
 nstart = os.path.join(nwts["lane"], "bench")
