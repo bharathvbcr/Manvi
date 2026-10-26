@@ -567,10 +567,15 @@ printf '    covered: %s native broker tests, formatted and clippy-clean\n' "$nat
 # reaches 22 crates transitively and compiles SQLite from source. That is 22
 # more things than the workspace comment claimed for a long time, and until this
 # step existed nothing checked any of them against an advisory.
+# native/ is a second workspace with its own Cargo.lock (tokio, atspi, zbus), so
+# auditing crates/ alone left it unchecked. Unsound advisories are denied too:
+# cargo audit exits 0 on them by default, and RUSTSEC-2026-0386 (tokio AsyncFd
+# I/O safety) is one. Unmaintained stays a printed warning, not a failure.
 step "Rust — supply chain"
 if have cargo-audit; then
-  (cd crates && cargo audit --quiet) || fail "cargo audit found a vulnerable crate"
-  printf '    covered: every crate in Cargo.lock against the RustSec advisory database\n'
+  (cd crates && cargo audit --quiet --deny unsound) || fail "cargo audit found a vulnerable or unsound crate in crates/"
+  (cd native && cargo audit --quiet --deny unsound) || fail "cargo audit found a vulnerable or unsound crate in native/"
+  printf '    covered: every crate in crates/Cargo.lock and native/Cargo.lock against the RustSec advisory database (vulnerable or unsound fails)\n'
 else
   notcovered "cargo-audit is not installed — the Rust dependency tree is unaudited"
 fi

@@ -102,7 +102,7 @@ flowchart TD
     G9 --> R1["Rust: cargo fmt --check"]
     R1 --> R2["Rust: cargo clippy -D warnings"]
     R2 --> R2n["Rust: native/ broker — fmt, clippy, test"]
-    R2n --> R2a["Rust: cargo audit — Cargo.lock against the RustSec database"]
+    R2n --> R2a["Rust: cargo audit --deny unsound — crates/ and native/ Cargo.lock against the RustSec database"]
     R2a --> R3["Rust: cargo test (unit & integration)"]
     
     R3 --> P1["Parity: fnmatch-parity.tsv >= 500 cases"]

@@ -139,7 +139,11 @@ case "$1" in
   test)
     n=40; [ "\${CARGO:-ok}" = zero ] && n=0
     echo "test result: ok. $n passed; 0 failed; 0 ignored"; [ "\${CARGO:-ok}" = testfail ] && exit 101; exit 0 ;;
-  audit) [ "\${AUDIT:-ok}" = fail ] && exit 1; exit 0 ;;
+  audit)
+    [ "\${AUDIT:-ok}" = fail ] && exit 1
+    [ "\${AUDIT:-ok}" = native ] && [ "\${PWD##*/}" = native ] && exit 1
+    [ "\${AUDIT:-ok}" = unsound ] && [[ " $* " == *" --deny unsound "* ]] && { echo "Warning: unsound" >&2; exit 1; }
+    exit 0 ;;
 esac
 exit 0
 `,
@@ -338,6 +342,11 @@ for (const [env, desc] of [
   [{ CARGO: "zero" }, "the suites compile in and run zero tests"],
   [{ CARGO: "testfail" }, "cargo test fails"],
   [{ AUDIT: "fail" }, "cargo audit finds a vulnerable crate"],
+  // native/ is its own workspace with its own Cargo.lock; auditing crates/ alone
+  // left the desktop broker's tree unchecked.
+  [{ AUDIT: "native" }, "cargo audit finds a vulnerable crate in native/ only"],
+  // cargo audit exits 0 on an unsound advisory unless asked to deny it.
+  [{ AUDIT: "unsound" }, "cargo audit finds an unsound crate"],
 ]) {
   test(`rust: ${desc}`, () => {
     const run = runGate([SEGMENTS.rust], ["cargo", "cargo-audit"], env);
