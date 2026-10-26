@@ -1,6 +1,7 @@
 """Sandbox tools: dispatch, the output cap, shell capture, and file-open safety."""
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -364,6 +365,153 @@ if hung:
     th.join(3)
 check("read_file on a FIFO is refused instead of hanging the harness",
       not hung and result.get("r", "").startswith("refused"), str(result))
+
+# G1. git_guard_roots fails closed. It used to answer an unreadable pointer
+# with the start itself, which the final filter then dropped as "the bench's own
+# checkout" -- so one unreadable sibling worktrees/<n>/gitdir silently unguarded
+# the main checkout and every other worktree, and the hidden tests in them.
+print("git_guard_roots refuses a git pointer it cannot follow (G1)")
+
+
+def make_repo(base, worktrees, nested=()):
+    """A hand-built main checkout with linked worktrees, as git lays them out.
+
+    `worktrees` live beside main; `nested` under main/tmp (the layout a lane
+    worktree uses). Returns (main, {name: worktree dir}).
+    """
+    main = os.path.join(base, "main")
+    os.makedirs(os.path.join(main, ".git", "worktrees"))
+    made = {}
+    for name in list(worktrees) + list(nested):
+        wt = (os.path.join(main, "tmp", name) if name in nested
+              else os.path.join(base, name))
+        meta = os.path.join(main, ".git", "worktrees", name)
+        os.makedirs(os.path.join(wt, "bench"))
+        os.makedirs(meta)
+        with open(os.path.join(wt, ".git"), "w") as f:
+            f.write(f"gitdir: {meta}\n")
+        with open(os.path.join(meta, "gitdir"), "w") as f:
+            f.write(os.path.join(wt, ".git") + "\n")
+        with open(os.path.join(meta, "commondir"), "w") as f:
+            f.write("../..\n")
+        made[name] = wt
+    return main, made
+
+
+def guard_error(*starts):
+    """The GitGuardError git_guard_roots raises for `starts`, else None."""
+    try:
+        toolmod.git_guard_roots(*starts)
+    except toolmod.GitGuardError as e:
+        return e
+    return None
+
+
+def rel(base, roots):
+    return sorted(os.path.relpath(r, base) for r in roots)
+
+
+def unreadable(path):
+    """Make `path` unreadable; skipped as root, which ignores file modes."""
+    os.chmod(path, 0o000)
+    return os.geteuid() != 0 and not os.access(path, os.R_OK)
+
+
+base = tmpdir()
+main, wts = make_repo(base, ["wt_a", "wt_b", "wt_c"])
+start = os.path.join(wts["wt_a"], "bench")
+full = ["main", "main/.git", "main/.git/worktrees/wt_a", "wt_b", "wt_c"]
+check("normal layout: the main checkout, git dirs and siblings are guarded",
+      rel(base, toolmod.git_guard_roots(start)) == full,
+      str(rel(base, toolmod.git_guard_roots(start))))
+
+pruned = os.path.join(main, ".git", "worktrees", "gone")
+os.makedirs(pruned)
+with open(os.path.join(pruned, "gitdir"), "w") as f:
+    f.write(os.path.join(base, "gone_wt", ".git") + "\n")
+check("a pruned worktree (readable pointer, missing target) is skipped, the rest intact",
+      not os.path.exists(os.path.join(base, "gone_wt"))
+      and rel(base, toolmod.git_guard_roots(start)) == full,
+      str(rel(base, toolmod.git_guard_roots(start))))
+shutil.rmtree(pruned)
+
+# A stray file beside the worktree entries (macOS's .DS_Store) is not a pointer.
+open(os.path.join(main, ".git", "worktrees", ".DS_Store"), "w").close()
+check("a stray file among the worktree entries is not mistaken for a broken one",
+      rel(base, toolmod.git_guard_roots(start)) == full)
+os.remove(os.path.join(main, ".git", "worktrees", ".DS_Store"))
+
+sib = os.path.join(main, ".git", "worktrees", "wt_a", "gitdir")
+if unreadable(sib):
+    err = guard_error(start)
+    check("an unreadable sibling gitdir raises, naming the file (the reported leak)",
+          err is not None and sib in str(err) and err.path == sib, str(err))
+os.chmod(sib, 0o644)
+
+own = os.path.join(wts["wt_a"], ".git")
+if unreadable(own):
+    err = guard_error(start)
+    check("an unreadable own .git pointer raises, naming the file",
+          err is not None and own in str(err), str(err))
+os.chmod(own, 0o644)
+
+cdir = os.path.join(main, ".git", "worktrees", "wt_a", "commondir")
+if unreadable(cdir):
+    err = guard_error(start)
+    check("an unreadable commondir raises, naming the file",
+          err is not None and cdir in str(err), str(err))
+os.chmod(cdir, 0o644)
+
+wtmeta = os.path.join(main, ".git", "worktrees", "wt_b")
+os.chmod(wtmeta, 0o000)
+if os.geteuid() != 0:
+    err = guard_error(start)
+    check("an unsearchable worktree entry raises instead of looking absent",
+          err is not None and wtmeta in str(err), str(err))
+os.chmod(wtmeta, 0o755)
+
+wlist = os.path.join(main, ".git", "worktrees")
+os.chmod(wlist, 0o000)
+if os.geteuid() != 0:
+    err = guard_error(os.path.join(main, "tmp"))
+    check("an unlistable worktrees directory raises",
+          err is not None and wlist in str(err), str(err))
+os.chmod(wlist, 0o755)
+
+with open(sib, "wb") as f:
+    f.write(b"\xff\xfe\x80 not utf-8\n")
+err = guard_error(start)
+check("a non-UTF-8 pointer raises, naming the file",
+      err is not None and sib in str(err) and "UnicodeDecodeError" in str(err), str(err))
+with open(sib, "w") as f:
+    f.write(os.path.join(wts["wt_a"], ".git") + "\n")
+
+for label, text in (("an empty .git pointer", ""), ("a .git file with no gitdir line", "garbage\n")):
+    with open(own, "w") as f:
+        f.write(text)
+    err = guard_error(start)
+    check(f"{label} raises", err is not None and own in str(err), str(err))
+with open(own, "w") as f:
+    f.write(f"gitdir: {os.path.join(main, '.git', 'worktrees', 'wt_a')}\n")
+check("the repaired layout guards the full set again",
+      rel(base, toolmod.git_guard_roots(start)) == full)
+check("GitGuardError is a ContainmentUnavailable, so every existing refusal path handles it",
+      issubclass(toolmod.GitGuardError, toolmod.ContainmentUnavailable))
+
+nbase = tmpdir()
+nmain, nwts = make_repo(nbase, ["wt_b"], nested=["lane"])
+nstart = os.path.join(nwts["lane"], "bench")
+nroots = rel(nbase, toolmod.git_guard_roots(nstart))
+check("nested worktree layout: outer checkout, git dirs and sibling all guarded, own tree not",
+      nroots == ["main", "main/.git", "main/.git/worktrees/lane", "wt_b"], str(nroots))
+nsib = os.path.join(nmain, ".git", "worktrees", "wt_b", "gitdir")
+if unreadable(nsib):
+    err = guard_error(nstart)
+    check("nested layout: an unreadable sibling gitdir raises rather than unguarding the outer checkout",
+          err is not None and nsib in str(err), str(err))
+os.chmod(nsib, 0o644)
+shutil.rmtree(base, ignore_errors=True)
+shutil.rmtree(nbase, ignore_errors=True)
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")

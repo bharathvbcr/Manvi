@@ -228,12 +228,52 @@ def shell_body(out, err, limit):
 # --- OS containment ----------------------------------------------------------
 
 
-def _read_git_pointer(path):
-    """The directory a `.git` file or `gitdir`/`commondir` file points at."""
-    with open(path, encoding="utf-8") as f:
-        line = f.read().strip()
+class GitGuardError(ContainmentUnavailable):
+    """A git pointer in the walk could not be read or parsed.
+
+    Guarding the checkouts around the benchmark means following every `.git`
+    file, `commondir` and registered worktree's `gitdir`. One that cannot be
+    followed leaves a checkout that tracks hidden tests and reference solutions
+    unguarded, and an unguarded checkout is indistinguishable from "there was
+    nothing to guard" -- so the guard refuses instead of guessing. It is a
+    ContainmentUnavailable: containment that cannot be set up is the same
+    refusal whichever part could not be set up. `path` is the offending file.
+    """
+
+    def __init__(self, path, reason):
+        self.path = path
+        super().__init__(
+            f"cannot work out which git checkouts to guard: {path}: {reason}. "
+            f"Refusing to run: an unguarded checkout would leave hidden tests "
+            f"and reference solutions readable to the model. Repair or remove "
+            f"that path.")
+
+
+def _read_git_pointer(path, *, dotgit=False, optional=False):
+    """The directory a `.git` file or `gitdir`/`commondir` file points at.
+
+    Raises GitGuardError when the file cannot be read, is not UTF-8, or names
+    nothing (a `.git` file must also carry the `gitdir:` prefix). With
+    `optional`, only a file that does not exist (or whose parent is not a
+    directory, like a stray .DS_Store beside the worktree entries) returns None:
+    "this entry has no such file" is a fact about the repository, whereas an
+    unreadable one is not.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            line = f.read().strip()
+    except (FileNotFoundError, NotADirectoryError) as e:
+        if optional:
+            return None
+        raise GitGuardError(path, f"{type(e).__name__}: {e.strerror}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise GitGuardError(path, f"{type(e).__name__}: {e}") from e
+    if dotgit and not line.startswith("gitdir:"):
+        raise GitGuardError(path, "a .git file without a 'gitdir:' line")
     if line.startswith("gitdir:"):
         line = line[len("gitdir:"):].strip()
+    if not line:
+        raise GitGuardError(path, "the pointer names no directory")
     return os.path.realpath(os.path.join(os.path.dirname(path), line))
 
 
@@ -253,9 +293,16 @@ def git_guard_roots(*starts):
     the nested layout -- a worktree under the main checkout's gitignored tmp/
     -- where the main checkout's work tree tracks the same hidden tests and
     used to be dropped from the guard for "containing" the bench. Only paths
-    that exist are returned (a bwrap tmpfs mask needs a mount point). A `.git`
-    pointer that cannot be parsed protects its whole worktree rather than none
-    of it.
+    that exist are returned (a bwrap tmpfs mask needs a mount point), so a
+    pruned worktree whose pointer is readable but whose target is gone is
+    simply absent.
+
+    Fails closed: a `.git` pointer, `commondir`, or any registered worktree's
+    `gitdir` that cannot be read or parsed raises GitGuardError naming it. It
+    must not be skipped or answered with the start itself -- the start is the
+    checkout the benchmark runs in and is filtered out, so that would silently
+    drop every sibling. Callers that need this to fail once, at start-up, call
+    it before anything runs (run.py:require_containment does).
     """
     starts = [os.path.realpath(p) for p in starts if p]
 
@@ -270,25 +317,29 @@ def git_guard_roots(*starts):
                 if not owned:
                     own.add(cur)
                     owned = True
+                if os.path.isdir(dotgit):
+                    gitdir = common = os.path.realpath(dotgit)
+                else:
+                    gitdir = common = _read_git_pointer(dotgit, dotgit=True)
+                    cdir = _read_git_pointer(os.path.join(gitdir, "commondir"),
+                                             optional=True)
+                    if cdir is not None:
+                        common = cdir
+                roots.update((gitdir, common))
+                wtroot = os.path.join(common, "worktrees")
                 try:
-                    if os.path.isdir(dotgit):
-                        gitdir = common = os.path.realpath(dotgit)
-                    else:
-                        gitdir = common = _read_git_pointer(dotgit)
-                        cdir = os.path.join(gitdir, "commondir")
-                        if os.path.exists(cdir):
-                            common = _read_git_pointer(cdir)
-                    roots.update((gitdir, common))
-                    wtroot = os.path.join(common, "worktrees")
-                    if os.path.isdir(wtroot):
-                        for name in os.listdir(wtroot):
-                            ptr = os.path.join(wtroot, name, "gitdir")
-                            if os.path.exists(ptr):
-                                roots.add(os.path.dirname(_read_git_pointer(ptr)))
-                    if os.path.basename(common) == ".git":
-                        roots.add(os.path.dirname(common))
-                except (OSError, UnicodeDecodeError):
-                    roots.add(cur)
+                    names = os.listdir(wtroot)
+                except (FileNotFoundError, NotADirectoryError):
+                    names = []      # a repository with no linked worktrees
+                except OSError as e:
+                    raise GitGuardError(wtroot, f"{type(e).__name__}: {e}") from e
+                for name in names:
+                    target = _read_git_pointer(
+                        os.path.join(wtroot, name, "gitdir"), optional=True)
+                    if target is not None:
+                        roots.add(os.path.dirname(target))
+                if os.path.basename(common) == ".git":
+                    roots.add(os.path.dirname(common))
             parent = os.path.dirname(cur)
             if parent == cur:
                 break

@@ -91,6 +91,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Bench: an unreadable or unparseable git pointer no longer unguards the
+  repository's other checkouts. `git_guard_roots` answered one unreadable
+  `.git` file, `commondir` or sibling `worktrees/<n>/gitdir` with the start
+  itself, which the final filter dropped as the bench's own checkout, so the
+  main checkout and every sibling worktree (hidden tests, reference solutions)
+  became readable to the model. It now raises `GitGuardError` naming the file,
+  and `run.py` refuses to start on it, before the containment probe.
 - `policy.check.command` now marks a hard refusal for an unreadable construct
   (`cd`, `git -C`, a heredoc, a substitution) with `policy.unreadable_only` once
   the line's redirections have been judged and passed, as the harness gate

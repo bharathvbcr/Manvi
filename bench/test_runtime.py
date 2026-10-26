@@ -1285,6 +1285,35 @@ with tempfile.TemporaryDirectory() as tmp:
     check("no backend at all aborts run.main too",
           isinstance(code, str) and "no containment backend" in code, str(code))
 
+    # An unreadable git pointer refuses once, at start, with the path named --
+    # before the probe, the cell directory or any eviction, and not softened by
+    # the opt-out (which waives the backend, not the guard set's computation).
+    _saved_guard = _tools.default_protected_roots
+
+    def _unreadable_pointer():
+        raise _tools.GitGuardError("/repo/.git/worktrees/w/gitdir", "PermissionError")
+    _tools.default_protected_roots = _unreadable_pointer
+    try:
+        code, out = run_main(["--model", "m", "--tag", "gitptr", "--tasks", "alpha"],
+                             tmp)
+        os.environ[_tools.UNCONTAINED_ENV] = "1"
+        try:
+            code_off, _ = run_main(["--model", "m", "--tag", "gitptr2",
+                                    "--tasks", "alpha"], tmp)
+        finally:
+            del os.environ[_tools.UNCONTAINED_ENV]
+    finally:
+        _tools.default_protected_roots = _saved_guard
+    check("an unparseable git pointer aborts run.main, naming the path",
+          isinstance(code, str) and "/repo/.git/worktrees/w/gitdir" in code
+          and "Refusing to run" in code, str(code))
+    check("it also aborts under the containment opt-out",
+          isinstance(code_off, str) and "/repo/.git/worktrees/w/gitdir" in code_off,
+          str(code_off))
+    check("the git-pointer refusal runs nothing, evicts nothing, creates no cell",
+          FakeHarness.ran == [] and EVICTED == []
+          and not os.path.exists(os.path.join(tmp, "m__full__gitptr")))
+
     # The existing explicit opt-out still works, loudly.
     os.environ[_tools.UNCONTAINED_ENV] = "1"
     try:
