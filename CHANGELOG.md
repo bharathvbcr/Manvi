@@ -153,6 +153,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The Anthropic budget ledger no longer holds a cancelled caller behind another
+  caller's wait. Each operation took an in-process `sync.Mutex` before the
+  context-aware file lock, and a mutex cannot be abandoned: while one goroutine
+  waited out a wedged file lock (another process stopped or stalled holding
+  it), every other goroutine in the process queued behind it for the whole wait,
+  a cancelled one included (a caller cancelled at 100 ms returned after 2.8 s,
+  once per queued waiter). The in-process turn is now a one-slot channel
+  selected against the context, and one `lockWait` bound covers the turn and the
+  file lock together, so a queue behind a wedged holder ends together.
 - The managed Claude build probe now ends with its deadline. `claude --version`
   was run with a 10 s timeout that killed only the process it started, and
   `Output` then waited for every descendant to close the stdout pipe, so an
