@@ -162,6 +162,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `manvi run --image` refuses a path that is not a regular file instead of
+  opening it. Images are read while the arguments are parsed, before `--timeout`
+  or a provider exists, and a bare open of a FIFO waits for a writer, so a
+  `--image` naming one stopped the run from ever starting without a word. A
+  FIFO, device, socket or directory is now refused by name (`not a regular file
+  (a named pipe)`), and the opened handle is checked again and opened without
+  waiting for a writer, in case the name was swapped in between. Symbolic links
+  are followed as before; what they lead to decides.
 - The Anthropic budget ledger no longer holds a cancelled caller behind another
   caller's wait. Each operation took an in-process `sync.Mutex` before the
   context-aware file lock, and a mutex cannot be abandoned: while one goroutine
