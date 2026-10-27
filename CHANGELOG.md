@@ -162,6 +162,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The credential scrubber no longer has a data race between `Clean` and
+  `Watch`. `Clean` copied the watched-value slice's header under the read lock
+  and walked the shared backing array after releasing it, while `Watch`
+  re-sorted that array in place; callers re-arm on every use while tool results
+  and sub-agents `Clean`, so `go test -race` reported it (no leak was observed
+  in about 130,000 calls, but a walk that skips a value the sort moved past
+  could let one through). `Watch` now publishes a new sorted slice under the
+  lock and never writes one it has handed out; `Clean` still holds the lock only
+  to copy the header, and its cost is unchanged.
 - `manvi run --image` refuses a path that is not a regular file instead of
   opening it. Images are read while the arguments are parsed, before `--timeout`
   or a provider exists, and a bare open of a FIFO waits for a writer, so a
