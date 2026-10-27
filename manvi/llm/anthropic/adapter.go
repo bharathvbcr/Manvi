@@ -351,6 +351,38 @@ type wireBlock struct {
 	Source *wireSource `json:"source,omitempty"`
 }
 
+// MarshalJSON writes the fields a block type requires even when they are
+// empty, and no field it does not have.
+//
+// The struct above is shared between decoding a response and encoding a
+// request, and omitempty is right for the many optional fields but wrong for
+// the required ones. ThinkingBlockParam requires `thinking` and `signature`,
+// and the default display on current models is "omitted", which delivers
+// thinking:"" — an empty value that omitempty then dropped on replay, leaving a
+// thinking block the API rejects ("Thinking blocks must be passed back
+// unmodified"). The same shape applies to redacted_thinking's `data`. So the
+// required fields are re-declared without omitempty for exactly the block types
+// that require them, and every other type marshals as before: a text, tool_use
+// or image block never gains a `thinking` field.
+func (b wireBlock) MarshalJSON() ([]byte, error) {
+	type plain wireBlock // drops this method, so the marshal below cannot recurse
+	switch b.Type {
+	case BlockThinking:
+		return json.Marshal(struct {
+			plain
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+		}{plain(b), b.Thinking, b.Signature})
+	case BlockRedactedThinking:
+		return json.Marshal(struct {
+			plain
+			Data string `json:"data"`
+		}{plain(b), b.Data})
+	default:
+		return json.Marshal(plain(b))
+	}
+}
+
 type wireSource struct {
 	Type      string `json:"type"`
 	MediaType string `json:"media_type"`
@@ -452,46 +484,94 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 		})
 	}
 	for i, msg := range req.Messages {
-		converted, err := toWireMessage(msg)
+		converted, keep, err := toWireMessage(msg)
 		if err != nil {
 			return nil, fmt.Errorf("anthropic: message %d: %w", i, err)
 		}
-		out.Messages = append(out.Messages, converted)
+		if keep {
+			out.Messages = append(out.Messages, converted)
+		}
+	}
+	if len(out.Messages) == 0 {
+		return nil, errors.New("anthropic: no message has sendable content")
 	}
 	return out, nil
 }
 
-func toWireMessage(msg llm.Message) (wireMessage, error) {
+// emptyErrorResultText stands in for the content of an error tool_result that
+// has none.
+const emptyErrorResultText = "(no output)"
+
+// toWireMessage converts one neutral message. keep is false for an assistant
+// message that has nothing left to send once its empty text blocks are dropped.
+//
+// A text block's text has minLength 1 and a non-final message must have
+// content, so a turn in which the model said nothing cannot be replayed as it
+// was journaled. The API combines consecutive same-role turns, so omitting that
+// turn leaves a well-formed history. A user message with no sendable content is
+// not model output but the caller's mistake, and dropping it would change who
+// spoke last, so it is refused.
+func toWireMessage(msg llm.Message) (wire wireMessage, keep bool, err error) {
 	// The API takes the system prompt as a top-level field, not as a role. A
 	// system message reaching here means the caller put it in the wrong place,
 	// and silently folding it into the user turn would change the prompt.
 	if msg.Role == llm.RoleSystem {
-		return wireMessage{}, errors.New("system content belongs in Request.System, not in Messages")
+		return wireMessage{}, false, errors.New("system content belongs in Request.System, not in Messages")
 	}
 	out := wireMessage{Role: string(msg.Role)}
 	for _, block := range msg.Content {
-		converted, err := toWireBlock(block)
+		converted, ok, err := toWireBlock(block)
 		if err != nil {
-			return wireMessage{}, err
+			return wireMessage{}, false, err
 		}
-		out.Content = append(out.Content, converted)
+		if ok {
+			out.Content = append(out.Content, converted)
+		}
 	}
-	return out, nil
+	if len(out.Content) == 0 {
+		if msg.Role == llm.RoleAssistant {
+			return wireMessage{}, false, nil
+		}
+		return wireMessage{}, false, errors.New("message has no sendable content")
+	}
+	return out, true, nil
 }
 
-func toWireBlock(block llm.ContentBlock) (wireBlock, error) {
+// toWireBlock converts one neutral block. ok is false for a block that has no
+// valid wire form and carries nothing: a text block with no text or only
+// whitespace, and a thinking block whose signature never arrived. They are
+// dropped here, in the encoder, because journals already on disk hold such
+// blocks (a text block that opened and never received a delta; an empty
+// read_file result; thinking cut off by max_tokens before its signature), so
+// fixing only the producers would leave every old session unreplayable.
+func toWireBlock(block llm.ContentBlock) (wire wireBlock, ok bool, err error) {
 	switch b := block.(type) {
 	case llm.TextBlock:
-		return wireBlock{Type: BlockText, Text: b.Text}, nil
+		// Empty text violates TextBlockParam's minLength 1 (the reference). A
+		// whitespace-only block is refused by the live API too ("text content
+		// blocks must contain non-whitespace text"), but that rule is third-party
+		// evidence (microsoft/vscode#307807, anthropics/claude-code#23440), not
+		// in the reference. Text that has any other content is sent as it is,
+		// untrimmed.
+		if strings.TrimSpace(b.Text) == "" {
+			return wireBlock{}, false, nil
+		}
+		return wireBlock{Type: BlockText, Text: b.Text}, true, nil
 	case llm.ReasoningBlock:
 		if b.Redacted {
-			return wireBlock{Type: BlockRedactedThinking, Data: b.Signature}, nil
+			return wireBlock{Type: BlockRedactedThinking, Data: b.Signature}, true, nil
 		}
-		return wireBlock{Type: BlockThinking, Thinking: b.Text, Signature: b.Signature}, nil
+		if b.Signature == "" {
+			// Thinking cut off before its signature arrived. The signature is
+			// what makes the block replayable, and "" is not one, so there is no
+			// valid wire form for it.
+			return wireBlock{}, false, nil
+		}
+		return wireBlock{Type: BlockThinking, Thinking: b.Text, Signature: b.Signature}, true, nil
 	case llm.ImageBlock:
 		return wireBlock{Type: "image", Source: &wireSource{
 			Type: "base64", MediaType: b.MediaType, Data: encodeBase64(b.Data),
-		}}, nil
+		}}, true, nil
 	case llm.ToolCallBlock:
 		input := b.Arguments
 		if len(input) == 0 {
@@ -500,19 +580,33 @@ func toWireBlock(block llm.ContentBlock) (wireBlock, error) {
 			// as a schema problem with the tool.
 			input = json.RawMessage("{}")
 		}
-		return wireBlock{Type: BlockToolUse, ID: string(b.ID), Name: b.Name, Input: input}, nil
+		return wireBlock{Type: BlockToolUse, ID: string(b.ID), Name: b.Name, Input: input}, true, nil
 	case llm.ToolResultBlock:
+		// content is optional on a tool_result, so a result with nothing to say
+		// (an empty file) is a tool_result with no content, never one holding a
+		// text block with no text.
+		//
+		// An error result is the exception: the live API is reported to refuse
+		// is_error:true with no content ("content cannot be empty if is_error is
+		// true", anthropics/claude-agent-sdk-python#248; this is not in the
+		// reference). A failure that said nothing therefore carries a
+		// placeholder, which also tells the model something happened.
 		out := wireBlock{Type: "tool_result", ToolUseID: string(b.ToolCallID), IsError: b.IsError}
 		for _, inner := range b.Content {
-			converted, err := toWireBlock(inner)
+			converted, keep, err := toWireBlock(inner)
 			if err != nil {
-				return wireBlock{}, err
+				return wireBlock{}, false, err
 			}
-			out.Content = append(out.Content, converted)
+			if keep {
+				out.Content = append(out.Content, converted)
+			}
 		}
-		return out, nil
+		if b.IsError && len(out.Content) == 0 {
+			out.Content = []wireBlock{{Type: BlockText, Text: emptyErrorResultText}}
+		}
+		return out, true, nil
 	default:
-		return wireBlock{}, fmt.Errorf("anthropic: cannot send a %s block", block.Kind())
+		return wireBlock{}, false, fmt.Errorf("anthropic: cannot send a %s block", block.Kind())
 	}
 }
 
@@ -841,6 +935,7 @@ func (s *stream) Response() (llm.Response, error) {
 		Role:       llm.RoleAssistant,
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
 	}
+	var malformed []llm.MalformedCall
 	for _, index := range s.order {
 		acc := s.blocks[index]
 		if acc == nil {
@@ -887,18 +982,35 @@ func (s *stream) Response() (llm.Response, error) {
 			if len(args) == 0 {
 				args = json.RawMessage("{}")
 			}
+			// A call is complete when its block was sealed by content_block_stop
+			// and its arguments are valid JSON. Anything less is a prefix, and a
+			// prefix is never run: truncated JSON that happens to parse, or an
+			// unsealed `{}`, is how a half-received call becomes a runnable one.
+			sealedAndValid := acc.sealed && json.Valid(args)
+			if !sealedAndValid && s.stopReason == llm.StopMaxTokens {
+				// The model ran out of output budget in the middle of the call.
+				// That is the model's own limit, not a broken stream, so the turn
+				// survives: the call is reported as malformed, the loop tells the
+				// model it was cut off, and it can ask for less. Returning an
+				// error here discarded every completed step of the turn with it.
+				// This is the same settlement openaicompat reaches for a call
+				// whose arguments did not arrive whole.
+				malformed = append(malformed, llm.MalformedCall{
+					ID:   llm.CallID(acc.toolID),
+					Name: acc.toolName,
+					Reason: fmt.Sprintf(
+						"the arguments were cut off by the output limit after %d bytes and are not complete JSON",
+						acc.args.Len()),
+				})
+				continue
+			}
 			if !json.Valid(args) {
-				// A tool call whose arguments did not arrive whole must not be
-				// handed to the tool layer. Truncated JSON that happens to
-				// parse is the failure this guards against.
+				// Not a token limit: the stream itself delivered a call whose
+				// arguments are not JSON, which is not something the model can
+				// be asked to fix.
 				return llm.Response{}, fmt.Errorf(
 					"anthropic: tool call %q arrived with incomplete arguments: %q", acc.toolName, args)
 			}
-			// A call is complete when its block was sealed by content_block_stop.
-			// An unsealed block means the stream lost the event that frames the
-			// arguments, so whatever arrived is a prefix; running it is how a
-			// half-received call becomes `{}`. A sealed call that took no
-			// arguments is legitimately empty and is the only way `{}` appears.
 			if !acc.sealed {
 				return llm.Response{}, fmt.Errorf(
 					"anthropic: tool call %q (id %q) was never closed by content_block_stop; "+
@@ -915,7 +1027,10 @@ func (s *stream) Response() (llm.Response, error) {
 	if stop == "" {
 		stop = llm.StopOther
 	}
-	return llm.Response{Message: msg, StopReason: stop, Usage: wholePrompt(s.usage), MaxTokensApplied: s.maxTokensApplied}, nil
+	return llm.Response{
+		Message: msg, StopReason: stop, Usage: wholePrompt(s.usage),
+		MaxTokensApplied: s.maxTokensApplied, Malformed: malformed,
+	}, nil
 }
 
 // Close releases the stream.

@@ -76,7 +76,7 @@ func TestPublicEventsAndObserversOmitPrivateContinuation(t *testing.T) {
 func TestTextScrubberDoesNotRewriteBinaryOrSignatureFields(t *testing.T) {
 	l := NewLog()
 	l.SetScrubber(func(s string) string { return strings.ReplaceAll(s, "AQID", "[redacted]") })
-	_, err := l.Append(AssistantMessage, MessageData{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.ImageBlock{MediaType: "image/png", Data: []byte{1, 2, 3}}, llm.ReasoningBlock{Text: "AQID", Signature: "AQID"}}}})
+	_, err := l.Append(AssistantMessage, MessageData{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.ImageBlock{MediaType: "image/png", Data: []byte{1, 2, 3}}, llm.ReasoningBlock{Text: "plain thought", Signature: "AQID"}}}})
 	if err != nil {
 		t.Fatalf("text scrubber corrupted binary payload: %v", err)
 	}
@@ -84,9 +84,12 @@ func TestTextScrubberDoesNotRewriteBinaryOrSignatureFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The signature is opaque: a scrubber target inside it is not rewritten. (A
+	// signed block whose text the scrubber would change is dropped whole instead
+	// of being rewritten beside its signature; see privacy_reasoning_test.go.)
 	reasoning, ok := messages[0].Content[1].(llm.ReasoningBlock)
-	if !ok || reasoning.Text != "[redacted]" || reasoning.Signature != "AQID" {
-		t.Fatal("opaque signature changed or visible reasoning not scrubbed")
+	if !ok || reasoning.Text != "plain thought" || reasoning.Signature != "AQID" {
+		t.Fatal("opaque signature changed or an unchanged signed block was not replayed as recorded")
 	}
 	public, err := l.PublicEvents()
 	if err != nil {

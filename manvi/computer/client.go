@@ -283,6 +283,11 @@ func (c *Client) Close() error {
 	return err
 }
 
+// Call sends one request and waits for its reply. A cancellation before the
+// request is written leaves the client usable. Once any of it may have reached
+// the broker, a cancel retires the broker, and every later call fails with that
+// cause, unless the op is in readOnlyOps and the request was written whole: a
+// slow observe then costs one call, not the run.
 func (c *Client) Call(ctx context.Context, op string, session *Session, payload json.RawMessage) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -337,38 +342,90 @@ func (c *Client) Call(ctx context.Context, op string, session *Session, payload 
 		}
 		written <- err
 	}()
+	var writeErr error
 	select {
+	case writeErr = <-written:
 	case <-ctx.Done():
-		return nil, errors.Join(ctx.Err(), c.stop(ctx.Err()))
-	case err := <-written:
-		if err != nil {
-			return nil, errors.Join(err, c.stop(err))
+		// A write that finished as the context ended is a finished write: the
+		// reply wait below decides what a cancel costs. One still in flight may
+		// have sent part of the request, so the broker is retired.
+		select {
+		case writeErr = <-written:
+		default:
+			return nil, errors.Join(ctx.Err(), c.stop(ctx.Err()))
 		}
 	}
+	if writeErr != nil {
+		return nil, errors.Join(writeErr, c.stop(writeErr))
+	}
+	return c.awaitReply(ctx, op, ch)
+}
+
+// awaitReply waits for the reply to a request that has been written whole.
+func (c *Client) awaitReply(ctx context.Context, op string, ch <-chan pendingResult) (json.RawMessage, error) {
 	select {
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
-		return nil, ctx.Err()
 	case result := <-ch:
-		if result.err != nil {
-			return nil, result.err
-		}
-		if !result.response.OK {
-			if len(result.response.Result) != 0 && string(result.response.Result) != "null" {
-				return nil, errors.New("inconsistent broker failure response")
-			}
-			if result.response.Error == nil {
-				return nil, errors.New("broker rejected request without structured reason")
-			}
-			return nil, result.response.Error
-		}
-		if result.response.Error != nil || len(result.response.Result) == 0 {
-			return nil, errors.New("inconsistent broker success response")
-		}
-		return result.response.Result, nil
+		return result.unwrap()
+	case <-ctx.Done():
 	}
+	// select picks at random when both are ready, so a reply that has already
+	// arrived is taken before the cancellation is acted on: the call did complete,
+	// and the caller needs its receipt.
+	select {
+	case result := <-ch:
+		return result.unwrap()
+	default:
+	}
+	if readOnlyOps[op] {
+		// Nothing was asked of the desktop, so there is nothing to stop. Call's
+		// deferred delete drops the pending entry, read discards a reply that has
+		// no waiting call, and request ids are never reused, so a late reply cannot
+		// reach a newer call.
+		return nil, ctx.Err()
+	}
+	// The broker has the request and may act on it: a click, a keystroke or a
+	// typed secret. Dropping the pending entry would only stop listening, so the
+	// broker is retired exactly as in the write window. That also closes the
+	// client, so a late reply can never be matched to a newer call.
+	return nil, errors.Join(ctx.Err(), c.stop(ctx.Err()))
+}
+
+// readOnlyOps are the operations whose cancellation after the request was
+// written needs no retirement of the broker: they only read, or only make the
+// broker safer. Anything not listed is treated as able to act, so a new
+// operation fails closed.
+//
+//	probe, observe, resolve  read the desktop or the broker's state.
+//	pause                    fences actions; a late pause leaves later actions
+//	                         refused on a stale epoch, never performed.
+//	detach                   ends the session; a late detach performs no input.
+//
+// Retired on cancel: act and human_act (input), approve (grants authority to
+// act), attach (it may focus the window, and an uncertain attachment must not be
+// reused, see AttachFocusedReady), focus (it moves keyboard focus, which decides
+// where a following keystroke lands) and resume (it lifts the fence a pause or a
+// person put up).
+var readOnlyOps = map[string]bool{"probe": true, "observe": true, "resolve": true, "pause": true, "detach": true}
+
+// unwrap turns a broker reply into Call's results, refusing replies that
+// contradict themselves.
+func (r pendingResult) unwrap() (json.RawMessage, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if !r.response.OK {
+		if len(r.response.Result) != 0 && string(r.response.Result) != "null" {
+			return nil, errors.New("inconsistent broker failure response")
+		}
+		if r.response.Error == nil {
+			return nil, errors.New("broker rejected request without structured reason")
+		}
+		return nil, r.response.Error
+	}
+	if r.response.Error != nil || len(r.response.Result) == 0 {
+		return nil, errors.New("inconsistent broker success response")
+	}
+	return r.response.Result, nil
 }
 
 func (c *Client) Probe(ctx context.Context) (json.RawMessage, error) {

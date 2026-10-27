@@ -271,6 +271,14 @@ func (s Store) setStatus(id, revision, sha string, status Status) error {
 	if c.ID != id || c.Revision != revision || p.Digest() != sha {
 		return errors.New("promotion does not match a compiled revision")
 	}
+	// The pointer is read, changed and replaced whole, so no other writer may
+	// run between the read and the rename: a revocation that landed in that gap
+	// would be overwritten with a stale "approved".
+	unlock, err := s.lockCurrent(dir, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var prior Entry
 	if meta, err := readRegular(dir, "current.json"); err == nil {
 		if err := json.Unmarshal(meta, &prior); err != nil {

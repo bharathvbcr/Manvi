@@ -530,7 +530,7 @@ func (r *VerifyRunner) criticPrompt(ctx context.Context, rec *VerifyRecord, item
 		}
 	}
 	diffPaths := changes.paths[:min(len(changes.paths), 64)]
-	args := append([]string{"diff", "--no-ext-diff", "--no-color", "--end-of-options", rec.Base, "--"}, diffPaths...)
+	args := append([]string{"diff", "--no-textconv", "--no-ext-diff", "--no-color", "--end-of-options", rec.Base, "--"}, diffPaths...)
 	if diff, truncated, err := runGit(ctx, rec.Worktree, maxVerifyDiffPrompt, args...); err == nil && len(diff) > 0 {
 		b.WriteString("\nDiff of tracked changes against the base (untracked files are listed above, not shown):\n")
 		b.Write(diff)

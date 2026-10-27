@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Manvi/manvi/harness"
-	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // None of these tests touches the task store: harness.resolve and the
@@ -403,7 +402,7 @@ func TestPrepareNotesAHarnessChangeAsOnePrefixMoveWithoutReShortening(t *testing
 		t.Fatalf("prefix moves = %d, want exactly 1", session.prefixMoves)
 	}
 	for id, text := range shortened {
-		if session.compacted[llm.CallID(id)] != text {
+		if session.compacted[firstResult(id)] != text {
 			t.Fatalf("the ledger entry for %s changed across the harness change", id)
 		}
 	}

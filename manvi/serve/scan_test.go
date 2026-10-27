@@ -340,10 +340,11 @@ func TestScanAttachesAFindingTheBoardAlreadyHolds(t *testing.T) {
 			gapFP = p.Fingerprint
 		}
 	}
-	// The host filed the doc proposal with its marker line; a person filed the
-	// gap one with the label only.
+	// The host filed the doc proposal with its label and marker line; a person
+	// filed the gap one with the label only. Cards carry no description, as the
+	// store's items.list never returns one, so the label is what holds each.
 	h.board.items = []map[string]any{
-		{"id": "ft-doc", "title": "Fix README", "description": "from a scan\n\n" + scanMarker + " " + docFP, "labels": []string{}},
+		{"id": "ft-doc", "title": "Fix README", "labels": []string{"manvi-scan", scanLabelPrefix + docFP}},
 		{"id": "ft-gap", "title": "Resolve gaps", "description": "", "labels": []string{scanLabelPrefix + gapFP}},
 	}
 	again := h.scan(t, root, "")

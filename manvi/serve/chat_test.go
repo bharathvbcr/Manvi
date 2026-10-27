@@ -120,7 +120,7 @@ func TestTheSessionTableStaysBoundedUnderAMintingHost(t *testing.T) {
 	for i := 0; i < maxChatSessions*3; i++ {
 		id := fmt.Sprintf("session-%d", i)
 		s := sessions.get(id)
-		s.compacted[llm.CallID(id)] = "shortened"
+		s.compacted[firstResult(id)] = "shortened"
 		if got := len(sessions.byID); got > maxChatSessions {
 			t.Fatalf("table grew to %d at insertion %d; cap is %d", got, i, maxChatSessions)
 		}
@@ -651,10 +651,10 @@ func TestOneSessionsLedgerDoesNotGrowWithEveryRequest(t *testing.T) {
 	}
 
 	session := d.srv.chat.get("one-tab")
-	live := map[llm.CallID]bool{}
+	live := map[llm.ResultKey]bool{}
 	for _, m := range last {
 		if m.Role == "tool" {
-			live[llm.CallID(m.ToolCallID)] = true
+			live[firstResult(m.ToolCallID)] = true
 		}
 	}
 	residue := 0
@@ -684,7 +684,7 @@ func TestTheLedgerCapHoldsWhenTheHistoryItselfKeepsGrowing(t *testing.T) {
 	const overflow = 500
 	for i := 0; i < maxCompactedEntries+overflow; i++ {
 		id := fmt.Sprintf("call_%d", i)
-		session.compacted[llm.CallID(id)] = "shortened"
+		session.compacted[firstResult(id)] = "shortened"
 		history = append(history, WireMessage{Role: "tool", ToolCallID: id, Text: "x"})
 	}
 
@@ -693,12 +693,12 @@ func TestTheLedgerCapHoldsWhenTheHistoryItselfKeepsGrowing(t *testing.T) {
 	if got := len(session.compacted); got > maxCompactedEntries {
 		t.Fatalf("ledger holds %d entries, cap is %d", got, maxCompactedEntries)
 	}
-	if _, ok := session.compacted["call_0"]; ok {
+	if _, ok := session.compacted[firstResult("call_0")]; ok {
 		t.Error("the oldest entry survived the cap; eviction must start at the front")
 	}
-	newest := llm.CallID(fmt.Sprintf("call_%d", maxCompactedEntries+overflow-1))
+	newest := firstResult(fmt.Sprintf("call_%d", maxCompactedEntries+overflow-1))
 	if _, ok := session.compacted[newest]; !ok {
-		t.Errorf("%s was evicted; the newest results are the ones the model is reasoning over", newest)
+		t.Errorf("%s was evicted; the newest results are the ones the model is reasoning over", newest.ID)
 	}
 }
 
@@ -706,8 +706,8 @@ func TestTheLedgerCapHoldsWhenTheHistoryItselfKeepsGrowing(t *testing.T) {
 // the one-way property dies with it and the prompt prefix moves every step.
 func TestPruningKeepsWhatTheHistoryStillReferences(t *testing.T) {
 	session := newChatSession()
-	session.compacted["kept"] = "short"
-	session.compacted["gone"] = "short"
+	session.compacted[firstResult("kept")] = "short"
+	session.compacted[firstResult("gone")] = "short"
 
 	session.pruneLedger([]WireMessage{
 		{Role: "user", Text: "hello"},
@@ -715,10 +715,10 @@ func TestPruningKeepsWhatTheHistoryStillReferences(t *testing.T) {
 		{Role: "tool", ToolCallID: "kept", Text: "short"},
 	})
 
-	if _, ok := session.compacted["kept"]; !ok {
+	if _, ok := session.compacted[firstResult("kept")]; !ok {
 		t.Error("an entry for a result still in the history was pruned; it would be re-shortened")
 	}
-	if _, ok := session.compacted["gone"]; ok {
+	if _, ok := session.compacted[firstResult("gone")]; ok {
 		t.Error("an entry for a result the host no longer sends was kept")
 	}
 }

@@ -739,7 +739,7 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // give the two readers different answers for the same file.
 func gitSpec(root, index string, args []string) procSpec {
 	spec := procSpec{
-		argv:        append([]string{"git", "-c", "core.quotePath=false"}, args...),
+		argv:        append([]string{"git", "-c", "core.quotePath=false"}, withoutDiffPrograms(args)...),
 		dir:         root,
 		timeout:     gitTimeout,
 		stderrLimit: maxGitStderrBytes,
@@ -749,6 +749,70 @@ func gitSpec(root, index string, args []string) procSpec {
 		spec.env = childenv.Git("GIT_INDEX_FILE=" + index)
 	}
 	return spec
+}
+
+// withoutDiffPrograms inserts the flags that keep a diff from running a program
+// the repository names: --no-textconv (a textconv driver from its config and
+// attributes) and --no-ext-diff (an external diff from its config). This
+// package reads repositories it does not trust, so a diff is always the raw one,
+// as commitscan's and the scan's already are.
+//
+// It sits at the construction site, not at each caller, so a diff added later
+// cannot forget it. Git's global options before the subcommand are skipped,
+// whether they take a value (`-c k=v`, `-C dir`, `--git-dir dir`, and the other
+// separate-value forms in globalOptionsWithValue) or not (`--literal-pathspecs`,
+// `--git-dir=dir`). The subcommands are those that can produce a patch. Probed
+// against git 2.54 with a textconv driver configured: diff, show, log -p and
+// blame ran it by default, and every command in diffProgramFlags accepts its
+// flags. diff-tree, diff-index, diff-files and format-patch only run it when
+// asked with --textconv, so for them the flags guard against that being added
+// later. Any other command is returned unchanged.
+func withoutDiffPrograms(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case globalOptionsWithValue[a]:
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			flags := diffProgramFlags[a]
+			at := i + 1
+			if a == "stash" {
+				// Only `stash show` makes a patch, and the flags belong to show.
+				if i+1 >= len(args) || args[i+1] != "show" {
+					return args
+				}
+				flags, at = diffProgramFlags["show"], i+2
+			}
+			if flags == nil {
+				return args
+			}
+			out := make([]string, 0, len(args)+len(flags))
+			out = append(out, args[:at]...)
+			out = append(out, flags...)
+			return append(out, args[at:]...)
+		}
+	}
+	return args
+}
+
+// globalOptionsWithValue are git's global options that take their value as the
+// next argument when it is not attached with "=".
+var globalOptionsWithValue = map[string]bool{
+	"-c": true, "-C": true, "--git-dir": true, "--work-tree": true, "--namespace": true,
+	"--super-prefix": true, "--config-env": true, "--attr-source": true,
+}
+
+// diffProgramFlags are the flags that stop each patch-producing subcommand
+// running a repository-named program. blame has --no-textconv only (it does not
+// run an external diff), and whatchanged is a removed command that git refuses
+// whatever it is given.
+var diffProgramFlags = map[string][]string{
+	"diff": {"--no-textconv", "--no-ext-diff"}, "show": {"--no-textconv", "--no-ext-diff"},
+	"log": {"--no-textconv", "--no-ext-diff"}, "diff-tree": {"--no-textconv", "--no-ext-diff"},
+	"diff-index": {"--no-textconv", "--no-ext-diff"}, "diff-files": {"--no-textconv", "--no-ext-diff"},
+	"format-patch": {"--no-textconv", "--no-ext-diff"}, "whatchanged": {"--no-textconv", "--no-ext-diff"},
+	"blame": {"--no-textconv"},
 }
 
 // runGitEnv runs git against a scratch index, returning stdout and stderr.

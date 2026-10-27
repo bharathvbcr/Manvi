@@ -354,6 +354,11 @@ type Loop struct {
 	// step/start with no matching end yet. Run's deferred closer reads them so
 	// every exit, including a failing one, leaves the log balanced.
 	turnOpen, stepOpen bool
+	// openCalls are the tool calls of the response in flight that no tool
+	// result in the log answers yet, in the order the response made them. A
+	// call joins when its response is logged and leaves when its result is. It
+	// is empty on every normal path; it is what an abnormal exit has to answer.
+	openCalls []llm.CallID
 	// announced is the turn whose TurnStarting has been published and whose
 	// TurnEnded has not, zero when there is none. Run's deferred closer reads
 	// it, so the pair is balanced on every exit however early the turn failed.
@@ -466,12 +471,34 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 	// on the Loop. A Loop lasts one turn; the log lasts the session, and a
 	// per-turn ledger silently re-compacts everything from the previous turn.
 	// See session.Log.CompactedCalls for what that costs.
+	// A compaction names a result by its place among the results sharing a call
+	// id, and the log resolves that to a sequence by its own count. So the
+	// planner must count over the history the log holds. The messages handed in
+	// are that history unless an earlier stage of the waterfall dropped or
+	// rewrote part of it, and a plan over a truncated history would name the
+	// wrong result of a reused id. The result of this function is the log's
+	// projection whenever it compacts anyway, so in that case plan over the
+	// projection: the owner is the log, not the stage that changed the messages.
+	holds, err := l.log.HoldsResults(messages)
+	if err != nil {
+		return nil, err
+	}
+	planned := messages
+	if !holds {
+		if planned, err = l.log.DeriveMessages(); err != nil {
+			return nil, err
+		}
+	}
 	already, err := l.log.CompactedCalls()
 	if err != nil {
 		return nil, err
 	}
+	done, err := l.log.CompactedResults()
+	if err != nil {
+		return nil, err
+	}
 
-	plan := PlanCompactionCalibrated(messages, l.cfg.SystemPrompt, schemas, l.Budget(), already, &l.calib)
+	plan := PlanCompactionCalibrated(planned, l.cfg.SystemPrompt, schemas, l.Budget(), already, &l.calib, done...)
 	if plan.Empty() {
 		if plan.Insufficient {
 			if err := l.reportOverflow(plan); err != nil {
@@ -971,11 +998,52 @@ func (l *Loop) endTurn() error {
 // log that refuses the append is already failing the caller with its own
 // error; there is nothing better to do with this one than leave it.
 func (l *Loop) closeOpenBoundaries() {
+	l.answerOpenCalls()
 	if l.stepOpen {
 		_ = l.endStep()
 	}
 	if l.turnOpen {
 		_ = l.endTurn()
+	}
+}
+
+// unwoundCallText is what a call that the turn left open is answered with.
+const unwoundCallText = "interrupted: the turn ended before this call returned a result, " +
+	"so it may not have run, or may have run in part"
+
+// answerOpenCalls gives every call the turn left unanswered an error result,
+// before the step closes and before anything persists.
+//
+// An assistant message whose tool_use has no tool_result is not a history a
+// provider will accept, and the save that follows an abnormal exit used to
+// write exactly that over the last good copy: the next turn then failed on its
+// own request. The ways out that leave calls open are a listener's refusal at
+// ToolsDispatching, a log that refuses an append mid-step, and a panic anywhere
+// in the step. A cancelled turn mostly does not: its calls run to a result.
+//
+// Each call is answered once. A call leaves openCalls when its result is
+// appended, so what this sees is only what is still open, and a second call to
+// it finds nothing. A refused append stops it: the log is failing the caller
+// already, and answering past a hole would leave the history out of order.
+func (l *Loop) answerOpenCalls() {
+	for len(l.openCalls) > 0 {
+		id := l.openCalls[0]
+		if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
+			ToolCallID: id, Text: unwoundCallText, IsError: true,
+		}); err != nil {
+			return
+		}
+		l.openCalls = l.openCalls[1:]
+	}
+}
+
+// answered records that a call's result is in the log.
+func (l *Loop) answered(id llm.CallID) {
+	for i, open := range l.openCalls {
+		if open == id {
+			l.openCalls = append(l.openCalls[:i], l.openCalls[i+1:]...)
+			return
+		}
 	}
 }
 
@@ -996,6 +1064,7 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	l.repeats = newRepeatTracker()
 	l.progress = newProgressTracker(l.tools)
 	l.overflowed = false
+	l.openCalls = nil
 	turnEvent, err := l.log.Append(session.TurnStart, nil)
 	if err != nil {
 		return 0, err
@@ -1462,10 +1531,13 @@ func (l *Loop) recordCall(out *Outcome, call llm.ToolCallBlock, result tools.Res
 		}
 	}
 
-	_, err := l.log.Append(session.ToolResult, session.ToolResultData{
+	if _, err := l.log.Append(session.ToolResult, session.ToolResultData{
 		ToolCallID: call.ID, Text: result.Text, Content: result.Content, IsError: result.IsError,
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	l.answered(call.ID)
+	return nil
 }
 
 // chargeStep spends the step's cost from the turn's budget, and raises the
@@ -1744,6 +1816,10 @@ func (l *Loop) streamResponse(ctx context.Context, request llm.Request) (llm.Res
 	if _, err := l.log.Append(session.AssistantMessage,
 		session.MessageData{Message: response.Message}); err != nil {
 		return llm.Response{}, err
+	}
+	l.openCalls = l.openCalls[:0]
+	for _, call := range response.Message.ToolCalls() {
+		l.openCalls = append(l.openCalls, call.ID)
 	}
 	return response, nil
 }

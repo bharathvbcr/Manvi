@@ -36,7 +36,7 @@ manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite
 | `harness.resolve` (optional) | Resolves a harness spec (`repo`, `named` or `inline`) into sections, roles, a bounded skills listing and a digest for the host to compose into its own `System`. Listed in `hello.ops` only when served; a host that does not see it runs with no harness. See [Host harness](#host-harness). |
 | `devmap.status` | Reports devmap host-contract, schema, readiness, freshness, coverage gaps, and command capabilities. |
 | `devmap.query` | Runs a bounded `explore`, `impact`, `trace`, or `affected` query and preserves the producer's completeness envelope. |
-| `work.scan.gaps` / `work.scan.get` / `work.scan.cancel` (with `work.*`) | `work.scan.gaps {repo_root, since?, max_proposals?}` claims a no-model repository gap scan and answers at once with a `scan_id`; `work.scan.get {scan_id}` reads its `coverage`, `complete` flag and `proposals` (each with a `fingerprint`, a `new`/`known`/`attached` status and, for dead code, both signals); `work.scan.cancel` stops it. `repo_root` must be absolute, free of symlinks and the top of a git work tree, else `E_BAD_REQUEST`; an unbuilt or degraded DevMap index is refused with `E_DEPENDENCY` naming `devmap status`. The scan never writes the board: the host files a proposal with its `scan:<fp>` label and the `manvi-scan:` description line, which later scans dedupe on. The claim is in-process (it does not survive a sidecar restart). |
+| `work.scan.gaps` / `work.scan.get` / `work.scan.cancel` (with `work.*`) | `work.scan.gaps {repo_root, since?, max_proposals?}` claims a no-model repository gap scan and answers at once with a `scan_id`; `work.scan.get {scan_id}` reads its `coverage`, `complete` flag and `proposals` (each with a `fingerprint`, a `new`/`known`/`attached` status and, for dead code, both signals); `work.scan.cancel` stops it. `repo_root` must be absolute, free of symlinks and the top of a git work tree, else `E_BAD_REQUEST`; an unbuilt or degraded DevMap index is refused with `E_DEPENDENCY` naming `devmap status`. The scan never writes the board: the host files a proposal with its `scan:<fp>` label and the `manvi-scan:` description line. Later scans dedupe on the label alone, because item cards omit descriptions; the description line is a trace for people and is not read back. Only open cards hold a finding (`archived:false` and not Done), so a finished or archived card does not silence a gap that has come back. `work.scan.cancel` frees the root at once: a `work.scan.gaps` for it afterwards starts a new scan, while the cancelled one, if still unwinding, keeps counting against the limit of two concurrent scans (`E_BUSY`, retryable). The claim is in-process (it does not survive a sidecar restart). |
 | `work.*` (opt-in) | Persistent profile workspaces, repositories, task CRUD, scoped boards, editable enhancement proposals and acceptance/undo, durable automatic settings/queue/preparation, revisions and events; enabled by `--workbench-db`. The configured CLI host provides asynchronous `work.enhancements.generate`, coalesced `work.enhancements.wake`, cached coordinator status through `work.enhancements.worker`, and selection metadata through `work.enhancements.configuration`. `work.verify.task` claims and answers at once, then verifies a board item on a job context of its own (changed paths from git, the operator's verification command and rigor gates, DevMap-affected tests, and a read-only critic scoring each stored acceptance criterion) and records a `passed`/`failed`/`degraded` verdict as dc-store evidence; `work.verify.get` reads it. A retry with the same `request_id` replays the record and never re-runs the critic; the request carries no command and no path list. Committed text saves wake automatic work; data/configuration reads do not start inference. Managed Codex uses host-only `work.runs.managed.prepare`, `activate` and `stop` operations; preparation returns protocol version 2 without initializing a thread, and activation records native process identity before the handshake and single task turn. See [Workbench](WORKBENCH.md). |
 
 ---
@@ -275,7 +275,7 @@ weakened setting on stderr.
   "ok": true,
   "result": {
     "steps": [
-      {"tool_call_id": "c1", "text": "[compacted]", "from_bytes": 8100, "to_bytes": 11}
+      {"tool_call_id": "c1", "occurrence": 1, "text": "[compacted]", "from_bytes": 8100, "to_bytes": 11}
     ],
     "before_tokens": 2100,
     "after_tokens": 640,
@@ -287,6 +287,15 @@ weakened setting on stderr.
   }
 }
 ```
+
+A step names a result, not only a call id. `occurrence` is which `role: "tool"`
+message carrying `tool_call_id` is meant, counted from 1 in the `messages` the
+host sent. A host that reuses a call id across responses applies the step to
+that message and to no other with the same id; a host whose ids are unique
+always sees 1 and can ignore the field. The session's ledger is keyed the same
+way, so a shortening recorded for one result is never substituted for, or taken
+as already done on, another that shares its id. `occurrence` is optional and
+additive within protocol 1.
 
 ---
 

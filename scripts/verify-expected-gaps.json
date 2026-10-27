@@ -34,6 +34,21 @@
       "why": "A re-exec helper, not a test of its own: TestApproveFDBareApproverIsClosedToChildrenToo runs it as a child with the approval descriptor at fd 3, and it skips when the suite reaches it directly."
     },
     {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestTUIPtyHelper",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "A re-exec helper, not a test of its own: the TUI signal tests run it as a child on a pty to drive the real entry point, and it skips when the suite reaches it directly."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/session.TestSaveKillChild",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "A re-exec helper, not a test of its own: the killed-save test runs it as a child and kills it at each write step, and it skips when the suite reaches it directly."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/session.TestAdvFirstSaveKillChild",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "A re-exec helper, not a test of its own: the first-save kill test runs it as a child, and it skips when the suite reaches it directly."
+    },
+    {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantsCannotSmuggleADifferentFile/case",
       "os": ["ubuntu-latest"],
       "why": "Case-insensitive volumes only; Linux ext4 distinguishes the spellings."

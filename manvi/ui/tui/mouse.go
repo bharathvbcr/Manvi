@@ -26,8 +26,12 @@ func (a *App) scroll(t ActionScroll) []Effect {
 	if card := v.Approval(); card != nil {
 		// The card is modal for the wheel exactly as it is for keys and
 		// clicks: a notch moves the highlight between options, and the
-		// transcript behind an unanswered question does not scroll.
-		card.Next(sign(t.Delta))
+		// transcript behind an unanswered question does not scroll. A notch
+		// is input like any other, so until the card admits input it is
+		// dropped and restarts the quiet period.
+		if card.admit() {
+			card.Next(sign(t.Delta))
+		}
 		return nil
 	}
 	// The session strip is a control, not content: a wheel notch over it
@@ -142,11 +146,19 @@ func (a *App) click(t ActionClick) []Effect {
 	// keyboard: until it is answered, clicks belong to it and to nothing
 	// behind it.
 	if card := v.Approval(); card != nil {
-		accept, _ := card.Click(t.X, t.Y)
-		if !accept {
+		// The left button only, as the overlays take it: a confirmation that a
+		// middle or right press can trigger is one the ledger cannot tell from
+		// a deliberate one. A press outside the card does nothing to it. One
+		// inside is input like any other: until the card admits input it is
+		// dropped, whether it would have moved the highlight or confirmed it,
+		// and it restarts the quiet period.
+		if t.Button != 1 || !card.cardRect.Contains(t.X, t.Y) || !card.admit() {
 			return nil
 		}
-		return a.acceptApproval()
+		if accept, _ := card.Click(t.X, t.Y); accept {
+			return a.acceptApproval()
+		}
+		return nil
 	}
 
 	// The composer: click focuses it and puts the caret where the click

@@ -162,6 +162,299 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
+  every mark to the cell on its left with no bound, each append copying what the
+  cell already held, so a line of n marks (a model reply or tool result; they are
+  zero width, so the line stays one row) cost n squared: 200,000 of them took
+  2.8 s to draw (min of 5, load 13 to 25), on every frame that showed the line. A
+  cell now keeps at most `render.MaxCombPerCell` (30) marks and drops the rest,
+  which is the limit the Stream-Safe Text Format (UAX #15, section 13) puts on a
+  run of non-starters and several times what real text needs (stacked
+  Vietnamese, Thai, Hebrew and Arabic marks, ZWJ emoji, a seven-tag flag
+  sequence). The same line draws in 9.6 ms. Text under the cap renders exactly
+  as before, checked cell by cell against the previous layout for those scripts.
+- A large paste decodes in linear time. Each read that arrived while a paste was
+  open made the input decoder copy the whole pending buffer twice and search it
+  again for the closing marker, so a paste cost the square of its size over the
+  read size: 8 MB in 1 KB reads took 6.3 s (min of 5, load 27 to 40), 1 MB took
+  0.14 s. The reader now remembers how far it has searched and resumes there,
+  backed up far enough to find a marker split across two reads, and no longer
+  converts the buffer to a string to test for the paste prefix: 46.5 ms and
+  6.9 ms for the same pastes (135x and 21x). The decoded text is unchanged.
+- A pasted block no longer comes back into a later prompt. The composer never
+  forgot a collapsed paste chip: after the prompt was sent the paste stayed
+  registered, so a later prompt that merely mentioned the chip's words (for
+  example `[pasted 308 chars]`) was sent with the earlier paste in its place,
+  re-sending a credential that had been pasted. Expansion also ran over a map in
+  random order, so a paste that quoted another chip's text expanded differently
+  from one call to the next. Sending or clearing a prompt now drops its chips,
+  replacing the buffer keeps only the chips the new text shows, and expansion
+  reads the buffer once from left to right, replacing each registered chip it
+  finds with its paste and never reading the replacement, so one buffer gives
+  one string. Every chip now carries a number (`[pasted 308 chars #1]`) that
+  only grows for the life of the prompt, through deletion and Clear, so a label
+  is never issued twice and Undo cannot show one paste's label over another's
+  text. Each edit first drops the chips the buffer no longer shows, so a chip
+  deleted by hand is plain text if its label is typed again. Undo after Clear or
+  a submit can still bring a label back; it is then a dead chip that submits as
+  its own words.
+- `manvi tui` shuts down on SIGTERM, SIGHUP and SIGINT as it does on a quit.
+  It installed no handler (the headless face does), so a stop signal killed it
+  with the alternate screen, mouse reporting and bracketed paste still on and
+  the tty raw, the sessions' leases unreleased and a turn in flight unsaved. The
+  signal now cancels the run, which takes the loop's ordinary exit: the terminal
+  is restored, running turns are cancelled and waited for, and the leases are
+  released. It exits with status 1 and reports `stopped by <signal>`, including
+  a signal that arrives while the leases are being released; a second signal
+  during the shutdown gets the default action. A panic in a turn is
+  recovered on the turn's goroutine into a transcript error, with the session
+  log persisted and the stack written to stderr after the terminal is back,
+  instead of ending the process with the terminal raw. The pty helpers the term
+  tests used are now shared as `internal/ptytest`.
+- A turn that ends abnormally no longer leaves a tool call unanswered. A panic
+  between the assistant's tool_use being logged and its tool_result (a
+  `ToolsDispatching` listener defect), a listener's refusal at that point, or a
+  log append that failed mid-step left a history with a tool_use no result
+  answered; the session was saved that way over the last good copy, and the next
+  turn's request was invalid. Every exit from a turn now gives each call still
+  open an error result ("interrupted: ... it may not have run, or may have run
+  in part") before the step closes and before anything persists. A call is
+  answered once: it leaves the loop's open set when its own result is logged.
+- An approval card no longer takes keys typed before it appeared. The card was
+  modal but had no activation delay: an operator typing into the composer when
+  a request arrived had a digit select "allow once", the words after it became
+  the grant's reason, and the Enter meant for the composer recorded
+  `Allow=true By="human"`. The card now takes no input until it has been
+  painted and 400 ms have passed since the later of that paint and the last
+  input it refused, so a burst of type-ahead of any length is dropped (not
+  replayed) and one keypress after a pause is a decision. The same gate holds
+  for clicks and wheel notches (including ones that only move the highlight),
+  for the next card in a queue when its predecessor is answered, and for keys an
+  overlay consumed: closing the palette over a card restarts the quiet period.
+  Only the left button operates the card; a middle or right press does nothing.
+  Esc, Ctrl-C and the quit keys only refuse or leave, and are not gated. The
+  gate cannot tell a held key's auto-repeat from a press once the period has
+  passed; an allow still needs a reason and a second key.
+- Provider requests no longer follow a redirect to another origin. Credentials
+  travel in `x-api-key` / `x-goog-api-key`, which net/http does not strip when a
+  redirect leaves the host (it strips only Authorization, Cookie and
+  WWW-Authenticate), and a 307/308 replays the request body, so a provider
+  endpoint that redirected sent the key and the prompt wherever it pointed. The
+  transport client now refuses any redirect whose scheme, host or port differs
+  from the original request, failing closed with `*ErrCrossOriginRedirect`
+  (origins only, no URL or query) as a permanent error that is not retried;
+  same-origin redirects are followed as before, under net/http's ten-hop limit,
+  and a chain past it is a typed, permanent `*ErrTooManyRedirects` rather than
+  a fault retried four times over. Both errors are carried as themselves, not
+  inside net/http's `Post "<full URL>"` wrapper, so a query string never reaches
+  the message.
+  An operator whose endpoint moved sets the base URL to the final one. Applies
+  to every provider and to `Probe`. Tests with two fixture servers fail on
+  58b9258.
+- An Anthropic response cut off by `max_tokens` in the middle of a tool call no
+  longer ends the turn. `Response()` returned an "incomplete arguments" (or
+  "never closed") error, discarding every completed step with it, although the
+  model had only run out of output budget. When the stop reason is
+  `max_tokens`, a call that was not sealed by `content_block_stop` or whose
+  arguments are not valid JSON now settles as `StopMaxTokens` plus a
+  `MalformedCall`, the same as the OpenAI-compatible adapter: the loop tells the
+  model its call was cut off and to send less, a call that arrived whole in the
+  same message still runs, and the cut call is never run, even when the prefix
+  happens to parse (ft-074e1445's rule). Invalid arguments or an unsealed call
+  on any other stop reason are still an error, since that is the stream, not the
+  model's limit. Tests fail on 58b9258.
+- An empty tool result and an empty text block are encoded as valid requests on
+  both wires. `read_file` of an empty file is `ToolResultData{Text:""}`, which
+  the projection turns into a text block with no text; Anthropic's
+  `tool_result.content` was then `[{"type":"text"}]` (a text block's `text` has
+  `minLength` 1), an assistant text block that opened and never received a delta
+  was replayed as `{"type":"text"}`, and the OpenAI-compatible adapter sent a
+  `role:"tool"` message with no `content` (the chat-completions schema lists
+  `role`, `content` and `tool_call_id` as required on a tool message). The fix
+  is in the encoders, because journals already on disk hold these blocks:
+  Anthropic omits `content` on a tool_result that has none and never emits a
+  text block without text, dropping an assistant message that is left with no
+  content (the API combines consecutive same-role turns) and refusing a user
+  message with none; the OpenAI-compatible adapter always sends `content` on a
+  tool message (`""` when empty) and still omits it on an assistant message that
+  only carries tool calls. Tests run an empty `read_file` through the session
+  projection into both encoders and fail on 58b9258. The same encoder also
+  covers three neighbouring shapes: an `is_error` tool_result left with no
+  content carries `(no output)` (the live API is reported to refuse it empty,
+  anthropics/claude-agent-sdk-python#248; not in the reference); a thinking
+  block whose signature never arrived (cut off by `max_tokens`) is dropped,
+  since `""` is not a signature; and a whitespace-only text block is dropped,
+  with other text sent untrimmed (the API rule is third-party evidence,
+  microsoft/vscode#307807 and anthropics/claude-code#23440, not in the
+  reference). The OpenAI-compatible adapter omits an assistant turn that is only
+  empty text, as the Anthropic encoder does, so a session can move between
+  providers; an empty user message is still refused.
+- A replayed Anthropic thinking block keeps its required `thinking` field.
+  `thinking` was `omitempty`, and the default display on current models is
+  `"omitted"`, which delivers `thinking:""`: the block went back as
+  `{"type":"thinking","signature":"SIG"}`, and the Messages API requires
+  `thinking` (a string) and says thinking blocks must be passed back unmodified
+  or the request is a 400, so a tool-using turn after step one was likely
+  refused (found by audit; not run live). The wire block now marshals
+  `thinking` and `signature` on a thinking block and `data` on a
+  redacted_thinking block even when empty, and no other block type gains a
+  `thinking` field. A golden test pins the exact JSON of every block type; the
+  replay test fails on 58b9258.
+- Compaction counts and removes images, and says it did. The planner counted and
+  replaced text only, and the projection replaces a whole result with the one
+  text it is given, so a screenshot inside a compacted result vanished with no
+  marker (7 of 10 in the audit's run), and a result of images alone was never
+  eligible: 20 screenshots at 26,726 estimated tokens against a 13,312
+  threshold gave an empty plan and `Insufficient`. Images now count toward a
+  result's size, scaled by the calibrator like text, and a result with images
+  is replaced by its text cut to the floor followed by
+  `[N image(s) removed to fit the context window]`; an image smaller than that
+  notice is left alone. The same history now plans 14 steps and lands at 8,764
+  estimated tokens. A result without images is shortened exactly as before
+  (same text, same order); `BenchmarkPlanCompaction` is within noise of the
+  previous build. Known limit: compaction rewrites earlier tool results, which
+  is an edit to an earlier turn and invalidates later signed thinking on the
+  models and accounts that enforce preserved thinking; that class is tracked on
+  ft-f7993787 and is not changed here.
+- `chat.prepare` calibrates its token estimate against the raw estimate, not
+  against its own corrected one. It stored the calibrated `after_tokens` as the
+  estimate for the next server count and fed it back to the calibrator as the
+  raw side of the pair, so the correction was applied twice: a server counting
+  half the raw estimate settled the ratio at 0.707 (the square root) instead of
+  0.5, and compaction fired earlier than the window required. The session now
+  holds the raw `CountRequestTokens` of the request the host will send (the
+  history with the ledger's shortenings applied), as the agent loop already
+  does, and a server counting half converges to 0.5. `calibration_ratio` on the
+  wire is unchanged in meaning; its values are now the true ratio.
+- A tool result's compaction is recorded against that result, not against its
+  call id. The compaction ledger was keyed on the id alone, so a provider that
+  reuses one across responses (`call_0` is what several OpenAI-compatible local
+  servers emit) had the compaction of one result replayed over another's
+  unrelated text, and a later result carrying the id of a compacted one was
+  taken as already compacted and never shortened. The `context/tool_result_compacted`
+  event gains `result_seq`, the sequence of the tool result it shortens; the
+  planner names a result by call id and its place among the results with that
+  id, and `Apply` resolves that to the sequence (and refuses a result the log
+  does not hold, before writing anything). A record without `result_seq`, which
+  is every existing journal, still names the call id only and projects exactly
+  as before, so a resumed session replays as it did. The `manvi serve` chat
+  plane keys its ledger the same way: `chat.prepare` steps gain an optional
+  `occurrence` (which `tool` message carrying `tool_call_id`, from 1), additive
+  within protocol 1, so a host that reuses an id can apply a step to one result.
+  `contracts/serve.ops.schema.json` and its checksum are regenerated; a host
+  that mirrors the contract needs the new copy. Two follow-ons: when the
+  messages handed to the loop's compaction stage are not the log's tool results
+  (an earlier stage of the waterfall dropped or rewrote some), compaction plans
+  over the log's own projection, which is what it returns anyway, so a place
+  counted among results sharing an id always means the log's result. And a
+  restored journal stays lenient about a compaction record that names a result
+  the log does not hold under that call id (a bogus sequence, or a result
+  retention trimmed off the front): the projection ignores it, and
+  `LoadReport.IgnoredCompactions` counts it; `Append` still refuses to write one.
+- The session privacy scrub no longer leaves a signed reasoning block with text
+  that its signature does not cover. It rewrote a thinking block's text and kept
+  the signature, and the Anthropic adapter replays both, which the API refuses
+  ("Modified thinking blocks are rejected with a 400 error"), so every later
+  request in a session whose reasoning mentioned a scrubbed value failed. (With
+  `thinking.display` omitted the text is empty, the scrub changes nothing and
+  the block was fine; it bit on the tiers that return summaries.) When the
+  scrubber would change the text of a signed reasoning block, the message now
+  drops that block and the rest of its signed run, text and signature together,
+  and records the count in `reasoning_redacted` on the message event; the
+  secret is not persisted and no mismatched block reaches a provider. The whole
+  run goes, not one block: within the latest assistant message the API checks
+  the run as a unit ("you can't rearrange, edit, or partially drop them"). A
+  turn without its thinking run is valid under adaptive thinking ("no assistant
+  turn needs to start with" a thinking block), which is the only mode this
+  adapter sends, including the assistant turn before a `tool_result`. A signed
+  block the scrubber leaves alone replays unchanged, and unsigned reasoning (a
+  provider that signs nothing) is still scrubbed in place.
+
+  On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 a thinking block's
+  signature also binds the system prompt, the tools and every message before it,
+  so an edit to an earlier turn invalidates the signed reasoning after it. A
+  live append is unaffected: the scrub runs before the next request is built,
+  so every later block is minted against the scrubbed history. `RestoreSensitiveLog`
+  is the one retroactive scrub, and it edits a history the provider already
+  signed: once it has rewritten any string in a user message, assistant message,
+  tool result or compaction, the signed reasoning of every assistant message
+  after it is dropped too (`llm.DropSignedReasoning`), each recording its count
+  in `reasoning_redacted`. A rewrite elsewhere in the same message does not
+  touch that message's own reasoning, which comes before it. A journal already
+  written with a scrubbed block and its old signature is not repaired: the
+  scrubber that changed it is not known at load.
+- `work.scan.gaps` replies match the serve contract, dedupes against open cards
+  only, and no longer joins a cancelled scan (ft-70ef5f3d). `ScanView.clone`
+  turned empty slices into nil, so `coverage` and `proposals` went out as `null`
+  in the claim reply, in a read while the scan ran, and in a finished scan with
+  no proposals, though the contract marks both required and not nullable; both
+  are now always arrays. The board index listed the whole board, so a Done or
+  archived card marked a proposal `attached` and silenced a recurring gap for
+  good; it now asks for `archived:false` and skips Done cards. The documented
+  `manvi-scan:` description line was never read, because `items.list` cards omit
+  descriptions: the docs now say dedupe is by the `scan:<fp>` label alone and the
+  description line is a trace for people (the alternative, an `items.get` per
+  card, costs a store read for every card on the board). `work.scan.cancel`
+  freed no root: a `work.scan.gaps` for it while the cancelled goroutine was
+  still unwinding joined the cancelled job and was answered with a cancelled
+  view in place of a scan. Cancel now frees the root at once, so the next request
+  starts a fresh scan; the unwinding job keeps counting against the limit of two
+  concurrent scans, so cancel-and-restart cannot pile up stuck scans (`E_BUSY`,
+  retryable, when both slots are held).
+- Verification no longer runs a repository's diff programs. `work.verify.task`
+  built the critic's diff with `git diff --no-ext-diff` but without
+  `--no-textconv`, and the path verifier's scoped diff (shared with the
+  end-of-turn check of `manvi run`) passed neither, so a `diff.<driver>.textconv`
+  in the repository's config, selected by its `.gitattributes`, ran on the host
+  whenever a changed file matched: a hostile worktree, or an operator's own
+  config, executed a program of its choosing. Every patch-producing git child
+  the `devcouncil` package builds (`diff`, `show`, `log`, `diff-tree`,
+  `diff-index`, `diff-files`, `format-patch`, `whatchanged`, `stash show`, and
+  `blame` with `--no-textconv` alone) now gets `--no-textconv --no-ext-diff` at
+  its one construction site, found past git's global options whether they carry
+  a value (`-C dir`, `--git-dir dir`) or not; `diff`, `show`, `log -p` and
+  `blame` were checked to run the driver by default. The serve
+  critic diff passes both, as the scan and the commit scan already did. The diff
+  text for an ordinary file is unchanged. The `work.verify.task` documentation
+  now says what "passed" covers: with no `MANVI_VERIFY_COMMAND` no test or build
+  runs and a verification passes on the path-scoped gates alone, which the record
+  states in `rigor.source` (ft-9b535b8f).
+- A revoked workflow-catalog entry can no longer end up approved. `Revoke`,
+  `Approve`, `Promote` and `SetStability` each read an entry's `current.json`,
+  changed it and renamed the whole file back with nothing serialising them, so a
+  `SetStability` that read before a `Revoke` and renamed after it restored
+  `approved`: the audit reproduction saw 91 to 121 of 300 rounds end approved
+  after a successful `Revoke`, and `CheckUnattended` admits an approved entry.
+  Every read-modify-write of an identity's `current.json` now holds a lock: an
+  in-process lock per identity directory plus an exclusive file lock
+  (`.current.lock`, opened through the directory handle) against other
+  processes, because the catalog is shared (the Jarvis daemon and CLI write the
+  same directory through this package). One 10-second bound covers the wait for
+  both locks, so writers queued behind a wedged holder fail together after one
+  bound; a writer never writes unlocked, and on a platform with no `flock` (the
+  file lock is built for Linux, macOS, the BSDs and illumos, and Windows; Solaris
+  and AIX have none) it refuses. `SetStability` now rewrites only the `stability` field of the pointer
+  as it is on disk, so the status, the promotion flag and fields this build does
+  not know are left as their writer wrote them. The file lock moved out of
+  `llm/budget` into `internal/filelock`, which the spend ledger and the catalog
+  both use (ft-ce60ca4b).
+- Cancelling a desktop-broker call after its request was written stops the
+  broker. `Client.Call` retired the broker only when the cancel landed while the
+  request was still being written; once the write had succeeded, a cancelled or
+  timed-out call dropped its pending entry and returned, so the click, keystroke
+  or typed secret it had asked for still ran after the caller gave up. The
+  post-write cancel now retires the broker the same way (the client is closed, so
+  a late reply cannot satisfy a newer call and the caller must start a new
+  broker), for every op that can act or change what an action would hit: `act`,
+  `human_act`, `approve`, `attach`, `focus`, `resume`, and any op not listed. The
+  read-only ops (`probe`, `observe`, `resolve`, `pause`, `detach`) only drop their
+  pending entry, because nothing starts a second broker and a slow observe past
+  the runner's 8 s deadline must not end computer use for the run; request ids
+  are never reused, so their late reply is discarded. A reply that has already
+  arrived when the context ends is returned, not thrown away. Tests cancel in
+  both windows against a stand-in broker process and assert the action file is
+  never written (ft-871861f4; the earlier claimed fix 5dc4518 never reached the
+  repository).
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible

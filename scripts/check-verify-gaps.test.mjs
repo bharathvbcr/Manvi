@@ -56,11 +56,15 @@ test("every expected entry says why", () => {
 test("the macos verdict CI produced is fully expected", () => {
   // verify.sh (macos-latest) at d6c956f, attempt 2: APFS runs the three
   // spelling tests, so four skips rather than seven; plus the approve-fd re-exec
-  // helper, which skips on both runners since it was added.
+  // helper, which skips on both runners since it was added, as do the TUI pty
+  // and killed-save re-exec helpers.
   const skips = [
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
     "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestApproveFDBareApproverHelper",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestTUIPtyHelper",
+    "github.com/bharathvbcr/Manvi/manvi/session.TestSaveKillChild",
+    "github.com/bharathvbcr/Manvi/manvi/session.TestAdvFirstSaveKillChild",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
   ];
