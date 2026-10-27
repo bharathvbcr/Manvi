@@ -200,7 +200,8 @@ func structureProblem(field, text string) string {
 	for line := range strings.Lines(text) {
 		if line = strings.TrimRight(line, "\r\n"); readsAsStructure(line) {
 			return fmt.Sprintf("the %s has a line that starts with %q, a section heading the store reads back as the "+
-				"start of one of an entry's sections (%q): indent it or reword it", field, "## ", clip(line))
+				"start of one of an entry's sections (%q): reword it (indenting works only after the field's first line, "+
+				"whose leading spaces are dropped)", field, "## ", clip(line))
 		}
 	}
 	return ""
