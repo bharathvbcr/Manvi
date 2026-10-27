@@ -149,3 +149,77 @@ func TestApproveFDModelCannotApproveItsOwnEscalationInAHeadlessRun(t *testing.T)
 		t.Fatalf("the model approved the write itself:\n%s", run.out)
 	}
 }
+
+// Before the harness reaches runHeadless it scaffolds the repository, and that
+// runs git. With init enabled (the default) the descriptor has to be closed to
+// those children as well, and to the DevCouncil binaries; the shims below log
+// whether fd 3 is open in each process they are started as, then do the real
+// work (git) or fail (the rest).
+func TestApproveFDIsClosedToEverythingSpawnedBeforeTheTurn(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is needed")
+	}
+	for _, shape := range approveFDShapes() {
+		t.Run(shape.name, func(t *testing.T) {
+			bin := t.TempDir()
+			logPath := filepath.Join(bin, "spawns.log")
+			probe := `if [ -e /dev/fd/3 ]; then echo "$0 OPEN" >> '` + logPath + `'; else echo "$0 CLOSED" >> '` + logPath + `'; fi` + "\n"
+			write := func(name, tail string) string {
+				path := filepath.Join(bin, name)
+				if err := os.WriteFile(path, []byte("#!/bin/sh\n"+probe+tail), 0o700); err != nil { // #nosec G306 -- a script the test execs
+					t.Fatal(err)
+				}
+				return path
+			}
+			write("git", "exec '"+realGit+"' \"$@\"\n")
+			fail := write("tool", "exit 1\n")
+
+			model := &e2eModel{reply: func(int) (map[string]any, string) {
+				return map[string]any{"content": "done"}, "stop"
+			}}
+			base := model.start(t)
+			repo := e2eRepo(t)
+			run := e2eHost(t, repo, base, shape.open(t),
+				[]string{"run", "-p", "hello", "--json", "--approve-fd", "3"},
+				func(int, ui.Event) string { return "" },
+				"MANVI_HARNESS_INIT_ENABLED=true", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"MANVI_STORE_BINARY="+fail, "MANVI_MAP_BINARY="+fail,
+				"MANVI_GREP_BINARY="+fail, "MANVI_VERIFY_BINARY="+fail)
+			raw, err := os.ReadFile(logPath) // #nosec G304 -- a file this test made under t.TempDir
+			if err != nil {
+				t.Fatalf("no child was spawned, so nothing was tested: %v\n%s", err, run.out)
+			}
+			lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			sawGit := false
+			for _, l := range lines {
+				if strings.HasSuffix(l, " OPEN") {
+					t.Fatalf("a child spawned by the run held the approval descriptor:\n%s\n%s", raw, run.out)
+				}
+				sawGit = sawGit || strings.HasSuffix(l, "git CLOSED")
+			}
+			if !sawGit {
+				t.Fatalf("scaffolding spawned no git, so the pre-turn path was not exercised:\n%s\n%s", raw, run.out)
+			}
+		})
+	}
+}
+
+// A descriptor number that is not open must be refused, not accepted because
+// opening the configuration reissued it as the runtime's own poller.
+func TestApproveFDClosedDescriptorIsRefusedAtStartup(t *testing.T) {
+	model := &e2eModel{reply: func(int) (map[string]any, string) {
+		return map[string]any{"content": "done"}, "stop"
+	}}
+	base := model.start(t)
+	repo := e2eRepo(t)
+	out, status := e2eRunWith(t, false, repo, base,
+		[]string{"run", "-p", "hello", "--json", "--approve-fd", "3"},
+		"MANVI_HARNESS_INIT_ENABLED=true")
+	if status == 0 || !strings.Contains(out, "--approve-fd 3") {
+		t.Fatalf("exit %d; a closed --approve-fd was accepted or not named:\n%s", status, out)
+	}
+	if strings.Contains(out, `"kind":"session.start"`) {
+		t.Fatalf("the run started on a descriptor that is not open:\n%s", out)
+	}
+}

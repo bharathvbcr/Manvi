@@ -722,9 +722,9 @@ func parseRunArgs(reg *flags.Registry, args []string, stdin *os.File) (runOption
 		case arg == "--approve-fd":
 			var raw string
 			if raw, err = next(); err == nil {
-				n, convErr := strconv.Atoi(raw)
+				n, convErr := parseApproveFDValue(raw)
 				if convErr != nil {
-					return runOptions{}, fmt.Errorf("--approve-fd must be an integer file descriptor, got %q", raw)
+					return runOptions{}, convErr
 				}
 				opts.approveFD = n
 				opts.approveFDSet = true

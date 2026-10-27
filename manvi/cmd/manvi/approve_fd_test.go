@@ -323,6 +323,77 @@ func TestApproveFDDiscardReportsAreBounded(t *testing.T) {
 	}
 }
 
+// A host's keepalive newline is not a decision: it neither declines the
+// pending request nor is reported as a stray line.
+func TestApproveFDBlankLinesAreIgnored(t *testing.T) {
+	read, write := approvalPipe(t)
+	log := &approvalEvents{}
+	done := pendingApproval(t, newFDApprover(read, log), log, context.Background(), ui.Request{ID: "k", Reason: "r"})
+	for _, blank := range []string{"\n", "\r\n", "  \t\n"} {
+		if _, err := write.WriteString(blank); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case d := <-done:
+		t.Fatalf("a blank line decided the request: %+v", d)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if _, err := write.WriteString(`{"approval_id":"k","allow":true,"reason":"ok"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if d := receiveDecision(t, done, 2*time.Second); !d.Allow {
+		t.Fatalf("the real decision after the blanks was refused: %+v", d)
+	}
+	if n := len(log.kinds(ui.KindNotice)); n != 0 {
+		t.Fatalf("blank lines produced %d notices", n)
+	}
+}
+
+// The pre-scan that claims the descriptor before configuration is read must
+// find the same descriptor parseRunArgs does, including where a value that
+// looks like a flag is a prompt.
+func TestScanApproveFDAgreesWithParseRunArgs(t *testing.T) {
+	cases := [][]string{
+		{"-p", "hello", "--json", "--approve-fd", "3"},
+		{"--json", "--approve-fd", "7", "-p", "hello"},
+		{"-p", "--approve-fd", "--json", "--approve-fd", "5"},
+		{"-p", "x", "--json", "--approve-fd", "4", "--approve-fd", "6"},
+		{"--resume", "--approve-fd", "-p", "x", "--json", "--approve-fd", "9"},
+		{"--image", "a.png", "--task", "T", "--timeout", "1m", "--max-steps", "2", "-p", "x", "--json", "--approve-fd", "8"},
+	}
+	for _, args := range cases {
+		fd, set := scanApproveFD(args)
+		opts, err := parseRunArgs(newTestRegistry(t), args, nil)
+		if err != nil {
+			// parseRunArgs may refuse for an unrelated reason (a missing image
+			// file); the pre-scan must still not have claimed a descriptor it
+			// would not read.
+			continue
+		}
+		if opts.approveFDSet != set || opts.approveFD != fd {
+			t.Fatalf("%q: pre-scan = (%d, %v), parseRunArgs = (%d, %v)", args, fd, set, opts.approveFD, opts.approveFDSet)
+		}
+	}
+	if fd, set := scanApproveFD([]string{"--approve-fd", "nope"}); set {
+		t.Fatalf("an unparseable value was claimed: %d", fd)
+	}
+	if fd, set := scanApproveFD([]string{"-p", "--approve-fd", "3"}); set {
+		t.Fatalf("a prompt that looks like a flag was read as one: %d", fd)
+	}
+}
+
+func TestClaimApproveFDFromArgvOnlyActsForRunAndLeavesStdioAlone(t *testing.T) {
+	for _, args := range [][]string{
+		nil, {"doctor"}, {"tui", "--approve-fd", "3"}, {"run", "--approve-fd", "0"},
+		{"run", "--approve-fd", "2"}, {"--yolo", "run", "--approve-fd", "-1"}, {"run", "-p", "--approve-fd", "3"},
+	} {
+		if err := claimApproveFDFromArgv(args); err != nil {
+			t.Fatalf("%q: %v", args, err)
+		}
+	}
+}
+
 func TestReadDecisionLineBoundsWhatItKeeps(t *testing.T) {
 	long := strings.Repeat("x", 3*maxDecisionLine)
 	r := bufio.NewReader(strings.NewReader(long + "\nsecond\n"))

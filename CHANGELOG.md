@@ -147,6 +147,13 @@ under **Unreleased** in the same commit as the code.
   approval is pending on a blocking descriptor; it hung before, holding the
   approver's lock, so only SIGKILL ended the run. One reader goroutine owns the
   descriptor and the descriptor's blocking mode is left as the host set it.
+  The claim is made as the first act of `manvi run`, before the configuration
+  is read or the repository is scaffolded (scaffolding runs `git`, which would
+  otherwise have inherited it), and the approver claims the descriptor itself
+  as well. A descriptor that is not a pipe, FIFO, socket, device or file, or is
+  the runtime's own event poller (a closed `--approve-fd 3` is reissued as one
+  once a file has been opened), is refused. A blank line from the host is
+  ignored rather than read as a refusal.
   Making `approval_id` mandatory is not done here; it breaks hosts that omit it
   and is left for a minor release.
 - Bench: an unreadable or unparseable git pointer no longer unguards the

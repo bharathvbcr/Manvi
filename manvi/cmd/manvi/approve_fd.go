@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,25 +27,97 @@ const maxDecisionLine = 64 << 10
 // stream, so a writer that floods the descriptor cannot flood the transcript.
 const maxDiscardNotices = 16
 
-// claimApproveFD is run once, straight after the flags are parsed and before
-// this process starts any child: it marks the descriptor close-on-exec, so no
-// tool, MCP server or git the harness spawns inherits it.
+// runValueFlags are the `manvi run` flags that consume the next argument,
+// which the argv pre-scan has to step over exactly as parseRunArgs does: in
+// `-p --approve-fd` the second word is a prompt, not a flag.
+var runValueFlags = map[string]bool{
+	"-p": true, "--prompt": true, "--resume": true, "--task": true,
+	"--max-steps": true, "--timeout": true, "--approve-fd": true, "--image": true,
+}
+
+// parseApproveFDValue is the one reading of --approve-fd's argument, shared by
+// parseRunArgs and the pre-scan.
+func parseApproveFDValue(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("--approve-fd must be an integer file descriptor, got %q", raw)
+	}
+	return n, nil
+}
+
+// scanApproveFD finds --approve-fd in the arguments after `run`, the way
+// parseRunArgs would (the last one wins), without validating anything else. A
+// value that does not parse is left for parseRunArgs to report.
+func scanApproveFD(args []string) (fd int, set bool) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--approve-fd" && i+1 < len(args):
+			i++
+			if n, err := parseApproveFDValue(args[i]); err == nil {
+				fd, set = n, true
+			}
+		case runValueFlags[args[i]]:
+			i++
+		}
+	}
+	return fd, set
+}
+
+// claimApproveFDFromArgv is the first thing the process does for `manvi run`:
+// before the configuration is read, before the repository is scaffolded (which
+// runs git) and before any file is opened. Opening a file can hand the
+// descriptor number of a closed --approve-fd to the runtime's own poller, and
+// every child spawned before the claim holds the real one. Full parsing and
+// its errors happen later in parseRunArgs; descriptors 0 to 2 are never
+// touched here, since parseRunArgs refuses them.
+func claimApproveFDFromArgv(args []string) error {
+	i := 0
+	for i < len(args) && args[i] == "--yolo" {
+		i++
+	}
+	if i >= len(args) || args[i] != "run" {
+		return nil
+	}
+	fd, set := scanApproveFD(args[i+1:])
+	if !set || fd < 3 {
+		return nil
+	}
+	return claimApproveFD(runOptions{approveFD: fd, approveFDSet: true})
+}
+
+// claimApproveFD marks the descriptor close-on-exec, so no tool, MCP server or
+// git the harness spawns inherits it, and refuses one that is not a pipe,
+// socket, character device or file.
 //
-// Marking it later is too late. Every spawn site starts its child with
-// whatever descriptors are inheritable at that moment, and the model chooses
-// what its shell tool runs. A child holding a writable end can answer its own
-// escalation, and one holding the read end can take the host's decisions.
-//
-// A descriptor that is not open is refused here, with the flag named, rather
-// than surfacing later as an approval that "closed before a decision".
+// Every spawn site starts its child with whatever descriptors are inheritable
+// at that moment, and the model chooses what its shell tool runs. A child
+// holding a writable end can answer its own escalation, and one holding the
+// read end can take the host's decisions. It is idempotent: it runs from the
+// argv pre-scan, again after parsing, and once more in newFDApprover, so an
+// entry point that skips one cannot reopen the hole.
 func claimApproveFD(opts runOptions) error {
 	if !opts.approveFDSet {
 		return nil
 	}
-	if err := setCloseOnExec(opts.approveFD); err != nil {
+	if err := prepareApproveFD(opts.approveFD); err != nil {
 		return fmt.Errorf("--approve-fd %d: %w", opts.approveFD, err)
 	}
 	return nil
+}
+
+// markCloseOnExec applies the claim to an already-wrapped file without
+// touching its blocking mode (File.Fd would switch a pollable file to
+// blocking, which is the host's setting to keep).
+func markCloseOnExec(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var prepErr error
+	if err := rc.Control(func(fd uintptr) { prepErr = prepareApproveFD(int(fd)) }); err != nil {
+		return err
+	}
+	return prepErr
 }
 
 // approverForRun is nil when --approve-fd was not set, which is what
@@ -85,6 +158,10 @@ type fdApprover struct {
 	// not be told apart.
 	slot chan struct{}
 
+	// unusable is why the descriptor could not be claimed, when it could not;
+	// every request is then refused with it.
+	unusable string
+
 	mu        sync.Mutex
 	pending   *pendingDecision
 	closedErr error
@@ -104,6 +181,11 @@ type decisionLine struct {
 
 func newFDApprover(file *os.File, sink ui.Sink) *fdApprover {
 	a := &fdApprover{file: file, sink: sink, slot: make(chan struct{}, 1)}
+	// The approver does not rely on its caller having claimed the descriptor.
+	if err := markCloseOnExec(file); err != nil {
+		a.unusable = "the approval fd could not be made close-on-exec, so it was not used: " + err.Error()
+		return a
+	}
 	go a.readLoop(bufio.NewReader(file))
 	return a
 }
@@ -121,7 +203,8 @@ type approvalDecisionLine struct {
 func (a *fdApprover) readLoop(r *bufio.Reader) {
 	for {
 		line, tooLong, err := readDecisionLine(r)
-		if len(line) > 0 || tooLong {
+		// A blank line is a keepalive, not a decision.
+		if tooLong || len(bytes.TrimSpace(line)) > 0 {
 			a.deliver(decisionLine{line: line, tooLong: tooLong})
 		}
 		if err != nil {
@@ -192,6 +275,9 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 	cancelled := declineDecision("cancelled")
 	if ctx.Err() != nil {
 		return cancelled, nil
+	}
+	if a.unusable != "" {
+		return declineDecision(a.unusable), nil
 	}
 	select {
 	case a.slot <- struct{}{}:
