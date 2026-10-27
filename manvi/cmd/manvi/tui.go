@@ -968,7 +968,7 @@ func (h *harnessHost) prepareTurn(ctx context.Context, s *tuiSession, sessionID 
 		Areas:              caps.Areas,
 	}
 	spec := resolveTurnInputs(ctx, h.reg, turnInputs{
-		skills: s.native, repoRead: s.native.RepoReader, roles: s.native.Roles(), pipeline: s.pipeline,
+		skills: s.native, repoRead: s.native.RepoReader, root: s.native.Root(), roles: s.native.Roles(), pipeline: s.pipeline,
 	}, &s.turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(h.reg, promptOpts)
 	// Surfaced in the transcript rather than on stderr. Under the alternate

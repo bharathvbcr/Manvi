@@ -188,8 +188,12 @@ under **Unreleased** in the same commit as the code.
   - Read once per turn by the per-turn resolution and carried in
     `PromptOptions.Instructions`; the reserved-name checks and the spec
     collision check no longer read the file (it was read several times a turn).
-  - A session started in a subdirectory now carries the repository's
-    instructions rather than a file of that name in the subdirectory.
+  - The file is still the working directory's: a session started in `sub/`
+    carries `sub/AGENTS.md`, a root file it never carried does not join or
+    replace it, and `sub/`'s file wins over the root's when both exist. The gate
+    is rooted at the project root and the file is read as `sub/AGENTS.md`
+    beneath it. A working directory outside any project root is gated at the
+    directory itself.
 - A skill's body is refused on the same runes as its description and a spec's
   text, by one enumerated policy (`hiddenRuneProblem`, over `hiddenRanges`) and
   not by Unicode category: C0 and C1 controls except tab, newline and carriage

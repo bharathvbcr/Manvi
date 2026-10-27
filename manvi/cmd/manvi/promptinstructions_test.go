@@ -197,22 +197,129 @@ func TestProjectInstructionsNormalFileIsInThePrompt(t *testing.T) {
 	}
 }
 
-// The project root, not the process's working directory, names the file: a
-// session started in a subdirectory carries the repository's instructions, and
-// a stray AGENTS.md in the subdirectory is not mistaken for them.
-func TestProjectInstructionsAreReadFromTheProjectRoot(t *testing.T) {
+// instructionsTurnAt is instructionsTurn for a session whose project root is
+// root and whose working directory is wherever the test moved to: the
+// production shape, in which the reader is rooted at the project root and the
+// instruction file is the working directory's.
+func instructionsTurnAt(t *testing.T, provider, root string) (string, []string) {
+	t.Helper()
+	reg := specRegistry(t, nil)
+	opts := PromptOptions{Provider: provider, TaskToolsOffered: true}
+	resolveTurnInputs(context.Background(), reg,
+		turnInputs{skills: fakeSkills{}, repoRead: repoReader(root), root: root}, &turnState{}, &opts)
+	text, _, faults := assemblePromptReported(reg, opts)
+	return text, faults
+}
+
+// The instruction file is the working directory's, as it was before it went
+// through the gate: a session started in sub/ carries sub/AGENTS.md, a root file
+// it never carried does not silently join or replace it, and the gate is the
+// project root's.
+func TestProjectInstructionsAreTheWorkingDirectorysUnderTheProjectRoot(t *testing.T) {
+	// A fresh project per case: a root with a pkg/deep beneath it.
+	fresh := func(t *testing.T) (root, sub string) {
+		t.Helper()
+		root = realRoot(t)
+		sub = filepath.Join(root, "pkg", "deep")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return root, sub
+	}
+
+	t.Run("only the subdirectory has one", func(t *testing.T) {
+		root, sub := fresh(t)
+		writeFile(t, sub, "AGENTS.md", "- SUB-RULE\n")
+		chdir(t, sub)
+		text, faults := instructionsTurnAt(t, "anthropic", root)
+		if !strings.Contains(text, "Project instructions (AGENTS.md):\n- SUB-RULE") {
+			t.Fatal("the working directory's instructions were dropped")
+		}
+		if faultNaming(faults, "instructions") {
+			t.Fatalf("a healthy file produced a fault: %v", faults)
+		}
+	})
+
+	t.Run("only the root has one", func(t *testing.T) {
+		root, sub := fresh(t)
+		writeFile(t, root, "AGENTS.md", "- ROOT-RULE\n")
+		chdir(t, sub)
+		text, faults := instructionsTurnAt(t, "anthropic", root)
+		if hasInstructions(text) {
+			t.Fatal("a root file the working directory never carried joined the prompt")
+		}
+		if faultNaming(faults, "instructions") {
+			t.Fatalf("absence is not a fault: %v", faults)
+		}
+	})
+
+	t.Run("both have one and the working directory wins", func(t *testing.T) {
+		root, sub := fresh(t)
+		writeFile(t, root, "AGENTS.md", "- ROOT-RULE\n")
+		writeFile(t, sub, "AGENTS.md", "- SUB-RULE\n")
+		chdir(t, sub)
+		text, _ := instructionsTurnAt(t, "anthropic", root)
+		if !strings.Contains(text, "SUB-RULE") || strings.Contains(text, "ROOT-RULE") {
+			t.Fatal("the working directory's file did not win")
+		}
+	})
+
+	t.Run("the working directory is the root", func(t *testing.T) {
+		root, _ := fresh(t)
+		writeFile(t, root, "AGENTS.md", "- ROOT-RULE\n")
+		chdir(t, root)
+		text, _ := instructionsTurnAt(t, "anthropic", root)
+		if !strings.Contains(text, "Project instructions (AGENTS.md):\n- ROOT-RULE") {
+			t.Fatal("the root's instructions were not read from the root")
+		}
+	})
+
+	t.Run("the gate is still the project root's", func(t *testing.T) {
+		root, sub := fresh(t)
+		outside := filepath.Join(t.TempDir(), "credentials")
+		if err := os.WriteFile(outside, []byte("aws_secret_access_key = SUB-SECRET\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(sub, "AGENTS.md")); err != nil {
+			t.Fatal(err)
+		}
+		chdir(t, sub)
+		text, faults := instructionsTurnAt(t, "anthropic", root)
+		if strings.Contains(text, "SUB-SECRET") {
+			t.Fatal("a link out of the repository was followed from a subdirectory")
+		}
+		if !faultNaming(faults, "AGENTS.md", "refusing to read") {
+			t.Fatalf("the refusal was silent: %v", faults)
+		}
+	})
+}
+
+// A working directory outside any project root keeps the old behaviour, gated
+// at the directory itself: its own file is read, and a link out of it is not.
+func TestProjectInstructionsOutsideTheProjectRootAreGatedAtTheWorkingDirectory(t *testing.T) {
 	root := realRoot(t)
 	writeFile(t, root, "AGENTS.md", "- ROOT-RULE\n")
-	sub := filepath.Join(root, "pkg")
-	if err := os.Mkdir(sub, 0o755); err != nil {
+	elsewhere := realRoot(t)
+	writeFile(t, elsewhere, "AGENTS.md", "- ELSEWHERE-RULE\n")
+	chdir(t, elsewhere)
+	text, _ := instructionsTurnAt(t, "anthropic", root)
+	if !strings.Contains(text, "ELSEWHERE-RULE") || strings.Contains(text, "ROOT-RULE") {
+		t.Fatal("a working directory outside the root did not read its own file")
+	}
+
+	if err := os.Remove(filepath.Join(elsewhere, "AGENTS.md")); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, sub, "AGENTS.md", "- SUBDIRECTORY-RULE\n")
-	chdir(t, sub)
-
-	text, _ := instructionsTurn(t, "anthropic", repoReader(root))
-	if !strings.Contains(text, "ROOT-RULE") || strings.Contains(text, "SUBDIRECTORY-RULE") {
-		t.Fatal("the instructions came from the working directory and not the project root")
+	secret := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(secret, []byte("aws_secret_access_key = ELSEWHERE-SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(elsewhere, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	text, faults := instructionsTurnAt(t, "anthropic", root)
+	if strings.Contains(text, "ELSEWHERE-SECRET") || !faultNaming(faults, "AGENTS.md") {
+		t.Fatalf("the directory's own gate did not hold: faults=%v", faults)
 	}
 }
 

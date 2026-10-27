@@ -280,7 +280,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	}
 	var turn turnState
 	spec := resolveTurnInputs(ctx, reg, turnInputs{
-		skills: native, repoRead: native.RepoReader, roles: native.Roles(), pipeline: pipeline,
+		skills: native, repoRead: native.RepoReader, root: native.Root(), roles: native.Roles(), pipeline: pipeline,
 	}, &turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {

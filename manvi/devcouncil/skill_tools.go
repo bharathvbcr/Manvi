@@ -45,6 +45,10 @@ func RepoReaderAt(ctx context.Context, root string) harness.ReadFunc {
 // for specs would be a second place the read gate could be forgotten.
 func (r *Registry) RepoReader(ctx context.Context) harness.ReadFunc { return r.skillReader(ctx) }
 
+// Root is the repository root RepoReader reads under, for a caller that has to
+// place a path (the working directory) beneath it.
+func (r *Registry) Root() string { return r.deps.Root }
+
 // LoadSkills reads the repository's skills, at most harness.MaxSkills of them,
 // for the prompt's always-on listing. The names the model is shown here and the
 // names devcouncil_load_skill accepts come from the same loader.
