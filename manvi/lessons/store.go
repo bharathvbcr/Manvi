@@ -186,6 +186,32 @@ const (
 	maxSaveAttempts   = 32
 )
 
+// renderProblem is why r cannot be rendered without writing structure into the
+// entry, or "". Parse already refuses these, so for an accepted answer this is
+// a second look at the same facts; its job is the Result that did not come from
+// Parse. The cue, each change and each note are printed inside one line, the
+// lesson and the evidence at the start of lines, and the store re-reads the
+// result by its headings and list prefixes.
+func renderProblem(r Result) string {
+	type field struct{ name, text string }
+	e := r.Experience
+	oneLine := []field{{"cue", e.Cue}, {"confidence", e.Confidence}}
+	for _, ed := range r.Edits {
+		oneLine = append(oneLine, field{"an edit's change", ed.Change}, field{"an edit's note", ed.Note})
+	}
+	for _, f := range oneLine {
+		if strings.ContainsAny(f.text, "\r\n") {
+			return fmt.Sprintf("%s spans more than one line, and the store reads an entry back line by line", f.name)
+		}
+	}
+	for _, f := range []field{{"lesson", e.Lesson}, {"evidence", e.Evidence}} {
+		if why := headingProblem(f.name, f.text); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
 func render(sessionID string, r Result, history []string) string {
 	e := r.Experience
 	var b strings.Builder
@@ -320,6 +346,9 @@ func save(store entryStore, library, sessionID string, r Result) (string, int, e
 	}
 	if r.NoEntry || r.Experience == nil {
 		return "", 0, errors.New("lessons: there is no entry to store")
+	}
+	if why := renderProblem(r); why != "" {
+		return "", 0, fmt.Errorf("lessons: %s", why)
 	}
 	name := EntryName(library, r.Experience.Cue)
 	// Containment, checked on the result rather than assumed from how it was

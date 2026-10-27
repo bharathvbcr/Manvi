@@ -208,6 +208,25 @@ under **Unreleased** in the same commit as the code.
   absent. Measured once each on a 100,000-directory skills directory: one
   lookup went from 377 ms to 40 ms, and `LoadSkills` from 3.07 s to 1.88 s, the
   rest being the read gate's cost for the 200 skills it examines.
+- A lesson can no longer write its own History or verdict counts. The store
+  re-reads an entry's Markdown by its headings (`historyOf` takes every
+  `- revision` row under the first `## History`; `supersededRow` switches
+  section on any `## ` line and counts `- <verdict>:` lines under
+  `## Attribution`), and a lesson or evidence line that spelled a heading, such
+  as `## History` followed by a `- revision 99, ...` row, was stored verbatim
+  and adopted by the next revision.
+  - `lessons.Parse` refuses any line of the lesson or the evidence, first line
+    included, that is a Markdown heading (one to six `#` marks, then a space, a
+    tab or the end of the line; judged after trimming, so an indented or
+    no-break-space-led heading counts). `#!/bin/sh`, `#123` and `- helped:`
+    bullets are prose and stay legal: without a heading to put them under the
+    store never counts them, which a test checks through a real revision.
+  - `lessons.Save` makes the same check on a `Result` that did not come from
+    `Parse`, and refuses a cue, change or note that spans lines. Nothing is
+    written when it refuses.
+  - The reflector's prompt states the rule, since a refused answer costs a
+    rerun.
+  - Entries already stored with a forged heading are not rewritten.
 
 
 ## [0.1.0] — 2026-10-17
