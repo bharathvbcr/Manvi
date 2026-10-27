@@ -25,8 +25,10 @@ import (
 // work.scan.gaps is a deterministic repository audit. It asks DevMap, the text
 // searcher, git and the verification store questions and turns the answers
 // into proposals for the GitPulse inbox. It calls no model and never writes the
-// board: the host files a proposal (carrying the fingerprint label and marker
-// below, which are what later scans dedupe on) when a person accepts it.
+// board: the host files a proposal when a person accepts it, with the
+// fingerprint label below, which is what later scans dedupe on (open cards only),
+// and the marker line below in its description, which is a trace for people:
+// item cards omit descriptions, so a scan cannot read it back.
 //
 // The scan runs on its own context, off the lane that took the request, so a
 // slow index cannot hold the lane's 60 s request deadline. The op answers as
@@ -49,9 +51,11 @@ const (
 	scanDeadConfidence   = 0.8
 	scanGitOutputLimit   = 4 << 20
 
-	// scanMarker prefixes the fingerprint line a proposal's description carries.
+	// scanMarker prefixes the fingerprint line a proposal's description carries,
+	// for a person reading the card. Dedupe does not read it (see scanLabelPrefix).
 	scanMarker = "manvi-scan:"
-	// scanLabelPrefix prefixes the fingerprint label a proposal asks for.
+	// scanLabelPrefix prefixes the fingerprint label a proposal asks for; it is
+	// what a scan dedupes on.
 	scanLabelPrefix = "scan:"
 )
 
@@ -119,16 +123,24 @@ type ScanRunner struct {
 	mu     sync.Mutex
 	closed bool
 	jobs   map[string]*scanJob // by scan id
-	active map[string]*scanJob // by root
-	order  []string            // finished scan ids, oldest first
-	known  map[string]map[string]struct{}
-	roots  []string // known-fingerprint roots, oldest first
-	wg     sync.WaitGroup
+	active map[string]*scanJob // by root; running scans only
+	// stopping counts scans Cancel has taken out of active whose goroutines have
+	// not returned yet. They are no longer a root's scan (a new request starts a
+	// fresh one) but still hold a place against scanMaxActive, because a goroutine
+	// stuck in a call that ignores its context is still running.
+	stopping int
+	order    []string // finished scan ids, oldest first
+	known    map[string]map[string]struct{}
+	roots    []string // known-fingerprint roots, oldest first
+	wg       sync.WaitGroup
 }
 
 type scanJob struct {
 	cancel context.CancelFunc
 	view   ScanView
+	// stopping is set by Cancel when it moved the job from active to the
+	// runner's stopping count.
+	stopping bool
 }
 
 func NewScanRunner(deps ScanDeps) (*ScanRunner, error) {
@@ -209,9 +221,12 @@ type ScanView struct {
 	Proposals     []ScanProposal `json:"proposals"`
 }
 
+// clone copies the view's slices so a reader never shares them with the job.
+// Both are required arrays in the contract, so a copy of an empty or unset one is
+// an empty array, never nil (which marshals as null).
 func (v ScanView) clone() ScanView {
-	v.Coverage = append([]ScanCoverage(nil), v.Coverage...)
-	v.Proposals = append([]ScanProposal(nil), v.Proposals...)
+	v.Coverage = append(make([]ScanCoverage, 0, len(v.Coverage)), v.Coverage...)
+	v.Proposals = append(make([]ScanProposal, 0, len(v.Proposals)), v.Proposals...)
 	return v
 }
 
@@ -329,7 +344,7 @@ func (r *ScanRunner) Start(ctx context.Context, raw json.RawMessage) (any, *Erro
 		v.Joined = true
 		return v, nil
 	}
-	if len(r.active) >= scanMaxActive {
+	if len(r.active)+r.stopping >= scanMaxActive {
 		r.mu.Unlock()
 		return nil, &Error{Code: ErrBusy, Message: "too many scans are running", Retryable: true}
 	}
@@ -376,6 +391,13 @@ func (r *ScanRunner) Cancel(raw json.RawMessage) (any, *Error) {
 	}
 	if job.view.State == scanRunning {
 		job.view.State = scanCancelled
+		// A request for this root from now on is a new scan: joining this one
+		// would hand its caller a cancelled view in place of a scan.
+		if r.active[job.view.RepoRoot] == job {
+			delete(r.active, job.view.RepoRoot)
+			job.stopping = true
+			r.stopping++
+		}
 	}
 	view := job.view.clone()
 	r.mu.Unlock()
@@ -509,7 +531,11 @@ func (r *ScanRunner) run(ctx context.Context, job *scanJob, dm ScanDevmap) {
 		}
 	}
 	v.Complete = complete
-	delete(r.active, v.RepoRoot)
+	if job.stopping {
+		r.stopping--
+	} else if r.active[v.RepoRoot] == job {
+		delete(r.active, v.RepoRoot)
+	}
 	r.order = append(r.order, v.ScanID)
 	for len(r.order) > scanRetained {
 		delete(r.jobs, r.order[0])
@@ -532,20 +558,27 @@ func (r *ScanRunner) remember(root string, set map[string]struct{}) {
 
 var scanFingerprintPattern = regexp.MustCompile(`(?:` + regexp.QuoteMeta(scanMarker) + `\s*|\b` + regexp.QuoteMeta(scanLabelPrefix) + `)([0-9a-f]{16})\b`)
 
+// boardItem is the part of an items.list card a scan reads. Cards omit
+// descriptions, so a proposal's fingerprint is read from its label alone.
 type boardItem struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Labels      []string `json:"labels"`
+	ID     string   `json:"id"`
+	Title  string   `json:"title"`
+	Status string   `json:"status"`
+	Labels []string `json:"labels"`
 }
 
+// scanBoardDone is the status of a finished card, which is not open.
+const scanBoardDone = "done"
+
 // boardIndex maps fingerprints to the open item that carries them, reading
-// every page up to a bound. complete is false when the bound cut the read.
+// every page up to a bound. Open means on the board (archived:false) and not
+// Done: a finished or archived card must not hold a recurring gap silent
+// forever. complete is false when the bound cut the read.
 func (r *ScanRunner) boardIndex(ctx context.Context) (index map[string]boardItem, complete bool, err error) {
 	index = map[string]boardItem{}
 	cursor := ""
 	for page := 0; page < scanMaxBoardPages; page++ {
-		input := map[string]any{"limit": 200}
+		input := map[string]any{"limit": 200, "archived": false}
 		if cursor != "" {
 			input["cursor"] = cursor
 		}
@@ -566,7 +599,10 @@ func (r *ScanRunner) boardIndex(ctx context.Context) (index map[string]boardItem
 			return nil, false, fmt.Errorf("decode items.list: %w", err)
 		}
 		for _, item := range res.Items {
-			seen := scanFingerprintPattern.FindAllStringSubmatch(item.Description+"\n"+strings.Join(item.Labels, "\n"), -1)
+			if item.Status == scanBoardDone {
+				continue
+			}
+			seen := scanFingerprintPattern.FindAllStringSubmatch(strings.Join(item.Labels, "\n"), -1)
 			for _, m := range seen {
 				if _, ok := index[m[1]]; !ok {
 					index[m[1]] = item

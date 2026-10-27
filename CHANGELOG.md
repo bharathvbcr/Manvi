@@ -383,6 +383,78 @@ under **Unreleased** in the same commit as the code.
   touch that message's own reasoning, which comes before it. A journal already
   written with a scrubbed block and its old signature is not repaired: the
   scrubber that changed it is not known at load.
+- `work.scan.gaps` replies match the serve contract, dedupes against open cards
+  only, and no longer joins a cancelled scan (ft-70ef5f3d). `ScanView.clone`
+  turned empty slices into nil, so `coverage` and `proposals` went out as `null`
+  in the claim reply, in a read while the scan ran, and in a finished scan with
+  no proposals, though the contract marks both required and not nullable; both
+  are now always arrays. The board index listed the whole board, so a Done or
+  archived card marked a proposal `attached` and silenced a recurring gap for
+  good; it now asks for `archived:false` and skips Done cards. The documented
+  `manvi-scan:` description line was never read, because `items.list` cards omit
+  descriptions: the docs now say dedupe is by the `scan:<fp>` label alone and the
+  description line is a trace for people (the alternative, an `items.get` per
+  card, costs a store read for every card on the board). `work.scan.cancel`
+  freed no root: a `work.scan.gaps` for it while the cancelled goroutine was
+  still unwinding joined the cancelled job and was answered with a cancelled
+  view in place of a scan. Cancel now frees the root at once, so the next request
+  starts a fresh scan; the unwinding job keeps counting against the limit of two
+  concurrent scans, so cancel-and-restart cannot pile up stuck scans (`E_BUSY`,
+  retryable, when both slots are held).
+- Verification no longer runs a repository's diff programs. `work.verify.task`
+  built the critic's diff with `git diff --no-ext-diff` but without
+  `--no-textconv`, and the path verifier's scoped diff (shared with the
+  end-of-turn check of `manvi run`) passed neither, so a `diff.<driver>.textconv`
+  in the repository's config, selected by its `.gitattributes`, ran on the host
+  whenever a changed file matched: a hostile worktree, or an operator's own
+  config, executed a program of its choosing. Every patch-producing git child
+  the `devcouncil` package builds (`diff`, `show`, `log`, `diff-tree`,
+  `diff-index`, `diff-files`, `format-patch`, `whatchanged`, `stash show`, and
+  `blame` with `--no-textconv` alone) now gets `--no-textconv --no-ext-diff` at
+  its one construction site, found past git's global options whether they carry
+  a value (`-C dir`, `--git-dir dir`) or not; `diff`, `show`, `log -p` and
+  `blame` were checked to run the driver by default. The serve
+  critic diff passes both, as the scan and the commit scan already did. The diff
+  text for an ordinary file is unchanged. The `work.verify.task` documentation
+  now says what "passed" covers: with no `MANVI_VERIFY_COMMAND` no test or build
+  runs and a verification passes on the path-scoped gates alone, which the record
+  states in `rigor.source` (ft-9b535b8f).
+- A revoked workflow-catalog entry can no longer end up approved. `Revoke`,
+  `Approve`, `Promote` and `SetStability` each read an entry's `current.json`,
+  changed it and renamed the whole file back with nothing serialising them, so a
+  `SetStability` that read before a `Revoke` and renamed after it restored
+  `approved`: the audit reproduction saw 91 to 121 of 300 rounds end approved
+  after a successful `Revoke`, and `CheckUnattended` admits an approved entry.
+  Every read-modify-write of an identity's `current.json` now holds a lock: an
+  in-process lock per identity directory plus an exclusive file lock
+  (`.current.lock`, opened through the directory handle) against other
+  processes, because the catalog is shared (the Jarvis daemon and CLI write the
+  same directory through this package). One 10-second bound covers the wait for
+  both locks, so writers queued behind a wedged holder fail together after one
+  bound; a writer never writes unlocked, and on a platform with no `flock` (the
+  file lock is built for Linux, macOS, the BSDs and illumos, and Windows; Solaris
+  and AIX have none) it refuses. `SetStability` now rewrites only the `stability` field of the pointer
+  as it is on disk, so the status, the promotion flag and fields this build does
+  not know are left as their writer wrote them. The file lock moved out of
+  `llm/budget` into `internal/filelock`, which the spend ledger and the catalog
+  both use (ft-ce60ca4b).
+- Cancelling a desktop-broker call after its request was written stops the
+  broker. `Client.Call` retired the broker only when the cancel landed while the
+  request was still being written; once the write had succeeded, a cancelled or
+  timed-out call dropped its pending entry and returned, so the click, keystroke
+  or typed secret it had asked for still ran after the caller gave up. The
+  post-write cancel now retires the broker the same way (the client is closed, so
+  a late reply cannot satisfy a newer call and the caller must start a new
+  broker), for every op that can act or change what an action would hit: `act`,
+  `human_act`, `approve`, `attach`, `focus`, `resume`, and any op not listed. The
+  read-only ops (`probe`, `observe`, `resolve`, `pause`, `detach`) only drop their
+  pending entry, because nothing starts a second broker and a slow observe past
+  the runner's 8 s deadline must not end computer use for the run; request ids
+  are never reused, so their late reply is discarded. A reply that has already
+  arrived when the context ends is returned, not thrown away. Tests cancel in
+  both windows against a stand-in broker process and assert the action file is
+  never written (ft-871861f4; the earlier claimed fix 5dc4518 never reached the
+  repository).
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible

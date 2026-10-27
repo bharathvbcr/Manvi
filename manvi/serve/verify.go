@@ -35,9 +35,14 @@ import (
 // the verdict are read back through work.verify.get.
 //
 // Outcome. passed, failed or degraded, never a quiet fourth state. Passed
-// requires every check to have run and every criterion to be met; a check that
-// could not run degrades the verdict, and a defect found fails it whatever else
-// could not run.
+// requires every check the verification was set up to run to have run and every
+// criterion to be met; a check that could not run degrades the verdict, and a
+// defect found fails it whatever else could not run. "Every check" is those
+// configured: with no MANVI_VERIFY_COMMAND (the default) no test or build runs,
+// and a verification passes on the path-scoped gates alone. The record says so
+// in rigor.source ("path-scoped gates" rather than "operator verification
+// command"), so a reader can tell a pass that ran the project's own check from
+// one that did not.
 
 const (
 	// OpVerifyTask starts, or replays, one verification.
