@@ -1,6 +1,9 @@
 package render
 
-import "unicode"
+import (
+	"unicode"
+	"unicode/utf8"
+)
 
 // Cell is one character position on the screen.
 type Cell struct {
@@ -15,6 +18,32 @@ type Cell struct {
 	// would put a slice header in every cell of every frame.
 	Comb  string
 	Style Style
+}
+
+// MaxCombPerCell is how many combining marks one cell keeps; a mark past it is
+// dropped.
+//
+// Without a bound a run of n marks cost O(n^2), each one copying everything the
+// cell already held, so a line of 200,000 of them (a model reply or a tool
+// result; Sanitize passes them, and they are zero width, so the line stays one
+// row) took 4.6 s to draw, on every frame that showed it. A cell has no use for
+// that many: the longest sequences real text needs are a base with a handful of
+// stacked marks (Vietnamese, Thai, Hebrew with cantillation, Arabic with its
+// vowel signs) and an emoji tag sequence, which is a base and seven tag
+// characters. Thirty is the limit the Stream-Safe Text Format (UAX #15,
+// section 13) puts on a run of non-starters for the same reason, well above
+// what any of those uses, and at it the cost per mark is a constant.
+const MaxCombPerCell = 30
+
+// addMark appends a combining mark to the cell unless it already holds
+// MaxCombPerCell of them.
+func (c *Cell) addMark(r rune) {
+	// A mark is at least one byte, so under the cap in bytes is under the cap
+	// in marks, and the common case never counts.
+	if len(c.Comb) >= MaxCombPerCell && utf8.RuneCountInString(c.Comb) >= MaxCombPerCell {
+		return
+	}
+	c.Comb += string(r)
 }
 
 // blank is the cell an erased position holds.
@@ -213,7 +242,7 @@ func (b *Buffer) SetRune(x, y int, r rune, s Style) int {
 		// its left there is nothing to attach to, and it is dropped rather
 		// than promoted to a base character it is not.
 		if x-1 >= 0 && x-1 < b.W {
-			b.cells[y*b.W+x-1].Comb += string(r)
+			b.cells[y*b.W+x-1].addMark(r)
 		}
 		return 0
 	}

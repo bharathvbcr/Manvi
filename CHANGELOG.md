@@ -162,6 +162,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
+  every mark to the cell on its left with no bound, each append copying what the
+  cell already held, so a line of n marks (a model reply or tool result; they are
+  zero width, so the line stays one row) cost n squared: 200,000 of them took
+  2.8 s to draw (min of 5, load 13 to 25), on every frame that showed the line. A
+  cell now keeps at most `render.MaxCombPerCell` (30) marks and drops the rest,
+  which is the limit the Stream-Safe Text Format (UAX #15, section 13) puts on a
+  run of non-starters and several times what real text needs (stacked
+  Vietnamese, Thai, Hebrew and Arabic marks, ZWJ emoji, a seven-tag flag
+  sequence). The same line draws in 9.6 ms. Text under the cap renders exactly
+  as before, checked cell by cell against the previous layout for those scripts.
 - A large paste decodes in linear time. Each read that arrived while a paste was
   open made the input decoder copy the whole pending buffer twice and search it
   again for the closing marker, so a paste cost the square of its size over the
