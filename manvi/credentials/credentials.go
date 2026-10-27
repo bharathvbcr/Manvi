@@ -555,6 +555,12 @@ type Scrubber struct {
 	// not have to: LockedBuffer.String is a view into the guarded page, not a
 	// copy, so the match reads the plaintext in place. The buffers are frozen
 	// (read-only) and destroyed by Purge at exit.
+	//
+	// The slice itself is copy-on-write: Watch builds a new sorted slice and
+	// swaps it in under mu, and never writes to one it has published. Clean
+	// copies the header under the read lock and walks it unlocked, because it
+	// is on every hot path and must not hold the lock across a search of the
+	// text.
 	values []*memguard.LockedBuffer
 	// unarmed is why a value this scrubber was asked to watch is not among
 	// values — it could not be opened, or there was no locked memory to hold
@@ -627,10 +633,17 @@ func (s *Scrubber) Watch(secret Secret) {
 		}
 		buf.Copy(raw)
 		buf.Freeze()
-		s.values = append(s.values, buf)
-		// Longest first, so a key that contains another key's prefix is
-		// replaced whole rather than leaving a tail behind.
-		sort.Slice(s.values, func(i, j int) bool { return s.values[i].Size() > s.values[j].Size() })
+		// Publish a new slice rather than appending to and sorting the one
+		// Clean may be walking: Clean takes the slice header under the lock
+		// and iterates it after releasing it, so a slice that has been handed
+		// out is never written again. Longest first, so a key that contains
+		// another key's prefix is replaced whole rather than leaving a tail
+		// behind.
+		next := make([]*memguard.LockedBuffer, len(s.values), len(s.values)+1)
+		copy(next, s.values)
+		next = append(next, buf)
+		sort.Slice(next, func(i, j int) bool { return next[i].Size() > next[j].Size() })
+		s.values = next
 		return nil
 	})
 	if err != nil {

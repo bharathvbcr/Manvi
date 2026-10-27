@@ -59,6 +59,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
+  running the turn on the first megabyte. The read stopped at the cap with no
+  overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
+  said the rest was dropped, which for an instruction at the end meant the turn
+  did something else. A prompt of exactly the cap is still accepted; one byte
+  more exits 1 with a message naming the cap and the way through, which is a
+  file in the checkout that a shorter prompt names (there is no option for a
+  larger prompt). `-p` and positional prompts were never read through this
+  limit. Documented in `docs/CLI_AND_CONFIGURATION.md` and `manvi run --help`.
 - `computer.Run.Send` now waits until the run loop admits the control, at most
   one loop step (for example a 3s pause fence), and returns the run's verdict.
   It returns nil once the control passed the epoch check, `ErrStaleControlEpoch`
@@ -175,6 +184,50 @@ under **Unreleased** in the same commit as the code.
   name the registry does not hold, the text is the generic "not offered"
   refusal rather than `unknown tool`. Naming a refused tool a second time counts
   as circling, so reasoning effort escalates as it does for a repeated call.
+- The credential scrubber no longer has a data race between `Clean` and
+  `Watch`. `Clean` copied the watched-value slice's header under the read lock
+  and walked the shared backing array after releasing it, while `Watch`
+  re-sorted that array in place; callers re-arm on every use while tool results
+  and sub-agents `Clean`, so `go test -race` reported it (no leak was observed
+  in about 130,000 calls, but a walk that skips a value the sort moved past
+  could let one through). `Watch` now publishes a new sorted slice under the
+  lock and never writes one it has handed out; `Clean` still holds the lock only
+  to copy the header, and its cost is unchanged.
+- `manvi run --image` no longer waits forever on a path. Images are read while
+  the arguments are parsed, before `--timeout` or a provider exists, and a bare
+  open of a FIFO waits for a writer, so a `--image` naming one nobody wrote to
+  stopped the run from ever starting without a word. The open no longer waits,
+  and a pipe is read with a bound: five seconds (`imagePipeWait`) and the 8 MiB
+  image limit. A pipe with a live writer still works, which includes
+  `--image <(cat a.png)`, `cat a.png | manvi run --image /dev/stdin` and a named
+  pipe whose writer starts after the run does; one with no writer, or a writer
+  that stops sending, is refused after the five seconds with `no image data
+  arrived on the pipe in time`. Devices, sockets and directories are refused by
+  name (`not a regular file (a device)`), the kind is checked again on the
+  opened handle in case the name was swapped in between, and symbolic links are
+  followed as before. On Windows only regular files are read, and a
+  `\\.\pipe\...` path is refused by its name before it is touched, because
+  inspecting a named pipe connects to it.
+- The Anthropic budget ledger no longer holds a cancelled caller behind another
+  caller's wait. Each operation took an in-process `sync.Mutex` before the
+  context-aware file lock, and a mutex cannot be abandoned: while one goroutine
+  waited out a wedged file lock (another process stopped or stalled holding
+  it), every other goroutine in the process queued behind it for the whole wait,
+  a cancelled one included (a caller cancelled at 100 ms returned after 2.8 s,
+  once per queued waiter). The in-process turn is now a one-slot channel
+  selected against the context, and one `lockWait` bound covers the turn and the
+  file lock together, so a queue behind a wedged holder ends together.
+- The managed Claude build probe now ends with its deadline. `claude --version`
+  was run with a 10 s timeout that killed only the process it started, and
+  `Output` then waited for every descendant to close the stdout pipe, so an
+  executable that left a background process holding it kept the launch running
+  for that process's whole life (25 s against a 10 s probe in the audit). The
+  probe now runs in its own process group, killed with the deadline, and gives
+  up on a held pipe two seconds after the process is gone, as the other child
+  processes here do. A probe that exited 0 and printed its identity is still
+  accepted when a background process it started holds the pipe past those two
+  seconds (that process is then killed); a non-zero exit, a timeout, or output
+  that is not Claude Code's is refused as before.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
