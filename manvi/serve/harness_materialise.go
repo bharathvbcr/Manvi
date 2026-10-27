@@ -320,6 +320,31 @@ func (w harnessWriter) remove(rel string) error {
 	return nil
 }
 
+// removeRecord removes the pending record only if it is the record of the block
+// with this nonce. There is one record file per checkout directory, so a run's end
+// must not take away another run's: a checkout directory that was deleted and
+// recreated is a new directory to the guard, which admits a second run there while
+// the first is still live, and the second's record replaces the first's. The
+// record is read, compared and then removed; a record that is not readable, or
+// carries another nonce, is left alone. A record that vanishes between the read
+// and the removal is gone, which is what was wanted.
+func (w harnessWriter) removeRecord(nonce string) error {
+	raw, err := devcouncil.ReadPinned(w.root, harnessPendingFile, maxPendingBytes)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return materialiseFailure("reading the record of the harness block to remove it: %v", err)
+	}
+	var own struct {
+		Nonce string `json:"nonce"`
+	}
+	if json.Unmarshal(raw, &own) != nil || own.Nonce != nonce {
+		return nil
+	}
+	return w.remove(harnessPendingFile)
+}
+
 func (w harnessWriter) judge(rel string, op dc.Operation) error {
 	gate := policy.FileGate{Root: w.root, HardRules: true}
 	d := PostureHost.demote(gate.EvaluateFileChange(rel, nil, op, true), "managed harness: Manvi's own write, no task model")
@@ -391,14 +416,14 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	// no record.
 	if err := w.write(harnessPendingFile, dc.OpWrite, record); err != nil {
 		if writeMayHaveChanged(err) {
-			err = errors.Join(err, w.remove(harnessPendingFile)) // a record of no block restores as nothing
+			err = errors.Join(err, w.removeRecord(nonce)) // a record of no block restores as nothing
 		}
 		return nil, err
 	}
 	whole := append(append([]byte(nil), before...), appended...)
 	if err := w.write(rel, op, whole); err != nil {
 		if !writeMayHaveChanged(err) {
-			return nil, errors.Join(err, w.remove(harnessPendingFile))
+			return nil, errors.Join(err, w.removeRecord(nonce))
 		}
 		return m.afterUnknownWrite(err)
 	}
@@ -423,7 +448,7 @@ func (m *harnessMaterialisation) afterUnknownWrite(writeErr error) (*harnessMate
 	case err == nil && bytes.Contains(current, m.pending.Appended):
 		return m, nil
 	case err == nil, errors.Is(err, fs.ErrNotExist):
-		return nil, errors.Join(writeErr, m.remove(harnessPendingFile))
+		return nil, errors.Join(writeErr, m.removeRecord(m.pending.Nonce))
 	}
 	return m, errors.Join(writeErr, materialiseFailure("reading %s to see whether the block was written: %v; its record is kept", m.File, err))
 }
@@ -463,7 +488,7 @@ func restoreRecorded(w harnessWriter, p pendingRestore) error {
 	switch {
 	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
-		return w.remove(harnessPendingFile) // the agent deleted the file, block and all
+		return w.removeRecord(p.Nonce) // the agent deleted the file, block and all
 	default:
 		return materialiseFailure("reading %s to restore it: %v", p.File, err)
 	}
@@ -473,7 +498,7 @@ func restoreRecorded(w harnessWriter, p pendingRestore) error {
 			return materialiseFailure("%w in %s: the agent edited inside it, so Manvi did "+
 				"not guess where it ends and left the file as it is; remove the block from %s by hand", errBlockModified, p.File, p.File)
 		}
-		return w.remove(harnessPendingFile) // the agent removed the block itself
+		return w.removeRecord(p.Nonce) // the agent removed the block itself
 	}
 	if !p.Existed && len(bytes.TrimSpace(remainder)) == 0 {
 		if err := w.remove(p.File); err != nil {
@@ -482,7 +507,7 @@ func restoreRecorded(w harnessWriter, p pendingRestore) error {
 	} else if err := w.write(p.File, dc.OpModify, remainder); err != nil {
 		return err
 	}
-	return w.remove(harnessPendingFile)
+	return w.removeRecord(p.Nonce)
 }
 
 // cutSpans removes every non-overlapping occurrence of span from content and
@@ -548,8 +573,11 @@ func recoverPendingHarness(root string) (string, error) {
 			w.remove(harnessPendingFile))
 	}
 	if err := restoreRecorded(w, p); err != nil {
-		if errors.Is(err, errRecordUnusable) || errors.Is(err, errBlockModified) {
-			err = errors.Join(err, w.remove(harnessPendingFile))
+		switch {
+		case errors.Is(err, errRecordUnusable):
+			err = errors.Join(err, w.remove(harnessPendingFile)) // no nonce in it to trust
+		case errors.Is(err, errBlockModified):
+			err = errors.Join(err, w.removeRecord(p.Nonce))
 		}
 		return "", err
 	}

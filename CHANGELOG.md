@@ -226,6 +226,13 @@ under **Unreleased** in the same commit as the code.
   note. Before this, such a normal run held its checkout until Manvi restarted.
   What outlives the agent is the process-group problem, which this does not
   address.
+- A managed run's end no longer removes another run's pending record. There is
+  one record file per checkout directory, and a directory deleted and recreated
+  is a new directory to the one-harness guard, so a second run was admitted
+  while the first was live and its record replaced the first's; the first run's
+  restore then removed it by path, leaving the second's block in the file with
+  nothing to take it out. A record is now removed only when it carries the
+  nonce of the block being restored.
 - `work.runs.managed.activate` no longer holds the run's lock across its two
   task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
   answered inline on the serve read loop and takes that lock, so a slow store
