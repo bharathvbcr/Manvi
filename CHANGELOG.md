@@ -233,6 +233,20 @@ under **Unreleased** in the same commit as the code.
   restore then removed it by path, leaving the second's block in the file with
   nothing to take it out. A record is now removed only when it carries the
   nonce of the block being restored.
+- A refused restore says what to do about it. When the pinned read of the
+  instruction file is refused (the file replaced by a symbolic link, given a
+  second name, grown past the bound, made a directory), the record is kept and
+  the `E_HARNESS_MATERIALISE` refusal now says it was a read and nothing was
+  written or removed, names the file, the block's nonce and byte offset and the
+  lines that bound it, and gives the remedy for that cause (replace the link with
+  a regular copy; give the file one name; shrink it) or the manual one (remove
+  the block's lines, then delete `.devcouncil/managed-harness-pending.json`). A
+  failed write during the restore is told the same way. `HarnessBusy` builds its
+  refusal from the record and the file on disk, so after a restart it no longer
+  promises that the next prepare takes the block out when that would be refused.
+  The run id is named on the run's own record, not in the file: the pending
+  record does not carry one. `ReadPinned` also names a read when a link refuses
+  it; it said "refusing to write through".
 - `work.runs.managed.activate` no longer holds the run's lock across its two
   task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
   answered inline on the serve read loop and takes that lock, so a slow store

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -490,7 +492,7 @@ func restoreRecorded(w harnessWriter, p pendingRestore) error {
 	case errors.Is(err, fs.ErrNotExist):
 		return w.removeRecord(p.Nonce) // the agent deleted the file, block and all
 	default:
-		return materialiseFailure("reading %s to restore it: %v", p.File, err)
+		return restoreReadFailure(w.root, p, err)
 	}
 	remainder, removed := cutSpans(current, p.Appended, p.Offset)
 	if removed == 0 {
@@ -505,9 +507,76 @@ func restoreRecorded(w harnessWriter, p pendingRestore) error {
 			return err
 		}
 	} else if err := w.write(p.File, dc.OpModify, remainder); err != nil {
-		return err
+		return materialiseFailure("taking the harness block out of %s failed on the write (the read was fine): %w. The record of the block is kept. %s; to recover, fix what refused the write and the next work.runs.managed.prepare takes the block out, %s",
+			p.File, err, p.describe(), p.manualRemedy())
 	}
 	return w.removeRecord(p.Nonce)
+}
+
+// describe says which block a record is, and where it sits, for an operator who
+// has to find it: the nonce that is in its BEGIN and END lines, and the byte
+// offset the file's own content ended at when it was written (an edit the agent
+// made earlier in the file moves it).
+func (p pendingRestore) describe() string {
+	return fmt.Sprintf("the block carries nonce=%s and is %d bytes, written at byte offset %d of %s, from the line beginning %q to the matching END line",
+		p.Nonce, len(p.Appended), p.Offset, p.File, harnessBeginMarker+" nonce="+p.Nonce)
+}
+
+// manualRemedy is the way out that needs nothing from Manvi: take the block's
+// lines out of the file by hand, then the record that names them.
+func (p pendingRestore) manualRemedy() string {
+	return fmt.Sprintf("or remove the block's lines from %s by hand, then delete %s", p.File, harnessPendingFile)
+}
+
+// restoreReadFailure is the typed refusal for a restore that could not read the
+// instruction file. It says it was a read, that nothing was written and nothing
+// removed, which block it concerns and what an operator can do about the cause,
+// which differs by cause: a link, a second name, a file past the bound. The
+// record stays (see recoverPendingHarness).
+func restoreReadFailure(root string, p pendingRestore, err error) error {
+	return materialiseFailure("%s", readFailureText(root, p, err))
+}
+
+// readFailureText is restoreReadFailure's message, without the typed prefix.
+func readFailureText(root string, p pendingRestore, err error) string {
+	var remedy string
+	switch msg := err.Error(); {
+	case strings.Contains(msg, "symbolic link"):
+		target, _ := os.Readlink(filepath.Join(root, p.File))
+		remedy = fmt.Sprintf("%s is a symbolic link now (to %q), so the file that held the block is not at that name; if the link's target holds the block, replace the link with a regular copy of it (rm %s && cp %s %s) and the next work.runs.managed.prepare takes the block out",
+			p.File, target, p.File, target, p.File)
+	case strings.Contains(msg, "names reach this file"):
+		remedy = fmt.Sprintf("%s has more than one name (a hard link); give it one (cp %s %s.tmp && mv %s.tmp %s) and the next work.runs.managed.prepare takes the block out",
+			p.File, p.File, p.File, p.File, p.File)
+	case strings.Contains(msg, "-byte limit"):
+		remedy = fmt.Sprintf("%s is larger than the %d-byte limit on what Manvi reads back; shrink it below the limit and the next work.runs.managed.prepare takes the block out",
+			p.File, maxInstructionFileBytes)
+	default:
+		remedy = fmt.Sprintf("make %s a regular file with one name and under %d bytes, and the next work.runs.managed.prepare takes the block out", p.File, maxInstructionFileBytes)
+	}
+	return fmt.Sprintf("reading %s to take the harness block out was refused: %v. This was a read; nothing was written and nothing was removed, and the record of the block is kept. %s. To recover, %s; %s",
+		p.File, err, p.describe(), remedy, p.manualRemedy())
+}
+
+// leftBlockNote says, from the record on disk and the file alone (nothing held in
+// process memory, so it is true after a restart), what a block left behind is and
+// whether taking it out would be refused now, and why. refused is true when it
+// would be.
+func leftBlockNote(root string) (note string, refused bool) {
+	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	if err != nil {
+		return "", false
+	}
+	var p pendingRestore
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&p) != nil || p.valid() != nil {
+		return "its record is not one Manvi can act on, so the next work.runs.managed.prepare on this checkout reports it once and clears it", false
+	}
+	if _, rerr := readInstructionFile(root, p.File); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		return readFailureText(root, p, rerr), true
+	}
+	return p.describe(), false
 }
 
 // cutSpans removes every non-overlapping occurrence of span from content and

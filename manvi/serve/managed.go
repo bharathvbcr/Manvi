@@ -464,10 +464,17 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		return harnessBusy("%s", reason)
 	}
 	if harnessRecordPending(resolved) {
-		if reason := r.blockedReason(info); reason != "" {
-			return harnessBusy("a managed harness run left its block in this worktree and taking it out failed: %s; the block may still be in the instruction file, and every work.runs.managed.prepare on this checkout is refused until that is put right", reason)
+		// What is said comes from the record and the file on disk, not from what this
+		// process remembers: after a restart nothing is remembered, and the next
+		// prepare may refuse as well as succeed.
+		note, refused := leftBlockNote(resolved)
+		switch {
+		case refused:
+			return harnessBusy("a managed harness run left its block in this worktree and taking it out is refused, so the block may still be in the instruction file and every work.runs.managed.prepare on this checkout is refused until that is put right: %s", note)
+		case r.blockedReason(info) != "":
+			return harnessBusy("a managed harness run left its block in this worktree and taking it out failed: %s; the block may still be in the instruction file, and every work.runs.managed.prepare on this checkout is refused until that is put right (%s)", r.blockedReason(info), note)
 		}
-		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out; the next work.runs.managed.prepare on this checkout takes it out and reports it")
+		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out (%s); the next work.runs.managed.prepare on this checkout takes it out and reports it, or refuses naming why", note)
 	}
 	return nil
 }
@@ -1802,7 +1809,7 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 		job.mu.Lock()
 		info, root := job.checkoutInfo, job.checkout
 		job.mu.Unlock()
-		r.settleBlocked(info, root, restoreErr)
+		r.settleBlocked(info, root, fmt.Errorf("run %s: %w", job.id, restoreErr))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
