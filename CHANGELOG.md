@@ -122,6 +122,34 @@ under **Unreleased** in the same commit as the code.
   Benchmarks: time to the first request with the sensor attached went from about
   50 ms to under 0.1 ms, and the scoped diff went from 63 to 47 ms.
 - `artifacts` exports `ErrPublishedUnsynced` and `NewStoreWithDirSync`.
+- `render.Line.Wrap` breaks a word wider than the line in time linear in the
+  word. The hard break measured everything it had left at every cut, so a
+  160 KB base64 blob or minified-JSON line cost the square of its length: the
+  benchmark went from 306 ms to 1.0 ms (no-space) and from 1.19 s to 3.9 ms
+  (CJK), on a loaded machine, min of 8 interleaved runs. The rows are
+  unchanged: a property test holds it to the previous implementation over
+  10,000 random lines at widths 1 to 200.
+- A streamed reply that is one long paragraph — a base64 blob, minified JSON, a
+  wide table row — is laid out from the last few rows each frame instead of
+  from its first byte. The open line used to be wrapped whole, and every row
+  put through the gutter again, at every frame. A plain paragraph (no code span
+  or bold, long enough that no heading, list, diff or fence prefix can still
+  apply) now keeps the rows before its last two in their final form. A marker
+  that arrives late, a break, or a resize drops the cache and the line is laid
+  out whole, as before. So does a blank other than space and tab (a no-break
+  or ideographic space, U+2028, a carriage return), which the wrap breaks at
+  but the cache does not model; and rows are not kept while the text ends
+  partway through a multi-byte character, whose width is not known until its
+  last byte arrives (a tag character or variation selector completes to zero). Per frame at 160 KB, min of 8 interleaved runs at load
+  40 to 50: prose 2.03 to 0.12 ms, table row 4.76 to 0.13 ms, base64 367 to
+  0.12 ms, minified JSON 369 to 0.12 ms, against the 8 ms frame budget. A
+  8,000-delta unbroken prose stream went from 749 to 66 ms and 1.46 GB to
+  25 MB allocated; the same stream as base64 from 73.8 s to 66 ms and 124 MB to
+  16 MB. A reply broken into lines is unchanged (41.0 to 41.8 ms, same
+  allocations). The rows are held to a whole render by property tests over
+  random growth with late markers, resizes, two alternating widths and every
+  rune class above. `mdState.line` now classifies through `mdState.kind`,
+  checked against the previous branches over random input.
 
 ### Fixed
 
