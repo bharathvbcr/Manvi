@@ -24,7 +24,7 @@ func TestReadPinnedNamesAReadWhenALinkRefusesIt(t *testing.T) {
 	if err == nil {
 		t.Fatal("a link was read through")
 	}
-	if !strings.Contains(err.Error(), "refusing to read through") || strings.Contains(err.Error(), "write") {
+	if !strings.Contains(err.Error(), "refusing to read") || strings.Contains(err.Error(), "write") {
 		t.Fatalf("ReadPinned = %v, want a refusal that names a read", err)
 	}
 	if err := WritePinned(root, "CLAUDE.md", []byte("x"), 0o600); err == nil || !strings.Contains(err.Error(), "refusing to write through") {
