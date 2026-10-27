@@ -341,10 +341,10 @@ func (w harnessWriter) removeRecord(nonce string) error {
 	var own struct {
 		Nonce string `json:"nonce"`
 	}
-	if json.Unmarshal(raw, &own) != nil || own.Nonce != nonce {
-		return nil
+	if decodeErr := json.Unmarshal(raw, &own); decodeErr == nil && own.Nonce == nonce {
+		return w.remove(harnessPendingFile)
 	}
-	return w.remove(harnessPendingFile)
+	return nil // not readable, or another run's: not this run's to remove
 }
 
 func (w harnessWriter) judge(rel string, op dc.Operation) error {

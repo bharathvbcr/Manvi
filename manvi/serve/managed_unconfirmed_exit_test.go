@@ -119,7 +119,7 @@ func TestAnUnconfirmedExitKeepsTheCheckoutHeldAndTheBlockInPlace(t *testing.T) {
 	}
 	// A second admission is refused at once, with or without a harness, and says the same.
 	_, err = secondHarnessAttempt(m, root)
-	if busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "restart `manvi serve`") {
+	if err == nil || busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "restart `manvi serve`") {
 		t.Errorf("a second run was admitted on a checkout whose agent may still be running, or not told how to recover: %v", err)
 	}
 	plain := m.otherAttempt("plain", ManagedHarness{})
