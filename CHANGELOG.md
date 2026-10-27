@@ -162,6 +162,24 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Verification no longer runs a repository's diff programs. `work.verify.task`
+  built the critic's diff with `git diff --no-ext-diff` but without
+  `--no-textconv`, and the path verifier's scoped diff (shared with the
+  end-of-turn check of `manvi run`) passed neither, so a `diff.<driver>.textconv`
+  in the repository's config, selected by its `.gitattributes`, ran on the host
+  whenever a changed file matched: a hostile worktree, or an operator's own
+  config, executed a program of its choosing. Every patch-producing git child
+  the `devcouncil` package builds (`diff`, `show`, `log`, `diff-tree`,
+  `diff-index`, `diff-files`, `format-patch`, `whatchanged`, `stash show`, and
+  `blame` with `--no-textconv` alone) now gets `--no-textconv --no-ext-diff` at
+  its one construction site, found past git's global options whether they carry
+  a value (`-C dir`, `--git-dir dir`) or not; `diff`, `show`, `log -p` and
+  `blame` were checked to run the driver by default. The serve
+  critic diff passes both, as the scan and the commit scan already did. The diff
+  text for an ordinary file is unchanged. The `work.verify.task` documentation
+  now says what "passed" covers: with no `MANVI_VERIFY_COMMAND` no test or build
+  runs and a verification passes on the path-scoped gates alone, which the record
+  states in `rigor.source` (ft-9b535b8f).
 - A revoked workflow-catalog entry can no longer end up approved. `Revoke`,
   `Approve`, `Promote` and `SetStability` each read an entry's `current.json`,
   changed it and renamed the whole file back with nothing serialising them, so a
