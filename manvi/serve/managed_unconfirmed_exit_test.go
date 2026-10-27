@@ -90,6 +90,9 @@ func TestAnUnconfirmedExitKeepsTheCheckoutHeldAndTheBlockInPlace(t *testing.T) {
 
 	// The provider confirms the exit when it is asked again: the block is taken
 	// out and the checkout is released.
+	if session == nil {
+		t.Fatal("the factory never built the session")
+	}
 	session.unreaped = false
 	job, err := secondHarnessAttempt(m, root)
 	if err != nil {
@@ -117,6 +120,9 @@ func TestAnAbandonedRunWhoseExitIsUnconfirmedKeepsTheBlock(t *testing.T) {
 	m.runner.mu.Lock()
 	job := m.runner.jobs["run"]
 	m.runner.mu.Unlock()
+	if job == nil {
+		t.Fatal("the prepared run is not registered")
+	}
 	m.runner.abandon(job, errors.New("activation did not produce a receipt"))
 	if got := readFile(t, root, "CLAUDE.md"); !strings.Contains(got, harnessBeginMarker) {
 		t.Fatalf("an abandoned run with an unconfirmed process had its block taken out:\n%s", got)
