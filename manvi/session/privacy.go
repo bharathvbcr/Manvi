@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 // Public returns an owned event suitable for UI and export. Adapter-private
@@ -41,6 +43,135 @@ func (l *Log) PublicEvents() ([]Event, error) {
 		events[i] = e
 	}
 	return events, nil
+}
+
+// scrubPayload is how a payload is scrubbed on its way into a log, for both
+// the live append and a sensitive restore, so the two cannot differ. It also
+// reports whether the scrubber rewrote any string in the payload, which is what
+// a restore needs to know to keep later signed reasoning valid.
+func scrubPayload(t Type, raw json.RawMessage, scrub func(string) string) (json.RawMessage, bool, error) {
+	rewrote := false
+	watching := func(s string) string {
+		out := scrub(s)
+		if out != s {
+			rewrote = true
+		}
+		return out
+	}
+	if t == AssistantMessage {
+		var err error
+		if raw, err = dropScrubbedSignedReasoning(raw, watching); err != nil {
+			return nil, false, err
+		}
+	}
+	out, err := rewritePayload(raw, watching, false, nil, 0)
+	return out, rewrote, err
+}
+
+// dropPrefixInvalidatedReasoning removes the signed reasoning from an assistant
+// message and adds the count to its reasoning_redacted. A restore uses it for
+// the messages after one it rewrote; see RestoreSensitiveLog.
+func dropPrefixInvalidatedReasoning(raw json.RawMessage) (json.RawMessage, error) {
+	var data MessageData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	msg, n := llm.DropSignedReasoning(data.Message)
+	if n == 0 {
+		return raw, nil
+	}
+	data.Message = msg
+	data.ReasoningRedacted += n
+	return json.Marshal(data)
+}
+
+// dropScrubbedSignedReasoning removes the signed reasoning from an assistant
+// message whose reasoning the scrubber would change, and records how many
+// blocks went in the payload's reasoning_redacted.
+//
+// A signed thinking block is only good as produced. Anthropic's thinking
+// documentation: "Pass every `thinking` block back to the API complete and
+// unmodified, alongside the `tool_use` block it accompanied", and "Modified
+// thinking blocks are rejected with a 400 error". Rewriting the text and keeping
+// the signature, as the generic walk does, builds exactly that block and fails
+// every later request in the session. Keeping the text instead would persist
+// the secret the scrubber exists to remove. So the block goes, and the history
+// replays without it.
+//
+// The whole signed run goes, not the one block: "Within the latest assistant
+// message, the sequence of consecutive `thinking` blocks must match what the
+// model generated in the original request: you can't rearrange, edit, or
+// partially drop them", and a kept block whose neighbour was removed leaves a
+// gap ("What fails is a gap"). The documented recovery is to send the history
+// without its thinking blocks, each turn's other blocks left in place, and this
+// adapter only ever sends adaptive thinking, where "no assistant turn needs to
+// start with" a thinking block. Reasoning without a signature (a provider that
+// signs nothing) has no such constraint and is still scrubbed in place by the
+// generic walk, as is a signed block the scrubber leaves unchanged.
+func dropScrubbedSignedReasoning(raw json.RawMessage, scrub func(string) string) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return raw, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return nil, err
+	}
+	message, content := messageBlocks(payload)
+	if message == nil || content == nil {
+		// Not a message the projection can read; the typed decode that follows
+		// refuses it with a better error than this walk could give.
+		return raw, nil
+	}
+
+	type head struct {
+		Kind      string `json:"kind"`
+		Text      string `json:"text"`
+		Signature string `json:"signature"`
+	}
+	signed := make([]bool, len(content))
+	changed, run := false, 0
+	for i, block := range content {
+		var h head
+		if json.Unmarshal(block, &h) != nil || h.Kind != string(llm.KindReasoning) || h.Signature == "" {
+			continue
+		}
+		signed[i] = true
+		run++
+		if scrub(h.Text) != h.Text {
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, nil
+	}
+
+	kept := make([]json.RawMessage, 0, len(content)-run)
+	for i, block := range content {
+		if !signed[i] {
+			kept = append(kept, block)
+		}
+	}
+	var err error
+	if message["content"], err = json.Marshal(kept); err != nil {
+		return nil, err
+	}
+	if payload["message"], err = json.Marshal(message); err != nil {
+		return nil, err
+	}
+	if payload["reasoning_redacted"], err = json.Marshal(run); err != nil {
+		return nil, err
+	}
+	return json.Marshal(payload)
+}
+
+// messageBlocks splits a message payload into the message object and its
+// content blocks. Both are nil when the payload does not hold them.
+func messageBlocks(payload map[string]json.RawMessage) (message map[string]json.RawMessage, content []json.RawMessage) {
+	if json.Unmarshal(payload["message"], &message) != nil || json.Unmarshal(message["content"], &content) != nil {
+		return nil, nil
+	}
+	return message, content
 }
 
 // Walk encoded values rather than replacing JSON bytes: quoted, escaped and

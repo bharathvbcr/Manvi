@@ -87,6 +87,18 @@ type ToolResultBlock struct {
 
 func (ToolResultBlock) Kind() BlockKind { return KindToolResult }
 
+// ResultKey names one tool result within a history: the call it answers and
+// which of the results answering that id it is, counted from 1 in history order.
+//
+// A call id alone is not an identity. A provider may reuse one across responses
+// ("call_0" is what several OpenAI-compatible local servers emit), and anything
+// that remembers something about a result, such as that it was compacted, has to
+// remember which of them.
+type ResultKey struct {
+	ID         CallID
+	Occurrence int
+}
+
 // Role is who a message is from.
 type Role string
 
@@ -207,6 +219,29 @@ func (d Drop) String() string {
 // which is the behaviour that predates the interface.
 type ReasoningReplayer interface {
 	ReplayableOn(fromModel, toModel string) bool
+}
+
+// DropSignedReasoning removes from msg the reasoning a provider binds to the
+// conversation that produced it, a block that carries a signature (an encrypted
+// block carries its data there), and returns how many went. It is the other
+// way history loses reasoning, beside PrepareHistoryFor's model mismatch: there
+// the model cannot read the block, here the history before it no longer matches
+// the one it was signed against. Reasoning with no signature is left alone.
+func DropSignedReasoning(msg Message) (Message, int) {
+	kept := make([]ContentBlock, 0, len(msg.Content))
+	dropped := 0
+	for _, block := range msg.Content {
+		if r, ok := block.(ReasoningBlock); ok && r.Signature != "" {
+			dropped++
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if dropped == 0 {
+		return msg, 0
+	}
+	msg.Content = kept
+	return msg, dropped
 }
 
 // PrepareHistoryFor adapts a message history for a target adapter and model.

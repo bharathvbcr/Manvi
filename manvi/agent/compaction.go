@@ -113,6 +113,11 @@ func (b Budget) Target() int {
 // replaces it.
 type CompactionStep struct {
 	ToolCallID llm.CallID
+	// Occurrence says which of the results answering ToolCallID this is,
+	// counted from 1 in history order. A call id is not unique to a result, so
+	// the step names the result and not only the id. Zero names every result
+	// with the id, which is what a step built by hand without it always meant.
+	Occurrence int
 	Text       string
 	FromBytes  int
 	ToBytes    int
@@ -140,8 +145,18 @@ func (p CompactionPlan) Empty() bool { return len(p.Steps) == 0 }
 // corrected against what the server has been counting. A nil Calibrator leaves
 // the estimate uncorrected.
 //
-// already names tool results that carry a compaction from an earlier step;
-// they are never revisited, which is what keeps the prompt prefix stable.
+// A result's text is cut to a floor, and its images, which are priced in the
+// request like text, are removed whole and replaced by a notice that says how
+// many (ImageRemovalMarker). A result of images alone is eligible: a history of
+// screenshots can be reclaimed, and the model is told it once held them. A
+// result without images is shortened exactly as before.
+//
+// already and done name tool results that carry a compaction from an earlier
+// step; they are never revisited, which is what keeps the prompt prefix stable.
+// already names call ids, and covers every result with the id: it is what a
+// record that named only the id means. done names single results, by call id
+// and place among the results with that id, because a provider may reuse an id
+// and one result's compaction says nothing about the next.
 func PlanCompactionCalibrated(
 	messages []llm.Message,
 	systemPrompt string,
@@ -149,6 +164,7 @@ func PlanCompactionCalibrated(
 	budget Budget,
 	already map[llm.CallID]struct{},
 	cal *Calibrator,
+	done ...llm.ResultKey,
 ) CompactionPlan {
 	scale := cal.Ratio()
 	estimate := func(text string) int { return int(float64(prompt.EstimateTokens(text)) * scale) }
@@ -159,35 +175,83 @@ func PlanCompactionCalibrated(
 		return plan
 	}
 
+	// A candidate is a result that may be shortened: its text, which the floors
+	// cut, and its images, which compaction removes whole and says so. size is
+	// the bytes the result holds, so the step's saving is audited in bytes as it
+	// always was.
 	type candidate struct {
-		id     llm.CallID
-		text   string
-		tokens int
+		id         llm.CallID
+		occurrence int
+		text       string
+		images     int
+		size       int
+		tokens     int
+	}
+	// shortened is the text the candidate is replaced with at a floor: its text
+	// cut to the floor, then the notice for any images removed with it.
+	shortened := func(c candidate, floor int) string {
+		short := CompactToolResultText(c.text, floor)
+		if c.images > 0 {
+			short = withImageNotice(short, c.images)
+		}
+		return short
 	}
 	var eligible []candidate
 
+	var compacted map[llm.ResultKey]struct{}
+	if len(done) > 0 {
+		compacted = make(map[llm.ResultKey]struct{}, len(done))
+		for _, key := range done {
+			compacted[key] = struct{}{}
+		}
+	}
+	seen := make(map[llm.CallID]int)
+
 	cutoff := len(messages) - ProtectedTail
-	for i := 0; i < cutoff; i++ {
-		for _, block := range messages[i].Content {
+	for i, msg := range messages {
+		if i >= cutoff {
+			break
+		}
+		for _, block := range msg.Content {
 			tr, ok := block.(llm.ToolResultBlock)
 			if !ok {
 				continue
 			}
-			if _, done := already[tr.ToolCallID]; done {
+			// Counted before any skip: the place of a result among those that
+			// share its id does not depend on whether the earlier ones were
+			// compacted.
+			seen[tr.ToolCallID]++
+			occurrence := seen[tr.ToolCallID]
+			if _, skip := already[tr.ToolCallID]; skip {
+				continue
+			}
+			if _, skip := compacted[llm.ResultKey{ID: tr.ToolCallID, Occurrence: occurrence}]; skip {
 				continue
 			}
 			var body strings.Builder
+			images, imageTokens, imageBytes := 0, 0, 0
 			for _, inner := range tr.Content {
-				if t, ok := inner.(llm.TextBlock); ok {
-					body.WriteString(t.Text)
+				switch b := inner.(type) {
+				case llm.TextBlock:
+					body.WriteString(b.Text)
+				case llm.ImageBlock:
+					// Counted in the request, so they have to be reclaimable: a
+					// computer-use history is mostly screenshots, and a result
+					// with nothing but images was never eligible, which left a
+					// window full of them with no plan and Insufficient.
+					images++
+					imageTokens += ImageTokens(b)
+					imageBytes += len(b.Data)
 				}
 			}
 			text := body.String()
-			if text == "" {
+			if text == "" && images == 0 {
 				continue
 			}
 			eligible = append(eligible, candidate{
-				id: tr.ToolCallID, text: text, tokens: estimate(text),
+				id: tr.ToolCallID, occurrence: occurrence, text: text, images: images,
+				size:   len(text) + imageBytes,
+				tokens: estimate(text) + int(float64(imageTokens)*scale),
 			})
 		}
 	}
@@ -214,7 +278,7 @@ func PlanCompactionCalibrated(
 	for _, floor := range compactFloors {
 		total := 0
 		for _, c := range eligible {
-			total += c.tokens - estimate(CompactToolResultText(c.text, floor))
+			total += c.tokens - estimate(shortened(c, floor))
 		}
 		if total >= need {
 			chosen = floor
@@ -227,14 +291,21 @@ func PlanCompactionCalibrated(
 		if saved >= need {
 			break
 		}
-		short := CompactToolResultText(c.text, chosen)
-		if len(short) >= len(c.text) {
+		short := shortened(c, chosen)
+		gain := c.tokens - estimate(short)
+		if c.images == 0 {
+			// Text alone: never longer than the input, as it always was.
+			if len(short) >= len(c.text) {
+				continue
+			}
+		} else if gain <= 0 {
+			// An image smaller than its own notice is not worth removing.
 			continue
 		}
-		saved += c.tokens - estimate(short)
+		saved += gain
 		plan.Steps = append(plan.Steps, CompactionStep{
-			ToolCallID: c.id, Text: short,
-			FromBytes: len(c.text), ToBytes: len(short),
+			ToolCallID: c.id, Occurrence: c.occurrence, Text: short,
+			FromBytes: c.size, ToBytes: len(short),
 		})
 	}
 
@@ -244,14 +315,36 @@ func PlanCompactionCalibrated(
 }
 
 // Apply writes the plan to the log. The projection picks it up from there.
+//
+// Each step records the sequence number of the result it shortens, resolved
+// here from the step's call id and occurrence, so the record applies to that
+// result alone. A step that names no occurrence is recorded by call id, which
+// applies to every result with it. A step the log cannot resolve fails the
+// whole Apply before anything is written.
 func (p CompactionPlan) Apply(log *session.Log) error {
+	var keys []llm.ResultKey
 	for _, step := range p.Steps {
-		if _, err := log.Append(session.ToolResultCompacted, session.CompactionData{
+		if step.Occurrence > 0 {
+			keys = append(keys, llm.ResultKey{ID: step.ToolCallID, Occurrence: step.Occurrence})
+		}
+	}
+	seqs, err := log.ResultSeqs(keys)
+	if err != nil {
+		return err
+	}
+	next := 0
+	for _, step := range p.Steps {
+		data := session.CompactionData{
 			ToolCallID: step.ToolCallID,
 			Text:       step.Text,
 			FromBytes:  step.FromBytes,
 			ToBytes:    step.ToBytes,
-		}); err != nil {
+		}
+		if step.Occurrence > 0 {
+			data.ResultSeq = seqs[next]
+			next++
+		}
+		if _, err := log.Append(session.ToolResultCompacted, data); err != nil {
 			return err
 		}
 	}
@@ -262,6 +355,21 @@ func (p CompactionPlan) Apply(log *session.Log) error {
 // constant because both the compactor and anything reading a transcript need to
 // agree on what an elision looks like.
 const CompactionMarker = "[%d line(s) omitted to fit the context window]"
+
+// ImageRemovalMarker is the notice a compacted result carries for the images it
+// held. Compaction replaces a result with text, so its images go with it, and
+// the model must be told: left silent, a result that once showed a screenshot
+// reads as one that never did.
+const ImageRemovalMarker = "[%d image(s) removed to fit the context window]"
+
+// withImageNotice appends the notice for n removed images to a result's text.
+func withImageNotice(text string, n int) string {
+	notice := fmt.Sprintf(ImageRemovalMarker, n)
+	if text == "" {
+		return notice
+	}
+	return text + "\n" + notice
+}
 
 // CompactToolResultText shortens one tool result to roughly maxChars, keeping
 // the head and tail.

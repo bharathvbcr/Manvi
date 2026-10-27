@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -231,6 +232,13 @@ type (
 		// words as though the operator had typed them. A log that cannot tell
 		// those apart is a log that lies about who asked for what.
 		Origin Origin `json:"origin,omitempty"`
+		// ReasoningRedacted counts the signed reasoning blocks the scrubber
+		// removed from this message because it would have changed their text.
+		// A signed block cannot be edited and still be replayed, so it is
+		// dropped whole and this says that happened; the message's other
+		// blocks are as recorded. Zero for every message the scrubber left
+		// whole, which is every message written before the field existed.
+		ReasoningRedacted int `json:"reasoning_redacted,omitempty"`
 	}
 	// ToolCallData is a tool invocation as the model asked for it.
 	ToolCallData struct {
@@ -288,7 +296,15 @@ type (
 	// the model's history carries the short form.
 	CompactionData struct {
 		ToolCallID llm.CallID `json:"tool_call_id"`
-		Text       string     `json:"text"`
+		// ResultSeq is the sequence number of the ToolResult event this
+		// compaction shortens. A call id is not unique to a result (a provider
+		// may reuse one across responses), so the id alone would replay this
+		// text over every result that shares it. Zero means the record names
+		// the call id only, which is every compaction written before the field
+		// existed; such a record still applies to every result with that id,
+		// exactly as it did, so an old journal projects as it always did.
+		ResultSeq int    `json:"result_seq,omitempty"`
+		Text      string `json:"text"`
 		// FromBytes and ToBytes make the saving auditable without diffing the
 		// two events.
 		FromBytes int `json:"from_bytes"`
@@ -370,10 +386,47 @@ type Log struct {
 // those live in `pending` until a message event or a derive folds them in,
 // matching the grouping the original full-replay algorithm produced.
 type projection struct {
-	valid     bool
+	valid bool
+	// compacted is the ledger of compactions that name only a call id (those
+	// written before a compaction named its result): each applies to every
+	// result with that id. bySeq is the ledger of compactions that name their
+	// result, keyed by its ToolResult event's sequence number, and wins when
+	// both hold an entry for a result.
 	compacted map[llm.CallID]string
-	messages  []llm.Message
-	pending   []llm.ContentBlock
+	bySeq     map[int]keyedCompaction
+	// ignored counts the compactions that name a result this log does not hold
+	// under that call id: a journal's bogus sequence, or a result trimmed off
+	// the front. They apply to nothing; Append refuses to write one, so only a
+	// restored journal has any.
+	ignored int
+	// results is every ToolResult event seen, in log order: the index that turns
+	// a result's place in the history into the sequence number a compaction
+	// records, and back.
+	results  []resultRef
+	messages []llm.Message
+	pending  []llm.ContentBlock
+}
+
+// keyedCompaction is a compaction that names its result: the call id it was
+// written for, checked against the result at that sequence, and its text.
+type keyedCompaction struct {
+	id   llm.CallID
+	text string
+}
+
+// resultRef is one ToolResult event as the projection remembers it.
+type resultRef struct {
+	seq int
+	id  llm.CallID
+}
+
+// shortened returns the compacted text for the result at seq answering id.
+func (p *projection) shortened(seq int, id llm.CallID) (string, bool) {
+	if c, ok := p.bySeq[seq]; ok && c.id == id {
+		return c.text, true
+	}
+	short, ok := p.compacted[id]
+	return short, ok
 }
 
 // NewLog returns an empty log.
@@ -447,7 +500,7 @@ func (l *Log) Observe(fn func(Event)) {
 // AssistantChunk above all — is history-neutral and costs nothing here,
 // which is the whole point: the old derive-everything-per-step shape made a
 // long streaming session quadratic in its own token count.
-func (l *Log) extendProjection(t Type, payload any) {
+func (l *Log) extendProjection(t Type, seq int, payload any) {
 	switch t {
 	case ToolResultCompacted:
 		// A compaction changes how an EARLIER tool result replays, so no
@@ -486,9 +539,10 @@ func (l *Log) extendProjection(t Type, payload any) {
 		if len(content) == 0 {
 			content = llm.Content{llm.TextBlock{Text: data.Text}}
 		}
-		if short, ok := l.proj.compacted[data.ToolCallID]; ok {
+		if short, ok := l.proj.shortened(seq, data.ToolCallID); ok {
 			content = llm.Content{llm.TextBlock{Text: short}}
 		}
+		l.proj.results = append(l.proj.results, resultRef{seq: seq, id: data.ToolCallID})
 		l.proj.pending = append(l.proj.pending, llm.ToolResultBlock{
 			ToolCallID: data.ToolCallID,
 			Content:    content,
@@ -514,7 +568,7 @@ func (p *projection) flushPending(out *[]llm.Message) {
 func (l *Log) rebuildProjection() error {
 	events := l.events
 
-	proj := projection{valid: true, compacted: make(map[llm.CallID]string)}
+	proj := projection{valid: true, compacted: make(map[llm.CallID]string), bySeq: make(map[int]keyedCompaction)}
 	for _, event := range events {
 		if event.Type != ToolResultCompacted {
 			continue
@@ -523,7 +577,11 @@ func (l *Log) rebuildProjection() error {
 		if err := json.Unmarshal(event.Data, &data); err != nil {
 			return fmt.Errorf("session: event %d: %w", event.Seq, err)
 		}
-		proj.compacted[data.ToolCallID] = data.Text
+		if data.ResultSeq > 0 {
+			proj.bySeq[data.ResultSeq] = keyedCompaction{id: data.ToolCallID, text: data.Text}
+		} else {
+			proj.compacted[data.ToolCallID] = data.Text
+		}
 	}
 
 	for _, event := range events {
@@ -551,14 +609,24 @@ func (l *Log) rebuildProjection() error {
 			if len(content) == 0 {
 				content = llm.Content{llm.TextBlock{Text: data.Text}}
 			}
-			if short, ok := proj.compacted[data.ToolCallID]; ok {
+			if short, ok := proj.shortened(event.Seq, data.ToolCallID); ok {
 				content = llm.Content{llm.TextBlock{Text: short}}
 			}
+			proj.results = append(proj.results, resultRef{seq: event.Seq, id: data.ToolCallID})
 			proj.pending = append(proj.pending, llm.ToolResultBlock{
 				ToolCallID: data.ToolCallID,
 				Content:    content,
 				IsError:    data.IsError,
 			})
+		}
+	}
+	held := make(map[int]llm.CallID, len(proj.results))
+	for _, r := range proj.results {
+		held[r.seq] = r.id
+	}
+	for seq, c := range proj.bySeq {
+		if id, ok := held[seq]; !ok || id != c.id {
+			proj.ignored++
 		}
 	}
 	l.proj = proj
@@ -591,7 +659,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		raw = json.RawMessage(`{"withheld":true}`)
 	}
 	if scrub != nil && len(raw) > 0 {
-		cleaned, err := rewritePayload(raw, scrub, false, nil, 0)
+		cleaned, _, err := scrubPayload(t, raw, scrub)
 		if err != nil {
 			return Event{}, fmt.Errorf("session: scrubbing %s: %w", t, err)
 		}
@@ -608,7 +676,12 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	// The projection must consume the bytes that will be persisted, never the
 	// caller's mutable payload or its pre-redaction contents.
 	var projected any
+	var compaction CompactionData
 	switch t {
+	case ToolResultCompacted:
+		if err := json.Unmarshal(raw, &compaction); err != nil {
+			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
+		}
 	case UserMessage, AssistantMessage:
 		var data MessageData
 		if err := json.Unmarshal(raw, &data); err != nil {
@@ -627,6 +700,12 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	}
 
 	l.mu.Lock()
+	if t == ToolResultCompacted {
+		if err := l.checkCompactionLocked(compaction); err != nil {
+			l.mu.Unlock()
+			return Event{}, err
+		}
+	}
 	switch t {
 	case TurnStart:
 		l.turn++
@@ -645,7 +724,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		Data: raw,
 	}
 	l.events = append(l.events, event)
-	l.extendProjection(t, projected)
+	l.extendProjection(t, event.Seq, projected)
 	observers := append([]func(Event){}, l.observers...)
 	l.mu.Unlock()
 
@@ -660,6 +739,31 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		fn(cloneEvent(publicEvent))
 	}
 	return cloneEvent(event), nil
+}
+
+// checkCompactionLocked refuses a compaction that names a result the log does
+// not hold under that call id. A record that named the wrong event would apply
+// to nothing, or to the wrong result, and say nothing about it. A record that
+// names no result (the call-id form) is not checked: it is what every journal
+// written before the field existed contains. Caller holds l.mu.
+func (l *Log) checkCompactionLocked(c CompactionData) error {
+	if c.ResultSeq == 0 {
+		return nil
+	}
+	i := sort.Search(len(l.events), func(i int) bool { return l.events[i].Seq >= c.ResultSeq })
+	if i == len(l.events) || l.events[i].Seq != c.ResultSeq || l.events[i].Type != ToolResult {
+		return fmt.Errorf("session: compaction names result seq %d, which is not a tool result in this log", c.ResultSeq)
+	}
+	var result struct {
+		ToolCallID llm.CallID `json:"tool_call_id"`
+	}
+	if err := json.Unmarshal(l.events[i].Data, &result); err != nil {
+		return fmt.Errorf("session: event %d: %w", c.ResultSeq, err)
+	}
+	if result.ToolCallID != c.ToolCallID {
+		return fmt.Errorf("session: compaction of call %q names result seq %d, which answers call %q", c.ToolCallID, c.ResultSeq, result.ToolCallID)
+	}
+	return nil
 }
 
 func validateToolContent(data ToolResultData) error {
@@ -679,7 +783,10 @@ func validateToolContent(data ToolResultData) error {
 // SetScrubber installs a backstop for decoded JSON string values, including
 // escaped text. The callback takes plain text and must return plain text.
 // Provider-private message.provenance.replay_state is preserved byte-for-byte;
-// redacting it corrupts signed continuation. PublicEvents and Observe omit it.
+// redacting it corrupts signed continuation. Signed reasoning is the other half
+// of that rule: a signed block the scrubber would change is dropped whole, with
+// the rest of its message's signed run, and the message records the count in
+// reasoning_redacted. PublicEvents and Observe omit the replay state.
 // Applications must retain Events/Store privately and avoid sending sensitive
 // literals as model-generated signed tool arguments (use parameter references).
 func (l *Log) SetScrubber(scrub func(string) string) {
@@ -706,11 +813,27 @@ func (l *Log) SetSensitiveScrubber(scrub func(string) string) {
 // (Jarvis resumes discovery sessions through it): RestoreLog then
 // SetSensitiveScrubber would project the unscrubbed history first, and the
 // scrubber cannot reach events that are already recorded.
+//
+// This is the one retroactive scrub, and it is the one that edits a history the
+// provider has already signed. A thinking block's signature binds the system
+// prompt, the tools and every message before it (the Claude API skill's
+// shared/preserved-thinking-migration.md: "each `thinking` block's `signature`
+// records the conversation that produced it ... every message before the
+// block"; "One edit to an earlier turn invalidates every thinking block after
+// it"). So once the scrub has rewritten any string in a message that shapes the
+// history, the signed reasoning of every assistant message after it is stale and
+// is dropped, each recording its count in reasoning_redacted. A message's own
+// reasoning is dropped only when its own reasoning text changed (handled where
+// the scrub runs); a rewrite elsewhere in the same message does not touch it,
+// because the block comes before the text that changed. A live append needs none
+// of this: the scrub runs before the next request is built, so every later
+// block is minted against the scrubbed history.
 func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error) {
 	if scrub == nil {
 		return nil, errors.New("session: sensitive restore requires scrubber")
 	}
 	clean := cloneEvents(events)
+	edited := false
 	for i := range clean {
 		if clean[i].Type == AssistantChunk {
 			clean[i].Data = json.RawMessage(`{"withheld":true}`)
@@ -719,11 +842,23 @@ func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error
 		if len(clean[i].Data) == 0 {
 			continue
 		}
-		raw, err := rewritePayload(clean[i].Data, scrub, false, nil, 0)
+		data := clean[i].Data
+		if edited && clean[i].Type == AssistantMessage {
+			// Before the scrub, which re-encodes canonically: dropping after it
+			// would leave bytes a second restore would encode differently.
+			var err error
+			if data, err = dropPrefixInvalidatedReasoning(data); err != nil {
+				return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
+			}
+		}
+		raw, rewrote, err := scrubPayload(clean[i].Type, data, scrub)
 		if err != nil {
 			return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
 		}
 		clean[i].Data = raw
+		if rewrote && shapesHistory(clean[i].Type) {
+			edited = true
+		}
 	}
 	log, err := RestoreLog(clean)
 	if err != nil {
@@ -731,6 +866,18 @@ func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error
 	}
 	log.SetSensitiveScrubber(scrub)
 	return log, nil
+}
+
+// shapesHistory reports whether an event of this type is part of the history a
+// request replays: a message, a tool result, or the text a compaction puts in
+// the place of one.
+func shapesHistory(t Type) bool {
+	switch t {
+	case UserMessage, AssistantMessage, ToolResult, ToolResultCompacted:
+		return true
+	default:
+		return false
+	}
 }
 
 // Events returns a copy of the log.
@@ -824,8 +971,10 @@ func (l *Log) Len() int {
 	return len(l.events)
 }
 
-// CompactedCalls returns the tool results this log records as already
-// compacted, so a planner can leave them alone.
+// CompactedCalls returns the call ids whose results this log records as already
+// compacted by a record that names only the id, so a planner can leave every
+// result with that id alone. Those are the compactions written before a record
+// named its result; one that does is in CompactedResults.
 //
 // The ledger has to live on the log rather than on the caller. A Loop is built
 // per turn — cmd/manvi/tui.go builds a new one on every submission, and
@@ -868,7 +1017,119 @@ func (l *Log) CompactedCalls() (map[llm.CallID]struct{}, error) {
 		if err := json.Unmarshal(event.Data, &data); err != nil {
 			return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
 		}
-		out[data.ToolCallID] = struct{}{}
+		if data.ResultSeq == 0 {
+			out[data.ToolCallID] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
+// withProjection runs read against the projection once it is warm, building it
+// first when a compaction or a restore left it cold. read runs under the read
+// lock and must not keep what it is handed.
+func (l *Log) withProjection(read func(*projection)) error {
+	for {
+		l.mu.RLock()
+		if l.proj.valid {
+			read(&l.proj)
+			l.mu.RUnlock()
+			return nil
+		}
+		l.mu.RUnlock()
+		l.mu.Lock()
+		if !l.proj.valid {
+			if err := l.rebuildProjection(); err != nil {
+				l.mu.Unlock()
+				return err
+			}
+		}
+		l.mu.Unlock()
+	}
+}
+
+// CompactedResults returns the results this log records as already compacted
+// by a record that names its result, as the keys a planner skips. The key of a
+// result is its call id and its place among the results with that id, which is
+// what the planner can see in the messages it is given.
+func (l *Log) CompactedResults() ([]llm.ResultKey, error) {
+	var out []llm.ResultKey
+	err := l.withProjection(func(p *projection) {
+		seen := make(map[llm.CallID]int)
+		for _, r := range p.results {
+			seen[r.id]++
+			if c, ok := p.bySeq[r.seq]; ok && c.id == r.id {
+				out = append(out, llm.ResultKey{ID: r.id, Occurrence: seen[r.id]})
+			}
+		}
+	})
+	return out, err
+}
+
+// HoldsResults reports whether msgs carry exactly the tool results this log's
+// projection does, by call id and in order. That is what makes a result's place
+// among those sharing an id the same number in msgs as in the log, which is how
+// a compaction planned over msgs names a result of the log.
+func (l *Log) HoldsResults(msgs []llm.Message) (bool, error) {
+	same := true
+	err := l.withProjection(func(p *projection) {
+		i := 0
+		for _, m := range msgs {
+			for _, b := range m.Content {
+				tr, ok := b.(llm.ToolResultBlock)
+				if !ok {
+					continue
+				}
+				if i >= len(p.results) || p.results[i].id != tr.ToolCallID {
+					same = false
+					return
+				}
+				i++
+			}
+		}
+		same = i == len(p.results)
+	})
+	return same, err
+}
+
+// IgnoredCompactions is how many compaction records name a result this log does
+// not hold under their call id, so the projection ignores them. A restore stays
+// lenient about them, because an old journal can carry one (a result trimmed off
+// the front by retention leaves its compaction behind); Append refuses to write
+// one. Store.Load reports the count in LoadReport.
+func (l *Log) IgnoredCompactions() (int, error) {
+	n := 0
+	err := l.withProjection(func(p *projection) { n = p.ignored })
+	return n, err
+}
+
+// ResultSeqs resolves result keys to the sequence numbers of their ToolResult
+// events, in the order given, so a compaction can name the result it shortens.
+// It refuses a key the log does not hold rather than guess which result was
+// meant.
+func (l *Log) ResultSeqs(keys []llm.ResultKey) ([]int, error) {
+	out := make([]int, len(keys))
+	var missing *llm.ResultKey
+	err := l.withProjection(func(p *projection) {
+		byKey := make(map[llm.ResultKey]int, len(p.results))
+		seen := make(map[llm.CallID]int)
+		for _, r := range p.results {
+			seen[r.id]++
+			byKey[llm.ResultKey{ID: r.id, Occurrence: seen[r.id]}] = r.seq
+		}
+		for i, key := range keys {
+			seq, ok := byKey[key]
+			if !ok {
+				missing = &keys[i]
+				return
+			}
+			out[i] = seq
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if missing != nil {
+		return nil, fmt.Errorf("session: no tool result %d of call %q in this log", missing.Occurrence, missing.ID)
 	}
 	return out, nil
 }

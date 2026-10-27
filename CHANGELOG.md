@@ -300,6 +300,89 @@ under **Unreleased** in the same commit as the code.
   redacted_thinking block even when empty, and no other block type gains a
   `thinking` field. A golden test pins the exact JSON of every block type; the
   replay test fails on 58b9258.
+- Compaction counts and removes images, and says it did. The planner counted and
+  replaced text only, and the projection replaces a whole result with the one
+  text it is given, so a screenshot inside a compacted result vanished with no
+  marker (7 of 10 in the audit's run), and a result of images alone was never
+  eligible: 20 screenshots at 26,726 estimated tokens against a 13,312
+  threshold gave an empty plan and `Insufficient`. Images now count toward a
+  result's size, scaled by the calibrator like text, and a result with images
+  is replaced by its text cut to the floor followed by
+  `[N image(s) removed to fit the context window]`; an image smaller than that
+  notice is left alone. The same history now plans 14 steps and lands at 8,764
+  estimated tokens. A result without images is shortened exactly as before
+  (same text, same order); `BenchmarkPlanCompaction` is within noise of the
+  previous build. Known limit: compaction rewrites earlier tool results, which
+  is an edit to an earlier turn and invalidates later signed thinking on the
+  models and accounts that enforce preserved thinking; that class is tracked on
+  ft-f7993787 and is not changed here.
+- `chat.prepare` calibrates its token estimate against the raw estimate, not
+  against its own corrected one. It stored the calibrated `after_tokens` as the
+  estimate for the next server count and fed it back to the calibrator as the
+  raw side of the pair, so the correction was applied twice: a server counting
+  half the raw estimate settled the ratio at 0.707 (the square root) instead of
+  0.5, and compaction fired earlier than the window required. The session now
+  holds the raw `CountRequestTokens` of the request the host will send (the
+  history with the ledger's shortenings applied), as the agent loop already
+  does, and a server counting half converges to 0.5. `calibration_ratio` on the
+  wire is unchanged in meaning; its values are now the true ratio.
+- A tool result's compaction is recorded against that result, not against its
+  call id. The compaction ledger was keyed on the id alone, so a provider that
+  reuses one across responses (`call_0` is what several OpenAI-compatible local
+  servers emit) had the compaction of one result replayed over another's
+  unrelated text, and a later result carrying the id of a compacted one was
+  taken as already compacted and never shortened. The `context/tool_result_compacted`
+  event gains `result_seq`, the sequence of the tool result it shortens; the
+  planner names a result by call id and its place among the results with that
+  id, and `Apply` resolves that to the sequence (and refuses a result the log
+  does not hold, before writing anything). A record without `result_seq`, which
+  is every existing journal, still names the call id only and projects exactly
+  as before, so a resumed session replays as it did. The `manvi serve` chat
+  plane keys its ledger the same way: `chat.prepare` steps gain an optional
+  `occurrence` (which `tool` message carrying `tool_call_id`, from 1), additive
+  within protocol 1, so a host that reuses an id can apply a step to one result.
+  `contracts/serve.ops.schema.json` and its checksum are regenerated; a host
+  that mirrors the contract needs the new copy. Two follow-ons: when the
+  messages handed to the loop's compaction stage are not the log's tool results
+  (an earlier stage of the waterfall dropped or rewrote some), compaction plans
+  over the log's own projection, which is what it returns anyway, so a place
+  counted among results sharing an id always means the log's result. And a
+  restored journal stays lenient about a compaction record that names a result
+  the log does not hold under that call id (a bogus sequence, or a result
+  retention trimmed off the front): the projection ignores it, and
+  `LoadReport.IgnoredCompactions` counts it; `Append` still refuses to write one.
+- The session privacy scrub no longer leaves a signed reasoning block with text
+  that its signature does not cover. It rewrote a thinking block's text and kept
+  the signature, and the Anthropic adapter replays both, which the API refuses
+  ("Modified thinking blocks are rejected with a 400 error"), so every later
+  request in a session whose reasoning mentioned a scrubbed value failed. (With
+  `thinking.display` omitted the text is empty, the scrub changes nothing and
+  the block was fine; it bit on the tiers that return summaries.) When the
+  scrubber would change the text of a signed reasoning block, the message now
+  drops that block and the rest of its signed run, text and signature together,
+  and records the count in `reasoning_redacted` on the message event; the
+  secret is not persisted and no mismatched block reaches a provider. The whole
+  run goes, not one block: within the latest assistant message the API checks
+  the run as a unit ("you can't rearrange, edit, or partially drop them"). A
+  turn without its thinking run is valid under adaptive thinking ("no assistant
+  turn needs to start with" a thinking block), which is the only mode this
+  adapter sends, including the assistant turn before a `tool_result`. A signed
+  block the scrubber leaves alone replays unchanged, and unsigned reasoning (a
+  provider that signs nothing) is still scrubbed in place.
+
+  On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 a thinking block's
+  signature also binds the system prompt, the tools and every message before it,
+  so an edit to an earlier turn invalidates the signed reasoning after it. A
+  live append is unaffected: the scrub runs before the next request is built,
+  so every later block is minted against the scrubbed history. `RestoreSensitiveLog`
+  is the one retroactive scrub, and it edits a history the provider already
+  signed: once it has rewritten any string in a user message, assistant message,
+  tool result or compaction, the signed reasoning of every assistant message
+  after it is dropped too (`llm.DropSignedReasoning`), each recording its count
+  in `reasoning_redacted`. A rewrite elsewhere in the same message does not
+  touch that message's own reasoning, which comes before it. A journal already
+  written with a scrubbed block and its old signature is not repaired: the
+  scrubber that changed it is not known at load.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible
