@@ -296,7 +296,7 @@ func (w harnessWriter) write(rel string, op dc.Operation, data []byte) error {
 		return err
 	}
 	if changed, err := pinnedWrite(w.root, rel, data); err != nil {
-		return &harnessMaterialiseError{cause: fmt.Errorf("writing %s: %v", rel, err), mayHaveChanged: changed}
+		return &harnessMaterialiseError{cause: fmt.Errorf("writing %s: %w", rel, err), mayHaveChanged: changed}
 	}
 	return nil
 }

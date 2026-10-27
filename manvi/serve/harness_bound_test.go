@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -186,7 +185,7 @@ func TestManagedFinishKeepsTheRecordWhenTheBlockCannotBeTakenOut(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, harnessPendingFile)); err != nil {
 		t.Fatalf("finish lost the record of a block it could not take out: %v", err)
 	}
-	if e := m.runner.HarnessBusy(root); e == nil || !bytes.Contains([]byte(e.Message), []byte("-byte limit")) {
+	if e := m.runner.HarnessBusy(root); e == nil || !strings.Contains(e.Message, "-byte limit") {
 		t.Fatalf("HarnessBusy = %+v, want busy naming why", e)
 	}
 }

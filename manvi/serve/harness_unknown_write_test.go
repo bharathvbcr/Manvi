@@ -143,7 +143,7 @@ func TestManagedUnknownBlockWriteIsTakenOutByTheNextAttempt(t *testing.T) {
 	if e := m.runner.HarnessBusy(root); e == nil {
 		t.Fatal("verification would diff a checkout that may carry the block")
 	}
-	if err := os.Chmod(filepath.Join(root, "CLAUDE.md"), 0o644); err != nil {
+	if err := os.Chmod(filepath.Join(root, "CLAUDE.md"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	next := &managedJob{done: make(chan struct{})}
