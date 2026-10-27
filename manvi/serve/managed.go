@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
-	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 )
 
@@ -67,7 +67,66 @@ type ManagedRunner struct {
 	// registration on it one step; see enterCheckout. Taken before mu and before
 	// any job's mu.
 	checkoutMu sync.Mutex
+	// blocked is the checkouts whose harness block no live run holds and that
+	// has not been taken out, each with why; guarded by mu. See blockedCheckout.
+	blocked []blockedCheckout
 }
+
+// blockedCheckout is a checkout whose harness block was left in place because
+// taking it out failed, and the reason (the restore's own error). That the block
+// may be there is the record on disk, which this does not replace: it is process
+// memory kept only so a verifier that is refused is told why.
+type blockedCheckout struct {
+	info   os.FileInfo
+	reason string
+}
+
+// setBlocked remembers why the block on a checkout could not be taken out,
+// replacing what was remembered for that directory.
+func (r *ManagedRunner) setBlocked(info os.FileInfo, reason string) {
+	if info == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropBlocked(info)
+	r.blocked = append(r.blocked, blockedCheckout{info: info, reason: reason})
+}
+
+func (r *ManagedRunner) clearBlocked(info os.FileInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropBlocked(info)
+}
+
+// dropBlocked forgets a checkout; mu is held.
+func (r *ManagedRunner) dropBlocked(info os.FileInfo) {
+	r.blocked = slices.DeleteFunc(r.blocked, func(b blockedCheckout) bool { return sameCheckout(b.info, info) })
+}
+
+// blockedReason is why the block on a checkout was not taken out, or "".
+func (r *ManagedRunner) blockedReason(info os.FileInfo) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range r.blocked {
+		if sameCheckout(b.info, info) {
+			return b.reason
+		}
+	}
+	return ""
+}
+
+// settleBlocked is what an attempt to take a block out came to: err is its
+// error. A record still on disk means the block may still be in the file, and
+// why is remembered; with none there is nothing left to say.
+func (r *ManagedRunner) settleBlocked(info os.FileInfo, root string, err error) {
+	if err == nil || !harnessRecordPending(root) {
+		r.clearBlocked(info)
+		return
+	}
+	r.setBlocked(info, err.Error())
+}
+
 type managedRun struct {
 	ID             string `json:"id"`
 	Revision       int64  `json:"revision"`
@@ -193,7 +252,11 @@ func harnessBusy(format string, args ...any) *Error {
 //     always did. The check and the claim are one step under checkoutMu.
 //   - a block a run left behind (Manvi died mid-run) is taken out, by the same
 //     exact-bytes rule as any restore, and reported in the prepare result. A block
-//     that cannot be taken out is refused once, typed, and the record is cleared.
+//     the agent edited inside, or a record that is not a block Manvi wrote, is
+//     refused once, typed, and the record is cleared. Any other failure to take a
+//     block out (the file cannot be read, or is past the bound) is refused, typed,
+//     and the record is kept: the block may still be in the file, so every attempt
+//     on the checkout is refused until the cause is put right.
 //
 // A checkout that cannot be resolved has nothing to guard; a harness attempt on
 // one is refused where its spec is read.
@@ -234,6 +297,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		}
 	}
 	note, err := recoverPendingHarness(resolved)
+	r.settleBlocked(info, resolved, err)
 	if err != nil {
 		return err
 	}
@@ -271,10 +335,11 @@ func sameCheckout(a, b os.FileInfo) bool {
 
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
 // managed run with a harness is live on it, or one left a record that has not
-// been applied. Anything that captures the worktree's diff asks first and
-// refuses, so no check judges a change the agent did not make. It is refused and
-// not worked around by excluding the span: a refusal is honest about what the
-// diff would have held. Nil means no block is known to be there.
+// been applied (and, when this process tried to apply it and could not, why).
+// Anything that captures the worktree's diff asks first and refuses, so no check
+// judges a change the agent did not make. It is refused and not worked around by
+// excluding the span: a refusal is honest about what the diff would have held.
+// Nil means no block is known to be there.
 func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 	resolved, info, ok := resolvedCheckout(worktree)
 	if !ok {
@@ -299,7 +364,10 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
 		}
 	}
-	if _, err := devcouncil.ReadPinned(resolved, harnessPendingFile, maxPendingBytes); err == nil {
+	if harnessRecordPending(resolved) {
+		if reason := r.blockedReason(info); reason != "" {
+			return harnessBusy("a managed harness run left its block in this worktree and taking it out failed: %s; the block may still be in the instruction file, and every work.runs.managed.prepare on this checkout is refused until that is put right", reason)
+		}
 		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out; the next work.runs.managed.prepare on this checkout takes it out and reports it")
 	}
 	return nil
@@ -1594,9 +1662,14 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 	// Before anything is recorded, and whatever the run's end: the checkout is
 	// given back without the harness block. A restore that fails is part of the
 	// reason the run is recorded with, typed, because a block left behind is a
-	// change in the checkout the agent did not make.
+	// change in the checkout the agent did not make. Its record is kept (see
+	// recoverPendingHarness), and why is kept beside it for HarnessBusy.
 	if restoreErr := job.restoreHarness(); restoreErr != nil {
 		cause = errors.Join(cause, restoreErr)
+		job.mu.Lock()
+		info, root := job.checkoutInfo, job.checkout
+		job.mu.Unlock()
+		r.settleBlocked(info, root, restoreErr)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

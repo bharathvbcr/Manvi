@@ -187,6 +187,22 @@ under **Unreleased** in the same commit as the code.
   run proceeds, restoring it when it ends; it is not and the attempt fails with
   no record; the file cannot be read to tell and the record is kept and the run
   is aborted with it, so the next attempt on the checkout takes the block out.
+- A managed run's harness block can no longer be written where it could not be
+  taken out again, and a failed restore no longer deletes its record. The
+  block's size was bounded apart from the file's, so a CLAUDE.md a few hundred
+  bytes under the 4 MiB read limit was accepted, grew past it, could not be read
+  by the restore, and the next prepare then cleared the record: Manvi's bytes
+  stayed in the user's file and `HarnessBusy` stopped reporting them. There is
+  now one bound, on the file with the block in it, checked before anything is
+  written (`E_HARNESS_MATERIALISE` naming it), and shared by the read before the
+  write and the read that restores. A restore that fails for any reason other
+  than the agent having edited inside or removed the block keeps its record:
+  every `work.runs.managed.prepare` on that checkout is refused, and
+  `HarnessBusy` refuses a verification of it naming why, until the cause is put
+  right and a later recovery takes the block out. An unreadable record, or a
+  block the agent edited inside, is still refused once and cleared. A checkout
+  whose record an earlier build wrote past the new bound stays refused with the
+  restore's error until the file is put right by hand.
 
 ## [0.1.0] — 2026-10-17
 
