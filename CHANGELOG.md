@@ -178,6 +178,15 @@ under **Unreleased** in the same commit as the code.
   record. Checkouts are compared with `os.SameFile` (device and inode; volume
   serial number and file index on Windows), which is also right on a
   case-sensitive volume, where a case-folded string would not be.
+- A managed run's harness block write that fails after the file was replaced
+  (the rename is done, the directory sync after it failed;
+  `WriteMayHaveChanged`) is no longer taken for a write that did nothing. The
+  materialisation used to delete the record of the block and carry on as if the
+  file were untouched, leaving the block in the user's instruction file with
+  nothing to take it out. It now reads the file back: the block is there and the
+  run proceeds, restoring it when it ends; it is not and the attempt fails with
+  no record; the file cannot be read to tell and the record is kept and the run
+  is aborted with it, so the next attempt on the checkout takes the block out.
 
 ## [0.1.0] — 2026-10-17
 

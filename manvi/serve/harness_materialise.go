@@ -84,12 +84,24 @@ const (
 // its harness could not be written into the checkout, or taken out of it.
 const ErrHarnessMaterialise = "E_HARNESS_MATERIALISE"
 
-type harnessMaterialiseError struct{ cause error }
+type harnessMaterialiseError struct {
+	cause error
+	// mayHaveChanged is set on a failed write that may still have changed the
+	// file (devcouncil.WriteMayHaveChanged): the outcome is unknown, not failed.
+	mayHaveChanged bool
+}
 
 func (e *harnessMaterialiseError) Error() string {
 	return ErrHarnessMaterialise + ": " + e.cause.Error()
 }
 func (e *harnessMaterialiseError) Unwrap() error { return e.cause }
+
+// writeMayHaveChanged says whether err is a failed write whose effect on the
+// file is unknown.
+func writeMayHaveChanged(err error) bool {
+	var typed *harnessMaterialiseError
+	return errors.As(err, &typed) && typed.mayHaveChanged
+}
 
 func materialiseFailure(format string, args ...any) error {
 	return &harnessMaterialiseError{cause: fmt.Errorf(format, args...)}
@@ -253,10 +265,19 @@ func (w harnessWriter) write(rel string, op dc.Operation, data []byte) error {
 	if err := w.judge(rel, op); err != nil {
 		return err
 	}
-	if err := devcouncil.WritePinned(w.root, rel, data, 0o644); err != nil {
-		return materialiseFailure("writing %s: %v", rel, err)
+	if changed, err := pinnedWrite(w.root, rel, data); err != nil {
+		return &harnessMaterialiseError{cause: fmt.Errorf("writing %s: %v", rel, err), mayHaveChanged: changed}
 	}
 	return nil
+}
+
+// pinnedWrite is the pinned writer, and says whether a failed write may still
+// have changed the file (devcouncil.WriteMayHaveChanged: the rename is done and
+// the directory sync after it failed). A variable so a test can fail a write
+// after its bytes are in place.
+var pinnedWrite = func(root, rel string, data []byte) (mayHaveChanged bool, err error) {
+	err = devcouncil.WritePinned(root, rel, data, 0o644)
+	return err != nil && devcouncil.WriteMayHaveChanged(err), err
 }
 
 func (w harnessWriter) remove(rel string) error {
@@ -291,7 +312,9 @@ type harnessMaterialisation struct {
 // nothing to write: a spec with no sections has nothing to say to the CLI. A
 // provider with no instruction file is refused. Nothing already in the file is
 // read as a block: content that looks like one is content. A failure leaves the
-// file as it found it.
+// file as it found it, with one exception: when a write that may have changed
+// the file fails and the file cannot be read to tell (afterUnknownWrite), it
+// returns what restores the block together with the error, and the record stays.
 func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMaterialisation, error) {
 	rel, ok := harnessInstructionFile(provider)
 	if !ok {
@@ -334,12 +357,42 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	// block that is not there, which restores as nothing, and never a block with
 	// no record.
 	if err := w.write(harnessPendingFile, dc.OpWrite, record); err != nil {
+		if writeMayHaveChanged(err) {
+			err = errors.Join(err, w.remove(harnessPendingFile)) // a record of no block restores as nothing
+		}
 		return nil, err
 	}
-	if err := w.write(rel, op, append(append([]byte(nil), before...), appended...)); err != nil {
-		return nil, errors.Join(err, w.remove(harnessPendingFile))
+	whole := append(append([]byte(nil), before...), appended...)
+	if err := w.write(rel, op, whole); err != nil {
+		if !writeMayHaveChanged(err) {
+			return nil, errors.Join(err, w.remove(harnessPendingFile))
+		}
+		return m.afterUnknownWrite(err)
 	}
 	return m, nil
+}
+
+// afterUnknownWrite decides what a block write that may have changed the file
+// came to, by reading the file. The record is never removed while the block may
+// be in it:
+//
+//   - the block is there: the write landed, the failure was after it, and the
+//     run proceeds with what takes the block out at its end;
+//   - the file is readable and the block is not there: nothing was written, a
+//     failed materialisation with no record;
+//   - the file cannot be read to tell: unknown. The record stays and the run is
+//     returned beside the error, so the caller can still take the block out if it
+//     is there, and the next Prepare on the checkout finds the record if it
+//     cannot.
+func (m *harnessMaterialisation) afterUnknownWrite(writeErr error) (*harnessMaterialisation, error) {
+	current, err := devcouncil.ReadPinned(m.root, m.File, maxInstructionFileBytes)
+	switch {
+	case err == nil && bytes.Contains(current, m.pending.Appended):
+		return m, nil
+	case err == nil, errors.Is(err, fs.ErrNotExist):
+		return nil, errors.Join(writeErr, m.remove(harnessPendingFile))
+	}
+	return m, errors.Join(writeErr, materialiseFailure("reading %s to see whether the block was written: %v; its record is kept", m.File, err))
 }
 
 // Restore takes the block out and clears the record. See restoreRecorded.
