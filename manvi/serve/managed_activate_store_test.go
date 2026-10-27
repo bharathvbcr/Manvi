@@ -96,6 +96,13 @@ func TestActivateDoesNotHoldTheJobAcrossStoreCalls(t *testing.T) {
 			t.Errorf("Follow = %+v, %v, want the message queued", res, err)
 		}
 	})
+	// Stop is the other inline op that reaches a job; it takes no lock the store
+	// call holds, and is asserted rather than assumed.
+	answersWithin(t, "a stop", 2*time.Second, func() {
+		if err := m.runner.Stop(stopRequest()); err != nil {
+			t.Errorf("Stop = %v", err)
+		}
+	})
 
 	releaseStore()
 	a, b := <-first, <-retry
