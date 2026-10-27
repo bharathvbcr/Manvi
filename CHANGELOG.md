@@ -59,6 +59,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
+  running the turn on the first megabyte. The read stopped at the cap with no
+  overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
+  said the rest was dropped, which for an instruction at the end meant the turn
+  did something else. A prompt of exactly the cap is still accepted; one byte
+  more exits 1 with a message naming the cap and the way through, which is a
+  file in the checkout that a shorter prompt names (there is no option for a
+  larger prompt). `-p` and positional prompts were never read through this
+  limit. Documented in `docs/CLI_AND_CONFIGURATION.md` and `manvi run --help`.
 - `computer.Run.Send` now waits until the run loop admits the control, at most
   one loop step (for example a 3s pause fence), and returns the run's verdict.
   It returns nil once the control passed the epoch check, `ErrStaleControlEpoch`

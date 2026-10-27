@@ -40,7 +40,7 @@ const runUsage = `manvi run — drive one turn without a terminal
 
 Usage:
   manvi run [-p] PROMPT            Run one turn and print the final message
-  echo PROMPT | manvi run          Read the prompt from stdin
+  echo PROMPT | manvi run          Read the prompt from stdin (at most 1 MiB, never cut)
   manvi run -c [-p] PROMPT         Continue the most recent session
   manvi run --resume ID [-p] TEXT  Continue a named session (a unique prefix will do)
 
@@ -808,9 +808,28 @@ func readPipedPrompt(stdin *os.File) (string, error) {
 	if info.Mode()&os.ModeCharDevice != 0 {
 		return "", nil
 	}
-	body, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
+	// One byte past the cap, so an input that does not fit is told apart from
+	// one that exactly does. A reader that stops at the cap cannot say which it
+	// met, and the turn then runs on a prompt cut at an arbitrary byte.
+	body, err := io.ReadAll(io.LimitReader(stdin, maxPipedPromptBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("reading the prompt from stdin: %w", err)
 	}
+	if len(body) > maxPipedPromptBytes {
+		return "", errPromptTooLarge
+	}
 	return string(body), nil
 }
+
+// maxPipedPromptBytes is the largest prompt stdin may carry.
+const maxPipedPromptBytes = 1 << 20
+
+// errPromptTooLarge refuses a prompt that does not fit rather than running the
+// turn on part of it. There is no option for a larger one: the prompt is
+// -p, a positional argument or stdin, and the first two are bound by the
+// operating system's argument limit, so the way through is a file in the
+// checkout that a short prompt names.
+var errPromptTooLarge = fmt.Errorf("the prompt on stdin is over the 1 MiB (%d byte) limit and was not run, "+
+	"because running part of it would drop whatever came after the cut; "+
+	"manvi run has no option for a larger prompt, so put the material in a file in the checkout "+
+	"and name that file in a shorter prompt", maxPipedPromptBytes)
