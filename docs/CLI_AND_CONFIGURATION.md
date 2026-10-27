@@ -61,13 +61,22 @@ work as if it were finished. `manvi run --help` prints the same list.
 
 With `--json`, the first event is `session.start`. Its `session_id` is that same id. `choices` and `multi_select` are carried on `approval.request` when the request is a question.
 
-`--approve-fd N` is refused unless `--json` is also set, and refused when N is below 3. The process emits `approval.request` (`text` is the reason, plus `rule`, `severity`, `path`, `task_id`, `grantable`, `approval_id`, and for a question `choices` and `multi_select`), then reads one JSON object from that descriptor:
+`--approve-fd N` is refused unless `--json` is also set, and refused when N is below 3. `N` must be an open descriptor: one that is not is refused at startup, naming the flag. On Windows `N` is a HANDLE rather than a small descriptor number. The process marks the descriptor close-on-exec (on Windows, clears its inherit flag) before it starts anything, so no tool, MCP server or `git` it spawns holds it. A host that wants a child to see the channel has to open it for that child itself.
+
+The process emits `approval.request` (`text` is the reason, plus `rule`, `severity`, `path`, `task_id`, `grantable`, `approval_id`, and for a question `choices` and `multi_select`), then reads one JSON object from that descriptor:
 
 ```json
 {"approval_id":"<id>","allow":false,"chosen":[],"write_in":"","reason":""}
 ```
 
-`approval_id` may be omitted; when it is present it must match the request. A question is an answer only when `allow` is true and `chosen` or `write_in` is non-empty. Anything else, including `allow: false`, a mismatched id, malformed JSON, a closed descriptor, or a cancelled turn, is a refusal and is never treated as consent. CI and `manvi run -p` without the flag do not read a descriptor.
+Every request carries an `approval_id` that is unique within the process and unguessable across processes (`approval-<nonce>-<n>` for a blocked operation, `question-<nonce>-<n>` for a question). Treat it as opaque. How a decision is bound to its request:
+
+- **Id.** `approval_id` may still be omitted. When it is present it must equal the id of the request being answered; a line naming another request's id is a refusal. When it is omitted the decision is accepted, and a `notice` event on the stream says it was bound to the request only by timing. Echo the id.
+- **Pending only.** A line is read only while a request is waiting. A line that arrives with nothing pending, whether written before the request existed or in answer to one the turn has since abandoned, is discarded, and a `notice` says so (at most 16 notices are sent: the 16th says the rest are not reported). Write a decision only after reading its `approval.request`. Requests are asked one at a time.
+- **Bounded.** A decision line is at most 65536 bytes, newline excluded. A longer line is a refusal, and the rest of it is skipped to the next newline without being held.
+- **Chosen is checked.** For a question every value in `chosen` must be one of the offered `choices`, none twice, and no more than one unless `multi_select` is true. Anything else is a refusal. `write_in` is free text and is not checked against `choices`.
+
+A question is an answer only when `allow` is true and `chosen` or `write_in` is non-empty. Anything else, including `allow: false`, a mismatched id, a value that was not offered, an over-long line, malformed JSON, a closed descriptor, or a cancelled turn, is a refusal and is never treated as consent. A cancelled turn (`--timeout`, SIGINT, SIGTERM) returns at once even when the host never answers and the descriptor is a plain blocking one; the process does not change the descriptor's blocking mode. CI and `manvi run -p` without the flag do not read a descriptor.
 
 `--image` may be repeated. More than four images, a file over 8 MiB, a directory, a missing path, or bytes that are not png, jpeg, gif, or webp is exit 1 before the provider is contacted. Accepted images are appended to the user message after the text block. A model that rejects an image fails that request; the image is not dropped.
 
