@@ -162,6 +162,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- An Anthropic response cut off by `max_tokens` in the middle of a tool call no
+  longer ends the turn. `Response()` returned an "incomplete arguments" (or
+  "never closed") error, discarding every completed step with it, although the
+  model had only run out of output budget. When the stop reason is
+  `max_tokens`, a call that was not sealed by `content_block_stop` or whose
+  arguments are not valid JSON now settles as `StopMaxTokens` plus a
+  `MalformedCall`, the same as the OpenAI-compatible adapter: the loop tells the
+  model its call was cut off and to send less, a call that arrived whole in the
+  same message still runs, and the cut call is never run, even when the prefix
+  happens to parse (ft-074e1445's rule). Invalid arguments or an unsealed call
+  on any other stop reason are still an error, since that is the stream, not the
+  model's limit. Tests fail on 58b9258.
 - An empty tool result and an empty text block are encoded as valid requests on
   both wires. `read_file` of an empty file is `ToolResultData{Text:""}`, which
   the projection turns into a text block with no text; Anthropic's

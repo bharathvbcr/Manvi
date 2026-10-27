@@ -935,6 +935,7 @@ func (s *stream) Response() (llm.Response, error) {
 		Role:       llm.RoleAssistant,
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
 	}
+	var malformed []llm.MalformedCall
 	for _, index := range s.order {
 		acc := s.blocks[index]
 		if acc == nil {
@@ -981,18 +982,35 @@ func (s *stream) Response() (llm.Response, error) {
 			if len(args) == 0 {
 				args = json.RawMessage("{}")
 			}
+			// A call is complete when its block was sealed by content_block_stop
+			// and its arguments are valid JSON. Anything less is a prefix, and a
+			// prefix is never run: truncated JSON that happens to parse, or an
+			// unsealed `{}`, is how a half-received call becomes a runnable one.
+			sealedAndValid := acc.sealed && json.Valid(args)
+			if !sealedAndValid && s.stopReason == llm.StopMaxTokens {
+				// The model ran out of output budget in the middle of the call.
+				// That is the model's own limit, not a broken stream, so the turn
+				// survives: the call is reported as malformed, the loop tells the
+				// model it was cut off, and it can ask for less. Returning an
+				// error here discarded every completed step of the turn with it.
+				// This is the same settlement openaicompat reaches for a call
+				// whose arguments did not arrive whole.
+				malformed = append(malformed, llm.MalformedCall{
+					ID:   llm.CallID(acc.toolID),
+					Name: acc.toolName,
+					Reason: fmt.Sprintf(
+						"the arguments were cut off by the output limit after %d bytes and are not complete JSON",
+						acc.args.Len()),
+				})
+				continue
+			}
 			if !json.Valid(args) {
-				// A tool call whose arguments did not arrive whole must not be
-				// handed to the tool layer. Truncated JSON that happens to
-				// parse is the failure this guards against.
+				// Not a token limit: the stream itself delivered a call whose
+				// arguments are not JSON, which is not something the model can
+				// be asked to fix.
 				return llm.Response{}, fmt.Errorf(
 					"anthropic: tool call %q arrived with incomplete arguments: %q", acc.toolName, args)
 			}
-			// A call is complete when its block was sealed by content_block_stop.
-			// An unsealed block means the stream lost the event that frames the
-			// arguments, so whatever arrived is a prefix; running it is how a
-			// half-received call becomes `{}`. A sealed call that took no
-			// arguments is legitimately empty and is the only way `{}` appears.
 			if !acc.sealed {
 				return llm.Response{}, fmt.Errorf(
 					"anthropic: tool call %q (id %q) was never closed by content_block_stop; "+
@@ -1009,7 +1027,10 @@ func (s *stream) Response() (llm.Response, error) {
 	if stop == "" {
 		stop = llm.StopOther
 	}
-	return llm.Response{Message: msg, StopReason: stop, Usage: wholePrompt(s.usage), MaxTokensApplied: s.maxTokensApplied}, nil
+	return llm.Response{
+		Message: msg, StopReason: stop, Usage: wholePrompt(s.usage),
+		MaxTokensApplied: s.maxTokensApplied, Malformed: malformed,
+	}, nil
 }
 
 // Close releases the stream.
