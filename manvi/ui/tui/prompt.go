@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -32,9 +33,20 @@ type Prompt struct {
 	killRing []string
 	// undoStack holds previous buffer snapshots for Ctrl+Z / undo.
 	undoStack [][]rune
-	// pastes tracks collapsed paste chips and their original text.
+	// pastes tracks the collapsed paste chips of the text being composed, and
+	// their original text. It lives for one composition: Clear (and so Submit)
+	// empties it, SetValue keeps only what the new text still shows, and every
+	// edit first drops the chips the buffer no longer shows, so a deleted chip
+	// does not come back when its label is typed by hand and a paste is never
+	// expanded into a prompt typed after it was sent.
 	pastes map[string]string
-
+	// pasteSeq numbers every chip ever issued by this prompt. It only grows: it
+	// survives pruning and Clear, so a label is never issued twice and a label
+	// that is in the buffer can only ever stand for the paste it was issued for.
+	// Undo can bring back the label of a chip that was dropped (after Clear, a
+	// submit, or a later edit); that label is then a dead chip, plain text that
+	// submits as itself, and not another paste's text under the first one's name.
+	pasteSeq int
 	// Multiline makes Enter insert a newline instead of submitting.
 	Multiline bool
 	// Placeholder is shown when the buffer is empty.
@@ -65,13 +77,76 @@ func NewPrompt() *Prompt {
 
 // Value is the current text, with any collapsed paste chips expanded.
 func (p *Prompt) Value() string {
-	s := string(p.runes)
-	if len(p.pastes) > 0 {
-		for chip, full := range p.pastes {
-			s = strings.ReplaceAll(s, chip, full)
+	s, _ := p.expand(string(p.runes))
+	return s
+}
+
+// expand replaces the paste chips in s with the text they stand for and
+// reports whether it replaced any.
+//
+// It reads s once from left to right and never reads what it has written, so
+// the result is one string for one buffer: a pasted block that itself contains
+// another chip's text (a copied transcript does) is inserted as it is, not
+// expanded again in an order that depended on map iteration. Only chips that
+// the text shows are replaced; one that was deleted from the buffer stands for
+// nothing. Where two chips could match at one place the longer wins, which
+// makes that choice a rule rather than an accident.
+func (p *Prompt) expand(s string) (string, bool) {
+	if len(p.pastes) == 0 {
+		return s, false
+	}
+	chips := make([]string, 0, len(p.pastes))
+	for chip := range p.pastes {
+		chips = append(chips, chip)
+	}
+	sort.Slice(chips, func(i, j int) bool {
+		if len(chips[i]) != len(chips[j]) {
+			return len(chips[i]) > len(chips[j])
+		}
+		return chips[i] < chips[j]
+	})
+	var b strings.Builder
+	expanded := false
+	for i := 0; i < len(s); {
+		if s[i] == '[' {
+			if chip := matchChip(s[i:], chips); chip != "" {
+				b.WriteString(p.pastes[chip])
+				i += len(chip)
+				expanded = true
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	if !expanded {
+		return s, false
+	}
+	return b.String(), true
+}
+
+// matchChip returns the first of chips that s begins with.
+func matchChip(s string, chips []string) string {
+	for _, chip := range chips {
+		if strings.HasPrefix(s, chip) {
+			return chip
 		}
 	}
-	return s
+	return ""
+}
+
+// forgetAbsentPastes drops the chips that text no longer shows, which bounds
+// what a composition holds on to and keeps a deleted chip from being expanded
+// if the same words are typed later.
+func (p *Prompt) forgetAbsentPastes(text string) {
+	for chip := range p.pastes {
+		if !strings.Contains(text, chip) {
+			delete(p.pastes, chip)
+		}
+	}
+	if len(p.pastes) == 0 {
+		p.pastes = nil
+	}
 }
 
 // RawValue returns the literal runes in the buffer without expanding paste chips.
@@ -83,39 +158,33 @@ func (p *Prompt) InsertPaste(s string) string {
 		p.InsertString(s)
 		return ""
 	}
+	p.forgetAbsentPastes(string(p.runes))
 	if p.pastes == nil {
 		p.pastes = make(map[string]string)
 	}
-	chip := fmt.Sprintf("[pasted %d chars]", len(s))
-	if _, exists := p.pastes[chip]; exists {
-		chip = fmt.Sprintf("[pasted %d chars #%d]", len(s), len(p.pastes)+1)
-	}
-	p.pastes[chip] = s
+	// Numbered every time, not only on a clash with a live chip: a label that is
+	// free now may be one an earlier paste of this prompt held and Undo can
+	// bring back.
+	p.pasteSeq++
+	chip := fmt.Sprintf("[pasted %d chars #%d]", len(s), p.pasteSeq)
+	// Inserted before it is registered: the insert's own edit forgets chips the
+	// buffer does not show yet, and this one is not in it until the insert.
 	p.InsertString(chip)
+	p.pastes[chip] = s
 	return chip
 }
 
 // ExpandPastes expands all collapsed paste chips in the buffer into their raw text.
 func (p *Prompt) ExpandPastes() bool {
-	if len(p.pastes) == 0 {
+	s, expanded := p.expand(string(p.runes))
+	if !expanded {
 		return false
 	}
 	p.saveUndo()
-	s := string(p.runes)
-	expanded := false
-	for chip, full := range p.pastes {
-		if strings.Contains(s, chip) {
-			s = strings.ReplaceAll(s, chip, full)
-			expanded = true
-		}
-	}
-	if expanded {
-		p.runes = []rune(s)
-		p.cursor = len(p.runes)
-		p.pastes = nil
-		return true
-	}
-	return false
+	p.runes = []rune(s)
+	p.cursor = len(p.runes)
+	p.pastes = nil
+	return true
 }
 
 // Empty reports whether anything has been typed.
@@ -126,6 +195,7 @@ func (p *Prompt) SetValue(s string) {
 	p.saveUndo()
 	p.runes = []rune(s)
 	p.cursor = len(p.runes)
+	p.forgetAbsentPastes(s)
 }
 
 // Clear empties the buffer and stops history browsing.
@@ -135,9 +205,19 @@ func (p *Prompt) Clear() {
 	p.cursor = 0
 	p.histIdx = len(p.history)
 	p.draft = ""
+	// A paste belongs to the text it was made into. Keeping it would expand
+	// the next prompt that merely mentions the chip's words, which re-sends
+	// whatever was pasted, a credential included.
+	p.pastes = nil
 }
 
 func (p *Prompt) saveUndo() {
+	// Every edit starts here, before it changes the buffer, so what this sees
+	// is the buffer as the last edit left it: a chip that edit removed is
+	// forgotten before anything can retype its label.
+	if len(p.pastes) > 0 {
+		p.forgetAbsentPastes(string(p.runes))
+	}
 	if len(p.runes) == 0 && len(p.undoStack) == 0 {
 		return
 	}

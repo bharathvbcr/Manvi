@@ -162,6 +162,23 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A pasted block no longer comes back into a later prompt. The composer never
+  forgot a collapsed paste chip: after the prompt was sent the paste stayed
+  registered, so a later prompt that merely mentioned the chip's words (for
+  example `[pasted 308 chars]`) was sent with the earlier paste in its place,
+  re-sending a credential that had been pasted. Expansion also ran over a map in
+  random order, so a paste that quoted another chip's text expanded differently
+  from one call to the next. Sending or clearing a prompt now drops its chips,
+  replacing the buffer keeps only the chips the new text shows, and expansion
+  reads the buffer once from left to right, replacing each registered chip it
+  finds with its paste and never reading the replacement, so one buffer gives
+  one string. Every chip now carries a number (`[pasted 308 chars #1]`) that
+  only grows for the life of the prompt, through deletion and Clear, so a label
+  is never issued twice and Undo cannot show one paste's label over another's
+  text. Each edit first drops the chips the buffer no longer shows, so a chip
+  deleted by hand is plain text if its label is typed again. Undo after Clear or
+  a submit can still bring a label back; it is then a dead chip that submits as
+  its own words.
 - `manvi tui` shuts down on SIGTERM, SIGHUP and SIGINT as it does on a quit.
   It installed no handler (the headless face does), so a stop signal killed it
   with the alternate screen, mouse reporting and bracketed paste still on and
