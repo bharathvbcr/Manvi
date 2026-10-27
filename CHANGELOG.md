@@ -162,6 +162,28 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `manvi tui` shuts down on SIGTERM, SIGHUP and SIGINT as it does on a quit.
+  It installed no handler (the headless face does), so a stop signal killed it
+  with the alternate screen, mouse reporting and bracketed paste still on and
+  the tty raw, the sessions' leases unreleased and a turn in flight unsaved. The
+  signal now cancels the run, which takes the loop's ordinary exit: the terminal
+  is restored, running turns are cancelled and waited for, and the leases are
+  released. It exits with status 1 and reports `stopped by <signal>`, including
+  a signal that arrives while the leases are being released; a second signal
+  during the shutdown gets the default action. A panic in a turn is
+  recovered on the turn's goroutine into a transcript error, with the session
+  log persisted and the stack written to stderr after the terminal is back,
+  instead of ending the process with the terminal raw. The pty helpers the term
+  tests used are now shared as `internal/ptytest`.
+- A turn that ends abnormally no longer leaves a tool call unanswered. A panic
+  between the assistant's tool_use being logged and its tool_result (a
+  `ToolsDispatching` listener defect), a listener's refusal at that point, or a
+  log append that failed mid-step left a history with a tool_use no result
+  answered; the session was saved that way over the last good copy, and the next
+  turn's request was invalid. Every exit from a turn now gives each call still
+  open an error result ("interrupted: ... it may not have run, or may have run
+  in part") before the step closes and before anything persists. A call is
+  answered once: it leaves the loop's open set when its own result is logged.
 - An approval card no longer takes keys typed before it appeared. The card was
   modal but had no activation delay: an operator typing into the composer when
   a request arrived had a digit select "allow once", the words after it became

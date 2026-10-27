@@ -1,11 +1,13 @@
 //go:build linux
 
-package term
+package ptytest
 
 import (
 	"fmt"
 	"os"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -27,3 +29,5 @@ func slaveName(master *os.File) (string, error) {
 	}
 	return fmt.Sprintf("/dev/pts/%d", n), nil
 }
+
+func getTermios(fd int) (*unix.Termios, error) { return unix.IoctlGetTermios(fd, unix.TCGETS) }

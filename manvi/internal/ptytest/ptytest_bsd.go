@@ -1,11 +1,14 @@
 //go:build darwin || dragonfly || freebsd || netbsd || openbsd
 
-package term
+package ptytest
 
 import (
 	"fmt"
 	"os"
+	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // Verified by running them on this platform rather than recalled from memory.
@@ -34,3 +37,12 @@ func slaveName(master *os.File) (string, error) {
 	}
 	return string(buf[:n]), nil
 }
+
+func ioctlVal(fd, req, val uintptr) error {
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, req, val); e != 0 {
+		return e
+	}
+	return nil
+}
+
+func getTermios(fd int) (*unix.Termios, error) { return unix.IoctlGetTermios(fd, unix.TIOCGETA) }

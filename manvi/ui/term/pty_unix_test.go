@@ -12,62 +12,24 @@ import (
 	"syscall"
 	"testing"
 	"time"
-	"unsafe"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/ptytest"
 )
 
 // openPTY returns a connected master/slave pair.
 //
-// A pseudo-terminal is the only way to test this package for real. Everything
-// here is about what happens to a tty — raw mode, restoration, window size,
-// SIGWINCH — and none of it can be observed through a pipe, because a pipe is
-// not a terminal and IsTerminal correctly refuses it. Testing around that would
-// leave the one path whose failure strands the user's shell unexercised.
-//
-// The ioctl numbers are platform constants rather than a portable API. They
-// were verified by running them on this platform, not recalled; a wrong one
-// here surfaces as a failure to open, which fails the test rather than skipping
-// it.
+// A pseudo-terminal is the only way to test this package for real: everything
+// here is about what happens to a tty, and none of it can be observed through a
+// pipe. The helpers are shared with the other packages that test against one.
 func openPTY(t *testing.T) (master, slave *os.File) {
 	t.Helper()
-	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-	if err != nil {
-		t.Skipf("no /dev/ptmx on this system: %v", err)
-	}
-	name, err := slaveName(m)
-	if err != nil {
-		m.Close()
-		t.Fatalf("could not derive the pty slave: %v", err)
-	}
-	s, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		m.Close()
-		t.Fatalf("opening the pty slave %s: %v", name, err)
-	}
-	t.Cleanup(func() { s.Close(); m.Close() })
-	return m, s
-}
-
-func ioctlPtr(fd, req uintptr, arg unsafe.Pointer) error {
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, req, uintptr(arg)); e != 0 {
-		return e
-	}
-	return nil
-}
-
-func ioctlVal(fd, req, val uintptr) error {
-	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, req, val); e != 0 {
-		return e
-	}
-	return nil
+	return ptytest.Open(t)
 }
 
 // setWinsize resizes the pty, which is what SIGWINCH and Size report on.
 func setWinsize(t *testing.T, f *os.File, cols, rows uint16) {
 	t.Helper()
-	ws := winsize{Row: rows, Col: cols}
-	if err := ioctlPtr(f.Fd(), tiocswinsz, unsafe.Pointer(&ws)); err != nil {
-		t.Fatalf("resizing the pty: %v", err)
-	}
+	ptytest.SetWinsize(t, f, cols, rows)
 }
 
 // termiosOf reads a descriptor's current settings.
