@@ -153,6 +153,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `bench/run.py` stops a cell cleanly when an episode's guard set cannot be
+  worked out. A concurrent `git worktree add` leaves a worktree's `gitdir`
+  pointer empty or missing for a moment, `Harness(...)` raised `GitGuardError`
+  outside any handler, and the run died on a traceback. It now prints
+  `[runner] ABORTING:` with the path and the episode, writes no row for it and
+  exits non-zero, so `grid.py` reports the cell failed. No row is written on
+  purpose: a `runner_error` row is kept and scored, so the cell would carry a
+  failure the model never had, and a re-run could not replace it. Re-running the
+  tag keeps the finished episodes and draws the missing one.
 - The MCP client asks for the latest revision it speaks. Its `initialize` named
   `2025-03-26` while it already accepted a reply up to `2025-11-25`; the
   lifecycle specification has the client send the latest version it supports.

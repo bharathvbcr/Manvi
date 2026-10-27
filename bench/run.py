@@ -381,7 +381,28 @@ def main():
             verify_output, events = "", []
             for attempt in (0, 1):
                 task.materialise(sandbox)
-                h = Harness(client, cfg, sandbox, task, log_dir=outdir)
+                try:
+                    h = Harness(client, cfg, sandbox, task, log_dir=outdir)
+                except toolmod.GitGuardError as e:
+                    # The guard set is worked out again for every episode, and
+                    # a concurrent `git worktree add` leaves a gitdir pointer
+                    # empty or missing for a moment. That is the instrument
+                    # failing before the model ran, so no row is written: a
+                    # runner_error row is kept and scored (should_rerun_episode)
+                    # and a cell would carry a failure the model never had,
+                    # while a second exclusion would move the preregistered
+                    # denominator. Stop, naming the path and the episode; a
+                    # re-run of this tag resumes and draws it. Not retried
+                    # here: a guard that cannot be computed is not a transient
+                    # to wait out silently.
+                    print(f"[runner] ABORTING: {e}\n"
+                          f"           No episode was written for "
+                          f"{task.name}.rep{rep}; no model call was made for "
+                          f"it. If a `git worktree add` or `git worktree "
+                          f"prune` was running, re-run this tag: episodes on "
+                          f"disk are kept and this one is drawn then.",
+                          flush=True)
+                    raise SystemExit(f"[runner] {e}")
                 sampler = Sampler(interval=2.0)
                 sampler.start()
                 try:

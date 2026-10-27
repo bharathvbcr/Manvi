@@ -1314,6 +1314,73 @@ with tempfile.TemporaryDirectory() as tmp:
           FakeHarness.ran == [] and EVICTED == []
           and not os.path.exists(os.path.join(tmp, "m__full__gitptr")))
 
+    # The guard set is worked out again when each episode's Harness is built,
+    # and a concurrent `git worktree add` leaves a gitdir pointer empty for a
+    # moment. That used to escape run.py as a traceback. It now stops the cell,
+    # named, with a non-zero exit -- and writes NO row for the episode: a
+    # runner_error row is kept and scored, so the cell would carry a failure the
+    # model never had, and a re-run could never replace it.
+    # The layout a lane uses: main/.git/worktrees/<name> beside the checkout,
+    # with one sibling's gitdir pointer empty, as a concurrent
+    # `git worktree add` leaves it before it writes the path.
+    gmain = os.path.join(tmp, "gmain")
+    gwt = os.path.join(tmp, "gwt")
+    gsib = os.path.join(gmain, ".git", "worktrees", "sib")
+    for d in (os.path.join(gwt, "bench"), gsib,
+              os.path.join(gmain, ".git", "worktrees", "wt")):
+        os.makedirs(d)
+    with open(os.path.join(gwt, ".git"), "w") as f:
+        f.write(f"gitdir: {os.path.join(gmain, '.git', 'worktrees', 'wt')}\n")
+    with open(os.path.join(gmain, ".git", "worktrees", "wt", "gitdir"), "w") as f:
+        f.write(os.path.join(gwt, ".git") + "\n")
+    with open(os.path.join(gmain, ".git", "worktrees", "wt", "commondir"), "w") as f:
+        f.write("../..\n")
+    gitdir = os.path.join(gsib, "gitdir")
+    open(gitdir, "w").close()
+
+    class GuardFailingHarness(FakeHarness):
+        fail_on = ()
+
+        def __init__(self, client, cfg, sandbox, task, log_dir=None):
+            if task.name in GuardFailingHarness.fail_on:
+                _tools.git_guard_roots(os.path.join(gwt, "bench"))
+            super().__init__(client, cfg, sandbox, task, log_dir=log_dir)
+
+    _saved_harness = runner.Harness
+    runner.Harness = GuardFailingHarness
+    GuardFailingHarness.fail_on = ("beta",)
+    try:
+        code, out = run_main(["--model", "m", "--tag", "guard"], tmp,
+                             tasks=("alpha", "beta", "gamma"))
+    finally:
+        runner.Harness = _saved_harness
+        GuardFailingHarness.fail_on = ()
+    guard_dir = os.path.join(tmp, "m__full__guard")
+    written = sorted(f for f in os.listdir(guard_dir) if f.endswith(".json")) \
+        if os.path.isdir(guard_dir) else []
+    check("a guard failure while building one episode's Harness stops the cell, named",
+          isinstance(code, str) and code.startswith("[runner]") and gitdir in code,
+          str(code))
+    check("it is a runner abort, not a traceback",
+          not (isinstance(code, str) and code.startswith("CRASH")), str(code))
+    check("it says which episode got no row and that no model call was made",
+          "No episode was written for beta.rep0" in out
+          and "no model call was made" in out, out[:600])
+    check("the episode before it is kept and the one that failed has no file",
+          written == ["alpha.rep0.json"], str(written))
+    check("nothing after it ran and no row was scored for it",
+          FakeHarness.ran == ["alpha"]
+          and not os.path.exists(os.path.join(guard_dir, "summary.json")),
+          f"{FakeHarness.ran} {written}")
+    # A re-run with the guard working resumes: alpha is kept, beta and gamma drawn.
+    code, out = run_main(["--model", "m", "--tag", "guard"], tmp,
+                         tasks=("alpha", "beta", "gamma"))
+    written = sorted(f for f in os.listdir(guard_dir) if f.endswith(".json"))
+    check("a re-run keeps the finished episode and draws the one that was missing",
+          code == 0 and FakeHarness.ran == ["beta", "gamma"]
+          and "alpha.rep0.json" in written and "beta.rep0.json" in written,
+          f"{code} {FakeHarness.ran} {written}")
+
     # The existing explicit opt-out still works, loudly.
     os.environ[_tools.UNCONTAINED_ENV] = "1"
     try:
