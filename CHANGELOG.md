@@ -153,6 +153,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The MCP client asks for the latest revision it speaks. Its `initialize` named
+  `2025-03-26` while it already accepted a reply up to `2025-11-25`; the
+  lifecycle specification has the client send the latest version it supports.
+  It now sends `2025-11-25`, and the accepted list is built from that constant
+  so the two cannot drift. A server that counter-offers an older revision
+  (`2025-03-26`, `2025-06-18`, `2024-11-05`) is still accepted. The transport is
+  stdio only, so no `MCP-Protocol-Version` header applies.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
