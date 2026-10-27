@@ -162,6 +162,38 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The session privacy scrub no longer leaves a signed reasoning block with text
+  that its signature does not cover. It rewrote a thinking block's text and kept
+  the signature, and the Anthropic adapter replays both, which the API refuses
+  ("Modified thinking blocks are rejected with a 400 error"), so every later
+  request in a session whose reasoning mentioned a scrubbed value failed. (With
+  `thinking.display` omitted the text is empty, the scrub changes nothing and
+  the block was fine; it bit on the tiers that return summaries.) When the
+  scrubber would change the text of a signed reasoning block, the message now
+  drops that block and the rest of its signed run, text and signature together,
+  and records the count in `reasoning_redacted` on the message event; the
+  secret is not persisted and no mismatched block reaches a provider. The whole
+  run goes, not one block: within the latest assistant message the API checks
+  the run as a unit ("you can't rearrange, edit, or partially drop them"). A
+  turn without its thinking run is valid under adaptive thinking ("no assistant
+  turn needs to start with" a thinking block), which is the only mode this
+  adapter sends, including the assistant turn before a `tool_result`. A signed
+  block the scrubber leaves alone replays unchanged, and unsigned reasoning (a
+  provider that signs nothing) is still scrubbed in place.
+
+  On Claude Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 a thinking block's
+  signature also binds the system prompt, the tools and every message before it,
+  so an edit to an earlier turn invalidates the signed reasoning after it. A
+  live append is unaffected: the scrub runs before the next request is built,
+  so every later block is minted against the scrubbed history. `RestoreSensitiveLog`
+  is the one retroactive scrub, and it edits a history the provider already
+  signed: once it has rewritten any string in a user message, assistant message,
+  tool result or compaction, the signed reasoning of every assistant message
+  after it is dropped too (`llm.DropSignedReasoning`), each recording its count
+  in `reasoning_redacted`. A rewrite elsewhere in the same message does not
+  touch that message's own reasoning, which comes before it. A journal already
+  written with a scrubbed block and its old signature is not repaired: the
+  scrubber that changed it is not known at load.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible

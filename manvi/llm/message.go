@@ -209,6 +209,29 @@ type ReasoningReplayer interface {
 	ReplayableOn(fromModel, toModel string) bool
 }
 
+// DropSignedReasoning removes from msg the reasoning a provider binds to the
+// conversation that produced it, a block that carries a signature (an encrypted
+// block carries its data there), and returns how many went. It is the other
+// way history loses reasoning, beside PrepareHistoryFor's model mismatch: there
+// the model cannot read the block, here the history before it no longer matches
+// the one it was signed against. Reasoning with no signature is left alone.
+func DropSignedReasoning(msg Message) (Message, int) {
+	kept := make([]ContentBlock, 0, len(msg.Content))
+	dropped := 0
+	for _, block := range msg.Content {
+		if r, ok := block.(ReasoningBlock); ok && r.Signature != "" {
+			dropped++
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if dropped == 0 {
+		return msg, 0
+	}
+	msg.Content = kept
+	return msg, dropped
+}
+
 // PrepareHistoryFor adapts a message history for a target adapter and model.
 //
 // An assistant message keeps its ReplayState and its reasoning blocks only when

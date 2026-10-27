@@ -231,6 +231,13 @@ type (
 		// words as though the operator had typed them. A log that cannot tell
 		// those apart is a log that lies about who asked for what.
 		Origin Origin `json:"origin,omitempty"`
+		// ReasoningRedacted counts the signed reasoning blocks the scrubber
+		// removed from this message because it would have changed their text.
+		// A signed block cannot be edited and still be replayed, so it is
+		// dropped whole and this says that happened; the message's other
+		// blocks are as recorded. Zero for every message the scrubber left
+		// whole, which is every message written before the field existed.
+		ReasoningRedacted int `json:"reasoning_redacted,omitempty"`
 	}
 	// ToolCallData is a tool invocation as the model asked for it.
 	ToolCallData struct {
@@ -591,7 +598,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		raw = json.RawMessage(`{"withheld":true}`)
 	}
 	if scrub != nil && len(raw) > 0 {
-		cleaned, err := rewritePayload(raw, scrub, false, nil, 0)
+		cleaned, _, err := scrubPayload(t, raw, scrub)
 		if err != nil {
 			return Event{}, fmt.Errorf("session: scrubbing %s: %w", t, err)
 		}
@@ -679,7 +686,10 @@ func validateToolContent(data ToolResultData) error {
 // SetScrubber installs a backstop for decoded JSON string values, including
 // escaped text. The callback takes plain text and must return plain text.
 // Provider-private message.provenance.replay_state is preserved byte-for-byte;
-// redacting it corrupts signed continuation. PublicEvents and Observe omit it.
+// redacting it corrupts signed continuation. Signed reasoning is the other half
+// of that rule: a signed block the scrubber would change is dropped whole, with
+// the rest of its message's signed run, and the message records the count in
+// reasoning_redacted. PublicEvents and Observe omit the replay state.
 // Applications must retain Events/Store privately and avoid sending sensitive
 // literals as model-generated signed tool arguments (use parameter references).
 func (l *Log) SetScrubber(scrub func(string) string) {
@@ -706,11 +716,27 @@ func (l *Log) SetSensitiveScrubber(scrub func(string) string) {
 // (Jarvis resumes discovery sessions through it): RestoreLog then
 // SetSensitiveScrubber would project the unscrubbed history first, and the
 // scrubber cannot reach events that are already recorded.
+//
+// This is the one retroactive scrub, and it is the one that edits a history the
+// provider has already signed. A thinking block's signature binds the system
+// prompt, the tools and every message before it (the Claude API skill's
+// shared/preserved-thinking-migration.md: "each `thinking` block's `signature`
+// records the conversation that produced it ... every message before the
+// block"; "One edit to an earlier turn invalidates every thinking block after
+// it"). So once the scrub has rewritten any string in a message that shapes the
+// history, the signed reasoning of every assistant message after it is stale and
+// is dropped, each recording its count in reasoning_redacted. A message's own
+// reasoning is dropped only when its own reasoning text changed (handled where
+// the scrub runs); a rewrite elsewhere in the same message does not touch it,
+// because the block comes before the text that changed. A live append needs none
+// of this: the scrub runs before the next request is built, so every later
+// block is minted against the scrubbed history.
 func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error) {
 	if scrub == nil {
 		return nil, errors.New("session: sensitive restore requires scrubber")
 	}
 	clean := cloneEvents(events)
+	edited := false
 	for i := range clean {
 		if clean[i].Type == AssistantChunk {
 			clean[i].Data = json.RawMessage(`{"withheld":true}`)
@@ -719,11 +745,23 @@ func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error
 		if len(clean[i].Data) == 0 {
 			continue
 		}
-		raw, err := rewritePayload(clean[i].Data, scrub, false, nil, 0)
+		data := clean[i].Data
+		if edited && clean[i].Type == AssistantMessage {
+			// Before the scrub, which re-encodes canonically: dropping after it
+			// would leave bytes a second restore would encode differently.
+			var err error
+			if data, err = dropPrefixInvalidatedReasoning(data); err != nil {
+				return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
+			}
+		}
+		raw, rewrote, err := scrubPayload(clean[i].Type, data, scrub)
 		if err != nil {
 			return nil, fmt.Errorf("session: sanitizing restored event: %w", err)
 		}
 		clean[i].Data = raw
+		if rewrote && shapesHistory(clean[i].Type) {
+			edited = true
+		}
 	}
 	log, err := RestoreLog(clean)
 	if err != nil {
@@ -731,6 +769,18 @@ func RestoreSensitiveLog(events []Event, scrub func(string) string) (*Log, error
 	}
 	log.SetSensitiveScrubber(scrub)
 	return log, nil
+}
+
+// shapesHistory reports whether an event of this type is part of the history a
+// request replays: a message, a tool result, or the text a compaction puts in
+// the place of one.
+func shapesHistory(t Type) bool {
+	switch t {
+	case UserMessage, AssistantMessage, ToolResult, ToolResultCompacted:
+		return true
+	default:
+		return false
+	}
 }
 
 // Events returns a copy of the log.
