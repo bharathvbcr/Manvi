@@ -29,7 +29,7 @@ func TestARefusedRestoreReadSaysWhatHappenedAndHowToRecover(t *testing.T) {
 		damage func(t *testing.T, root string)
 		cause  string // what the cause-specific remedy says
 	}{
-		{"symbolic link", damageByLink, "is a symbolic link now"},
+		{"symbolic link", damageByLink, "is a symbolic link"},
 		{"hard link", func(t *testing.T, root string) {
 			if err := os.Link(filepath.Join(root, "CLAUDE.md"), filepath.Join(root, "second-name.md")); err != nil {
 				t.Skipf("no hard links here: %v", err)

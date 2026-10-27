@@ -43,6 +43,9 @@ type blockedCheckout struct {
 	interval time.Duration
 	attempts int
 	gaveUp   bool
+	// rechecks counts the times an attempt on the checkout restarted a reaper that
+	// had used its attempts.
+	rechecks int
 }
 
 // reapInterval is the pause between the reaper's asks and maxReapAttempts how
@@ -57,8 +60,11 @@ var (
 // a hold. It names the run, since when, and how it ends.
 func (b *blockedCheckout) holdMessage() string {
 	waiting := "Manvi keeps asking the provider and releases the checkout, taking the block out, when it confirms the exit"
-	if b.gaveUp {
-		waiting = fmt.Sprintf("Manvi asked the provider %d times and has stopped asking", b.attempts)
+	switch {
+	case b.gaveUp:
+		waiting = fmt.Sprintf("Manvi asked the provider %d times and has stopped asking; the next attempt on this checkout starts asking again", b.attempts)
+	case b.rechecks > 0:
+		waiting = fmt.Sprintf("Manvi had stopped asking after %d attempts and is re-checking with the provider now; it releases the checkout, taking the block out, when it confirms the exit", b.attempts)
 	}
 	return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process exited, so the agent may still be running: its harness block (nonce=%s) stays in %s and this checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the record on disk is then applied as a dead run's block is",
 		b.runID, b.since.UTC().Format(time.RFC3339), b.nonce, b.file, waiting)
@@ -159,18 +165,42 @@ func (r *ManagedRunner) reap(b *blockedCheckout, stop <-chan struct{}) {
 	r.mu.Unlock()
 }
 
-// releaseHeld ends a hold whose process is confirmed gone: the block is taken out
-// of the file as a dead run's is (the record is on disk), and only then does the
-// checkout stop being held, so no attempt is admitted between. A restore that
-// fails leaves the record and is remembered as any failed restore is.
+// releaseHeld ends a hold whose process is confirmed gone: the held run's block is
+// taken out of the file (restoreHeldBlock: only if the record is this run's), and
+// only then does the checkout stop being held, so no attempt is admitted between.
+// A restore that fails, or a block the agent edited inside, keeps the record and is
+// remembered, as it is when a run ends normally: HarnessBusy refuses naming it, and
+// the next attempt on the checkout reports it.
 func (r *ManagedRunner) releaseHeld(b *blockedCheckout) {
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
-	_, err := recoverPendingHarness(b.root)
+	err := restoreHeldBlock(b.root, b.nonce)
 	r.mu.Lock()
 	r.blocked = slices.DeleteFunc(r.blocked, func(e *blockedCheckout) bool { return e == b })
 	r.mu.Unlock()
+	if err != nil {
+		err = fmt.Errorf("run %s, whose agent process has since exited: %w", b.runID, err)
+	}
 	r.settleBlocked(b.info, b.root, err)
+}
+
+// recheckHeld restarts the reaper of a hold whose attempts ran out, when an attempt
+// on the checkout comes in: the agent may have exited since. It starts the same
+// bounded reaper off the lane and returns at once; the attempt is refused either way.
+func (r *ManagedRunner) recheckHeld(info os.FileInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.reapStop == nil {
+		return
+	}
+	for _, b := range r.blocked {
+		if b.session != nil && b.gaveUp && sameCheckout(b.info, info) {
+			b.gaveUp = false
+			b.rechecks++
+			go r.reap(b, r.reapStop)
+			return
+		}
+	}
 }
 
 // exitConfirmed says whether the agent process has exited: Close reaped it. A Close

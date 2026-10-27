@@ -223,6 +223,23 @@ under **Unreleased** in the same commit as the code.
   the one managed lane up to five seconds per retry). Not covered: a factory that
   fails after possibly starting a process returns no session to ask, so that end
   still restores as before.
+- The hold's release and the pending record are safer. The reaper acts on the
+  record only when it is the held run's own (the nonce): with the checkout
+  directory deleted and recreated, a second run is admitted as a new checkout, and
+  the old hold's reaper used to strip that live run's block and record. A block
+  the agent edited inside, found when the hold is released, is now reported as
+  when a run ends normally (the record is kept, `HarnessBusy` refuses naming it
+  and the run, the next attempt reports it once) and no longer cleared and
+  released unseen. Every mutation of a pending record is under one in-process
+  lock, so removing a record is atomic with another run's write of it (it was
+  read, compared, then unlinked, and another run's record written between was
+  deleted); two Manvi processes on one checkout can still interleave. A
+  restore-failure message no longer builds a shell command from names an agent
+  controls: the remedy is in words, a symbolic link's target is shown only when it
+  is inside the checkout (quoted) and as "points outside the checkout" otherwise.
+  When the reaper has used its attempts, an attempt on the checkout (still
+  refused at once) restarts the bounded reaper off the lane, so an agent that
+  exits later releases the checkout without a restart.
 - A managed run's checkout is held only when its agent process is not reaped.
   `Close` answering `Reaped: true` beside an error (os/exec's `ErrWaitDelay`,
   when the agent exited 0 but an orphaned grandchild, a dev server or an MCP

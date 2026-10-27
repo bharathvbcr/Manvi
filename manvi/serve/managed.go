@@ -233,6 +233,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
 	if reason := r.heldReason(info); reason != "" {
+		r.recheckHeld(info)
 		return harnessBusy("%s", reason)
 	}
 	r.mu.Lock()

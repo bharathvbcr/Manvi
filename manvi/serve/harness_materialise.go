@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	dc "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
@@ -81,6 +82,21 @@ const (
 	// small envelope.
 	maxPendingBytes = maxInstructionFileBytes*2 + 4096
 )
+
+// recordMu serialises every mutation of a checkout's pending record and of the
+// instruction file's block in this process: the write of a record, a restore and
+// its removal of the record, a recovery, and a held run's release. The record is
+// one file per checkout directory, and removeRecord is read, compare, unlink, so
+// without one lock another run's record written between the compare and the unlink
+// would be removed. It is one lock for every checkout (these are short file
+// operations), taken after checkoutMu and before mu, never inside either. It
+// guards this process only: two Manvi processes on one checkout can still
+// interleave, which the pinned writes and the nonce check narrow and do not close.
+var recordMu sync.Mutex
+
+// recordReadHook, when set, runs in removeRecord between the read of the record
+// and the unlink. A test uses it to put another run's write into that window.
+var recordReadHook func()
 
 // ErrHarnessMaterialise is the typed reason a managed run was aborted because
 // its harness could not be written into the checkout, or taken out of it.
@@ -338,6 +354,9 @@ func (w harnessWriter) removeRecord(nonce string) error {
 	case err != nil:
 		return materialiseFailure("reading the record of the harness block to remove it: %v", err)
 	}
+	if recordReadHook != nil {
+		recordReadHook()
+	}
 	var own struct {
 		Nonce string `json:"nonce"`
 	}
@@ -385,6 +404,8 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	if err != nil || block == "" {
 		return nil, err
 	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	w := harnessWriter{root: root}
 	before, err := readInstructionFile(root, rel)
 	existed := err == nil
@@ -460,6 +481,8 @@ func (m *harnessMaterialisation) Restore() error {
 	if m == nil {
 		return nil
 	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	return restoreRecorded(m.harnessWriter, m.pending)
 }
 
@@ -533,6 +556,35 @@ func (p pendingRestore) manualRemedy() string {
 // removed, which block it concerns and what an operator can do about the cause,
 // which differs by cause: a link, a second name, a file past the bound. The
 // record stays (see recoverPendingHarness).
+// restoreHeldBlock takes the block of a held run out of its checkout once the
+// run's process is confirmed gone. It acts on the record only if the record is the
+// held run's own (the nonce): a checkout directory deleted and recreated is a new
+// directory to the guard, and the record at the path may be a live run's, which is
+// then left, with its file, alone. It restores as a run's own end does, not as a
+// later attempt's recovery does: a restore that cannot be done, or a block the
+// agent edited inside, returns its error with the record kept, so the caller
+// remembers it and the next attempt reports it, rather than it being cleared here
+// unreported.
+func restoreHeldBlock(root, nonce string) error {
+	recordMu.Lock()
+	defer recordMu.Unlock()
+	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	default:
+		return materialiseFailure("reading the record of the held harness block: %v", err)
+	}
+	var p pendingRestore
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&p) != nil || p.Nonce != nonce {
+		return nil // not readable, or another run's: not this run's to act on
+	}
+	return restoreRecorded(harnessWriter{root: root}, p)
+}
+
 func restoreReadFailure(root string, p pendingRestore, err error) error {
 	return materialiseFailure("%s", readFailureText(root, p, err))
 }
@@ -542,12 +594,11 @@ func readFailureText(root string, p pendingRestore, err error) string {
 	var remedy string
 	switch msg := err.Error(); {
 	case strings.Contains(msg, "symbolic link"):
-		target, _ := os.Readlink(filepath.Join(root, p.File))
-		remedy = fmt.Sprintf("%s is a symbolic link now (to %q), so the file that held the block is not at that name; if the link's target holds the block, replace the link with a regular copy of it (rm %s && cp %s %s) and the next work.runs.managed.prepare takes the block out",
-			p.File, target, p.File, target, p.File)
+		remedy = fmt.Sprintf("%s is %s now, so the file that held the block is not at that name; if the block is still in what the link points to, replace the link %s with a regular file holding the same text, and the next work.runs.managed.prepare takes the block out",
+			p.File, linkDescription(root, p.File), p.File)
 	case strings.Contains(msg, "names reach this file"):
-		remedy = fmt.Sprintf("%s has more than one name (a hard link); give it one (cp %s %s.tmp && mv %s.tmp %s) and the next work.runs.managed.prepare takes the block out",
-			p.File, p.File, p.File, p.File, p.File)
+		remedy = fmt.Sprintf("%s has more than one name (a hard link); replace %s with a regular copy of its own text, so it has one name, and the next work.runs.managed.prepare takes the block out",
+			p.File, p.File)
 	case strings.Contains(msg, "-byte limit"):
 		remedy = fmt.Sprintf("%s is larger than the %d-byte limit on what Manvi reads back; shrink it below the limit and the next work.runs.managed.prepare takes the block out",
 			p.File, maxInstructionFileBytes)
@@ -556,6 +607,24 @@ func readFailureText(root string, p pendingRestore, err error) string {
 	}
 	return fmt.Sprintf("reading %s to take the harness block out was refused: %v. This was a read; nothing was written and nothing was removed, and the record of the block is kept. %s. To recover, %s; %s",
 		p.File, err, p.describe(), remedy, p.manualRemedy())
+}
+
+// linkDescription says what the link at rel points to, in words and without a
+// command: an agent chose the link's target, so it is shown only when it is inside
+// the checkout, and then quoted; outside the checkout it is not shown at all.
+func linkDescription(root, rel string) string {
+	target, err := os.Readlink(filepath.Join(root, rel))
+	if err != nil {
+		return "a symbolic link"
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	inside, err := filepath.Rel(root, filepath.Clean(target))
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "a symbolic link that points outside the checkout"
+	}
+	return fmt.Sprintf("a symbolic link to %q", inside)
 }
 
 // leftBlockNote says, from the record on disk and the file alone (nothing held in
@@ -625,6 +694,8 @@ func harnessRecordPending(root string) bool {
 // and every attempt on the checkout, and every verification of it, is refused
 // until the cause is put right and a later recovery takes the block out.
 func recoverPendingHarness(root string) (string, error) {
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	w := harnessWriter{root: root}
 	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
 	switch {
