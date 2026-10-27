@@ -82,9 +82,10 @@ type turnInputs struct {
 
 // turnState is what a session remembers between turns of this resolution.
 type turnState struct {
-	skillNotices noticeOnce
-	specNotices  noticeOnce
-	roles        harness.Roles
+	skillNotices       noticeOnce
+	specNotices        noticeOnce
+	instructionNotices noticeOnce
+	roles              harness.Roles
 }
 
 // skillsFiltered lists only the skills a spec selected. It filters what the
@@ -104,8 +105,12 @@ func (s skillsFiltered) LoadSkills(ctx context.Context) (harness.SkillSet, error
 }
 
 // resolveTurnInputs resolves, once per turn and for both faces, everything a
-// turn's prompt takes from the repository beside the project instructions: the
+// turn's prompt takes from the repository: the project instructions, the
 // harness spec and the skills listing, which the spec may narrow.
+//
+// The project instructions are read here, through the same gated reader as the
+// spec, and nowhere else: the prompt's source lists (the reserved names, the
+// spec collision check, assembly) take them from opts.Instructions.
 //
 // It fills opts, and returns the identity of the spec the prompt carries. A
 // spec that is unknown, unreadable or invalid is a notice and not a failure:
@@ -114,6 +119,10 @@ func (s skillsFiltered) LoadSkills(ctx context.Context) (harness.SkillSet, error
 func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, st *turnState, opts *PromptOptions) specIdentity {
 	provider := opts.Provider
 	budget := promptTokenBudget(reg, provider)
+
+	var instructionNotices []string
+	opts.Instructions, instructionNotices = resolveInstructions(ctx, in, budget)
+	opts.InstructionNotices = st.instructionNotices.fresh(instructionNotices)
 
 	spec, specNotices := resolveSpec(ctx, reg, in, st, *opts, budget)
 	var id specIdentity
@@ -147,6 +156,17 @@ func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, 
 	}
 	opts.SpecNotices = st.specNotices.fresh(specNotices)
 	return id
+}
+
+// resolveInstructions reads the project's instructions through the turn's
+// repository reader. A turn handed no reader has no way to read the repository
+// by the gate's rules, and runs without the instructions and says so rather than
+// reading the working directory around the gate.
+func resolveInstructions(ctx context.Context, in turnInputs, budget int) (prompt.Source, []string) {
+	if in.repoRead == nil {
+		return nil, []string{"project instructions were not read this turn: no repository reader is available"}
+	}
+	return projectInstructionsSource(in.repoRead(ctx), budget)
 }
 
 // collidingSection names a section of the spec that shares a name with a source

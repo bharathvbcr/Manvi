@@ -171,6 +171,25 @@ under **Unreleased** in the same commit as the code.
   message already did. It used to skip the frame and end the run as completed
   with that result lost. A user frame with no message, or with plain-string
   content, is still skipped.
+- The project instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) are read
+  through the repository's gated, pinned reader, rooted at the project root.
+  They were a bare `os.ReadFile` of the working directory: a symbolic link named
+  `AGENTS.md` carried a credential from outside the repository into the system
+  prompt and to the provider, and a FIFO of that name hung prompt assembly.
+  - A link (even one inside the repository), a file with a second name, a
+    FIFO or device, and a file the read gate withholds are refused. The turn
+    runs without that file, a prompt-fault notice names it and says why (once,
+    not every turn), and the next candidate is still tried, so a repository that
+    links `AGENTS.md` to `CLAUDE.md` gets the real file. Absent or blank files
+    are not a fault.
+  - Every provider has a 256 KiB bound, refused with the file's size rather
+    than truncated. It used to bind only where a token budget existed, which is
+    local models alone.
+  - Read once per turn by the per-turn resolution and carried in
+    `PromptOptions.Instructions`; the reserved-name checks and the spec
+    collision check no longer read the file (it was read several times a turn).
+  - A session started in a subdirectory now carries the repository's
+    instructions rather than a file of that name in the subdirectory.
 
 ## [0.1.0] — 2026-10-17
 
