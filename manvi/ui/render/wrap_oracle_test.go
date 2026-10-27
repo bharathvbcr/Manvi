@@ -137,6 +137,7 @@ func randWrapLine(rng *rand.Rand) Line {
 func TestWrapMatchesTheQuadraticOracle(t *testing.T) {
 	cases, rows, hard := 0, 0, 0
 	for seed := int64(1); seed <= 40; seed++ {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		for i := 0; i < 250; i++ {
 			l := randWrapLine(rng)
