@@ -275,7 +275,7 @@ weakened setting on stderr.
   "ok": true,
   "result": {
     "steps": [
-      {"tool_call_id": "c1", "text": "[compacted]", "from_bytes": 8100, "to_bytes": 11}
+      {"tool_call_id": "c1", "occurrence": 1, "text": "[compacted]", "from_bytes": 8100, "to_bytes": 11}
     ],
     "before_tokens": 2100,
     "after_tokens": 640,
@@ -287,6 +287,15 @@ weakened setting on stderr.
   }
 }
 ```
+
+A step names a result, not only a call id. `occurrence` is which `role: "tool"`
+message carrying `tool_call_id` is meant, counted from 1 in the `messages` the
+host sent. A host that reuses a call id across responses applies the step to
+that message and to no other with the same id; a host whose ids are unique
+always sees 1 and can ignore the field. The session's ledger is keyed the same
+way, so a shortening recorded for one result is never substituted for, or taken
+as already done on, another that shares its id. `occurrence` is optional and
+additive within protocol 1.
 
 ---
 

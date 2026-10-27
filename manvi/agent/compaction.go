@@ -113,6 +113,11 @@ func (b Budget) Target() int {
 // replaces it.
 type CompactionStep struct {
 	ToolCallID llm.CallID
+	// Occurrence says which of the results answering ToolCallID this is,
+	// counted from 1 in history order. A call id is not unique to a result, so
+	// the step names the result and not only the id. Zero names every result
+	// with the id, which is what a step built by hand without it always meant.
+	Occurrence int
 	Text       string
 	FromBytes  int
 	ToBytes    int
@@ -140,8 +145,12 @@ func (p CompactionPlan) Empty() bool { return len(p.Steps) == 0 }
 // corrected against what the server has been counting. A nil Calibrator leaves
 // the estimate uncorrected.
 //
-// already names tool results that carry a compaction from an earlier step;
-// they are never revisited, which is what keeps the prompt prefix stable.
+// already and done name tool results that carry a compaction from an earlier
+// step; they are never revisited, which is what keeps the prompt prefix stable.
+// already names call ids, and covers every result with the id: it is what a
+// record that named only the id means. done names single results, by call id
+// and place among the results with that id, because a provider may reuse an id
+// and one result's compaction says nothing about the next.
 func PlanCompactionCalibrated(
 	messages []llm.Message,
 	systemPrompt string,
@@ -149,6 +158,7 @@ func PlanCompactionCalibrated(
 	budget Budget,
 	already map[llm.CallID]struct{},
 	cal *Calibrator,
+	done ...llm.ResultKey,
 ) CompactionPlan {
 	scale := cal.Ratio()
 	estimate := func(text string) int { return int(float64(prompt.EstimateTokens(text)) * scale) }
@@ -160,11 +170,21 @@ func PlanCompactionCalibrated(
 	}
 
 	type candidate struct {
-		id     llm.CallID
-		text   string
-		tokens int
+		id         llm.CallID
+		occurrence int
+		text       string
+		tokens     int
 	}
 	var eligible []candidate
+
+	var compacted map[llm.ResultKey]struct{}
+	if len(done) > 0 {
+		compacted = make(map[llm.ResultKey]struct{}, len(done))
+		for _, key := range done {
+			compacted[key] = struct{}{}
+		}
+	}
+	seen := make(map[llm.CallID]int)
 
 	cutoff := len(messages) - ProtectedTail
 	for i := 0; i < cutoff; i++ {
@@ -173,7 +193,15 @@ func PlanCompactionCalibrated(
 			if !ok {
 				continue
 			}
-			if _, done := already[tr.ToolCallID]; done {
+			// Counted before any skip: the place of a result among those that
+			// share its id does not depend on whether the earlier ones were
+			// compacted.
+			seen[tr.ToolCallID]++
+			occurrence := seen[tr.ToolCallID]
+			if _, skip := already[tr.ToolCallID]; skip {
+				continue
+			}
+			if _, skip := compacted[llm.ResultKey{ID: tr.ToolCallID, Occurrence: occurrence}]; skip {
 				continue
 			}
 			var body strings.Builder
@@ -187,7 +215,7 @@ func PlanCompactionCalibrated(
 				continue
 			}
 			eligible = append(eligible, candidate{
-				id: tr.ToolCallID, text: text, tokens: estimate(text),
+				id: tr.ToolCallID, occurrence: occurrence, text: text, tokens: estimate(text),
 			})
 		}
 	}
@@ -233,7 +261,7 @@ func PlanCompactionCalibrated(
 		}
 		saved += c.tokens - estimate(short)
 		plan.Steps = append(plan.Steps, CompactionStep{
-			ToolCallID: c.id, Text: short,
+			ToolCallID: c.id, Occurrence: c.occurrence, Text: short,
 			FromBytes: len(c.text), ToBytes: len(short),
 		})
 	}
@@ -244,14 +272,36 @@ func PlanCompactionCalibrated(
 }
 
 // Apply writes the plan to the log. The projection picks it up from there.
+//
+// Each step records the sequence number of the result it shortens, resolved
+// here from the step's call id and occurrence, so the record applies to that
+// result alone. A step that names no occurrence is recorded by call id, which
+// applies to every result with it. A step the log cannot resolve fails the
+// whole Apply before anything is written.
 func (p CompactionPlan) Apply(log *session.Log) error {
+	var keys []llm.ResultKey
 	for _, step := range p.Steps {
-		if _, err := log.Append(session.ToolResultCompacted, session.CompactionData{
+		if step.Occurrence > 0 {
+			keys = append(keys, llm.ResultKey{ID: step.ToolCallID, Occurrence: step.Occurrence})
+		}
+	}
+	seqs, err := log.ResultSeqs(keys)
+	if err != nil {
+		return err
+	}
+	next := 0
+	for _, step := range p.Steps {
+		data := session.CompactionData{
 			ToolCallID: step.ToolCallID,
 			Text:       step.Text,
 			FromBytes:  step.FromBytes,
 			ToBytes:    step.ToBytes,
-		}); err != nil {
+		}
+		if step.Occurrence > 0 {
+			data.ResultSeq = seqs[next]
+			next++
+		}
+		if _, err := log.Append(session.ToolResultCompacted, data); err != nil {
 			return err
 		}
 	}

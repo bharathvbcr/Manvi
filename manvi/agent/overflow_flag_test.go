@@ -43,6 +43,41 @@ func overflowMessages(resultChars int, protected bool) []llm.Message {
 	return msgs
 }
 
+// logHistory records msgs in the harness's log, so a compaction planned over
+// them names results the log holds. Compaction records the result it shortens
+// by its place in the log; a history that never was in the log has no such
+// result to name, and Apply refuses it.
+func logHistory(t *testing.T, h *harness, msgs []llm.Message) {
+	t.Helper()
+	for _, m := range msgs {
+		var results []llm.ToolResultBlock
+		var rest []llm.ContentBlock
+		for _, b := range m.Content {
+			if tr, ok := b.(llm.ToolResultBlock); ok {
+				results = append(results, tr)
+			} else {
+				rest = append(rest, b)
+			}
+		}
+		if len(rest) > 0 {
+			typ := session.UserMessage
+			if m.Role == llm.RoleAssistant {
+				typ = session.AssistantMessage
+			}
+			if _, err := h.log.Append(typ, session.MessageData{Message: llm.Message{Role: m.Role, Content: rest}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, tr := range results {
+			if _, err := h.log.Append(session.ToolResult, session.ToolResultData{
+				ToolCallID: tr.ToolCallID, Content: tr.Content,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 // overflowLoop builds a loop on a window small enough that the threshold is the
 // minimum, so sysChars of system prompt decides whether compaction can win.
 func overflowLoop(t *testing.T, sysChars int, turns []replay.Turn) *harness {
@@ -90,7 +125,9 @@ func TestInsufficientCompactionSetsTheFlag(t *testing.T) {
 
 	t.Run("non-empty plan", func(t *testing.T) {
 		h := overflowLoop(t, hugeSystem, nil)
-		if _, err := h.loop.compact(overflowMessages(40000, false)); err != nil {
+		msgs := overflowMessages(40000, false)
+		logHistory(t, h, msgs)
+		if _, err := h.loop.compact(msgs); err != nil {
 			t.Fatal(err)
 		}
 		if countEvents(h, session.ToolResultCompacted) == 0 {
@@ -107,7 +144,9 @@ func TestInsufficientCompactionSetsTheFlag(t *testing.T) {
 
 	t.Run("non-empty plan that is sufficient stays quiet", func(t *testing.T) {
 		h := overflowLoop(t, 100, nil)
-		if _, err := h.loop.compact(overflowMessages(80000, false)); err != nil {
+		msgs := overflowMessages(80000, false)
+		logHistory(t, h, msgs)
+		if _, err := h.loop.compact(msgs); err != nil {
 			t.Fatal(err)
 		}
 		if countEvents(h, session.ToolResultCompacted) == 0 {
@@ -143,6 +182,10 @@ func TestInsufficientCompactionSetsTheFlag(t *testing.T) {
 func TestFlagSurvivesALaterStepThatFitsButNotALaterTurn(t *testing.T) {
 	h := overflowLoop(t, 100, []replay.Turn{textTurn("done")})
 
+	// Compaction plans over the history the log holds, by call id and order. The
+	// log holds a small c1 so the later turn really fits; the message handed in
+	// carries the same result, too big, as the stage under test would see it.
+	logHistory(t, h, overflowMessages(100, true))
 	if _, err := h.loop.compact(overflowMessages(200000, true)); err != nil { // does not fit
 		t.Fatal(err)
 	}

@@ -376,6 +376,15 @@ model-visible-means-logged assertion — on by default — failed the first time
 compaction touched a multi-line tool result. There is now no exemption in the
 invariant check, because none is needed.
 
+**A compaction names its result.** The event carries `result_seq`, the sequence
+number of the `tool/result` event it shortens, so a call id that a provider
+reuses across responses does not carry one result's compaction onto another and
+does not make a later result look already compacted. The planner identifies a
+result as its call id and its place among the results with that id, and the log
+resolves that to the sequence when the plan is applied. A record without
+`result_seq`, which is every journal written before the field, names the call id
+only and applies to every result with it, as it always did.
+
 **A result is compacted once.** The text it is given is the text it keeps for
 the rest of the session. Recomputing compaction every step, with tiers that
 escalate as the turn grows, changed the prompt prefix on every step.

@@ -87,6 +87,18 @@ type ToolResultBlock struct {
 
 func (ToolResultBlock) Kind() BlockKind { return KindToolResult }
 
+// ResultKey names one tool result within a history: the call it answers and
+// which of the results answering that id it is, counted from 1 in history order.
+//
+// A call id alone is not an identity. A provider may reuse one across responses
+// ("call_0" is what several OpenAI-compatible local servers emit), and anything
+// that remembers something about a result, such as that it was compacted, has to
+// remember which of them.
+type ResultKey struct {
+	ID         CallID
+	Occurrence int
+}
+
 // Role is who a message is from.
 type Role string
 

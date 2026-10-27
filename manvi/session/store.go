@@ -185,6 +185,11 @@ type LoadReport struct {
 	Oversize     bool
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// IgnoredCompactions counts compaction records in the file that name a
+	// result it does not hold, so the projection ignores them. Loading stays
+	// lenient about them (retention can leave one behind); a nonzero count is
+	// worth saying out loud.
+	IgnoredCompactions int
 }
 
 // SaveReport describes a session that was written.
@@ -410,6 +415,10 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 	if err != nil {
 		return nil, LoadReport{}, &CorruptError{Path: path, Detail: err.Error()}
 	}
+	ignored, err := log.IgnoredCompactions()
+	if err != nil {
+		return nil, LoadReport{}, &CorruptError{Path: path, Detail: err.Error()}
+	}
 
 	s.mu.Lock()
 	s.seen[id] = digest(raw)
@@ -421,6 +430,7 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 		Events: len(events), Turns: doc.Turns,
 		TrimmedTurns: doc.TrimmedTurns, Oversize: doc.Oversize,
 		CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
+		IgnoredCompactions: ignored,
 	}, nil
 }
 

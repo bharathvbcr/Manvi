@@ -466,12 +466,34 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 	// on the Loop. A Loop lasts one turn; the log lasts the session, and a
 	// per-turn ledger silently re-compacts everything from the previous turn.
 	// See session.Log.CompactedCalls for what that costs.
+	// A compaction names a result by its place among the results sharing a call
+	// id, and the log resolves that to a sequence by its own count. So the
+	// planner must count over the history the log holds. The messages handed in
+	// are that history unless an earlier stage of the waterfall dropped or
+	// rewrote part of it, and a plan over a truncated history would name the
+	// wrong result of a reused id. The result of this function is the log's
+	// projection whenever it compacts anyway, so in that case plan over the
+	// projection: the owner is the log, not the stage that changed the messages.
+	holds, err := l.log.HoldsResults(messages)
+	if err != nil {
+		return nil, err
+	}
+	planned := messages
+	if !holds {
+		if planned, err = l.log.DeriveMessages(); err != nil {
+			return nil, err
+		}
+	}
 	already, err := l.log.CompactedCalls()
 	if err != nil {
 		return nil, err
 	}
+	done, err := l.log.CompactedResults()
+	if err != nil {
+		return nil, err
+	}
 
-	plan := PlanCompactionCalibrated(messages, l.cfg.SystemPrompt, schemas, l.Budget(), already, &l.calib)
+	plan := PlanCompactionCalibrated(planned, l.cfg.SystemPrompt, schemas, l.Budget(), already, &l.calib, done...)
 	if plan.Empty() {
 		if plan.Insufficient {
 			if err := l.reportOverflow(plan); err != nil {

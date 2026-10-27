@@ -162,6 +162,31 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A tool result's compaction is recorded against that result, not against its
+  call id. The compaction ledger was keyed on the id alone, so a provider that
+  reuses one across responses (`call_0` is what several OpenAI-compatible local
+  servers emit) had the compaction of one result replayed over another's
+  unrelated text, and a later result carrying the id of a compacted one was
+  taken as already compacted and never shortened. The `context/tool_result_compacted`
+  event gains `result_seq`, the sequence of the tool result it shortens; the
+  planner names a result by call id and its place among the results with that
+  id, and `Apply` resolves that to the sequence (and refuses a result the log
+  does not hold, before writing anything). A record without `result_seq`, which
+  is every existing journal, still names the call id only and projects exactly
+  as before, so a resumed session replays as it did. The `manvi serve` chat
+  plane keys its ledger the same way: `chat.prepare` steps gain an optional
+  `occurrence` (which `tool` message carrying `tool_call_id`, from 1), additive
+  within protocol 1, so a host that reuses an id can apply a step to one result.
+  `contracts/serve.ops.schema.json` and its checksum are regenerated; a host
+  that mirrors the contract needs the new copy. Two follow-ons: when the
+  messages handed to the loop's compaction stage are not the log's tool results
+  (an earlier stage of the waterfall dropped or rewrote some), compaction plans
+  over the log's own projection, which is what it returns anyway, so a place
+  counted among results sharing an id always means the log's result. And a
+  restored journal stays lenient about a compaction record that names a result
+  the log does not hold under that call id (a bogus sequence, or a result
+  retention trimmed off the front): the projection ignores it, and
+  `LoadReport.IgnoredCompactions` counts it; `Append` still refuses to write one.
 - The session privacy scrub no longer leaves a signed reasoning block with text
   that its signature does not cover. It rewrote a thinking block's text and kept
   the signature, and the Anthropic adapter replays both, which the API refuses

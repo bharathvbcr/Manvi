@@ -53,7 +53,12 @@ type ChatSession struct {
 	// string invalidates everything after it and costs a full re-prefill —
 	// measured at 120s for a 14.7k-token prompt on a 4-bit 27B against 1.5s
 	// warm.
-	compacted map[llm.CallID]string
+	//
+	// It is keyed by result, not by call id: a host may reuse an id across
+	// responses, and the shortening of one result is not another's. The key is
+	// the id and the result's place among the tool messages that carry it, in
+	// the history the host sends.
+	compacted map[llm.ResultKey]string
 	// calibrator corrects the token estimator against what the server counts.
 	calibrator agent.Calibrator
 	// lastEstimate is what prepare predicted for the request the host then
@@ -71,7 +76,7 @@ type ChatSession struct {
 }
 
 func newChatSession() *ChatSession {
-	return &ChatSession{compacted: map[llm.CallID]string{}, lastUsed: time.Now()}
+	return &ChatSession{compacted: map[llm.ResultKey]string{}, lastUsed: time.Now()}
 }
 
 // maxHarnessDigestLen bounds the digest a host may state. A digest is 64 hex
@@ -124,9 +129,9 @@ func shortDigest(d string) string {
 //
 // A ledger entry earns its place by substituting a shortened result back into
 // the next request (toNeutralMessages) and by keeping that result off the next
-// plan (the `already` set). An entry for a tool_call_id the host no longer
-// sends does neither: the conversation moved on, the result is gone, and the
-// entry is pure residue. Dropping it is therefore free — it cannot move a
+// plan (the `done` keys). An entry for a result the host no longer sends does
+// neither: the conversation moved on, the result is gone, and the entry is
+// pure residue. Dropping it is therefore free — it cannot move a
 // prompt prefix that no longer contains the message.
 //
 // What is left is bounded by what the host sends, and one request is bounded
@@ -139,27 +144,34 @@ func (s *ChatSession) pruneLedger(wire []WireMessage) {
 	if len(s.compacted) == 0 {
 		return
 	}
-	live := make(map[llm.CallID]struct{}, len(wire))
-	order := make([]llm.CallID, 0, len(wire))
+	live := make(map[llm.ResultKey]struct{}, len(wire))
+	order := make([]llm.ResultKey, 0, len(wire))
+	seen := make(map[llm.CallID]int, len(wire))
 	for _, m := range wire {
 		if m.Role != "tool" || m.ToolCallID == "" {
 			continue
 		}
-		id := llm.CallID(m.ToolCallID)
-		if _, seen := live[id]; seen {
-			continue
-		}
-		live[id] = struct{}{}
-		order = append(order, id)
+		key := nextResultKey(seen, m.ToolCallID)
+		live[key] = struct{}{}
+		order = append(order, key)
 	}
-	for id := range s.compacted {
-		if _, ok := live[id]; !ok {
-			delete(s.compacted, id)
+	for key := range s.compacted {
+		if _, ok := live[key]; !ok {
+			delete(s.compacted, key)
 		}
 	}
 	for i := 0; len(s.compacted) > maxCompactedEntries && i < len(order); i++ {
 		delete(s.compacted, order[i])
 	}
+}
+
+// nextResultKey is the key of the next tool message answering id, given how
+// many of them seen has counted so far. Callers walk the history in order, so
+// the counts are the places the results hold in it.
+func nextResultKey(seen map[llm.CallID]int, id string) llm.ResultKey {
+	call := llm.CallID(id)
+	seen[call]++
+	return llm.ResultKey{ID: call, Occurrence: seen[call]}
 }
 
 // Session-table bounds.
@@ -344,6 +356,12 @@ type PrepareParams struct {
 // PrepareStep is one tool result to shorten, and the text to shorten it to.
 type PrepareStep struct {
 	ToolCallID string `json:"tool_call_id"`
+	// Occurrence says which tool message carrying ToolCallID is meant, counted
+	// from 1 in the history the host sent. A host that reuses a call id across
+	// responses applies the step to that one and leaves the others alone; a host
+	// whose ids are unique sees 1 and can ignore it. Optional on the wire,
+	// like every field added to a shape a host already reads.
+	Occurrence int    `json:"occurrence,omitempty"`
 	Text       string `json:"text"`
 	FromBytes  int    `json:"from_bytes"`
 	ToBytes    int    `json:"to_bytes"`
@@ -452,13 +470,13 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 		Overhead:       p.Overhead,
 	}
 
-	already := make(map[llm.CallID]struct{}, len(session.compacted))
-	for id := range session.compacted {
-		already[id] = struct{}{}
+	done := make([]llm.ResultKey, 0, len(session.compacted))
+	for key := range session.compacted {
+		done = append(done, key)
 	}
 
 	plan := agent.PlanCompactionCalibrated(
-		messages, p.System, tools, budget, already, &session.calibrator)
+		messages, p.System, tools, budget, nil, &session.calibrator, done...)
 
 	result := PrepareResult{
 		Before:             plan.Before,
@@ -476,9 +494,10 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 		// Recorded here, not only returned. The ledger is what makes the next
 		// step skip this result instead of recomputing a possibly different
 		// shortening for it.
-		session.compacted[step.ToolCallID] = step.Text
+		session.compacted[llm.ResultKey{ID: step.ToolCallID, Occurrence: step.Occurrence}] = step.Text
 		result.Steps = append(result.Steps, PrepareStep{
 			ToolCallID: string(step.ToolCallID),
+			Occurrence: step.Occurrence,
 			Text:       step.Text,
 			FromBytes:  step.FromBytes,
 			ToBytes:    step.ToBytes,
@@ -666,19 +685,23 @@ func (s *Server) forget(raw json.RawMessage) (any, *Error) {
 }
 
 // toNeutralMessages converts the wire shape to what the planner reads,
-// substituting any shortening already recorded for a tool result.
+// substituting any shortening already recorded for a tool result. A tool
+// message is looked up by its result key, so a call id the host reused does not
+// pull one result's shortening onto another.
 //
 // The substitution is what makes the accounting honest: without it the planner
 // would price a result at its original length, decide the history is over
 // budget, and find nothing left to shorten.
-func toNeutralMessages(wire []WireMessage, compacted map[llm.CallID]string) []llm.Message {
+func toNeutralMessages(wire []WireMessage, compacted map[llm.ResultKey]string) []llm.Message {
 	out := make([]llm.Message, 0, len(wire))
+	seen := make(map[llm.CallID]int)
 	for _, m := range wire {
 		switch m.Role {
 		case "tool":
-			id := llm.CallID(m.ToolCallID)
+			key := nextResultKey(seen, m.ToolCallID)
+			id := key.ID
 			text := m.Text
-			if short, ok := compacted[id]; ok {
+			if short, ok := compacted[key]; ok {
 				text = short
 			}
 			out = append(out, llm.Message{
