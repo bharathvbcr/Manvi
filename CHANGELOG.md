@@ -190,6 +190,25 @@ under **Unreleased** in the same commit as the code.
     collision check no longer read the file (it was read several times a turn).
   - A session started in a subdirectory now carries the repository's
     instructions rather than a file of that name in the subdirectory.
+- A skill's body is refused on the same runes as its description, a spec's text
+  and a lesson's answer: control characters other than tab, newline and carriage
+  return, format characters (bidi, zero-width, byte order) and private-use ones,
+  Unicode tag characters included. `devcouncil_load_skill` hands the body to the
+  model whole and it checked UTF-8 alone, so an escape sequence or a bidi
+  override could sit in steps a reviewer read as plain text. The rejection names
+  the skill and the codepoint; `${...}` and `{{...}}` in a body are still
+  allowed. The one check, `hiddenRuneProblem`, now serves the description, a
+  spec's text and the body.
+- Listing the skills directory is bounded. It read every entry
+  (`ReadDir(-1)`) on every turn and every `devcouncil_load_skill` call; it now
+  reads at most `harness.MaxSkillDirEntries` (10,000) in chunks, checking for
+  cancellation between them, and reports a cut (`SkillSet.ListingCut`, a prompt
+  notice, a `harness.resolve` note) instead of silence. A lookup of a name not
+  among the entries read says the listing was cut rather than that the skill is
+  absent. Measured once each on a 100,000-directory skills directory: one
+  lookup went from 377 ms to 40 ms, and `LoadSkills` from 3.07 s to 1.88 s, the
+  rest being the read gate's cost for the 200 skills it examines.
+
 
 ## [0.1.0] — 2026-10-17
 

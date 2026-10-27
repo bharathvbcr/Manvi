@@ -299,6 +299,9 @@ func (h *HarnessResolver) listSkills(ctx context.Context, root, provider string,
 	if set.NotExamined > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("%d skill directories past the limit of %d were not examined; the listing is a prefix", set.NotExamined, harness.MaxSkills))
 	}
+	if set.ListingCut {
+		out.Notes = append(out.Notes, fmt.Sprintf("the skills directory holds more than %d entries; only the first %d were considered, so the listing may be missing skills", harness.MaxSkillDirEntries, harness.MaxSkillDirEntries))
+	}
 	limit := h.budget(provider).Skills
 	used := 0
 	for i, s := range set.Skills {

@@ -112,7 +112,7 @@ func (r *Registry) skillToolOffered(ctx context.Context) bool {
 	if err != nil {
 		return true
 	}
-	return len(set.Skills) > 0 || len(set.Rejected) > 0 || set.RejectedOmitted > 0 || set.NotExamined > 0
+	return len(set.Skills) > 0 || len(set.Rejected) > 0 || set.RejectedOmitted > 0 || set.NotExamined > 0 || set.ListingCut
 }
 
 // NoteListedSkills records the skill names the system prompt just carried, in
@@ -178,6 +178,12 @@ func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result 
 			return tools.Errorf("%s exists but was rejected: %s", harness.QuoteName(l.Dir), l.Reason)
 		}
 		return tools.Errorf("skill %s was rejected: %s", harness.QuoteName(args.Name), l.Reason)
+	}
+	if l.ListingCut {
+		// A name that is not among the entries read may be among the ones that
+		// were not, so "no such skill" would be a claim the listing cannot make.
+		return tools.Errorf("no skill named %s among the first %d entries of %s, which holds more than that and was not listed past them",
+			harness.QuoteName(args.Name), harness.MaxSkillDirEntries, harness.SkillsDir)
 	}
 	if l.Directories == 0 {
 		return tools.Errorf("no skill named %s: this repository has no skills under %s", harness.QuoteName(args.Name), harness.SkillsDir)

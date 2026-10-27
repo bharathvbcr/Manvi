@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -43,6 +44,17 @@ const (
 	// unbounded directory would be an unbounded prompt and an unbounded scan.
 	// Directories past the bound are counted in SkillSet.NotExamined.
 	MaxSkills = 200
+	// MaxSkillDirEntries bounds how many entries of the skills directory one
+	// listing reads, whatever they are: 50 times MaxSkills, far past any real
+	// repository and small enough that the listing every turn and every
+	// devcouncil_load_skill call makes costs milliseconds. The directory is read
+	// in chunks and the read stops here; SkillSet.ListingCut says it did. The
+	// entries read are the first ones in directory order, which a filesystem
+	// need not keep stable, so past this bound two loads of an unchanged tree
+	// may list different prefixes. They never list more than the bound.
+	MaxSkillDirEntries = 50 * MaxSkills
+	// skillDirChunk is how many entries one read of the directory asks for.
+	skillDirChunk = 512
 	// MaxRejected bounds how many rejections one load records by name. The rest
 	// are counted in SkillSet.RejectedOmitted, so a directory of ten thousand
 	// bad names is one number and not ten thousand entries.
@@ -107,6 +119,10 @@ type SkillSet struct {
 	// NotExamined counts validly named directories past MaxSkills that were
 	// never read. A nonzero value means the listing is a prefix, not the whole.
 	NotExamined int
+	// ListingCut reports that the skills directory holds more than
+	// MaxSkillDirEntries entries and only the first MaxSkillDirEntries, in
+	// directory order, were considered. Everything else here describes those.
+	ListingCut bool
 }
 
 // Find returns the accepted skill called name.
@@ -146,11 +162,11 @@ type ReadFunc func(rel string, limit int64) ([]byte, error)
 // link is judged by the reader, which refuses one that leaves the repository.
 // A name that cannot be a skill costs no read.
 func LoadSkills(ctx context.Context, root string, read ReadFunc) (SkillSet, error) {
-	names, err := listSkillDirs(ctx, root)
+	names, cut, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return SkillSet{}, err
 	}
-	var set SkillSet
+	set := SkillSet{ListingCut: cut}
 	examined := 0
 	for _, name := range names {
 		if !ValidSkillName(name) {
@@ -215,6 +231,10 @@ type Lookup struct {
 	// Directories counts every valid skill directory, listed elsewhere or not,
 	// so a refusal can tell "no skills" from "every skill is already listed".
 	Directories int
+	// ListingCut reports that the skills directory holds more than
+	// MaxSkillDirEntries entries and only the first of them were listed, so a
+	// name that is SkillMissing may exist among the rest.
+	ListingCut bool
 }
 
 // MaxListedNames bounds the names a refusal lists.
@@ -237,7 +257,7 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 	if !ValidSkillName(name) {
 		return Lookup{}, fmt.Errorf("%s is not a valid skill name", QuoteName(name))
 	}
-	names, err := listSkillDirs(ctx, root)
+	names, cut, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -252,7 +272,7 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 		}
 	}
 	if dir == "" {
-		l := Lookup{Outcome: SkillMissing}
+		l := Lookup{Outcome: SkillMissing, ListingCut: cut}
 		for _, n := range names {
 			if !ValidSkillName(n) {
 				continue
@@ -280,9 +300,10 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 	return Lookup{Outcome: SkillFound, Skill: skill, Dir: dir}, nil
 }
 
-// listSkillDirs returns the sorted names of candidate skill entries. The
-// listing goes through os.Root, which refuses a skills directory that is a
-// symbolic link out of the repository.
+// listSkillDirs returns the sorted names of candidate skill entries, and whether
+// the directory held more than MaxSkillDirEntries entries so that the rest were
+// not read. The listing goes through os.Root, which refuses a skills directory
+// that is a symbolic link out of the repository.
 //
 // The path is judged before it is opened: a FIFO, socket, device or plain file
 // at .agents/skills is refused as a listing error, because opening a FIFO
@@ -290,63 +311,84 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 // the read are also bounded by ctx, since the judgement and the open are two
 // steps and a hung filesystem has no type to judge; a cancelled or timed-out
 // listing takes the same error path as any other listing failure.
-func listSkillDirs(ctx context.Context, root string) ([]string, error) {
+func listSkillDirs(ctx context.Context, root string) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
 	}
 	type outcome struct {
 		names []string
+		cut   bool
 		err   error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		names, err := readSkillDirs(root)
-		done <- outcome{names, err}
+		names, cut, err := readSkillDirs(ctx, root)
+		done <- outcome{names, cut, err}
 	}()
 	select {
 	case o := <-done:
-		return o.names, o.err
+		return o.names, o.cut, o.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, ctx.Err())
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, ctx.Err())
 	}
 }
 
-func readSkillDirs(root string) ([]string, error) {
+// readSkillDirs reads the directory in chunks of skillDirChunk entries, stops
+// after MaxSkillDirEntries, and checks ctx between chunks so a cancelled load
+// does not leave this goroutine reading on. A single ReadDir(-1) held every
+// entry of a hostile directory in memory and in the time of one turn.
+func readSkillDirs(ctx context.Context, root string) ([]string, bool, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
-		return nil, fmt.Errorf("opening repository root: %w", err)
+		return nil, false, fmt.Errorf("opening repository root: %w", err)
 	}
 	defer func() { _ = r.Close() }()
 	info, err := r.Stat(SkillsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("examining %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("examining %s: %w", SkillsDir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory (%s), so it is not opened", SkillsDir, info.Mode().Type())
+		return nil, false, fmt.Errorf("%s is not a directory (%s), so it is not opened", SkillsDir, info.Mode().Type())
 	}
 	dir, err := r.Open(SkillsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("opening %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("opening %s: %w", SkillsDir, err)
 	}
 	defer func() { _ = dir.Close() }()
-	entries, err := dir.ReadDir(-1)
-	if err != nil {
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, err)
-	}
 	var names []string
-	for _, e := range entries {
-		if e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
-			names = append(names, e.Name())
+	for read := 0; read < MaxSkillDirEntries; {
+		if err := ctx.Err(); err != nil {
+			return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
+		}
+		entries, err := dir.ReadDir(min(skillDirChunk, MaxSkillDirEntries-read))
+		for _, e := range entries {
+			if e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
+				names = append(names, e.Name())
+			}
+		}
+		read += len(entries)
+		if errors.Is(err, io.EOF) {
+			sort.Strings(names)
+			return names, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
 		}
 	}
+	// The bound is reached. One more entry is the difference between a
+	// directory of exactly the bound and one that was cut.
+	more, err := dir.ReadDir(1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
+	}
 	sort.Strings(names)
-	return names, nil
+	return names, len(more) > 0, nil
 }
 
 // loadSkill judges one directory. It returns a reason, never a partial skill.
@@ -398,6 +440,12 @@ func judgeSkill(dirName string, data []byte) (Skill, string) {
 	if n := utf8.RuneCountInString(desc); n > MaxDescriptionRunes {
 		return Skill{}, fmt.Sprintf("description is %d runes, over the %d limit", n, MaxDescriptionRunes)
 	}
+	// The body is what devcouncil_load_skill hands the model whole, so it is
+	// refused on the same runes the description is: a skill whose steps hide an
+	// escape sequence or a bidi override from the person who reviews it.
+	if why := hiddenRuneProblem(body); why != "" {
+		return Skill{}, "body " + why
+	}
 	return Skill{Name: dirName, Description: desc, Body: body}, ""
 }
 
@@ -406,6 +454,23 @@ func judgeSkill(dirName string, data []byte) (Skill, string) {
 // this one definition of text that is refused.
 func unrenderable(r rune) bool {
 	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+}
+
+// hiddenRuneProblem is why text carries a rune that must not reach the model or
+// a terminal unrendered, or "": the one check every prompt input shares (a
+// description, a spec's text, a skill's body). Tab, newline and carriage return
+// are layout, not hiding places, and are allowed. It does not judge UTF-8
+// validity or templating tokens, which differ by input.
+func hiddenRuneProblem(text string) string {
+	for _, r := range text {
+		if r == '\n' || r == '\t' || r == '\r' {
+			continue
+		}
+		if unrenderable(r) {
+			return fmt.Sprintf("contains U+%04X, a control, format or private-use character", r)
+		}
+	}
+	return ""
 }
 
 // ParseFrontmatter reads the leading "---" block of a SKILL.md and returns its
@@ -474,10 +539,8 @@ func scalar(v string) (string, error) {
 		v = inner
 	}
 	v = strings.Join(strings.Fields(v), " ")
-	for _, r := range v {
-		if unrenderable(r) {
-			return "", fmt.Errorf("contains U+%04X, a control, format or private-use character", r)
-		}
+	if why := hiddenRuneProblem(v); why != "" {
+		return "", errors.New(why)
 	}
 	return v, nil
 }

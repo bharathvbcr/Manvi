@@ -156,7 +156,7 @@ func FilterSkills(set SkillSet, only []string) SkillSet {
 	for _, n := range only {
 		want[n] = true
 	}
-	out := SkillSet{Rejected: set.Rejected, RejectedOmitted: set.RejectedOmitted, NotExamined: set.NotExamined}
+	out := SkillSet{Rejected: set.Rejected, RejectedOmitted: set.RejectedOmitted, NotExamined: set.NotExamined, ListingCut: set.ListingCut}
 	for _, s := range set.Skills {
 		if want[s.Name] {
 			out.Skills = append(out.Skills, s)

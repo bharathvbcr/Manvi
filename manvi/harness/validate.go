@@ -91,15 +91,7 @@ func textProblem(text string) string {
 			return fmt.Sprintf("contains %q: a spec is data and is never templated", token)
 		}
 	}
-	for _, r := range text {
-		if r == '\n' || r == '\t' || r == '\r' {
-			continue
-		}
-		if unrenderable(r) {
-			return fmt.Sprintf("contains U+%04X, a control, format or private-use character", r)
-		}
-	}
-	return ""
+	return hiddenRuneProblem(text)
 }
 
 // Validate lists every problem with the spec against env. An empty result
