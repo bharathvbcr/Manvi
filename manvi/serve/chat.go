@@ -61,8 +61,11 @@ type ChatSession struct {
 	compacted map[llm.ResultKey]string
 	// calibrator corrects the token estimator against what the server counts.
 	calibrator agent.Calibrator
-	// lastEstimate is what prepare predicted for the request the host then
-	// sent, held so the next call can pair it with the server's real count.
+	// lastEstimate is the harness's raw, uncalibrated estimate of the request
+	// the host then sent, held so the next call can pair it with the server's
+	// real count. Raw because the calibrator learns the ratio of the count to
+	// the raw estimate; a calibrated figure here would have the correction
+	// applied twice.
 	lastEstimate int
 	// harnessDigest is the harness the host last said its System was composed
 	// from, and prefixMoves counts the times it said a different one. See
@@ -505,8 +508,19 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 	}
 
 	// What the host is about to send, so the next call can pair it with the
-	// server's count. After the plan, because the plan is what changes it.
-	session.lastEstimate = plan.After
+	// server's count. After the plan, because the plan is what changes it: the
+	// request is the history with the ledger's shortenings applied.
+	//
+	// The raw estimate, not plan.After. After is the calibrated figure, and the
+	// calibrator learns the ratio of the server's count to the raw estimate;
+	// feeding it its own output made the correction apply twice, so a server
+	// counting half the raw estimate settled at 0.707 instead of 0.5 and
+	// compaction fired earlier than the window needed. The agent loop pairs the
+	// raw CountRequestTokens with the count too.
+	if len(plan.Steps) > 0 {
+		messages = toNeutralMessages(p.Messages, session.compacted)
+	}
+	session.lastEstimate = agent.CountRequestTokens(p.System, tools, messages)
 	return result, nil
 }
 

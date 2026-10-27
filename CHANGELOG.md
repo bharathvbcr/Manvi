@@ -162,6 +162,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `chat.prepare` calibrates its token estimate against the raw estimate, not
+  against its own corrected one. It stored the calibrated `after_tokens` as the
+  estimate for the next server count and fed it back to the calibrator as the
+  raw side of the pair, so the correction was applied twice: a server counting
+  half the raw estimate settled the ratio at 0.707 (the square root) instead of
+  0.5, and compaction fired earlier than the window required. The session now
+  holds the raw `CountRequestTokens` of the request the host will send (the
+  history with the ledger's shortenings applied), as the agent loop already
+  does, and a server counting half converges to 0.5. `calibration_ratio` on the
+  wire is unchanged in meaning; its values are now the true ratio.
 - A tool result's compaction is recorded against that result, not against its
   call id. The compaction ledger was keyed on the id alone, so a provider that
   reuses one across responses (`call_0` is what several OpenAI-compatible local
