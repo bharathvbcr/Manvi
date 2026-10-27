@@ -72,13 +72,24 @@ type ManagedRunner struct {
 	blocked []blockedCheckout
 }
 
-// blockedCheckout is a checkout whose harness block was left in place because
-// taking it out failed, and the reason (the restore's own error). That the block
-// may be there is the record on disk, which this does not replace: it is process
-// memory kept only so a verifier that is refused is told why.
+// blockedCheckout is a checkout whose harness block was left in place, and why.
+// That the block may be there is the record on disk, which this does not
+// replace: it is process memory kept so a verifier that is refused is told why,
+// and, for a hold, so the checkout stays held. Two kinds:
+//
+//   - a restore that failed (session nil): the reason is the restore's error.
+//     Nothing is held; the next attempt on the checkout tries the restore again.
+//   - a hold (session set): the run ended without its agent process confirmed
+//     gone, so the block was not taken out from under a process that may still be
+//     reading and writing the file, and no other run is admitted on the checkout.
+//     session is what the process was started as; it is asked again to confirm
+//     the exit (see reapHeld), which is how the hold ends. The hold is in
+//     process memory: a restart of Manvi ends it, and the record on disk is then
+//     applied as any dead run's is.
 type blockedCheckout struct {
-	info   os.FileInfo
-	reason string
+	info    os.FileInfo
+	reason  string
+	session ManagedSession
 }
 
 // setBlocked remembers why the block on a checkout could not be taken out,
@@ -114,6 +125,70 @@ func (r *ManagedRunner) blockedReason(info os.FileInfo) string {
 		}
 	}
 	return ""
+}
+
+// holdCheckout keeps a checkout held after a run whose agent process is not
+// confirmed gone: its block stays in the file and its record on disk, and no run
+// is admitted on the checkout until reapHeld confirms the exit.
+func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession) {
+	job.mu.Lock()
+	info := job.checkoutInfo
+	job.mu.Unlock()
+	if info == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropBlocked(info)
+	r.blocked = append(r.blocked, blockedCheckout{info: info, session: session,
+		reason: "a managed run ended without confirmation that its agent process exited, so the agent may still be running: its harness block stays in the instruction file and the checkout stays held until the provider confirms the exit, which the next work.runs.managed.prepare on this checkout asks it for"})
+}
+
+// heldReason is why a checkout is held for an unconfirmed exit, or "".
+func (r *ManagedRunner) heldReason(info os.FileInfo) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range r.blocked {
+		if b.session != nil && sameCheckout(b.info, info) {
+			return b.reason
+		}
+	}
+	return ""
+}
+
+// reapHeld asks the provider of a held checkout whether its process has exited
+// now. Close waits for the process again and is bounded, so an unconfirmed
+// process costs the asking attempt one bounded wait and no more. On a
+// confirmation the hold ends and the record, still on disk, is applied by the
+// recovery that follows in enterCheckout.
+func (r *ManagedRunner) reapHeld(info os.FileInfo) {
+	r.mu.Lock()
+	var session ManagedSession
+	for _, b := range r.blocked {
+		if b.session != nil && sameCheckout(b.info, info) {
+			session = b.session
+			break
+		}
+	}
+	r.mu.Unlock()
+	if session == nil {
+		return
+	}
+	if exit, err := session.Close(); exitConfirmed(exit, err) {
+		r.clearBlocked(info)
+	}
+}
+
+// exitConfirmed says whether a Close left no doubt that the process is gone.
+func exitConfirmed(exit codingagent.Exit, err error) bool { return exit.Reaped && err == nil }
+
+// unconfirmedSession is the session to hold a checkout for after a Close that returned
+// exit and err: the session itself when the exit is not confirmed, else nil.
+func unconfirmedSession(session ManagedSession, exit codingagent.Exit, err error) ManagedSession {
+	if exitConfirmed(exit, err) {
+		return nil
+	}
+	return session
 }
 
 // settleBlocked is what an attempt to take a block out came to: err is its
@@ -269,8 +344,12 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		}
 		return nil // nothing to guard for an attempt with no harness
 	}
+	r.reapHeld(info) // outside checkoutMu: it may wait on a process
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
+	if reason := r.heldReason(info); reason != "" {
+		return harnessBusy("%s", reason)
+	}
 	r.mu.Lock()
 	others := make([]*managedJob, 0, len(r.jobs))
 	for _, o := range r.jobs {
@@ -363,6 +442,9 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		if live {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
 		}
+	}
+	if reason := r.heldReason(info); reason != "" {
+		return harnessBusy("%s", reason)
 	}
 	if harnessRecordPending(resolved) {
 		if reason := r.blockedReason(info); reason != "" {
@@ -463,16 +545,14 @@ func (r *ManagedRunner) resolveHarness(ctx context.Context, run managedRun, ref 
 	return spec, root, nil
 }
 
-// restoreHarness takes the harness block out of the checkout. It is called from
-// finish, once, before the run is recorded finished, so every end of a run
-// (success, failure, cancel, stop, abandonment) leaves the checkout without it
-// and the diff a verifier takes afterwards is the agent's own.
-func (j *managedJob) restoreHarness() error {
+// takeMaterialised hands finish what takes the harness block out of the
+// checkout, once: the job no longer holds it afterwards.
+func (j *managedJob) takeMaterialised() *harnessMaterialisation {
 	j.mu.Lock()
+	defer j.mu.Unlock()
 	m := j.materialised
 	j.materialised = nil
-	j.mu.Unlock()
-	return m.Restore()
+	return m
 }
 
 // managedOwnerID is the owner a managed attempt records:
@@ -732,7 +812,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 			}
 			// finish keeps its store error on the job (job.err), which is
 			// where this goroutine's caller reads the run's end from.
-			_ = r.finish(job, outcome, nil, err, providerState)
+			_ = r.finish(job, outcome, nil, err, providerState, nil)
 		}
 		job.cancel()
 		close(job.done)
@@ -756,9 +836,9 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		}
 		job.mu.Unlock()
 		if !activated {
-			_, closeErr := provider.Close()
+			exit, closeErr := provider.Close()
 			// The store error, if any, is kept on the job by finish.
-			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted")
+			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted", unconfirmedSession(provider, exit, closeErr))
 			job.cancel()
 			close(job.done)
 		}
@@ -896,9 +976,9 @@ func managedTurn(provider, mode, brief string) string {
 const managedGuidanceHeading = "\n## Agent guidance\n"
 
 func (r *ManagedRunner) abandon(job *managedJob, cause error) {
-	_, err := job.provider.Close()
+	exit, err := job.provider.Close()
 	// The store error, if any, is kept on the job by finish.
-	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")
+	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted", unconfirmedSession(job.provider, exit, err))
 	close(job.done)
 }
 
@@ -1128,14 +1208,14 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	var code *int
 	// Provider failure and callback uncertainty do not imply that a reaped
 	// process is alive. Preserve their reasons; task acceptance remains separate.
-	if exit.Reaped && closeErr == nil {
+	if exitConfirmed(exit, closeErr) {
 		outcome = "exited"
 		if exit.Code >= 0 {
 			v := exit.Code
 			code = &v
 		}
 	}
-	finishErr := r.finish(job, outcome, code, err, finalState)
+	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit, closeErr))
 	// Arm only after finish has released the checkout, and never for a timeout.
 	// A provider-reported failure and a clean stop both arm. The queued message
 	// is snapshotted here: a follow that arrives after this is refused.
@@ -1658,13 +1738,27 @@ func (r *ManagedRunner) resolve(ctx context.Context, job *managedJob, callback *
 	_, err = r.client.Workbench(ctx, "decisions.resolve", input)
 	return err
 }
-func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string) error {
+
+// finish records the end of a run. unconfirmed is the session whose process is
+// not confirmed gone (see unconfirmedSession), nil when it is, or when the run has no
+// session to ask again (a factory that failed owns its own cleanup).
+func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string, unconfirmed ManagedSession) error {
 	// Before anything is recorded, and whatever the run's end: the checkout is
 	// given back without the harness block. A restore that fails is part of the
 	// reason the run is recorded with, typed, because a block left behind is a
 	// change in the checkout the agent did not make. Its record is kept (see
 	// recoverPendingHarness), and why is kept beside it for HarnessBusy.
-	if restoreErr := job.restoreHarness(); restoreErr != nil {
+	//
+	// The exception is a process not confirmed gone: it may be reading and
+	// writing the instruction file, and a restore is a read and then a write over
+	// it, so it would overwrite the agent's edit in between and give the checkout
+	// to the next run while the agent may still be in it. The block and its record
+	// stay, the checkout is held (holdCheckout), and the run is recorded
+	// unresolved, as the caller already records it.
+	if m := job.takeMaterialised(); m != nil && unconfirmed != nil {
+		r.holdCheckout(job, unconfirmed)
+		cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+	} else if restoreErr := m.Restore(); restoreErr != nil {
 		cause = errors.Join(cause, restoreErr)
 		job.mu.Lock()
 		info, root := job.checkoutInfo, job.checkout

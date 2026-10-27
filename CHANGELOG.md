@@ -203,6 +203,20 @@ under **Unreleased** in the same commit as the code.
   block the agent edited inside, is still refused once and cleared. A checkout
   whose record an earlier build wrote past the new bound stays refused with the
   restore's error until the file is put right by hand.
+- A managed run that ends with its agent process not confirmed gone no longer
+  gives its checkout away. `Close` answering "not reaped", or failing, is
+  recorded `unresolved`, but `finish` still restored the harness block (a read
+  and then a write over a file the agent may be writing, which overwrote its
+  edit in between) and closed the job, so the next run was admitted on a
+  checkout the first agent might still be in, with two agents and one block. The
+  block and its record now stay, the checkout is held (every attempt on it,
+  with a harness or without, is refused `E_HARNESS_BUSY` and `HarnessBusy`
+  refuses a verification), and the next prepare on the checkout asks the
+  provider again whether the process has exited (`Close` waits again, bounded);
+  once it confirms, the block is taken out and the checkout is free. The hold is
+  in memory, so a restart of Manvi ends it and the record is applied as any dead
+  run's is. Not covered: a factory that fails after possibly starting a process
+  returns no session to ask again, so that end still restores as before.
 
 ## [0.1.0] — 2026-10-17
 
