@@ -142,6 +142,15 @@ func claudeBuild(ctx context.Context, program string) (string, error) {
 	// withholding.
 	cmd.Env = childenv.Inherit()
 	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrWaitDelay) && probe.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// The process exited 0 and a descendant outlived it holding stdout.
+		// That is not a failed probe: the answer is what was read, and the
+		// identity checks below are what decide whether it is the right one.
+		// Whatever is still holding the pipe has nothing left to do for this
+		// call, so the group goes with it.
+		proc.KillGroup(cmd.Process.Pid)
+		err = nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("read managed Claude build identity: %w", err)
 	}

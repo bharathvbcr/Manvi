@@ -202,7 +202,10 @@ under **Unreleased** in the same commit as the code.
   for that process's whole life (25 s against a 10 s probe in the audit). The
   probe now runs in its own process group, killed with the deadline, and gives
   up on a held pipe two seconds after the process is gone, as the other child
-  processes here do.
+  processes here do. A probe that exited 0 and printed its identity is still
+  accepted when a background process it started holds the pipe past those two
+  seconds (that process is then killed); a non-zero exit, a timeout, or output
+  that is not Claude Code's is refused as before.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
