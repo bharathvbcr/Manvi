@@ -281,6 +281,112 @@ under **Unreleased** in the same commit as the code.
   carry a remedy each (replace the hard link or the link out of the repository
   with a copy; rename a file that holds no credentials). They reach the prompt
   notice for a refused instruction file, a skill's rejection and a spec's.
+- The one-harness-per-checkout guard keys a checkout by the directory, not by
+  its path string. `.../MyRepo` and `.../myrepo` are one directory on a
+  case-insensitive volume (APFS, NTFS default) and used to be two checkouts, so
+  two managed runs proceeded and the second overwrote the first's pending
+  record. Checkouts are compared with `os.SameFile` (device and inode; volume
+  serial number and file index on Windows), which is also right on a
+  case-sensitive volume, where a case-folded string would not be.
+- A managed run's harness block write that fails after the file was replaced
+  (the rename is done, the directory sync after it failed;
+  `WriteMayHaveChanged`) is no longer taken for a write that did nothing. The
+  materialisation used to delete the record of the block and carry on as if the
+  file were untouched, leaving the block in the user's instruction file with
+  nothing to take it out. It now reads the file back: the block is there and the
+  run proceeds, restoring it when it ends; it is not and the attempt fails with
+  no record; the file cannot be read to tell and the record is kept and the run
+  is aborted with it, so the next attempt on the checkout takes the block out.
+- A managed run's harness block can no longer be written where it could not be
+  taken out again, and a failed restore no longer deletes its record. The
+  block's size was bounded apart from the file's, so a CLAUDE.md a few hundred
+  bytes under the 4 MiB read limit was accepted, grew past it, could not be read
+  by the restore, and the next prepare then cleared the record: Manvi's bytes
+  stayed in the user's file and `HarnessBusy` stopped reporting them. There is
+  now one bound, on the file with the block in it, checked before anything is
+  written (`E_HARNESS_MATERIALISE` naming it), and shared by the read before the
+  write and the read that restores. A restore that fails for any reason other
+  than the agent having edited inside or removed the block keeps its record:
+  every `work.runs.managed.prepare` on that checkout is refused, and
+  `HarnessBusy` refuses a verification of it naming why, until the cause is put
+  right and a later recovery takes the block out. An unreadable record, or a
+  block the agent edited inside, is still refused once and cleared. A checkout
+  whose record an earlier build wrote past the new bound stays refused with the
+  restore's error until the file is put right by hand.
+- A managed run that ends with its agent process not confirmed gone no longer
+  gives its checkout away. `Close` answering "not reaped" is recorded
+  `unresolved`, but `finish` still restored the harness block (a read and then a
+  write over a file the agent may be writing, which overwrote its edit in
+  between) and closed the job, so the next run was admitted on a checkout the
+  first agent might still be in, with two agents and one block. The contract now
+  is: **hold until reap or restart.** The block and its record stay and the
+  checkout is held. Every attempt on it, with a harness or without, is refused
+  `E_HARNESS_BUSY` at once, and `HarnessBusy` refuses a verification; both name
+  the held run, since when, the block's nonce and file, and say to restart
+  `manvi serve` to recover. A background reaper, one per held run, keeps asking
+  the provider whether the process has exited (`Close` is idempotent and
+  bounded; about ten minutes of asks, tied to the runner's lifetime); when it
+  confirms, it takes the block out and releases the checkout, with nobody
+  asking. The hold is in memory, so a restart of Manvi ends it and the record is
+  applied as any dead run's is. The ask does not run inside a prepare, so a held
+  checkout delays no other checkout's attempts (it used to cost every prepare on
+  the one managed lane up to five seconds per retry). Not covered: a factory that
+  fails after possibly starting a process returns no session to ask, so that end
+  still restores as before.
+- The hold's release and the pending record are safer. The reaper acts on the
+  record only when it is the held run's own (the nonce): with the checkout
+  directory deleted and recreated, a second run is admitted as a new checkout, and
+  the old hold's reaper used to strip that live run's block and record. A block
+  the agent edited inside, found when the hold is released, is now reported as
+  when a run ends normally (the record is kept, `HarnessBusy` refuses naming it
+  and the run, the next attempt reports it once) and no longer cleared and
+  released unseen. Every mutation of a pending record is under one in-process
+  lock, so removing a record is atomic with another run's write of it (it was
+  read, compared, then unlinked, and another run's record written between was
+  deleted); two Manvi processes on one checkout can still interleave. A
+  restore-failure message no longer builds a shell command from names an agent
+  controls: the remedy is in words, a symbolic link's target is shown only when it
+  is inside the checkout (quoted) and as "points outside the checkout" otherwise.
+  When the reaper has used its attempts, an attempt on the checkout (still
+  refused at once) restarts the bounded reaper off the lane, so an agent that
+  exits later releases the checkout without a restart.
+- A managed run's checkout is held only when its agent process is not reaped.
+  `Close` answering `Reaped: true` beside an error (os/exec's `ErrWaitDelay`,
+  when the agent exited 0 but an orphaned grandchild, a dev server or an MCP
+  child, still holds its stdout; the wait error is sticky, so every later
+  `Close` returns it) means the agent is gone: the block is taken out and the
+  checkout released as after a clean exit, and the error stays on the run as a
+  note. Before this, such a normal run held its checkout until Manvi restarted.
+  What outlives the agent is the process-group problem, which this does not
+  address.
+- A managed run's end no longer removes another run's pending record. There is
+  one record file per checkout directory, and a directory deleted and recreated
+  is a new directory to the one-harness guard, so a second run was admitted
+  while the first was live and its record replaced the first's; the first run's
+  restore then removed it by path, leaving the second's block in the file with
+  nothing to take it out. A record is now removed only when it carries the
+  nonce of the block being restored.
+- A refused restore says what to do about it. When the pinned read of the
+  instruction file is refused (the file replaced by a symbolic link, given a
+  second name, grown past the bound, made a directory), the record is kept and
+  the `E_HARNESS_MATERIALISE` refusal now says it was a read and nothing was
+  written or removed, names the file, the block's nonce and byte offset and the
+  lines that bound it, and gives the remedy for that cause (replace the link with
+  a regular copy; give the file one name; shrink it) or the manual one (remove
+  the block's lines, then delete `.devcouncil/managed-harness-pending.json`). A
+  failed write during the restore is told the same way. `HarnessBusy` builds its
+  refusal from the record and the file on disk, so after a restart it no longer
+  promises that the next prepare takes the block out when that would be refused.
+  The run id is named on the run's own record, not in the file: the pending
+  record does not carry one. `ReadPinned` also names a read when a link refuses
+  it; it said "refusing to write through".
+- `work.runs.managed.activate` no longer holds the run's lock across its two
+  task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
+  answered inline on the serve read loop and takes that lock, so a slow store
+  held up `hello`, the policy checks and a queued `managed.stop` behind it for as
+  long as the store took (bounded only by the lane's one-minute deadline). A
+  separate per-run lock now serialises activations, so a retry still waits for
+  the first call and gets its receipt, and follow never waits on the store.
 
 ## [0.1.0] — 2026-10-17
 

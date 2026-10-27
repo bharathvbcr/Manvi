@@ -27,8 +27,14 @@ type managedTestSession struct {
 	initialized    atomic.Bool
 	initialize     func() error
 	unreaped       bool
-	closed         atomic.Bool
-	sent           atomic.Value // the turn text StartTurn received
+	// closeErr is what Close reports beside the exit; confirmed makes a later Close
+	// report the process reaped; closeDelay is how long Close takes; closes counts them.
+	closeErr   error
+	confirmed  atomic.Bool
+	closeDelay time.Duration
+	closes     atomic.Int32
+	closed     atomic.Bool
+	sent       atomic.Value // the turn text StartTurn received
 	// claudeLike models the Claude adapter: Respond emits no ResolvedID, and the
 	// turn finishes finishAfter later rather than as part of the reply.
 	claudeLike  bool
@@ -61,7 +67,11 @@ func (s *managedTestSession) PID() int                         { return 123 }
 func (s *managedTestSession) Effective() codingagent.Effective { return s.config }
 func (s *managedTestSession) Close() (codingagent.Exit, error) {
 	s.closed.Store(true)
-	return codingagent.Exit{Reaped: !s.unreaped, Code: 0}, nil
+	s.closes.Add(1)
+	if s.closeDelay > 0 {
+		time.Sleep(s.closeDelay)
+	}
+	return codingagent.Exit{Reaped: !s.unreaped || s.confirmed.Load(), Code: 0}, s.closeErr
 }
 func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	s.sent.Store(turn)

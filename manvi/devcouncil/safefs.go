@@ -136,7 +136,7 @@ func (e *symlinkRefusal) Error() string {
 				"Replace the link with the file itself, or with a copy of it, to have it read", e.component)
 	}
 	return fmt.Sprintf(
-		"refusing to %s through %q: it is a symbolic link, and writing through links is how a "+
+		"refusing to %s through %q: it is a symbolic link, and following links is how a "+
 			"contained path becomes an uncontained one", e.during, e.component)
 }
 
@@ -824,6 +824,11 @@ func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 func ReadPinned(root, rel string, limit int64) ([]byte, error) {
 	pinned, err := pinForOp(root, rel, "read")
 	if err != nil {
+		// Pinning is shared with the write; the refusal it names a write is a read here.
+		var link *symlinkRefusal
+		if errors.As(err, &link) && link.during == "write" {
+			link.during = "read"
+		}
 		return nil, err
 	}
 	return pinned.Read(limit)
