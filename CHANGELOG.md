@@ -162,6 +162,32 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- An empty tool result and an empty text block are encoded as valid requests on
+  both wires. `read_file` of an empty file is `ToolResultData{Text:""}`, which
+  the projection turns into a text block with no text; Anthropic's
+  `tool_result.content` was then `[{"type":"text"}]` (a text block's `text` has
+  `minLength` 1), an assistant text block that opened and never received a delta
+  was replayed as `{"type":"text"}`, and the OpenAI-compatible adapter sent a
+  `role:"tool"` message with no `content` (the chat-completions schema lists
+  `role`, `content` and `tool_call_id` as required on a tool message). The fix
+  is in the encoders, because journals already on disk hold these blocks:
+  Anthropic omits `content` on a tool_result that has none and never emits a
+  text block without text, dropping an assistant message that is left with no
+  content (the API combines consecutive same-role turns) and refusing a user
+  message with none; the OpenAI-compatible adapter always sends `content` on a
+  tool message (`""` when empty) and still omits it on an assistant message that
+  only carries tool calls. Tests run an empty `read_file` through the session
+  projection into both encoders and fail on 58b9258. The same encoder also
+  covers three neighbouring shapes: an `is_error` tool_result left with no
+  content carries `(no output)` (the live API is reported to refuse it empty,
+  anthropics/claude-agent-sdk-python#248; not in the reference); a thinking
+  block whose signature never arrived (cut off by `max_tokens`) is dropped,
+  since `""` is not a signature; and a whitespace-only text block is dropped,
+  with other text sent untrimmed (the API rule is third-party evidence,
+  microsoft/vscode#307807 and anthropics/claude-code#23440, not in the
+  reference). The OpenAI-compatible adapter omits an assistant turn that is only
+  empty text, as the Anthropic encoder does, so a session can move between
+  providers; an empty user message is still refused.
 - A replayed Anthropic thinking block keeps its required `thinking` field.
   `thinking` was `omitempty`, and the default display on current models is
   `"omitted"`, which delivers `thinking:""`: the block went back as

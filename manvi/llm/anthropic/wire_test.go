@@ -54,7 +54,10 @@ func sendHistory(t *testing.T, msgs []llm.Message) string {
 // body that this package cannot enforce by construction: a text block carries
 // non-empty text (TextBlockParam.text has minLength 1), a thinking block carries
 // both "thinking" and "signature" (ThinkingBlockParam requires them), and a
-// block of any other type carries no "thinking" field.
+// block of any other type carries no "thinking" field. It also holds the
+// encoder to two rules that are not in the reference: a text block is not
+// whitespace-only (third-party evidence, see toWireBlock), and an is_error
+// tool_result has content (anthropics/claude-agent-sdk-python#248).
 func assertWireIsValid(t *testing.T, body string) {
 	t.Helper()
 	var req struct {
@@ -78,8 +81,8 @@ func assertWireIsValid(t *testing.T, body string) {
 		switch kind {
 		case "text":
 			var text string
-			if err := json.Unmarshal(block["text"], &text); err != nil || text == "" {
-				t.Errorf("%s: text block without non-empty text: %s", path, raw)
+			if err := json.Unmarshal(block["text"], &text); err != nil || strings.TrimSpace(text) == "" {
+				t.Errorf("%s: text block without non-whitespace text: %s", path, raw)
 			}
 		case "thinking":
 			for _, key := range []string{"thinking", "signature"} {
@@ -87,7 +90,15 @@ func assertWireIsValid(t *testing.T, body string) {
 					t.Errorf("%s: thinking block without %q: %s", path, key, raw)
 				}
 			}
+			if string(block["signature"]) == `""` {
+				t.Errorf("%s: thinking block with an empty signature: %s", path, raw)
+			}
 		case "tool_result":
+			if string(block["is_error"]) == "true" {
+				if _, ok := block["content"]; !ok {
+					t.Errorf("%s: is_error tool_result without content: %s", path, raw)
+				}
+			}
 			if inner, ok := block["content"]; ok {
 				var blocks []json.RawMessage
 				if err := json.Unmarshal(inner, &blocks); err != nil || len(blocks) == 0 {
@@ -139,7 +150,7 @@ func TestWireJSONOfEachBlockType(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			msg, err := toWireMessage(llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{c.block}})
+			msg, _, err := toWireMessage(llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{c.block}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -220,7 +231,7 @@ data: {"type":"message_stop"}
 			if err != nil {
 				t.Fatal(err)
 			}
-			msg, err := toWireMessage(resp.Message)
+			msg, _, err := toWireMessage(resp.Message)
 			if err != nil {
 				t.Fatal(err)
 			}

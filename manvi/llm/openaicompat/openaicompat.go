@@ -249,6 +249,25 @@ type wireMessage struct {
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
+// MarshalJSON keeps `content` on a tool message when it is empty.
+//
+// The chat-completions request schema requires `content` on a role "tool"
+// message (a string or an array of text parts), and an empty tool output — a
+// command that printed nothing, an empty file — is a legitimate result whose
+// content is "". omitempty dropped the key, which strict servers refuse. Every
+// other role still omits an empty content, which is how an assistant message
+// that only carries tool_calls is written.
+func (m wireMessage) MarshalJSON() ([]byte, error) {
+	type plain wireMessage // drops this method, so the marshal below cannot recurse
+	if m.Role != "tool" {
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		plain
+		Content string `json:"content"`
+	}{plain(m), m.Content})
+}
+
 type wireToolCall struct {
 	Index    int          `json:"index,omitempty"`
 	ID       string       `json:"id,omitempty"`
@@ -397,6 +416,14 @@ func toWireMessages(msg llm.Message, name string) ([]wireMessage, error) {
 	}
 	out = append(out, results...)
 	if len(out) == 0 {
+		// An assistant turn that said nothing — the anthropic adapter settles a
+		// text block that never received a delta as TextBlock{""} — has no
+		// wire form here and is omitted, as the anthropic encoder omits it, so a
+		// session can move between providers. A user message with nothing in it
+		// is the caller's mistake and stays refused.
+		if msg.Role == llm.RoleAssistant {
+			return nil, nil
+		}
 		return nil, errors.New("message has no sendable content")
 	}
 	return out, nil
