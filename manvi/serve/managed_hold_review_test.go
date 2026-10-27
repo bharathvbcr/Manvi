@@ -23,6 +23,9 @@ func heldRun(t *testing.T, files map[string]string, configure ...func(*managedTe
 	}
 	activate(t, m, prepared)
 	m.finished()
+	if session == nil {
+		t.Fatal("the factory never built the session")
+	}
 	return root, session, m
 }
 
