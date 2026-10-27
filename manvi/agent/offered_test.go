@@ -164,67 +164,194 @@ func TestAnOfferedToolStillRuns(t *testing.T) {
 	}
 }
 
-// A tool activated in one step is offered in the next, and runs there. Naming
-// it in the same response that activates it is refused: that request never
-// offered it, so the model cannot have been given its schema.
-func TestActivatedToolRunsOnlyOnceItIsOffered(t *testing.T) {
-	register := func(t *testing.T, h *harness) *atomic.Int32 {
-		t.Helper()
-		if err := h.tools.Register(tools.Tool{
-			Schema: llm.ToolSchema{Name: "devcouncil_activate_tools"}, ReadOnly: true, Group: tools.GroupCore,
-			Handler: func(context.Context, tools.Call) tools.Result {
-				if _, err := h.tools.Activate("specialized"); err != nil {
-					return tools.Errorf("activation failed: %v", err)
-				}
-				return tools.Result{Text: "activated"}
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		ran := countingTool(t, h.tools, tools.Tool{
-			Schema: llm.ToolSchema{Name: "specialized_tool"}, ReadOnly: true, Group: "specialized", Extended: true,
-		})
-		h.tools.EnableDynamic("devcouncil_activate_tools")
-		return ran
+// dynamicHarness is a dynamic-mode registry holding the activation tool and one
+// extended tool in group "specialized", with only the activation tool active.
+// activateReadOnly says whether the activation tool may be offered to a
+// read-only loop.
+func dynamicHarness(t *testing.T, turns []replay.Turn, cfg func(*Config), special tools.Tool, activateReadOnly bool) (h *harness, activations, specials *atomic.Int32) {
+	t.Helper()
+	h = build(t, turns, cfg)
+	activations = new(atomic.Int32)
+	if err := h.tools.Register(tools.Tool{
+		Schema: llm.ToolSchema{Name: tools.ActivateToolName}, ReadOnly: activateReadOnly, Group: tools.GroupCore,
+		Handler: func(context.Context, tools.Call) tools.Result {
+			activations.Add(1)
+			if _, err := h.tools.Activate("specialized"); err != nil {
+				return tools.Errorf("activation failed: %v", err)
+			}
+			return tools.Result{Text: "activated"}
+		},
+	}); err != nil {
+		t.Fatal(err)
 	}
+	special.Schema.Name, special.Group, special.Extended = "specialized_tool", "specialized", true
+	specials = countingTool(t, h.tools, special)
+	h.tools.EnableDynamic(tools.ActivateToolName)
+	return h, activations, specials
+}
 
-	t.Run("next step", func(t *testing.T) {
-		h := build(t, []replay.Turn{
-			toolTurn("c1", "devcouncil_activate_tools", `{}`),
-			toolTurn("c2", "specialized_tool", `{}`),
+// A tool activated in one step is offered in the next, and runs there.
+func TestActivatedToolRunsInTheNextStep(t *testing.T) {
+	h, _, ran := dynamicHarness(t, []replay.Turn{
+		toolTurn("c1", tools.ActivateToolName, `{}`),
+		toolTurn("c2", "specialized_tool", `{}`),
+		textTurn("done"),
+	}, nil, tools.Tool{ReadOnly: true}, true)
+	if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() != 1 {
+		t.Fatalf("the activated tool ran %d times in the step after it was offered, want 1", ran.Load())
+	}
+	if r := resultFor(t, h, "c2"); r.IsError {
+		t.Fatalf("the activated call came back as an error: %+v", r)
+	}
+}
+
+// Calls run in order, so a response that activates a tool and then names it
+// works: the tool became active during this response, which is not the same as
+// a name the request never offered.
+func TestAToolActivatedEarlierInTheResponseRuns(t *testing.T) {
+	h, activations, ran := dynamicHarness(t, []replay.Turn{
+		twoCallTurn(tools.ActivateToolName, `{}`, "specialized_tool", `{}`),
+		textTurn("done"),
+	}, nil, tools.Tool{ReadOnly: true}, true)
+	if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
+		t.Fatal(err)
+	}
+	if activations.Load() != 1 || ran.Load() != 1 {
+		t.Fatalf("activation ran %d times and the tool %d, want 1 and 1", activations.Load(), ran.Load())
+	}
+	if r := resultFor(t, h, "b"); r.IsError {
+		t.Fatalf("the activated call came back as an error: %+v", r)
+	}
+}
+
+// Activation cannot widen a step the loop's own filters narrowed. A chat-only
+// run refuses the activation call itself, so nothing becomes active; a
+// read-only or core-only step that does activate still selects only what it
+// would have offered.
+func TestActivationCannotWidenAFilteredStep(t *testing.T) {
+	cases := []struct {
+		name             string
+		cfg              func(*Config)
+		special          tools.Tool
+		activateReadOnly bool
+		wantActivations  int32
+	}{
+		{"chat-only", func(c *Config) { c.ChatOnly = true }, tools.Tool{ReadOnly: true}, true, 0},
+		{"read-only, activation tool not offered", func(c *Config) { c.ReadOnly = true }, tools.Tool{ReadOnly: true}, false, 0},
+		{"read-only, mutating tool activated", func(c *Config) { c.ReadOnly = true }, tools.Tool{}, true, 1},
+		{"core-only, extended tool activated", func(c *Config) { c.CoreToolsOnly = true }, tools.Tool{ReadOnly: true}, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, activations, ran := dynamicHarness(t, []replay.Turn{
+				twoCallTurn(tools.ActivateToolName, `{}`, "specialized_tool", `{}`),
+				textTurn("done"),
+			}, tc.cfg, tc.special, tc.activateReadOnly)
+			if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
+				t.Fatal(err)
+			}
+			if activations.Load() != tc.wantActivations {
+				t.Fatalf("the activation tool ran %d times, want %d", activations.Load(), tc.wantActivations)
+			}
+			if ran.Load() != 0 {
+				t.Fatalf("a filtered step ran a tool it activated for itself (%d runs)", ran.Load())
+			}
+			if r := resultFor(t, h, "b"); !r.IsError {
+				t.Fatalf("the call to the tool was not refused: %+v", r)
+			}
+		})
+	}
+}
+
+// A refused call to a registered but inactive tool carries the registry's own
+// hint to activate it, when the model can act on it.
+func TestARefusedInactiveToolCarriesTheActivationHint(t *testing.T) {
+	t.Run("activation tool offered", func(t *testing.T) {
+		h, _, ran := dynamicHarness(t, []replay.Turn{
+			toolTurn("c1", "specialized_tool", `{}`),
 			textTurn("done"),
-		}, nil)
-		ran := register(t, h)
+		}, nil, tools.Tool{ReadOnly: true}, true)
 		if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
 			t.Fatal(err)
 		}
-		if ran.Load() != 1 {
-			t.Fatalf("the activated tool ran %d times in the step after it was offered, want 1", ran.Load())
-		}
-		if r := resultFor(t, h, "c2"); r.IsError {
-			t.Fatalf("the activated call came back as an error: %+v", r)
+		r := resultFor(t, h, "c1")
+		want := `registered but not currently active in context; call ` + tools.ActivateToolName +
+			` with {"tools": ["specialized_tool"]} to activate it`
+		if ran.Load() != 0 || !r.IsError || !strings.Contains(resultText(r), want) {
+			t.Fatalf("ran %d times; the model was shown %+v, want the registry's hint %q", ran.Load(), r, want)
 		}
 	})
 
-	t.Run("same response", func(t *testing.T) {
-		h := build(t, []replay.Turn{
-			twoCallTurn("devcouncil_activate_tools", `{}`, "specialized_tool", `{}`),
+	t.Run("unregistered name keeps the generic text", func(t *testing.T) {
+		h, _, _ := dynamicHarness(t, []replay.Turn{
+			toolTurn("c1", "ghost", `{}`),
 			textTurn("done"),
-		}, nil)
-		ran := register(t, h)
+		}, nil, tools.Tool{ReadOnly: true}, true)
 		if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
 			t.Fatal(err)
 		}
-		if ran.Load() != 0 {
-			t.Fatalf("a tool named in the response that activated it ran %d times", ran.Load())
-		}
-		if r := resultFor(t, h, "a"); r.IsError {
-			t.Fatalf("the activation itself was refused: %+v", r)
-		}
-		if r := resultFor(t, h, "b"); !r.IsError || !strings.Contains(resultText(r), "not offered") {
-			t.Fatalf("the model was shown %+v for the not-yet-offered call", r)
+		got := resultText(resultFor(t, h, "c1"))
+		if !strings.Contains(got, "not offered") || strings.Contains(got, tools.ActivateToolName) {
+			t.Fatalf("the model was shown %q", got)
 		}
 	})
+
+	t.Run("no hint when the activation tool was not offered", func(t *testing.T) {
+		h := build(t, []replay.Turn{
+			toolTurn("c1", "specialized_tool", `{}`),
+			textTurn("done"),
+		}, nil)
+		countingTool(t, h.tools, tools.Tool{Schema: llm.ToolSchema{Name: "reader"}, ReadOnly: true, Group: tools.GroupCore})
+		countingTool(t, h.tools, tools.Tool{Schema: llm.ToolSchema{Name: tools.ActivateToolName}, ReadOnly: true, Extended: true, Group: "meta"})
+		ran := countingTool(t, h.tools, tools.Tool{Schema: llm.ToolSchema{Name: "specialized_tool"}, ReadOnly: true, Extended: true, Group: "specialized"})
+		h.tools.EnableDynamic("reader")
+		if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
+			t.Fatal(err)
+		}
+		got := resultText(resultFor(t, h, "c1"))
+		if ran.Load() != 0 || !strings.Contains(got, "not offered") || strings.Contains(got, tools.ActivateToolName) {
+			t.Fatalf("ran %d times; the model was shown %q, which must not point at a tool it was not offered", ran.Load(), got)
+		}
+	})
+
+	t.Run("read-only loop gets the generic text", func(t *testing.T) {
+		h, _, ran := dynamicHarness(t, []replay.Turn{
+			toolTurn("c1", "specialized_tool", `{}`),
+			textTurn("done"),
+		}, func(c *Config) { c.ReadOnly = true }, tools.Tool{ReadOnly: true}, true)
+		if _, err := h.loop.Run(context.Background(), userMsg("go")); err != nil {
+			t.Fatal(err)
+		}
+		got := resultText(resultFor(t, h, "c1"))
+		if ran.Load() != 0 || !strings.Contains(got, "not offered") {
+			t.Fatalf("ran %d times; the model was shown %q", ran.Load(), got)
+		}
+	})
+}
+
+// Naming a refused tool a second time is the turn going round, so effort
+// escalation sees it; the first mistake alone is not charged as circling.
+func TestRenamingAnUnofferedToolIsCircling(t *testing.T) {
+	run := func(t *testing.T, turns []replay.Turn) Outcome {
+		t.Helper()
+		h := buildOn(t, localLadder(), turns, func(c *Config) {
+			c.ChatOnly, c.Effort, c.EffortCeiling, c.MaxSteps = true, "low", "high", 100
+		})
+		out, err := h.loop.Run(context.Background(), userMessage("go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if out := run(t, []replay.Turn{callTurn("ghost", `{}`), textTurn("done")}); out.EffortRaised != 0 {
+		t.Fatalf("one refused call raised effort %d time(s)", out.EffortRaised)
+	}
+	if out := run(t, []replay.Turn{callTurn("ghost", `{}`), callTurn("ghost", `{}`), textTurn("done")}); out.EffortRaised != 1 {
+		t.Fatalf("re-naming a refused tool raised effort %d time(s), want 1", out.EffortRaised)
+	}
 }
 
 // The set that is enforced is the set that went out: a listener that narrows

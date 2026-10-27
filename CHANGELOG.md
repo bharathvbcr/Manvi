@@ -163,10 +163,18 @@ under **Unreleased** in the same commit as the code.
   refuses a call outside that set as an error result the model sees ("tool X was
   not offered in this step"), before the repeat and stall checks and without
   reaching a handler. The set is rebuilt every step, so a tool activated by
-  `devcouncil_activate_tools` runs from the next step; naming it in the same
-  response that activates it is refused, since that request never carried its
-  schema. A tool the registry does not hold gets the same wording instead of
-  `unknown tool`.
+  `devcouncil_activate_tools` runs from the next step, and a response that
+  activates a tool and then names it still works: calls run in order, and a tool
+  the loop's own filters select after an earlier call activated it is allowed.
+  That is read through the same filtered selection the request came from, so a
+  chat-only run (which refuses the activation call itself) and a read-only or
+  core-only step cannot widen themselves this way. A refused call to a
+  registered but inactive tool carries the registry's "call
+  `devcouncil_activate_tools` to activate it" hint when that tool was offered
+  in the step and the loop is not read-only or core-only; otherwise, and for a
+  name the registry does not hold, the text is the generic "not offered"
+  refusal rather than `unknown tool`. Naming a refused tool a second time counts
+  as circling, so reasoning effort escalates as it does for a repeated call.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`

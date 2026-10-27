@@ -363,9 +363,17 @@ type Loop struct {
 	// say, and nothing else. runCall refuses a call outside it. It is rebuilt
 	// every step, because the set can change between steps (a tool activated
 	// mid-turn is offered from the next request), and it is never widened by
-	// anything a response says. Nil before the first request, which refuses
-	// every call, so a call can never run against a set nobody sent.
+	// anything a response says. The one widening is what the registry itself
+	// activated while this response's calls ran: see allows. Nil before the
+	// first request, which refuses every call, so a call can never run against
+	// a set nobody sent.
 	offered map[string]struct{}
+	// candidates is the names the loop's own filters (chat-only, read-only,
+	// core-only, dynamic activation) selected when the step's request was
+	// assembled, before any waterfall. A name in it but not in offered was
+	// withheld by a listener and stays refused; a name in neither that the same
+	// filters select later became active during the response.
+	candidates map[string]struct{}
 }
 
 // NewLoop builds a driver.
@@ -1208,9 +1216,8 @@ func (l *Loop) dispatchCalls(ctx context.Context, out *Outcome, calls []llm.Tool
 func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call llm.ToolCallBlock) tools.Result {
 	var result tools.Result
 	repeat := l.repeats.seen(call.Name, call.Arguments)
-	_, offered := l.offered[call.Name]
 	switch {
-	case !offered:
+	case !l.allows(call.Name):
 		// The registry knows more tools than a step offers: a chat-only run
 		// offers none, a read-only or core-only loop offers a filtered set, a
 		// dynamic registry offers what is active. A provider that builds a
@@ -1225,13 +1232,14 @@ func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call
 		// gate never saw the call, and a PolicyDenied no policy made would be
 		// a lie in the evidence trail. It is a plain error result, which the
 		// log records as the call's tool result.
-		result = tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"tool %q was not offered in this step, so it was not run. Call only the tools "+
-					"listed in this request%s.",
-				boundField(call.Name), noToolsNote(l.offered)),
+		//
+		// Circling only when the model names it again: the first mistake is a
+		// mistake, but re-naming a tool it was just told it was not offered is
+		// the turn going round, and effort escalation should see that.
+		if repeat > 1 {
+			tally.circling = true
 		}
+		result = tools.Result{IsError: true, Text: l.notOfferedText(call.Name)}
 
 	case repeat > RepeatLimit:
 		// Refused rather than run, and said out loud.
@@ -1327,13 +1335,61 @@ func (l *Loop) runCall(ctx context.Context, out *Outcome, tally *stepTally, call
 	return result
 }
 
-// noToolsNote is the clause that tells a model with no tools at all that it has
-// none, rather than leaving it to hunt for a list that is empty.
-func noToolsNote(offered map[string]struct{}) string {
-	if len(offered) == 0 {
-		return "; this request offered no tools"
+func schemaNames(schemas []llm.ToolSchema) map[string]struct{} {
+	names := make(map[string]struct{}, len(schemas))
+	for _, s := range schemas {
+		names[s.Name] = struct{}{}
 	}
-	return ""
+	return names
+}
+
+// allows reports whether a call to name may run: the step's request offered it,
+// or the registry activated it while this response's earlier calls ran.
+//
+// The second case keeps an activate-then-use response working: calls run in
+// order, so by the time the second one is checked the first has changed what is
+// active. It is read through schemas, the same filtered selection the request
+// came from, so it cannot widen what the loop's own filters exclude — a
+// chat-only run selects nothing, and a read-only or core-only loop selects only
+// what it would have offered anyway. A name the request's candidates already
+// held but a listener withheld stays refused.
+func (l *Loop) allows(name string) bool {
+	if l.offered == nil {
+		return false
+	}
+	if _, ok := l.offered[name]; ok {
+		return true
+	}
+	if _, withheld := l.candidates[name]; withheld {
+		return false
+	}
+	for _, s := range l.schemas() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// notOfferedText is what the model is told about a call it was not allowed to
+// make. A tool that is registered but inactive gets the registry's own hint to
+// activate it, but only when the activation tool was itself offered in this step
+// and activating it would put it in the request (a read-only or core-only loop
+// filters on more than activity, so there the hint could promise what activation
+// cannot deliver); otherwise the hint would point at something the model cannot
+// call.
+func (l *Loop) notOfferedText(name string) string {
+	if _, canActivate := l.offered[tools.ActivateToolName]; canActivate && !l.cfg.ReadOnly && !l.cfg.CoreToolsOnly && l.tools != nil {
+		if note, ok := l.tools.InactiveNote(name); ok {
+			return note
+		}
+	}
+	note := ""
+	if len(l.offered) == 0 {
+		note = "; this request offered no tools"
+	}
+	return fmt.Sprintf("tool %q was not offered in this step, so it was not run. Call only the tools listed in this request%s.",
+		boundField(name), note)
 }
 
 // recordCall records what the gate made of one call, any grant it applied,
@@ -1605,10 +1661,8 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 	// The offered set is read off the request as finally shaped, not off the
 	// schemas computed above: a listener that narrowed the tools narrowed what
 	// the model may run, and the set enforced must be the set that goes out.
-	l.offered = make(map[string]struct{}, len(request.Tools))
-	for _, s := range request.Tools {
-		l.offered[s.Name] = struct{}{}
-	}
+	l.offered = schemaNames(request.Tools)
+	l.candidates = schemaNames(schemas)
 
 	// Assembly-time capability check, when a registry is available: an
 	// impossible request fails here rather than as a 400 mid-turn.
