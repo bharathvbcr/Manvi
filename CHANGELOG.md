@@ -162,6 +162,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A large paste decodes in linear time. Each read that arrived while a paste was
+  open made the input decoder copy the whole pending buffer twice and search it
+  again for the closing marker, so a paste cost the square of its size over the
+  read size: 8 MB in 1 KB reads took 6.3 s (min of 5, load 27 to 40), 1 MB took
+  0.14 s. The reader now remembers how far it has searched and resumes there,
+  backed up far enough to find a marker split across two reads, and no longer
+  converts the buffer to a string to test for the paste prefix: 46.5 ms and
+  6.9 ms for the same pastes (135x and 21x). The decoded text is unchanged.
 - A pasted block no longer comes back into a later prompt. The composer never
   forgot a collapsed paste chip: after the prompt was sent the paste stayed
   registered, so a later prompt that merely mentioned the chip's words (for

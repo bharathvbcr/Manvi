@@ -1,6 +1,7 @@
 package input
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -17,13 +18,28 @@ import (
 // more reports whether the caller believes further bytes are already in flight.
 // When it is false and the buffer holds an incomplete sequence that has waited
 // out its grace period, the caller passes flush to force a decision.
-func decode(buf []byte, flush bool) (Event, int) {
+func decode(buf []byte, flush bool) (Event, int) { return decodeAt(buf, flush, nil) }
+
+// pasteScan remembers how much of a paste that is still waiting for its closing
+// marker has already been searched.
+//
+// A paste arrives in reads of at most a few kilobytes and is decoded again on
+// each one. Searching the whole buffer every time makes a paste cost the square
+// of its size over the read size; with this the search resumes where the last
+// one stopped, so each byte is searched once. It is valid only for a buffer that
+// has grown at the end since it was recorded, so the caller resets it whenever
+// decode consumes bytes.
+type pasteScan struct{ searched int }
+
+// decodeAt is decode with the scan state of a stream. A nil scan decodes the
+// buffer from scratch, which is what a caller that has no stream wants.
+func decodeAt(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 	if len(buf) == 0 {
 		return nil, 0
 	}
 
 	if buf[0] == 0x1b {
-		return decodeEscape(buf, flush)
+		return decodeEscape(buf, flush, scan)
 	}
 	return decodeByte(buf)
 }
@@ -70,7 +86,7 @@ func decodeByte(buf []byte) (Event, int) {
 }
 
 // decodeEscape handles anything beginning with ESC.
-func decodeEscape(buf []byte, flush bool) (Event, int) {
+func decodeEscape(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 	if len(buf) == 1 {
 		if flush {
 			return Key{Type: KeyEscape}, 1
@@ -80,7 +96,7 @@ func decodeEscape(buf []byte, flush bool) (Event, int) {
 
 	switch buf[1] {
 	case '[':
-		return decodeCSI(buf, flush)
+		return decodeCSI(buf, flush, scan)
 	case 'O':
 		return decodeSS3(buf, flush)
 	case 0x1b:
@@ -112,10 +128,19 @@ const (
 	pasteEnd   = "\x1b[201~"
 )
 
+var (
+	pasteStartBytes = []byte(pasteStart)
+	pasteEndBytes   = []byte(pasteEnd)
+)
+
+// pasteSearchHook, when set by a test, is told how many bytes each search for
+// the closing marker covers. Production leaves it nil.
+var pasteSearchHook func(n int)
+
 // decodeCSI handles ESC [ … sequences.
-func decodeCSI(buf []byte, flush bool) (Event, int) {
-	if strings.HasPrefix(string(buf), pasteStart) {
-		return decodePaste(buf, flush)
+func decodeCSI(buf []byte, flush bool, scan *pasteScan) (Event, int) {
+	if bytes.HasPrefix(buf, pasteStartBytes) {
+		return decodePaste(buf, flush, scan)
 	}
 
 	// A CSI runs: parameter bytes 0x30-0x3f, intermediate bytes 0x20-0x2f, then
@@ -312,9 +337,18 @@ func decodeSS3(buf []byte, flush bool) (Event, int) {
 }
 
 // decodePaste collects everything up to the closing bracket.
-func decodePaste(buf []byte, flush bool) (Event, int) {
+func decodePaste(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 	rest := buf[len(pasteStart):]
-	idx := strings.Index(string(rest), pasteEnd)
+	// Resume where the last search stopped, backed up far enough that a marker
+	// split across two reads is still found.
+	from := 0
+	if scan != nil && scan.searched <= len(rest) {
+		from = max(0, scan.searched-(len(pasteEnd)-1))
+	}
+	if pasteSearchHook != nil {
+		pasteSearchHook(len(rest) - from)
+	}
+	idx := bytes.Index(rest[from:], pasteEndBytes)
 	if idx < 0 {
 		if flush {
 			// The terminal opened a paste and never closed it. Delivering what
@@ -322,8 +356,12 @@ func decodePaste(buf []byte, flush bool) (Event, int) {
 			// forever on a close that is not coming.
 			return Paste{Text: sanitizePaste(string(rest))}, len(buf)
 		}
+		if scan != nil {
+			scan.searched = len(rest)
+		}
 		return nil, 0
 	}
+	idx += from
 	text := string(rest[:idx])
 	return Paste{Text: sanitizePaste(text)}, len(pasteStart) + idx + len(pasteEnd)
 }
