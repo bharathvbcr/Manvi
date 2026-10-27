@@ -327,3 +327,26 @@ func TestPricesMatchThePublishedTable(t *testing.T) {
 		}
 	}
 }
+
+// TestCapabilityAgreesWithValidateRequestAboutSampling: the descriptor says a
+// model rejects sampling exactly when the request check refuses a temperature,
+// for every model served, so a caller that reads the descriptor never meets the
+// refusal and one that ignores it still does.
+func TestCapabilityAgreesWithValidateRequestAboutSampling(t *testing.T) {
+	for _, model := range Models() {
+		c, ok := Capability(model)
+		if !ok {
+			t.Fatalf("%s is listed but not served", model)
+		}
+		withTemperature := req(model)
+		zero := 0.0
+		withTemperature.Temperature = &zero
+		refused := ValidateRequest(withTemperature, ThinkingDefault) != nil
+		if c.RejectsSampling != refused {
+			t.Errorf("%s: RejectsSampling = %v but a temperature is refused = %v", model, c.RejectsSampling, refused)
+		}
+		if err := ValidateRequest(req(model), ThinkingDefault); err != nil && strings.Contains(err.Error(), "temperature") {
+			t.Errorf("%s: a request with no temperature was refused for one: %v", model, err)
+		}
+	}
+}

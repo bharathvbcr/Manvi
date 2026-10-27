@@ -331,13 +331,35 @@ func startServeHost(t *testing.T, extraEnv ...string) *serveHost {
 	return host
 }
 
+// anthropicRefinementTurn is one completed Messages stream whose text is a
+// refinement with nothing to propose.
+const anthropicRefinementTurn = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"acceptance_criteria\":[],\"split_into\":[],\"duplicate_of\":[]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
 // TestServeRefusesOnlyTheTierAnOpUses is the shape the host sees. serve starts
 // whatever the tier profile holds, and the op that builds a provider is refused
 // only for the tier it uses: the main tier is what an enhancement runs on, so a
 // main tier the catalogue does not hold is reported before any request, naming
 // the setting, while a bad heavy tier is none of that op's business and it is
-// not refused for it. (Refinement then stops in the anthropic adapter, which
-// refuses the temperature enhancement_output.go sets; that is as on dd36c68.)
+// not refused for it: the refinement completes against the provider, and the
+// request that reaches it carries no temperature, which anthropic models refuse.
 func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -349,10 +371,13 @@ func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var reached atomic.Int32
+			var wire atomic.Value
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				reached.Add(1)
-				_, _ = io.Copy(io.Discard, r.Body)
-				http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"fixture refuses"}}`, http.StatusBadRequest)
+				body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+				wire.Store(string(body))
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, anthropicRefinementTurn)
 			}))
 			t.Cleanup(provider.Close)
 			host := startServeHost(t, "MANVI_MODEL=", "MANVI_LLM_DEFAULT_PROVIDER=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-tier",
@@ -368,15 +393,16 @@ func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
 			host.request("work.repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 			host.request("work.items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"fix E42","repository_ids":["r"],"primary_repository_id":"r"}`)
 			refined := host.call("work.enhancements.refine", `{"id":"t","request_id":"w","expected_revision":1,"repo_root":`+strconv.Quote(host.repo)+`}`)
-			if refined.OK || refined.Error == nil {
-				t.Fatalf("refinement against a fixture that refuses every request succeeded: %+v", refined)
-			}
-			named := strings.Contains(refined.Error.Message, "tier main") && strings.Contains(refined.Error.Message, "llm.tier.main")
-			if tc.refused && (!named || reached.Load() != 0) {
-				t.Fatalf("refinement = %+v after %d requests; want the main tier named before any request", refined, reached.Load())
-			}
-			if !tc.refused && strings.Contains(refined.Error.Message, "tier ") {
-				t.Fatalf("refinement = %+v; an unrelated tier must not refuse it", refined)
+			if tc.refused {
+				named := refined.Error != nil && strings.Contains(refined.Error.Message, "tier main") && strings.Contains(refined.Error.Message, "llm.tier.main")
+				if refined.OK || !named || reached.Load() != 0 {
+					t.Fatalf("refinement = %+v after %d requests; want the main tier named before any request", refined, reached.Load())
+				}
+			} else {
+				body, _ := wire.Load().(string)
+				if !refined.OK || reached.Load() == 0 || body == "" || strings.Contains(body, "temperature") {
+					t.Fatalf("refinement = %+v after %d requests with body %q; an unrelated tier must not refuse it and no temperature may reach the provider", refined, reached.Load(), body)
+				}
 			}
 			if err := host.stdin.Close(); err != nil {
 				t.Fatal(err)

@@ -169,6 +169,15 @@ under **Unreleased** in the same commit as the code.
   is checked, so a bad `llm.tier.heavy` does not refuse an op that never uses
   it. Other providers resolve as before, and anthropic still does not inherit
   `llm.local.model`.
+- `manvi serve` workbench enhancements and refinements now complete on
+  anthropic. Every request pinned `temperature: 0`, which every anthropic model
+  refuses, so the adapter rejected each one before it was sent
+  (`anthropic: [temperature top_p top_k] are not accepted by current models`)
+  and no anthropic enhancement could ever run. `llm.Capability` gains
+  `rejects_sampling` (anthropic sets it for every model it serves, the rule
+  `ValidateRequest` already enforced), and the enhancement request pins
+  temperature 0 only when the selected model does not set it. Local, xai and
+  gemini models are still sent 0.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`

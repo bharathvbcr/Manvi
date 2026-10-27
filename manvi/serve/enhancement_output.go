@@ -202,9 +202,15 @@ func (r *EnhancementRunner) completeText(ctx context.Context, providerName, mode
 	if promptTokens+maxTokens > capability.ContextWindow {
 		return "", errors.New("task does not fit the selected model's declared context budget; narrow the task fields and retry")
 	}
-	temperature := 0.0
-	request := llm.Request{Model: model, System: system, MaxTokens: maxTokens, Temperature: &temperature,
+	request := llm.Request{Model: model, System: system, MaxTokens: maxTokens,
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: string(prompt)}}}}}
+	// Pinned to 0 so a retry reads the same, for a model that takes sampling
+	// parameters; a model that refuses them is sent none, since its adapter
+	// refuses the request before it goes out.
+	if !capability.RejectsSampling {
+		temperature := 0.0
+		request.Temperature = &temperature
+	}
 	if err := capability.Validate(request); err != nil {
 		return "", err
 	}
