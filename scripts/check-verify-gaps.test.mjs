@@ -5,13 +5,15 @@ import { compare, parseVerdict } from "./check-verify-gaps.mjs";
 
 const EXPECTED = JSON.parse(readFileSync(new URL("./verify-expected-gaps.json", import.meta.url), "utf8"));
 
-// The verdict verify.sh printed on ubuntu-latest at d6c956f, colour codes and all.
+// The verdict verify.sh printed on ubuntu-latest at d6c956f, colour codes and all,
+// with its skip list taken from the expected file, so an entry added since (the
+// approve-fd re-exec helper) is in it as CI now prints it.
+const UBUNTU_SKIPS = EXPECTED.skips.filter((s) => s.os.includes("ubuntu-latest")).map((s) => s.test);
 const UBUNTU = [
   "    covered: 874 checks",
   "",
   "\x1b[33mPASS\x1b[0m with gates that did not run:",
-  "    - 7 of 3005 test(s) skipped, so their assertions did not run: " +
-    EXPECTED.skips.filter((s) => s.os.includes("ubuntu-latest")).map((s) => s.test).join(", "),
+  `    - ${UBUNTU_SKIPS.length} of 3005 test(s) skipped, so their assertions did not run: ` + UBUNTU_SKIPS.join(", "),
   "    - devmap not found — repo navigation is unverified here",
   "    - local — this gate makes no request. The harness reports:",
   "    - anthropic, gemini and xai are verified against scripted servers only.",
@@ -20,7 +22,7 @@ const UBUNTU = [
 
 test("the ubuntu verdict CI produced is fully expected", () => {
   const found = parseVerdict(UBUNTU);
-  assert.equal(found.skips.length, 7);
+  assert.equal(found.skips.length, UBUNTU_SKIPS.length);
   assert.equal(found.gaps.length, 3);
   assert.deepEqual(compare(found, EXPECTED, "ubuntu-latest"), { unexpectedGaps: [], unexpectedSkips: [], stale: [] });
 });
@@ -53,16 +55,18 @@ test("every expected entry says why", () => {
 
 test("the macos verdict CI produced is fully expected", () => {
   // verify.sh (macos-latest) at d6c956f, attempt 2: APFS runs the three
-  // spelling tests, so four skips rather than seven.
+  // spelling tests, so four skips rather than seven; plus the approve-fd re-exec
+  // helper, which skips on both runners since it was added.
   const skips = [
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestApproveFDBareApproverHelper",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/agent",
     "github.com/bharathvbcr/Manvi/manvi/ui/tui.TestEveryUntrustedEventFieldIsCleanedOnTheWayIntoTheFrame/path",
   ];
   const log = [
     "PASS with gates that did not run:",
-    `    - 4 of 3005 test(s) skipped, so their assertions did not run: ${skips.join(", ")}`,
+    `    - ${skips.length} of 3005 test(s) skipped, so their assertions did not run: ${skips.join(", ")}`,
     "    - devmap not found — repo navigation is unverified here",
     "    - local — this gate makes no request. The harness reports:",
     "    - anthropic, gemini and xai are verified against scripted servers only.",
