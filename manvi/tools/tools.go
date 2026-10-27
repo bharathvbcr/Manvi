@@ -889,9 +889,33 @@ func (r *Registry) dispatch(ctx context.Context, call Call) Result {
 		return Errorf("unknown tool %q", call.Name)
 	}
 	if !isActive {
-		return Errorf("tool %q (group %q) is registered but not currently active in context; call devcouncil_activate_tools with {\"tools\": [%q]} to activate it", call.Name, tool.Group, tool.Schema.Name)
+		return Errorf("%s", inactiveMessage(tool))
 	}
 	return tool.Handler(ctx, call)
+}
+
+// ActivateToolName is the tool a model calls to activate others in dynamic mode.
+// The inactive-tool message names it, so the name has one owner here.
+const ActivateToolName = "devcouncil_activate_tools"
+
+func inactiveMessage(tool Tool) string {
+	return fmt.Sprintf("tool %q (group %q) is registered but not currently active in context; call %s with {\"tools\": [%q]} to activate it",
+		tool.Schema.Name, tool.Group, ActivateToolName, tool.Schema.Name)
+}
+
+// InactiveNote is dispatch's message for a tool that is registered but not
+// active in dynamic mode, and whether name is such a tool. It lets a caller that
+// refuses a call before dispatch give the model the same recovery hint dispatch
+// would have.
+func (r *Registry) InactiveNote(name string) (string, bool) {
+	r.mu.RLock()
+	tool, ok := r.tools[name]
+	inactive := ok && r.dynamicMode && !r.active[name]
+	r.mu.RUnlock()
+	if !inactive {
+		return "", false
+	}
+	return inactiveMessage(tool), true
 }
 
 // Has reports whether a tool is registered.
