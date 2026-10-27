@@ -18,6 +18,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/serve"
 )
 
@@ -148,6 +149,15 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			// The profile run and the TUI check before any request, checked
+			// here when an op needs it rather than when serve starts: a tier
+			// the catalogue does not hold names itself instead of reaching the
+			// provider as a refused request, and the host still starts.
+			if name == anthropic.Name {
+				if _, err := checkTiers(reg, name); err != nil {
+					return nil, err
+				}
+			}
 			resolver := credentials.NewResolver()
 			armScrubber(scrubber, resolver)
 			provider, err := buildProvider(ctx, name, reg, resolver, io.Discard, model)
@@ -163,7 +173,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		if err != nil {
 			return err
 		}
-		configuration, err := workbenchEnhancementConfiguration(reg)
+		configuration, err := workbenchEnhancementConfiguration(ctx, os.Stderr, reg)
 		if err != nil {
 			return err
 		}
@@ -272,12 +282,31 @@ func serveHarnessResolver(reg *flags.Registry) *serve.HarnessResolver {
 	}
 }
 
-func workbenchEnhancementConfiguration(reg *flags.Registry) (serve.EnhancementConfiguration, error) {
+// workbenchEnhancementConfiguration is the provider and model the host's
+// enhancement ops run on, read once when serve starts.
+//
+// On anthropic the model is what run and the TUI send: resolveModelFor is
+// called, not copied, so MANVI_MODEL, then the main tier, can never be answered
+// differently here. A main tier that resolves to nothing must not stop serve —
+// the host serves the board, the code graph and scans besides, the reasoning
+// newServeCritic gives — so it leaves the selection without a model, which
+// refuses the ops that need one, and says why on notes. Every other provider
+// resolves as it did before this followed the run path.
+func workbenchEnhancementConfiguration(ctx context.Context, notes io.Writer, reg *flags.Registry) (serve.EnhancementConfiguration, error) {
 	provider, _, err := reg.String(flags.LLMDefaultProvider)
 	if err != nil {
 		return serve.EnhancementConfiguration{}, err
 	}
 	configuration := serve.EnhancementConfiguration{OK: true, Provider: provider, Providers: providerNames(), ModelSource: "none"}
+	if provider == anthropic.Name {
+		model, source, err := resolveModelFor(ctx, provider, nil, reg)
+		if err != nil {
+			_, _ = fmt.Fprintf(notes, "manvi serve: no model for enhancements on %s: %v\n", provider, err)
+			return configuration, nil
+		}
+		configuration.Model, configuration.ModelSource = model, string(source)
+		return configuration, nil
+	}
 	if model := strings.TrimSpace(os.Getenv("MANVI_MODEL")); model != "" {
 		configuration.Model, configuration.ModelSource = model, string(SourceEnv)
 	} else if provider == "local" {

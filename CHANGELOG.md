@@ -153,6 +153,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `manvi serve` resolves the anthropic model as `manvi run` and the TUI do.
+  With `MANVI_MODEL` unset it read nothing else, so it offered no model
+  (`model: ""`, `model_source: "none"`) and the workbench refused to refine or
+  enhance on a machine where `manvi run` used the main tier. It now calls the
+  one resolver run and the TUI use: `MANVI_MODEL`, then `llm.tier.main`
+  (default `claude-opus-5-5`), reported as `model_source: "llm.tier.main"`. A
+  tier profile serve cannot use never stops it starting: a main tier that
+  resolves to nothing leaves the selection empty and is named on stderr. The
+  enhancement provider now checks the whole tier profile before building, as
+  `manvi run` and the TUI do and before any request is sent, so a tier the
+  catalogue does not hold (any tier, not only main, whatever model the host
+  selected) refuses the op that builds a provider with the
+  `tier main: llm.tier.main=...` error `manvi run` gives, not with a
+  model-not-served message pointing at the local model setting. Other
+  providers resolve as before, and anthropic still does not inherit
+  `llm.local.model`.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
