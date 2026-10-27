@@ -122,6 +122,13 @@ under **Unreleased** in the same commit as the code.
   Benchmarks: time to the first request with the sensor attached went from about
   50 ms to under 0.1 ms, and the scoped diff went from 63 to 47 ms.
 - `artifacts` exports `ErrPublishedUnsynced` and `NewStoreWithDirSync`.
+- `render.Line.Wrap` breaks a word wider than the line in time linear in the
+  word. The hard break measured everything it had left at every cut, so a
+  160 KB base64 blob or minified-JSON line cost the square of its length: the
+  benchmark went from 306 ms to 1.0 ms (no-space) and from 1.19 s to 3.9 ms
+  (CJK), on a loaded machine, min of 8 interleaved runs. The rows are
+  unchanged: a property test holds it to the previous implementation over
+  10,000 random lines at widths 1 to 200.
 
 ### Fixed
 

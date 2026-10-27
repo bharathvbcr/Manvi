@@ -184,22 +184,18 @@ func (l Line) Wrap(width int) []Line {
 				if curWidth > 0 {
 					breakLine()
 				}
-				for StringWidth(word) > width {
-					head := TruncateWidth(word, width, "")
-					if head == "" {
-						// The first character is wider than the whole line — a
-						// double-width rune at width 1. It is placed on a line
-						// of its own, overflowing it, rather than cut to
-						// nothing: an empty head consumed nothing, and this
-						// loop never ended.
-						_, size := utf8.DecodeRuneInString(word)
-						head = word[:size]
-					}
-					cur = cur.Append(head, span.Style)
+				// The width left in word is carried down rather than measured
+				// again: StringWidth and TruncateWidth each read the whole of
+				// what remains, and on a word with no break in it — a base64
+				// blob, minified JSON — that made the loop the square of the
+				// word's length.
+				for ww > width {
+					cut, cutWidth := hardBreak(word, width)
+					cur = cur.Append(word[:cut], span.Style)
 					breakLine()
-					word = word[len(head):]
+					word = word[cut:]
+					ww -= cutWidth
 				}
-				ww = StringWidth(word)
 			}
 
 			if curWidth+pendingWidth+ww > width {
@@ -229,6 +225,31 @@ func (l Line) Wrap(width int) []Line {
 		out[i] = trimTrailingSpace(out[i])
 	}
 	return out
+}
+
+// hardBreak is where a word wider than a line is cut: the byte length of the
+// longest prefix of at most width columns, and the columns that prefix takes.
+// It reads only the prefix. A zero-width rune that follows a full row stays on
+// it, as TruncateWidth always kept it, since the row has room for nothing but
+// its own width.
+//
+// The first character may be wider than the whole line — a double-width rune
+// at width 1. It is placed on a line of its own, overflowing it, rather than
+// cut to nothing: an empty cut consumed nothing, and the loop that calls this
+// never ended.
+func hardBreak(word string, width int) (cut, cols int) {
+	for i, r := range word {
+		rw := RuneWidth(r)
+		if cols+rw > width {
+			if i == 0 {
+				_, size := utf8.DecodeRuneInString(word)
+				return size, rw
+			}
+			return i, cols
+		}
+		cols += rw
+	}
+	return len(word), cols
 }
 
 // splitKeepSpace splits text into words and the whitespace runs between them,
