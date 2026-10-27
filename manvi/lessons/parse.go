@@ -283,7 +283,10 @@ func Parse(answer string) (Result, error) {
 			if !ok || buf == nil {
 				return refuse("continuation of unknown field %q", currentKey)
 			}
-			if !buf.add(sep + trimmed) {
+			// Stored as written, indentation included. Trimming it would turn an
+			// indented "## x" into a column-0 one, which the store reads as a
+			// heading, and an indented line is not one.
+			if !buf.add(sep + strings.TrimRightFunc(line, unicode.IsSpace)) {
 				return refuse("%s is over the %d limit", currentKey, buf.limit)
 			}
 			pendingBlnk = false
@@ -336,6 +339,20 @@ func Parse(answer string) (Result, error) {
 		}
 		if n := utf8.RuneCountInString(f.text); n > f.limit {
 			return refuse("%s is %d characters, over the %d limit", f.name, n, f.limit)
+		}
+	}
+	// The store reads an entry back by its section headings (historyOf,
+	// supersededRow), and the lesson and the evidence are printed into it as
+	// stored, so a line of either that the store reads as a heading would write
+	// structure into the entry: forged History rows, and verdict counts the
+	// attribution never gave. They are refused here, not escaped, because an
+	// escaped heading is a different lesson from the one the reflector wrote.
+	// What counts is readsAsStructure, the store's own predicate, asked of the
+	// text as it will be stored; Save asks it of a Result that did not come
+	// through this parser.
+	for _, f := range []struct{ name, text string }{{"lesson", exp.Lesson}, {"evidence", exp.Evidence}} {
+		if why := structureProblem(f.name, f.text); why != "" {
+			return refuse("%s", why)
 		}
 	}
 	switch exp.Confidence {

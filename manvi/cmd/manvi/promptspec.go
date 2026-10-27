@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 	"github.com/bharathvbcr/Manvi/manvi/llm/local"
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
@@ -76,15 +80,21 @@ type specIdentity struct {
 type turnInputs struct {
 	skills   skillLoader
 	repoRead func(ctx context.Context) harness.ReadFunc
+	// root is the project root repoRead reads under. The project instructions
+	// are read from the working directory, as they always were, so the reader
+	// needs to know where that directory sits beneath it. Empty means the
+	// working directory is the root.
+	root     string
 	roles    *agents.Registry
 	pipeline *tools.Registry
 }
 
 // turnState is what a session remembers between turns of this resolution.
 type turnState struct {
-	skillNotices noticeOnce
-	specNotices  noticeOnce
-	roles        harness.Roles
+	skillNotices       noticeOnce
+	specNotices        noticeOnce
+	instructionNotices noticeOnce
+	roles              harness.Roles
 }
 
 // skillsFiltered lists only the skills a spec selected. It filters what the
@@ -104,8 +114,12 @@ func (s skillsFiltered) LoadSkills(ctx context.Context) (harness.SkillSet, error
 }
 
 // resolveTurnInputs resolves, once per turn and for both faces, everything a
-// turn's prompt takes from the repository beside the project instructions: the
+// turn's prompt takes from the repository: the project instructions, the
 // harness spec and the skills listing, which the spec may narrow.
+//
+// The project instructions are read here, through the same gated reader as the
+// spec, and nowhere else: the prompt's source lists (the reserved names, the
+// spec collision check, assembly) take them from opts.Instructions.
 //
 // It fills opts, and returns the identity of the spec the prompt carries. A
 // spec that is unknown, unreadable or invalid is a notice and not a failure:
@@ -114,6 +128,10 @@ func (s skillsFiltered) LoadSkills(ctx context.Context) (harness.SkillSet, error
 func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, st *turnState, opts *PromptOptions) specIdentity {
 	provider := opts.Provider
 	budget := promptTokenBudget(reg, provider)
+
+	var instructionNotices []string
+	opts.Instructions, instructionNotices = resolveInstructions(ctx, in, budget)
+	opts.InstructionNotices = st.instructionNotices.fresh(instructionNotices)
 
 	spec, specNotices := resolveSpec(ctx, reg, in, st, *opts, budget)
 	var id specIdentity
@@ -147,6 +165,70 @@ func resolveTurnInputs(ctx context.Context, reg *flags.Registry, in turnInputs, 
 	}
 	opts.SpecNotices = st.specNotices.fresh(specNotices)
 	return id
+}
+
+// resolveInstructions reads the project's instructions through the turn's
+// repository reader. A turn handed no reader has no way to read the repository
+// by the gate's rules, and runs without the instructions and says so rather than
+// reading the working directory around the gate.
+func resolveInstructions(ctx context.Context, in turnInputs, budget int) (prompt.Source, []string) {
+	if in.repoRead == nil {
+		return nil, []string{"project instructions were not read this turn: no repository reader is available"}
+	}
+	read, err := instructionReader(ctx, in)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("project instructions were not read this turn, so none are in the prompt: %v", err)}
+	}
+	return projectInstructionsSource(read, budget)
+}
+
+// instructionReader is the reader the instruction files are read through. They
+// are the working directory's, as they were before they went through the gate
+// (a session started in sub/ carries sub/AGENTS.md, and a root file it never
+// carried does not join it), and the gate is rooted at the project root: the
+// directory's file is read as <dir>/AGENTS.md beneath that root, by the same
+// reader as every other repository byte. A working directory outside any
+// project root keeps its old behaviour, gated at the directory itself.
+func instructionReader(ctx context.Context, in turnInputs) (harness.ReadFunc, error) {
+	read := in.repoRead(ctx)
+	if in.root == "" {
+		return read, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("the working directory cannot be determined: %w", err)
+	}
+	rel, inside := relativeWithin(in.root, cwd)
+	switch {
+	case !inside:
+		return devcouncil.RepoReaderAt(ctx, cwd), nil
+	case rel == ".":
+		return read, nil
+	}
+	return func(name string, limit int64) ([]byte, error) {
+		return read(path.Join(rel, name), limit)
+	}, nil
+}
+
+// relativeWithin is dir's slash-separated path beneath root, "." when they are
+// the same directory, and whether dir is inside root at all. Both are resolved
+// through symbolic links first, so a root spelled one way and a working
+// directory reported another (macOS's /var and /private/var) compare equal.
+func relativeWithin(root, dir string) (string, bool) {
+	resolve := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return real
+		}
+		return p
+	}
+	rel, err := filepath.Rel(resolve(root), resolve(dir))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 // collidingSection names a section of the spec that shares a name with a source

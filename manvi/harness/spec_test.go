@@ -161,7 +161,7 @@ func TestPerProviderAlwaysOnCap(t *testing.T) {
 }
 
 func TestTemplateBracesAndUnrenderableRunesAreRefused(t *testing.T) {
-	for _, text := range []string{"a {{ b", "a }} b", "a ${HOME} b", "bell\x07", "zero\u200bwidth", "private\ue000use"} {
+	for _, text := range []string{"a {{ b", "a }} b", "a ${HOME} b", "bell\x07", "bidi\u202eoverride", "isolate\u2066x", "tag\U000e0041x", "esc\x1b[2J"} {
 		s := goodSpec()
 		s.Sections[0].Text = text
 		if p := s.Validate(cloud()); len(p) == 0 {

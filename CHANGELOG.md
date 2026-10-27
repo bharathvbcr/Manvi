@@ -202,6 +202,85 @@ under **Unreleased** in the same commit as the code.
   message already did. It used to skip the frame and end the run as completed
   with that result lost. A user frame with no message, or with plain-string
   content, is still skipped.
+- The project instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) are read
+  through the repository's gated, pinned reader, rooted at the project root.
+  They were a bare `os.ReadFile` of the working directory: a symbolic link named
+  `AGENTS.md` carried a credential from outside the repository into the system
+  prompt and to the provider, and a FIFO of that name hung prompt assembly.
+  - A link (even one inside the repository), a file with a second name, a
+    FIFO or device, and a file the read gate withholds are refused. The turn
+    runs without that file, a prompt-fault notice names it and says why (once,
+    not every turn), and the next candidate is still tried, so a repository that
+    links `AGENTS.md` to `CLAUDE.md` gets the real file. Absent or blank files
+    are not a fault.
+  - Every provider has a 256 KiB bound, refused with the file's size rather
+    than truncated. It used to bind only where a token budget existed, which is
+    local models alone.
+  - Read once per turn by the per-turn resolution and carried in
+    `PromptOptions.Instructions`; the reserved-name checks and the spec
+    collision check no longer read the file (it was read several times a turn).
+  - The file is still the working directory's: a session started in `sub/`
+    carries `sub/AGENTS.md`, a root file it never carried does not join or
+    replace it, and `sub/`'s file wins over the root's when both exist. The gate
+    is rooted at the project root and the file is read as `sub/AGENTS.md`
+    beneath it. A working directory outside any project root is gated at the
+    directory itself.
+- A skill's body is refused on the same runes as its description and a spec's
+  text, by one enumerated policy (`hiddenRuneProblem`, over `hiddenRanges`) and
+  not by Unicode category: C0 and C1 controls except tab, newline and carriage
+  return, the bidi embedding, override and isolate controls (U+202A-202E,
+  U+2066-2069) and the tag block (U+E0000-E007F). `devcouncil_load_skill` hands
+  the body to the model whole and it checked UTF-8 alone, so an escape sequence
+  or a bidi override could sit in steps a reviewer read as plain text. A
+  refusal names the skill, the rune (code point and name), and its line and
+  column, and never strips. `${...}` and `{{...}}` in a body are still allowed.
+  - Descriptions and a spec's text are loosened to the same set. They used to
+    refuse every control, format and private-use rune, which refused real text:
+    the zero-width joiner in a family or technologist emoji, the zero-width
+    non-joiner in Persian, the soft hyphen, a zero-width space, a word joiner, a
+    byte-order mark mid-text, the left-to-right, right-to-left and Arabic letter
+    marks, variation selectors and private-use glyphs. These now load.
+- Listing the skills directory is bounded. It read every entry
+  (`ReadDir(-1)`) on every turn and every `devcouncil_load_skill` call; it now
+  reads at most `harness.MaxSkillDirEntries` (10,000) in chunks, checking for
+  cancellation between them, and reports a cut (`SkillSet.ListingCut`, a prompt
+  notice, a `harness.resolve` note) instead of silence. A lookup of a name not
+  among the entries read says the listing was cut rather than that the skill is
+  absent. Measured once each on a 100,000-directory skills directory: one
+  lookup went from 377 ms to 40 ms, and `LoadSkills` from 3.07 s to 1.88 s, the
+  rest being the read gate's cost for the 200 skills it examines.
+- A lesson can no longer write its own History or verdict counts. The store
+  re-reads an entry's Markdown by its headings (`historyOf` takes every
+  `- revision` row under the first `## History`; `supersededRow` switches
+  section on any `## ` line and counts `- <verdict>:` lines under
+  `## Attribution`), and a lesson or evidence line that spelled a heading, such
+  as `## History` followed by a `- revision 99, ...` row, was stored verbatim
+  and adopted by the next revision.
+  - One predicate, `readsAsStructure` (a column-0 `## ` line), is what the
+    store switches section on and what `lessons.Parse` refuses in the lesson and
+    the evidence, first line included, wherever it sits. Nothing else is
+    refused: `# python comment`, `### Testing`, `#123`, `#!/bin/sh`, a lone `#`
+    and an indented `## x` are prose and stay legal. A continuation line is now
+    stored with its indentation, because trimming it turned an indented `## x`
+    into a column-0 one. `- helped:` and `- revision ...` bullets stay legal;
+    without a heading to put them under the store never counts them, which a
+    test checks through a real revision. `historyOf` now takes only the rows
+    under a `## History` heading, through the same predicate.
+  - `lessons.Save` makes the same check on a `Result` that did not come from
+    `Parse`, and refuses a cue, change or note that spans lines. Nothing is
+    written when it refuses.
+  - The reflector's prompt states the rule, since a refused answer costs a
+    rerun.
+  - Entries already stored with a forged heading are not rewritten.
+- A refused read says it is a read and what to do about it. The reader's
+  refusal of a symbolic link said `refusing to write through ...` because every
+  pinned operation pinned through the write path's text; it now says
+  `refusing to read "AGENTS.md": it is a symbolic link ... Replace the link with
+  the file itself, or with a copy of it`, and a removal says it is one. The read
+  gate's refusals (`path.aliased_read`, `path.outside_root`, `path.secret_read`)
+  carry a remedy each (replace the hard link or the link out of the repository
+  with a copy; rename a file that holds no credentials). They reach the prompt
+  notice for a refused instruction file, a skill's rejection and a spec's.
 
 ## [0.1.0] — 2026-10-17
 

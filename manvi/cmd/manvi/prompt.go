@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 	"strings"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/repomap"
+	"github.com/bharathvbcr/Manvi/manvi/harness"
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -62,6 +66,15 @@ type PromptOptions struct {
 	// Areas is the repository's own shape, from the code map, used to orient
 	// the model instead of asking it to go and discover the layout.
 	Areas []repomap.AreaSummary
+	// Instructions is the project's instructions section, read once for the
+	// turn by resolveTurnInputs through the repository's gated reader. Nil
+	// means there is none, or it could not be read; InstructionNotices says
+	// which. Every place that lists the prompt's sources reads this, so none of
+	// them touches the file.
+	Instructions prompt.Source
+	// InstructionNotices are the faults of that read, surfaced with the
+	// assembly's own faults.
+	InstructionNotices []string
 	// Skills is the repository's skills listing, resolved once for the turn by
 	// skillsForPrompt beside the project instructions. Nil means there are no
 	// skills to list, or none could be read; SkillNotices says which.
@@ -91,6 +104,7 @@ type PromptOptions struct {
 // evidence trail could not explain the difference in behaviour.
 func assemblePromptReported(reg *flags.Registry, opts PromptOptions) (string, prompt.Report, []string) {
 	text, report, faults := assembleSections(promptSources(reg, opts), promptTokenBudget(reg, opts.Provider))
+	faults = append(faults, opts.InstructionNotices...)
 	faults = append(faults, opts.SkillNotices...)
 	return text, report, append(faults, opts.SpecNotices...)
 }
@@ -435,8 +449,8 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	// size: AGENTS.md is whatever the repo wrote. It is not Essential for that
 	// reason — a file that grew past the budget must lose to the rules, not
 	// push them out.
-	if pSrc, ok := projectInstructionsSource(promptTokenBudget(reg, provider)); ok {
-		r.Add(pSrc)
+	if opts.Instructions != nil {
+		r.Add(opts.Instructions)
 	}
 	if opts.Skills != nil {
 		r.Add(opts.Skills)
@@ -450,16 +464,59 @@ func promptRouter(reg *flags.Registry, opts PromptOptions) *prompt.Router {
 	return r
 }
 
-func projectInstructionsSource(budget int) (prompt.Source, bool) {
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md"} {
-		data, err := os.ReadFile(name)
-		if err == nil && len(bytes.TrimSpace(data)) > 0 {
+// projectInstructionFiles are the files the project's own instructions are read
+// from, in order: the first that exists, is not empty and is allowed is used.
+var projectInstructionFiles = []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md"}
+
+// maxProjectInstructionBytes bounds the instructions file on every provider.
+// A budget bounds it only where there is one (a local model); a frontier
+// provider has none, and an unbounded read there was an unbounded prompt, paid
+// for on every turn. 256 KiB is about sixty-four thousand tokens, far past any
+// instructions file anyone reads. A larger file is refused with its size rather
+// than truncated, because half the rules reads as all of them; the reader
+// enforces the bound against the opened descriptor, not against a stat.
+const maxProjectInstructionBytes = 256 * 1024
+
+// projectInstructionsSource reads the project's instructions through read, the
+// repository's own contained reader (devcouncil.RepoReaderAt over the project
+// root): the read gate, a pinned path that never follows a link, regular files
+// only, one name for the file, and the size bound above. It was a bare
+// os.ReadFile of the working directory, which followed a symbolic link to a
+// credential outside the repository into the system prompt and blocked forever
+// on a FIFO.
+//
+// What happens to a file that is refused is decided here once. The turn runs
+// without that file and the notices say why, the way a rejected skill is
+// reported: the operator learns of it through the prompt-fault path, and a
+// repository cannot fail a turn by planting a bad file. The next candidate is
+// still tried, so a repository that links AGENTS.md to CLAUDE.md (a link is
+// refused, as for a skill) gets the real file. A file that is absent or has
+// only whitespace is not a fault. A cancelled read is not a verdict on the
+// file: it ends the search and is reported as what it is.
+//
+// It reads the files, so it is called once per turn, by resolveTurnInputs; the
+// source it returns travels in PromptOptions.
+func projectInstructionsSource(read harness.ReadFunc, budget int) (prompt.Source, []string) {
+	var notices []string
+	for _, name := range projectInstructionFiles {
+		data, err := read(name, maxProjectInstructionBytes)
+		switch {
+		case err == nil:
+			if len(bytes.TrimSpace(data)) == 0 {
+				continue
+			}
 			body := boundProjectInstructions(strings.TrimSpace(string(data)), budget)
 			return prompt.Static(projectInstructionsName, 35, false,
-				fmt.Sprintf("Project instructions (%s):\n%s", name, body)), true
+				fmt.Sprintf("Project instructions (%s):\n%s", name, body)), notices
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			return nil, append(notices, fmt.Sprintf("project instructions were not read this turn, so none are in the prompt: %v", err))
+		default:
+			notices = append(notices, fmt.Sprintf("project instructions: %s was not read and is not in the prompt: %v", name, err))
 		}
 	}
-	return nil, false
+	return nil, notices
 }
 
 // projectInstructionShare is the fraction of the prompt budget this file may

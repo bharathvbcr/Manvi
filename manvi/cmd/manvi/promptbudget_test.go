@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,14 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
-// chdir moves into dir for the duration of the test. The instructions file is
-// read from the working directory, so the only way to exercise that read is to
-// have one.
+// chdir moves into dir for the duration of the test, for the tests that prove
+// the working directory is not what the instructions are read from.
 func chdir(t *testing.T, dir string) {
 	t.Helper()
 	t.Chdir(dir)
@@ -45,8 +46,7 @@ func writeFile(t *testing.T, dir, name, content string) {
 // and method — the guidance most likely to be missed and least likely to be
 // noticed missing.
 func TestOversizedProjectInstructionsDoNotDisplaceTheGuidance(t *testing.T) {
-	dir := t.TempDir()
-	chdir(t, dir)
+	dir := realRoot(t)
 
 	// Far larger than any budget: the point is that it cannot take everything
 	// with it, however big it is.
@@ -57,9 +57,9 @@ func TestOversizedProjectInstructionsDoNotDisplaceTheGuidance(t *testing.T) {
 	writeFile(t, dir, "AGENTS.md", huge.String())
 
 	const budget = 2000
-	src, ok := projectInstructionsSource(budget)
-	if !ok {
-		t.Fatal("the instructions file was not picked up at all")
+	src, notices := projectInstructionsSource(devcouncil.RepoReaderAt(context.Background(), dir), budget)
+	if src == nil {
+		t.Fatalf("the instructions file was not picked up at all: %v", notices)
 	}
 	sections, err := src.Sections()
 	if err != nil {
@@ -88,13 +88,12 @@ func TestOversizedProjectInstructionsDoNotDisplaceTheGuidance(t *testing.T) {
 // An unbounded budget is what every non-local provider gets, and nothing is
 // scarce there, so nothing is cut.
 func TestProjectInstructionsAreNotCutWithoutABudget(t *testing.T) {
-	dir := t.TempDir()
-	chdir(t, dir)
+	dir := realRoot(t)
 	writeFile(t, dir, "AGENTS.md", strings.Repeat("- a rule\n", 5000))
 
-	src, ok := projectInstructionsSource(0)
-	if !ok {
-		t.Fatal("not picked up")
+	src, notices := projectInstructionsSource(devcouncil.RepoReaderAt(context.Background(), dir), 0)
+	if src == nil {
+		t.Fatalf("not picked up: %v", notices)
 	}
 	sections, _ := src.Sections()
 	if strings.Contains(sections[0].Text, "cut here") {
@@ -106,14 +105,10 @@ func TestProjectInstructionsAreNotCutWithoutABudget(t *testing.T) {
 // the property the bound exists for, asserted end to end rather than through
 // the token arithmetic above.
 func TestGuidanceSurvivesAnOversizedInstructionsFile(t *testing.T) {
-	dir := t.TempDir()
-	chdir(t, dir)
+	dir := realRoot(t)
 	writeFile(t, dir, "AGENTS.md", strings.Repeat("- always run the full suite\n", 4000))
 
-	reg := routerRegistry(t, nil)
-	text, _, _ := assemblePromptReported(reg, PromptOptions{
-		Provider: "local", TaskToolsOffered: true,
-	})
+	text, _ := instructionsTurn(t, "local", repoReader(dir))
 	for _, want := range []string{
 		"Problem Deconstruction & Hypotheses",
 		"Hardening & Adversarial Stress-Testing",

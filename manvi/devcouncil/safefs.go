@@ -126,6 +126,15 @@ type symlinkRefusal struct {
 }
 
 func (e *symlinkRefusal) Error() string {
+	if e.during == "read" {
+		// A read says it is a read and gives the remedy: the reader never
+		// follows a final-component link, so what it can read is the file
+		// itself.
+		return fmt.Sprintf(
+			"refusing to read %q: it is a symbolic link, and reading through links is how a file "+
+				"outside the repository, or one the read gate withholds, reaches the model. "+
+				"Replace the link with the file itself, or with a copy of it, to have it read", e.component)
+	}
 	return fmt.Sprintf(
 		"refusing to %s through %q: it is a symbolic link, and writing through links is how a "+
 			"contained path becomes an uncontained one", e.during, e.component)
@@ -167,7 +176,11 @@ func (p *pinnedTarget) pinnedDirID(i int) (componentIdentity, bool) {
 // creates directories, so the snapshot records how far the existing chain
 // reaches. The missing tail is not trusted for being absent — it is created
 // and verified at write time, through descriptors, by openVerifiedParent.
-func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
+func pinWriteTarget(root, rel string) (*pinnedTarget, error) { return pinForOp(root, rel, "write") }
+
+// pinForOp is pinWriteTarget for an operation named op ("write", "read" or
+// "remove"), so a refusal at pin time says which one it refused.
+func pinForOp(root, rel, op string) (*pinnedTarget, error) {
 	clean := path.Clean(filepath.ToSlash(rel))
 	if path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || clean == "." {
 		return nil, fmt.Errorf("path %q is not a contained repository-relative path", rel)
@@ -190,7 +203,7 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 	}
 	rootID, ok := identityOf(rootFi)
 	if !ok {
-		return nil, fmt.Errorf("platform cannot identify directories; refusing to write %q", rel)
+		return nil, fmt.Errorf("platform cannot identify directories; refusing to %s %q", op, rel)
 	}
 	pinned.dirIDs = append(pinned.dirIDs, rootID)
 
@@ -240,13 +253,13 @@ func pinWriteTarget(root, rel string) (*pinnedTarget, error) {
 			return nil, fmt.Errorf("inspecting %q: %w", physical, leafErr)
 		}
 		if leafErr == nil && leafFi.Mode()&fs.ModeSymlink != 0 {
-			return nil, &symlinkRefusal{component: parts[len(parts)-1], during: "write"}
+			return nil, &symlinkRefusal{component: parts[len(parts)-1], during: op}
 		}
 		if leafErr == nil {
 			pinned.targetExisted = true
 			id, ok := identityOf(leafFi)
 			if !ok {
-				return nil, fmt.Errorf("platform cannot identify files; refusing to write %q", rel)
+				return nil, fmt.Errorf("platform cannot identify files; refusing to %s %q", op, rel)
 			}
 			pinned.targetIdent = id
 		}
@@ -809,7 +822,7 @@ func (p *pinnedTarget) Read(limit int64) ([]byte, error) {
 // ReadPinned pins and then reads in one step, for callers that have no
 // deliberation window between evaluation and read.
 func ReadPinned(root, rel string, limit int64) ([]byte, error) {
-	pinned, err := pinWriteTarget(root, rel)
+	pinned, err := pinForOp(root, rel, "read")
 	if err != nil {
 		return nil, err
 	}
@@ -833,7 +846,7 @@ func WritePinned(root, rel string, data []byte, perm fs.FileMode) error {
 // against the verified parent's descriptor and never follows a final-component
 // symlink, so neither the leaf nor any directory above it can redirect it.
 func RemovePinned(root, rel string) error {
-	pinned, err := pinWriteTarget(root, rel)
+	pinned, err := pinForOp(root, rel, "remove")
 	if err != nil {
 		return err
 	}

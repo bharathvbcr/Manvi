@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -19,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
@@ -43,6 +43,17 @@ const (
 	// unbounded directory would be an unbounded prompt and an unbounded scan.
 	// Directories past the bound are counted in SkillSet.NotExamined.
 	MaxSkills = 200
+	// MaxSkillDirEntries bounds how many entries of the skills directory one
+	// listing reads, whatever they are: 50 times MaxSkills, far past any real
+	// repository and small enough that the listing every turn and every
+	// devcouncil_load_skill call makes costs milliseconds. The directory is read
+	// in chunks and the read stops here; SkillSet.ListingCut says it did. The
+	// entries read are the first ones in directory order, which a filesystem
+	// need not keep stable, so past this bound two loads of an unchanged tree
+	// may list different prefixes. They never list more than the bound.
+	MaxSkillDirEntries = 50 * MaxSkills
+	// skillDirChunk is how many entries one read of the directory asks for.
+	skillDirChunk = 512
 	// MaxRejected bounds how many rejections one load records by name. The rest
 	// are counted in SkillSet.RejectedOmitted, so a directory of ten thousand
 	// bad names is one number and not ten thousand entries.
@@ -107,6 +118,10 @@ type SkillSet struct {
 	// NotExamined counts validly named directories past MaxSkills that were
 	// never read. A nonzero value means the listing is a prefix, not the whole.
 	NotExamined int
+	// ListingCut reports that the skills directory holds more than
+	// MaxSkillDirEntries entries and only the first MaxSkillDirEntries, in
+	// directory order, were considered. Everything else here describes those.
+	ListingCut bool
 }
 
 // Find returns the accepted skill called name.
@@ -146,11 +161,11 @@ type ReadFunc func(rel string, limit int64) ([]byte, error)
 // link is judged by the reader, which refuses one that leaves the repository.
 // A name that cannot be a skill costs no read.
 func LoadSkills(ctx context.Context, root string, read ReadFunc) (SkillSet, error) {
-	names, err := listSkillDirs(ctx, root)
+	names, cut, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return SkillSet{}, err
 	}
-	var set SkillSet
+	set := SkillSet{ListingCut: cut}
 	examined := 0
 	for _, name := range names {
 		if !ValidSkillName(name) {
@@ -215,6 +230,10 @@ type Lookup struct {
 	// Directories counts every valid skill directory, listed elsewhere or not,
 	// so a refusal can tell "no skills" from "every skill is already listed".
 	Directories int
+	// ListingCut reports that the skills directory holds more than
+	// MaxSkillDirEntries entries and only the first of them were listed, so a
+	// name that is SkillMissing may exist among the rest.
+	ListingCut bool
 }
 
 // MaxListedNames bounds the names a refusal lists.
@@ -237,7 +256,7 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 	if !ValidSkillName(name) {
 		return Lookup{}, fmt.Errorf("%s is not a valid skill name", QuoteName(name))
 	}
-	names, err := listSkillDirs(ctx, root)
+	names, cut, err := listSkillDirs(ctx, root)
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -252,7 +271,7 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 		}
 	}
 	if dir == "" {
-		l := Lookup{Outcome: SkillMissing}
+		l := Lookup{Outcome: SkillMissing, ListingCut: cut}
 		for _, n := range names {
 			if !ValidSkillName(n) {
 				continue
@@ -280,9 +299,10 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 	return Lookup{Outcome: SkillFound, Skill: skill, Dir: dir}, nil
 }
 
-// listSkillDirs returns the sorted names of candidate skill entries. The
-// listing goes through os.Root, which refuses a skills directory that is a
-// symbolic link out of the repository.
+// listSkillDirs returns the sorted names of candidate skill entries, and whether
+// the directory held more than MaxSkillDirEntries entries so that the rest were
+// not read. The listing goes through os.Root, which refuses a skills directory
+// that is a symbolic link out of the repository.
 //
 // The path is judged before it is opened: a FIFO, socket, device or plain file
 // at .agents/skills is refused as a listing error, because opening a FIFO
@@ -290,63 +310,84 @@ func LookupSkillExcluding(ctx context.Context, root string, read ReadFunc, name 
 // the read are also bounded by ctx, since the judgement and the open are two
 // steps and a hung filesystem has no type to judge; a cancelled or timed-out
 // listing takes the same error path as any other listing failure.
-func listSkillDirs(ctx context.Context, root string) ([]string, error) {
+func listSkillDirs(ctx context.Context, root string) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
 	}
 	type outcome struct {
 		names []string
+		cut   bool
 		err   error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		names, err := readSkillDirs(root)
-		done <- outcome{names, err}
+		names, cut, err := readSkillDirs(ctx, root)
+		done <- outcome{names, cut, err}
 	}()
 	select {
 	case o := <-done:
-		return o.names, o.err
+		return o.names, o.cut, o.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, ctx.Err())
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, ctx.Err())
 	}
 }
 
-func readSkillDirs(root string) ([]string, error) {
+// readSkillDirs reads the directory in chunks of skillDirChunk entries, stops
+// after MaxSkillDirEntries, and checks ctx between chunks so a cancelled load
+// does not leave this goroutine reading on. A single ReadDir(-1) held every
+// entry of a hostile directory in memory and in the time of one turn.
+func readSkillDirs(ctx context.Context, root string) ([]string, bool, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
-		return nil, fmt.Errorf("opening repository root: %w", err)
+		return nil, false, fmt.Errorf("opening repository root: %w", err)
 	}
 	defer func() { _ = r.Close() }()
 	info, err := r.Stat(SkillsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("examining %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("examining %s: %w", SkillsDir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory (%s), so it is not opened", SkillsDir, info.Mode().Type())
+		return nil, false, fmt.Errorf("%s is not a directory (%s), so it is not opened", SkillsDir, info.Mode().Type())
 	}
 	dir, err := r.Open(SkillsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("opening %s: %w", SkillsDir, err)
+		return nil, false, fmt.Errorf("opening %s: %w", SkillsDir, err)
 	}
 	defer func() { _ = dir.Close() }()
-	entries, err := dir.ReadDir(-1)
-	if err != nil {
-		return nil, fmt.Errorf("listing %s: %w", SkillsDir, err)
-	}
 	var names []string
-	for _, e := range entries {
-		if e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
-			names = append(names, e.Name())
+	for read := 0; read < MaxSkillDirEntries; {
+		if err := ctx.Err(); err != nil {
+			return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
+		}
+		entries, err := dir.ReadDir(min(skillDirChunk, MaxSkillDirEntries-read))
+		for _, e := range entries {
+			if e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
+				names = append(names, e.Name())
+			}
+		}
+		read += len(entries)
+		if errors.Is(err, io.EOF) {
+			sort.Strings(names)
+			return names, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
 		}
 	}
+	// The bound is reached. One more entry is the difference between a
+	// directory of exactly the bound and one that was cut.
+	more, err := dir.ReadDir(1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false, fmt.Errorf("listing %s: %w", SkillsDir, err)
+	}
 	sort.Strings(names)
-	return names, nil
+	return names, len(more) > 0, nil
 }
 
 // loadSkill judges one directory. It returns a reason, never a partial skill.
@@ -398,14 +439,98 @@ func judgeSkill(dirName string, data []byte) (Skill, string) {
 	if n := utf8.RuneCountInString(desc); n > MaxDescriptionRunes {
 		return Skill{}, fmt.Sprintf("description is %d runes, over the %d limit", n, MaxDescriptionRunes)
 	}
+	// The body is what devcouncil_load_skill hands the model whole, so it is
+	// refused on the same runes the description is: a skill whose steps hide an
+	// escape sequence or a bidi override from the person who reviews it.
+	if why := hiddenRuneProblem(body); why != "" {
+		return Skill{}, "body " + why
+	}
 	return Skill{Name: dirName, Description: desc, Body: body}, ""
 }
 
-// unrenderable reports a control, format or private-use rune: one that would
-// reach the model and the terminal unrendered. Skills and harness specs share
-// this one definition of text that is refused.
-func unrenderable(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+// hiddenRange is a run of runes this package refuses, with the one-line reason
+// a person reading the refusal needs.
+type hiddenRange struct {
+	lo, hi rune
+	reason string
+}
+
+// hiddenRanges is the whole of what hiddenRuneProblem refuses, enumerated and
+// not derived from a Unicode category. A category would sweep in text that is
+// legitimate (a zero-width joiner holds a family emoji together and a
+// zero-width non-joiner spells Persian; a private-use glyph is an icon font's;
+// a byte-order mark is harmless anywhere) and could change under a Unicode
+// update; these ranges are the ones that hide or rewrite what a reviewer reads:
+//
+//   - C0 and C1 controls except tab, newline and carriage return, which a
+//     terminal executes or an escape sequence is built from;
+//   - the bidi embedding, override and isolate controls, which reorder text so
+//     what is shown differs from what the model reads;
+//   - the tag block, which spells ASCII in characters that render as nothing.
+//
+// Allowed on purpose: zero-width joiner, non-joiner, space and word joiner, soft
+// hyphen, the byte-order mark anywhere, the left-to-right, right-to-left and
+// Arabic letter marks, variation selectors, and private use (planes 15 and 16
+// included). A refused rune is refused, never stripped: the reviewer and the
+// model must read the same bytes.
+var hiddenRanges = []hiddenRange{
+	{0x0000, 0x001F, "a C0 control: a terminal executes it, and an escape sequence starts with one"},
+	{0x007F, 0x009F, "DEL or a C1 control: a terminal executes it"},
+	{0x202A, 0x202E, "a bidi embedding or override: it reorders the text a reviewer reads"},
+	{0x2066, 0x2069, "a bidi isolate: it reorders the text a reviewer reads"},
+	{0xE0000, 0xE007F, "a Unicode tag character: it spells ASCII in characters that render as nothing"},
+}
+
+// hiddenRuneNames names the refused runes that have a name worth giving; the
+// rest are named by their range.
+var hiddenRuneNames = map[rune]string{
+	0x0000: "NULL", 0x0007: "BELL", 0x0008: "BACKSPACE", 0x000B: "LINE TABULATION", 0x000C: "FORM FEED",
+	0x001B: "ESCAPE", 0x007F: "DELETE", 0x0085: "NEXT LINE",
+	0x202A: "LEFT-TO-RIGHT EMBEDDING", 0x202B: "RIGHT-TO-LEFT EMBEDDING", 0x202C: "POP DIRECTIONAL FORMATTING",
+	0x202D: "LEFT-TO-RIGHT OVERRIDE", 0x202E: "RIGHT-TO-LEFT OVERRIDE",
+	0x2066: "LEFT-TO-RIGHT ISOLATE", 0x2067: "RIGHT-TO-LEFT ISOLATE", 0x2068: "FIRST STRONG ISOLATE",
+	0x2069: "POP DIRECTIONAL ISOLATE",
+}
+
+func hiddenRuneName(r rune) string {
+	if n, ok := hiddenRuneNames[r]; ok {
+		return n
+	}
+	switch {
+	case r <= 0x1F:
+		return "C0 CONTROL"
+	case r >= 0x80 && r <= 0x9F:
+		return "C1 CONTROL"
+	case r >= 0xE0000:
+		return "TAG CHARACTER"
+	}
+	return "CONTROL"
+}
+
+// hiddenRuneProblem is why text carries a rune that must not reach the model or
+// a terminal, or "": the one check every prompt input shares (a description, a
+// spec's text, a skill's body), over the enumerated hiddenRanges. Tab, newline
+// and carriage return are layout and are allowed. The answer names the first
+// such rune, its name, and where it is (line and rune column, both from 1). It
+// does not judge UTF-8 validity or templating tokens, which differ by input.
+func hiddenRuneProblem(text string) string {
+	line, col := 1, 0
+	for _, r := range text {
+		col++
+		if r == '\n' {
+			line, col = line+1, 0
+			continue
+		}
+		if r == '\t' || r == '\r' {
+			continue
+		}
+		for _, h := range hiddenRanges {
+			if r >= h.lo && r <= h.hi {
+				return fmt.Sprintf("contains U+%04X %s at line %d, column %d: %s", r, hiddenRuneName(r), line, col, h.reason)
+			}
+		}
+	}
+	return ""
 }
 
 // ParseFrontmatter reads the leading "---" block of a SKILL.md and returns its
@@ -419,8 +544,8 @@ func unrenderable(r rune) bool {
 // repeated key is refused rather than resolved, because last-wins would let a
 // second line replace the one a reviewer read. A block scalar (| or >) is
 // refused, because accepting its indicator as the text would put ">" in the
-// prompt as the description. A value carrying a control, format or private-use
-// rune is refused: it would reach the model and the terminal unrendered. Other
+// prompt as the description. A value carrying a rune in hiddenRanges
+// (a control, a bidi override or isolate, a tag character) is refused. Other
 // keys and indented lines are ignored. CRLF is accepted.
 func ParseFrontmatter(text string) (map[string]string, string, error) {
 	text = strings.TrimPrefix(text, "\ufeff")
@@ -474,10 +599,8 @@ func scalar(v string) (string, error) {
 		v = inner
 	}
 	v = strings.Join(strings.Fields(v), " ")
-	for _, r := range v {
-		if unrenderable(r) {
-			return "", fmt.Errorf("contains U+%04X, a control, format or private-use character", r)
-		}
+	if why := hiddenRuneProblem(v); why != "" {
+		return "", errors.New(why)
 	}
 	return v, nil
 }
