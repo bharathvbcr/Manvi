@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	dc "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
@@ -80,16 +83,51 @@ const (
 	maxPendingBytes = maxInstructionFileBytes*2 + 4096
 )
 
+// recordMu serialises every mutation of a checkout's pending record and of the
+// instruction file's block in this process: the write of a record, a restore and
+// its removal of the record, a recovery, and a held run's release. The record is
+// one file per checkout directory, and removeRecord is read, compare, unlink, so
+// without one lock another run's record written between the compare and the unlink
+// would be removed. It is one lock for every checkout (these are short file
+// operations), taken after checkoutMu and before mu, never inside either. It
+// guards this process only: two Manvi processes on one checkout can still
+// interleave, which the pinned writes and the nonce check narrow and do not close.
+var recordMu sync.Mutex
+
+// recordReadHook, when set, runs in removeRecord between the read of the record
+// and the unlink. A test uses it to put another run's write into that window.
+var recordReadHook func()
+
 // ErrHarnessMaterialise is the typed reason a managed run was aborted because
 // its harness could not be written into the checkout, or taken out of it.
 const ErrHarnessMaterialise = "E_HARNESS_MATERIALISE"
 
-type harnessMaterialiseError struct{ cause error }
+// errRecordUnusable and errBlockModified are the two restore refusals that leave
+// nothing a later restore could do, so recovery clears the record on them: the
+// record is not a block Manvi would have written, or the agent edited inside it.
+var (
+	errRecordUnusable = errors.New("the record of the harness block is not usable")
+	errBlockModified  = errors.New("the checkout carries a modified harness block")
+)
+
+type harnessMaterialiseError struct {
+	cause error
+	// mayHaveChanged is set on a failed write that may still have changed the
+	// file (devcouncil.WriteMayHaveChanged): the outcome is unknown, not failed.
+	mayHaveChanged bool
+}
 
 func (e *harnessMaterialiseError) Error() string {
 	return ErrHarnessMaterialise + ": " + e.cause.Error()
 }
 func (e *harnessMaterialiseError) Unwrap() error { return e.cause }
+
+// writeMayHaveChanged says whether err is a failed write whose effect on the
+// file is unknown.
+func writeMayHaveChanged(err error) bool {
+	var typed *harnessMaterialiseError
+	return errors.As(err, &typed) && typed.mayHaveChanged
+}
 
 func materialiseFailure(format string, args ...any) error {
 	return &harnessMaterialiseError{cause: fmt.Errorf(format, args...)}
@@ -239,6 +277,28 @@ func (p pendingRestore) valid() error {
 	return nil
 }
 
+// fitsRestoreBound says whether the file with this record's block in it is one
+// the restore can read back. Offset+len(Appended) is the file's size once the
+// block is written, and every read of an instruction file (the one before the
+// write and the one that takes the block out) is under maxInstructionFileBytes,
+// so a block that would take the file past it could be written and never
+// removed. It is checked before anything is written. valid() does not check it:
+// it bounds the two parts one at a time, and a record an earlier build wrote
+// under that looser rule must still be read, and kept when it cannot be acted on.
+func (p pendingRestore) fitsRestoreBound() error {
+	if size := p.Offset + len(p.Appended); size > maxInstructionFileBytes {
+		return fmt.Errorf("%s would be %d bytes with the block in it, over the %d-byte limit on what Manvi reads back to take the block out again (the file is %d bytes, the block %d)",
+			p.File, size, maxInstructionFileBytes, p.Offset, len(p.Appended))
+	}
+	return nil
+}
+
+// readInstructionFile is the one read of an instruction file, before the block
+// is written and when it is taken out, so both are under the same bound.
+func readInstructionFile(root, rel string) ([]byte, error) {
+	return devcouncil.ReadPinned(root, rel, maxInstructionFileBytes)
+}
+
 // harnessWriter judges and performs the writes of one materialisation.
 type harnessWriter struct {
 	root string
@@ -253,10 +313,19 @@ func (w harnessWriter) write(rel string, op dc.Operation, data []byte) error {
 	if err := w.judge(rel, op); err != nil {
 		return err
 	}
-	if err := devcouncil.WritePinned(w.root, rel, data, 0o644); err != nil {
-		return materialiseFailure("writing %s: %v", rel, err)
+	if changed, err := pinnedWrite(w.root, rel, data); err != nil {
+		return &harnessMaterialiseError{cause: fmt.Errorf("writing %s: %w", rel, err), mayHaveChanged: changed}
 	}
 	return nil
+}
+
+// pinnedWrite is the pinned writer, and says whether a failed write may still
+// have changed the file (devcouncil.WriteMayHaveChanged: the rename is done and
+// the directory sync after it failed). A variable so a test can fail a write
+// after its bytes are in place.
+var pinnedWrite = func(root, rel string, data []byte) (mayHaveChanged bool, err error) {
+	err = devcouncil.WritePinned(root, rel, data, 0o644)
+	return err != nil && devcouncil.WriteMayHaveChanged(err), err
 }
 
 func (w harnessWriter) remove(rel string) error {
@@ -267,6 +336,34 @@ func (w harnessWriter) remove(rel string) error {
 		return materialiseFailure("removing %s: %v", rel, err)
 	}
 	return nil
+}
+
+// removeRecord removes the pending record only if it is the record of the block
+// with this nonce. There is one record file per checkout directory, so a run's end
+// must not take away another run's: a checkout directory that was deleted and
+// recreated is a new directory to the guard, which admits a second run there while
+// the first is still live, and the second's record replaces the first's. The
+// record is read, compared and then removed; a record that is not readable, or
+// carries another nonce, is left alone. A record that vanishes between the read
+// and the removal is gone, which is what was wanted.
+func (w harnessWriter) removeRecord(nonce string) error {
+	raw, err := devcouncil.ReadPinned(w.root, harnessPendingFile, maxPendingBytes)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return materialiseFailure("reading the record of the harness block to remove it: %v", err)
+	}
+	if recordReadHook != nil {
+		recordReadHook()
+	}
+	var own struct {
+		Nonce string `json:"nonce"`
+	}
+	if decodeErr := json.Unmarshal(raw, &own); decodeErr == nil && own.Nonce == nonce {
+		return w.remove(harnessPendingFile)
+	}
+	return nil // not readable, or another run's: not this run's to remove
 }
 
 func (w harnessWriter) judge(rel string, op dc.Operation) error {
@@ -291,7 +388,9 @@ type harnessMaterialisation struct {
 // nothing to write: a spec with no sections has nothing to say to the CLI. A
 // provider with no instruction file is refused. Nothing already in the file is
 // read as a block: content that looks like one is content. A failure leaves the
-// file as it found it.
+// file as it found it, with one exception: when a write that may have changed
+// the file fails and the file cannot be read to tell (afterUnknownWrite), it
+// returns what restores the block together with the error, and the record stays.
 func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMaterialisation, error) {
 	rel, ok := harnessInstructionFile(provider)
 	if !ok {
@@ -305,8 +404,10 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	if err != nil || block == "" {
 		return nil, err
 	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	w := harnessWriter{root: root}
-	before, err := devcouncil.ReadPinned(root, rel, maxInstructionFileBytes)
+	before, err := readInstructionFile(root, rel)
 	existed := err == nil
 	switch {
 	case err == nil:
@@ -322,6 +423,9 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	if err := m.pending.valid(); err != nil {
 		return nil, materialiseFailure("the block Manvi would write is not one it can later recognise: %v", err)
 	}
+	if err := m.pending.fitsRestoreBound(); err != nil {
+		return nil, materialiseFailure("the harness block is not written: %v", err)
+	}
 	record, err := json.Marshal(m.pending)
 	if err != nil {
 		return nil, materialiseFailure("recording the block: %v", err)
@@ -334,12 +438,42 @@ func materialiseHarness(root, provider string, spec harness.Spec) (*harnessMater
 	// block that is not there, which restores as nothing, and never a block with
 	// no record.
 	if err := w.write(harnessPendingFile, dc.OpWrite, record); err != nil {
+		if writeMayHaveChanged(err) {
+			err = errors.Join(err, w.removeRecord(nonce)) // a record of no block restores as nothing
+		}
 		return nil, err
 	}
-	if err := w.write(rel, op, append(append([]byte(nil), before...), appended...)); err != nil {
-		return nil, errors.Join(err, w.remove(harnessPendingFile))
+	whole := append(append([]byte(nil), before...), appended...)
+	if err := w.write(rel, op, whole); err != nil {
+		if !writeMayHaveChanged(err) {
+			return nil, errors.Join(err, w.removeRecord(nonce))
+		}
+		return m.afterUnknownWrite(err)
 	}
 	return m, nil
+}
+
+// afterUnknownWrite decides what a block write that may have changed the file
+// came to, by reading the file. The record is never removed while the block may
+// be in it:
+//
+//   - the block is there: the write landed, the failure was after it, and the
+//     run proceeds with what takes the block out at its end;
+//   - the file is readable and the block is not there: nothing was written, a
+//     failed materialisation with no record;
+//   - the file cannot be read to tell: unknown. The record stays and the run is
+//     returned beside the error, so the caller can still take the block out if it
+//     is there, and the next Prepare on the checkout finds the record if it
+//     cannot.
+func (m *harnessMaterialisation) afterUnknownWrite(writeErr error) (*harnessMaterialisation, error) {
+	current, err := readInstructionFile(m.root, m.File)
+	switch {
+	case err == nil && bytes.Contains(current, m.pending.Appended):
+		return m, nil
+	case err == nil, errors.Is(err, fs.ErrNotExist):
+		return nil, errors.Join(writeErr, m.removeRecord(m.pending.Nonce))
+	}
+	return m, errors.Join(writeErr, materialiseFailure("reading %s to see whether the block was written: %v; its record is kept", m.File, err))
 }
 
 // Restore takes the block out and clears the record. See restoreRecorded.
@@ -347,6 +481,8 @@ func (m *harnessMaterialisation) Restore() error {
 	if m == nil {
 		return nil
 	}
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	return restoreRecorded(m.harnessWriter, m.pending)
 }
 
@@ -361,36 +497,155 @@ func (m *harnessMaterialisation) Restore() error {
 //   - they are not, and no line carries the nonce: the agent removed the block
 //     itself and there is nothing to undo;
 //   - they are not, and a line carries the nonce: the agent edited inside the
-//     block. It is refused, typed, the file is left as it is and the record is
-//     kept, so the next Prepare on the checkout reports it, once.
+//     block (errBlockModified). It is refused, typed, the file is left as it is
+//     and the record is kept, so the next Prepare on the checkout reports it,
+//     once.
+//
+// Every other failure (the file cannot be read, or is past the bound, or the
+// write or the gate refuses) returns its error with the record kept: the block
+// may still be in the file, and the record is the only thing that can take it
+// out. The caller does not clear it.
 func restoreRecorded(w harnessWriter, p pendingRestore) error {
 	if err := p.valid(); err != nil {
-		return materialiseFailure("the record of the harness block is not usable: %v", err)
+		return materialiseFailure("%w: %v", errRecordUnusable, err)
 	}
-	current, err := devcouncil.ReadPinned(w.root, p.File, maxInstructionFileBytes)
+	current, err := readInstructionFile(w.root, p.File)
 	switch {
 	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
-		return w.remove(harnessPendingFile) // the agent deleted the file, block and all
+		return w.removeRecord(p.Nonce) // the agent deleted the file, block and all
 	default:
-		return materialiseFailure("reading %s to restore it: %v", p.File, err)
+		return restoreReadFailure(w.root, p, err)
 	}
 	remainder, removed := cutSpans(current, p.Appended, p.Offset)
 	if removed == 0 {
 		if bytes.Contains(current, []byte("MANVI HARNESS nonce="+p.Nonce+" ")) {
-			return materialiseFailure("the checkout carries a modified harness block in %s: the agent edited inside it, so Manvi did "+
-				"not guess where it ends and left the file as it is; remove the block from %s by hand", p.File, p.File)
+			return materialiseFailure("%w in %s: the agent edited inside it, so Manvi did "+
+				"not guess where it ends and left the file as it is; remove the block from %s by hand", errBlockModified, p.File, p.File)
 		}
-		return w.remove(harnessPendingFile) // the agent removed the block itself
+		return w.removeRecord(p.Nonce) // the agent removed the block itself
 	}
 	if !p.Existed && len(bytes.TrimSpace(remainder)) == 0 {
 		if err := w.remove(p.File); err != nil {
 			return err
 		}
 	} else if err := w.write(p.File, dc.OpModify, remainder); err != nil {
-		return err
+		return materialiseFailure("taking the harness block out of %s failed on the write (the read was fine): %w. The record of the block is kept. %s; to recover, fix what refused the write and the next work.runs.managed.prepare takes the block out, %s",
+			p.File, err, p.describe(), p.manualRemedy())
 	}
-	return w.remove(harnessPendingFile)
+	return w.removeRecord(p.Nonce)
+}
+
+// describe says which block a record is, and where it sits, for an operator who
+// has to find it: the nonce that is in its BEGIN and END lines, and the byte
+// offset the file's own content ended at when it was written (an edit the agent
+// made earlier in the file moves it).
+func (p pendingRestore) describe() string {
+	return fmt.Sprintf("the block carries nonce=%s and is %d bytes, written at byte offset %d of %s, from the line beginning %q to the matching END line",
+		p.Nonce, len(p.Appended), p.Offset, p.File, harnessBeginMarker+" nonce="+p.Nonce)
+}
+
+// manualRemedy is the way out that needs nothing from Manvi: take the block's
+// lines out of the file by hand, then the record that names them.
+func (p pendingRestore) manualRemedy() string {
+	return fmt.Sprintf("or remove the block's lines from %s by hand, then delete %s", p.File, harnessPendingFile)
+}
+
+// restoreReadFailure is the typed refusal for a restore that could not read the
+// instruction file. It says it was a read, that nothing was written and nothing
+// removed, which block it concerns and what an operator can do about the cause,
+// which differs by cause: a link, a second name, a file past the bound. The
+// record stays (see recoverPendingHarness).
+// restoreHeldBlock takes the block of a held run out of its checkout once the
+// run's process is confirmed gone. It acts on the record only if the record is the
+// held run's own (the nonce): a checkout directory deleted and recreated is a new
+// directory to the guard, and the record at the path may be a live run's, which is
+// then left, with its file, alone. It restores as a run's own end does, not as a
+// later attempt's recovery does: a restore that cannot be done, or a block the
+// agent edited inside, returns its error with the record kept, so the caller
+// remembers it and the next attempt reports it, rather than it being cleared here
+// unreported.
+func restoreHeldBlock(root, nonce string) error {
+	recordMu.Lock()
+	defer recordMu.Unlock()
+	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	default:
+		return materialiseFailure("reading the record of the held harness block: %v", err)
+	}
+	var p pendingRestore
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&p) != nil || p.Nonce != nonce {
+		return nil // not readable, or another run's: not this run's to act on
+	}
+	return restoreRecorded(harnessWriter{root: root}, p)
+}
+
+func restoreReadFailure(root string, p pendingRestore, err error) error {
+	return materialiseFailure("%s", readFailureText(root, p, err))
+}
+
+// readFailureText is restoreReadFailure's message, without the typed prefix.
+func readFailureText(root string, p pendingRestore, err error) string {
+	var remedy string
+	switch msg := err.Error(); {
+	case strings.Contains(msg, "symbolic link"):
+		remedy = fmt.Sprintf("%s is %s now, so the file that held the block is not at that name; if the block is still in what the link points to, replace the link %s with a regular file holding the same text, and the next work.runs.managed.prepare takes the block out",
+			p.File, linkDescription(root, p.File), p.File)
+	case strings.Contains(msg, "names reach this file"):
+		remedy = fmt.Sprintf("%s has more than one name (a hard link); replace %s with a regular copy of its own text, so it has one name, and the next work.runs.managed.prepare takes the block out",
+			p.File, p.File)
+	case strings.Contains(msg, "-byte limit"):
+		remedy = fmt.Sprintf("%s is larger than the %d-byte limit on what Manvi reads back; shrink it below the limit and the next work.runs.managed.prepare takes the block out",
+			p.File, maxInstructionFileBytes)
+	default:
+		remedy = fmt.Sprintf("make %s a regular file with one name and under %d bytes, and the next work.runs.managed.prepare takes the block out", p.File, maxInstructionFileBytes)
+	}
+	return fmt.Sprintf("reading %s to take the harness block out was refused: %v. This was a read; nothing was written and nothing was removed, and the record of the block is kept. %s. To recover, %s; %s",
+		p.File, err, p.describe(), remedy, p.manualRemedy())
+}
+
+// linkDescription says what the link at rel points to, in words and without a
+// command: an agent chose the link's target, so it is shown only when it is inside
+// the checkout, and then quoted; outside the checkout it is not shown at all.
+func linkDescription(root, rel string) string {
+	target, err := os.Readlink(filepath.Join(root, rel))
+	if err != nil {
+		return "a symbolic link"
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	inside, err := filepath.Rel(root, filepath.Clean(target))
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "a symbolic link that points outside the checkout"
+	}
+	return fmt.Sprintf("a symbolic link to %q", inside)
+}
+
+// leftBlockNote says, from the record on disk and the file alone (nothing held in
+// process memory, so it is true after a restart), what a block left behind is and
+// whether taking it out would be refused now, and why. refused is true when it
+// would be.
+func leftBlockNote(root string) (note string, refused bool) {
+	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	if err != nil {
+		return "", false
+	}
+	var p pendingRestore
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&p) != nil || p.valid() != nil {
+		return "its record is not one Manvi can act on, so the next work.runs.managed.prepare on this checkout reports it once and clears it", false
+	}
+	if _, rerr := readInstructionFile(root, p.File); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		return readFailureText(root, p, rerr), true
+	}
+	return p.describe(), false
 }
 
 // cutSpans removes every non-overlapping occurrence of span from content and
@@ -420,12 +675,27 @@ func cutSpans(content, span []byte, hint int) ([]byte, int) {
 	return append(out, rest...), removed
 }
 
+// harnessRecordPending says whether a record of a block is on disk under root:
+// a block a run wrote may still be in the instruction file.
+func harnessRecordPending(root string) bool {
+	_, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
+	return err == nil
+}
+
 // recoverPendingHarness applies a record a run left behind, for a checkout no
 // live run holds. It returns a note saying what it did (empty when there was
-// nothing), or the typed error when the block could not be taken out: the
-// record is cleared in that case too, so the refusal is made once and the next
-// attempt is not wedged by it.
+// nothing), or the typed error when the block could not be taken out.
+//
+// The record is cleared, so the refusal is made once and the next attempt is not
+// wedged by it, only when there is nothing it could ever take out: it cannot be
+// read or is not a block Manvi would have written, or the agent edited inside
+// the block. Any other failure (the file cannot be read, is past the bound, the
+// write is refused) keeps the record, because the block may still be in the file
+// and every attempt on the checkout, and every verification of it, is refused
+// until the cause is put right and a later recovery takes the block out.
 func recoverPendingHarness(root string) (string, error) {
+	recordMu.Lock()
+	defer recordMu.Unlock()
 	w := harnessWriter{root: root}
 	raw, err := devcouncil.ReadPinned(root, harnessPendingFile, maxPendingBytes)
 	switch {
@@ -443,7 +713,13 @@ func recoverPendingHarness(root string) (string, error) {
 			w.remove(harnessPendingFile))
 	}
 	if err := restoreRecorded(w, p); err != nil {
-		return "", errors.Join(err, w.remove(harnessPendingFile))
+		switch {
+		case errors.Is(err, errRecordUnusable):
+			err = errors.Join(err, w.remove(harnessPendingFile)) // no nonce in it to trust
+		case errors.Is(err, errBlockModified):
+			err = errors.Join(err, w.removeRecord(p.Nonce))
+		}
+		return "", err
 	}
 	return fmt.Sprintf("took the harness block of a run that never finished out of %s", p.File), nil
 }

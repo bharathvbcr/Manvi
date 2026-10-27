@@ -34,6 +34,23 @@ const (
 	ruleOutsideRoot = "path.outside_root"
 )
 
+// withheldRemedy is what a person can do about a read the gate refused, as a
+// clause to follow the rule's name, or "" for a rule with nothing to say beyond
+// its name.
+func withheldRemedy(rule string) string {
+	switch rule {
+	case ruleAliasedRead:
+		return ": the file has more than one name (a hard link), so reading it would also reach it under a name " +
+			"the gate never judged. Replace it with a copy of the file to have it read"
+	case ruleOutsideRoot:
+		return ": it resolves outside the repository (a symbolic link out of it, or a path that climbs out). " +
+			"Replace it with a copy of the file inside the repository to have it read"
+	case string(policy.RuleSecretRead):
+		return ": its name marks it as a place credentials live. Rename it if it holds none"
+	}
+	return ""
+}
+
 // withheldRead is one path a reader left out of its result, and the rule that
 // left it out.
 type withheldRead struct {

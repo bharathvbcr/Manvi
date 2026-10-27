@@ -193,13 +193,12 @@ func TestFDApproverDeclinesAnythingThatIsNotAnAnswer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			read, write := approvalPipe(t)
+			log := &approvalEvents{}
+			done := pendingApproval(t, newFDApprover(read, log), log, context.Background(), tc.req)
 			if _, err := write.WriteString(tc.line); err != nil {
 				t.Fatal(err)
 			}
-			d, err := newFDApprover(read, ui.Discard).Approve(context.Background(), tc.req)
-			if err != nil {
-				t.Fatal(err)
-			}
+			d := receiveDecision(t, done, 2*time.Second)
 			if d.Allow || d.Answered() || strings.TrimSpace(d.Reason) == "" {
 				t.Fatalf("decision = %+v, want a refusal with a reason", d)
 			}
@@ -212,15 +211,14 @@ func TestFDApproverDeclinesAnythingThatIsNotAnAnswer(t *testing.T) {
 
 func TestFDApproverWriteInAnswers(t *testing.T) {
 	read, write := approvalPipe(t)
+	log := &approvalEvents{}
+	done := pendingApproval(t, newFDApprover(read, log), log, context.Background(), ui.Request{
+		ID: "QUESTION-0001", Choices: []string{"sqlite", "postgres"},
+	})
 	if _, err := write.WriteString("{\"allow\":true,\"write_in\":\"neither\"}\n"); err != nil {
 		t.Fatal(err)
 	}
-	d, err := newFDApprover(read, ui.Discard).Approve(context.Background(), ui.Request{
-		ID: "QUESTION-0001", Choices: []string{"sqlite", "postgres"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := receiveDecision(t, done, 2*time.Second)
 	if !d.Answered() || d.WriteIn != "neither" || d.By != "human" {
 		t.Fatalf("decision = %+v", d)
 	}
@@ -285,25 +283,23 @@ func TestFDApproverClosedFDRefuses(t *testing.T) {
 
 func TestFDApproverReadsOneLineAtATime(t *testing.T) {
 	read, write := approvalPipe(t)
-	if _, err := write.WriteString(
-		"{\"approval_id\":\"Q1\",\"allow\":true,\"chosen\":[\"a\"]}\n" +
-			"{\"approval_id\":\"Q2\",\"allow\":true,\"write_in\":\"other\"}\n"); err != nil {
+	log := &approvalEvents{}
+	ap := newFDApprover(read, log)
+	first := pendingApproval(t, ap, log, context.Background(), ui.Request{ID: "Q1", Choices: []string{"a", "b"}})
+	if _, err := write.WriteString("{\"approval_id\":\"Q1\",\"allow\":true,\"chosen\":[\"a\"]}\n"); err != nil {
 		t.Fatal(err)
 	}
-	ap := newFDApprover(read, ui.Discard)
-	first, err := ap.Approve(context.Background(), ui.Request{ID: "Q1", Choices: []string{"a", "b"}})
-	if err != nil {
+	firstAnswer := receiveDecision(t, first, 2*time.Second)
+	second := pendingApproval(t, ap, log, context.Background(), ui.Request{ID: "Q2", Choices: []string{"a", "b"}})
+	if _, err := write.WriteString("{\"approval_id\":\"Q2\",\"allow\":true,\"write_in\":\"other\"}\n"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ap.Approve(context.Background(), ui.Request{ID: "Q2", Choices: []string{"a", "b"}})
-	if err != nil {
-		t.Fatal(err)
+	secondAnswer := receiveDecision(t, second, 2*time.Second)
+	if !firstAnswer.Answered() || len(firstAnswer.Chosen) != 1 || firstAnswer.Chosen[0] != "a" {
+		t.Fatalf("first = %+v", firstAnswer)
 	}
-	if !first.Answered() || len(first.Chosen) != 1 || first.Chosen[0] != "a" {
-		t.Fatalf("first = %+v", first)
-	}
-	if !second.Answered() || second.WriteIn != "other" {
-		t.Fatalf("second = %+v", second)
+	if !secondAnswer.Answered() || secondAnswer.WriteIn != "other" {
+		t.Fatalf("second = %+v", secondAnswer)
 	}
 }
 

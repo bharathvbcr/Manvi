@@ -17,7 +17,6 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
-	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
 )
 
@@ -48,8 +47,17 @@ type ManagedFactory func(context.Context, codingagent.Options) (ManagedSession, 
 // the host had both already accepted.
 const MaxManagedSessions = 64
 
+// managedStore is the part of the task store a managed run speaks to. It is
+// *store.Client in production; a test wraps it to hold one call, so it can show
+// what is and is not blocked behind that call.
+type managedStore interface {
+	Workbench(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	CreateDecision(ctx context.Context, request store.DecisionRequest) (json.RawMessage, error)
+	ClaimDecision(ctx context.Context, request store.DecisionRequest, requestID string, revision int64) (json.RawMessage, error)
+}
+
 type ManagedRunner struct {
-	client      *store.Client
+	client      managedStore
 	factory     ManagedFactory
 	failureText func(error) string
 	mu          sync.Mutex
@@ -67,7 +75,15 @@ type ManagedRunner struct {
 	// registration on it one step; see enterCheckout. Taken before mu and before
 	// any job's mu.
 	checkoutMu sync.Mutex
+	// blocked is the checkouts whose harness block no live run holds and that
+	// has not been taken out, each with why; guarded by mu. See blockedCheckout.
+	blocked []*blockedCheckout
+	// reapStop ends the background reapers of held checkouts when the runner
+	// closes; made when the first hold is taken, closed once by Close.
+	reapStop chan struct{}
+	stopOnce sync.Once
 }
+
 type managedRun struct {
 	ID             string `json:"id"`
 	Revision       int64  `json:"revision"`
@@ -89,6 +105,10 @@ type managedRun struct {
 	Configuration string  `json:"effective_configuration"`
 }
 type managedJob struct {
+	// activateMu serialises Activate for this run, so a retry waits for the first
+	// call and gets its receipt. It is held across Activate's store round trips;
+	// mu, which the serve read loop takes for follow, never is. Taken before mu.
+	activateMu         sync.Mutex
 	mu                 sync.Mutex
 	id, owner, session string
 	preparation        generationRequest
@@ -100,10 +120,13 @@ type managedJob struct {
 	harnessDigest string
 	harnessFile   string
 	materialised  *harnessMaterialisation
-	// checkout is the resolved directory this attempt runs in, wantsHarness
-	// whether it asked for a harness, and recovery what Prepare found and
-	// cleared there before anything else (see enterCheckout).
+	// checkout is the resolved directory this attempt runs in and checkoutInfo
+	// the directory itself, which is what checkouts are compared by (see
+	// sameCheckout); wantsHarness is whether it asked for a harness, and recovery
+	// what Prepare found and cleared there before anything else (see
+	// enterCheckout).
 	checkout     string
+	checkoutInfo os.FileInfo
 	wantsHarness bool
 	recovery     string
 	// ctx is the job's lifetime and cancel ends it: Stop, Close and the
@@ -190,13 +213,17 @@ func harnessBusy(format string, args ...any) *Error {
 //     always did. The check and the claim are one step under checkoutMu.
 //   - a block a run left behind (Manvi died mid-run) is taken out, by the same
 //     exact-bytes rule as any restore, and reported in the prepare result. A block
-//     that cannot be taken out is refused once, typed, and the record is cleared.
+//     the agent edited inside, or a record that is not a block Manvi wrote, is
+//     refused once, typed, and the record is cleared. Any other failure to take a
+//     block out (the file cannot be read, or is past the bound) is refused, typed,
+//     and the record is kept: the block may still be in the file, so every attempt
+//     on the checkout is refused until the cause is put right.
 //
 // A checkout that cannot be resolved has nothing to guard; a harness attempt on
 // one is refused where its spec is read.
 func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	wants := job.harnessRef != (ManagedHarness{})
-	resolved, ok := resolvedCheckout(run.Cwd)
+	resolved, info, ok := resolvedCheckout(run.Cwd)
 	if !ok {
 		if wants {
 			return badRoot("cwd does not exist or cannot be resolved")
@@ -205,6 +232,10 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	}
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
+	if reason := r.heldReason(info); reason != "" {
+		r.recheckHeld(info)
+		return harnessBusy("%s", reason)
+	}
 	r.mu.Lock()
 	others := make([]*managedJob, 0, len(r.jobs))
 	for _, o := range r.jobs {
@@ -220,7 +251,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		default:
 		}
 		o.mu.Lock()
-		same, harnessed := o.checkout == resolved, o.wantsHarness
+		same, harnessed := sameCheckout(o.checkoutInfo, info), o.wantsHarness
 		o.mu.Unlock()
 		switch {
 		case !same:
@@ -231,30 +262,51 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		}
 	}
 	note, err := recoverPendingHarness(resolved)
+	r.settleBlocked(info, resolved, err)
 	if err != nil {
 		return err
 	}
 	job.mu.Lock()
-	job.checkout, job.wantsHarness, job.recovery = resolved, wants, note
+	job.checkout, job.checkoutInfo, job.wantsHarness, job.recovery = resolved, info, wants, note
 	job.mu.Unlock()
 	return nil
 }
 
-// resolvedCheckout is a directory with its symbolic links resolved, and whether
-// it could be.
-func resolvedCheckout(dir string) (string, bool) {
+// resolvedCheckout is a directory with its symbolic links resolved, the
+// directory itself as the file system names it, and whether both could be had.
+func resolvedCheckout(dir string) (string, os.FileInfo, bool) {
 	resolved, err := filepath.EvalSymlinks(dir)
-	return resolved, err == nil
+	if err != nil {
+		return "", nil, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", nil, false
+	}
+	return resolved, info, true
+}
+
+// sameCheckout says whether two checkouts are one directory. A checkout is keyed
+// by the directory, not by how its path is spelled: on a case-insensitive volume
+// .../MyRepo and .../myrepo are two spellings of one directory and so one
+// checkout, and a case-folded string would be wrong on a case-sensitive volume,
+// where they are two. os.SameFile compares what the file system calls the
+// directory (device and inode; on Windows the volume serial number and file
+// index), so it is right on both, and a link to the directory is the directory.
+// A job with no directory (nil) is on no checkout.
+func sameCheckout(a, b os.FileInfo) bool {
+	return a != nil && b != nil && os.SameFile(a, b)
 }
 
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
 // managed run with a harness is live on it, or one left a record that has not
-// been applied. Anything that captures the worktree's diff asks first and
-// refuses, so no check judges a change the agent did not make. It is refused and
-// not worked around by excluding the span: a refusal is honest about what the
-// diff would have held. Nil means no block is known to be there.
+// been applied (and, when this process tried to apply it and could not, why).
+// Anything that captures the worktree's diff asks first and refuses, so no check
+// judges a change the agent did not make. It is refused and not worked around by
+// excluding the span: a refusal is honest about what the diff would have held.
+// Nil means no block is known to be there.
 func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
-	resolved, ok := resolvedCheckout(worktree)
+	resolved, info, ok := resolvedCheckout(worktree)
 	if !ok {
 		return nil
 	}
@@ -271,14 +323,27 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		default:
 		}
 		j.mu.Lock()
-		live := j.checkout == resolved && j.materialised != nil
+		live := sameCheckout(j.checkoutInfo, info) && j.materialised != nil
 		j.mu.Unlock()
 		if live {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
 		}
 	}
-	if _, err := devcouncil.ReadPinned(resolved, harnessPendingFile, maxPendingBytes); err == nil {
-		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out; the next work.runs.managed.prepare on this checkout takes it out and reports it")
+	if reason := r.heldReason(info); reason != "" {
+		return harnessBusy("%s", reason)
+	}
+	if harnessRecordPending(resolved) {
+		// What is said comes from the record and the file on disk, not from what this
+		// process remembers: after a restart nothing is remembered, and the next
+		// prepare may refuse as well as succeed.
+		note, refused := leftBlockNote(resolved)
+		switch {
+		case refused:
+			return harnessBusy("a managed harness run left its block in this worktree and taking it out is refused, so the block may still be in the instruction file and every work.runs.managed.prepare on this checkout is refused until that is put right: %s", note)
+		case r.blockedReason(info) != "":
+			return harnessBusy("a managed harness run left its block in this worktree and taking it out failed: %s; the block may still be in the instruction file, and every work.runs.managed.prepare on this checkout is refused until that is put right (%s)", r.blockedReason(info), note)
+		}
+		return harnessBusy("a managed harness run left its block in this worktree and it has not been taken out (%s); the next work.runs.managed.prepare on this checkout takes it out and reports it, or refuses naming why", note)
 	}
 	return nil
 }
@@ -373,16 +438,14 @@ func (r *ManagedRunner) resolveHarness(ctx context.Context, run managedRun, ref 
 	return spec, root, nil
 }
 
-// restoreHarness takes the harness block out of the checkout. It is called from
-// finish, once, before the run is recorded finished, so every end of a run
-// (success, failure, cancel, stop, abandonment) leaves the checkout without it
-// and the diff a verifier takes afterwards is the agent's own.
-func (j *managedJob) restoreHarness() error {
+// takeMaterialised hands finish what takes the harness block out of the
+// checkout, once: the job no longer holds it afterwards.
+func (j *managedJob) takeMaterialised() *harnessMaterialisation {
 	j.mu.Lock()
+	defer j.mu.Unlock()
 	m := j.materialised
 	j.materialised = nil
-	j.mu.Unlock()
-	return m.Restore()
+	return m
 }
 
 // managedOwnerID is the owner a managed attempt records:
@@ -642,7 +705,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 			}
 			// finish keeps its store error on the job (job.err), which is
 			// where this goroutine's caller reads the run's end from.
-			_ = r.finish(job, outcome, nil, err, providerState)
+			_ = r.finish(job, outcome, nil, err, providerState, nil)
 		}
 		job.cancel()
 		close(job.done)
@@ -666,9 +729,9 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		}
 		job.mu.Unlock()
 		if !activated {
-			_, closeErr := provider.Close()
+			exit, closeErr := provider.Close()
 			// The store error, if any, is kept on the job by finish.
-			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted")
+			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted", unconfirmedSession(provider, exit))
 			job.cancel()
 			close(job.done)
 		}
@@ -698,21 +761,16 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	if job == nil || closed {
 		return nil, errors.New("the managed session is not owned by this host")
 	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	if job.provider == nil || job.err != nil || in.Owner != job.owner || in.Session != job.session || in.PID != job.provider.PID() {
-		return nil, errors.New("activation does not match the prepared process")
+	// Activations of one run are taken one at a time, and a second waits for the
+	// first and answers with its receipt. job.mu is not that wait: it guards fields
+	// that the serve read loop reads (follow), and the two store round trips below
+	// are not done under it.
+	job.activateMu.Lock()
+	defer job.activateMu.Unlock()
+	receipt, claimed, err := job.claimActivation(in.Owner, in.Session, in.PID)
+	if err != nil || !claimed {
+		return receipt, err
 	}
-	if job.parentID != "" && strings.TrimSpace(job.turnText) == "" {
-		return nil, errors.New("the follow-up has no message")
-	}
-	if job.activated {
-		if len(job.activation) > 0 {
-			return append(json.RawMessage(nil), job.activation...), nil
-		}
-		return nil, errors.New("activation is already consumed or unresolved")
-	}
-	job.activated = true // A lost store reply cannot launch twice.
 	launched := false
 	defer func() {
 		if !launched {
@@ -744,17 +802,44 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	if err != nil {
 		return nil, err
 	}
+	job.mu.Lock()
 	job.activation = append(json.RawMessage(nil), result...)
 	job.phase = "running"
+	turnText := job.turnText
+	job.mu.Unlock()
 	launched = true
 	// A follow-up's session already has the task. Sending the brief again would
 	// repeat the first turn. The queued message is the one turn this process gets.
 	brief := managedTurn(run.Provider, run.Mode, run.Brief.Markdown)
 	if job.parentID != "" {
-		brief = job.turnText
+		brief = turnText
 	}
 	go r.drive(job, brief)
 	return result, nil
+}
+
+// claimActivation checks an activation against the prepared process and, when it
+// is the first, takes the one launch this job gets: claimed is true and nothing
+// has been written. When the job was already activated it returns the receipt
+// (claimed false), or the refusal if that activation produced none. It holds
+// job.mu for these checks and nothing else.
+func (j *managedJob) claimActivation(owner, session string, pid int) (receipt json.RawMessage, claimed bool, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.provider == nil || j.err != nil || owner != j.owner || session != j.session || pid != j.provider.PID() {
+		return nil, false, errors.New("activation does not match the prepared process")
+	}
+	if j.parentID != "" && strings.TrimSpace(j.turnText) == "" {
+		return nil, false, errors.New("the follow-up has no message")
+	}
+	if j.activated {
+		if len(j.activation) > 0 {
+			return append(json.RawMessage(nil), j.activation...), false, nil
+		}
+		return nil, false, errors.New("activation is already consumed or unresolved")
+	}
+	j.activated = true // A lost store reply cannot launch twice.
+	return nil, true, nil
 }
 
 // managedTurn is the one message a managed provider receives: what the
@@ -806,9 +891,9 @@ func managedTurn(provider, mode, brief string) string {
 const managedGuidanceHeading = "\n## Agent guidance\n"
 
 func (r *ManagedRunner) abandon(job *managedJob, cause error) {
-	_, err := job.provider.Close()
+	exit, err := job.provider.Close()
 	// The store error, if any, is kept on the job by finish.
-	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted")
+	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted", unconfirmedSession(job.provider, exit))
 	close(job.done)
 }
 
@@ -1045,7 +1130,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			code = &v
 		}
 	}
-	finishErr := r.finish(job, outcome, code, err, finalState)
+	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit))
 	// Arm only after finish has released the checkout, and never for a timeout.
 	// A provider-reported failure and a clean stop both arm. The queued message
 	// is snapshotted here: a follow that arrives after this is refused.
@@ -1568,13 +1653,32 @@ func (r *ManagedRunner) resolve(ctx context.Context, job *managedJob, callback *
 	_, err = r.client.Workbench(ctx, "decisions.resolve", input)
 	return err
 }
-func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string) error {
+
+// finish records the end of a run. unconfirmed is the session whose process is
+// not confirmed gone (see unconfirmedSession), nil when it is, or when the run has no
+// session to ask again (a factory that failed owns its own cleanup).
+func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause error, providerState string, unconfirmed ManagedSession) error {
 	// Before anything is recorded, and whatever the run's end: the checkout is
 	// given back without the harness block. A restore that fails is part of the
 	// reason the run is recorded with, typed, because a block left behind is a
-	// change in the checkout the agent did not make.
-	if restoreErr := job.restoreHarness(); restoreErr != nil {
+	// change in the checkout the agent did not make. Its record is kept (see
+	// recoverPendingHarness), and why is kept beside it for HarnessBusy.
+	//
+	// The exception is a process not confirmed gone: it may be reading and
+	// writing the instruction file, and a restore is a read and then a write over
+	// it, so it would overwrite the agent's edit in between and give the checkout
+	// to the next run while the agent may still be in it. The block and its record
+	// stay, the checkout is held (holdCheckout), and the run is recorded
+	// unresolved, as the caller already records it.
+	if m := job.takeMaterialised(); m != nil && unconfirmed != nil {
+		r.holdCheckout(job, unconfirmed, m)
+		cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+	} else if restoreErr := m.Restore(); restoreErr != nil {
 		cause = errors.Join(cause, restoreErr)
+		job.mu.Lock()
+		info, root := job.checkoutInfo, job.checkout
+		job.mu.Unlock()
+		r.settleBlocked(info, root, fmt.Errorf("run %s: %w", job.id, restoreErr))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1639,6 +1743,9 @@ func (r *ManagedRunner) Stop(raw json.RawMessage) error {
 func (r *ManagedRunner) Close() error {
 	r.mu.Lock()
 	r.closed = true
+	if r.reapStop != nil {
+		r.stopOnce.Do(func() { close(r.reapStop) })
+	}
 	var jobs []*managedJob
 	for _, j := range r.jobs {
 		jobs = append(jobs, j)

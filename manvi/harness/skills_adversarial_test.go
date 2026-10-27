@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
@@ -65,10 +64,10 @@ func TestAdvKeySpacingMatchesYAML(t *testing.T) {
 
 // A description enters the always-on prompt. It must not carry characters that
 // can forge prompt structure or terminal control: controls, line/paragraph
-// separators, NUL, ESC, bidi overrides, zero-width joiners.
+// separators, NUL, ESC, bidi overrides and isolates, tag characters.
 func TestAdvDescriptionControlAndFormatRunesRefused(t *testing.T) {
 	for name, r := range map[string]string{
-		"NUL": "\x00", "ESC": "\x1b[2J", "FS": "\x1c", "RLO": "\u202e", "ZWSP": "\u200b",
+		"NUL": "\x00", "ESC": "\x1b[2J", "FS": "\x1c", "RLO": "\u202e", "LRI": "\u2066",
 		"LS": "\u2028", "NEL": "\u0085", "BEL": "\a", "DEL": "\x7f", "tag char": "\U000e0041",
 	} {
 		doc := "---\nname: foo\ndescription: \"safe " + r + " text\"\n---\n"
@@ -78,7 +77,7 @@ func TestAdvDescriptionControlAndFormatRunesRefused(t *testing.T) {
 		}
 		listing, _ := SkillsSection([]Skill{s}, 0)
 		for _, ch := range s.Description {
-			if unicode.IsControl(ch) || unicode.Is(unicode.Cf, ch) {
+			if forbiddenRune(ch) {
 				t.Errorf("%s: accepted description carries U+%04X into the always-on prompt (%q)", name, ch, listing)
 				break
 			}

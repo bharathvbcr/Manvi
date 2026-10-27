@@ -69,7 +69,50 @@ type streamSlot struct {
 	rows []render.Line
 	// md is the markdown state at the end of src.
 	md mdState
+	// open holds the finished rows of the line after src, for a line that is a
+	// plain paragraph and long; see openLine.
+	open openLine
 }
+
+// openLine is the rows of a reply's open line that can no longer change.
+//
+// A reply that is one long paragraph — a base64 blob, minified JSON, a table
+// row — never reaches a line break, so the finished-line cache above holds
+// nothing of it, and every frame wrapped the whole line from its first byte and
+// put every row through finishRow: the square of its length over the stream.
+// Wrapping is greedy, and a row's width is the sum of its runes', so a row
+// that is followed by two more cannot change when text is added after them,
+// and wrapping from the start of any row reproduces it and every row after.
+// openLine keeps the rows before the last two, in their final form, and the
+// byte where the rest begins; a frame wraps only from there.
+//
+// It exists only for a line that settled says is a paragraph for good. A
+// marker arriving later, a width change (a slot is one width) or text that is
+// not an extension of what the rows describe drops it, and the line is laid
+// out whole, as it was before this existed.
+type openLine struct {
+	// base is the number of the slot's rows ahead of the line; the rows here are
+	// numbered from it, which finishRow needs to tell the first row of the
+	// reply from the others.
+	base int
+	// prefix is the text of the open line the rows describe. A frame's open
+	// line must begin with it. An unchanged prefix of a builder's buffer is the
+	// same memory, which the comparison notices before reading a byte.
+	prefix string
+	rows   []render.Line
+}
+
+const (
+	// openKeep is how many of the last rows of the open line are laid out
+	// again every frame rather than kept. A delta changes the last row, and
+	// can move a word from it to a new one; the row before is the margin for a
+	// width that was only provisional — a multi-byte rune cut between deltas is
+	// counted as invalid bytes, one column each, until its last byte arrives.
+	// Such a rune is at most three bytes in the open and so spans at most
+	// two rows once a row is at least two columns wide (openMinWidth).
+	openKeep     = 2
+	openMinWidth = 4
+)
 
 // text is the entry's body: streamed text if it accumulated any, otherwise the
 // event's own.
@@ -497,7 +540,8 @@ func (e *Entry) finishRow(th Theme, g Glyphs, body, i int, l render.Line) render
 // "-" that may yet become a heading or a list item is on the last line too. The
 // rows from the last break onward are rendered fresh each time; the boundary is
 // a break and never a point inside a line, since a line's inline spans and its
-// wrapping can both change as it grows.
+// wrapping can both change as it grows. The one exception is a long plain
+// paragraph, which has no span to change and wraps greedily: see openLine.
 //
 // The returned rows are final up to ready, unfinished after it.
 func (e *Entry) streamRows(th Theme, body int, g Glyphs) (out []render.Line, ready int) {
@@ -524,13 +568,99 @@ func (e *Entry) streamRows(th Theme, body int, g Glyphs) (out []render.Line, rea
 			sl.rows = append(sl.rows, e.finishRow(th, g, body, len(sl.rows), l))
 		}
 		sl.src = text[:done]
+		sl.open = openLine{}
 	}
+	open := text[len(sl.src):]
+	if body >= openMinWidth && sl.md.settled(open) {
+		if out, ready, ok := e.openRows(sl, th, body, g, open); ok {
+			return out, ready
+		}
+	}
+	sl.open = openLine{}
 	// A copy, because build appends to what it returns and the entry's cache
 	// keeps it; sl.rows grows in place on the next delta.
 	out = make([]render.Line, len(sl.rows), len(sl.rows)+4)
 	copy(out, sl.rows)
 	md := sl.md
-	return md.line(out, text[len(sl.src):], th, body), len(sl.rows)
+	return md.line(out, open, th, body), len(sl.rows)
+}
+
+// openRows is streamRows' last step for an open line that is a settled
+// paragraph: the rows kept so far, then the wrap of the text after them, with
+// every row but the last openKeep moved into the kept ones. ok is false when
+// the cache cannot vouch for the rows it would return, and the caller lays the
+// line out whole.
+func (e *Entry) openRows(sl *streamSlot, th Theme, body int, g Glyphs, open string) (out []render.Line, ready int, ok bool) {
+	oc := &sl.open
+	if oc.base != len(sl.rows) || !strings.HasPrefix(open, oc.prefix) {
+		*oc = openLine{base: len(sl.rows)}
+	}
+	tail := open[len(oc.prefix):]
+	// The cache models a break as the blanks ' ' and '\t' and nothing else.
+	// Wrap treats any word of unicode.IsSpace runes as a break too — a no-break
+	// space, an ideographic one, U+2028, a carriage return — but trims and
+	// splits only on the two, so a row can end or be empty in ways the kept
+	// rows do not model. The kept prefix has none, as each tail is checked
+	// before it is kept; a line that has one is laid out whole.
+	if strings.IndexFunc(tail, otherSpace) >= 0 {
+		return nil, 0, false
+	}
+	rows := parseInlineSpans(tail, th, th.Base()).Wrap(body)
+	// A wrap that returns no rows has nothing to vouch for. A tail narrower
+	// than the pane is not trimmed, so its trailing blanks stay; after kept
+	// rows it can only be that if they end where they should not.
+	if len(rows) == 0 || len(oc.prefix) > 0 && len(rows) < openKeep {
+		return nil, 0, false
+	}
+	// Rows are kept only while the text ends on a whole rune. The tail of a
+	// multi-byte rune cut between deltas is counted as invalid bytes, a column
+	// each, and the rune may complete to a width of zero — a tag character, a
+	// variation selector — which no row-count margin covers: the rows laid out
+	// around it would be rows a whole render does not have.
+	if n := len(rows) - openKeep; n > 1 && !endsInPartialRune(tail) {
+		// Where each kept row ends, and the next begins after the blanks the
+		// wrap dropped at the break. A row that is not where the text says it
+		// is, or is empty, means the wrap did something this does not model.
+		pos := 0
+		for _, r := range rows[:n] {
+			t := r.Text()
+			if t == "" || !strings.HasPrefix(tail[pos:], t) {
+				return nil, 0, false
+			}
+			pos += len(t)
+			for pos < len(tail) && (tail[pos] == ' ' || tail[pos] == '\t') {
+				pos++
+			}
+		}
+		if next := rows[n].Text(); next == "" || !strings.HasPrefix(tail[pos:], next) {
+			return nil, 0, false
+		}
+		for _, r := range rows[:n] {
+			oc.rows = append(oc.rows, e.finishRow(th, g, body, oc.base+len(oc.rows), r))
+		}
+		oc.prefix = open[:len(oc.prefix)+pos]
+		rows = rows[n:]
+	}
+	out = make([]render.Line, 0, len(sl.rows)+len(oc.rows)+len(rows)+4)
+	out = append(out, sl.rows...)
+	out = append(out, oc.rows...)
+	ready = len(out)
+	return append(out, rows...), ready, true
+}
+
+// otherSpace is a rune Wrap's strings.TrimSpace calls blank that is not one of
+// the two blanks it splits and trims on.
+func otherSpace(r rune) bool { return r != ' ' && r != '\t' && unicode.IsSpace(r) }
+
+// endsInPartialRune reports whether s ends partway through a multi-byte rune,
+// one whose remaining bytes may still arrive.
+func endsInPartialRune(s string) bool {
+	for i := 1; i <= utf8.UTFMax-1 && i <= len(s); i++ {
+		if c := s[len(s)-i]; utf8.RuneStart(c) {
+			return c >= utf8.RuneSelf && !utf8.FullRuneInString(s[len(s)-i:])
+		}
+	}
+	return false
 }
 
 // streamSlot finds the stream slot for a body width and theme, replacing the
@@ -753,8 +883,15 @@ var codeKeywords = map[string]bool{
 	"DELETE": true, "JOIN": true, "CREATE": true, "TABLE": true, "GROUP": true, "ORDER": true,
 }
 
+// hasInlineMarkup reports whether a line holds anything parseInlineSpans would
+// style: a code span or bold. A line without any is one span in the base style,
+// and is the only kind whose rows an open-line cache may keep (see settled).
+func hasInlineMarkup(line string) bool {
+	return strings.Contains(line, "`") || strings.Contains(line, "**")
+}
+
 func parseInlineSpans(line string, th Theme, baseStyle render.Style) render.Line {
-	if !strings.Contains(line, "`") && !strings.Contains(line, "**") {
+	if !hasInlineMarkup(line) {
 		return render.Styled(line, baseStyle)
 	}
 
@@ -893,11 +1030,84 @@ type mdState struct {
 	lang   string
 }
 
+// mdKind is what a raw line is, decided by mdState.kind.
+type mdKind uint8
+
+const (
+	mdParagraph mdKind = iota
+	mdFence
+	mdCode
+	mdDiffHeader
+	mdHunk
+	mdAdded
+	mdRemoved
+	mdHeading1
+	mdHeading2
+	mdHeading3
+	mdBullet
+)
+
+// mdPrefixSpan is how much of a line kind reads: the longest literal it tests
+// for is "diff --git ". Once a line's trimmed text is this long, no further
+// byte can change what kind says about it, which is what lets a long open line
+// be treated as a paragraph for good (see settled).
+const mdPrefixSpan = len("diff --git ")
+
+// kind classifies one raw line. It is the single place the constructs are told
+// apart, and the order of the cases is the precedence: a fence line is a fence
+// whether or not a fence is open, and nothing inside one is anything else.
+func (st *mdState) kind(raw string) mdKind {
+	trimmed := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(trimmed, "```"):
+		return mdFence
+	case st.inCode:
+		return mdCode
+	case strings.HasPrefix(raw, "diff --git ") || strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ "):
+		return mdDiffHeader
+	case strings.HasPrefix(raw, "@@"):
+		return mdHunk
+	case strings.HasPrefix(raw, "+") && len(raw) > 1 && raw[1] != '+':
+		return mdAdded
+	case strings.HasPrefix(raw, "-") && len(raw) > 1 && raw[1] != '-':
+		return mdRemoved
+	case strings.HasPrefix(raw, "# "):
+		return mdHeading1
+	case strings.HasPrefix(raw, "## "):
+		return mdHeading2
+	case strings.HasPrefix(raw, "### "):
+		return mdHeading3
+	case strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- "):
+		return mdBullet
+	}
+	return mdParagraph
+}
+
+// settled reports whether raw, a line still arriving, is a plain paragraph
+// that no text added to it can turn into anything else: its rows are then the
+// wrap of its text, and a longer text is the same wrap with more on the end.
+//
+// Three things could still change it, and each is closed. The kind: every
+// test in kind is a prefix test on raw or on its trimmed form, so it is
+// decided once trimmed holds mdPrefixSpan bytes — trimmed, not raw, because a
+// "-" followed only by blanks is not yet a list item and a delta carrying text
+// makes it one. A fence, which is a state and not a kind, is excluded by
+// inCode. And the inline markup, which restyles part of a line, is excluded
+// by its absence anywhere in it; a marker that arrives later takes the line
+// out of this class, and it goes back to the full layout.
+func (st *mdState) settled(raw string) bool {
+	return !st.inCode &&
+		len(strings.TrimSpace(raw)) >= mdPrefixSpan &&
+		st.kind(raw) == mdParagraph &&
+		!hasInlineMarkup(raw)
+}
+
 // line renders one raw line, without its break, appending its rows to out.
 func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []render.Line {
 	trimmed := strings.TrimSpace(raw)
 
-	if strings.HasPrefix(trimmed, "```") {
+	switch st.kind(raw) {
+	case mdFence:
 		if !st.inCode {
 			st.inCode = true
 			st.lang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
@@ -914,47 +1124,38 @@ func (st *mdState) line(out []render.Line, raw string, th Theme, width int) []re
 		st.inCode = false
 		botLine := render.Styled("└"+strings.Repeat("─", width-1), render.Style{Fg: th.Border, Bg: th.BgInset})
 		return append(out, botLine.Truncate(width))
-	}
 
-	if st.inCode {
+	case mdCode:
 		codeLine := highlightCodeLine(raw, th, st.lang)
 		if codeLine.Width() < width {
 			codeLine = codeLine.Pad(width, render.Style{Bg: th.BgInset})
 		}
 		return append(out, codeLine.Truncate(width))
-	}
 
-	if strings.HasPrefix(raw, "diff --git ") || strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ ") {
+	case mdDiffHeader:
 		return append(out, render.Styled(raw, render.Style{Fg: th.FgMuted, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
-	}
-	if strings.HasPrefix(raw, "@@") {
+	case mdHunk:
 		return append(out, render.Styled(raw, render.Style{Fg: th.Info, Bg: th.BgInset, Attrs: render.Bold}).Truncate(width))
-	}
-	if strings.HasPrefix(raw, "+") && len(raw) > 1 && raw[1] != '+' {
+	case mdAdded:
 		diffLine := render.Styled("+ ", render.Style{Fg: th.Success, Bg: th.BgInset, Attrs: render.Bold}).
 			Append(raw[1:], render.Style{Fg: th.Success, Bg: th.BgInset})
 		return append(out, diffLine.Truncate(width))
-	}
-	if strings.HasPrefix(raw, "-") && len(raw) > 1 && raw[1] != '-' {
+	case mdRemoved:
 		diffLine := render.Styled("- ", render.Style{Fg: th.Danger, Bg: th.BgInset, Attrs: render.Bold}).
 			Append(raw[1:], render.Style{Fg: th.Danger, Bg: th.BgInset})
 		return append(out, diffLine.Truncate(width))
-	}
 
-	if strings.HasPrefix(raw, "# ") {
+	case mdHeading1:
 		heading := strings.TrimPrefix(raw, "# ")
 		return append(out, render.Styled("■ "+heading, render.Style{Fg: th.Accent, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-	}
-	if strings.HasPrefix(raw, "## ") {
+	case mdHeading2:
 		heading := strings.TrimPrefix(raw, "## ")
 		return append(out, render.Styled("◆ "+heading, render.Style{Fg: th.Fg, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-	}
-	if strings.HasPrefix(raw, "### ") {
+	case mdHeading3:
 		heading := strings.TrimPrefix(raw, "### ")
 		return append(out, render.Styled("▸ "+heading, render.Style{Fg: th.FgMuted, Bg: th.Bg, Attrs: render.Bold}).Truncate(width))
-	}
 
-	if strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "- ") {
+	case mdBullet:
 		itemText := strings.TrimSpace(trimmed[2:])
 		bullet := render.Styled("  "+th.Glyphs().Bullet+" ", th.Status(StatusInfo))
 		itemLine := bullet.Concat(parseInlineSpans(itemText, th, th.Base()))

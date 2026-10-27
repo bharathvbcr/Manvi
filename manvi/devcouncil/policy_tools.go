@@ -224,6 +224,9 @@ func (r *Registry) escalate(ctx context.Context, decision policy.Decision, subje
 
 	state := r.sessionFor(ctx).State()
 	answer, err := r.deps.Approver.Approve(ctx, ui.Request{
+		// An id of its own, so a host that echoes it back is held to this request
+		// and not to whichever one it last saw.
+		ID:        ui.NewRequestID("approval"),
 		Rule:      string(authorised.Rule),
 		Severity:  string(authorised.Severity),
 		Path:      authorised.Target,

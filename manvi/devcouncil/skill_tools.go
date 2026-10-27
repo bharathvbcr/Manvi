@@ -33,7 +33,7 @@ func (r *Registry) skillReader(ctx context.Context) harness.ReadFunc {
 func RepoReaderAt(ctx context.Context, root string) harness.ReadFunc {
 	return func(rel string, limit int64) ([]byte, error) {
 		if why := readRefusalAt(root, rel); why != "" {
-			return nil, fmt.Errorf("%s is withheld by %s", rel, why)
+			return nil, fmt.Errorf("refusing to read %s: it is withheld by %s%s", rel, why, withheldRemedy(why))
 		}
 		return readContained(ctx, root, rel, limit)
 	}
@@ -44,6 +44,10 @@ func RepoReaderAt(ctx context.Context, root string) harness.ReadFunc {
 // .devcouncil/harness. There is one reader for repository bytes; a second one
 // for specs would be a second place the read gate could be forgotten.
 func (r *Registry) RepoReader(ctx context.Context) harness.ReadFunc { return r.skillReader(ctx) }
+
+// Root is the repository root RepoReader reads under, for a caller that has to
+// place a path (the working directory) beneath it.
+func (r *Registry) Root() string { return r.deps.Root }
 
 // LoadSkills reads the repository's skills, at most harness.MaxSkills of them,
 // for the prompt's always-on listing. The names the model is shown here and the
@@ -112,7 +116,7 @@ func (r *Registry) skillToolOffered(ctx context.Context) bool {
 	if err != nil {
 		return true
 	}
-	return len(set.Skills) > 0 || len(set.Rejected) > 0 || set.RejectedOmitted > 0 || set.NotExamined > 0
+	return len(set.Skills) > 0 || len(set.Rejected) > 0 || set.RejectedOmitted > 0 || set.NotExamined > 0 || set.ListingCut
 }
 
 // NoteListedSkills records the skill names the system prompt just carried, in
@@ -178,6 +182,12 @@ func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result 
 			return tools.Errorf("%s exists but was rejected: %s", harness.QuoteName(l.Dir), l.Reason)
 		}
 		return tools.Errorf("skill %s was rejected: %s", harness.QuoteName(args.Name), l.Reason)
+	}
+	if l.ListingCut {
+		// A name that is not among the entries read may be among the ones that
+		// were not, so "no such skill" would be a claim the listing cannot make.
+		return tools.Errorf("no skill named %s among the first %d entries of %s, which holds more than that and was not listed past them",
+			harness.QuoteName(args.Name), harness.MaxSkillDirEntries, harness.SkillsDir)
 	}
 	if l.Directories == 0 {
 		return tools.Errorf("no skill named %s: this repository has no skills under %s", harness.QuoteName(args.Name), harness.SkillsDir)

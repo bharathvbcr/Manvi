@@ -83,7 +83,9 @@ func (a ApproverAsker) AskQuestions(ctx context.Context, questions []Question) (
 	answers := make([]QuestionAnswer, 0, len(questions))
 	for i, q := range questions {
 		req := ui.Request{
-			ID:       fmt.Sprintf("QUESTION-%04d", i+1),
+			// Unique per call, not per position: "QUESTION-0001" named the first
+			// question of every call, so an answer to one bound to the next.
+			ID:       ui.NewRequestID("question"),
 			Rule:     flags.PairQuestionsEnabled,
 			Severity: "ask",
 			Subject:  "question",

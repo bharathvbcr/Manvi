@@ -78,6 +78,10 @@ func skillsForPrompt(ctx context.Context, loader skillLoader, budgetTokens int) 
 		notices = append(notices, fmt.Sprintf("%d skill directories past the limit of %d were not examined; the listing is a prefix",
 			set.NotExamined, harness.MaxSkills))
 	}
+	if set.ListingCut {
+		notices = append(notices, fmt.Sprintf("the skills directory holds more than %d entries; only the first %d were considered, so the listing may be missing skills",
+			harness.MaxSkillDirEntries, harness.MaxSkillDirEntries))
+	}
 	limit := 0
 	if budgetTokens > 0 {
 		limit = budgetTokens / skillsBudgetShare

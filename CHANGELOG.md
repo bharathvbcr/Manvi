@@ -122,9 +122,68 @@ under **Unreleased** in the same commit as the code.
   Benchmarks: time to the first request with the sensor attached went from about
   50 ms to under 0.1 ms, and the scoped diff went from 63 to 47 ms.
 - `artifacts` exports `ErrPublishedUnsynced` and `NewStoreWithDirSync`.
+- `render.Line.Wrap` breaks a word wider than the line in time linear in the
+  word. The hard break measured everything it had left at every cut, so a
+  160 KB base64 blob or minified-JSON line cost the square of its length: the
+  benchmark went from 306 ms to 1.0 ms (no-space) and from 1.19 s to 3.9 ms
+  (CJK), on a loaded machine, min of 8 interleaved runs. The rows are
+  unchanged: a property test holds it to the previous implementation over
+  10,000 random lines at widths 1 to 200.
+- A streamed reply that is one long paragraph — a base64 blob, minified JSON, a
+  wide table row — is laid out from the last few rows each frame instead of
+  from its first byte. The open line used to be wrapped whole, and every row
+  put through the gutter again, at every frame. A plain paragraph (no code span
+  or bold, long enough that no heading, list, diff or fence prefix can still
+  apply) now keeps the rows before its last two in their final form. A marker
+  that arrives late, a break, or a resize drops the cache and the line is laid
+  out whole, as before. So does a blank other than space and tab (a no-break
+  or ideographic space, U+2028, a carriage return), which the wrap breaks at
+  but the cache does not model; and rows are not kept while the text ends
+  partway through a multi-byte character, whose width is not known until its
+  last byte arrives (a tag character or variation selector completes to zero). Per frame at 160 KB, min of 8 interleaved runs at load
+  40 to 50: prose 2.03 to 0.12 ms, table row 4.76 to 0.13 ms, base64 367 to
+  0.12 ms, minified JSON 369 to 0.12 ms, against the 8 ms frame budget. A
+  8,000-delta unbroken prose stream went from 749 to 66 ms and 1.46 GB to
+  25 MB allocated; the same stream as base64 from 73.8 s to 66 ms and 124 MB to
+  16 MB. A reply broken into lines is unchanged (41.0 to 41.8 ms, same
+  allocations). The rows are held to a whole render by property tests over
+  random growth with late markers, resizes, two alternating widths and every
+  rune class above. `mdState.line` now classifies through `mdState.kind`,
+  checked against the previous branches over random input.
 
 ### Fixed
 
+- `manvi run --approve-fd`: tool children no longer inherit the approval
+  descriptor, and a decision is bound to its request. The descriptor was
+  wrapped with no close-on-exec, so every shell command, MCP server and `git`
+  the harness started held it: with a writable descriptor (`3<>fifo`) the
+  model's own command wrote the "human" approval for its own escalation, and
+  with a pipe or socketpair it could read or steal the host's decisions. It is
+  now marked close-on-exec (Windows: inherit flag cleared) straight after the
+  flags are parsed, before anything is spawned, and a descriptor that is not
+  open is refused at startup naming the flag. Requests now carry unique ids
+  (`approval-<nonce>-<n>` on escalations, which had none; `question-<nonce>-<n>`
+  in place of the per-call `QUESTION-000N`), a decision naming another id is
+  refused, and a line is read only while a request is pending: one that arrives
+  earlier, or for a request the turn abandoned, is discarded with a `notice`
+  rather than approving the next request. `approval_id` stays optional; when a
+  decision omits it a `notice` says it was bound by timing only. `chosen` is
+  checked against the offered choices (and `multi_select`), and a decision line
+  is capped at 64 KiB, an over-long one being a refusal skipped to its newline
+  without being buffered (it was unbounded, 256 MiB held in the audit). A
+  cancelled turn (`--timeout`, SIGINT, SIGTERM) returns at once while an
+  approval is pending on a blocking descriptor; it hung before, holding the
+  approver's lock, so only SIGKILL ended the run. One reader goroutine owns the
+  descriptor and the descriptor's blocking mode is left as the host set it.
+  The claim is made as the first act of `manvi run`, before the configuration
+  is read or the repository is scaffolded (scaffolding runs `git`, which would
+  otherwise have inherited it), and the approver claims the descriptor itself
+  as well. A descriptor that is not a pipe, FIFO, socket, device or file, or is
+  the runtime's own event poller (a closed `--approve-fd 3` is reissued as one
+  once a file has been opened), is refused. A blank line from the host is
+  ignored rather than read as a refusal.
+  Making `approval_id` mandatory is not done here; it breaks hosts that omit it
+  and is left for a minor release.
 - Bench: an unreadable or unparseable git pointer no longer unguards the
   repository's other checkouts. `git_guard_roots` answered one unreadable
   `.git` file, `commondir` or sibling `worktrees/<n>/gitdir` with the start
@@ -171,6 +230,191 @@ under **Unreleased** in the same commit as the code.
   message already did. It used to skip the frame and end the run as completed
   with that result lost. A user frame with no message, or with plain-string
   content, is still skipped.
+- The project instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) are read
+  through the repository's gated, pinned reader, rooted at the project root.
+  They were a bare `os.ReadFile` of the working directory: a symbolic link named
+  `AGENTS.md` carried a credential from outside the repository into the system
+  prompt and to the provider, and a FIFO of that name hung prompt assembly.
+  - A link (even one inside the repository), a file with a second name, a
+    FIFO or device, and a file the read gate withholds are refused. The turn
+    runs without that file, a prompt-fault notice names it and says why (once,
+    not every turn), and the next candidate is still tried, so a repository that
+    links `AGENTS.md` to `CLAUDE.md` gets the real file. Absent or blank files
+    are not a fault.
+  - Every provider has a 256 KiB bound, refused with the file's size rather
+    than truncated. It used to bind only where a token budget existed, which is
+    local models alone.
+  - Read once per turn by the per-turn resolution and carried in
+    `PromptOptions.Instructions`; the reserved-name checks and the spec
+    collision check no longer read the file (it was read several times a turn).
+  - The file is still the working directory's: a session started in `sub/`
+    carries `sub/AGENTS.md`, a root file it never carried does not join or
+    replace it, and `sub/`'s file wins over the root's when both exist. The gate
+    is rooted at the project root and the file is read as `sub/AGENTS.md`
+    beneath it. A working directory outside any project root is gated at the
+    directory itself.
+- A skill's body is refused on the same runes as its description and a spec's
+  text, by one enumerated policy (`hiddenRuneProblem`, over `hiddenRanges`) and
+  not by Unicode category: C0 and C1 controls except tab, newline and carriage
+  return, the bidi embedding, override and isolate controls (U+202A-202E,
+  U+2066-2069) and the tag block (U+E0000-E007F). `devcouncil_load_skill` hands
+  the body to the model whole and it checked UTF-8 alone, so an escape sequence
+  or a bidi override could sit in steps a reviewer read as plain text. A
+  refusal names the skill, the rune (code point and name), and its line and
+  column, and never strips. `${...}` and `{{...}}` in a body are still allowed.
+  - Descriptions and a spec's text are loosened to the same set. They used to
+    refuse every control, format and private-use rune, which refused real text:
+    the zero-width joiner in a family or technologist emoji, the zero-width
+    non-joiner in Persian, the soft hyphen, a zero-width space, a word joiner, a
+    byte-order mark mid-text, the left-to-right, right-to-left and Arabic letter
+    marks, variation selectors and private-use glyphs. These now load.
+- Listing the skills directory is bounded. It read every entry
+  (`ReadDir(-1)`) on every turn and every `devcouncil_load_skill` call; it now
+  reads at most `harness.MaxSkillDirEntries` (10,000) in chunks, checking for
+  cancellation between them, and reports a cut (`SkillSet.ListingCut`, a prompt
+  notice, a `harness.resolve` note) instead of silence. A lookup of a name not
+  among the entries read says the listing was cut rather than that the skill is
+  absent. Measured once each on a 100,000-directory skills directory: one
+  lookup went from 377 ms to 40 ms, and `LoadSkills` from 3.07 s to 1.88 s, the
+  rest being the read gate's cost for the 200 skills it examines.
+- A lesson can no longer write its own History or verdict counts. The store
+  re-reads an entry's Markdown by its headings (`historyOf` takes every
+  `- revision` row under the first `## History`; `supersededRow` switches
+  section on any `## ` line and counts `- <verdict>:` lines under
+  `## Attribution`), and a lesson or evidence line that spelled a heading, such
+  as `## History` followed by a `- revision 99, ...` row, was stored verbatim
+  and adopted by the next revision.
+  - One predicate, `readsAsStructure` (a column-0 `## ` line), is what the
+    store switches section on and what `lessons.Parse` refuses in the lesson and
+    the evidence, first line included, wherever it sits. Nothing else is
+    refused: `# python comment`, `### Testing`, `#123`, `#!/bin/sh`, a lone `#`
+    and an indented `## x` are prose and stay legal. A continuation line is now
+    stored with its indentation, because trimming it turned an indented `## x`
+    into a column-0 one. `- helped:` and `- revision ...` bullets stay legal;
+    without a heading to put them under the store never counts them, which a
+    test checks through a real revision. `historyOf` now takes only the rows
+    under a `## History` heading, through the same predicate.
+  - `lessons.Save` makes the same check on a `Result` that did not come from
+    `Parse`, and refuses a cue, change or note that spans lines. Nothing is
+    written when it refuses.
+  - The reflector's prompt states the rule, since a refused answer costs a
+    rerun.
+  - Entries already stored with a forged heading are not rewritten.
+- A refused read says it is a read and what to do about it. The reader's
+  refusal of a symbolic link said `refusing to write through ...` because every
+  pinned operation pinned through the write path's text; it now says
+  `refusing to read "AGENTS.md": it is a symbolic link ... Replace the link with
+  the file itself, or with a copy of it`, and a removal says it is one. The read
+  gate's refusals (`path.aliased_read`, `path.outside_root`, `path.secret_read`)
+  carry a remedy each (replace the hard link or the link out of the repository
+  with a copy; rename a file that holds no credentials). They reach the prompt
+  notice for a refused instruction file, a skill's rejection and a spec's.
+- The one-harness-per-checkout guard keys a checkout by the directory, not by
+  its path string. `.../MyRepo` and `.../myrepo` are one directory on a
+  case-insensitive volume (APFS, NTFS default) and used to be two checkouts, so
+  two managed runs proceeded and the second overwrote the first's pending
+  record. Checkouts are compared with `os.SameFile` (device and inode; volume
+  serial number and file index on Windows), which is also right on a
+  case-sensitive volume, where a case-folded string would not be.
+- A managed run's harness block write that fails after the file was replaced
+  (the rename is done, the directory sync after it failed;
+  `WriteMayHaveChanged`) is no longer taken for a write that did nothing. The
+  materialisation used to delete the record of the block and carry on as if the
+  file were untouched, leaving the block in the user's instruction file with
+  nothing to take it out. It now reads the file back: the block is there and the
+  run proceeds, restoring it when it ends; it is not and the attempt fails with
+  no record; the file cannot be read to tell and the record is kept and the run
+  is aborted with it, so the next attempt on the checkout takes the block out.
+- A managed run's harness block can no longer be written where it could not be
+  taken out again, and a failed restore no longer deletes its record. The
+  block's size was bounded apart from the file's, so a CLAUDE.md a few hundred
+  bytes under the 4 MiB read limit was accepted, grew past it, could not be read
+  by the restore, and the next prepare then cleared the record: Manvi's bytes
+  stayed in the user's file and `HarnessBusy` stopped reporting them. There is
+  now one bound, on the file with the block in it, checked before anything is
+  written (`E_HARNESS_MATERIALISE` naming it), and shared by the read before the
+  write and the read that restores. A restore that fails for any reason other
+  than the agent having edited inside or removed the block keeps its record:
+  every `work.runs.managed.prepare` on that checkout is refused, and
+  `HarnessBusy` refuses a verification of it naming why, until the cause is put
+  right and a later recovery takes the block out. An unreadable record, or a
+  block the agent edited inside, is still refused once and cleared. A checkout
+  whose record an earlier build wrote past the new bound stays refused with the
+  restore's error until the file is put right by hand.
+- A managed run that ends with its agent process not confirmed gone no longer
+  gives its checkout away. `Close` answering "not reaped" is recorded
+  `unresolved`, but `finish` still restored the harness block (a read and then a
+  write over a file the agent may be writing, which overwrote its edit in
+  between) and closed the job, so the next run was admitted on a checkout the
+  first agent might still be in, with two agents and one block. The contract now
+  is: **hold until reap or restart.** The block and its record stay and the
+  checkout is held. Every attempt on it, with a harness or without, is refused
+  `E_HARNESS_BUSY` at once, and `HarnessBusy` refuses a verification; both name
+  the held run, since when, the block's nonce and file, and say to restart
+  `manvi serve` to recover. A background reaper, one per held run, keeps asking
+  the provider whether the process has exited (`Close` is idempotent and
+  bounded; about ten minutes of asks, tied to the runner's lifetime); when it
+  confirms, it takes the block out and releases the checkout, with nobody
+  asking. The hold is in memory, so a restart of Manvi ends it and the record is
+  applied as any dead run's is. The ask does not run inside a prepare, so a held
+  checkout delays no other checkout's attempts (it used to cost every prepare on
+  the one managed lane up to five seconds per retry). Not covered: a factory that
+  fails after possibly starting a process returns no session to ask, so that end
+  still restores as before.
+- The hold's release and the pending record are safer. The reaper acts on the
+  record only when it is the held run's own (the nonce): with the checkout
+  directory deleted and recreated, a second run is admitted as a new checkout, and
+  the old hold's reaper used to strip that live run's block and record. A block
+  the agent edited inside, found when the hold is released, is now reported as
+  when a run ends normally (the record is kept, `HarnessBusy` refuses naming it
+  and the run, the next attempt reports it once) and no longer cleared and
+  released unseen. Every mutation of a pending record is under one in-process
+  lock, so removing a record is atomic with another run's write of it (it was
+  read, compared, then unlinked, and another run's record written between was
+  deleted); two Manvi processes on one checkout can still interleave. A
+  restore-failure message no longer builds a shell command from names an agent
+  controls: the remedy is in words, a symbolic link's target is shown only when it
+  is inside the checkout (quoted) and as "points outside the checkout" otherwise.
+  When the reaper has used its attempts, an attempt on the checkout (still
+  refused at once) restarts the bounded reaper off the lane, so an agent that
+  exits later releases the checkout without a restart.
+- A managed run's checkout is held only when its agent process is not reaped.
+  `Close` answering `Reaped: true` beside an error (os/exec's `ErrWaitDelay`,
+  when the agent exited 0 but an orphaned grandchild, a dev server or an MCP
+  child, still holds its stdout; the wait error is sticky, so every later
+  `Close` returns it) means the agent is gone: the block is taken out and the
+  checkout released as after a clean exit, and the error stays on the run as a
+  note. Before this, such a normal run held its checkout until Manvi restarted.
+  What outlives the agent is the process-group problem, which this does not
+  address.
+- A managed run's end no longer removes another run's pending record. There is
+  one record file per checkout directory, and a directory deleted and recreated
+  is a new directory to the one-harness guard, so a second run was admitted
+  while the first was live and its record replaced the first's; the first run's
+  restore then removed it by path, leaving the second's block in the file with
+  nothing to take it out. A record is now removed only when it carries the
+  nonce of the block being restored.
+- A refused restore says what to do about it. When the pinned read of the
+  instruction file is refused (the file replaced by a symbolic link, given a
+  second name, grown past the bound, made a directory), the record is kept and
+  the `E_HARNESS_MATERIALISE` refusal now says it was a read and nothing was
+  written or removed, names the file, the block's nonce and byte offset and the
+  lines that bound it, and gives the remedy for that cause (replace the link with
+  a regular copy; give the file one name; shrink it) or the manual one (remove
+  the block's lines, then delete `.devcouncil/managed-harness-pending.json`). A
+  failed write during the restore is told the same way. `HarnessBusy` builds its
+  refusal from the record and the file on disk, so after a restart it no longer
+  promises that the next prepare takes the block out when that would be refused.
+  The run id is named on the run's own record, not in the file: the pending
+  record does not carry one. `ReadPinned` also names a read when a link refuses
+  it; it said "refusing to write through".
+- `work.runs.managed.activate` no longer holds the run's lock across its two
+  task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
+  answered inline on the serve read loop and takes that lock, so a slow store
+  held up `hello`, the policy checks and a queued `managed.stop` behind it for as
+  long as the store took (bounded only by the lane's one-minute deadline). A
+  separate per-run lock now serialises activations, so a retry still waits for
+  the first call and gets its receipt, and follow never waits on the store.
 
 ## [0.1.0] — 2026-10-17
 

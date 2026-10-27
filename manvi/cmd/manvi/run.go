@@ -122,9 +122,35 @@ type runOptions struct {
 	chatOnly bool
 }
 
+// runContext is the context a turn runs under: it ends at timeout, and on
+// Ctrl-C or SIGTERM. Everything that waits on something outside the process,
+// including an approval pending on the host's descriptor, waits on this.
+func runContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(stop)
+		cancel()
+	}
+}
+
 func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err error) {
 	opts, err := parseRunArgs(reg, args, os.Stdin)
 	if err != nil {
+		return err
+	}
+
+	// Before anything is built or spawned: the descriptor must already be
+	// close-on-exec when the first child starts. See claimApproveFD.
+	if err := claimApproveFD(opts); err != nil {
 		return err
 	}
 
@@ -176,18 +202,8 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// SIGTERM from a job runner both end the turn through the same path that
 	// releases the lease. Building the provider is covered too: it can probe a
 	// local server for its address and wait on the spend ledger's lock.
-	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	ctx, cancel := runContext(opts.timeout)
 	defer cancel()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stop)
-	go func() {
-		select {
-		case <-stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 
 	env, err := buildRunEnv(ctx, notes, reg, pipeline)
 	if err != nil {
@@ -280,7 +296,7 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	}
 	var turn turnState
 	spec := resolveTurnInputs(ctx, reg, turnInputs{
-		skills: native, repoRead: native.RepoReader, roles: native.Roles(), pipeline: pipeline,
+		skills: native, repoRead: native.RepoReader, root: native.Root(), roles: native.Roles(), pipeline: pipeline,
 	}, &turn, &promptOpts)
 	systemPrompt, promptReport, promptFaults := assemblePromptReported(reg, promptOpts)
 	for _, fault := range promptFaults {
@@ -706,9 +722,9 @@ func parseRunArgs(reg *flags.Registry, args []string, stdin *os.File) (runOption
 		case arg == "--approve-fd":
 			var raw string
 			if raw, err = next(); err == nil {
-				n, convErr := strconv.Atoi(raw)
+				n, convErr := parseApproveFDValue(raw)
 				if convErr != nil {
-					return runOptions{}, fmt.Errorf("--approve-fd must be an integer file descriptor, got %q", raw)
+					return runOptions{}, convErr
 				}
 				opts.approveFD = n
 				opts.approveFDSet = true

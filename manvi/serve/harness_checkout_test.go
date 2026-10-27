@@ -18,6 +18,9 @@ import (
 
 func liveJob(checkout string, harnessed bool) *managedJob {
 	j := &managedJob{checkout: checkout, wantsHarness: harnessed, done: make(chan struct{})}
+	if info, err := os.Stat(checkout); err == nil {
+		j.checkoutInfo = info
+	}
 	if harnessed {
 		j.materialised = &harnessMaterialisation{}
 	}
