@@ -262,6 +262,12 @@ func statusFor(err error, notes io.Writer) int {
 // gets piped, and a line about .gitignore in the middle of it is a line some
 // script has to learn to skip.
 func run(out, notes io.Writer, args []string) error {
+	// Before anything else: no file is opened and no child is started until a
+	// --approve-fd descriptor is close-on-exec. See claimApproveFDFromArgv.
+	if err := claimApproveFDFromArgv(args); err != nil {
+		return err
+	}
+
 	// Every subprocess the process spawned is reaped on the way out, however
 	// the run ends — success, error, or a ceiling exit. Registered by the
 	// surfaces that own children; drained here because this is the one frame

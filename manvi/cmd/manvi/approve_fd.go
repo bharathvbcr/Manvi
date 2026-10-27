@@ -9,12 +9,116 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/ui"
 )
+
+// maxDecisionLine bounds one decision line, newline excluded. A real decision
+// is a few hundred bytes; the cap is generous enough for a long reason or
+// write-in and small enough that a host, or anything holding the descriptor,
+// cannot make the process buffer an unbounded line.
+const maxDecisionLine = 64 << 10
+
+// maxDiscardNotices bounds how many unsolicited lines are reported on the
+// stream, so a writer that floods the descriptor cannot flood the transcript.
+const maxDiscardNotices = 16
+
+// runValueFlags are the `manvi run` flags that consume the next argument,
+// which the argv pre-scan has to step over exactly as parseRunArgs does: in
+// `-p --approve-fd` the second word is a prompt, not a flag.
+var runValueFlags = map[string]bool{
+	"-p": true, "--prompt": true, "--resume": true, "--task": true,
+	"--max-steps": true, "--timeout": true, "--approve-fd": true, "--image": true,
+}
+
+// parseApproveFDValue is the one reading of --approve-fd's argument, shared by
+// parseRunArgs and the pre-scan.
+func parseApproveFDValue(raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("--approve-fd must be an integer file descriptor, got %q", raw)
+	}
+	return n, nil
+}
+
+// scanApproveFD finds --approve-fd in the arguments after `run`, the way
+// parseRunArgs would (the last one wins), without validating anything else. A
+// value that does not parse is left for parseRunArgs to report.
+func scanApproveFD(args []string) (fd int, set bool) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--approve-fd" && i+1 < len(args):
+			i++
+			if n, err := parseApproveFDValue(args[i]); err == nil {
+				fd, set = n, true
+			}
+		case runValueFlags[args[i]]:
+			i++
+		}
+	}
+	return fd, set
+}
+
+// claimApproveFDFromArgv is the first thing the process does for `manvi run`:
+// before the configuration is read, before the repository is scaffolded (which
+// runs git) and before any file is opened. Opening a file can hand the
+// descriptor number of a closed --approve-fd to the runtime's own poller, and
+// every child spawned before the claim holds the real one. Full parsing and
+// its errors happen later in parseRunArgs; descriptors 0 to 2 are never
+// touched here, since parseRunArgs refuses them.
+func claimApproveFDFromArgv(args []string) error {
+	i := 0
+	for i < len(args) && args[i] == "--yolo" {
+		i++
+	}
+	if i >= len(args) || args[i] != "run" {
+		return nil
+	}
+	fd, set := scanApproveFD(args[i+1:])
+	if !set || fd < 3 {
+		return nil
+	}
+	return claimApproveFD(runOptions{approveFD: fd, approveFDSet: true})
+}
+
+// claimApproveFD marks the descriptor close-on-exec, so no tool, MCP server or
+// git the harness spawns inherits it, and refuses one that is not a pipe,
+// socket, character device or file.
+//
+// Every spawn site starts its child with whatever descriptors are inheritable
+// at that moment, and the model chooses what its shell tool runs. A child
+// holding a writable end can answer its own escalation, and one holding the
+// read end can take the host's decisions. It is idempotent: it runs from the
+// argv pre-scan, again after parsing, and once more in newFDApprover, so an
+// entry point that skips one cannot reopen the hole.
+func claimApproveFD(opts runOptions) error {
+	if !opts.approveFDSet {
+		return nil
+	}
+	if err := prepareApproveFD(opts.approveFD); err != nil {
+		return fmt.Errorf("--approve-fd %d: %w", opts.approveFD, err)
+	}
+	return nil
+}
+
+// markCloseOnExec applies the claim to an already-wrapped file without
+// touching its blocking mode (File.Fd would switch a pollable file to
+// blocking, which is the host's setting to keep).
+func markCloseOnExec(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var prepErr error
+	if err := rc.Control(func(fd uintptr) { prepErr = prepareApproveFD(int(fd)) }); err != nil {
+		return err
+	}
+	return prepErr
+}
 
 // approverForRun is nil when --approve-fd was not set, which is what
 // nativeToolsWith is given for every run that did not ask. The descriptor is
@@ -32,17 +136,58 @@ func approverForRun(opts runOptions, sink ui.Sink) (ui.Approver, error) {
 }
 
 // fdApprover answers one approval by writing approval.request and reading one
-// JSON decision line. The sink's lock is not held across that read: Emit
-// locks only for the write, and this returns from Emit before reading.
+// JSON decision line.
+//
+// One goroutine owns the descriptor for the life of the process and turns it
+// into lines. A request is answered only by a line that arrives while it is
+// pending; a line that arrives with nothing pending is discarded and reported,
+// so an answer written early, or late for a request the turn gave up on, can
+// never decide a request it was not written for. The descriptor is read with
+// plain blocking reads and never switched to non-blocking: O_NONBLOCK belongs
+// to the open file description the host shares, and changing it would change
+// the host's own I/O on the same descriptor.
+//
+// A request waits on that goroutine and on its context, so a cancelled turn
+// returns at once whatever the host does. Neither the approver's mutex nor the
+// sink's is held while waiting.
 type fdApprover struct {
-	file   *os.File
-	reader *bufio.Reader
-	sink   ui.Sink
-	mu     sync.Mutex
+	file *os.File
+	sink ui.Sink
+	// slot admits one request at a time: a decision line carries no request
+	// of its own unless the host echoes the id, so two pending requests could
+	// not be told apart.
+	slot chan struct{}
+
+	// unusable is why the descriptor could not be claimed, when it could not;
+	// every request is then refused with it.
+	unusable string
+
+	mu        sync.Mutex
+	pending   *pendingDecision
+	closedErr error
+	discarded int
+}
+
+// pendingDecision is the one request currently waiting for a line.
+type pendingDecision struct{ lines chan decisionLine }
+
+// decisionLine is what the reader hands to the pending request: one line, or
+// the error that ended the stream.
+type decisionLine struct {
+	line    []byte
+	tooLong bool
+	err     error
 }
 
 func newFDApprover(file *os.File, sink ui.Sink) *fdApprover {
-	return &fdApprover{file: file, reader: bufio.NewReader(file), sink: sink}
+	a := &fdApprover{file: file, sink: sink, slot: make(chan struct{}, 1)}
+	// The approver does not rely on its caller having claimed the descriptor.
+	if err := markCloseOnExec(file); err != nil {
+		a.unusable = "the approval fd could not be made close-on-exec, so it was not used: " + err.Error()
+		return a
+	}
+	go a.readLoop(bufio.NewReader(file))
+	return a
 }
 
 type approvalDecisionLine struct {
@@ -53,10 +198,104 @@ type approvalDecisionLine struct {
 	Reason     string   `json:"reason"`
 }
 
-func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, error) {
-	if err := ctx.Err(); err != nil {
-		return declineDecision("cancelled"), nil //nolint:nilerr // a cancelled turn is a refusal, never consent and never an approver error
+// readLoop is the descriptor's only reader. It ends when the descriptor does
+// (end of file, or closed), after telling any pending request why.
+func (a *fdApprover) readLoop(r *bufio.Reader) {
+	for {
+		line, tooLong, err := readDecisionLine(r)
+		// A blank line is a keepalive, not a decision.
+		if tooLong || len(bytes.TrimSpace(line)) > 0 {
+			a.deliver(decisionLine{line: line, tooLong: tooLong})
+		}
+		if err != nil {
+			a.finish(err)
+			return
+		}
 	}
+}
+
+// deliver hands a line to the pending request, or discards it.
+func (a *fdApprover) deliver(l decisionLine) {
+	a.mu.Lock()
+	p := a.pending
+	a.pending = nil
+	var note string
+	if p == nil {
+		a.discarded++
+		switch {
+		case a.discarded < maxDiscardNotices:
+			note = "a line arrived on the approval descriptor while no approval was pending and was discarded"
+		case a.discarded == maxDiscardNotices:
+			note = "a line arrived on the approval descriptor while no approval was pending and was discarded; further discarded lines are not reported"
+		}
+	}
+	a.mu.Unlock()
+	if p != nil {
+		p.lines <- l // capacity 1, and the slot admits one request: never blocks
+		return
+	}
+	if note != "" {
+		a.sink.Emit(ui.Event{Kind: ui.KindNotice, At: time.Now().UTC(), Text: note})
+	}
+}
+
+// finish records the end of the stream and releases a pending request.
+func (a *fdApprover) finish(err error) {
+	a.mu.Lock()
+	a.closedErr = err
+	p := a.pending
+	a.pending = nil
+	a.mu.Unlock()
+	if p != nil {
+		p.lines <- decisionLine{err: err}
+	}
+}
+
+// await registers a pending request, or reports that the stream has ended.
+func (a *fdApprover) await() (*pendingDecision, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closedErr != nil {
+		return nil, a.closedErr
+	}
+	a.pending = &pendingDecision{lines: make(chan decisionLine, 1)}
+	return a.pending, nil
+}
+
+// withdraw un-registers p if no line has claimed it.
+func (a *fdApprover) withdraw(p *pendingDecision) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending == p {
+		a.pending = nil
+	}
+}
+
+func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, error) {
+	cancelled := declineDecision("cancelled")
+	if ctx.Err() != nil {
+		return cancelled, nil
+	}
+	if a.unusable != "" {
+		return declineDecision(a.unusable), nil
+	}
+	select {
+	case a.slot <- struct{}{}:
+		defer func() { <-a.slot }()
+	case <-ctx.Done():
+		return cancelled, nil
+	}
+	if req.ID == "" {
+		// Every request the host is shown has an id it can echo.
+		req.ID = ui.NewRequestID("approval")
+	}
+
+	p, err := a.await()
+	if err != nil {
+		return declineDecision("the approval fd closed before a decision"), nil //nolint:nilerr // a closed descriptor is a refusal, never consent
+	}
+	defer a.withdraw(p)
+
 	a.sink.Emit(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
 		Text: req.Reason, Rule: req.Rule, Severity: req.Severity,
@@ -64,25 +303,47 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 		Grantable: req.Grantable, ApprovalID: req.ID,
 		Choices: req.Choices, MultiSelect: req.MultiSelect,
 	})
-	if err := ctx.Err(); err != nil {
-		return declineDecision("cancelled"), nil //nolint:nilerr // a cancelled turn is a refusal, never consent and never an approver error
+
+	var got decisionLine
+	select {
+	case got = <-p.lines:
+	case <-ctx.Done():
+		return cancelled, nil
 	}
-	line, err := a.readLine(ctx)
-	if err != nil {
-		reason := "the approval fd closed before a decision"
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			reason = "cancelled"
-		}
-		return declineDecision(reason), nil
+	if ctx.Err() != nil {
+		return cancelled, nil
 	}
+	if got.err != nil {
+		return declineDecision("the approval fd closed before a decision"), nil
+	}
+	if got.tooLong {
+		return declineDecision(fmt.Sprintf("the approval decision line is over %d bytes", maxDecisionLine)), nil
+	}
+	return a.decide(req, got.line), nil
+}
+
+// decide turns one line into the decision for req.
+func (a *fdApprover) decide(req ui.Request, line []byte) ui.Decision {
 	parsed, err := parseDecisionLine(line)
 	if err != nil {
-		return declineDecision("the approval decision was not one JSON object"), nil //nolint:nilerr // a malformed decision line is a refusal, never consent
+		return declineDecision("the approval decision was not one JSON object")
 	}
-	if parsed.ApprovalID != nil && *parsed.ApprovalID != req.ID {
-		return declineDecision("approval_id does not match the request"), nil
+	if parsed.ApprovalID != nil {
+		if *parsed.ApprovalID != req.ID {
+			return declineDecision("approval_id does not match the request")
+		}
+	} else {
+		// The id is optional in the contract, so an unbound line is accepted.
+		// It is bound to nothing but timing, and the stream says so.
+		a.sink.Emit(ui.Event{
+			Kind: ui.KindNotice, At: time.Now().UTC(), ApprovalID: req.ID,
+			Text: "the approval decision carried no approval_id, so it is bound to this request only by arriving while it was pending",
+		})
 	}
 	if req.IsQuestion() {
+		if err := checkChosen(req, parsed.Chosen); err != nil {
+			return declineDecision(err.Error())
+		}
 		decision := ui.Decision{
 			Allow:   parsed.Allow,
 			Chosen:  parsed.Chosen,
@@ -96,14 +357,38 @@ func (a *fdApprover) Approve(ctx context.Context, req ui.Request) (ui.Decision, 
 			return ui.Decision{
 				Allow: true, Chosen: parsed.Chosen, WriteIn: parsed.WriteIn,
 				Reason: parsed.Reason, By: "human",
-			}, nil
+			}
 		}
-		return declineDecision(parsed.Reason), nil
+		return declineDecision(parsed.Reason)
 	}
 	if parsed.Allow {
-		return ui.Decision{Allow: true, Reason: parsed.Reason, By: "human"}, nil
+		return ui.Decision{Allow: true, Reason: parsed.Reason, By: "human"}
 	}
-	return declineDecision(parsed.Reason), nil
+	return declineDecision(parsed.Reason)
+}
+
+// checkChosen refuses a selection the question did not offer: a value that is
+// not among its choices, the same one twice, or more than one where the
+// question is not multi-select.
+func checkChosen(req ui.Request, chosen []string) error {
+	if len(chosen) > 1 && !req.MultiSelect {
+		return errors.New("more than one option was chosen for a single-select question")
+	}
+	offered := make(map[string]bool, len(req.Choices))
+	for _, c := range req.Choices {
+		offered[c] = true
+	}
+	seen := make(map[string]bool, len(chosen))
+	for _, c := range chosen {
+		if !offered[c] {
+			return errors.New("a chosen value is not among the offered choices")
+		}
+		if seen[c] {
+			return errors.New("a choice was selected more than once")
+		}
+		seen[c] = true
+	}
+	return nil
 }
 
 func declineDecision(reason string) ui.Decision {
@@ -113,42 +398,31 @@ func declineDecision(reason string) ui.Decision {
 	return ui.Decision{Allow: false, Reason: reason}
 }
 
-// readLine reads one line on a goroutine so ctx.Done can return a refusal
-// without waiting out the descriptor. The read is unblocked by expiring the
-// file's deadline; the call then waits for that read to finish so a later
-// Approve cannot observe a consumer still sitting on the buffer. The
-// approver's own mutex is held here, never the sink's.
-func (a *fdApprover) readLine(ctx context.Context) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	_ = a.file.SetReadDeadline(time.Time{})
-
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		line, err := a.reader.ReadBytes('\n')
-		ch <- readResult{line, err}
-	}()
-	select {
-	case res := <-ch:
-		if err := ctx.Err(); err != nil {
-			return nil, err
+// readDecisionLine reads one line without ever holding more than
+// maxDecisionLine bytes of it. A longer line is reported with tooLong and no
+// content, and the rest of it is read and dropped up to its newline, so the
+// next call starts on the next line. The line is returned with its newline;
+// at the end of the stream a final unterminated line comes back with io.EOF.
+func readDecisionLine(r *bufio.Reader) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		if !tooLong {
+			if len(line)+len(chunk) > maxDecisionLine+1 { // the +1 is the newline
+				tooLong, line = true, nil
+			} else {
+				line = append(line, chunk...)
+			}
 		}
-		if res.err != nil && len(bytes.TrimSpace(res.line)) == 0 {
-			return nil, res.err
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
 		}
-		return res.line, nil
-	case <-ctx.Done():
-		_ = a.file.SetReadDeadline(time.Now().Add(-time.Second))
-		<-ch
-		return nil, ctx.Err()
+		err = readErr
+		break
 	}
+	if !tooLong && len(bytes.TrimSuffix(line, []byte("\n"))) > maxDecisionLine {
+		tooLong, line = true, nil
+	}
+	return line, tooLong, err
 }
 
 // parseDecisionLine accepts one JSON object and nothing after it. null, an

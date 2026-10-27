@@ -125,6 +125,37 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `manvi run --approve-fd`: tool children no longer inherit the approval
+  descriptor, and a decision is bound to its request. The descriptor was
+  wrapped with no close-on-exec, so every shell command, MCP server and `git`
+  the harness started held it: with a writable descriptor (`3<>fifo`) the
+  model's own command wrote the "human" approval for its own escalation, and
+  with a pipe or socketpair it could read or steal the host's decisions. It is
+  now marked close-on-exec (Windows: inherit flag cleared) straight after the
+  flags are parsed, before anything is spawned, and a descriptor that is not
+  open is refused at startup naming the flag. Requests now carry unique ids
+  (`approval-<nonce>-<n>` on escalations, which had none; `question-<nonce>-<n>`
+  in place of the per-call `QUESTION-000N`), a decision naming another id is
+  refused, and a line is read only while a request is pending: one that arrives
+  earlier, or for a request the turn abandoned, is discarded with a `notice`
+  rather than approving the next request. `approval_id` stays optional; when a
+  decision omits it a `notice` says it was bound by timing only. `chosen` is
+  checked against the offered choices (and `multi_select`), and a decision line
+  is capped at 64 KiB, an over-long one being a refusal skipped to its newline
+  without being buffered (it was unbounded, 256 MiB held in the audit). A
+  cancelled turn (`--timeout`, SIGINT, SIGTERM) returns at once while an
+  approval is pending on a blocking descriptor; it hung before, holding the
+  approver's lock, so only SIGKILL ended the run. One reader goroutine owns the
+  descriptor and the descriptor's blocking mode is left as the host set it.
+  The claim is made as the first act of `manvi run`, before the configuration
+  is read or the repository is scaffolded (scaffolding runs `git`, which would
+  otherwise have inherited it), and the approver claims the descriptor itself
+  as well. A descriptor that is not a pipe, FIFO, socket, device or file, or is
+  the runtime's own event poller (a closed `--approve-fd 3` is reissued as one
+  once a file has been opened), is refused. A blank line from the host is
+  ignored rather than read as a refusal.
+  Making `approval_id` mandatory is not done here; it breaks hosts that omit it
+  and is left for a minor release.
 - Bench: an unreadable or unparseable git pointer no longer unguards the
   repository's other checkouts. `git_guard_roots` answered one unreadable
   `.git` file, `commondir` or sibling `worktrees/<n>/gitdir` with the start

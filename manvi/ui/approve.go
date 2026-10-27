@@ -2,8 +2,12 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // Request is a blocked operation put to whoever can clear it.
@@ -102,3 +106,24 @@ type Approver interface {
 
 // ErrNoApprover reports that nothing could answer.
 var ErrNoApprover = errors.New("ui: no approver is attached to answer this request")
+
+// requestSeq and requestNonce make request ids unique within a process and
+// unguessable across them. The nonce is why an answer written for one run, or
+// before a request existed, cannot name a request of another.
+var (
+	requestSeq   atomic.Uint64
+	requestNonce = func() string {
+		raw := make([]byte, 6)
+		_, _ = rand.Read(raw) // crypto/rand.Read does not return an error since Go 1.24
+		return hex.EncodeToString(raw)
+	}()
+)
+
+// NewRequestID returns an id no other request of this process carries and no
+// other process is likely to: kind, a per-process nonce and a sequence number.
+// Every producer of a Request calls it, so a host that echoes an id back can be
+// held to the request it was shown. The kind is a short word ("approval",
+// "question") and says what the id is for, not how it is checked.
+func NewRequestID(kind string) string {
+	return fmt.Sprintf("%s-%s-%04d", kind, requestNonce, requestSeq.Add(1))
+}
