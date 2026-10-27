@@ -162,6 +162,24 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `work.scan.gaps` replies match the serve contract, dedupes against open cards
+  only, and no longer joins a cancelled scan (ft-70ef5f3d). `ScanView.clone`
+  turned empty slices into nil, so `coverage` and `proposals` went out as `null`
+  in the claim reply, in a read while the scan ran, and in a finished scan with
+  no proposals, though the contract marks both required and not nullable; both
+  are now always arrays. The board index listed the whole board, so a Done or
+  archived card marked a proposal `attached` and silenced a recurring gap for
+  good; it now asks for `archived:false` and skips Done cards. The documented
+  `manvi-scan:` description line was never read, because `items.list` cards omit
+  descriptions: the docs now say dedupe is by the `scan:<fp>` label alone and the
+  description line is a trace for people (the alternative, an `items.get` per
+  card, costs a store read for every card on the board). `work.scan.cancel`
+  freed no root: a `work.scan.gaps` for it while the cancelled goroutine was
+  still unwinding joined the cancelled job and was answered with a cancelled
+  view in place of a scan. Cancel now frees the root at once, so the next request
+  starts a fresh scan; the unwinding job keeps counting against the limit of two
+  concurrent scans, so cancel-and-restart cannot pile up stuck scans (`E_BUSY`,
+  retryable, when both slots are held).
 - Verification no longer runs a repository's diff programs. `work.verify.task`
   built the critic's diff with `git diff --no-ext-diff` but without
   `--no-textconv`, and the path verifier's scoped diff (shared with the
