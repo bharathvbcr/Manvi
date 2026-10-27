@@ -235,9 +235,10 @@ func (r *EnhancementRunner) stepAutomatic(ctx context.Context, configuration Enh
 		return r.automaticPaused(errors.New("queued task metadata is incomplete"))
 	}
 	if config.Provider != nil {
-		configuration.Provider, configuration.Model = *config.Provider, *config.Model
+		// The saved profile names its own provider and model: that is a choice.
+		configuration.Provider, configuration.Model, configuration.ModelSource = *config.Provider, *config.Model, "automation settings"
 	}
-	if strings.TrimSpace(configuration.Provider) == "" || strings.TrimSpace(configuration.Model) == "" {
+	if strings.TrimSpace(configuration.Provider) == "" || strings.TrimSpace(configuration.Model) == "" || configuration.ModelSource == ModelSourceDefault {
 		return r.automaticPaused(errors.New("Choose an explicit provider and model for automatic enhancements."))
 	}
 	if wait := time.Until(time.UnixMilli(task.NotBeforeMS)); wait > 0 {

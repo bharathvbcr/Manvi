@@ -30,6 +30,12 @@ type WorkbenchModule struct {
 	Verify *VerifyRunner
 }
 
+// ModelSourceDefault is the ModelSource of a model nothing the operator set
+// named: the harness's own built-in choice. An interactive op may run on it,
+// as `manvi run` does; automatic enhancement spends with nobody present and
+// treats it as no selection.
+const ModelSourceDefault = "default"
+
 // EnhancementConfiguration describes the host's selection, not provider health.
 // It contains no credential or permission settings and requires no model call.
 type EnhancementConfiguration struct {
