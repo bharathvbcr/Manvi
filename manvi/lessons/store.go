@@ -186,6 +186,26 @@ const (
 	maxSaveAttempts   = 32
 )
 
+// readsAsStructure reports whether a line of a stored entry is one the store
+// reads as structure: a column-0 "## " heading. historyOf and supersededRow
+// switch section on exactly this, and Parse and Save refuse exactly this in the
+// lesson and the evidence, so the question has one owner and the writer cannot
+// disagree with the reader about it. An indented "## x", "# x", "### x", a
+// "#!/bin/sh" or a "#123" is not a section the store reads and is prose.
+func readsAsStructure(line string) bool { return strings.HasPrefix(line, "## ") }
+
+// structureProblem is why text may not be stored as a lesson's prose or
+// evidence, or "": one of its lines is read by the store as a section heading.
+func structureProblem(field, text string) string {
+	for line := range strings.Lines(text) {
+		if line = strings.TrimRight(line, "\r\n"); readsAsStructure(line) {
+			return fmt.Sprintf("the %s has a line that starts with %q, a section heading the store reads back as the "+
+				"start of one of an entry's sections (%q): indent it or reword it", field, "## ", clip(line))
+		}
+	}
+	return ""
+}
+
 // renderProblem is why r cannot be rendered without writing structure into the
 // entry, or "". Parse already refuses these, so for an accepted answer this is
 // a second look at the same facts; its job is the Result that did not come from
@@ -195,17 +215,17 @@ const (
 func renderProblem(r Result) string {
 	type field struct{ name, text string }
 	e := r.Experience
-	oneLine := []field{{"cue", e.Cue}, {"confidence", e.Confidence}}
+	single := []field{{"cue", e.Cue}, {"confidence", e.Confidence}}
 	for _, ed := range r.Edits {
-		oneLine = append(oneLine, field{"an edit's change", ed.Change}, field{"an edit's note", ed.Note})
+		single = append(single, field{"an edit's change", ed.Change}, field{"an edit's note", ed.Note})
 	}
-	for _, f := range oneLine {
+	for _, f := range single {
 		if strings.ContainsAny(f.text, "\r\n") {
 			return fmt.Sprintf("%s spans more than one line, and the store reads an entry back line by line", f.name)
 		}
 	}
 	for _, f := range []field{{"lesson", e.Lesson}, {"evidence", e.Evidence}} {
-		if why := headingProblem(f.name, f.text); why != "" {
+		if why := structureProblem(f.name, f.text); why != "" {
 			return why
 		}
 	}
@@ -242,12 +262,15 @@ func render(sessionID string, r Result, history []string) string {
 // attribution read and what the evidence was.
 func historyOf(prev *artifacts.Artifact) []string {
 	var rows []string
-	if i := strings.Index(prev.Content, "\n"+historyHeading+"\n"); i >= 0 {
-		for line := range strings.Lines(prev.Content[i+len(historyHeading)+2:]) {
-			line = strings.TrimRight(line, "\n")
-			if strings.HasPrefix(line, historyRowPrefix) {
-				rows = append(rows, oneLine(line, maxHistoryRowRune))
-			}
+	inHistory := false
+	for line := range strings.Lines(prev.Content) {
+		line = strings.TrimRight(line, "\n")
+		if readsAsStructure(line) {
+			inHistory = line == historyHeading
+			continue
+		}
+		if inHistory && strings.HasPrefix(line, historyRowPrefix) {
+			rows = append(rows, oneLine(line, maxHistoryRowRune))
 		}
 	}
 	rows = append(rows, supersededRow(prev))
@@ -268,7 +291,7 @@ func supersededRow(prev *artifacts.Artifact) string {
 	for line := range strings.Lines(prev.Content) {
 		line = strings.TrimRight(line, "\n")
 		switch {
-		case strings.HasPrefix(line, "## "):
+		case readsAsStructure(line):
 			where = line
 			continue
 		case where == "" && strings.HasPrefix(line, "- session: "):

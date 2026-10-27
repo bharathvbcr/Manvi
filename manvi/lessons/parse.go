@@ -283,7 +283,10 @@ func Parse(answer string) (Result, error) {
 			if !ok || buf == nil {
 				return refuse("continuation of unknown field %q", currentKey)
 			}
-			if !buf.add(sep + trimmed) {
+			// Stored as written, indentation included. Trimming it would turn an
+			// indented "## x" into a column-0 one, which the store reads as a
+			// heading, and an indented line is not one.
+			if !buf.add(sep + strings.TrimRightFunc(line, unicode.IsSpace)) {
 				return refuse("%s is over the %d limit", currentKey, buf.limit)
 			}
 			pendingBlnk = false
@@ -338,15 +341,17 @@ func Parse(answer string) (Result, error) {
 			return refuse("%s is %d characters, over the %d limit", f.name, n, f.limit)
 		}
 	}
-	// The store reads an entry back by its headings (historyOf, supersededRow),
-	// and the lesson and the evidence are printed into it at the start of a
-	// line, so a line of either that is a heading would write structure into
-	// the entry: forged History rows, and verdict counts the attribution never
-	// gave. They are refused here, not escaped, because an escaped heading is a
-	// different lesson from the one the reflector wrote; Save asks the same
-	// question of a Result that did not come through this parser.
+	// The store reads an entry back by its section headings (historyOf,
+	// supersededRow), and the lesson and the evidence are printed into it as
+	// stored, so a line of either that the store reads as a heading would write
+	// structure into the entry: forged History rows, and verdict counts the
+	// attribution never gave. They are refused here, not escaped, because an
+	// escaped heading is a different lesson from the one the reflector wrote.
+	// What counts is readsAsStructure, the store's own predicate, asked of the
+	// text as it will be stored; Save asks it of a Result that did not come
+	// through this parser.
 	for _, f := range []struct{ name, text string }{{"lesson", exp.Lesson}, {"evidence", exp.Evidence}} {
-		if why := headingProblem(f.name, f.text); why != "" {
+		if why := structureProblem(f.name, f.text); why != "" {
 			return refuse("%s", why)
 		}
 	}
@@ -358,30 +363,6 @@ func Parse(answer string) (Result, error) {
 		return refuse("confidence %q is not low, medium or high", exp.Confidence)
 	}
 	return Result{Edits: edits, Experience: exp}, nil
-}
-
-// isHeading reports whether a line, already trimmed, is a Markdown ATX heading:
-// one to six marks, then a space, a tab or the end of the line. "#!/bin/sh",
-// "#123" and seven marks are not headings. Every level is refused, not only the
-// "## " the store switches sections on: the stored entry is read by people and
-// by renderers as well, and a lesson that retitles itself is structure too.
-func isHeading(line string) bool {
-	rest := strings.TrimLeft(line, "#")
-	marks := len(line) - len(rest)
-	return marks >= 1 && marks <= 6 && (rest == "" || rest[0] == ' ' || rest[0] == '\t')
-}
-
-// headingProblem is why text may not be stored as a lesson's prose or evidence,
-// or "". Lines are judged after trimming, the way the parser stores them, so an
-// indented or no-break-space-led heading is the heading it looks like.
-func headingProblem(field, text string) string {
-	for line := range strings.Lines(text) {
-		if line = strings.TrimSpace(line); isHeading(line) {
-			return fmt.Sprintf("the %s has a line that is a Markdown heading, %q: an entry is read back by its headings, so its text may not contain one",
-				field, clip(line))
-		}
-	}
-	return ""
 }
 
 // fieldLine reads "key: value" where key is a bare lowercase word. A line

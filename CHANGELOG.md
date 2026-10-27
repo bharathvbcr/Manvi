@@ -225,12 +225,16 @@ under **Unreleased** in the same commit as the code.
   `## Attribution`), and a lesson or evidence line that spelled a heading, such
   as `## History` followed by a `- revision 99, ...` row, was stored verbatim
   and adopted by the next revision.
-  - `lessons.Parse` refuses any line of the lesson or the evidence, first line
-    included, that is a Markdown heading (one to six `#` marks, then a space, a
-    tab or the end of the line; judged after trimming, so an indented or
-    no-break-space-led heading counts). `#!/bin/sh`, `#123` and `- helped:`
-    bullets are prose and stay legal: without a heading to put them under the
-    store never counts them, which a test checks through a real revision.
+  - One predicate, `readsAsStructure` (a column-0 `## ` line), is what the
+    store switches section on and what `lessons.Parse` refuses in the lesson and
+    the evidence, first line included, wherever it sits. Nothing else is
+    refused: `# python comment`, `### Testing`, `#123`, `#!/bin/sh`, a lone `#`
+    and an indented `## x` are prose and stay legal. A continuation line is now
+    stored with its indentation, because trimming it turned an indented `## x`
+    into a column-0 one. `- helped:` and `- revision ...` bullets stay legal;
+    without a heading to put them under the store never counts them, which a
+    test checks through a real revision. `historyOf` now takes only the rows
+    under a `## History` heading, through the same predicate.
   - `lessons.Save` makes the same check on a `Result` that did not come from
     `Parse`, and refuses a cue, change or note that spans lines. Nothing is
     written when it refuses.
