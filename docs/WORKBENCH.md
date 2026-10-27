@@ -786,7 +786,10 @@ advertised when the host supplies configuration alongside its runner. The CLI
 uses its effective provider setting, the explicit `MANVI_MODEL` override when
 present, or the local provider's configured model. On `anthropic` the model is
 the one `manvi run` sends: `MANVI_MODEL`, then the main tier (`llm.tier.main`,
-reported as source `llm.tier.main`); serve calls the same resolver, and a tier
+reported as source `llm.tier.main` when the operator set it and as `default`
+when it is the built-in choice, which interactive ops use but automatic
+enhancement refuses as it refuses an empty selection); serve calls the same
+resolver, and a tier
 profile it cannot use never stops it starting — the op that needs the model
 refuses with the tier named. Any other cloud provider without an explicit model
 returns an empty model with source `none`; the user must choose one. This endpoint reports selection only. It neither opens profile storage nor

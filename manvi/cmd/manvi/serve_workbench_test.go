@@ -53,7 +53,7 @@ func TestWorkbenchConfigurationUsesExplicitSelectionWithoutDiscovery(t *testing.
 	t.Setenv(flags.EnvKey(flags.LLMLocalModel), "local-only")
 	settings, err = workbenchEnhancementConfiguration(context.Background(), io.Discard, serveTierRegistry(t, nil))
 	runModel, runSource, runErr := resolveModelFor(context.Background(), anthropic.Name, nil, serveTierRegistry(t, nil))
-	if err != nil || runErr != nil || settings.Model == "local-only" || settings.Model != runModel || settings.ModelSource != string(runSource) {
+	if err != nil || runErr != nil || settings.Model == "local-only" || settings.Model != runModel || settings.ModelSource != serve.ModelSourceDefault {
 		t.Fatalf("cloud inherited an unrelated local model, or disagreed with run: serve %+v %v; run %q %q %v", settings, err, runModel, runSource, runErr)
 	}
 }
@@ -100,7 +100,7 @@ func TestServeResolvesTheAnthropicModelAsRunDoes(t *testing.T) {
 	}{
 		{name: "the operator's main tier", tiers: map[string]string{mainKey: "claude-sonnet-5-5"}, want: "claude-sonnet-5-5", source: "llm.tier.main"},
 		{name: "MANVI_MODEL beats the main tier", tiers: map[string]string{mainKey: "claude-sonnet-5-5"}, model: "claude-haiku-5-5", want: "claude-haiku-5-5", source: "MANVI_MODEL"},
-		{name: "neither is the default run gives", want: "claude-opus-5-5", source: "llm.tier.main"},
+		{name: "neither is the default run gives", want: "claude-opus-5-5", source: "default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := serveTierRegistry(t, tc.tiers)
@@ -110,7 +110,7 @@ func TestServeResolvesTheAnthropicModelAsRunDoes(t *testing.T) {
 				t.Fatalf("serve = %+v, %v; want %q from %s", settings, err, tc.want, tc.source)
 			}
 			runModel, runSource, err := resolveModelFor(context.Background(), anthropic.Name, nil, reg)
-			if err != nil || runModel != settings.Model || string(runSource) != settings.ModelSource {
+			if err != nil || runModel != settings.Model {
 				t.Fatalf("run = %q from %q, %v; serve = %+v", runModel, runSource, err, settings)
 			}
 		})
@@ -286,7 +286,13 @@ func startServeHost(t *testing.T, extraEnv ...string) *serveHost {
 	cmd.Dir = repo
 	cmd.Env = append(append(os.Environ(), "MANVI_HARNESS_INIT_ENABLED=false", "DEVCOUNCIL_ROOT="+repo, "MANVI_STORE_BINARY="+storeBinary), extraEnv...)
 	cmd.WaitDelay = 3 * time.Second
-	host := &serveHost{t: t, repo: repo, ctx: ctx, stderr: &bytes.Buffer{}}
+	// The root a request names is refused when a component of it is a symlink,
+	// and the default macOS temp directory is one.
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &serveHost{t: t, repo: resolved, ctx: ctx, stderr: &bytes.Buffer{}}
 	cmd.Stderr = host.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -380,14 +386,14 @@ func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
 				_, _ = io.WriteString(w, anthropicRefinementTurn)
 			}))
 			t.Cleanup(provider.Close)
-			host := startServeHost(t, "MANVI_MODEL=", "MANVI_LLM_DEFAULT_PROVIDER=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-tier",
+			host := startServeHost(t, "MANVI_MODEL=", flags.EnvKey(flags.LLMDefaultProvider)+"=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-tier",
 				"ANTHROPIC_BASE_URL="+provider.URL, "MANVI_USER_CONFIG="+filepath.Join(t.TempDir(), "absent.yaml"), tc.tier)
 			configuration := host.request("work.enhancements.configuration", `{}`)
-			wantModel := `"model":"claude-opus-5-5"`
+			wantModel, wantSource := `"model":"claude-opus-5-5"`, `"model_source":"default"`
 			if tc.refused {
-				wantModel = `"model":"claude-opus-9"`
+				wantModel, wantSource = `"model":"claude-opus-9"`, `"model_source":"llm.tier.main"`
 			}
-			if !strings.Contains(string(configuration), wantModel) || !strings.Contains(string(configuration), `"model_source":"llm.tier.main"`) {
+			if !strings.Contains(string(configuration), wantModel) || !strings.Contains(string(configuration), wantSource) {
 				t.Fatalf("serve did not offer the main tier (%s): %s", wantModel, configuration)
 			}
 			host.request("work.repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
@@ -402,6 +408,80 @@ func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
 				body, _ := wire.Load().(string)
 				if !refined.OK || reached.Load() == 0 || body == "" || strings.Contains(body, "temperature") {
 					t.Fatalf("refinement = %+v after %d requests with body %q; an unrelated tier must not refuse it and no temperature may reach the provider", refined, reached.Load(), body)
+				}
+			}
+			if err := host.stdin.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := host.wait(); err != nil {
+				t.Fatalf("CLI shutdown: %v; stderr: %s", err, host.stderr.String())
+			}
+		})
+	}
+}
+
+// TestServeAutomaticEnhancementNeedsAnExplicitModel: the model serve offers
+// interactive ops on anthropic is the one `manvi run` sends, and when nothing
+// the operator set names it that is the built-in main tier. Automatic
+// enhancement spends with nobody present, so it needs a model the operator
+// chose — MANVI_MODEL or a main tier they set — and is paused, as it is on an
+// empty selection, when all it has is the built-in default.
+func TestServeAutomaticEnhancementNeedsAnExplicitModel(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		env      []string
+		source   string
+		explicit bool
+	}{
+		{name: "no setting names a model", source: "default"},
+		{name: "the operator set the main tier", env: []string{"MANVI_LLM_TIER_MAIN=claude-sonnet-5-5"}, source: "llm.tier.main", explicit: true},
+		{name: "the operator set MANVI_MODEL", env: []string{"MANVI_MODEL=claude-sonnet-5-5"}, source: "MANVI_MODEL", explicit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reached atomic.Int32
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, anthropicRefinementTurn)
+			}))
+			t.Cleanup(provider.Close)
+			env := append([]string{"MANVI_MODEL=", flags.EnvKey(flags.LLMDefaultProvider) + "=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-auto",
+				"ANTHROPIC_BASE_URL=" + provider.URL, "MANVI_USER_CONFIG=" + filepath.Join(t.TempDir(), "absent.yaml")}, tc.env...)
+			host := startServeHost(t, env...)
+			configuration := host.request("work.enhancements.configuration", `{}`)
+			host.request("work.repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
+			host.request("work.items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"fix E42","repository_ids":["r"],"primary_repository_id":"r"}`)
+			var status struct {
+				State  string `json:"state"`
+				Reason string `json:"reason"`
+			}
+			deadline := time.Now().Add(25 * time.Second)
+			for time.Now().Before(deadline) {
+				host.request("work.enhancements.wake", `{}`)
+				time.Sleep(300 * time.Millisecond)
+				if err := json.Unmarshal(host.request("work.enhancements.worker", `{}`), &status); err != nil {
+					t.Fatal(err)
+				}
+				if tc.explicit && reached.Load() > 0 || !tc.explicit && status.State == "paused" {
+					break
+				}
+			}
+			paused := status.State == "paused" && strings.Contains(status.Reason, "Choose an explicit provider and model")
+			if tc.explicit && (paused || reached.Load() == 0) {
+				t.Fatalf("automatic enhancement with an operator-chosen model: worker %+v, %d provider requests", status, reached.Load())
+			}
+			if !tc.explicit && (!paused || reached.Load() != 0) {
+				t.Fatalf("automatic enhancement on the built-in default: worker %+v, %d provider requests; want it paused before any request", status, reached.Load())
+			}
+			if !strings.Contains(string(configuration), `"model_source":"`+tc.source+`"`) || !strings.Contains(string(configuration), `"model":"`) || strings.Contains(string(configuration), `"model":""`) {
+				t.Fatalf("configuration = %s; want a model from %s", configuration, tc.source)
+			}
+			if !tc.explicit {
+				// Interactive refinement keeps the run-parity default.
+				refined := host.call("work.enhancements.refine", `{"id":"t","request_id":"w","expected_revision":1,"repo_root":`+strconv.Quote(host.repo)+`}`)
+				if !refined.OK || reached.Load() == 0 {
+					t.Fatalf("interactive refinement on the default: %+v after %d requests", refined, reached.Load())
 				}
 			}
 			if err := host.stdin.Close(); err != nil {

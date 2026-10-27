@@ -14,6 +14,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
+	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/credentials"
 	"github.com/bharathvbcr/Manvi/manvi/gussetcheck"
@@ -306,6 +307,15 @@ func workbenchEnhancementConfiguration(ctx context.Context, notes io.Writer, reg
 			return configuration, nil
 		}
 		configuration.Model, configuration.ModelSource = model, string(source)
+		// The built-in main tier is what run sends, but nobody chose it:
+		// reported as the default so automatic enhancement, which spends with
+		// nobody present, can tell it from a tier the operator set. An origin
+		// that cannot be read counts as the default.
+		if source == SourceTierMain {
+			if _, from, err := tierSetting(reg, tierModelKey(agents.TierMain)); err != nil || from == string(flags.OriginDefault) {
+				configuration.ModelSource = serve.ModelSourceDefault
+			}
+		}
 		return configuration, nil
 	}
 	if model := strings.TrimSpace(os.Getenv("MANVI_MODEL")); model != "" {

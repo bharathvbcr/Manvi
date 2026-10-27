@@ -158,7 +158,14 @@ under **Unreleased** in the same commit as the code.
   (`model: ""`, `model_source: "none"`) and the workbench refused to refine or
   enhance on a machine where `manvi run` used the main tier. It now calls the
   one resolver run and the TUI use: `MANVI_MODEL`, then `llm.tier.main`
-  (default `claude-opus-5-5`), reported as `model_source: "llm.tier.main"`. A
+  (default `claude-opus-5-5`), reported as `model_source: "MANVI_MODEL"` or
+  `"llm.tier.main"`, or `"default"` when no setting the operator made names the
+  model and it is the built-in main tier. Security impact: automatic
+  enhancement spends with nobody present, so it treats a `"default"` model as no
+  selection and stays paused ("Choose an explicit provider and model…") exactly
+  as it did when serve offered none; it runs only on `MANVI_MODEL`, a main tier
+  the operator set, or the provider and model saved in the automation profile.
+  Interactive refine and generate use the default, as `manvi run` does. A
   tier profile serve cannot use never stops it starting: a main tier that
   resolves to nothing leaves the selection empty and is named on stderr. When
   the model an enhancement op builds a provider for is the main tier's, that
@@ -174,8 +181,9 @@ under **Unreleased** in the same commit as the code.
   refuses, so the adapter rejected each one before it was sent
   (`anthropic: [temperature top_p top_k] are not accepted by current models`)
   and no anthropic enhancement could ever run. `llm.Capability` gains
-  `rejects_sampling` (anthropic sets it for every model it serves, the rule
-  `ValidateRequest` already enforced), and the enhancement request pins
+  `rejects_sampling` (anthropic sets it for every model it serves, matching
+  the temperature check `ValidateRequest` already made; it says nothing about
+  top_p or top_k), and the enhancement request pins
   temperature 0 only when the selected model does not set it. Local, xai and
   gemini models are still sent 0.
 - `manvi run --approve-fd`: tool children no longer inherit the approval

@@ -178,8 +178,8 @@ var alwaysThinking = map[string]bool{
 // Capability returns the descriptor for a model, or false when this adapter
 // does not serve it. An unknown model is never given a permissive default.
 //
-// Every model in it rejects sampling parameters, which is what ValidateRequest
-// enforces, so the descriptor says so and a caller reads that rather than
+// Every model in it rejects a pinned temperature, which is what ValidateRequest
+// checks, so the descriptor says so and a caller reads that rather than
 // learning it from the refusal.
 func Capability(model string) (llm.Capability, bool) {
 	c, ok := catalogue.Lookup(model)
