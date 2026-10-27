@@ -171,14 +171,21 @@ under **Unreleased** in the same commit as the code.
   could let one through). `Watch` now publishes a new sorted slice under the
   lock and never writes one it has handed out; `Clean` still holds the lock only
   to copy the header, and its cost is unchanged.
-- `manvi run --image` refuses a path that is not a regular file instead of
-  opening it. Images are read while the arguments are parsed, before `--timeout`
-  or a provider exists, and a bare open of a FIFO waits for a writer, so a
-  `--image` naming one stopped the run from ever starting without a word. A
-  FIFO, device, socket or directory is now refused by name (`not a regular file
-  (a named pipe)`), and the opened handle is checked again and opened without
-  waiting for a writer, in case the name was swapped in between. Symbolic links
-  are followed as before; what they lead to decides.
+- `manvi run --image` no longer waits forever on a path. Images are read while
+  the arguments are parsed, before `--timeout` or a provider exists, and a bare
+  open of a FIFO waits for a writer, so a `--image` naming one nobody wrote to
+  stopped the run from ever starting without a word. The open no longer waits,
+  and a pipe is read with a bound: five seconds (`imagePipeWait`) and the 8 MiB
+  image limit. A pipe with a live writer still works, which includes
+  `--image <(cat a.png)`, `cat a.png | manvi run --image /dev/stdin` and a named
+  pipe whose writer starts after the run does; one with no writer, or a writer
+  that stops sending, is refused after the five seconds with `no image data
+  arrived on the pipe in time`. Devices, sockets and directories are refused by
+  name (`not a regular file (a device)`), the kind is checked again on the
+  opened handle in case the name was swapped in between, and symbolic links are
+  followed as before. On Windows only regular files are read, and a
+  `\\.\pipe\...` path is refused by its name before it is touched, because
+  inspecting a named pipe connects to it.
 - The Anthropic budget ledger no longer holds a cancelled caller behind another
   caller's wait. Each operation took an in-process `sync.Mutex` before the
   context-aware file lock, and a mutex cannot be abandoned: while one goroutine

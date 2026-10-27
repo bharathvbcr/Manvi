@@ -3,25 +3,32 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
-// loadWithin runs loadRunImage and gives up waiting after a bound, because the
-// failure under test is the call never returning. A call still blocked in
-// open(2) when the bound passes is released by opening the other end, so the
+// loadBlockWithin runs loadRunImage and gives up waiting after a bound, because
+// the failure under test is the call never returning. A call still blocked on a
+// FIFO when the bound passes is released by opening the other end, so the
 // goroutine does not outlive the test.
-func loadWithin(t *testing.T, path string, release string) (returned bool, err error) {
+func loadBlockWithin(t *testing.T, path string, release string) (returned bool, block llm.ImageBlock, err error) {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() { _, e := loadRunImage(path); done <- e }()
+	type result struct {
+		block llm.ImageBlock
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() { b, e := loadRunImage(path); done <- result{b, e} }()
 	select {
-	case err = <-done:
-		return true, err
+	case got := <-done:
+		return true, got.block, got.err
 	case <-time.After(3 * time.Second):
 		if release != "" {
 			if w, openErr := os.OpenFile(release, os.O_WRONLY|syscall.O_NONBLOCK, 0); openErr == nil { // #nosec G304 -- a FIFO this test made under t.TempDir
@@ -29,31 +36,19 @@ func loadWithin(t *testing.T, path string, release string) (returned bool, err e
 			}
 			<-done
 		}
-		return false, nil
+		return false, llm.ImageBlock{}, nil
 	}
 }
 
-// --image is read while the arguments are parsed, before the --timeout context
-// exists or a provider is built. A FIFO named there blocked in open(2) until
-// something opened the other end, which for a path nobody is writing to is
-// forever: the run never started and nothing said why.
-func TestAnImagePathThatIsAFIFOIsRefusedWithoutBlocking(t *testing.T) {
-	fifo := filepath.Join(t.TempDir(), "img")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	returned, err := loadWithin(t, fifo, fifo)
-	if !returned {
-		t.Fatal("loadRunImage(FIFO) still blocked after 3s: no --timeout applies before the provider is built")
-	}
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") || !strings.Contains(err.Error(), "named pipe") {
-		t.Fatalf("err = %v, want a refusal naming a named pipe as not a regular file", err)
-	}
+func loadWithin(t *testing.T, path string, release string) (returned bool, err error) {
+	t.Helper()
+	returned, _, err = loadBlockWithin(t, path, release)
+	return returned, err
 }
 
 // A symbolic link is followed, as it always was: the operator named the path
 // and a link to an image is an image. What it leads to decides, so a link to a
-// FIFO is refused the same way and a link to a regular image still loads.
+// FIFO nobody writes to times out and a link to a regular image still loads.
 func TestAnImageSymlinkIsFollowedAndWhatItLeadsToDecides(t *testing.T) {
 	dir := t.TempDir()
 	png := filepath.Join(dir, "real.png")
@@ -77,12 +72,23 @@ func TestAnImageSymlinkIsFollowedAndWhatItLeadsToDecides(t *testing.T) {
 	if err := os.Symlink(fifo, fifoLink); err != nil {
 		t.Fatal(err)
 	}
+	shortPipeWait(t, 300*time.Millisecond)
 	returned, err := loadWithin(t, fifoLink, fifo)
 	if !returned {
 		t.Fatal("loadRunImage(symlink to FIFO) still blocked after 3s")
 	}
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("a symlink to a FIFO: err = %v, want a not-a-regular-file refusal", err)
+	if !errors.Is(err, errImagePipeTimeout) {
+		t.Fatalf("a symlink to a FIFO with no writer: err = %v, want errImagePipeTimeout", err)
+	}
+}
+
+func TestAnImagePathThatIsADirectoryIsRefused(t *testing.T) {
+	returned, err := loadWithin(t, t.TempDir(), "")
+	if !returned {
+		t.Fatal("loadRunImage(directory) did not return")
+	}
+	if err == nil || !strings.Contains(err.Error(), "not a regular file (a directory)") {
+		t.Fatalf("err = %v, want a directory refusal", err)
 	}
 }
 
