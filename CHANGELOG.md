@@ -153,6 +153,20 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The agent loop runs only a tool the step's request offered. `--chat-only`
+  offered the model no tools, but `runCall` ran whatever tool name a response
+  carried, and a provider that builds a call from prose (the OpenAI-compatible
+  adapter, the local fenced-JSON fallback) can name one: a chat-only run
+  executed it. The same held for a read-only or core-only loop, which filter
+  what they offer but not what they run. The loop now records the tool names of
+  each request as it is finally sent, after every waterfall, and `runCall`
+  refuses a call outside that set as an error result the model sees ("tool X was
+  not offered in this step"), before the repeat and stall checks and without
+  reaching a handler. The set is rebuilt every step, so a tool activated by
+  `devcouncil_activate_tools` runs from the next step; naming it in the same
+  response that activates it is refused, since that request never carried its
+  schema. A tool the registry does not hold gets the same wording instead of
+  `unknown tool`.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`

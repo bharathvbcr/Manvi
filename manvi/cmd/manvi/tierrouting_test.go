@@ -127,7 +127,7 @@ func TestTheCheckpointCriticIsAReadOnlyAdvisor(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(answer, "ran fake_write") || !strings.Contains(answer, "unknown tool") {
+	if strings.Contains(answer, "ran fake_write") || !strings.Contains(answer, "was not offered") {
 		t.Fatalf("the critic's call to fake_write reached a handler: %q", answer)
 	}
 	if !strings.Contains(seen[0].System, "critic") {
