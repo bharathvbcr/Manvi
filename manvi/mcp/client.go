@@ -1105,7 +1105,10 @@ func (f *initFlight) abortNow() { f.abortOnce.Do(func() { close(f.abort) }) }
 // and a late reply could be matched to the wrong attempt.
 //
 //   - A JSON-RPC error reply to our own initialize id is the server's definitive
-//     "no". The flight is cleared and the next call starts a new handshake.
+//     "no". The flight is cleared and the next call starts a new handshake. The
+//     one exception is -32602 with `data.supported`: handshake sends initialize
+//     once more, on a new id of the same flight, at the newest revision both
+//     sides speak (see handshake).
 //   - A transport that ended is already dead: Alive is false and every later
 //     call fails there.
 //   - Anything that leaves the server's view of the session unknown or
@@ -1196,9 +1199,56 @@ func (e *handshakeEnded) Unwrap() error { return e.err }
 // handshake sends initialize, waits for its resolution however long that takes,
 // and completes the handshake. A failure is retryable unless it is a
 // *handshakeEnded. See Initialize for which is which.
+//
+// It asks for ProtocolVersionLatest. A server that supports only older revisions
+// may answer with a counter-offer, which is a success reply, or with the error
+// the lifecycle page's own example shows: -32602 with `data.supported`. For
+// that error, and only that error, the request is sent once more with the
+// newest revision both sides speak: one outstanding initialize at a time (the
+// first has been answered), a new request id on the same flight, and
+// notifications/initialized only after the second one succeeds. The second
+// attempt's outcome is final, so this never loops.
+//
+// Spec: modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle,
+// "Version Negotiation": the server "MUST respond with another protocol version
+// it supports" and the error example carries `supported` and `requested`.
 func (c *Client) handshake(ctx context.Context, f *initFlight) (*InitializeResult, error) {
+	res, err := c.initializeAs(ctx, f, ProtocolVersionLatest)
+	var rpcErr *RPCError
+	var end *handshakeEnded
+	if err == nil || errors.As(err, &end) || !errors.As(err, &rpcErr) || rpcErr.Code != CodeInvalidParams {
+		return res, err
+	}
+	var data struct {
+		Supported []string `json:"supported"`
+	}
+	if json.Unmarshal(rpcErr.Data, &data) != nil || len(data.Supported) == 0 {
+		return res, err
+	}
+	var common []string
+	for _, v := range data.Supported {
+		if slices.Contains(handshakeVersions, v) {
+			common = append(common, v)
+		}
+	}
+	if len(common) == 0 {
+		return nil, fmt.Errorf("mcp: %s supports protocol revision(s) %s and this client speaks %s, so there is no revision to agree on: %w",
+			c.cfg.Name, strings.Join(data.Supported, ", "), strings.Join(handshakeVersions, ", "), err)
+	}
+	newest := slices.Max(common) // ISO dates order lexicographically
+	if newest == ProtocolVersionLatest {
+		// The server lists what it was just asked for and refused it anyway:
+		// nothing a second request would change.
+		return res, err
+	}
+	return c.initializeAs(ctx, f, newest)
+}
+
+// initializeAs is one initialize request at the given revision and what follows
+// a success: the checks on the reply and notifications/initialized.
+func (c *Client) initializeAs(ctx context.Context, f *initFlight, version string) (*InitializeResult, error) {
 	params := InitializeParams{
-		ProtocolVersion: ProtocolVersionLatest,
+		ProtocolVersion: version,
 		// No roots capability: nothing here serves roots/list, and a server
 		// told otherwise would wait on a list that never comes. Roots is also
 		// deprecated as of protocol 2026-07-28.

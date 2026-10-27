@@ -89,6 +89,17 @@ func main() {
 				asked, _ := params["protocolVersion"].(string)
 				os.WriteFile(aux, []byte(asked), 0o644)
 				reply(id, map[string]any{"protocolVersion": "2025-03-26"})
+			case "strict":
+				// A server that supports only 2025-03-26 and answers any other
+				// revision with the lifecycle page's example error.
+				if params["protocolVersion"] != "2025-03-26" {
+					payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{
+						"code": -32602, "message": "Unsupported protocol version",
+						"data": map[string]any{"supported": []string{"2025-03-26"}, "requested": params["protocolVersion"]}}})
+					fmt.Fprintln(os.Stdout, string(payload))
+				} else {
+					reply(id, map[string]any{"protocolVersion": "2025-03-26"})
+				}
 			case "modernonly":
 				// A per-request-era server answering a handshake with its own
 				// revision, which has no handshake.
@@ -865,6 +876,29 @@ func TestInitializeAsksForARealRevisionAndAcceptsACounterOffer(t *testing.T) {
 	}
 	if string(raw) != "2025-11-25" {
 		t.Fatalf("the initialize frame carried %q, want the latest revision the client speaks, 2025-11-25", raw)
+	}
+}
+
+// A strict server that supports only 2025-03-26 answers a newer request with
+// -32602 and `data.supported`, the error the lifecycle page itself shows. Base
+// asked for 2025-03-26 and succeeded; it must still, by asking again once.
+func TestInitializeFallsBackToARevisionAStrictServerSupports(t *testing.T) {
+	c, err := NewClient(stubConfig(t, "strict", "strict", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := c.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("a strict 2025-03-26 server failed the handshake: %v", err)
+	}
+	if res.ProtocolVersion != "2025-03-26" {
+		t.Fatalf("negotiated %q, want 2025-03-26", res.ProtocolVersion)
+	}
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatalf("the session was not usable after the fallback: %v", err)
 	}
 }
 

@@ -179,8 +179,14 @@ under **Unreleased** in the same commit as the code.
   lifecycle specification has the client send the latest version it supports.
   It now sends `2025-11-25`, and the accepted list is built from that constant
   so the two cannot drift. A server that counter-offers an older revision
-  (`2025-03-26`, `2025-06-18`, `2024-11-05`) is still accepted. The transport is
-  stdio only, so no `MCP-Protocol-Version` header applies.
+  (`2025-03-26`, `2025-06-18`, `2024-11-05`) is still accepted. A strict server
+  that answers the newer request with `-32602` and `data.supported` (the
+  lifecycle page's own example error) is asked once more, on a new request id of
+  the same handshake, for the newest revision both sides speak, and
+  `notifications/initialized` goes out only after that succeeds; a server with
+  no revision in common fails with an error naming both lists, and the retry is
+  never repeated. The transport is stdio only, so no `MCP-Protocol-Version`
+  header applies.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
