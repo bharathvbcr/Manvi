@@ -235,6 +235,71 @@ under **Unreleased** in the same commit as the code.
   Esc, Ctrl-C and the quit keys only refuse or leave, and are not gated. The
   gate cannot tell a held key's auto-repeat from a press once the period has
   passed; an allow still needs a reason and a second key.
+- Provider requests no longer follow a redirect to another origin. Credentials
+  travel in `x-api-key` / `x-goog-api-key`, which net/http does not strip when a
+  redirect leaves the host (it strips only Authorization, Cookie and
+  WWW-Authenticate), and a 307/308 replays the request body, so a provider
+  endpoint that redirected sent the key and the prompt wherever it pointed. The
+  transport client now refuses any redirect whose scheme, host or port differs
+  from the original request, failing closed with `*ErrCrossOriginRedirect`
+  (origins only, no URL or query) as a permanent error that is not retried;
+  same-origin redirects are followed as before, under net/http's ten-hop limit,
+  and a chain past it is a typed, permanent `*ErrTooManyRedirects` rather than
+  a fault retried four times over. Both errors are carried as themselves, not
+  inside net/http's `Post "<full URL>"` wrapper, so a query string never reaches
+  the message.
+  An operator whose endpoint moved sets the base URL to the final one. Applies
+  to every provider and to `Probe`. Tests with two fixture servers fail on
+  58b9258.
+- An Anthropic response cut off by `max_tokens` in the middle of a tool call no
+  longer ends the turn. `Response()` returned an "incomplete arguments" (or
+  "never closed") error, discarding every completed step with it, although the
+  model had only run out of output budget. When the stop reason is
+  `max_tokens`, a call that was not sealed by `content_block_stop` or whose
+  arguments are not valid JSON now settles as `StopMaxTokens` plus a
+  `MalformedCall`, the same as the OpenAI-compatible adapter: the loop tells the
+  model its call was cut off and to send less, a call that arrived whole in the
+  same message still runs, and the cut call is never run, even when the prefix
+  happens to parse (ft-074e1445's rule). Invalid arguments or an unsealed call
+  on any other stop reason are still an error, since that is the stream, not the
+  model's limit. Tests fail on 58b9258.
+- An empty tool result and an empty text block are encoded as valid requests on
+  both wires. `read_file` of an empty file is `ToolResultData{Text:""}`, which
+  the projection turns into a text block with no text; Anthropic's
+  `tool_result.content` was then `[{"type":"text"}]` (a text block's `text` has
+  `minLength` 1), an assistant text block that opened and never received a delta
+  was replayed as `{"type":"text"}`, and the OpenAI-compatible adapter sent a
+  `role:"tool"` message with no `content` (the chat-completions schema lists
+  `role`, `content` and `tool_call_id` as required on a tool message). The fix
+  is in the encoders, because journals already on disk hold these blocks:
+  Anthropic omits `content` on a tool_result that has none and never emits a
+  text block without text, dropping an assistant message that is left with no
+  content (the API combines consecutive same-role turns) and refusing a user
+  message with none; the OpenAI-compatible adapter always sends `content` on a
+  tool message (`""` when empty) and still omits it on an assistant message that
+  only carries tool calls. Tests run an empty `read_file` through the session
+  projection into both encoders and fail on 58b9258. The same encoder also
+  covers three neighbouring shapes: an `is_error` tool_result left with no
+  content carries `(no output)` (the live API is reported to refuse it empty,
+  anthropics/claude-agent-sdk-python#248; not in the reference); a thinking
+  block whose signature never arrived (cut off by `max_tokens`) is dropped,
+  since `""` is not a signature; and a whitespace-only text block is dropped,
+  with other text sent untrimmed (the API rule is third-party evidence,
+  microsoft/vscode#307807 and anthropics/claude-code#23440, not in the
+  reference). The OpenAI-compatible adapter omits an assistant turn that is only
+  empty text, as the Anthropic encoder does, so a session can move between
+  providers; an empty user message is still refused.
+- A replayed Anthropic thinking block keeps its required `thinking` field.
+  `thinking` was `omitempty`, and the default display on current models is
+  `"omitted"`, which delivers `thinking:""`: the block went back as
+  `{"type":"thinking","signature":"SIG"}`, and the Messages API requires
+  `thinking` (a string) and says thinking blocks must be passed back unmodified
+  or the request is a 400, so a tool-using turn after step one was likely
+  refused (found by audit; not run live). The wire block now marshals
+  `thinking` and `signature` on a thinking block and `data` on a
+  redacted_thinking block even when empty, and no other block type gains a
+  `thinking` field. A golden test pins the exact JSON of every block type; the
+  replay test fails on 58b9258.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible
