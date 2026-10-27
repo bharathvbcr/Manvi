@@ -237,7 +237,15 @@ under **Unreleased** in the same commit as the code.
   - The reflector's prompt states the rule, since a refused answer costs a
     rerun.
   - Entries already stored with a forged heading are not rewritten.
-
+- A refused read says it is a read and what to do about it. The reader's
+  refusal of a symbolic link said `refusing to write through ...` because every
+  pinned operation pinned through the write path's text; it now says
+  `refusing to read "AGENTS.md": it is a symbolic link ... Replace the link with
+  the file itself, or with a copy of it`, and a removal says it is one. The read
+  gate's refusals (`path.aliased_read`, `path.outside_root`, `path.secret_read`)
+  carry a remedy each (replace the hard link or the link out of the repository
+  with a copy; rename a file that holds no credentials). They reach the prompt
+  notice for a refused instruction file, a skill's rejection and a spec's.
 
 ## [0.1.0] — 2026-10-17
 

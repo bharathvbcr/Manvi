@@ -33,7 +33,7 @@ func (r *Registry) skillReader(ctx context.Context) harness.ReadFunc {
 func RepoReaderAt(ctx context.Context, root string) harness.ReadFunc {
 	return func(rel string, limit int64) ([]byte, error) {
 		if why := readRefusalAt(root, rel); why != "" {
-			return nil, fmt.Errorf("%s is withheld by %s", rel, why)
+			return nil, fmt.Errorf("refusing to read %s: it is withheld by %s%s", rel, why, withheldRemedy(why))
 		}
 		return readContained(ctx, root, rel, limit)
 	}
