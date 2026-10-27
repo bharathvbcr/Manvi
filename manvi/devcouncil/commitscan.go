@@ -53,6 +53,11 @@ import (
 // holds for it, and a working-tree entry that is not a regular file (a symlink,
 // a directory, a FIFO) by those blobs alone; neither is a failure.
 //
+// The same holds for an untracked directory git cannot open: `ls-files` exits 0
+// and leaves its files out, so a secret-path file there is neither listed nor
+// compared. That is a note per directory (listingWarningNotes), not a refusal
+// and not a clean listing.
+//
 // Residuals, accepted and named:
 //   - a modified binary whose HEAD version already held a value is refused on
 //     every touch, since its bytes still hold it;
@@ -247,6 +252,90 @@ func (r *Registry) trackedSecretBlobs(ctx context.Context, secret []string) (map
 	return found, nil
 }
 
+// maxListingNotes bounds the per-directory notes one scan carries; the agent can
+// create directories without limit, and the result must not grow with them.
+const maxListingNotes = 32
+
+const unreadableDirPrefix = "warning: could not open directory '"
+
+// listingWarningNotes turns what `git ls-files` said on stderr into notes. Git
+// exits 0 after "could not open directory 'X/': Permission denied" and leaves
+// that directory's files out of the listing, so a secret-path file there is
+// never listed, hashed or compared; stdout alone cannot tell that listing from a
+// complete one. Each such directory is a note and the commit is not refused: the
+// agent cannot always cure a directory it cannot read (see scanNote). A line this
+// does not recognise (git's messages are localised, and it has other warnings,
+// such as an unreadable .gitignore) and a stderr cut by its cap are one
+// listing note each, never a silent clean listing.
+func listingWarningNotes(captures []gitCapture) []scanNote {
+	var notes []scanNote
+	seen := map[string]bool{}
+	var unrecognised []string
+	var stderrCut []string
+	omitted := 0
+	for _, c := range captures {
+		if c.stderrNote != "" {
+			stderrCut = append(stderrCut, c.stderrNote)
+		}
+		for _, line := range strings.Split(c.stderr, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			rest, ok := strings.CutPrefix(line, unreadableDirPrefix)
+			end := strings.LastIndex(rest, "': ")
+			if !ok || end < 0 {
+				unrecognised = append(unrecognised, line)
+				continue
+			}
+			dir, reason := rest[:end], rest[end+len("': "):]
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			if len(notes) >= maxListingNotes {
+				omitted++
+				continue
+			}
+			notes = append(notes, scanNote{
+				Kind: "unreadable_untracked_dir", File: dir,
+				Bound: fmt.Sprintf("git could not open this untracked directory (%s), so the files inside it were left out of the listing", reason),
+				StillChecked: "tracked files (listed from the index, which needs no directory read) and every untracked file outside this directory; " +
+					"a secret-path file inside it was neither listed, hashed nor read, so a staged exact copy or value of it is not matched",
+				OperatorAction: "make the directory readable by the harness user, or move it out of the repository, then commit again; " +
+					"the agent cannot change the permissions of a directory it cannot open",
+			})
+		}
+	}
+	if omitted > 0 {
+		notes = append(notes, scanNote{
+			Kind: "unreadable_untracked_dir", File: fmt.Sprintf("(%d more directories)", omitted),
+			Bound:          fmt.Sprintf("git could not open %d more untracked directories than the %d named here", omitted, maxListingNotes),
+			StillChecked:   "the same as for each directory named: nothing inside any of them was listed",
+			OperatorAction: "make the directories readable by the harness user, or move them out of the repository, then commit again",
+		})
+	}
+	if len(unrecognised) > 0 || len(stderrCut) > 0 {
+		bound := "git reported on stderr while listing files, which this check cannot attribute to a directory"
+		if len(unrecognised) > 0 {
+			first := unrecognised[0]
+			if len(first) > gitStderrPreview {
+				first = first[:gitStderrPreview] + "…"
+			}
+			bound = fmt.Sprintf("git wrote %d warning line(s) while listing files that this check does not recognise, so the listing may be partial (first: %q)", len(unrecognised), first)
+		}
+		if len(stderrCut) > 0 {
+			bound += "; git's stderr was cut by its cap (" + stderrCut[0] + "), so a directory it could not open may not be named"
+		}
+		notes = append(notes, scanNote{
+			Kind: "listing_warning", File: "(git ls-files)", Bound: bound,
+			StillChecked:   "every file git did list",
+			OperatorAction: "run `git ls-files --others --exclude-standard` in the repository, read the warnings and make what they name readable by the harness user",
+		})
+	}
+	return notes
+}
+
 func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error) {
 	set := secretFileSet{blobs: map[string]string{}, values: map[string]string{}}
 
@@ -266,12 +355,14 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 			candidates = append(candidates, p)
 		}
 	}
+	var captures []gitCapture
 	for _, args := range listings {
-		out, err := runGit(ctx, r.deps.Root, args...)
+		listed, err := runGitWhole(ctx, r.deps.Root, args...)
 		if err != nil {
 			return set, fmt.Errorf("listing files: %w", err)
 		}
-		for _, p := range strings.Split(out, "\x00") {
+		captures = append(captures, listed)
+		for _, p := range strings.Split(listed.out, "\x00") {
 			if !strings.HasSuffix(p, "/") {
 				add(p)
 				continue
@@ -304,6 +395,10 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		}
 	}
 
+	// What the listings could not cover goes on the set before any early return
+	// below: a tree with no secret-path file it could see is exactly the tree
+	// whose hidden directory might hold one.
+	set.notes = listingWarningNotes(captures)
 	secret, err := secretPaths(r.matcher(), candidates)
 	if err != nil {
 		return set, err
@@ -400,7 +495,7 @@ func (r *Registry) collectSecretFiles(ctx context.Context) (secretFileSet, error
 		}
 		r.readValues(values, p, filepath.Join(r.deps.Root, filepath.FromSlash(p)), len(tracked[p]) > 0)
 	}
-	set.notes = values.notes
+	set.notes = append(set.notes, values.notes...)
 	return set, nil
 }
 

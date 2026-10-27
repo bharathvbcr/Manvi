@@ -228,6 +228,40 @@ under **Unreleased** in the same commit as the code.
   accepted when a background process it started holds the pipe past those two
   seconds (that process is then killed); a non-zero exit, a timeout, or output
   that is not Claude Code's is refused as before.
+- The commit scan no longer reports a clean listing for a directory git could
+  not open. `git ls-files --others` exits 0 after `warning: could not open
+  directory 'X/': Permission denied` and leaves that directory's files out, so
+  a secret-path file inside an unreadable untracked directory was never listed,
+  hashed or compared, and the commit carried no note. The listing's stderr is
+  now read: each such directory is an `unreadable_untracked_dir` scan note (the
+  directory, the bound, what was still checked, the operator action) and a
+  `commit.scan.…` entry in the degraded list. The commit is not refused, because
+  the agent cannot cure a directory it cannot read. A warning the scan does not
+  recognise (git's messages are localised) or a stderr cut by its cap is one
+  `listing_warning` note, and the notes are bounded at 32 directories plus a
+  count.
+- `bench/run.py` stops a cell cleanly when an episode's guard set cannot be
+  worked out. A concurrent `git worktree add` leaves a worktree's `gitdir`
+  pointer empty or missing for a moment, `Harness(...)` raised `GitGuardError`
+  outside any handler, and the run died on a traceback. It now prints
+  `[runner] ABORTING:` with the path and the episode, writes no row for it and
+  exits non-zero, so `grid.py` reports the cell failed. No row is written on
+  purpose: a `runner_error` row is kept and scored, so the cell would carry a
+  failure the model never had, and a re-run could not replace it. Re-running the
+  tag keeps the finished episodes and draws the missing one.
+- The MCP client asks for the latest revision it speaks. Its `initialize` named
+  `2025-03-26` while it already accepted a reply up to `2025-11-25`; the
+  lifecycle specification has the client send the latest version it supports.
+  It now sends `2025-11-25`, and the accepted list is built from that constant
+  so the two cannot drift. A server that counter-offers an older revision
+  (`2025-03-26`, `2025-06-18`, `2024-11-05`) is still accepted. A strict server
+  that answers the newer request with `-32602` and `data.supported` (the
+  lifecycle page's own example error) is asked once more, on a new request id of
+  the same handshake, for the newest revision both sides speak, and
+  `notifications/initialized` goes out only after that succeeds; a server with
+  no revision in common fails with an error naming both lists, and the retry is
+  never repeated. The transport is stdio only, so no `MCP-Protocol-Version`
+  header applies.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
