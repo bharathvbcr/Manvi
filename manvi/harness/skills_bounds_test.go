@@ -6,19 +6,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
 )
 
+// forbiddenRune is the refused set spelled out independently of
+// hiddenRanges, so the fuzz oracle does not share the code it checks.
 func forbiddenRune(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+	switch {
+	case r == '\t' || r == '\n' || r == '\r':
+		return false
+	case r < 0x20, r >= 0x7f && r <= 0x9f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r >= 0xe0000 && r <= 0xe007f:
+		return true
+	}
+	return false
 }
 
 func TestControlFormatAndPrivateUseRunesRefusedWithCodepoint(t *testing.T) {
 	for want, r := range map[string]string{
 		"U+0000": "\x00", "U+001B": "\x1b[2J", "U+0007": "\a", "U+007F": "\x7f",
-		"U+202E": "\u202e", "U+200B": "\u200b", "U+E0041": "\U000e0041", "U+E000": "",
+		"U+202E": "\u202e", "U+2066": "\u2066", "U+E0041": "\U000e0041", "U+0099": "\u0099",
 	} {
 		_, reason := loadSkill("foo", stubRead("---\nname: foo\ndescription: \"a "+r+" b\"\n---\n"))
 		if !strings.Contains(reason, want) {

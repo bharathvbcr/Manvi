@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/prompt"
@@ -449,25 +448,86 @@ func judgeSkill(dirName string, data []byte) (Skill, string) {
 	return Skill{Name: dirName, Description: desc, Body: body}, ""
 }
 
-// unrenderable reports a control, format or private-use rune: one that would
-// reach the model and the terminal unrendered. Skills and harness specs share
-// this one definition of text that is refused.
-func unrenderable(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r)
+// hiddenRange is a run of runes this package refuses, with the one-line reason
+// a person reading the refusal needs.
+type hiddenRange struct {
+	lo, hi rune
+	reason string
+}
+
+// hiddenRanges is the whole of what hiddenRuneProblem refuses, enumerated and
+// not derived from a Unicode category. A category would sweep in text that is
+// legitimate (a zero-width joiner holds a family emoji together and a
+// zero-width non-joiner spells Persian; a private-use glyph is an icon font's;
+// a byte-order mark is harmless anywhere) and could change under a Unicode
+// update; these ranges are the ones that hide or rewrite what a reviewer reads:
+//
+//   - C0 and C1 controls except tab, newline and carriage return, which a
+//     terminal executes or an escape sequence is built from;
+//   - the bidi embedding, override and isolate controls, which reorder text so
+//     what is shown differs from what the model reads;
+//   - the tag block, which spells ASCII in characters that render as nothing.
+//
+// Allowed on purpose: zero-width joiner, non-joiner, space and word joiner, soft
+// hyphen, the byte-order mark anywhere, the left-to-right, right-to-left and
+// Arabic letter marks, variation selectors, and private use (planes 15 and 16
+// included). A refused rune is refused, never stripped: the reviewer and the
+// model must read the same bytes.
+var hiddenRanges = []hiddenRange{
+	{0x0000, 0x001F, "a C0 control: a terminal executes it, and an escape sequence starts with one"},
+	{0x007F, 0x009F, "DEL or a C1 control: a terminal executes it"},
+	{0x202A, 0x202E, "a bidi embedding or override: it reorders the text a reviewer reads"},
+	{0x2066, 0x2069, "a bidi isolate: it reorders the text a reviewer reads"},
+	{0xE0000, 0xE007F, "a Unicode tag character: it spells ASCII in characters that render as nothing"},
+}
+
+// hiddenRuneNames names the refused runes that have a name worth giving; the
+// rest are named by their range.
+var hiddenRuneNames = map[rune]string{
+	0x0000: "NULL", 0x0007: "BELL", 0x0008: "BACKSPACE", 0x000B: "LINE TABULATION", 0x000C: "FORM FEED",
+	0x001B: "ESCAPE", 0x007F: "DELETE", 0x0085: "NEXT LINE",
+	0x202A: "LEFT-TO-RIGHT EMBEDDING", 0x202B: "RIGHT-TO-LEFT EMBEDDING", 0x202C: "POP DIRECTIONAL FORMATTING",
+	0x202D: "LEFT-TO-RIGHT OVERRIDE", 0x202E: "RIGHT-TO-LEFT OVERRIDE",
+	0x2066: "LEFT-TO-RIGHT ISOLATE", 0x2067: "RIGHT-TO-LEFT ISOLATE", 0x2068: "FIRST STRONG ISOLATE",
+	0x2069: "POP DIRECTIONAL ISOLATE",
+}
+
+func hiddenRuneName(r rune) string {
+	if n, ok := hiddenRuneNames[r]; ok {
+		return n
+	}
+	switch {
+	case r <= 0x1F:
+		return "C0 CONTROL"
+	case r >= 0x80 && r <= 0x9F:
+		return "C1 CONTROL"
+	case r >= 0xE0000:
+		return "TAG CHARACTER"
+	}
+	return "CONTROL"
 }
 
 // hiddenRuneProblem is why text carries a rune that must not reach the model or
-// a terminal unrendered, or "": the one check every prompt input shares (a
-// description, a spec's text, a skill's body). Tab, newline and carriage return
-// are layout, not hiding places, and are allowed. It does not judge UTF-8
-// validity or templating tokens, which differ by input.
+// a terminal, or "": the one check every prompt input shares (a description, a
+// spec's text, a skill's body), over the enumerated hiddenRanges. Tab, newline
+// and carriage return are layout and are allowed. The answer names the first
+// such rune, its name, and where it is (line and rune column, both from 1). It
+// does not judge UTF-8 validity or templating tokens, which differ by input.
 func hiddenRuneProblem(text string) string {
+	line, col := 1, 0
 	for _, r := range text {
-		if r == '\n' || r == '\t' || r == '\r' {
+		col++
+		if r == '\n' {
+			line, col = line+1, 0
 			continue
 		}
-		if unrenderable(r) {
-			return fmt.Sprintf("contains U+%04X, a control, format or private-use character", r)
+		if r == '\t' || r == '\r' {
+			continue
+		}
+		for _, h := range hiddenRanges {
+			if r >= h.lo && r <= h.hi {
+				return fmt.Sprintf("contains U+%04X %s at line %d, column %d: %s", r, hiddenRuneName(r), line, col, h.reason)
+			}
 		}
 	}
 	return ""
@@ -484,8 +544,8 @@ func hiddenRuneProblem(text string) string {
 // repeated key is refused rather than resolved, because last-wins would let a
 // second line replace the one a reviewer read. A block scalar (| or >) is
 // refused, because accepting its indicator as the text would put ">" in the
-// prompt as the description. A value carrying a control, format or private-use
-// rune is refused: it would reach the model and the terminal unrendered. Other
+// prompt as the description. A value carrying a rune in hiddenRanges
+// (a control, a bidi override or isolate, a tag character) is refused. Other
 // keys and indented lines are ignored. CRLF is accepted.
 func ParseFrontmatter(text string) (map[string]string, string, error) {
 	text = strings.TrimPrefix(text, "\ufeff")

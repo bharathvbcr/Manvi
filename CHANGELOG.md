@@ -190,15 +190,21 @@ under **Unreleased** in the same commit as the code.
     collision check no longer read the file (it was read several times a turn).
   - A session started in a subdirectory now carries the repository's
     instructions rather than a file of that name in the subdirectory.
-- A skill's body is refused on the same runes as its description, a spec's text
-  and a lesson's answer: control characters other than tab, newline and carriage
-  return, format characters (bidi, zero-width, byte order) and private-use ones,
-  Unicode tag characters included. `devcouncil_load_skill` hands the body to the
-  model whole and it checked UTF-8 alone, so an escape sequence or a bidi
-  override could sit in steps a reviewer read as plain text. The rejection names
-  the skill and the codepoint; `${...}` and `{{...}}` in a body are still
-  allowed. The one check, `hiddenRuneProblem`, now serves the description, a
-  spec's text and the body.
+- A skill's body is refused on the same runes as its description and a spec's
+  text, by one enumerated policy (`hiddenRuneProblem`, over `hiddenRanges`) and
+  not by Unicode category: C0 and C1 controls except tab, newline and carriage
+  return, the bidi embedding, override and isolate controls (U+202A-202E,
+  U+2066-2069) and the tag block (U+E0000-E007F). `devcouncil_load_skill` hands
+  the body to the model whole and it checked UTF-8 alone, so an escape sequence
+  or a bidi override could sit in steps a reviewer read as plain text. A
+  refusal names the skill, the rune (code point and name), and its line and
+  column, and never strips. `${...}` and `{{...}}` in a body are still allowed.
+  - Descriptions and a spec's text are loosened to the same set. They used to
+    refuse every control, format and private-use rune, which refused real text:
+    the zero-width joiner in a family or technologist emoji, the zero-width
+    non-joiner in Persian, the soft hyphen, a zero-width space, a word joiner, a
+    byte-order mark mid-text, the left-to-right, right-to-left and Arabic letter
+    marks, variation selectors and private-use glyphs. These now load.
 - Listing the skills directory is bounded. It read every entry
   (`ReadDir(-1)`) on every turn and every `devcouncil_load_skill` call; it now
   reads at most `harness.MaxSkillDirEntries` (10,000) in chunks, checking for
