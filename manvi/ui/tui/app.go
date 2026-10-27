@@ -45,6 +45,10 @@ type App struct {
 	quitArmed time.Time
 	quit      bool
 
+	// now is the clock the approval card's activation gate reads. Tests move
+	// it; the runner leaves it at the wall clock.
+	now func() time.Time
+
 	tick int
 	// tickMoved is set by each ActionTick; see TickMoved.
 	tickMoved bool
@@ -109,7 +113,7 @@ func NewApp(th Theme, host Host) *App {
 	// terminal would look broken with nothing to point at.
 	return &App{
 		Theme: th, Host: host, active: -1, Profile: th.Profile, Unicode: th.Unicode,
-		fx: fx.Enabled(), series: fx.NewSeries(24),
+		fx: fx.Enabled(), series: fx.NewSeries(24), now: time.Now,
 	}
 }
 
@@ -247,6 +251,10 @@ func (a *App) textTarget() *Prompt {
 
 // Dispatch folds an action into state and returns the effects to run.
 func (a *App) Dispatch(act Action) []Effect {
+	switch act.(type) {
+	case ActionKey, ActionRune, ActionPaste, ActionClick, ActionScroll:
+		a.noteOverlayInput()
+	}
 	switch t := act.(type) {
 	case ActionTick:
 		// Decided before the tick mutates anything, so the tick that clears a
@@ -325,6 +333,9 @@ func (a *App) Dispatch(act Action) []Effect {
 		return nil
 
 	case ActionPaste:
+		if a.approvalInert() {
+			return nil
+		}
 		if p := a.textTarget(); p != nil {
 			if v := a.Current(); v != nil && p == v.Prompt && len(t.Text) > 200 {
 				chip := p.InsertPaste(t.Text)
@@ -341,9 +352,15 @@ func (a *App) Dispatch(act Action) []Effect {
 		return nil
 
 	case ActionRune:
+		if a.approvalInert() {
+			return nil
+		}
 		return a.rune(t)
 
 	case ActionKey:
+		if !approvalAlwaysLive(t.Binding) && a.approvalInert() {
+			return nil
+		}
 		return a.key(t.Binding)
 
 	case ActionScroll:
@@ -361,6 +378,51 @@ func (a *App) Dispatch(act Action) []Effect {
 		return nil
 	}
 	return nil
+}
+
+// approvalInert reports whether an approval card owns the keyboard and has not
+// yet earned input, consuming the input's place in the gate when it has not.
+// The caller drops the input when it returns true.
+func (a *App) approvalInert() bool {
+	if a.Context() != CtxApproval {
+		return false
+	}
+	card := a.Current().Approval()
+	if card == nil {
+		return false
+	}
+	return !card.admit()
+}
+
+// approvalAlwaysLive names the keys that act on a card before it admits input.
+// Quitting is not an answer, cancelling the turn only ever refuses (a turn
+// stopped early costs the operator a retry), and escape only ever refuses: a
+// refusal issued early costs a retry, while an allow issued early is the harm
+// the gate exists to prevent. Everything else, Enter included, waits.
+func approvalAlwaysLive(binding string) bool {
+	if binding == "esc" {
+		return true
+	}
+	switch resolve(binding, CtxApproval) {
+	case CmdQuit, CmdCancel:
+		return true
+	}
+	return false
+}
+
+// noteOverlayInput counts input an overlay consumes against the card behind
+// it. The card is painted and the clock runs while a palette is open over it,
+// but the operator is reading the palette, not the card: without this, Esc to
+// close the palette followed by Enter would land on a card nobody has looked at.
+func (a *App) noteOverlayInput() {
+	if a.overlay == nil {
+		return
+	}
+	if v := a.Current(); v != nil {
+		if card := v.Approval(); card != nil {
+			card.refuse()
+		}
+	}
 }
 
 func (a *App) turnEnded(t ActionTurnEnded) []Effect {
@@ -388,7 +450,9 @@ func (a *App) approvalRequested(t ActionApprovalRequest) []Effect {
 		// approval nobody can see must not be granted by absence.
 		return []Effect{denyEffect(t.Reply, "no session is attached to put this to an operator")}
 	}
-	v.PushApproval(NewApprovalCard(t.Request, t.Reply))
+	card := NewApprovalCard(t.Request, t.Reply)
+	card.clock = func() time.Time { return a.now() }
+	v.PushApproval(card)
 	v.Apply(ui.Event{
 		Kind: ui.KindApproval, At: time.Now().UTC(),
 		Text: t.Request.Reason, Rule: t.Request.Rule, Severity: t.Request.Severity,

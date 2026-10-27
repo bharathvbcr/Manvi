@@ -162,6 +162,21 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- An approval card no longer takes keys typed before it appeared. The card was
+  modal but had no activation delay: an operator typing into the composer when
+  a request arrived had a digit select "allow once", the words after it became
+  the grant's reason, and the Enter meant for the composer recorded
+  `Allow=true By="human"`. The card now takes no input until it has been
+  painted and 400 ms have passed since the later of that paint and the last
+  input it refused, so a burst of type-ahead of any length is dropped (not
+  replayed) and one keypress after a pause is a decision. The same gate holds
+  for clicks and wheel notches (including ones that only move the highlight),
+  for the next card in a queue when its predecessor is answered, and for keys an
+  overlay consumed: closing the palette over a card restarts the quiet period.
+  Only the left button operates the card; a middle or right press does nothing.
+  Esc, Ctrl-C and the quit keys only refuse or leave, and are not gated. The
+  gate cannot tell a held key's auto-repeat from a press once the period has
+  passed; an allow still needs a reason and a second key.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible

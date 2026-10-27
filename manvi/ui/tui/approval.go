@@ -54,6 +54,17 @@ type ApprovalCard struct {
 	Index int
 	Total int
 
+	// clock reads the time for the activation gate; the app supplies its own
+	// so a test can move it.
+	clock func() time.Time
+	// painted is whether the card has been drawn where the operator could see
+	// it, and quietFrom is when the activation gate's quiet period began: the
+	// first paint, pushed forward by every input the gate refuses. armed
+	// latches once the gate lets an input through.
+	painted   bool
+	quietFrom time.Time
+	armed     bool
+
 	// cardRect is the whole card as last drawn, and optionRows and reasonRect
 	// are its controls, recorded against screen coordinates so a click is
 	// tested against what the operator is looking at rather than a layout
@@ -84,6 +95,71 @@ func NewApprovalCard(req ui.Request, reply chan ui.Decision) *ApprovalCard {
 	p := NewPrompt()
 	p.Placeholder = "why this is safe — recorded on the grant"
 	return &ApprovalCard{Request: req, Reply: reply, reason: p, arrived: time.Now(), Index: 1, Total: 1}
+}
+
+// approvalQuiet is how long the card must have been on screen with no input
+// arriving before it takes any.
+//
+// The card is modal, but modal is not enough on its own: an operator typing
+// into the composer when the request arrives has keystrokes already in flight,
+// and a digit among them answers it while the words after it become the grant's
+// reason. So the card takes no input until it has been painted, and then none
+// until a quiet period has passed since the later of that paint and the last
+// input it refused. The period restarts on every refused input, which is what
+// separates a burst of type-ahead, however long it runs, from one deliberate
+// keypress by someone who has read the card. 400 ms is longer than the gap
+// between keys in ordinary typing and shorter than a reader's reaction.
+//
+// What the gate does not do is tell a held key's auto-repeat from a press: a
+// digit held down since before the card appeared repeats once the quiet period
+// has passed and is admitted as one deliberate press. That is accepted, because
+// an allow still needs a reason typed and a second key to confirm it, and the
+// gate's job is the keystroke already in flight, not the one a person chooses
+// to keep pressing.
+const approvalQuiet = 400 * time.Millisecond
+
+// markPainted records that the card was drawn visibly. Only the first paint
+// counts: later frames must not restart the quiet period.
+func (c *ApprovalCard) markPainted() {
+	if c.painted {
+		return
+	}
+	c.painted = true
+	c.quietFrom = c.now()
+}
+
+func (c *ApprovalCard) now() time.Time {
+	if c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
+}
+
+// refuse counts an input that was not meant for the card as one the gate
+// refused: the quiet period restarts from now. It has no effect before the
+// first paint (the period starts there) or after the gate has opened.
+func (c *ApprovalCard) refuse() {
+	if c.painted && !c.armed {
+		c.quietFrom = c.now()
+	}
+}
+
+// admit reports whether an input arriving now may act on the card. An input
+// that may not is dropped, never deferred: replaying type-ahead after the quiet
+// period would be the same defect later.
+func (c *ApprovalCard) admit() bool {
+	if c.armed {
+		return true
+	}
+	now := c.now()
+	if !c.painted || now.Sub(c.quietFrom) < approvalQuiet {
+		if c.painted {
+			c.quietFrom = now
+		}
+		return false
+	}
+	c.armed = true
+	return true
 }
 
 // isQuestion reports whether this card asks the operator to choose rather than
@@ -451,6 +527,7 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 	if inner.Empty() {
 		return render.Rect{}
 	}
+	c.markPainted()
 
 	lines, reasonRow, optStart := c.content(th, inner.W)
 	nOpts := len(c.options())

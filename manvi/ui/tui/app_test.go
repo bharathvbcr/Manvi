@@ -282,10 +282,26 @@ func blockedRequest(grantable bool) ui.Request {
 	}
 }
 
-func raiseApproval(a *App, grantable bool) chan ui.Decision {
+// raiseApprovalCold raises a card exactly as the runner does: nothing has been
+// painted, so the card's activation gate is closed.
+func raiseApprovalCold(a *App, grantable bool) chan ui.Decision {
 	reply := make(chan ui.Decision, 1)
 	a.Dispatch(ActionApprovalRequest{SessionID: "S1", Request: blockedRequest(grantable), Reply: reply})
 	return reply
+}
+
+// raiseApproval raises a card and lets the operator have read it: it is painted,
+// and the clock has moved far past the quiet period, so the next input is a
+// deliberate one. The tests of the gate itself use raiseApprovalCold.
+func raiseApproval(a *App, grantable bool) chan ui.Decision {
+	reply := raiseApprovalCold(a, grantable)
+	settleApproval(a)
+	return reply
+}
+
+func settleApproval(a *App) {
+	a.Draw(render.NewBuffer(100, 30))
+	a.now = func() time.Time { return time.Now().Add(time.Hour) }
 }
 
 func TestApprovalDefaultsToDeny(t *testing.T) {
