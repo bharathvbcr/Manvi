@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
 	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
@@ -47,6 +48,11 @@ const (
 	claudeMaxPending  = 32
 	claudeMaxRequests = 2048
 	claudeMaxQueue    = 64
+
+	// The build probe is bounded by its own deadline and then by how long a
+	// descendant may keep the stdout pipe open after the process is gone.
+	claudeProbeTimeout   = 10 * time.Second
+	claudeProbeWaitDelay = 2 * time.Second
 )
 
 type claudePending struct {
@@ -123,9 +129,15 @@ func claudePolicy(o Options) (flag string, reported string, err error) {
 // answered is not the build that was recorded, the run fails rather than
 // carrying a configuration describing something else.
 func claudeBuild(ctx context.Context, program string) (string, error) {
-	probe, stop := context.WithTimeout(ctx, 10*time.Second)
+	probe, stop := context.WithTimeout(ctx, claudeProbeTimeout)
 	defer stop()
 	cmd := exec.CommandContext(probe, program, "--version")
+	// The deadline has to reach what the executable started, not only the
+	// executable: Output waits for the pipe to close, and a descendant holding
+	// it kept a 10 s probe running for 25. The group is killed with the
+	// deadline, and WaitDelay stops the wait on a pipe nobody will close.
+	proc.ConfigureGroup(cmd)
+	cmd.WaitDelay = claudeProbeWaitDelay
 	// The probe is the same executable the session will be; it gets the same
 	// withholding.
 	cmd.Env = childenv.Inherit()

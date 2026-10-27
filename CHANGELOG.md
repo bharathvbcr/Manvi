@@ -153,6 +153,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The managed Claude build probe now ends with its deadline. `claude --version`
+  was run with a 10 s timeout that killed only the process it started, and
+  `Output` then waited for every descendant to close the stdout pipe, so an
+  executable that left a background process holding it kept the launch running
+  for that process's whole life (25 s against a 10 s probe in the audit). The
+  probe now runs in its own process group, killed with the deadline, and gives
+  up on a held pipe two seconds after the process is gone, as the other child
+  processes here do.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`
