@@ -48,8 +48,17 @@ type ManagedFactory func(context.Context, codingagent.Options) (ManagedSession, 
 // the host had both already accepted.
 const MaxManagedSessions = 64
 
+// managedStore is the part of the task store a managed run speaks to. It is
+// *store.Client in production; a test wraps it to hold one call, so it can show
+// what is and is not blocked behind that call.
+type managedStore interface {
+	Workbench(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
+	CreateDecision(ctx context.Context, request store.DecisionRequest) (json.RawMessage, error)
+	ClaimDecision(ctx context.Context, request store.DecisionRequest, requestID string, revision int64) (json.RawMessage, error)
+}
+
 type ManagedRunner struct {
-	client      *store.Client
+	client      managedStore
 	factory     ManagedFactory
 	failureText func(error) string
 	mu          sync.Mutex
@@ -223,6 +232,10 @@ type managedRun struct {
 	Configuration string  `json:"effective_configuration"`
 }
 type managedJob struct {
+	// activateMu serialises Activate for this run, so a retry waits for the first
+	// call and gets its receipt. It is held across Activate's store round trips;
+	// mu, which the serve read loop takes for follow, never is. Taken before mu.
+	activateMu         sync.Mutex
 	mu                 sync.Mutex
 	id, owner, session string
 	preparation        generationRequest
@@ -868,21 +881,16 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	if job == nil || closed {
 		return nil, errors.New("the managed session is not owned by this host")
 	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	if job.provider == nil || job.err != nil || in.Owner != job.owner || in.Session != job.session || in.PID != job.provider.PID() {
-		return nil, errors.New("activation does not match the prepared process")
+	// Activations of one run are taken one at a time, and a second waits for the
+	// first and answers with its receipt. job.mu is not that wait: it guards fields
+	// that the serve read loop reads (follow), and the two store round trips below
+	// are not done under it.
+	job.activateMu.Lock()
+	defer job.activateMu.Unlock()
+	receipt, claimed, err := job.claimActivation(in.Owner, in.Session, in.PID)
+	if err != nil || !claimed {
+		return receipt, err
 	}
-	if job.parentID != "" && strings.TrimSpace(job.turnText) == "" {
-		return nil, errors.New("the follow-up has no message")
-	}
-	if job.activated {
-		if len(job.activation) > 0 {
-			return append(json.RawMessage(nil), job.activation...), nil
-		}
-		return nil, errors.New("activation is already consumed or unresolved")
-	}
-	job.activated = true // A lost store reply cannot launch twice.
 	launched := false
 	defer func() {
 		if !launched {
@@ -914,17 +922,44 @@ func (r *ManagedRunner) Activate(ctx context.Context, raw json.RawMessage) (json
 	if err != nil {
 		return nil, err
 	}
+	job.mu.Lock()
 	job.activation = append(json.RawMessage(nil), result...)
 	job.phase = "running"
+	turnText := job.turnText
+	job.mu.Unlock()
 	launched = true
 	// A follow-up's session already has the task. Sending the brief again would
 	// repeat the first turn. The queued message is the one turn this process gets.
 	brief := managedTurn(run.Provider, run.Mode, run.Brief.Markdown)
 	if job.parentID != "" {
-		brief = job.turnText
+		brief = turnText
 	}
 	go r.drive(job, brief)
 	return result, nil
+}
+
+// claimActivation checks an activation against the prepared process and, when it
+// is the first, takes the one launch this job gets: claimed is true and nothing
+// has been written. When the job was already activated it returns the receipt
+// (claimed false), or the refusal if that activation produced none. It holds
+// job.mu for these checks and nothing else.
+func (j *managedJob) claimActivation(owner, session string, pid int) (receipt json.RawMessage, claimed bool, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.provider == nil || j.err != nil || owner != j.owner || session != j.session || pid != j.provider.PID() {
+		return nil, false, errors.New("activation does not match the prepared process")
+	}
+	if j.parentID != "" && strings.TrimSpace(j.turnText) == "" {
+		return nil, false, errors.New("the follow-up has no message")
+	}
+	if j.activated {
+		if len(j.activation) > 0 {
+			return append(json.RawMessage(nil), j.activation...), false, nil
+		}
+		return nil, false, errors.New("activation is already consumed or unresolved")
+	}
+	j.activated = true // A lost store reply cannot launch twice.
+	return nil, true, nil
 }
 
 // managedTurn is the one message a managed provider receives: what the

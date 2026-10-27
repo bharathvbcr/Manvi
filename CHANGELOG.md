@@ -217,6 +217,13 @@ under **Unreleased** in the same commit as the code.
   in memory, so a restart of Manvi ends it and the record is applied as any dead
   run's is. Not covered: a factory that fails after possibly starting a process
   returns no session to ask again, so that end still restores as before.
+- `work.runs.managed.activate` no longer holds the run's lock across its two
+  task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
+  answered inline on the serve read loop and takes that lock, so a slow store
+  held up `hello`, the policy checks and a queued `managed.stop` behind it for as
+  long as the store took (bounded only by the lane's one-minute deadline). A
+  separate per-run lock now serialises activations, so a retry still waits for
+  the first call and gets its receipt, and follow never waits on the store.
 
 ## [0.1.0] — 2026-10-17
 
