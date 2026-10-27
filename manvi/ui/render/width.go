@@ -1,6 +1,9 @@
 package render
 
-import "unicode"
+import (
+	"unicode"
+	"unicode/utf8"
+)
 
 // RuneWidth reports how many terminal columns a rune occupies: 0, 1, or 2.
 //
@@ -55,8 +58,17 @@ func StringWidth(s string) int {
 	for _, r := range s {
 		w += RuneWidth(r)
 	}
+	if probe := runesMeasured; probe != nil {
+		probe(utf8.RuneCountInString(s))
+	}
 	return w
 }
+
+// runesMeasured, when a test sets it, is told how many runes each width
+// measurement read (StringWidth, and the prefix hardBreak scans). It exists so
+// a test can bound the total work of a wrap by counting it, which a clock
+// cannot do on a loaded machine. Production code never sets it.
+var runesMeasured func(runes int)
 
 // TruncateWidth cuts s to at most w columns, appending tail if it had to cut.
 //

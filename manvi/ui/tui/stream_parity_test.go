@@ -66,7 +66,15 @@ var (
 		"\x1b[31m", "\x1b[0m", "\x1b]0;title\x07", "\x1b]8;;http://x\x1b\\",
 		"a\xe7", "\x95b", "\xe7", "\xff", "\xf0\x9f", "\xe6\x97",
 		"https://example.com/a/very/long/path/that/never/breaks/anywhere?q=1&r=2",
+		// A zero-width rune of four bytes (a tag character, a variation
+		// selector, as in a flag emoji), which is three invalid bytes of one
+		// column each until its last byte arrives.
+		rs(0xE0067), rs(0xE0100), rs(0x1F3F4, 0xE0067, 0xE0062, 0xE0065, 0xE007F), rs(0x1D400),
 	}
+	// openOtherBlanks are blanks that are not ' ' or '\t' but that Wrap's
+	// TrimSpace calls blank. A line holding one is laid out whole, so they are
+	// mixed in for some seeds only: a line that has one stops testing the cache.
+	openOtherBlanks  = []string{rs(0xa0), rs(0x3000), rs(0x2003), rs(0x85), rs(0x2028), "\r", "\v"}
 	openMarkupPieces = []string{
 		"`", "``", "```", "`code`", "`unclosed ", "**", "**bold**", "*", "\n", "\n\n", "\r\n",
 		"```go\n", " - ", "- item\n", "* item\n", "# head\n", "+added\n", "-removed\n", "@@ -1 +1 @@\n", "> quote ",
@@ -83,13 +91,15 @@ var (
 
 // growOpenLine builds a reply of n pieces: a start, then mostly plain pieces
 // with a markup one now and then, as a late marker would arrive.
-func growOpenLine(rng *rand.Rand, n int, markupRate int) string {
+func growOpenLine(rng *rand.Rand, n int, markupRate int, otherBlanks bool) string {
 	var b strings.Builder
 	b.WriteString(openStarts[rng.Intn(len(openStarts))])
 	for i := 0; i < n; i++ {
 		switch {
 		case markupRate > 0 && rng.Intn(markupRate) == 0:
 			b.WriteString(openMarkupPieces[rng.Intn(len(openMarkupPieces))])
+		case otherBlanks && rng.Intn(12) == 0:
+			b.WriteString(openOtherBlanks[rng.Intn(len(openOtherBlanks))])
 		case rng.Intn(10) == 0: // a long word: what the hard break is for
 			b.WriteString(strings.Repeat(openPlainPieces[rng.Intn(len(openPlainPieces))], 1+rng.Intn(40)))
 		default:
@@ -98,6 +108,10 @@ func growOpenLine(rng *rand.Rand, n int, markupRate int) string {
 	}
 	return b.String()
 }
+
+// rs is the string of the given code points, for the runes a source file
+// would otherwise carry invisibly.
+func rs(cps ...rune) string { return string(cps) }
 
 func wholeLines(e *Entry, th Theme, width int) []render.Line {
 	fresh := &Entry{Event: e.Event, Folded: e.Folded, Foldable: e.Foldable, whole: true}
@@ -177,12 +191,12 @@ func TestSettledMeansForGood(t *testing.T) {
 		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		for i := 0; i < 400; i++ {
-			head := strings.NewReplacer("\n", "", "\r", "").Replace(growOpenLine(rng, rng.Intn(8), 0))
+			head := strings.NewReplacer("\n", "", "\r", "").Replace(growOpenLine(rng, rng.Intn(8), 0, false))
 			if !st.settled(head) {
 				continue
 			}
 			settled++
-			tail := strings.NewReplacer("\n", "", "\r", "").Replace(growOpenLine(rng, rng.Intn(6), 5))
+			tail := strings.NewReplacer("\n", "", "\r", "").Replace(growOpenLine(rng, rng.Intn(6), 5, false))
 			if k := st.kind(head + tail); k != mdParagraph {
 				t.Fatalf("%q settled, but %q is kind %d", head, head+tail, k)
 			}
@@ -218,22 +232,25 @@ func TestSettledMeansForGood(t *testing.T) {
 func TestOpenLineLayoutMatchesAWholeOne(t *testing.T) {
 	themes := []Theme{Dark(), NoColorTheme()}
 	var compared, advanced, dropped, engaged int
-	for seed := int64(1); seed <= 32; seed++ {
+	for seed := int64(1); seed <= 48; seed++ {
 		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
 		rng := rand.New(rand.NewSource(seed))
 		th := themes[seed%2]
 		markupRate := []int{0, 0, 40, 300}[seed%4]
-		text := growOpenLine(rng, 700, markupRate)
+		text := growOpenLine(rng, 400, markupRate, seed%5 < 2)
 		e := &Entry{Event: ui.Event{Kind: ui.KindText}}
 		if seed%3 == 0 {
 			e.Event.Agent = "sub-agent"
 		}
-		w1, w2 := 11+rng.Intn(100), 11+rng.Intn(100)
+		w1, w2 := 11+rng.Intn(30), 11+rng.Intn(100)
 		cached := map[int]int{}
 		for pos := 0; pos < len(text); {
 			n := 1 + rng.Intn(40)
 			if rng.Intn(30) == 0 {
 				n = 200 + rng.Intn(2000)
+			}
+			if rng.Intn(5) == 0 { // a cut inside a rune or an escape sequence
+				n = 1 + rng.Intn(4)
 			}
 			n = min(n, len(text)-pos)
 			e.Body.WriteString(text[pos : pos+n])
@@ -249,9 +266,6 @@ func TestOpenLineLayoutMatchesAWholeOne(t *testing.T) {
 			}
 			for _, w := range []int{w1, w2} {
 				got := e.Lines(th, w)
-				if rng.Intn(2) == 0 && pos < len(text) {
-					continue
-				}
 				want := wholeLines(e, th, w)
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("seed %d at byte %d/%d, width %d: incremental rows differ from a whole render (%d vs %d rows)\n got tail: %q\nwant tail: %q",
@@ -348,4 +362,122 @@ func TestOpenLineKeepsItsRows(t *testing.T) {
 	if tail := e.Body.Len() - len(sl.src) - len(sl.open.prefix); tail > 6*w {
 		t.Fatalf("a frame wraps %d bytes of an unbroken line; it should wrap a few rows", tail)
 	}
+}
+
+// A four-byte rune of zero width, cut between deltas, is three invalid bytes
+// of one column each until it completes. Rows laid out around the inflated
+// width must not be kept: every cut of the rune, at every width and every
+// length of the word before it, must still lay out as a whole render does.
+func TestPartialZeroWidthRuneDoesNotFixRows(t *testing.T) {
+	th := Dark()
+	for _, cp := range []rune{0xE0100, 0xE0067, 0xE007F} {
+		r := rs(cp)
+		for w := 11; w <= 40; w++ {
+			body := w - gutter
+			for rlen := 1; rlen <= 3; rlen++ {
+				for plen := body; plen >= 1; plen-- {
+					wlen := body - rlen - 1
+					if wlen < 1 {
+						continue
+					}
+					text := strings.Repeat("p", plen) + " " + strings.Repeat("r", rlen) + " " + strings.Repeat("w", wlen)
+					for cut := 1; cut < len(r); cut++ {
+						e := &Entry{Event: ui.Event{Kind: ui.KindText}}
+						for _, d := range []string{"0123456789ab ", text + r[:cut], r[cut:] + " tail tail tail tail tail tail tail tail tail"} {
+							e.Body.WriteString(d)
+							e.Invalidate()
+							got, want := e.Lines(th, w), wholeLines(e, th, w)
+							if !reflect.DeepEqual(got, want) {
+								t.Fatalf("U+%X cut at %d, width %d, word %d, r %d: rows differ\n got:\n%s\nwant:\n%s", cp, cut, w, plen, rlen, lineText(got), lineText(want))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// A word of blanks other than ' ' and '\t' is a break to Wrap but not to the
+// bookkeeping that keeps rows: it must not leave a kept row that a whole
+// render does not have, or an empty one where it has none. The pinned cases are
+// streams that did, found by searching 400 seeds; the rest are a few seeds of
+// each kind of blank at every width.
+func TestOtherBlanksDoNotFixRows(t *testing.T) {
+	th := Dark()
+	blanks := map[string]string{
+		"nbsp": rs(0xa0), "ideographic": rs(0x3000), "em space": rs(0x2003), "next line": rs(0x85),
+		"line separator": rs(0x2028), "carriage return": "\r", "vertical tab": "\v", "form feed": "\f",
+	}
+	stream := func(blank string, seed int64) []string {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
+		rng := rand.New(rand.NewSource(seed))
+		alphabet := []string{"abc ", "word ", " ", "xxxxxxxxxxxx", blank, blank + blank + blank, "plain text", ""}
+		deltas := []string{"A plain beginning of a reply, long enough. "}
+		for i := 0; i < 160; i++ {
+			var b strings.Builder
+			for k := 1 + rng.Intn(4); k > 0; k-- {
+				b.WriteString(alphabet[rng.Intn(len(alphabet))])
+			}
+			deltas = append(deltas, b.String())
+		}
+		return deltas
+	}
+	frames := 0
+	run := func(name string, seed int64, w int) {
+		e := &Entry{Event: ui.Event{Kind: ui.KindText}}
+		for i, d := range stream(blanks[name], seed) {
+			e.Body.WriteString(d)
+			e.Invalidate()
+			got, want := e.Lines(th, w), wholeLines(e, th, w)
+			frames++
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s seed %d width %d delta %d: rows differ\n got:\n%s\nwant:\n%s", name, seed, w, i, lineText(got), lineText(want))
+			}
+		}
+	}
+	run("ideographic", 8, 15)
+	for name := range blanks {
+		for seed := int64(1); seed <= 6; seed++ {
+			for _, w := range []int{11, 13, 19, 25} {
+				run(name, seed, w)
+			}
+		}
+	}
+	t.Logf("%d frames over 8 kinds of blank, compared with a whole render", frames)
+}
+
+// FuzzOpenLineLayout streams arbitrary text, cut at arbitrary byte offsets,
+// at two widths, and holds every frame to a whole render. Run it for as long as
+// the change deserves with: go test ./ui/tui -run '^$' -fuzz FuzzOpenLineLayout
+func FuzzOpenLineLayout(f *testing.F) {
+	f.Add("A plain beginning of a reply, long enough. xxxxxxxxxxxxxxxxxxxxxxxxxxx yyyyyyyyyyyyyyyyyy zzzzzzzzzzzzzzzzzzzzzzzz", int64(1), uint8(5))
+	for _, p := range append(append([]string{}, openPlainPieces...), openOtherBlanks...) {
+		f.Add("plain-token-with-no-break "+strings.Repeat(p, 12)+strings.Repeat("abc ", 20), int64(2), uint8(0))
+	}
+	for _, p := range openMarkupPieces {
+		f.Add("plain-token-with-no-break and more more more more "+p+strings.Repeat("abc ", 20), int64(3), uint8(9))
+	}
+	f.Fuzz(func(t *testing.T, text string, seed int64, wb uint8) {
+		// #nosec G404 -- seeded fixture data: reproducing a run is the point, secrecy is not.
+		rng := rand.New(rand.NewSource(seed))
+		e := &Entry{Event: ui.Event{Kind: ui.KindText}}
+		if wb%2 == 0 {
+			e.Event.Agent = "sub-agent"
+		}
+		widths := []int{11 + int(wb)%40, 11 + int(wb/3)%60}
+		th := Dark()
+		for pos := 0; pos < len(text); {
+			n := min(1+rng.Intn(24), len(text)-pos)
+			e.Body.WriteString(text[pos : pos+n])
+			pos += n
+			e.Invalidate()
+			for _, w := range widths {
+				got, want := e.Lines(th, w), wholeLines(e, th, w)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("byte %d/%d width %d: rows differ (%d vs %d)\ntext %q\n got:\n%s\nwant:\n%s", pos, len(text), w, len(got), len(want), e.Body.String(), lineText(got), lineText(want))
+				}
+			}
+		}
+	})
 }

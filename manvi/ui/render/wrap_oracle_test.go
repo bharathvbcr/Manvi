@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -162,40 +161,36 @@ func TestWrapMatchesTheQuadraticOracle(t *testing.T) {
 	t.Logf("%d random lines, widths 1..200, %d rows compared, %d lines with a full-width row; 0 differences", cases, rows, hard)
 }
 
-// A huge word costs time in proportion to its length. Making a word that has
-// no break in it eight times longer must not multiply the time by sixty-four,
-// which is what a hard break that reads the rest of the word at every cut does;
-// linear is eight. Both sizes are timed several times and the fastest kept, and
-// the bound sits well between the two, so a loaded machine has to be very
-// unlucky to cross it from the linear side.
-func TestWrapOfAHugeWordIsLinear(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing test")
-	}
-	best := func(text string) time.Duration {
-		l := Styled(text, Style{})
-		min := time.Duration(1<<63 - 1)
-		for i := 0; i < 5; i++ {
-			t0 := time.Now()
-			rows := l.Wrap(117)
-			if d := time.Since(t0); d < min {
-				min = d
-			}
-			var got strings.Builder
-			for _, r := range rows {
-				got.WriteString(r.Text())
-			}
-			if got.String() != text {
-				t.Fatalf("wrapping a %d-byte word lost or reordered text", len(text))
-			}
+// A huge word costs work in proportion to its length. The work is counted, not
+// timed: runesMeasured is told how many runes each width measurement reads, and
+// wrapping a word of n runes with no break in it reads each rune a small fixed
+// number of times (the line's width, the word's, and the cut itself), where a
+// hard break that measures what it has left at every cut reads about n²/width.
+// The previous implementation, run through the same count, must exceed the
+// bound, which shows the bound can fail.
+func TestWrapOfAHugeWordReadsEachRuneAFewTimes(t *testing.T) {
+	count := func(wrap func(Line, int) []Line, text string) (reads int) {
+		runesMeasured = func(n int) { reads += n }
+		defer func() { runesMeasured = nil }()
+		rows := wrap(Styled(text, Style{}), 117)
+		var got strings.Builder
+		for _, r := range rows {
+			got.WriteString(r.Text())
 		}
-		return min
+		if got.String() != text {
+			t.Fatalf("wrapping a %d-byte word lost or reordered text", len(text))
+		}
+		return reads
 	}
 	for _, unit := range []string{"abcdefgh", "界"} {
-		small := best(strings.Repeat(unit, 20_000/len(unit)))
-		large := best(strings.Repeat(unit, 160_000/len(unit)))
-		if ratio := float64(large) / float64(small); ratio > 24 {
-			t.Errorf("%q: 8x the word took %.1fx the time (%v -> %v); a linear break is about 8x, a quadratic one about 64x", unit, ratio, small, large)
+		text := strings.Repeat(unit, 20_000/len(unit))
+		n := utf8.RuneCountInString(text)
+		bound := 4*n + 64
+		if got := count(Line.Wrap, text); got > bound {
+			t.Errorf("%q: wrapping %d runes measured %d, more than %d", unit, n, got, bound)
+		}
+		if got := count(wrapQuadratic, text); got <= bound {
+			t.Errorf("%q: the quadratic oracle measured only %d runes (bound %d): the count cannot tell the two apart", unit, got, bound)
 		}
 	}
 }

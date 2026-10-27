@@ -238,18 +238,28 @@ func (l Line) Wrap(width int) []Line {
 // cut to nothing: an empty cut consumed nothing, and the loop that calls this
 // never ended.
 func hardBreak(word string, width int) (cut, cols int) {
+	cut, cols, read := scanCut(word, width)
+	if probe := runesMeasured; probe != nil {
+		probe(read)
+	}
+	return cut, cols
+}
+
+// scanCut is hardBreak's scan, and counts the runes it reads.
+func scanCut(word string, width int) (cut, cols, read int) {
 	for i, r := range word {
+		read++
 		rw := RuneWidth(r)
 		if cols+rw > width {
 			if i == 0 {
 				_, size := utf8.DecodeRuneInString(word)
-				return size, rw
+				return size, rw, read
 			}
-			return i, cols
+			return i, cols, read
 		}
 		cols += rw
 	}
-	return len(word), cols
+	return len(word), cols, read
 }
 
 // splitKeepSpace splits text into words and the whitespace runs between them,

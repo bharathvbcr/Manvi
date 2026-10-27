@@ -596,6 +596,15 @@ func (e *Entry) openRows(sl *streamSlot, th Theme, body int, g Glyphs, open stri
 		*oc = openLine{base: len(sl.rows)}
 	}
 	tail := open[len(oc.prefix):]
+	// The cache models a break as the blanks ' ' and '\t' and nothing else.
+	// Wrap treats any word of unicode.IsSpace runes as a break too — a no-break
+	// space, an ideographic one, U+2028, a carriage return — but trims and
+	// splits only on the two, so a row can end or be empty in ways the kept
+	// rows do not model. The kept prefix has none, as each tail is checked
+	// before it is kept; a line that has one is laid out whole.
+	if strings.IndexFunc(tail, otherSpace) >= 0 {
+		return nil, 0, false
+	}
 	rows := parseInlineSpans(tail, th, th.Base()).Wrap(body)
 	// A wrap that returns no rows has nothing to vouch for. A tail narrower
 	// than the pane is not trimmed, so its trailing blanks stay; after kept
@@ -603,14 +612,19 @@ func (e *Entry) openRows(sl *streamSlot, th Theme, body int, g Glyphs, open stri
 	if len(rows) == 0 || len(oc.prefix) > 0 && len(rows) < openKeep {
 		return nil, 0, false
 	}
-	if n := len(rows) - openKeep; n > 1 {
+	// Rows are kept only while the text ends on a whole rune. The tail of a
+	// multi-byte rune cut between deltas is counted as invalid bytes, a column
+	// each, and the rune may complete to a width of zero — a tag character, a
+	// variation selector — which no row-count margin covers: the rows laid out
+	// around it would be rows a whole render does not have.
+	if n := len(rows) - openKeep; n > 1 && !endsInPartialRune(tail) {
 		// Where each kept row ends, and the next begins after the blanks the
 		// wrap dropped at the break. A row that is not where the text says it
-		// is means the wrap did something this does not model.
+		// is, or is empty, means the wrap did something this does not model.
 		pos := 0
 		for _, r := range rows[:n] {
 			t := r.Text()
-			if !strings.HasPrefix(tail[pos:], t) {
+			if t == "" || !strings.HasPrefix(tail[pos:], t) {
 				return nil, 0, false
 			}
 			pos += len(t)
@@ -618,7 +632,7 @@ func (e *Entry) openRows(sl *streamSlot, th Theme, body int, g Glyphs, open stri
 				pos++
 			}
 		}
-		if next := rows[n].Text(); pos == 0 || !strings.HasPrefix(tail[pos:], next) {
+		if next := rows[n].Text(); next == "" || !strings.HasPrefix(tail[pos:], next) {
 			return nil, 0, false
 		}
 		for _, r := range rows[:n] {
@@ -632,6 +646,21 @@ func (e *Entry) openRows(sl *streamSlot, th Theme, body int, g Glyphs, open stri
 	out = append(out, oc.rows...)
 	ready = len(out)
 	return append(out, rows...), ready, true
+}
+
+// otherSpace is a rune Wrap's strings.TrimSpace calls blank that is not one of
+// the two blanks it splits and trims on.
+func otherSpace(r rune) bool { return r != ' ' && r != '\t' && unicode.IsSpace(r) }
+
+// endsInPartialRune reports whether s ends partway through a multi-byte rune,
+// one whose remaining bytes may still arrive.
+func endsInPartialRune(s string) bool {
+	for i := 1; i <= utf8.UTFMax-1 && i <= len(s); i++ {
+		if c := s[len(s)-i]; utf8.RuneStart(c) {
+			return c >= utf8.RuneSelf && !utf8.FullRuneInString(s[len(s)-i:])
+		}
+	}
+	return false
 }
 
 // streamSlot finds the stream slot for a body width and theme, replacing the

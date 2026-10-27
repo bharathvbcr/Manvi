@@ -136,7 +136,11 @@ under **Unreleased** in the same commit as the code.
   or bold, long enough that no heading, list, diff or fence prefix can still
   apply) now keeps the rows before its last two in their final form. A marker
   that arrives late, a break, or a resize drops the cache and the line is laid
-  out whole, as before. Per frame at 160 KB, min of 8 interleaved runs at load
+  out whole, as before. So does a blank other than space and tab (a no-break
+  or ideographic space, U+2028, a carriage return), which the wrap breaks at
+  but the cache does not model; and rows are not kept while the text ends
+  partway through a multi-byte character, whose width is not known until its
+  last byte arrives (a tag character or variation selector completes to zero). Per frame at 160 KB, min of 8 interleaved runs at load
   40 to 50: prose 2.03 to 0.12 ms, table row 4.76 to 0.13 ms, base64 367 to
   0.12 ms, minified JSON 369 to 0.12 ms, against the 8 ms frame budget. A
   8,000-delta unbroken prose stream went from 749 to 66 ms and 1.46 GB to
