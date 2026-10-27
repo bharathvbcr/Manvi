@@ -59,6 +59,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
+  running the turn on the first megabyte. The read stopped at the cap with no
+  overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
+  said the rest was dropped, which for an instruction at the end meant the turn
+  did something else. A prompt of exactly the cap is still accepted; one byte
+  more exits 1 with a message naming the cap and the way through, which is a
+  file in the checkout that a shorter prompt names (there is no option for a
+  larger prompt). `-p` and positional prompts were never read through this
+  limit. Documented in `docs/CLI_AND_CONFIGURATION.md` and `manvi run --help`.
 - `computer.Run.Send` now waits until the run loop admits the control, at most
   one loop step (for example a 3s pause fence), and returns the run's verdict.
   It returns nil once the control passed the epoch check, `ErrStaleControlEpoch`
@@ -153,6 +162,139 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The agent loop runs only a tool the step's request offered. `--chat-only`
+  offered the model no tools, but `runCall` ran whatever tool name a response
+  carried, and a provider that builds a call from prose (the OpenAI-compatible
+  adapter, the local fenced-JSON fallback) can name one: a chat-only run
+  executed it. The same held for a read-only or core-only loop, which filter
+  what they offer but not what they run. The loop now records the tool names of
+  each request as it is finally sent, after every waterfall, and `runCall`
+  refuses a call outside that set as an error result the model sees ("tool X was
+  not offered in this step"), before the repeat and stall checks and without
+  reaching a handler. The set is rebuilt every step, so a tool activated by
+  `devcouncil_activate_tools` runs from the next step, and a response that
+  activates a tool and then names it still works: calls run in order, and a tool
+  the loop's own filters select after an earlier call activated it is allowed.
+  That is read through the same filtered selection the request came from, so a
+  chat-only run (which refuses the activation call itself) and a read-only or
+  core-only step cannot widen themselves this way. A refused call to a
+  registered but inactive tool carries the registry's "call
+  `devcouncil_activate_tools` to activate it" hint when that tool was offered
+  in the step and the loop is not read-only or core-only; otherwise, and for a
+  name the registry does not hold, the text is the generic "not offered"
+  refusal rather than `unknown tool`. Naming a refused tool a second time counts
+  as circling, so reasoning effort escalates as it does for a repeated call.
+- The credential scrubber no longer has a data race between `Clean` and
+  `Watch`. `Clean` copied the watched-value slice's header under the read lock
+  and walked the shared backing array after releasing it, while `Watch`
+  re-sorted that array in place; callers re-arm on every use while tool results
+  and sub-agents `Clean`, so `go test -race` reported it (no leak was observed
+  in about 130,000 calls, but a walk that skips a value the sort moved past
+  could let one through). `Watch` now publishes a new sorted slice under the
+  lock and never writes one it has handed out; `Clean` still holds the lock only
+  to copy the header, and its cost is unchanged.
+- `manvi run --image` no longer waits forever on a path. Images are read while
+  the arguments are parsed, before `--timeout` or a provider exists, and a bare
+  open of a FIFO waits for a writer, so a `--image` naming one nobody wrote to
+  stopped the run from ever starting without a word. The open no longer waits,
+  and a pipe is read with a bound: five seconds (`imagePipeWait`) and the 8 MiB
+  image limit. A pipe with a live writer still works, which includes
+  `--image <(cat a.png)`, `cat a.png | manvi run --image /dev/stdin` and a named
+  pipe whose writer starts after the run does; one with no writer, or a writer
+  that stops sending, is refused after the five seconds with `no image data
+  arrived on the pipe in time`. Devices, sockets and directories are refused by
+  name (`not a regular file (a device)`), the kind is checked again on the
+  opened handle in case the name was swapped in between, and symbolic links are
+  followed as before. On Windows only regular files are read, and a
+  `\\.\pipe\...` path is refused by its name before it is touched, because
+  inspecting a named pipe connects to it.
+- The Anthropic budget ledger no longer holds a cancelled caller behind another
+  caller's wait. Each operation took an in-process `sync.Mutex` before the
+  context-aware file lock, and a mutex cannot be abandoned: while one goroutine
+  waited out a wedged file lock (another process stopped or stalled holding
+  it), every other goroutine in the process queued behind it for the whole wait,
+  a cancelled one included (a caller cancelled at 100 ms returned after 2.8 s,
+  once per queued waiter). The in-process turn is now a one-slot channel
+  selected against the context, and one `lockWait` bound covers the turn and the
+  file lock together, so a queue behind a wedged holder ends together.
+- The managed Claude build probe now ends with its deadline. `claude --version`
+  was run with a 10 s timeout that killed only the process it started, and
+  `Output` then waited for every descendant to close the stdout pipe, so an
+  executable that left a background process holding it kept the launch running
+  for that process's whole life (25 s against a 10 s probe in the audit). The
+  probe now runs in its own process group, killed with the deadline, and gives
+  up on a held pipe two seconds after the process is gone, as the other child
+  processes here do. A probe that exited 0 and printed its identity is still
+  accepted when a background process it started holds the pipe past those two
+  seconds (that process is then killed); a non-zero exit, a timeout, or output
+  that is not Claude Code's is refused as before.
+- The commit scan no longer reports a clean listing for a directory git could
+  not open. `git ls-files --others` exits 0 after `warning: could not open
+  directory 'X/': Permission denied` and leaves that directory's files out, so
+  a secret-path file inside an unreadable untracked directory was never listed,
+  hashed or compared, and the commit carried no note. The listing's stderr is
+  now read: each such directory is an `unreadable_untracked_dir` scan note (the
+  directory, the bound, what was still checked, the operator action) and a
+  `commit.scan.…` entry in the degraded list. The commit is not refused, because
+  the agent cannot cure a directory it cannot read. A warning the scan does not
+  recognise (git's messages are localised) or a stderr cut by its cap is one
+  `listing_warning` note, and the notes are bounded at 32 directories plus a
+  count.
+- `bench/run.py` stops a cell cleanly when an episode's guard set cannot be
+  worked out. A concurrent `git worktree add` leaves a worktree's `gitdir`
+  pointer empty or missing for a moment, `Harness(...)` raised `GitGuardError`
+  outside any handler, and the run died on a traceback. It now prints
+  `[runner] ABORTING:` with the path and the episode, writes no row for it and
+  exits non-zero, so `grid.py` reports the cell failed. No row is written on
+  purpose: a `runner_error` row is kept and scored, so the cell would carry a
+  failure the model never had, and a re-run could not replace it. Re-running the
+  tag keeps the finished episodes and draws the missing one.
+- The MCP client asks for the latest revision it speaks. Its `initialize` named
+  `2025-03-26` while it already accepted a reply up to `2025-11-25`; the
+  lifecycle specification has the client send the latest version it supports.
+  It now sends `2025-11-25`, and the accepted list is built from that constant
+  so the two cannot drift. A server that counter-offers an older revision
+  (`2025-03-26`, `2025-06-18`, `2024-11-05`) is still accepted. A strict server
+  that answers the newer request with `-32602` and `data.supported` (the
+  lifecycle page's own example error) is asked once more, on a new request id of
+  the same handshake, for the newest revision both sides speak, and
+  `notifications/initialized` goes out only after that succeeds; a server with
+  no revision in common fails with an error naming both lists, and the retry is
+  never repeated. The transport is stdio only, so no `MCP-Protocol-Version`
+  header applies.
+- `manvi serve` resolves the anthropic model as `manvi run` and the TUI do.
+  With `MANVI_MODEL` unset it read nothing else, so it offered no model
+  (`model: ""`, `model_source: "none"`) and the workbench refused to refine or
+  enhance on a machine where `manvi run` used the main tier. It now calls the
+  one resolver run and the TUI use: `MANVI_MODEL`, then `llm.tier.main`
+  (default `claude-opus-5-5`), reported as `model_source: "MANVI_MODEL"` or
+  `"llm.tier.main"`, or `"default"` when no setting the operator made names the
+  model and it is the built-in main tier. Security impact: automatic
+  enhancement spends with nobody present, so it treats a `"default"` model as no
+  selection and stays paused ("Choose an explicit provider and model…") exactly
+  as it did when serve offered none; it runs only on `MANVI_MODEL`, a main tier
+  the operator set, or the provider and model saved in the automation profile.
+  Interactive refine and generate use the default, as `manvi run` does. A
+  tier profile serve cannot use never stops it starting: a main tier that
+  resolves to nothing leaves the selection empty and is named on stderr. When
+  the model an enhancement op builds a provider for is the main tier's, that
+  one row is checked first, with the planner `manvi run` uses and before any
+  request: a main tier the catalogue does not hold refuses the op with the
+  `tier main: llm.tier.main=...` error `manvi run` gives, not with a
+  model-not-served message pointing at the local model setting. No other tier
+  is checked, so a bad `llm.tier.heavy` does not refuse an op that never uses
+  it. Other providers resolve as before, and anthropic still does not inherit
+  `llm.local.model`.
+- `manvi serve` workbench enhancements and refinements now complete on
+  anthropic. Every request pinned `temperature: 0`, which every anthropic model
+  refuses, so the adapter rejected each one before it was sent
+  (`anthropic: [temperature top_p top_k] are not accepted by current models`)
+  and no anthropic enhancement could ever run. `llm.Capability` gains
+  `rejects_sampling` (anthropic sets it for every model it serves, matching
+  the temperature check `ValidateRequest` already made; it says nothing about
+  top_p or top_k), and the enhancement request pins
+  temperature 0 only when the selected model does not set it. Local, xai and
+  gemini models are still sent 0.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was
   wrapped with no close-on-exec, so every shell command, MCP server and `git`

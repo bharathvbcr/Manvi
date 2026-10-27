@@ -69,6 +69,13 @@ type Capability struct {
 	SupportsStreaming bool   `json:"supports_streaming"`
 	SupportsImages    bool   `json:"supports_images"`
 	SupportsReasoning bool   `json:"supports_reasoning"`
+	// RejectsSampling is set when the model refuses a request that pins
+	// temperature. A caller that would otherwise pin one leaves it unset for
+	// such a model: the adapter refuses the request before it is sent rather
+	// than dropping the field. It speaks to temperature only: top_p and top_k
+	// are separate request fields it makes no claim about. The zero value is
+	// the permissive one, so an adapter that says nothing keeps receiving it.
+	RejectsSampling bool `json:"rejects_sampling,omitempty"`
 	// EffortLevels are the reasoning tiers this model accepts, ordered from
 	// least reasoning to most.
 	//

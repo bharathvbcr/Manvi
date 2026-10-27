@@ -225,7 +225,7 @@ func TestAChildCannotReachAnySubAgentDispatchTool(t *testing.T) {
 		}
 	}
 	// Absence, not a hidden schema: the child named the tool anyway.
-	if got := toolResultText(t, p); !strings.Contains(got, "unknown tool") {
+	if got := toolResultText(t, p); !strings.Contains(got, "was not offered") {
 		t.Errorf("a child that named %s reached something: %q", invokeTool, got)
 	}
 }
@@ -275,7 +275,7 @@ func TestAnMCPDeniedChildCannotDispatchAnMCPToolByName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RunSubAgent: %v", err)
 	}
-	if got := toolResultText(t, p); !strings.Contains(got, "unknown tool") {
+	if got := toolResultText(t, p); !strings.Contains(got, "was not offered") {
 		t.Errorf("an MCP-denied child ran an MCP tool by naming it: %q", got)
 	}
 }
@@ -336,7 +336,7 @@ func TestAllowedToolsCannotWidenPastTheReadOnlyFloor(t *testing.T) {
 	if !offered["fake_read"] {
 		t.Errorf("the read-only child lost its allowlisted read tool: %v", offered)
 	}
-	if got := toolResultText(t, p); !strings.Contains(got, "unknown tool") {
+	if got := toolResultText(t, p); !strings.Contains(got, "was not offered") {
 		t.Errorf("a read-only child ran an allowlisted write tool: %q", got)
 	}
 }

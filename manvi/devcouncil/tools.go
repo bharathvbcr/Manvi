@@ -370,7 +370,7 @@ func (r *Registry) Tools() []tools.Tool {
 			Handler:  r.searchTools,
 		},
 		{
-			Schema: schema("devcouncil_activate_tools",
+			Schema: schema(tools.ActivateToolName,
 				"Dynamically activate tools or entire tool groups into the model's active context. "+
 					"Prerequisites declared in requires are resolved and activated automatically.",
 				`{"type":"object","properties":{"tools":{"type":"array","items":{"type":"string"},"description":"names of tools or tool groups (e.g. ['subagent', 'nav', 'mcp', 'artifact', 'task'])"}},"required":["tools"]}`),

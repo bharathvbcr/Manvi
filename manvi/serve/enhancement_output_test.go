@@ -421,3 +421,38 @@ func FuzzEnhancementUnwrapKeepsSingleObjectContract(f *testing.F) {
 		}
 	})
 }
+
+// TestEnhancementSendsTemperatureOnlyToAModelThatTakesIt: the request carries
+// temperature 0 when the model's own capability accepts sampling parameters, and
+// no temperature at all when it says it rejects them. A model that refuses the
+// field cannot be sent it, and the request it can be sent is still one the
+// enhancement can score.
+func TestEnhancementSendsTemperatureOnlyToAModelThatTakesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		rejectSampling bool
+	}{{name: "accepts sampling"}, {name: "rejects sampling", rejectSampling: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := enhancementSource(t, "fix E42", "keep details", "title")
+			provider := &enhancementTestProvider{name: "local", cap: llm.Capability{Provider: "local", Model: "test-model", ContextWindow: 100000, MaxOutputTokens: 8192, RejectsSampling: tc.rejectSampling}}
+			var sent *llm.Request
+			provider.stream = func(_ context.Context, req llm.Request) (llm.Stream, error) {
+				sent = &req
+				return &enhancementTestStream{response: llm.Response{StopReason: llm.StopEndTurn, MaxTokensApplied: 8192,
+					Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: `{"title":"Resolve E42"}`}}}}}, nil
+			}
+			runner := &EnhancementRunner{provider: func(context.Context, string, string) (llm.Provider, error) { return provider, nil }}
+			if _, err := runner.infer(t.Context(), record); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case sent == nil:
+				t.Fatal("the model was never called")
+			case tc.rejectSampling && sent.Temperature != nil:
+				t.Fatalf("temperature %v sent to a model that rejects sampling", *sent.Temperature)
+			case !tc.rejectSampling && (sent.Temperature == nil || *sent.Temperature != 0):
+				t.Fatalf("temperature = %v, want 0", sent.Temperature)
+			}
+		})
+	}
+}

@@ -472,3 +472,143 @@ func TestManagerReplacesAClientWhoseHandshakeWasPoisoned(t *testing.T) {
 	}
 	t.Cleanup(mgr.CloseAll)
 }
+
+// --- version fallback ---
+
+// initializeFrames is what the client wrote for initialize: its id and the
+// revision it asked for, in order.
+func initializeFrames(in *recordingStdin) (ids []int, versions []string) {
+	for _, f := range in.frames() {
+		var probe struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		if json.Unmarshal([]byte(f), &probe) == nil && probe.Method == "initialize" {
+			ids = append(ids, probe.ID)
+			versions = append(versions, probe.Params.ProtocolVersion)
+		}
+	}
+	return ids, versions
+}
+
+func unsupportedVersionError(id int, supported string) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"error":{"code":-32602,"message":"Unsupported protocol version","data":{"supported":` +
+		supported + `,"requested":"2025-11-25"}}}`)
+}
+
+func initReplyAt(id int, version string) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"result":{"protocolVersion":"` + version + `","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`)
+}
+
+// -32602 with a supported list makes the client ask once more, on a new id of
+// the same flight, for the newest revision both sides speak. initialized goes
+// out only after that second request succeeds.
+func TestAStrictServersUnsupportedVersionErrorIsAnsweredWithOneRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, supported, want string
+	}{
+		{"only 2025-03-26", `["2025-03-26"]`, "2025-03-26"},
+		{"the newest common one", `["2024-11-05","2025-06-18","2026-07-28"]`, "2025-06-18"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, in := wiredForInit(t)
+			call := initAsync(c, withTimeout(t, 5*time.Second))
+			waitForMethod(t, in, "initialize", 1)
+			c.dispatch(unsupportedVersionError(1, tc.supported))
+			waitForMethod(t, in, "initialize", 2)
+			if n := countMethod(in, "notifications/initialized"); n != 0 {
+				t.Fatalf("initialized was sent before the second initialize succeeded: %q", in.frames())
+			}
+			c.dispatch(initReplyAt(2, tc.want))
+			o := receive(t, call, "the handshake")
+			if o.err != nil || o.res == nil || o.res.ProtocolVersion != tc.want {
+				t.Fatalf("res=%v err=%v, want success at %s", o.res, o.err, tc.want)
+			}
+			ids, versions := initializeFrames(in)
+			if len(ids) != 2 || ids[0] == ids[1] || versions[0] != "2025-11-25" || versions[1] != tc.want {
+				t.Fatalf("initialize frames ids=%v versions=%v, want two, on distinct ids, 2025-11-25 then %s", ids, versions, tc.want)
+			}
+			waitForMethod(t, in, "notifications/initialized", 1)
+			if _, err := c.Initialize(withTimeout(t, time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if n := countMethod(in, "initialize"); n != 2 {
+				t.Fatalf("initialize sent %d times in all: %q", n, in.frames())
+			}
+			if n := countMethod(in, "notifications/initialized"); n != 1 {
+				t.Fatalf("initialized sent %d times, want 1", n)
+			}
+		})
+	}
+}
+
+// A server whose supported list shares nothing with this client's fails with an
+// error naming both lists (and the server's own, still readable as typed). No
+// second request is sent.
+func TestAStrictServerWithNoCommonRevisionIsRefusedNamingBothLists(t *testing.T) {
+	c, in := wiredForInit(t)
+	call := initAsync(c, withTimeout(t, 5*time.Second))
+	waitForMethod(t, in, "initialize", 1)
+	c.dispatch(unsupportedVersionError(1, `["2026-07-28"]`))
+	o := receive(t, call, "the handshake")
+	if o.err == nil {
+		t.Fatal("a server with no common revision was accepted")
+	}
+	for _, want := range []string{"2026-07-28", "2025-11-25", "2024-11-05"} {
+		if !strings.Contains(o.err.Error(), want) {
+			t.Errorf("the error does not name %s: %v", want, o.err)
+		}
+	}
+	var rpc *RPCError
+	if !errors.As(o.err, &rpc) || rpc.Code != CodeInvalidParams {
+		t.Errorf("the server's own error is not reachable: %v", o.err)
+	}
+	if n := countMethod(in, "initialize"); n != 1 {
+		t.Fatalf("initialize sent %d times to a server with nothing in common: %q", n, in.frames())
+	}
+	if n := countMethod(in, "notifications/initialized"); n != 0 {
+		t.Fatalf("initialized sent for a failed handshake: %q", in.frames())
+	}
+}
+
+// The retry is the only one: a second -32602 is final, and so is a -32602
+// without a usable list or one that lists only what was asked for.
+func TestTheVersionFallbackNeverLoops(t *testing.T) {
+	t.Run("the retry is refused too", func(t *testing.T) {
+		c, in := wiredForInit(t)
+		call := initAsync(c, withTimeout(t, 5*time.Second))
+		waitForMethod(t, in, "initialize", 1)
+		c.dispatch(unsupportedVersionError(1, `["2025-03-26"]`))
+		waitForMethod(t, in, "initialize", 2)
+		c.dispatch(unsupportedVersionError(2, `["2025-03-26"]`))
+		if o := receive(t, call, "the handshake"); o.err == nil {
+			t.Fatal("a refused retry succeeded")
+		}
+		if n := countMethod(in, "initialize"); n != 2 {
+			t.Fatalf("initialize sent %d times, want exactly 2: %q", n, in.frames())
+		}
+	})
+	for name, body := range map[string]string{
+		"no data":            `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad"}}`,
+		"an empty list":      string(unsupportedVersionError(1, `[]`)),
+		"a malformed list":   string(unsupportedVersionError(1, `"2025-03-26"`)),
+		"only what was sent": string(unsupportedVersionError(1, `["2025-11-25"]`)),
+		"another error code": `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"warming up","data":{"supported":["2025-03-26"]}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, in := wiredForInit(t)
+			call := initAsync(c, withTimeout(t, 5*time.Second))
+			waitForMethod(t, in, "initialize", 1)
+			c.dispatch([]byte(body))
+			if o := receive(t, call, "the handshake"); o.err == nil {
+				t.Fatal("an error reply was taken as success")
+			}
+			if n := countMethod(in, "initialize"); n != 1 {
+				t.Fatalf("initialize re-sent without a revision to fall back to: %q", in.frames())
+			}
+		})
+	}
+}

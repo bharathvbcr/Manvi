@@ -57,7 +57,7 @@ work as if it were finished. `manvi run --help` prints the same list.
 
 ### Headless session, approvals, and images
 
-`manvi run` with none of `--approve-fd` or `--image` does not wait on a pipe and does not attach images. The prompt is still `-p`, a positional argument, or stdin, capped at 1 MiB. Stderr still prints `manvi: session <id>`.
+`manvi run` with none of `--approve-fd` or `--image` does not wait on a pipe and does not attach images. The prompt is still `-p`, a positional argument, or stdin. A prompt on stdin is capped at 1 MiB (1,048,576 bytes): one byte more is refused with exit status 1 and a message naming the cap, and the turn does not run on the first megabyte (before this it did, with no sign that the rest was dropped). `manvi run` has no option for a larger prompt, so put the material in a file in the checkout and name it in a shorter prompt. Stderr still prints `manvi: session <id>`.
 
 With `--json`, the first event is `session.start`. Its `session_id` is that same id. `choices` and `multi_select` are carried on `approval.request` when the request is a question.
 

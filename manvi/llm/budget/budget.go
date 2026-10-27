@@ -20,7 +20,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
@@ -159,10 +158,30 @@ func validate(s Snapshot) error {
 // each one locks the file, re-reads it, applies one change and writes it back,
 // so any number of processes can share a limit without overspending it.
 type Ledger struct {
-	mu    sync.Mutex
+	// turn serialises this handle's own goroutines ahead of the file lock. A
+	// one-slot channel rather than a sync.Mutex because a Mutex cannot be
+	// abandoned: a caller whose context ended would otherwise sit in the
+	// queue for as long as whoever is ahead of it waits on the file lock.
+	turn  chan struct{}
 	path  string
 	limit int64
 }
+
+func newLedger(path string, limit int64) *Ledger {
+	return &Ledger{turn: make(chan struct{}, 1), path: path, limit: limit}
+}
+
+// takeTurn waits for this handle's other goroutines, no longer than ctx allows.
+func (l *Ledger) takeTurn(ctx context.Context) error {
+	select {
+	case l.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *Ledger) releaseTurn() { <-l.turn }
 
 // Open validates the ledger at path, creating its directory if needed. A
 // missing file is an empty ledger; a corrupt one is refused rather than reset.
@@ -177,7 +196,7 @@ func Open(ctx context.Context, path string, limitNanoUSD int64) (*Ledger, error)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	l := &Ledger{path: path, limit: limitNanoUSD}
+	l := newLedger(path, limitNanoUSD)
 	if _, err := l.Snapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -219,14 +238,14 @@ func (l *Ledger) Snapshot(ctx context.Context) (Snapshot, error) {
 
 // Inspect reads a ledger without enforcing a limit, for reporting.
 func Inspect(ctx context.Context, path string) (Snapshot, error) {
-	l := &Ledger{path: path, limit: 1}
+	l := newLedger(path, 1)
 	return l.Snapshot(ctx)
 }
 
 // ReconcileAt reclaims the dead attempts in the ledger at path without
 // enforcing a limit, for an operator command that has none to hand.
 func ReconcileAt(ctx context.Context, path string) ([]Attempt, error) {
-	l := &Ledger{path: path, limit: 1}
+	l := newLedger(path, 1)
 	return l.Reconcile(ctx)
 }
 
@@ -236,13 +255,17 @@ func (l *Ledger) update(ctx context.Context, mutate func(*Snapshot) error) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	// Every operation holds the lock for one read and one write, so a wait
 	// longer than this means a holder is wedged; give up rather than hang a
-	// caller whose own context has no deadline.
+	// caller whose own context has no deadline. One bound covers the wait for
+	// this process's turn and for the file lock behind it, so a queue of
+	// callers behind a wedged holder ends together instead of one lockWait each.
 	lockCtx, cancel := context.WithTimeout(ctx, lockWait)
 	defer cancel()
+	if err := l.takeTurn(lockCtx); err != nil {
+		return err
+	}
+	defer l.releaseTurn()
 	unlock, err := lockFile(lockCtx, l.path+".lock")
 	if err != nil {
 		return err

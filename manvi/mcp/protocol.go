@@ -6,11 +6,14 @@ import "encoding/json"
 
 // Protocol versions supported.
 const (
-	// ProtocolVersionLatest is the handshake revision this client asks for. It
-	// was "2025-03-20", which is no revision: a server that negotiates exactly
-	// (DevCouncil's, since wave 6) counter-offers or, configured modern-first,
-	// refuses it with -32022 instead of serving it.
-	ProtocolVersionLatest     = "2025-03-26"
+	// ProtocolVersionLatest is the handshake revision this client asks for: the
+	// newest entry of handshakeVersions, which is built from it so the two
+	// cannot drift. The lifecycle specification has the client send the latest
+	// version it supports. It was "2025-03-20", which is no revision (a server
+	// that negotiates exactly counter-offers or, configured modern-first,
+	// refuses it with -32022), and then "2025-03-26" while the client already
+	// read replies up to 2025-11-25.
+	ProtocolVersionLatest     = "2025-11-25"
 	ProtocolVersionMCP20      = "2.0-stateless"
 	ProtocolVersionLegacy     = "2024-11-05"
 	OpenPluginStandardVersion = "1.0"
@@ -22,7 +25,7 @@ const (
 // answers with anything else — a per-request revision such as 2026-07-28, which
 // has no handshake, or a string nobody defined — has not agreed to a protocol
 // this client speaks, and the specification has the client disconnect.
-var handshakeVersions = []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+var handshakeVersions = []string{"2024-11-05", "2025-03-26", "2025-06-18", ProtocolVersionLatest}
 
 // Request is a JSON-RPC 2.0 / MCP 2.0 request envelope.
 type Request struct {

@@ -437,8 +437,34 @@ func checkTiers(reg *flags.Registry, provider string) (tierTable, error) {
 	if err != nil {
 		return tierTable{}, err
 	}
+	return planAnthropicTiers(table, strings.TrimSpace(ceiling))
+}
+
+// planAnthropicTiers checks a table against the shipped catalogue and the spend
+// cap meterAnthropic reads.
+func planAnthropicTiers(table tierTable, ceiling string) (tierTable, error) {
 	capped := strings.TrimSpace(os.Getenv(envAnthropicBudget)) != ""
-	return planTiers(table, anthropicTiers{}, capped, strings.TrimSpace(ceiling))
+	return planTiers(table, anthropicTiers{}, capped, ceiling)
+}
+
+// checkMainTierFor refuses a main tier the catalogue does not hold, or the spend
+// cap cannot price, when model is the one the main tier supplies — the model an
+// op took from the selection serve offers. It checks that one row with the same
+// planner checkTiers runs over all of them: an op that sends no effort and uses
+// no other tier has no business with a bad heavy tier, and a model the host
+// chose for itself is not the main tier's to refuse.
+func checkMainTierFor(reg *flags.Registry, provider, model string) error {
+	table, err := resolveTiers(reg, provider)
+	if err != nil {
+		return err
+	}
+	main := table.row(agents.TierMain)
+	if !table.Active || main.Model != model {
+		return nil
+	}
+	main.Effort = ""
+	_, err = planAnthropicTiers(tierTable{Provider: table.Provider, Active: true, Rows: []tierRow{main}}, "")
+	return err
 }
 
 // inactiveOverrides lists tier values an operator set that this session will
