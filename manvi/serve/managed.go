@@ -100,10 +100,13 @@ type managedJob struct {
 	harnessDigest string
 	harnessFile   string
 	materialised  *harnessMaterialisation
-	// checkout is the resolved directory this attempt runs in, wantsHarness
-	// whether it asked for a harness, and recovery what Prepare found and
-	// cleared there before anything else (see enterCheckout).
+	// checkout is the resolved directory this attempt runs in and checkoutInfo
+	// the directory itself, which is what checkouts are compared by (see
+	// sameCheckout); wantsHarness is whether it asked for a harness, and recovery
+	// what Prepare found and cleared there before anything else (see
+	// enterCheckout).
 	checkout     string
+	checkoutInfo os.FileInfo
 	wantsHarness bool
 	recovery     string
 	// ctx is the job's lifetime and cancel ends it: Stop, Close and the
@@ -196,7 +199,7 @@ func harnessBusy(format string, args ...any) *Error {
 // one is refused where its spec is read.
 func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	wants := job.harnessRef != (ManagedHarness{})
-	resolved, ok := resolvedCheckout(run.Cwd)
+	resolved, info, ok := resolvedCheckout(run.Cwd)
 	if !ok {
 		if wants {
 			return badRoot("cwd does not exist or cannot be resolved")
@@ -220,7 +223,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		default:
 		}
 		o.mu.Lock()
-		same, harnessed := o.checkout == resolved, o.wantsHarness
+		same, harnessed := sameCheckout(o.checkoutInfo, info), o.wantsHarness
 		o.mu.Unlock()
 		switch {
 		case !same:
@@ -235,16 +238,35 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		return err
 	}
 	job.mu.Lock()
-	job.checkout, job.wantsHarness, job.recovery = resolved, wants, note
+	job.checkout, job.checkoutInfo, job.wantsHarness, job.recovery = resolved, info, wants, note
 	job.mu.Unlock()
 	return nil
 }
 
-// resolvedCheckout is a directory with its symbolic links resolved, and whether
-// it could be.
-func resolvedCheckout(dir string) (string, bool) {
+// resolvedCheckout is a directory with its symbolic links resolved, the
+// directory itself as the file system names it, and whether both could be had.
+func resolvedCheckout(dir string) (string, os.FileInfo, bool) {
 	resolved, err := filepath.EvalSymlinks(dir)
-	return resolved, err == nil
+	if err != nil {
+		return "", nil, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", nil, false
+	}
+	return resolved, info, true
+}
+
+// sameCheckout says whether two checkouts are one directory. A checkout is keyed
+// by the directory, not by how its path is spelled: on a case-insensitive volume
+// .../MyRepo and .../myrepo are two spellings of one directory and so one
+// checkout, and a case-folded string would be wrong on a case-sensitive volume,
+// where they are two. os.SameFile compares what the file system calls the
+// directory (device and inode; on Windows the volume serial number and file
+// index), so it is right on both, and a link to the directory is the directory.
+// A job with no directory (nil) is on no checkout.
+func sameCheckout(a, b os.FileInfo) bool {
+	return a != nil && b != nil && os.SameFile(a, b)
 }
 
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
@@ -254,7 +276,7 @@ func resolvedCheckout(dir string) (string, bool) {
 // not worked around by excluding the span: a refusal is honest about what the
 // diff would have held. Nil means no block is known to be there.
 func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
-	resolved, ok := resolvedCheckout(worktree)
+	resolved, info, ok := resolvedCheckout(worktree)
 	if !ok {
 		return nil
 	}
@@ -271,7 +293,7 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		default:
 		}
 		j.mu.Lock()
-		live := j.checkout == resolved && j.materialised != nil
+		live := sameCheckout(j.checkoutInfo, info) && j.materialised != nil
 		j.mu.Unlock()
 		if live {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")

@@ -171,6 +171,13 @@ under **Unreleased** in the same commit as the code.
   message already did. It used to skip the frame and end the run as completed
   with that result lost. A user frame with no message, or with plain-string
   content, is still skipped.
+- The one-harness-per-checkout guard keys a checkout by the directory, not by
+  its path string. `.../MyRepo` and `.../myrepo` are one directory on a
+  case-insensitive volume (APFS, NTFS default) and used to be two checkouts, so
+  two managed runs proceeded and the second overwrote the first's pending
+  record. Checkouts are compared with `os.SameFile` (device and inode; volume
+  serial number and file index on Windows), which is also right on a
+  case-sensitive volume, where a case-folded string would not be.
 
 ## [0.1.0] — 2026-10-17
 
