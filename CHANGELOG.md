@@ -160,14 +160,14 @@ under **Unreleased** in the same commit as the code.
   one resolver run and the TUI use: `MANVI_MODEL`, then `llm.tier.main`
   (default `claude-opus-5-5`), reported as `model_source: "llm.tier.main"`. A
   tier profile serve cannot use never stops it starting: a main tier that
-  resolves to nothing leaves the selection empty and is named on stderr. The
-  enhancement provider now checks the whole tier profile before building, as
-  `manvi run` and the TUI do and before any request is sent, so a tier the
-  catalogue does not hold (any tier, not only main, whatever model the host
-  selected) refuses the op that builds a provider with the
+  resolves to nothing leaves the selection empty and is named on stderr. When
+  the model an enhancement op builds a provider for is the main tier's, that
+  one row is checked first, with the planner `manvi run` uses and before any
+  request: a main tier the catalogue does not hold refuses the op with the
   `tier main: llm.tier.main=...` error `manvi run` gives, not with a
-  model-not-served message pointing at the local model setting. Other
-  providers resolve as before, and anthropic still does not inherit
+  model-not-served message pointing at the local model setting. No other tier
+  is checked, so a bad `llm.tier.heavy` does not refuse an op that never uses
+  it. Other providers resolve as before, and anthropic still does not inherit
   `llm.local.model`.
 - `manvi run --approve-fd`: tool children no longer inherit the approval
   descriptor, and a decision is bound to its request. The descriptor was

@@ -331,30 +331,59 @@ func startServeHost(t *testing.T, extraEnv ...string) *serveHost {
 	return host
 }
 
-// TestServeStartsAndNamesATierTheCatalogueDoesNotHold is the shape the host
-// sees. The operator's main tier is a model the catalogue does not hold: serve
-// still starts and answers the board, and refinement — the op that needs the
-// model — reports the tier, naming the setting, before any request is sent.
-func TestServeStartsAndNamesATierTheCatalogueDoesNotHold(t *testing.T) {
-	// Nothing listens here: reaching it would fail with a transport error, not
-	// the refusal this test asks for.
-	host := startServeHost(t, "MANVI_MODEL=", "MANVI_LLM_DEFAULT_PROVIDER=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-tier",
-		"ANTHROPIC_BASE_URL=http://127.0.0.1:1", "MANVI_USER_CONFIG="+filepath.Join(t.TempDir(), "absent.yaml"),
-		"MANVI_LLM_TIER_MAIN=claude-opus-9")
-	configuration := host.request("work.enhancements.configuration", `{}`)
-	if !strings.Contains(string(configuration), `"model":"claude-opus-9"`) || !strings.Contains(string(configuration), `"model_source":"llm.tier.main"`) {
-		t.Fatalf("serve did not offer the operator's main tier: %s", configuration)
-	}
-	host.request("work.repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
-	host.request("work.items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"fix E42","repository_ids":["r"],"primary_repository_id":"r"}`)
-	refined := host.call("work.enhancements.refine", `{"id":"t","request_id":"w","expected_revision":1,"repo_root":`+strconv.Quote(host.repo)+`}`)
-	if refined.OK || refined.Error == nil || !strings.Contains(refined.Error.Message, "tier main") || !strings.Contains(refined.Error.Message, "claude-opus-9") {
-		t.Fatalf("refinement = %+v; want the main tier named", refined)
-	}
-	if err := host.stdin.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := host.wait(); err != nil {
-		t.Fatalf("CLI shutdown: %v; stderr: %s", err, host.stderr.String())
+// TestServeRefusesOnlyTheTierAnOpUses is the shape the host sees. serve starts
+// whatever the tier profile holds, and the op that builds a provider is refused
+// only for the tier it uses: the main tier is what an enhancement runs on, so a
+// main tier the catalogue does not hold is reported before any request, naming
+// the setting, while a bad heavy tier is none of that op's business and it is
+// not refused for it. (Refinement then stops in the anthropic adapter, which
+// refuses the temperature enhancement_output.go sets; that is as on dd36c68.)
+func TestServeRefusesOnlyTheTierAnOpUses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tier    string
+		refused bool
+	}{
+		{name: "main tier the catalogue does not hold", tier: "MANVI_LLM_TIER_MAIN=claude-opus-9", refused: true},
+		{name: "heavy tier the catalogue does not hold", tier: "MANVI_LLM_TIER_HEAVY=claude-opus-9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reached atomic.Int32
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"fixture refuses"}}`, http.StatusBadRequest)
+			}))
+			t.Cleanup(provider.Close)
+			host := startServeHost(t, "MANVI_MODEL=", "MANVI_LLM_DEFAULT_PROVIDER=anthropic", "ANTHROPIC_API_KEY=sk-ant-fixture-serve-tier",
+				"ANTHROPIC_BASE_URL="+provider.URL, "MANVI_USER_CONFIG="+filepath.Join(t.TempDir(), "absent.yaml"), tc.tier)
+			configuration := host.request("work.enhancements.configuration", `{}`)
+			wantModel := `"model":"claude-opus-5-5"`
+			if tc.refused {
+				wantModel = `"model":"claude-opus-9"`
+			}
+			if !strings.Contains(string(configuration), wantModel) || !strings.Contains(string(configuration), `"model_source":"llm.tier.main"`) {
+				t.Fatalf("serve did not offer the main tier (%s): %s", wantModel, configuration)
+			}
+			host.request("work.repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
+			host.request("work.items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"fix E42","repository_ids":["r"],"primary_repository_id":"r"}`)
+			refined := host.call("work.enhancements.refine", `{"id":"t","request_id":"w","expected_revision":1,"repo_root":`+strconv.Quote(host.repo)+`}`)
+			if refined.OK || refined.Error == nil {
+				t.Fatalf("refinement against a fixture that refuses every request succeeded: %+v", refined)
+			}
+			named := strings.Contains(refined.Error.Message, "tier main") && strings.Contains(refined.Error.Message, "llm.tier.main")
+			if tc.refused && (!named || reached.Load() != 0) {
+				t.Fatalf("refinement = %+v after %d requests; want the main tier named before any request", refined, reached.Load())
+			}
+			if !tc.refused && strings.Contains(refined.Error.Message, "tier ") {
+				t.Fatalf("refinement = %+v; an unrelated tier must not refuse it", refined)
+			}
+			if err := host.stdin.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := host.wait(); err != nil {
+				t.Fatalf("CLI shutdown: %v; stderr: %s", err, host.stderr.String())
+			}
+		})
 	}
 }

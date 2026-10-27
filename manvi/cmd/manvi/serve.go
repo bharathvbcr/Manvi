@@ -149,12 +149,13 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			// The profile run and the TUI check before any request, checked
-			// here when an op needs it rather than when serve starts: a tier
-			// the catalogue does not hold names itself instead of reaching the
-			// provider as a refused request, and the host still starts.
+			// The check manvi run and the TUI make before any request, made here
+			// for the tier this op uses and when the op needs it rather than
+			// when serve starts: a main tier the catalogue does not hold
+			// names itself instead of reaching the provider as a refused
+			// request, the host still starts, and no other tier is its concern.
 			if name == anthropic.Name {
-				if _, err := checkTiers(reg, name); err != nil {
+				if err := checkMainTierFor(reg, name, model); err != nil {
 					return nil, err
 				}
 			}
