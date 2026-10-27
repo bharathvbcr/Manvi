@@ -162,6 +162,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Provider requests no longer follow a redirect to another origin. Credentials
+  travel in `x-api-key` / `x-goog-api-key`, which net/http does not strip when a
+  redirect leaves the host (it strips only Authorization, Cookie and
+  WWW-Authenticate), and a 307/308 replays the request body, so a provider
+  endpoint that redirected sent the key and the prompt wherever it pointed. The
+  transport client now refuses any redirect whose scheme, host or port differs
+  from the original request, failing closed with `*ErrCrossOriginRedirect`
+  (origins only, no URL or query) as a permanent error that is not retried;
+  same-origin redirects are followed as before, under net/http's ten-hop limit,
+  and a chain past it is a typed, permanent `*ErrTooManyRedirects` rather than
+  a fault retried four times over. Both errors are carried as themselves, not
+  inside net/http's `Post "<full URL>"` wrapper, so a query string never reaches
+  the message.
+  An operator whose endpoint moved sets the base URL to the final one. Applies
+  to every provider and to `Probe`. Tests with two fixture servers fail on
+  58b9258.
 - An Anthropic response cut off by `max_tokens` in the middle of a tool call no
   longer ends the turn. `Response()` returned an "incomplete arguments" (or
   "never closed") error, discarding every completed step with it, although the

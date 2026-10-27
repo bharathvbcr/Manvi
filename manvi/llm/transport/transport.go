@@ -440,12 +440,100 @@ func New(provider, baseURL string, header func() (http.Header, error)) *Client {
 			// a call with the context instead.
 			Timeout:   0,
 			Transport: tr,
+			// Provider credentials travel in custom headers (x-api-key,
+			// x-goog-api-key) that net/http does not strip when a redirect
+			// leaves the host, and a 307/308 replays the request body too.
+			CheckRedirect: refuseCrossOriginRedirect,
 		},
 		Retry:                 DefaultRetryPolicy(),
 		Header:                header,
 		RequestIDHeader:       "request-id",
 		ResponseHeaderTimeout: headerTimeout,
 	}
+}
+
+// ErrCrossOriginRedirect reports that a provider answered with a redirect to a
+// different origin, which this client refuses to follow.
+//
+// The refusal is total rather than filtered by status or header: a key header
+// would follow a 307/308 to any host, the body with it, and a 301/302/303 that
+// drops the body still carries the key. A provider endpoint that has moved is
+// fixed in configuration, not by trusting whatever origin it points at.
+type ErrCrossOriginRedirect struct {
+	// From and To are origins (scheme and host), never full URLs, so the error
+	// cannot carry a query string.
+	From, To string
+}
+
+func (e *ErrCrossOriginRedirect) Error() string {
+	return fmt.Sprintf("the server redirected to another origin (%s -> %s); the request, its credentials "+
+		"and its body were not sent there. Point the provider's base URL at the final endpoint", e.From, e.To)
+}
+
+// maxRedirects is net/http's own limit on a redirect chain.
+const maxRedirects = 10
+
+// ErrTooManyRedirects reports a redirect chain longer than maxRedirects, which
+// is a loop or a misconfigured endpoint, not a fault a retry can clear.
+type ErrTooManyRedirects struct {
+	Limit int
+}
+
+func (e *ErrTooManyRedirects) Error() string {
+	return fmt.Sprintf("the server redirected more than %d times; the endpoint's base URL needs correcting", e.Limit)
+}
+
+// refuseCrossOriginRedirect is the http.Client redirect policy: same-origin
+// redirects are followed under net/http's own limit of ten, and any redirect to
+// another origin fails closed.
+func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return &ErrTooManyRedirects{Limit: maxRedirects}
+	}
+	if !sameOrigin(via[0].URL, req.URL) {
+		return &ErrCrossOriginRedirect{From: originOf(via[0].URL), To: originOf(req.URL)}
+	}
+	return nil
+}
+
+// sameOrigin reports whether two URLs share scheme, host and port, with the
+// scheme's default port and host case treated as the same.
+func sameOrigin(a, b *url.URL) bool {
+	return originOf(a) == originOf(b)
+}
+
+func originOf(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+}
+
+// transportFailure classifies an error from sending a request.
+//
+// A refused redirect and an exhausted redirect chain are permanent: sending the
+// same request again reaches the same redirect, and a retry loop would ask the
+// origin four times to learn it. Both are carried as their own typed error
+// rather than as the *url.Error net/http wraps around them, because that
+// wrapper's text is `Post "<full URL>"`, which would put the request's query
+// string into a message the way ErrCrossOriginRedirect promises not to.
+func (c *Client) transportFailure(err error) *Error {
+	var refused *ErrCrossOriginRedirect
+	if errors.As(err, &refused) {
+		return &Error{Provider: c.Provider, Err: refused, permanent: true}
+	}
+	var loop *ErrTooManyRedirects
+	if errors.As(err, &loop) {
+		return &Error{Provider: c.Provider, Err: loop, permanent: true}
+	}
+	return &Error{Provider: c.Provider, Err: err}
 }
 
 // Post sends a JSON body and returns the response for the caller to read.
@@ -579,7 +667,7 @@ func (c *Client) attempt(ctx context.Context, method, path string, payload []byt
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, &Error{Provider: c.Provider, Err: ctxErr, cancelled: true}
 		}
-		return nil, &Error{Provider: c.Provider, Err: err}
+		return nil, c.transportFailure(err)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
@@ -1374,7 +1462,7 @@ func (c *Client) Probe(ctx context.Context, method, url string, payload []byte) 
 	}
 	resp, err := c.send(ctx, req)
 	if err != nil {
-		return nil, &Error{Provider: c.Provider, Err: err}
+		return nil, c.transportFailure(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_ = resp.Body.Close()
