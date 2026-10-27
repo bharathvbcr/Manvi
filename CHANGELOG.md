@@ -162,6 +162,23 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Cancelling a desktop-broker call after its request was written stops the
+  broker. `Client.Call` retired the broker only when the cancel landed while the
+  request was still being written; once the write had succeeded, a cancelled or
+  timed-out call dropped its pending entry and returned, so the click, keystroke
+  or typed secret it had asked for still ran after the caller gave up. The
+  post-write cancel now retires the broker the same way (the client is closed, so
+  a late reply cannot satisfy a newer call and the caller must start a new
+  broker), for every op that can act or change what an action would hit: `act`,
+  `human_act`, `approve`, `attach`, `focus`, `resume`, and any op not listed. The
+  read-only ops (`probe`, `observe`, `resolve`, `pause`, `detach`) only drop their
+  pending entry, because nothing starts a second broker and a slow observe past
+  the runner's 8 s deadline must not end computer use for the run; request ids
+  are never reused, so their late reply is discarded. A reply that has already
+  arrived when the context ends is returned, not thrown away. Tests cancel in
+  both windows against a stand-in broker process and assert the action file is
+  never written (ft-871861f4; the earlier claimed fix 5dc4518 never reached the
+  repository).
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible
