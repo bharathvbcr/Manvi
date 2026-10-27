@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -65,6 +66,10 @@ type Runner struct {
 	done chan struct{}
 
 	focused bool
+
+	// panics holds the report of each turn that panicked, written to the real
+	// stderr once the terminal has been given back. See guardTurn.
+	panics []string
 }
 
 // New builds a runner.
@@ -255,6 +260,8 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 		if drainErr := r.shutdownTurns(turnDrainTimeout); drainErr != nil && err == nil {
 			err = drainErr
 		}
+		// Last, so a turn that panicked while quitting is in it too.
+		r.reportPanics()
 	}()
 	// Three registrations for one teardown. A panic here leaves the terminal in
 	// raw mode on the alternate screen, where the shell that regains it shows
@@ -785,13 +792,48 @@ func (r *Runner) startTurn(parent context.Context, sessionID string, work func(c
 			r.mu.Unlock()
 			cancel()
 		}()
-		err := work(ctx)
+		err := r.guardTurn(ctx, work)
 		if errors.Is(err, context.Canceled) {
 			// A cancel the operator asked for is not a failure to report as one.
 			err = nil
 		}
 		r.post(ActionTurnEnded{SessionID: sessionID, Err: err})
 	}()
+}
+
+// guardTurn runs a turn's work and turns a panic in it into an error.
+//
+// The turn runs on its own goroutine, so nothing above it can recover: a panic
+// there ends the process with the terminal still raw on the alternate screen,
+// the session unsaved and every lease held. As an error it takes the ordinary
+// route to the transcript, and the session stays usable. The stack is kept for
+// reportPanics, because the transcript line has only the panic value.
+func (r *Runner) guardTurn(ctx context.Context, work func(context.Context) error) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			report := fmt.Sprintf("manvi: a turn panicked: %v\n%s", rec, debug.Stack())
+			r.mu.Lock()
+			r.panics = append(r.panics, report)
+			r.mu.Unlock()
+			err = fmt.Errorf("the turn failed with an internal error: %v", rec)
+		}
+	}()
+	return work(ctx)
+}
+
+// reportPanics writes the stacks of the turns that panicked to stderr. It runs
+// after the terminal is restored and stderr is back, which is the only time a
+// trace is readable: written earlier it lands on an alternate screen that is
+// about to be discarded. Credential values are removed first, because a panic
+// value can carry whatever the code panicked over.
+func (r *Runner) reportPanics() {
+	r.mu.Lock()
+	reports := r.panics
+	r.panics = nil
+	r.mu.Unlock()
+	for _, report := range reports {
+		_, _ = fmt.Fprintln(os.Stderr, r.cfg.Scrubber.Clean(report))
+	}
 }
 
 // osc52Limit bounds a clipboard write. Terminals cap the sequence and several

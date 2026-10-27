@@ -114,6 +114,16 @@ func (r *Reader) Run() {
 	defer close(r.events)
 
 	var pending []byte
+	// scan is how far a paste waiting for its end has been searched; see
+	// pasteScan. It is reset whenever bytes are consumed.
+	var scan pasteScan
+	next := func(flush bool) (Event, int) {
+		ev, n := decodeAt(pending, flush, &scan)
+		if n > 0 {
+			scan = pasteScan{}
+		}
+		return ev, n
+	}
 	var timer *time.Timer
 	var timeout <-chan time.Time
 	stopTimer := func() {
@@ -128,7 +138,7 @@ func (r *Reader) Run() {
 	for {
 		// Drain everything the buffer can decide on its own.
 		for len(pending) > 0 {
-			ev, n := decode(pending, false)
+			ev, n := next(false)
 			if n == 0 {
 				break
 			}
@@ -155,7 +165,7 @@ func (r *Reader) Run() {
 			stopTimer()
 			// Nothing more is coming. Force a decision on what is held.
 			for len(pending) > 0 {
-				ev, n := decode(pending, true)
+				ev, n := next(true)
 				if n == 0 {
 					// decode must always consume under flush; refusing to would
 					// spin this loop forever. Drop a byte rather than hang.
@@ -198,7 +208,7 @@ func (r *Reader) Run() {
 			// Whatever is buffered is decoded before the error is reported, so
 			// a final keystroke is not lost to the stream ending.
 			for len(pending) > 0 {
-				ev, n := decode(pending, true)
+				ev, n := next(true)
 				if n == 0 {
 					pending = pending[1:]
 					continue

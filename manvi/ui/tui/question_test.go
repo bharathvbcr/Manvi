@@ -21,6 +21,7 @@ func questionRequest(multi bool) ui.Request {
 func raiseQuestion(a *App, multi bool) chan ui.Decision {
 	reply := make(chan ui.Decision, 1)
 	a.Dispatch(ActionApprovalRequest{SessionID: "S1", Request: questionRequest(multi), Reply: reply})
+	settleApproval(a)
 	return reply
 }
 

@@ -162,6 +162,79 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
+  every mark to the cell on its left with no bound, each append copying what the
+  cell already held, so a line of n marks (a model reply or tool result; they are
+  zero width, so the line stays one row) cost n squared: 200,000 of them took
+  2.8 s to draw (min of 5, load 13 to 25), on every frame that showed the line. A
+  cell now keeps at most `render.MaxCombPerCell` (30) marks and drops the rest,
+  which is the limit the Stream-Safe Text Format (UAX #15, section 13) puts on a
+  run of non-starters and several times what real text needs (stacked
+  Vietnamese, Thai, Hebrew and Arabic marks, ZWJ emoji, a seven-tag flag
+  sequence). The same line draws in 9.6 ms. Text under the cap renders exactly
+  as before, checked cell by cell against the previous layout for those scripts.
+- A large paste decodes in linear time. Each read that arrived while a paste was
+  open made the input decoder copy the whole pending buffer twice and search it
+  again for the closing marker, so a paste cost the square of its size over the
+  read size: 8 MB in 1 KB reads took 6.3 s (min of 5, load 27 to 40), 1 MB took
+  0.14 s. The reader now remembers how far it has searched and resumes there,
+  backed up far enough to find a marker split across two reads, and no longer
+  converts the buffer to a string to test for the paste prefix: 46.5 ms and
+  6.9 ms for the same pastes (135x and 21x). The decoded text is unchanged.
+- A pasted block no longer comes back into a later prompt. The composer never
+  forgot a collapsed paste chip: after the prompt was sent the paste stayed
+  registered, so a later prompt that merely mentioned the chip's words (for
+  example `[pasted 308 chars]`) was sent with the earlier paste in its place,
+  re-sending a credential that had been pasted. Expansion also ran over a map in
+  random order, so a paste that quoted another chip's text expanded differently
+  from one call to the next. Sending or clearing a prompt now drops its chips,
+  replacing the buffer keeps only the chips the new text shows, and expansion
+  reads the buffer once from left to right, replacing each registered chip it
+  finds with its paste and never reading the replacement, so one buffer gives
+  one string. Every chip now carries a number (`[pasted 308 chars #1]`) that
+  only grows for the life of the prompt, through deletion and Clear, so a label
+  is never issued twice and Undo cannot show one paste's label over another's
+  text. Each edit first drops the chips the buffer no longer shows, so a chip
+  deleted by hand is plain text if its label is typed again. Undo after Clear or
+  a submit can still bring a label back; it is then a dead chip that submits as
+  its own words.
+- `manvi tui` shuts down on SIGTERM, SIGHUP and SIGINT as it does on a quit.
+  It installed no handler (the headless face does), so a stop signal killed it
+  with the alternate screen, mouse reporting and bracketed paste still on and
+  the tty raw, the sessions' leases unreleased and a turn in flight unsaved. The
+  signal now cancels the run, which takes the loop's ordinary exit: the terminal
+  is restored, running turns are cancelled and waited for, and the leases are
+  released. It exits with status 1 and reports `stopped by <signal>`, including
+  a signal that arrives while the leases are being released; a second signal
+  during the shutdown gets the default action. A panic in a turn is
+  recovered on the turn's goroutine into a transcript error, with the session
+  log persisted and the stack written to stderr after the terminal is back,
+  instead of ending the process with the terminal raw. The pty helpers the term
+  tests used are now shared as `internal/ptytest`.
+- A turn that ends abnormally no longer leaves a tool call unanswered. A panic
+  between the assistant's tool_use being logged and its tool_result (a
+  `ToolsDispatching` listener defect), a listener's refusal at that point, or a
+  log append that failed mid-step left a history with a tool_use no result
+  answered; the session was saved that way over the last good copy, and the next
+  turn's request was invalid. Every exit from a turn now gives each call still
+  open an error result ("interrupted: ... it may not have run, or may have run
+  in part") before the step closes and before anything persists. A call is
+  answered once: it leaves the loop's open set when its own result is logged.
+- An approval card no longer takes keys typed before it appeared. The card was
+  modal but had no activation delay: an operator typing into the composer when
+  a request arrived had a digit select "allow once", the words after it became
+  the grant's reason, and the Enter meant for the composer recorded
+  `Allow=true By="human"`. The card now takes no input until it has been
+  painted and 400 ms have passed since the later of that paint and the last
+  input it refused, so a burst of type-ahead of any length is dropped (not
+  replayed) and one keypress after a pause is a decision. The same gate holds
+  for clicks and wheel notches (including ones that only move the highlight),
+  for the next card in a queue when its predecessor is answered, and for keys an
+  overlay consumed: closing the palette over a card restarts the quiet period.
+  Only the left button operates the card; a middle or right press does nothing.
+  Esc, Ctrl-C and the quit keys only refuse or leave, and are not gated. The
+  gate cannot tell a held key's auto-repeat from a press once the period has
+  passed; an allow still needs a reason and a second key.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible

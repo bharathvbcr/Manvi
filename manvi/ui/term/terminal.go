@@ -375,8 +375,10 @@ func (t *Terminal) Suspend() error {
 	return nil
 }
 
-// watchSignals delivers resize notifications and guarantees restoration on a
-// terminating signal.
+// watchSignals delivers resize notifications. It does not handle a terminating
+// signal: that is the caller's, because only the caller can end the run through
+// its ordinary exit (runTUI cancels the loop's context on SIGTERM, SIGHUP and
+// SIGINT, and the loop's deferred Stop restores the terminal).
 func (t *Terminal) watchSignals() {
 	if sig := resizeSignal(); sig != nil {
 		ch := make(chan os.Signal, 1)

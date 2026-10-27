@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
@@ -61,6 +63,18 @@ func runTUI(reg *flags.Registry, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// A stop signal ends the run the way a quit does. The terminal is raw, so a
+	// Ctrl-C from the keyboard is a key and never reaches here; what does is the
+	// window closing (SIGHUP), a supervisor (SIGTERM) or an interrupt sent to
+	// the process. With no handler the default action killed the process on the
+	// spot: the alternate screen, mouse reporting and bracketed paste stayed on,
+	// the tty stayed raw, the sessions' leases were never released and a turn in
+	// flight never saved its log. Cancelling the run's context takes the loop's
+	// ordinary exit instead, whose deferred steps restore the terminal and wait
+	// for the turns, and the lease release below follows it.
+	stopped, releaseSignals := cancelOnSignal(cancel, tuiStopSignals...)
+	defer releaseSignals()
+
 	// Started before the loop and cancelled with it. The index is the one piece
 	// of startup whose cost scales with the repository rather than with the
 	// command, so it runs beside the UI instead of in front of it.
@@ -77,7 +91,64 @@ func runTUI(reg *flags.Registry, args []string) error {
 	if err := host.releaseAll(releaseCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "manvi: some sessions did not release cleanly: %v\n", err)
 	}
+	// Read last, so a signal that arrived at any point up to here is reported,
+	// including the first one taken while the leases were being released: the
+	// handler is still installed then, so it did not kill the process and it
+	// did not reach the loop either.
+	return stoppedBy(stopped(), runErr)
+}
+
+// stoppedBy is what a TUI run returns once it is over: the run's own error if
+// it failed for a reason of its own, else, when a stop signal arrived, an error
+// naming it. A supervisor that stopped the process wants to know it did not
+// finish by itself, and it is reported as a failure.
+func stoppedBy(sig os.Signal, runErr error) error {
+	if sig != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
+		return fmt.Errorf("stopped by %v", sig)
+	}
 	return runErr
+}
+
+// tuiStopSignals are the signals that end a TUI run.
+var tuiStopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
+// cancelOnSignal cancels the run on the first of sigs and returns which one
+// arrived (nil if none has) and a function that stops listening.
+//
+// Only the first is taken. Once it has been, the handler is removed, so a
+// second signal during the shutdown it started gets the default action: an
+// operator who sends another is asking for the process gone now, and the
+// bounded waits in the teardown are not a reason to refuse them.
+func cancelOnSignal(cancel context.CancelFunc, sigs ...os.Signal) (received func() os.Signal, release func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, sigs...)
+	done := make(chan struct{})
+	var (
+		mu  sync.Mutex
+		got os.Signal
+	)
+	go func() {
+		select {
+		case sig := <-ch:
+			mu.Lock()
+			got = sig
+			mu.Unlock()
+			signal.Stop(ch)
+			cancel()
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return func() os.Signal {
+			mu.Lock()
+			defer mu.Unlock()
+			return got
+		}, func() {
+			once.Do(func() {
+				signal.Stop(ch)
+				close(done)
+			})
+		}
 }
 
 // tuiSession is one session's own harness state.
@@ -876,6 +947,17 @@ func (h *harnessHost) Submit(ctx context.Context, sessionID, text string) error 
 			return err
 		}
 	}
+	// A panic in the turn is recovered by the runner and reported as an error,
+	// which leaves the terminal intact; it must not also lose the log. The log
+	// is persisted here on the way past and the panic carried on to that
+	// recover.
+	defer func() {
+		if rec := recover(); rec != nil {
+			_ = h.persist(s)
+			panic(rec)
+		}
+	}()
+
 	// One snapshot for the whole turn. Reading the fields individually would
 	// let a settings change land between two of them and start a turn with a
 	// provider from before it and a model from after.
