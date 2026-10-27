@@ -1,13 +1,18 @@
 package catalog
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/internal/filelock"
 	"github.com/bharathvbcr/Manvi/manvi/internal/syncdir"
 	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
@@ -109,6 +114,62 @@ func directoryEntries(root *os.Root) ([]os.DirEntry, error) {
 		return nil, errors.New("catalog directory exceeds 4096 entries")
 	}
 	return entries, nil
+}
+
+// lockWait bounds the wait for another writer of the same entry, so a wedged
+// holder fails a caller with an error instead of hanging it. It is a variable so
+// a test can shorten it.
+var lockWait = 10 * time.Second
+
+// currentLockName is the lock file in an identity directory. It is not a
+// revision (no ".json" suffix), so listing skips it, and it is never removed: a
+// removed lock file lets two processes lock two inodes of one name.
+const currentLockName = ".current.lock"
+
+// identityLocks holds one single-slot semaphore per identity directory. Store is
+// a value, and callers (Jarvis builds one per request) make many of them for one
+// directory, so the lock cannot live on the Store. A channel rather than a
+// sync.Mutex so that waiting for it can be bounded.
+var identityLocks sync.Map
+
+// lockCurrent serialises every read-modify-write of an identity's current.json.
+// The in-process semaphore orders this process's writers without polling; the
+// file lock orders them against other processes, because the catalog is shared:
+// the Jarvis daemon and CLI each write the same directory through this package.
+// One lockWait bounds the wait for both together, so N writers behind a wedged
+// holder fail after one bound, not N. On a platform with no cross-process lock
+// this package knows it refuses rather than write unlocked.
+func (s Store) lockCurrent(dir *os.Root, id string) (func(), error) {
+	key, err := filepath.Abs(filepath.Join(s.Root, id))
+	if err != nil {
+		return nil, err
+	}
+	sem, _ := identityLocks.LoadOrStore(key, make(chan struct{}, 1))
+	slot := sem.(chan struct{}) //nolint:errcheck,forcetypeassert // the map only ever holds chan struct{}
+	ctx, cancel := context.WithTimeout(context.Background(), lockWait)
+	defer cancel()
+	waiting := func(err error) error { return fmt.Errorf("catalog: waiting for another writer of %s: %w", id, err) }
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, waiting(ctx.Err())
+	}
+	// Opened through dir, not by path, so a directory swapped after openChild
+	// cannot redirect the lock file.
+	f, err := dir.OpenFile(currentLockName, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		<-slot
+		return nil, err
+	}
+	unlock, err := filelock.LockFile(ctx, f)
+	if err != nil {
+		<-slot
+		if errors.Is(err, filelock.ErrUnsupported) {
+			return nil, errors.New("catalog: no cross-process file lock on this platform; the catalog cannot be written safely")
+		}
+		return nil, waiting(err)
+	}
+	return func() { unlock(); <-slot }, nil
 }
 
 // Publish only after the full bytes have reached a synchronized staging file.

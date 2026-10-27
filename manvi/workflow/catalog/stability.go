@@ -117,6 +117,11 @@ func (s Store) SetStability(id, revision, sha string, st Stability) error {
 		return err
 	}
 	defer dir.Close()
+	unlock, err := s.lockCurrent(dir, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	raw, err := readRegular(dir, "current.json")
 	if err != nil {
 		return err
@@ -125,13 +130,22 @@ func (s Store) SetStability(id, revision, sha string, st Stability) error {
 	if err := json.Unmarshal(raw, &current); err != nil {
 		return err
 	}
-	normalizeStatus(&current)
 	if current.ID != id || current.Revision != revision || current.SHA256 != sha {
 		return errors.New("stability does not match current catalog pointer")
 	}
-	copy := st
-	current.Stability = &copy
-	metadata, err := json.Marshal(current)
+	// Only the stability field changes. The pointer is rewritten from what is on
+	// disk, not from a decoded and normalised Entry, so status, promotion and any
+	// field this build does not know stay exactly as their writer left them.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	stability, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	fields["stability"] = stability
+	metadata, err := json.Marshal(fields)
 	if err != nil {
 		return err
 	}

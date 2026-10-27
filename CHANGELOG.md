@@ -162,6 +162,25 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A revoked workflow-catalog entry can no longer end up approved. `Revoke`,
+  `Approve`, `Promote` and `SetStability` each read an entry's `current.json`,
+  changed it and renamed the whole file back with nothing serialising them, so a
+  `SetStability` that read before a `Revoke` and renamed after it restored
+  `approved`: the audit reproduction saw 91 to 121 of 300 rounds end approved
+  after a successful `Revoke`, and `CheckUnattended` admits an approved entry.
+  Every read-modify-write of an identity's `current.json` now holds a lock: an
+  in-process lock per identity directory plus an exclusive file lock
+  (`.current.lock`, opened through the directory handle) against other
+  processes, because the catalog is shared (the Jarvis daemon and CLI write the
+  same directory through this package). One 10-second bound covers the wait for
+  both locks, so writers queued behind a wedged holder fail together after one
+  bound; a writer never writes unlocked, and on a platform with no `flock` (the
+  file lock is built for Linux, macOS, the BSDs and illumos, and Windows; Solaris
+  and AIX have none) it refuses. `SetStability` now rewrites only the `stability` field of the pointer
+  as it is on disk, so the status, the promotion flag and fields this build does
+  not know are left as their writer wrote them. The file lock moved out of
+  `llm/budget` into `internal/filelock`, which the spend ledger and the catalog
+  both use (ft-ce60ca4b).
 - Cancelling a desktop-broker call after its request was written stops the
   broker. `Client.Call` retired the broker only when the cancel landed while the
   request was still being written; once the write had succeeded, a cancelled or
