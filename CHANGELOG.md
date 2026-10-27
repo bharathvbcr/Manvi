@@ -217,6 +217,15 @@ under **Unreleased** in the same commit as the code.
   in memory, so a restart of Manvi ends it and the record is applied as any dead
   run's is. Not covered: a factory that fails after possibly starting a process
   returns no session to ask again, so that end still restores as before.
+- A managed run's checkout is held only when its agent process is not reaped.
+  `Close` answering `Reaped: true` beside an error (os/exec's `ErrWaitDelay`,
+  when the agent exited 0 but an orphaned grandchild, a dev server or an MCP
+  child, still holds its stdout; the wait error is sticky, so every later
+  `Close` returns it) means the agent is gone: the block is taken out and the
+  checkout released as after a clean exit, and the error stays on the run as a
+  note. Before this, such a normal run held its checkout until Manvi restarted.
+  What outlives the agent is the process-group problem, which this does not
+  address.
 - `work.runs.managed.activate` no longer holds the run's lock across its two
   task-store round trips (`runs.get`, `runs.started`). `managed.follow` is
   answered inline on the serve read loop and takes that lock, so a slow store

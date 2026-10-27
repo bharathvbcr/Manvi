@@ -183,18 +183,22 @@ func (r *ManagedRunner) reapHeld(info os.FileInfo) {
 	if session == nil {
 		return
 	}
-	if exit, err := session.Close(); exitConfirmed(exit, err) {
+	if exit, _ := session.Close(); exitConfirmed(exit) {
 		r.clearBlocked(info)
 	}
 }
 
-// exitConfirmed says whether a Close left no doubt that the process is gone.
-func exitConfirmed(exit codingagent.Exit, err error) bool { return exit.Reaped && err == nil }
+// exitConfirmed says whether the agent process has exited: Close reaped it. A Close
+// error beside a reaped process (os/exec's ErrWaitDelay, when an orphaned
+// grandchild still holds the agent's stdout) is about that pipe, not the agent, and
+// is recorded on the run as a note; it does not keep a checkout held. Whatever
+// outlives the agent is the process-group problem, which is not this check's.
+func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped }
 
 // unconfirmedSession is the session to hold a checkout for after a Close that returned
-// exit and err: the session itself when the exit is not confirmed, else nil.
-func unconfirmedSession(session ManagedSession, exit codingagent.Exit, err error) ManagedSession {
-	if exitConfirmed(exit, err) {
+// exit: the session itself when the exit is not confirmed, else nil.
+func unconfirmedSession(session ManagedSession, exit codingagent.Exit) ManagedSession {
+	if exitConfirmed(exit) {
 		return nil
 	}
 	return session
@@ -851,7 +855,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		if !activated {
 			exit, closeErr := provider.Close()
 			// The store error, if any, is kept on the job by finish.
-			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted", unconfirmedSession(provider, exit, closeErr))
+			_ = r.finish(job, "unresolved", nil, errors.Join(errors.New("managed preparation ended before activation"), closeErr), "interrupted", unconfirmedSession(provider, exit))
 			job.cancel()
 			close(job.done)
 		}
@@ -1013,7 +1017,7 @@ const managedGuidanceHeading = "\n## Agent guidance\n"
 func (r *ManagedRunner) abandon(job *managedJob, cause error) {
 	exit, err := job.provider.Close()
 	// The store error, if any, is kept on the job by finish.
-	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted", unconfirmedSession(job.provider, exit, err))
+	_ = r.finish(job, "unresolved", nil, errors.Join(cause, err), "interrupted", unconfirmedSession(job.provider, exit))
 	close(job.done)
 }
 
@@ -1243,14 +1247,14 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	var code *int
 	// Provider failure and callback uncertainty do not imply that a reaped
 	// process is alive. Preserve their reasons; task acceptance remains separate.
-	if exitConfirmed(exit, closeErr) {
+	if exit.Reaped && closeErr == nil {
 		outcome = "exited"
 		if exit.Code >= 0 {
 			v := exit.Code
 			code = &v
 		}
 	}
-	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit, closeErr))
+	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit))
 	// Arm only after finish has released the checkout, and never for a timeout.
 	// A provider-reported failure and a clean stop both arm. The queued message
 	// is snapshotted here: a follow that arrives after this is refused.

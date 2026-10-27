@@ -21,7 +21,7 @@ import (
 
 // unconfirmedLifecycle is a harness run whose session answers Close with the
 // given reaping state; the test flips it to confirm the exit later.
-func unconfirmedLifecycle(t *testing.T, root string, session **managedTestSession) *managedLifecycle {
+func unconfirmedLifecycle(t *testing.T, root string, session **managedTestSession, configure ...func(*managedTestSession)) *managedLifecycle {
 	t.Helper()
 	var atStart atomic.Value
 	var starts atomic.Int32
@@ -30,6 +30,9 @@ func unconfirmedLifecycle(t *testing.T, root string, session **managedTestSessio
 		s := m.fixtureSession(ctx, o)
 		s.withRequest = false
 		s.unreaped = true
+		for _, c := range configure {
+			c(s)
+		}
 		m.session, *session = s, s
 		return s, nil
 	}
@@ -152,5 +155,38 @@ func TestAConfirmedExitReleasesTheCheckoutAtOnce(t *testing.T) {
 	}
 	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
 		t.Fatalf("the block was not taken out: %q", got)
+	}
+}
+
+// An agent that exited 0 while an orphaned grandchild kept its stdout pipe open
+// is reaped: os/exec reports ErrWaitDelay beside the exit, and Close hands that
+// error back with Reaped true, every time (the wait error is sticky). The agent is
+// gone, so the block is taken out and the checkout is released as after a clean
+// exit, and the error is kept on the run as a note. Only an agent that is not
+// reaped holds the checkout.
+func TestAReapedAgentWithAWaitDelayErrorReleasesTheCheckout(t *testing.T) {
+	root := scanRepo(t, map[string]string{"CLAUDE.md": "project rules\n"})
+	var session *managedTestSession
+	m := unconfirmedLifecycle(t, root, &session, func(s *managedTestSession) {
+		s.unreaped = false
+		s.closeErr = errors.New("exec: WaitDelay expired before I/O complete")
+	})
+	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", `{"kind":"named","name":"registered"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activate(t, m, prepared)
+	_, raw := m.finished()
+	if !strings.Contains(string(raw), "WaitDelay") {
+		t.Errorf("the wait error is not on the run as a note: %s", raw)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
+		t.Fatalf("the block of a run whose agent exited was left in the file:\n%s", got)
+	}
+	if _, err := secondHarnessAttempt(m, root); err != nil {
+		t.Fatalf("the checkout of a run whose agent exited is still held: %v", err)
+	}
+	if e := m.runner.HarnessBusy(root); e != nil {
+		t.Fatalf("HarnessBusy = %v after the agent exited", e)
 	}
 }
