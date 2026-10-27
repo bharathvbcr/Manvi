@@ -351,6 +351,38 @@ type wireBlock struct {
 	Source *wireSource `json:"source,omitempty"`
 }
 
+// MarshalJSON writes the fields a block type requires even when they are
+// empty, and no field it does not have.
+//
+// The struct above is shared between decoding a response and encoding a
+// request, and omitempty is right for the many optional fields but wrong for
+// the required ones. ThinkingBlockParam requires `thinking` and `signature`,
+// and the default display on current models is "omitted", which delivers
+// thinking:"" — an empty value that omitempty then dropped on replay, leaving a
+// thinking block the API rejects ("Thinking blocks must be passed back
+// unmodified"). The same shape applies to redacted_thinking's `data`. So the
+// required fields are re-declared without omitempty for exactly the block types
+// that require them, and every other type marshals as before: a text, tool_use
+// or image block never gains a `thinking` field.
+func (b wireBlock) MarshalJSON() ([]byte, error) {
+	type plain wireBlock // drops this method, so the marshal below cannot recurse
+	switch b.Type {
+	case BlockThinking:
+		return json.Marshal(struct {
+			plain
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+		}{plain(b), b.Thinking, b.Signature})
+	case BlockRedactedThinking:
+		return json.Marshal(struct {
+			plain
+			Data string `json:"data"`
+		}{plain(b), b.Data})
+	default:
+		return json.Marshal(plain(b))
+	}
+}
+
 type wireSource struct {
 	Type      string `json:"type"`
 	MediaType string `json:"media_type"`

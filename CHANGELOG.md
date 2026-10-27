@@ -162,6 +162,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A replayed Anthropic thinking block keeps its required `thinking` field.
+  `thinking` was `omitempty`, and the default display on current models is
+  `"omitted"`, which delivers `thinking:""`: the block went back as
+  `{"type":"thinking","signature":"SIG"}`, and the Messages API requires
+  `thinking` (a string) and says thinking blocks must be passed back unmodified
+  or the request is a 400, so a tool-using turn after step one was likely
+  refused (found by audit; not run live). The wire block now marshals
+  `thinking` and `signature` on a thinking block and `data` on a
+  redacted_thinking block even when empty, and no other block type gains a
+  `thinking` field. A golden test pins the exact JSON of every block type; the
+  replay test fails on 58b9258.
 - The agent loop runs only a tool the step's request offered. `--chat-only`
   offered the model no tools, but `runCall` ran whatever tool name a response
   carried, and a provider that builds a call from prose (the OpenAI-compatible
