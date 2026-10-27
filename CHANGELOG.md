@@ -204,19 +204,25 @@ under **Unreleased** in the same commit as the code.
   whose record an earlier build wrote past the new bound stays refused with the
   restore's error until the file is put right by hand.
 - A managed run that ends with its agent process not confirmed gone no longer
-  gives its checkout away. `Close` answering "not reaped", or failing, is
-  recorded `unresolved`, but `finish` still restored the harness block (a read
-  and then a write over a file the agent may be writing, which overwrote its
-  edit in between) and closed the job, so the next run was admitted on a
-  checkout the first agent might still be in, with two agents and one block. The
-  block and its record now stay, the checkout is held (every attempt on it,
-  with a harness or without, is refused `E_HARNESS_BUSY` and `HarnessBusy`
-  refuses a verification), and the next prepare on the checkout asks the
-  provider again whether the process has exited (`Close` waits again, bounded);
-  once it confirms, the block is taken out and the checkout is free. The hold is
-  in memory, so a restart of Manvi ends it and the record is applied as any dead
-  run's is. Not covered: a factory that fails after possibly starting a process
-  returns no session to ask again, so that end still restores as before.
+  gives its checkout away. `Close` answering "not reaped" is recorded
+  `unresolved`, but `finish` still restored the harness block (a read and then a
+  write over a file the agent may be writing, which overwrote its edit in
+  between) and closed the job, so the next run was admitted on a checkout the
+  first agent might still be in, with two agents and one block. The contract now
+  is: **hold until reap or restart.** The block and its record stay and the
+  checkout is held. Every attempt on it, with a harness or without, is refused
+  `E_HARNESS_BUSY` at once, and `HarnessBusy` refuses a verification; both name
+  the held run, since when, the block's nonce and file, and say to restart
+  `manvi serve` to recover. A background reaper, one per held run, keeps asking
+  the provider whether the process has exited (`Close` is idempotent and
+  bounded; about ten minutes of asks, tied to the runner's lifetime); when it
+  confirms, it takes the block out and releases the checkout, with nobody
+  asking. The hold is in memory, so a restart of Manvi ends it and the record is
+  applied as any dead run's is. The ask does not run inside a prepare, so a held
+  checkout delays no other checkout's attempts (it used to cost every prepare on
+  the one managed lane up to five seconds per retry). Not covered: a factory that
+  fails after possibly starting a process returns no session to ask, so that end
+  still restores as before.
 - A managed run's checkout is held only when its agent process is not reaped.
   `Close` answering `Reaped: true` beside an error (os/exec's `ErrWaitDelay`,
   when the agent exited 0 but an orphaned grandchild, a dev server or an MCP
