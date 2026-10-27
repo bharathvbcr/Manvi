@@ -385,6 +385,13 @@ resolves that to the sequence when the plan is applied. A record without
 `result_seq`, which is every journal written before the field, names the call id
 only and applies to every result with it, as it always did.
 
+**Images are compacted, and say so.** A result's images are priced in the
+request like its text, so the planner counts them and can reclaim them: a result
+of images alone (a computer-use screenshot) is eligible, and a compacted result
+that held images carries `[N image(s) removed to fit the context window]` after
+whatever text it kept, so the model is told it once saw them. A result without
+images is shortened exactly as before.
+
 **A result is compacted once.** The text it is given is the text it keeps for
 the rest of the session. Recomputing compaction every step, with tiers that
 escalate as the turn grows, changed the prompt prefix on every step.

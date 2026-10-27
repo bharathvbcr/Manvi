@@ -162,6 +162,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Compaction counts and removes images, and says it did. The planner counted and
+  replaced text only, and the projection replaces a whole result with the one
+  text it is given, so a screenshot inside a compacted result vanished with no
+  marker (7 of 10 in the audit's run), and a result of images alone was never
+  eligible: 20 screenshots at 26,726 estimated tokens against a 13,312
+  threshold gave an empty plan and `Insufficient`. Images now count toward a
+  result's size, scaled by the calibrator like text, and a result with images
+  is replaced by its text cut to the floor followed by
+  `[N image(s) removed to fit the context window]`; an image smaller than that
+  notice is left alone. The same history now plans 14 steps and lands at 8,764
+  estimated tokens. A result without images is shortened exactly as before
+  (same text, same order); `BenchmarkPlanCompaction` is within noise of the
+  previous build. Known limit: compaction rewrites earlier tool results, which
+  is an edit to an earlier turn and invalidates later signed thinking on the
+  models and accounts that enforce preserved thinking; that class is tracked on
+  ft-f7993787 and is not changed here.
 - `chat.prepare` calibrates its token estimate against the raw estimate, not
   against its own corrected one. It stored the calibrated `after_tokens` as the
   estimate for the next server count and fed it back to the calibrator as the
