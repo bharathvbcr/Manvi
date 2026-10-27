@@ -697,14 +697,25 @@ const (
 // truncated answer is worse than no answer — a diff cut mid-hunk still parses,
 // still names files, and reads exactly like a complete one.
 func runGit(ctx context.Context, root string, args ...string) (string, error) {
-	out, note, err := runGitCapped(ctx, root, maxGitCaptureBytes, args...)
+	c, err := runGitWhole(ctx, root, args...)
+	return c.out, err
+}
+
+// runGitWhole is runGit, also returning what git wrote to stderr. For the
+// commands that exit 0 after a warning that changes what their answer covers
+// (`ls-files` skips a directory it cannot open and says so only there), where a
+// caller that drops stderr cannot tell the whole answer from a partial one.
+// Like runGit it refuses a truncated stdout; a truncated stderr is the caller's
+// to carry (gitCapture.stderrNote).
+func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, error) {
+	c, err := runGitCapture(ctx, root, maxGitCaptureBytes, args...)
 	if err != nil {
-		return "", err
+		return gitCapture{}, err
 	}
-	if note != "" {
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), note)
+	if c.note != "" {
+		return gitCapture{}, fmt.Errorf("git %s: %s", strings.Join(args, " "), c.note)
 	}
-	return out, nil
+	return c, nil
 }
 
 // gitSpec builds every git child this package runs.
@@ -777,6 +788,9 @@ type gitCapture struct {
 	out, note string
 	// total is len(out) plus whatever the cap discarded.
 	total int
+	// stderr is what git wrote to stderr, and stderrNote says what its cap
+	// discarded (empty when nothing was).
+	stderr, stderrNote string
 }
 
 // runGitCapture is runGitCapped, also reporting the size of the uncapped
@@ -790,7 +804,8 @@ func runGitCapture(ctx context.Context, root string, limit int, args ...string) 
 		return gitCapture{}, fmt.Errorf("git %s: timed out", strings.Join(args, " "))
 	}
 	out, err := string(res.stdout), res.err
-	c := gitCapture{out: out, note: res.stdoutNote, total: len(out) + res.stdoutDropped}
+	c := gitCapture{out: out, note: res.stdoutNote, total: len(out) + res.stdoutDropped,
+		stderr: string(res.stderr), stderrNote: res.stderrNote}
 
 	// `git diff --no-index` exits 1 when files differ, which is the normal
 	// case here rather than a failure.

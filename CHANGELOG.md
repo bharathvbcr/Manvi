@@ -153,6 +153,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The commit scan no longer reports a clean listing for a directory git could
+  not open. `git ls-files --others` exits 0 after `warning: could not open
+  directory 'X/': Permission denied` and leaves that directory's files out, so
+  a secret-path file inside an unreadable untracked directory was never listed,
+  hashed or compared, and the commit carried no note. The listing's stderr is
+  now read: each such directory is an `unreadable_untracked_dir` scan note (the
+  directory, the bound, what was still checked, the operator action) and a
+  `commit.scan.…` entry in the degraded list. The commit is not refused, because
+  the agent cannot cure a directory it cannot read. A warning the scan does not
+  recognise (git's messages are localised) or a stderr cut by its cap is one
+  `listing_warning` note, and the notes are bounded at 32 directories plus a
+  count.
 - `bench/run.py` stops a cell cleanly when an episode's guard set cannot be
   worked out. A concurrent `git worktree add` leaves a worktree's `gitdir`
   pointer empty or missing for a moment, `Harness(...)` raised `GitGuardError`
