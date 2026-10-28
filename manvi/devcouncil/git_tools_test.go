@@ -441,7 +441,7 @@ func TestGitCapsAreNamedInThePayload(t *testing.T) {
 	f := newFixture(t)
 
 	log := f.payload("devcouncil_git_log", map[string]any{"max": maxGitLogCommits + 50})
-	if notes, _ := log["degraded"].([]any); len(notes) != 1 || !strings.Contains(notes[0].(string), "capped") {
+	if notes, _ := log["degraded"].([]any); len(notes) != 1 || !noteSays(notes[0], "capped") {
 		t.Errorf("git_log cap is not in the payload: %v", log)
 	}
 
@@ -449,7 +449,7 @@ func TestGitCapsAreNamedInThePayload(t *testing.T) {
 	run(t, f.root, "add", "big.txt")
 	run(t, f.root, "commit", "-qm", "big")
 	show := f.payload("devcouncil_git_show", map[string]string{})
-	if notes, _ := show["degraded"].([]any); len(notes) != 1 || !strings.Contains(notes[0].(string), "truncated") {
+	if notes, _ := show["degraded"].([]any); len(notes) != 1 || !noteSays(notes[0], "truncated") {
 		t.Errorf("git_show truncation is not in the payload: %v", show["degraded"])
 	}
 	if patch, _ := show["patch"].(string); len(patch) != maxShowPatchBytes {
@@ -814,4 +814,11 @@ func TestGitStagePathsAreLiteral(t *testing.T) {
 	if names := stagedNames(t, f.root); len(names) != 1 || names[0] != "we*rd.txt" {
 		t.Fatalf("staged %v, want exactly we*rd.txt", names)
 	}
+}
+
+// noteSays reports whether a degraded note decoded from a payload is a string
+// containing want; a note of any other type is not.
+func noteSays(note any, want string) bool {
+	s, ok := note.(string)
+	return ok && strings.Contains(s, want)
 }
