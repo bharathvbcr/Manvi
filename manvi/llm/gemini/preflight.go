@@ -46,16 +46,13 @@ func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error)
 // isPreamble reports whether a frame is one of the opening frames that carry no
 // model output. Anything else means generation has begun.
 func isPreamble(frame string) bool {
-	for _, line := range strings.Split(frame, "\n") {
-		if !strings.HasPrefix(line, "event:") {
-			continue
-		}
-		switch strings.TrimSpace(strings.TrimPrefix(line, "event:")) {
-		case EventInteractionCreated, EventInteractionInProgress, EventInteractionStatusUpdate:
-			return true
-		default:
-			return false
-		}
+	// Read through the transport's field parser, not a split of its own, so this
+	// judge and the decoder that reads the same bytes agree on line endings and
+	// a leading byte order mark.
+	name, _ := transport.FrameFields(frame)
+	switch name {
+	case EventInteractionCreated, EventInteractionInProgress, EventInteractionStatusUpdate:
+		return true
 	}
 	// A frame with no event name is judged by its payload below; treat it as
 	// content so inspection stops rather than running on.
@@ -75,11 +72,9 @@ func errorInFrame(frame string) *transport.Error {
 			Code    string `json:"code"`
 		} `json:"error"`
 	}
-	for _, line := range strings.Split(frame, "\n") {
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	_, joined := transport.FrameFields(frame)
+	for _, line := range strings.Split(joined, "\n") {
+		data := strings.TrimSpace(line)
 		if data == "" || data == DoneSentinel {
 			continue
 		}

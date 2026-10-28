@@ -162,6 +162,10 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Gemini's opening-frame judge now reads frames through the same field parser as
+  the stream, so an opening `error` frame that arrives CR-framed or after a BOM
+  is retried like the LF-framed one. `isPreamble` and `errorInFrame` split lines
+  on LF themselves and saw one glued line.
 - The SSE reader now follows the event-stream grammar for line endings and the
   byte order mark. A stream ended its lines with CRLF or LF only, so a body
   framed with a bare CR was one unterminated line that never dispatched until
