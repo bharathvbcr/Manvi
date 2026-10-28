@@ -396,3 +396,40 @@ func TestGitStageRefusesWhenTheSecretCheckCannotAnswer(t *testing.T) {
 		t.Fatalf("secretPaths = %v, %v; want an error", leaked, err)
 	}
 }
+
+// TestGitShowRefusesObjectsThatAreNotCommits pins the class, not the `rev:path`
+// spelling: whatever syntax names a blob or a tree, the tool answers with a
+// commit or refuses. `git show -s` prints a blob's bytes whatever the format
+// says, and the NUL-split of that output used to hand the remainder back as
+// `subject` — the same read the command gate refuses as git_read_argument.
+func TestGitShowRefusesObjectsThatAreNotCommits(t *testing.T) {
+	f := newFixture(t)
+	blob := "k\x00e\x00y\x00-\x00material-the-model-must-not-read\n"
+	write(t, f.root, "deploy/cert.p12", blob)
+	run(t, f.root, "add", "deploy/cert.p12")
+	run(t, f.root, "commit", "-qm", "add cert")
+
+	for _, object := range []string{
+		"HEAD:deploy/cert.p12", "HEAD:seed.txt", "HEAD:deploy", "HEAD:", "HEAD^{tree}",
+		"HEAD~1^{tree}", "HEAD^{blob}", ":deploy/cert.p12", ":0:deploy/cert.p12",
+		"HEAD:deploy/cert.p12^{commit}", "HEAD~1:seed.txt",
+	} {
+		t.Run(object, func(t *testing.T) {
+			res := f.call("devcouncil_git_show", map[string]string{"object": object})
+			if !res.IsError {
+				t.Fatalf("%q was accepted: %s", object, res.Text)
+			}
+			if strings.Contains(res.Text, "material-the-model-must-not-read") {
+				t.Fatalf("%q leaked object bytes into the refusal: %q", object, res.Text)
+			}
+		})
+	}
+
+	// What remains accepted still works, and an annotated tag peels to its commit.
+	run(t, f.root, "tag", "-a", "-m", "release", "v1")
+	for _, object := range []string{"HEAD", "HEAD~1", "v1", gitHead(t, f.root)[:10]} {
+		if out := f.payload("devcouncil_git_show", map[string]string{"object": object}); out["sha"] == nil || out["sha"] == "" {
+			t.Errorf("%q no longer resolves to a commit: %v", object, out)
+		}
+	}
+}

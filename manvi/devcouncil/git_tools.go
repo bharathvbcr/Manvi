@@ -383,8 +383,22 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
+	// The spelling is judged by what it names, not by its characters: `rev:path`,
+	// `:path`, `^{tree}` and every syntax git adds later can name a blob or a
+	// tree, and `git show -s` prints a blob's bytes whatever --format says. Only
+	// a commit passes, and the rest of the call runs on its id, so what was
+	// checked is what is shown even if a branch moves in between.
+	commit, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", object+"^{commit}")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return tools.Errorf("object %q does not name a commit", args.Object)
+		}
+		return unavailable(fmt.Sprintf("commit %s", object), err)
+	}
+	shown := strings.TrimSpace(commit)
 	meta, err := runGit(ctx, r.deps.Root, "show", "-s",
-		"--format=%H%x00%h%x00%an%x00%aI%x00%s", object)
+		"--format=%H%x00%h%x00%an%x00%aI%x00%s", shown)
 	if err != nil {
 		return unavailable(fmt.Sprintf("commit %s", object), err)
 	}
@@ -393,14 +407,13 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 		return unavailable("commit metadata", fmt.Errorf("unexpected field count"))
 	}
 
-	patchRaw, err := runGit(ctx, r.deps.Root, "show", "--format=", object)
+	patchRaw, err := runGit(ctx, r.deps.Root, "show", "--format=", shown)
 	if err != nil {
 		return unavailable(fmt.Sprintf("patch for %s", object), err)
 	}
 	// Filtered before it is cut, so the cap measures what the model will see
-	// and a credential section cannot be what survives it. This also refuses
-	// `rev:path`, which prints a blob and no diff: text no section owns is
-	// withheld as unattributed.
+	// and a credential section cannot be what survives it. Text no section owns
+	// is withheld as unattributed.
 	patch, withheld := withholdHistoryDiff(patchRaw)
 	var degraded []string
 	if len(patch) > maxShowPatchBytes {

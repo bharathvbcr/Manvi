@@ -162,6 +162,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_git_show` answers only for a commit. The `object` check admitted
+  `:`, so `HEAD:deploy/cert.p12` named a blob, and `git show -s` prints a blob's
+  bytes whatever `--format` says: the NUL-split of them came back as `subject`,
+  `author` and `date`, a read the command gate refuses as
+  `command.git_read_argument`. The object is now resolved with
+  `rev-parse --verify <object>^{commit}`, so a blob, a tree or any revision
+  syntax that names one is refused, and the metadata and the patch are read from
+  the resolved id rather than the spelling.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
