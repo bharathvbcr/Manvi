@@ -294,6 +294,11 @@ func TestAReapedAgentWithALiveProcessGroupKeepsTheCheckoutHeld(t *testing.T) {
 	if _, err := secondHarnessAttempt(m, root); busyCode(err) != ErrHarnessBusy {
 		t.Errorf("a second run was admitted beside a live process group: %v", err)
 	}
+	// An operator is told which group holds the checkout, from what Close said.
+	waitFor(t, "the refusal to name the live group", func() bool {
+		e := m.runner.HarnessBusy(root)
+		return e != nil && strings.Contains(e.Message, "process group 123 still has a live member")
+	})
 
 	session.confirmed.Store(true)
 	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })

@@ -166,16 +166,22 @@ under **Unreleased** in the same commit as the code.
   on unix. The agent already led its own group, but the kill rode on `Wait`
   being pending, so once the agent had exited, a grandchild that redirected its
   stdout and stderr away (a backgrounded dev server, `nohup ... &`) kept running
-  in the checkout while `close()` reported the agent reaped with no error. It now
-  sends SIGKILL to the group, waits within the existing 5 s budget for it to be
-  empty, and returns an error beside `Reaped: true` if a member is still alive,
-  so the run is recorded `unresolved` rather than `exited`. A harness run whose
-  group is still alive after that (`Exit.GroupLive`) is treated like an unreaped
-  agent: its block stays in the checkout, the checkout is held, and the reaper
-  releases it when a later close finds the group gone. Plain runs keep today's
-  behaviour. A descendant that left the group with `setsid` is out of reach and
-  never holds, and off unix `close()` behaves as before until the DevCouncil pin
-  provides a Windows Job Object.
+  in the checkout while `close()` reported the agent reaped with no error. The
+  group is now killed the moment the agent is reaped (and only if a probe just
+  showed it has a member, since an empty group's number may belong to someone
+  else), and `close()` waits within the existing 5 s budget for it to be empty,
+  returning an error beside `Reaped: true` if a member is still alive, so the run
+  is recorded `unresolved` rather than `exited`. A grandchild still running when
+  the agent exits (a `git` process, say) is therefore killed, which can leave
+  `.git/index.lock` behind. A harness run whose group is still alive
+  (`Exit.GroupLive`) is treated like an unreaped agent: its block stays in the
+  checkout, the checkout is held, the refusal names what Close last said (which
+  group), and the reaper releases it when a later close finds the group gone.
+  Plain runs keep today's behaviour. A descendant that left the group with
+  `setsid` is out of reach, and a zombie it leaves in the group without reaping
+  it reads as a live member, so such a checkout stays held until that parent
+  exits or `manvi serve` restarts. Off unix `close()` behaves as before until the
+  DevCouncil pin provides a Windows Job Object.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are

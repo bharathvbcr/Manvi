@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -76,29 +77,161 @@ func TestCloseKillsAGrandchildThatIgnoresStdinClosureAndHoldsStdout(t *testing.T
 	}
 }
 
+// countSignals replaces signalGroup with one that counts and still delivers.
+func countSignals(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	old := signalGroup
+	signalGroup = func(pid int) { n.Add(1); old(pid) }
+	t.Cleanup(func() { signalGroup = old })
+	return &n
+}
+
 // The shape cmd.Cancel cannot reach: the agent exits, a grandchild in its group
 // has redirected stdout and stderr away, so Wait has already returned and there
 // is nothing left for cancel to interrupt. close() used to report the agent
 // reaped with a nil error while the grandchild, which can still write the
-// checkout, ran on.
+// checkout, ran on. The group is now killed once, as the agent is reaped, and
+// close() only waits for it.
 func TestCloseKillsAGrandchildThatRedirectedItsStdioAfterTheAgentExited(t *testing.T) {
+	signals := countSignals(t)
 	c, grandchild := startGrandchildAgent(t, `
 		if (fork() == 0) {
 			open(STDOUT, ">/dev/null"); open(STDERR, ">/dev/null");
 			open(F, ">$ARGV[0]"); print F $$; close F;
 			sleep 30; exit 0;
 		}
+		select(undef, undef, undef, 0.01) until -s $ARGV[0];
 		exit 0`)
 	<-c.done
-	if !pidAlive(grandchild) {
-		t.Fatalf("grandchild %d is already gone before close(); the scenario was not set up", grandchild)
+	if n := signals.Load(); n != 1 {
+		t.Fatalf("the group was signalled %d times as the agent was reaped, want once", n)
 	}
 	exit, err := c.close()
-	if !exit.Reaped || exit.Code != 0 || err != nil {
+	if !exit.Reaped || exit.Code != 0 || exit.GroupLive || err != nil {
 		t.Fatalf("close: exit = %+v, err = %v, want the agent reaped with code 0 and no error", exit, err)
 	}
 	if pidAlive(grandchild) {
 		t.Fatalf("grandchild %d is still running after close() reported the agent reaped", grandchild)
+	}
+	if n := signals.Load(); n != 1 {
+		t.Fatalf("close() signalled the group (%d signals in all); only the reap-time sweep may", n)
+	}
+}
+
+// A group found empty when the agent is reaped is never signalled or probed
+// again: its number is free, and a later close() must not reach whatever process
+// group has taken it. The stranger here is given the agent's group number.
+func TestCloseNeverTouchesAGroupThatWasEmptyWhenTheAgentWasReaped(t *testing.T) {
+	signals := countSignals(t)
+	c, err := startConnection(t.Context(), "/bin/sh", []string{"-c", "exit 0"}, t.TempDir(), func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done
+	stranger := exec.Command("/bin/sleep", "30")
+	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stranger.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(-stranger.Process.Pid, syscall.SIGKILL); stranger.Wait() })
+	c.pid = stranger.Process.Pid // the number the agent's group had, now held by another group
+	exit, err := c.close()
+	if !exit.Reaped || exit.GroupLive || err != nil {
+		t.Fatalf("close: exit = %+v, err = %v, want a clean confirmation without looking at the number", exit, err)
+	}
+	if n := signals.Load(); n != 0 {
+		t.Fatalf("close() or the sweep signalled %d times with nothing in the group", n)
+	}
+	if !pidAlive(stranger.Process.Pid) {
+		t.Fatal("an unrelated process group was killed")
+	}
+}
+
+// A group that had a member when the agent was reaped and was empty by the time
+// close() ran (the member exited on its own) is the case a reap-time snapshot got
+// wrong: close() signalled the number with no fresh look, and by then another
+// process group could hold it. Only the sweep, which probes first, signals now.
+func TestCloseNeverSignalsAfterTheSweepEvenIfTheNumberIsReusedByAnotherGroup(t *testing.T) {
+	signals := countSignals(t)
+	realProbe := probeGroup
+	var swept atomic.Bool
+	probeGroup = func(pid int) bool { // a member exists at the sweep, and only then
+		if swept.CompareAndSwap(false, true) {
+			return true
+		}
+		return realProbe(pid)
+	}
+	oldBudget := reapBudget
+	reapBudget = 200 * time.Millisecond
+	t.Cleanup(func() { probeGroup, reapBudget = realProbe, oldBudget })
+	c, err := startConnection(t.Context(), "/bin/sh", []string{"-c", "exit 0"}, t.TempDir(), func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done
+	stranger := exec.Command("/bin/sleep", "30")
+	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stranger.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(-stranger.Process.Pid, syscall.SIGKILL); stranger.Wait() })
+	c.pid = stranger.Process.Pid
+	c.close()
+	if n := signals.Load(); n != 1 {
+		t.Fatalf("%d signals in all, want only the sweep's", n)
+	}
+	if !pidAlive(stranger.Process.Pid) {
+		t.Fatal("close() killed an unrelated process group that held the number")
+	}
+}
+
+// Repeated and concurrent close calls agree and do not race (run with -race).
+func TestConcurrentCloseOfAnAgentWithAGroupAgrees(t *testing.T) {
+	c, _ := startGrandchildAgent(t, `
+		if (fork() == 0) {
+			open(STDOUT, ">/dev/null"); open(STDERR, ">/dev/null");
+			open(F, ">$ARGV[0]"); print F $$; close F;
+			sleep 30; exit 0;
+		}
+		sleep 30`)
+	var wg sync.WaitGroup
+	exits := make([]Exit, 8)
+	errs := make([]error, 8)
+	for i := range exits {
+		wg.Add(1)
+		go func() { defer wg.Done(); exits[i], errs[i] = c.close() }()
+	}
+	wg.Wait()
+	for i := range exits {
+		if !exits[i].Reaped || exits[i].GroupLive || errs[i] != nil {
+			t.Errorf("close #%d: exit = %+v, err = %v", i, exits[i], errs[i])
+		}
+	}
+}
+
+// A zombie left in the group by a process that has itself left the group (setsid)
+// and never waits cannot be cleared by SIGKILL, and kill(2) cannot tell it from a
+// running member. The group stays reported live for as long as that parent lives:
+// the known limit of group liveness, which fails closed.
+func TestAZombieOrphanedInTheGroupByAParentOutsideItIsReportedLive(t *testing.T) {
+	oldBudget := reapBudget
+	reapBudget = time.Second
+	t.Cleanup(func() { reapBudget = oldBudget })
+	c, _ := startGrandchildAgent(t, `
+		use POSIX;
+		if (fork() == 0) {
+			if (fork() == 0) { sleep 300; exit 0 }
+			POSIX::setsid();
+			open(F, ">$ARGV[0]"); print F $$; close F;
+			sleep 300; exit 0;
+		}
+		select(undef, undef, undef, 0.01) until -s $ARGV[0];
+		exit 0`)
+	<-c.done
+	exit, err := c.close()
+	if !exit.Reaped || !exit.GroupLive || err == nil {
+		t.Fatalf("close: exit = %+v, err = %v, want the zombie-held group reported live", exit, err)
 	}
 }
 

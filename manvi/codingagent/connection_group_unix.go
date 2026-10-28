@@ -17,7 +17,9 @@ import (
 // by the agent's pid and the number cannot be handed to another group while any
 // member exists. A descendant that called setsid or setpgid has left the group
 // and is not seen here; nothing about the group can find it, and close() does
-// not try to.
+// not try to. Its children that stayed in the group are seen, and a zombie
+// among them keeps the answer true until its parent reaps it or exits, which
+// kill(2) cannot tell from a running member.
 func groupAlive(pid int) bool {
 	if pid <= 0 {
 		return false
