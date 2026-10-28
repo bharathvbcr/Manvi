@@ -59,6 +59,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Behaviour change: repository hooks no longer run on any git command the
+  devcouncil tools start, which includes the commit `devcouncil_git_commit`
+  makes. `core.hooksPath` is pointed at the null device for every git child, so
+  `pre-commit`, `prepare-commit-msg` and `post-commit` (from `.git/hooks` or a
+  `core.hooksPath` such as `.husky`) do not fire; `--no-verify` would have left
+  the last two running. A repository that relies on a commit hook to format or
+  lint will not get it from this tool. The reason is under **Fixed**.
 - `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
   running the turn on the first megabyte. The read stopped at the cap with no
   overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
@@ -162,6 +169,19 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_git_commit` can no longer land content the checks did not see.
+  The name, alias and content checks read the index and then `git commit` ran
+  the repository's hooks: with `core.hooksPath=.husky` (not a write-restricted
+  path) a `pre-commit` that wrote `leak.txt` and ran `git add leak.txt` put it in
+  the commit, with `SSH_AUTH_SOCK` and `GNUPGHOME` in the hook's environment and
+  no command gate in front of it. Hooks are off (see **Changed**), and the commit
+  is held to a post-condition: the staged tree is written before and after the
+  checks (an index that moved while it was examined is refused), and after the
+  commit its tree must equal the checked one or the commit is taken back
+  (`update-ref` to the previous commit, or the unborn branch for a root commit,
+  with the new commit as the expected value) and an error is returned.
+  `committed_paths` and `head` now come from the commit that exists
+  (`diff-tree --root`), not the pre-check list.
 - `devcouncil_git_log` and `devcouncil_git_status` no longer read every git
   exit status of 128 as "no commits yet". git uses it for "not a repository" and
   "bad object" too, so a directory git could not read answered

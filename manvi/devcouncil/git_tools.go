@@ -104,7 +104,8 @@ func (r *Registry) gitTools() []tools.Tool {
 			Schema: schema("devcouncil_git_commit",
 				"Commit everything currently staged with the given message. Passes the command "+
 					"policy gate and refuses if the staged set contains a secret path, whatever "+
-					"staged it.",
+					"staged it. Repository hooks do not run, and the result lists the files that "+
+					"actually landed.",
 				`{"type":"object","properties":{"message":{"type":"string"},"allow_empty":{"type":"boolean","description":"permit a commit with no staged changes (default false)"}},"required":["message"]}`),
 			Group:   tools.GroupCore,
 			Handler: r.gitCommit,
@@ -513,7 +514,7 @@ func (r *Registry) gitStage(ctx context.Context, call tools.Call) tools.Result {
 	// what git matches.
 	return r.gatedGit(ctx, "staging", commandLine, argv, map[string]any{
 		"staged": rel,
-	}, "GIT_LITERAL_PATHSPECS=1")
+	}, gitRunOptions{env: []string{"GIT_LITERAL_PATHSPECS=1"}})
 }
 
 // gitCommit commits the staged set. The staged paths are re-checked against
@@ -534,6 +535,14 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
+	// The tree the checks below are about, taken before them and again after,
+	// so an index that moves while it is being examined is refused rather than
+	// committed on the strength of a read of something else.
+	checkedTree, err := runGit(ctx, r.deps.Root, "write-tree")
+	if err != nil {
+		return unavailable("staged tree", err)
+	}
+	checkedTree = strings.TrimSpace(checkedTree)
 	staged, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return unavailable("staged file list", err)
@@ -565,6 +574,26 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 		return contentRefusal(contentLeaks, scanNotes)
 	}
 
+	if again, err := runGit(ctx, r.deps.Root, "write-tree"); err != nil {
+		return unavailable("staged tree", err)
+	} else if strings.TrimSpace(again) != checkedTree {
+		return tools.Errorf("the index changed while it was being checked; nothing was committed. Stage again and retry")
+	}
+	// Where the branch stands now, so a commit that has to be taken back can
+	// be taken back to it.
+	var prev string
+	born, err := headExists(ctx, r.deps.Root)
+	if err != nil {
+		return unavailable("HEAD", err)
+	}
+	if born {
+		out, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return unavailable("HEAD", err)
+		}
+		prev = strings.TrimSpace(out)
+	}
+
 	argv := []string{"commit", "-m", args.Message}
 	if args.AllowEmpty {
 		argv = append(argv, "--allow-empty")
@@ -572,35 +601,74 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 	commandLine := renderCommandLine(append([]string{"git"}, argv...))
 
 	extra := map[string]any{"message": args.Message}
-	if len(stagedPaths) > 0 {
-		extra["committed_paths"] = stagedPaths
-	}
 	if len(scanNotes) > 0 {
 		// A bound held back part of the content check without refusing the
 		// commit. The payload says which and what was still checked; Degraded is
 		// the list the session log records for a result that is not a clean pass.
 		extra["scan_notes"] = scanNotes
 	}
-	res := r.gatedGit(ctx, "committing", commandLine, argv, extra)
+	// What is reported is what landed, not what was staged: once git has made
+	// the commit it is read back, held to the checked tree, and its id and files
+	// come from git. A commit that fails that is an error result, never a pass.
+	landed := func(payload map[string]any) error {
+		head, err := runGit(ctx, r.deps.Root, "log", "-1", "--format=%H%x00%s")
+		sha, subject, found := strings.Cut(strings.TrimRight(head, "\n"), "\x00")
+		if err != nil || !found {
+			return fmt.Errorf("the commit was made and HEAD could not be read back to check it (%v); "+
+				"inspect it with devcouncil_git_show before anything else", err)
+		}
+		if err := r.confirmLanded(ctx, checkedTree, prev, sha); err != nil {
+			return err
+		}
+		payload["head"] = map[string]string{"sha": sha, "subject": subject}
+		// --root: a root commit has no parent to diff against and would list nothing.
+		files, err := runGit(ctx, r.deps.Root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--root", sha)
+		if err != nil {
+			payload["committed_paths_error"] = err.Error()
+		} else if paths := strings.FieldsFunc(files, func(c rune) bool { return c == 0 }); len(paths) > 0 {
+			payload["committed_paths"] = paths
+		}
+		return nil
+	}
+	res := r.gatedGit(ctx, "committing", commandLine, argv, extra, gitRunOptions{afterSuccess: landed})
 	if !res.IsError {
 		res.Degraded = append(res.Degraded, degradedList(scanNotes)...)
 	}
-
-	// On success, hand back the new HEAD so the caller can cite what it made
-	// without a second round trip.
-	if !res.IsError {
-		if head, headErr := runGit(ctx, r.deps.Root, "log", "-1", "--format=%H%x00%s"); headErr == nil {
-			if sha, subject, ok := strings.Cut(strings.TrimRight(head, "\n"), "\x00"); ok {
-				if payload := decodePayload(res.Text); payload != nil {
-					payload["head"] = map[string]string{"sha": sha, "subject": subject}
-					if data, merr := json.Marshal(payload); merr == nil {
-						res.Text = string(data)
-					}
-				}
-			}
-		}
-	}
 	return res
+}
+
+// confirmLanded is the post-condition of a commit: the tree it recorded is the
+// tree that was checked. The checks read the index, a commit records the index
+// as it is when git takes it, and anything that moves the index in between — a
+// hook (off, but this does not rest on that), a process with repository access —
+// would otherwise put unchecked content in history, where the secret scans' one
+// irreversible act has already happened.
+//
+// On a mismatch the commit is taken back by moving the branch to where it was
+// (prev; no commit at all when prev is empty, a root commit) with the new
+// commit as the expected value, so a branch that has moved on again is left
+// alone and reported. The index is untouched, so the unchecked content stays
+// staged and the next attempt scans it. A tree that cannot be read is treated as
+// a mismatch: an unexamined commit is not a clean one.
+func (r *Registry) confirmLanded(ctx context.Context, checkedTree, prev, landed string) error {
+	tree, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", landed+"^{tree}")
+	reason := fmt.Sprintf("its tree is not the checked tree %s", checkedTree)
+	if err != nil {
+		reason = fmt.Sprintf("its tree could not be read (%v)", err)
+	} else if strings.TrimSpace(tree) == checkedTree {
+		return nil
+	}
+
+	undo := []string{"update-ref", "HEAD", prev, landed}
+	if prev == "" {
+		undo = []string{"update-ref", "-d", "HEAD", landed}
+	}
+	if _, undoErr := runGit(ctx, r.deps.Root, undo...); undoErr != nil {
+		return fmt.Errorf("commit %s was made and %s, and it could not be taken back (%v); "+
+			"move the branch off it before anything else", landed, reason, undoErr)
+	}
+	return fmt.Errorf("commit %s was taken back: %s; the staged content is unchanged and "+
+		"was not what the secret checks examined, so stage again and retry", landed, reason)
 }
 
 // gatedGit is the write path every mutating git tool takes: resolve the lease,
@@ -611,9 +679,19 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 // The executed argv and the evaluated command line are built from the same
 // slice, so the policy judged what actually ran.
 //
-// env is added to git's allowlisted environment, for settings that narrow what
-// git does without changing the command the gate is asked about.
-func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv []string, extra map[string]any, env ...string) tools.Result {
+// gitRunOptions are what a caller adds to the run, beyond the command it asks
+// the gate about.
+type gitRunOptions struct {
+	// env is added to git's allowlisted environment, for settings that narrow what
+	// git does without changing the command the gate is asked about.
+	env []string
+	// afterSuccess runs once git has exited 0, before the result is built, and
+	// may add to the payload. An error turns the result into a failure carrying
+	// it: the work was done and what it did is not acceptable.
+	afterSuccess func(payload map[string]any) error
+}
+
+func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv []string, extra map[string]any, opts gitRunOptions) tools.Result {
 	task, refusal := r.authorisingTask(ctx, verb)
 	if refusal != nil {
 		return *refusal
@@ -634,7 +712,7 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	// The same construction site as every read-side git child, so the paths
 	// in a commit summary are spelled the way the verifier reads them.
 	spec := gitSpec(r.deps.Root, "", argv)
-	spec.env = childenv.Git(env...)
+	spec.env = childenv.Git(opts.env...)
 	spec.stdoutLimit = maxGitOutputBytes
 	res := runProc(ctx, spec)
 	if res.timedOut {
@@ -668,6 +746,11 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	if exitCode != 0 {
 		return annotate(failure(payload, fmt.Sprintf(
 			"git %s failed with exit code %d", argv[0], exitCode)), decision)
+	}
+	if opts.afterSuccess != nil {
+		if err := opts.afterSuccess(payload); err != nil {
+			return annotate(failure(payload, err.Error()), decision)
+		}
 	}
 	return annotate(ok(payload), decision)
 }
@@ -814,16 +897,4 @@ func renderCommandLine(argv []string) string {
 		parts[i] = strconv.Quote(arg)
 	}
 	return strings.Join(parts, " ")
-}
-
-// decodePayload re-reads a result this package produced, for the one handler
-// that enriches its payload after executing. Nil when the text is not a JSON
-// object, which for results built by ok() cannot happen — and if it somehow
-// did, the enrichment is skipped rather than the original answer replaced.
-func decodePayload(text string) map[string]any {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(text), &payload); err != nil {
-		return nil
-	}
-	return payload
 }

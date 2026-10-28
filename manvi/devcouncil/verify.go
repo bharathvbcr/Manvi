@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -758,13 +759,27 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // fsmonitor in the repository runs with it, and the repository is not trusted
 // with the operator's provider keys.
 //
+// core.hooksPath at the null device means no hook is found, for every child:
+// the repository names programs git would run (a commit's pre-commit,
+// prepare-commit-msg and post-commit, an index write's post-index-change, a
+// ref update's reference-transaction), and the directories those usually live in
+// (.husky, .githooks) are ordinary writable paths. A hook runs outside the
+// command gate, with the environment git was given, and one that stages a file
+// puts content in a commit that no check saw. --no-verify would skip only some of
+// them. The gate judges the command line the caller built, not this argv: the
+// setting only narrows what git runs, and putting it in the judged line would
+// stop every allowlist entry and grant written against `git commit` matching it.
+// Repository hooks therefore do not run on any git this package starts — a
+// behaviour change for a repository that relies on a commit hook.
+//
 // core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead of
 // C-style octal escapes. It is set here rather than in either parser because
 // crates/dc-verify reads this same format: unquoting on one side only would
 // give the two readers different answers for the same file.
 func gitSpec(root, index string, args []string) procSpec {
 	spec := procSpec{
-		argv:        append([]string{"git", "-c", "core.quotePath=false"}, withoutDiffPrograms(args)...),
+		argv: append([]string{"git", "-c", "core.quotePath=false", "-c", "core.hooksPath=" + os.DevNull},
+			withoutDiffPrograms(args)...),
 		dir:         root,
 		timeout:     gitTimeout,
 		stderrLimit: maxGitStderrBytes,

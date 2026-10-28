@@ -506,6 +506,200 @@ func TestGitLogAndStatusSeparateNoCommitsFromAFailedRead(t *testing.T) {
 	})
 }
 
+// treeEntries lists the files a revision holds.
+func treeEntries(t *testing.T, root, rev string) []string {
+	t.Helper()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", root, "ls-tree", "-r", "--name-only", rev).Output()
+	if err != nil {
+		t.Fatalf("ls-tree %s: %v", rev, err)
+	}
+	return strings.Fields(string(out))
+}
+
+// TestGitCommitRunsNoRepositoryHook: a repository hook runs a program of the
+// repository's choosing, outside the command gate, in the environment git was
+// given, and one that stages a file puts content in the commit that the name,
+// alias and content checks never saw. `.husky` and `.githooks` are ordinary
+// writable directories, so the agent can author the hook. --no-verify would not
+// be enough — it leaves prepare-commit-msg and post-commit running — so hooks
+// are off at the construction site every git child shares.
+func TestGitCommitRunsNoRepositoryHook(t *testing.T) {
+	type hook struct{ name, dir string }
+	for _, h := range []hook{
+		{"pre-commit via core.hooksPath", ".husky"},
+		{"prepare-commit-msg via core.hooksPath", ".githooks"},
+		{"post-commit in .git/hooks", ""},
+	} {
+		t.Run(h.name, func(t *testing.T) {
+			f := newFixtureWith(t, map[string]string{
+				flags.HarnessPosture:      flags.PostureYolo,
+				flags.GrantsAgentCommands: "true",
+			})
+			dir := filepath.Join(f.root, ".git", "hooks")
+			if h.dir != "" {
+				dir = filepath.Join(f.root, h.dir)
+				run(t, f.root, "config", "core.hooksPath", h.dir)
+			}
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			script := "#!/bin/sh\ntouch hook-ran.marker\necho 'planted by a hook' > leak.txt\ngit add leak.txt\n"
+			for _, name := range []string{"pre-commit", "prepare-commit-msg", "post-commit"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil { //nolint:gosec // a hook has to be executable
+					t.Fatal(err)
+				}
+			}
+			modifySeed(t, f)
+			run(t, f.root, "add", "seed.txt")
+			checkout(t, f)
+
+			res := f.call("devcouncil_git_commit", map[string]string{"message": "update seed"})
+			if res.IsError {
+				t.Fatalf("commit failed: %s", res.Text)
+			}
+			if _, err := os.Stat(filepath.Join(f.root, "hook-ran.marker")); err == nil {
+				t.Error("a repository hook ran during git_commit")
+			}
+			for _, name := range treeEntries(t, f.root, "HEAD") {
+				if name == "leak.txt" {
+					t.Error("a file a hook staged landed in the commit")
+				}
+			}
+			var payload struct {
+				Paths []string `json:"committed_paths"`
+			}
+			if err := firstJSON(res.Text, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Paths) != 1 || payload.Paths[0] != "seed.txt" {
+				t.Errorf("committed_paths = %v, want exactly what landed: seed.txt", payload.Paths)
+			}
+		})
+	}
+}
+
+// firstJSON decodes the first JSON value of a tool result, which a demoted
+// gate decision follows with a prose note.
+func firstJSON(text string, into any) error {
+	return json.NewDecoder(strings.NewReader(text)).Decode(into)
+}
+
+// An empty root commit is the degenerate path of the post-condition: no parent
+// to return to, an empty checked tree and nothing for diff-tree to list.
+func TestGitCommitAllowEmptyInAnUnbornRepository(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{
+		flags.HarnessPosture:      flags.PostureYolo,
+		flags.GrantsAgentCommands: "true",
+	})
+	if err := os.RemoveAll(filepath.Join(f.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, f.root, "init", "-q")
+	run(t, f.root, "config", "user.email", "h@test")
+	run(t, f.root, "config", "user.name", "h")
+	checkout(t, f)
+
+	res := f.call("devcouncil_git_commit", map[string]any{"message": "empty root", "allow_empty": true})
+	if res.IsError {
+		t.Fatalf("an empty root commit was refused: %s", res.Text)
+	}
+	var out map[string]any
+	if err := firstJSON(res.Text, &out); err != nil {
+		t.Fatal(err)
+	}
+	if head, _ := out["head"].(map[string]any); head == nil || head["sha"] != gitHead(t, f.root) {
+		t.Errorf("head = %v, want %s", out["head"], gitHead(t, f.root))
+	}
+	if out["committed_paths"] != nil {
+		t.Errorf("an empty commit listed files: %v", out["committed_paths"])
+	}
+}
+
+// TestGitCommitReportsWhatLanded: committed_paths and head describe the commit
+// that exists, so a root commit (where `diff-tree` needs --root) reports its
+// files and not the pre-check list.
+func TestGitCommitReportsWhatLanded(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{
+		flags.HarnessPosture:      flags.PostureYolo,
+		flags.GrantsAgentCommands: "true",
+	})
+	if err := os.RemoveAll(filepath.Join(f.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, f.root, "init", "-q")
+	run(t, f.root, "config", "user.email", "h@test")
+	run(t, f.root, "config", "user.name", "h")
+	run(t, f.root, "add", "seed.txt")
+	checkout(t, f)
+
+	// Under yolo the gate's demotion note follows the JSON; the payload is the
+	// first value.
+	var out map[string]any
+	if err := firstJSON(f.call("devcouncil_git_commit", map[string]string{"message": "root"}).Text, &out); err != nil {
+		t.Fatal(err)
+	}
+	paths, _ := out["committed_paths"].([]any)
+	if len(paths) != 1 || paths[0] != "seed.txt" {
+		t.Fatalf("a root commit reported committed_paths %v", out["committed_paths"])
+	}
+	head, _ := out["head"].(map[string]any)
+	if head == nil || head["sha"] != gitHead(t, f.root) {
+		t.Errorf("head = %v, want %s", out["head"], gitHead(t, f.root))
+	}
+}
+
+// TestUndoLandedCommitRestoresTheBranch is the post-condition's failure path,
+// driven directly because a real mismatch needs the index to move between the
+// check and the commit. A commit whose tree is not the one that was checked is
+// taken back, to the parent or, for a root commit, to no commit, and the caller
+// gets an error, not a degraded pass.
+func TestUndoLandedCommitRestoresTheBranch(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureYolo})
+	ctx := context.Background()
+	before := gitHead(t, f.root)
+	checked := gitIn(t, f.root, "rev-parse", "HEAD^{tree}")
+
+	write(t, f.root, "unchecked.txt", "content the scan never saw\n")
+	gitIn(t, f.root, "add", "unchecked.txt")
+	gitIn(t, f.root, "commit", "-qm", "landed")
+	landed := gitHead(t, f.root)
+
+	if err := f.reg.confirmLanded(ctx, checked, before, landed); err == nil || !strings.Contains(err.Error(), "taken back") {
+		t.Fatalf("a commit whose tree was not the checked tree was kept: %v", err)
+	}
+	if got := gitHead(t, f.root); got != before {
+		t.Errorf("HEAD = %s after the undo, want the parent %s", got, before)
+	}
+	if st := gitIn(t, f.root, "status", "--porcelain"); !strings.Contains(st, "unchecked.txt") {
+		t.Errorf("the unchecked file should stay staged for a re-scan, status:\n%s", st)
+	}
+
+	// A matching tree is kept, and nothing moves.
+	gitIn(t, f.root, "commit", "-qm", "checked")
+	kept := gitHead(t, f.root)
+	if err := f.reg.confirmLanded(ctx, gitIn(t, f.root, "rev-parse", "HEAD^{tree}"), before, kept); err != nil {
+		t.Fatalf("a commit of the checked tree was refused: %v", err)
+	}
+	if got := gitHead(t, f.root); got != kept {
+		t.Errorf("HEAD moved from %s to %s on a matching tree", kept, got)
+	}
+
+	// A root commit has no parent to return to: the branch goes back to unborn.
+	root := t.TempDir()
+	gitIn(t, root, "init", "-q")
+	write(t, root, "a.txt", "a\n")
+	gitIn(t, root, "add", "a.txt")
+	gitIn(t, root, "commit", "-qm", "root")
+	rr := benchRegistry(root)
+	err := rr.confirmLanded(ctx, "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "", gitIn(t, root, "rev-parse", "HEAD"))
+	if err == nil || !strings.Contains(err.Error(), "taken back") {
+		t.Fatalf("root commit with a foreign tree was kept: %v", err)
+	}
+	if born, herr := headExists(ctx, root); herr != nil || born {
+		t.Errorf("after undoing a root commit HEAD exists=%v err=%v, want unborn", born, herr)
+	}
+}
+
 // stagedNames reads the index itself, the one place a stage that got past the
 // name check shows up.
 func stagedNames(t *testing.T, root string) []string {
