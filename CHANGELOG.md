@@ -162,6 +162,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Closing a managed coding agent now kills and confirms its whole process group
+  on unix. The agent already led its own group, but the kill rode on `Wait`
+  being pending, so once the agent had exited, a grandchild that redirected its
+  stdout and stderr away (a backgrounded dev server, `nohup ... &`) kept running
+  in the checkout while `close()` reported the agent reaped with no error. It now
+  sends SIGKILL to the group, waits within the existing 5 s budget for it to be
+  empty, and returns an error beside `Reaped: true` if a member is still alive,
+  so the run is recorded `unresolved` rather than `exited`. Whether the checkout
+  is held is unchanged (it still follows `Reaped`). A descendant that left the
+  group with `setsid` is out of reach, and off unix `close()` behaves as before
+  until the DevCouncil pin provides a Windows Job Object.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
