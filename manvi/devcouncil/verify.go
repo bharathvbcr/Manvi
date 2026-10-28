@@ -769,8 +769,10 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // them. The gate judges the command line the caller built, not this argv: the
 // setting only narrows what git runs, and putting it in the judged line would
 // stop every allowlist entry and grant written against `git commit` matching it.
-// Repository hooks therefore do not run on any git this package starts — a
-// behaviour change for a repository that relies on a commit hook.
+// Repository hooks therefore do not run on any git this package starts through
+// here — a behaviour change for a repository that relies on a commit hook. The
+// claim is that wide and no wider: serve/git.go and bootstrap spawn git on their
+// own and are not covered.
 //
 // core.fsmonitor=false is the same class: the repository's config can name a
 // program that git runs on diff, ls-files, status and add, and one that answers

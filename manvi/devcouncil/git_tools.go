@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -388,8 +389,10 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 	// checked is what is shown even if a branch moves in between.
 	commit, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", object+"^{commit}")
 	if err != nil {
+		// Exit 1 is the one answer that means "not a commit"; 128 is a store git
+		// could not read, and a timeout or a failed start is no answer at all.
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return tools.Errorf("object %q does not name a commit", args.Object)
 		}
 		return unavailable(fmt.Sprintf("commit %s", object), err)
@@ -651,6 +654,26 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 // staged and the next attempt scans it. A tree that cannot be read is treated as
 // a mismatch: an unexamined commit is not a clean one.
 func (r *Registry) confirmLanded(ctx context.Context, checkedTree, prev, landed string) error {
+	// Whose commit this is is settled before anything is judged or moved: it is
+	// the one commit directly on prev (a root commit has no parent). HEAD is read
+	// after git commit returns, so a commit another process landed in that window
+	// would otherwise be judged as ours, and the undo would drop both. Where HEAD
+	// is not that commit nothing is moved, and the error says so.
+	line, err := runGit(ctx, r.deps.Root, "rev-list", "--parents", "-n", "1", landed)
+	if err != nil {
+		return fmt.Errorf("commit %s was made and its parents could not be read (%v); nothing was moved; "+
+			"inspect it with devcouncil_git_show before anything else", landed, err)
+	}
+	var wantParents []string
+	if prev != "" {
+		wantParents = []string{prev}
+	}
+	if gotParents := strings.Fields(line); len(gotParents) < 1 || !slices.Equal(gotParents[1:], wantParents) {
+		return fmt.Errorf("HEAD is %s, which is not the commit this call made on %q: another process moved the "+
+			"branch while the commit was being made, so it was not checked and nothing was moved; "+
+			"inspect the history with devcouncil_git_log before anything else", landed, prev)
+	}
+
 	tree, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", landed+"^{tree}")
 	reason := fmt.Sprintf("its tree is not the checked tree %s", checkedTree)
 	if err != nil {

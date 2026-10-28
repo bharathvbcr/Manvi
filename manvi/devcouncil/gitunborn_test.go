@@ -11,7 +11,8 @@ import (
 // A repository's own config can name a program git runs on an ordinary read:
 // core.fsmonitor runs on diff, ls-files, status and add, and one that answers
 // "nothing changed" also hides changes from the read. Like hooks it runs outside
-// the command gate, so every git this package starts switches it off.
+// the command gate, so every git this package starts through gitSpec switches
+// it off.
 func TestGitChildrenRunNoFsmonitor(t *testing.T) {
 	root := t.TempDir()
 	gitIn(t, root, "init", "-q")

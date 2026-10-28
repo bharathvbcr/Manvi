@@ -60,13 +60,15 @@ under **Unreleased** in the same commit as the code.
 ### Changed
 
 - Behaviour change: repository hooks no longer run on any git command the
-  devcouncil tools start, which includes the commit `devcouncil_git_commit`
-  makes. `core.hooksPath` is pointed at the null device for every git child, so
-  `pre-commit`, `prepare-commit-msg` and `post-commit` (from `.git/hooks` or a
-  `core.hooksPath` such as `.husky`) do not fire; `--no-verify` would have left
-  the last two running. A repository that relies on a commit hook to format or
-  lint will not get it from this tool. The reason is under **Fixed**. The same
-  children also run with `core.fsmonitor=false`: a `core.fsmonitor` program named
+  devcouncil package starts through `gitSpec`, which includes the commit
+  `devcouncil_git_commit` makes. `core.hooksPath` is pointed at the null device
+  for each of those children, so `pre-commit`, `prepare-commit-msg` and
+  `post-commit` (from `.git/hooks` or a `core.hooksPath` such as `.husky`) do not
+  fire; `--no-verify` would have left the last two running. A repository that
+  relies on a commit hook to format or lint will not get it from this tool. Git
+  started elsewhere (`manvi serve`'s `serve/git.go`, bootstrap) is not covered.
+  The reason is under **Fixed**. The same children also run with
+  `core.fsmonitor=false`: a `core.fsmonitor` program named
   in the repository's config ran on `diff`, `ls-files`, `status` and `add`
   outside the command gate, and one that reported "nothing changed" hid changes
   from the diff the gates read.
@@ -173,6 +175,10 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_git_show` reports a git failure as one. Only `rev-parse`'s exit 1
+  means "does not name a commit"; a store git cannot read (exit 128) is now
+  "could not be determined", as `git_log` and `git_status` answer it, instead of
+  a refusal that blamed the argument.
 - `devcouncil_git_commit` can no longer land content the checks did not see.
   The name, alias and content checks read the index and then `git commit` ran
   the repository's hooks: with `core.hooksPath=.husky` (not a write-restricted
@@ -183,7 +189,10 @@ under **Unreleased** in the same commit as the code.
   checks (an index that moved while it was examined is refused), and after the
   commit its tree must equal the checked one or the commit is taken back
   (`update-ref` to the previous commit, or the unborn branch for a root commit,
-  with the new commit as the expected value) and an error is returned.
+  with the new commit as the expected value) and an error is returned. The
+  commit judged is only ever the one directly on the previous commit: if another
+  process moved the branch while the commit was being made, nothing is judged or
+  moved and the error says so, so the undo cannot drop someone else's commit.
   `committed_paths` and `head` now come from the commit that exists
   (`diff-tree --root`), not the pre-check list.
 - `devcouncil_git_log` and `devcouncil_git_status` no longer read every git

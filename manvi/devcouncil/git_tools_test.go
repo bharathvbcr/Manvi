@@ -522,7 +522,7 @@ func treeEntries(t *testing.T, root, rev string) []string {
 // alias and content checks never saw. `.husky` and `.githooks` are ordinary
 // writable directories, so the agent can author the hook. --no-verify would not
 // be enough — it leaves prepare-commit-msg and post-commit running — so hooks
-// are off at the construction site every git child shares.
+// are off at gitSpec, the construction site this package's git children share.
 func TestGitCommitRunsNoRepositoryHook(t *testing.T) {
 	type hook struct{ name, dir string }
 	for _, h := range []hook{
@@ -645,6 +645,65 @@ func TestGitCommitReportsWhatLanded(t *testing.T) {
 	head, _ := out["head"].(map[string]any)
 	if head == nil || head["sha"] != gitHead(t, f.root) {
 		t.Errorf("head = %v, want %s", out["head"], gitHead(t, f.root))
+	}
+}
+
+// TestGitShowSeparatesNotACommitFromAnUnreadableStore: only rev-parse's exit 1
+// says the spelling does not name a commit. A store git cannot read (128) is
+// "could not be determined", as git_log and git_status say it, and not a
+// refusal that blames the model's argument.
+func TestGitShowSeparatesNotACommitFromAnUnreadableStore(t *testing.T) {
+	f := newFixture(t)
+	if res := f.call("devcouncil_git_show", map[string]string{"object": "HEAD:seed.txt"}); !res.IsError ||
+		!strings.Contains(res.Text, "does not name a commit") {
+		t.Fatalf("a blob was not refused as not-a-commit: %s", res.Text)
+	}
+
+	head := gitHead(t, f.root)
+	obj := filepath.Join(f.root, ".git", "objects", head[:2], head[2:])
+	if err := os.Chmod(obj, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(obj, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call("devcouncil_git_show", map[string]string{})
+	if !res.IsError || strings.Contains(res.Text, "does not name a commit") || !strings.Contains(res.Text, "could not be determined") {
+		t.Fatalf("a corrupt object store was reported as %q", res.Text)
+	}
+}
+
+// TestConfirmLandedLeavesAForeignCommitAlone: HEAD is read after git commit
+// returns, so a commit another process lands in that window is what is read
+// back. It is not this call's commit and its tree is not the checked one, and
+// undoing it would drop the other process's work with ours. Nothing moves.
+func TestConfirmLandedLeavesAForeignCommitAlone(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureYolo})
+	ctx := context.Background()
+	prev := gitHead(t, f.root)
+
+	write(t, f.root, "ours.txt", "ours\n")
+	gitIn(t, f.root, "add", "ours.txt")
+	gitIn(t, f.root, "commit", "-qm", "ours")
+	checked := gitIn(t, f.root, "rev-parse", "HEAD^{tree}")
+	ours := gitHead(t, f.root)
+	write(t, f.root, "theirs.txt", "theirs\n")
+	gitIn(t, f.root, "add", "theirs.txt")
+	gitIn(t, f.root, "commit", "-qm", "theirs")
+	foreign := gitHead(t, f.root)
+
+	err := f.reg.confirmLanded(ctx, checked, prev, foreign)
+	if err == nil || !strings.Contains(err.Error(), "not the commit this call made") || !strings.Contains(err.Error(), "nothing was moved") {
+		t.Fatalf("a foreign commit was judged as ours: %v", err)
+	}
+	if got := gitHead(t, f.root); got != foreign {
+		t.Errorf("HEAD = %s, want it untouched at %s (ours %s, prev %s)", got, foreign, ours, prev)
+	}
+
+	// A foreign commit under ours is the same: HEAD's parent is not prev.
+	gitIn(t, f.root, "reset", "-q", "--hard", ours)
+	if err := f.reg.confirmLanded(ctx, checked, prev+"0", ours); err == nil || gitHead(t, f.root) != ours {
+		t.Fatalf("a commit on the wrong parent was kept or moved: %v, HEAD %s", err, gitHead(t, f.root))
 	}
 }
 
