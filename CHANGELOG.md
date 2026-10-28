@@ -201,6 +201,54 @@ under **Unreleased** in the same commit as the code.
   text. Finding the next free `#n` is linear in the number of colliding keys
   (it restarted at 2 for each, which took 19 s for 16,000 keys). This narrows
   what is stored and sent; it widens nothing.
+- A `Retry-After` of 9223372037 seconds or more no longer becomes a short
+  backoff. The delay-seconds value was multiplied by `time.Second` unchecked, so
+  it wrapped negative, and a value beyond int64 failed to parse and was treated
+  as absent. Both now saturate and meet the `MaxRetryAfter` ceiling. The jitter
+  added to a server's time saturates too (an operator-set `MaxRetryAfter` near
+  the duration limit wrapped to an instant retry), and `RetryPolicy.Jitter` is
+  held to its documented [0,1]: a larger value stretched a bounded wait and a
+  negative one shortened the server's time.
+- The SSE reader is hardened after review. A source that returns nothing for
+  ever no longer spins the reader (it reports `io.ErrNoProgress`, as the
+  buffered reader under it does, and a zero-length read returns at once); a byte
+  order mark is a mark only at the start of the stream, so the preflight's
+  `FrameFields` no longer strips one from a later frame and `PreflightStream`
+  skips only the stream's opening one; and bare-CR handling no longer copies
+  CRLF streams byte by byte (a CR before an LF is left alone and a bare CR is
+  overwritten in place), cutting the cost of CRLF framing several-fold.
+- Gemini's opening-frame judge now reads frames through the same field parser as
+  the stream, so an opening `error` frame that arrives CR-framed or after a BOM
+  is retried like the LF-framed one. `isPreamble` and `errorInFrame` split lines
+  on LF themselves and saw one glued line.
+- The SSE reader now follows the event-stream grammar for line endings and the
+  byte order mark. A stream ended its lines with CRLF or LF only, so a body
+  framed with a bare CR was one unterminated line that never dispatched until
+  the 32 MiB frame cap, and a leading UTF-8 BOM glued itself to the first field
+  name (`BOM + event: message_start` arrived nameless). A bare CR now ends a
+  line (CRLF stays one ending, however the chunks split it) and a leading BOM is
+  dropped. The stream preflight reads the opening frames with its own splitter,
+  which had the same gaps: `SplitFrame` and `FrameFields` now agree with the
+  reader, so an opening `overloaded_error` in either framing is judged and
+  retried. `event: ping` frames and `: ping` comments were already handled and
+  are now pinned with fixtures.
+- A server's `Retry-After` now carries jitter. `RetryPolicy.delayFor` returned
+  it verbatim, so every client a provider rate-limited together was told the
+  same value and came back in the same instant; only the computed backoff was
+  jittered. The delay is now the server's time (still bounded by
+  `MaxRetryAfter`) plus up to `Jitter` (20% by default) of it, never earlier.
+  The spread is added after the ceiling, so the longest wait is the ceiling plus
+  its spread and clients told something larger do not all land on the ceiling.
+- A response that arrives in the same instant as the response-header timer is
+  no longer thrown away. `Client.send` read `timer.Stop()` returning false as
+  "the timer won": a 200 that `Do` had already returned was closed and reported
+  as `ErrHeaderTimeout` and retried, and when `Stop` had not reported a fire the
+  callback could still cancel the context under a body the caller already held
+  (`send` returned no response and no error at all in the first case). The
+  callback and `send` now take one claim under a mutex; a response that wins is
+  kept and a mute request is still a typed, retryable `ErrHeaderTimeout`.
+  (ft-4712431b criterion 5; the fix on `hx/wave2-header-timeout` never reached
+  main.)
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are

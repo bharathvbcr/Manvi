@@ -148,14 +148,18 @@ type RetryPolicy struct {
 	BaseDelay time.Duration
 	// MaxDelay caps exponential growth.
 	MaxDelay time.Duration
-	// Jitter is the fraction of the delay randomised, in [0,1]. Without it,
-	// every client that failed together retries together.
+	// Jitter is the fraction of the delay randomised, in [0,1]; a value outside
+	// that range is held to it. Without it,
+	// every client that failed together retries together. A backoff is spread
+	// around its computed value; a server's Retry-After is only ever lengthened,
+	// by up to this fraction of it.
 	Jitter float64
 	// MaxRetryAfter bounds how long a server-supplied Retry-After can park the
 	// harness. It is an absolute ceiling rather than a multiple of MaxDelay:
 	// the two answer different questions, and deriving one from the other makes
 	// a short backoff silently shorten the limit on how long we will honour a
-	// server's own instruction. Zero means the default.
+	// server's own instruction. Zero means the default. It bounds what the
+	// server may ask for; the jitter added to that is on top of it.
 	MaxRetryAfter time.Duration
 }
 
@@ -177,8 +181,22 @@ func DefaultRetryPolicy() RetryPolicy {
 	}
 }
 
+// jitterFraction is Jitter held to its documented range: a fraction in [0,1].
+// Outside it a spread goes negative (a retry before the server's time, or a
+// negative wait) or multiplies a wait the server bounded.
+func (p RetryPolicy) jitterFraction() float64 {
+	switch {
+	case !(p.Jitter > 0): // also NaN
+		return 0
+	case p.Jitter > 1:
+		return 1
+	}
+	return p.Jitter
+}
+
 // delayFor computes the backoff before attempt n (1-based), honouring a
-// server-supplied Retry-After above all else.
+// server-supplied Retry-After above all else: never earlier than the server's
+// time (bounded by MaxRetryAfter), spread later by the policy's jitter.
 //
 // rand01 supplies the jitter draw and returns a value in [0,1). It is a
 // function rather than a *rand.Rand so that the source can be swapped — a nil
@@ -194,7 +212,24 @@ func (p RetryPolicy) delayFor(attempt int, retryAfter time.Duration, rand01 func
 			ceiling = DefaultMaxRetryAfter
 		}
 		if retryAfter > ceiling {
-			return ceiling
+			retryAfter = ceiling
+		}
+		// Jitter rides on top of the server's time and never subtracts from it.
+		// Every client a server rate-limits together is told the same value, and
+		// waiting exactly that long brings them all back in the same instant.
+		// The spread is taken from the clamped value, after the ceiling and not
+		// folded under it: clipping the sum would put every client that was told
+		// something larger back on the ceiling together. So the longest wait is
+		// the ceiling plus Jitter of it, and a hostile header cannot stretch it.
+		// MaxRetryAfter is the operator's to set, so the sum saturates rather
+		// than wrapping to an instant retry.
+		if j := p.jitterFraction(); j > 0 && rand01 != nil {
+			base := min(retryAfter, math.MaxInt64/2)
+			spread := time.Duration(rand01() * j * float64(base))
+			if spread > math.MaxInt64-retryAfter {
+				return math.MaxInt64
+			}
+			retryAfter += spread
 		}
 		return retryAfter
 	}
@@ -202,8 +237,8 @@ func (p RetryPolicy) delayFor(attempt int, retryAfter time.Duration, rand01 func
 	if max := float64(p.MaxDelay); delay > max {
 		delay = max
 	}
-	if p.Jitter > 0 && rand01 != nil {
-		spread := delay * p.Jitter
+	if j := p.jitterFraction(); j > 0 && rand01 != nil {
+		spread := delay * j
 		delay = delay - spread/2 + rand01()*spread
 	}
 	return time.Duration(delay)
@@ -233,6 +268,12 @@ type Client struct {
 	// headers until prefill is done. A timeout is reported as ErrHeaderTimeout
 	// and is retryable like any other transport fault.
 	ResponseHeaderTimeout time.Duration
+
+	// clock arms the response-header timer. Unexported because production has
+	// one clock and nil is it; the seam lets a test hold the timer's callback
+	// at the instant the response arrives, which no sleep can do reliably. See
+	// StallClock.
+	clock StallClock
 }
 
 // DefaultHostedHeaderTimeout is how long a hosted provider may take to answer
@@ -259,22 +300,52 @@ func (e *ErrHeaderTimeout) Timeout() bool { return true }
 
 // send issues one request under the client's response-header bound.
 //
-// The bound is a timer that cancels the request's own derived context, stopped
+// The bound is a timer that cancels the request's own derived context, disarmed
 // the instant Do returns. Cancelling is the only way to abandon a request that
-// is blocked in the runtime's poller, and stopping on return is what keeps the
+// is blocked in the runtime's poller, and disarming on return is what keeps the
 // bound from ever reaching the body: the derived context outlives Do and is
 // released when the caller closes the body, so a long healthy stream is not
 // subject to it.
+//
+// Who won is decided by a claim both sides take under one mutex, not by what
+// Stop returns. Stop reports false once the runtime has committed to running
+// the callback, which is not the same as the callback having cancelled
+// anything: reading that false as "the timer won" discarded a response Do had
+// already returned (and, when Stop was never consulted, a late callback
+// cancelled the context under a body the caller already held). With the claim, a
+// response that arrives first is kept whatever the callback does afterwards,
+// and a callback that fires first has cancelled the context before send looks.
 func (c *Client) send(ctx context.Context, req *http.Request) (*http.Response, error) {
 	limit := c.ResponseHeaderTimeout
 	if limit <= 0 {
 		return c.HTTP.Do(req)
 	}
 	reqCtx, cancel := context.WithCancelCause(ctx)
-	timer := time.AfterFunc(limit, func() { cancel(&ErrHeaderTimeout{After: limit}) })
+	clock := c.clock
+	if clock == nil {
+		clock = realTime{}
+	}
+	var (
+		mu      sync.Mutex
+		settled bool // Do has returned: the callback may no longer cancel
+		expired bool // the callback ran first and has cancelled reqCtx
+	)
+	timer := clock.AfterFunc(limit, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if settled {
+			return
+		}
+		expired = true
+		cancel(&ErrHeaderTimeout{After: limit})
+	})
 	resp, err := c.HTTP.Do(req.WithContext(reqCtx))
-	fired := !timer.Stop()
-	if fired {
+	mu.Lock()
+	settled = true
+	timedOut := expired
+	mu.Unlock()
+	timer.Stop()
+	if timedOut {
 		// The timer won the race against the headers. The body belongs to a
 		// cancelled context and cannot be read; report the timeout.
 		if resp != nil {
@@ -690,8 +761,18 @@ func retryAfter(e *Error) time.Duration {
 	if e == nil || e.retryHint == "" {
 		return 0
 	}
-	if seconds, err := strconv.Atoi(strings.TrimSpace(e.retryHint)); err == nil && seconds >= 0 {
+	hint := strings.TrimSpace(e.retryHint)
+	seconds, err := strconv.ParseInt(hint, 10, 64)
+	switch {
+	case err == nil && seconds >= 0:
+		// Saturating: seconds * time.Second wraps negative from 9223372037, and
+		// a header asking for the longest wait must not become the shortest.
+		if seconds > math.MaxInt64/int64(time.Second) {
+			return time.Duration(math.MaxInt64)
+		}
 		return time.Duration(seconds) * time.Second
+	case errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(hint, "-"):
+		return time.Duration(math.MaxInt64) // beyond int64, still a very long wait
 	}
 	if when, err := http.ParseTime(e.retryHint); err == nil {
 		if d := time.Until(when); d > 0 {
@@ -1202,23 +1283,130 @@ func (s *SSE) release() {
 	s.reader = nil
 }
 
-// payloadReader reports byte arrival to the stall watchdog.
+// payloadReader reports byte arrival to the stall watchdog, and puts the bytes
+// into the one shape the line parser reads.
 //
 // It only counts bytes that belong to a payload line. That distinction is the
 // whole point: a proxy emitting ": ping" heartbeats delivers bytes forever
 // while the stream produces nothing, and counting those as progress turns the
 // watchdog into a device that guarantees the turn budget is spent in full.
+//
+// The event-stream grammar allows a leading UTF-8 byte order mark and three line
+// endings (CRLF, LF and a bare CR); the parser above this reads LF-terminated
+// lines only. Normalising here, once, under the buffer, keeps that parser's
+// fast path (one ReadSlice per line) and means a BOM or a bare CR is handled
+// wherever a chunk boundary happens to fall.
 type payloadReader struct {
 	src io.Reader
 	sse *SSE
+
+	// bomDecided is set once the stream's first bytes have been judged. A byte
+	// order mark is only a mark at the very start of a stream.
+	bomDecided bool
+	// skipLF is set after a chunk that ended in CR, which was passed on as LF.
+	// A LF opening the next chunk is the other half of a CRLF and is dropped.
+	skipLF bool
 }
 
+// utf8BOM is the byte order mark the grammar says to discard.
+const utf8BOM = "\xEF\xBB\xBF"
+
+// maxEmptyReads is how many consecutive (0, nil) reads the source gets before
+// the stream gives up on it. It is bufio's own bound; the reads here sit under
+// a bufio.Reader that would report io.ErrNoProgress after the same number, and
+// this layer must not turn that guard into a spin.
+const maxEmptyReads = 100
+
 func (r *payloadReader) Read(p []byte) (int, error) {
-	n, err := r.src.Read(p)
-	if n > 0 && r.sse.payload && r.sse.watchdog != nil {
-		r.sse.watchdog.progress()
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for empty := 0; empty < maxEmptyReads; empty++ {
+		n, err := r.src.Read(p)
+		if !r.bomDecided && n > 0 {
+			n, err = r.dropBOM(p, n, err)
+		}
+		if n > 0 {
+			// One scan for the CR that most streams never contain; see endLines.
+			if first := bytes.IndexByte(p[:n], '\r'); first >= 0 || r.skipLF {
+				n = r.endLines(p[:n], first)
+			}
+			if n > 0 && r.sse.payload && r.sse.watchdog != nil {
+				r.sse.watchdog.progress()
+			}
+		}
+		if n > 0 || err != nil {
+			return n, err
+		}
+	}
+	return 0, io.ErrNoProgress
+}
+
+// dropBOM removes a leading byte order mark from the first bytes of the stream.
+// It reads on while what has arrived is a proper prefix of the mark, because a
+// mark split across reads is still a mark; nothing else ever waits here, since
+// a stream whose first byte is not 0xEF is decided at once.
+func (r *payloadReader) dropBOM(p []byte, n int, err error) (int, error) {
+	if len(p) < len(utf8BOM) {
+		r.bomDecided = true
+		return n, err
+	}
+	for empty := 0; n < len(utf8BOM) && err == nil && string(p[:n]) == utf8BOM[:n]; {
+		var m int
+		m, err = r.src.Read(p[n:])
+		n += m
+		switch {
+		case m > 0:
+			empty = 0
+		case err == nil:
+			if empty++; empty >= maxEmptyReads {
+				err = io.ErrNoProgress
+			}
+		}
+	}
+	r.bomDecided = true
+	if n >= len(utf8BOM) && string(p[:len(utf8BOM)]) == utf8BOM {
+		n = copy(p, p[len(utf8BOM):n])
 	}
 	return n, err
+}
+
+// endLines rewrites a bare CR as LF, in place, and returns the new length;
+// first is the index of the first CR in p, or -1 if there is none.
+//
+// A CR that opens a CRLF is left for the parser, which already trims it, so a
+// CRLF stream is not copied at all; a bare CR is overwritten where it stands. A
+// CR that ends the chunk cannot be told from a bare one until the next read, so
+// it becomes LF now and the LF that may open the next chunk is dropped by
+// skipLF: the one case that shifts bytes, and it needs a CRLF split exactly at a
+// chunk boundary.
+func (r *payloadReader) endLines(p []byte, first int) int {
+	if r.skipLF {
+		r.skipLF = false
+		if p[0] == '\n' {
+			p = p[:copy(p, p[1:])]
+			first = bytes.IndexByte(p, '\r')
+		}
+	}
+	for i := first; i >= 0; {
+		switch {
+		case i+1 == len(p):
+			p[i] = '\n'
+			r.skipLF = true
+			return len(p)
+		case p[i+1] == '\n':
+			i += 2
+		default:
+			p[i] = '\n'
+			i++
+		}
+		next := bytes.IndexByte(p[i:], '\r')
+		if next < 0 {
+			break
+		}
+		i += next
+	}
+	return len(p)
 }
 
 // Terminated reports whether the stream ended because the Done sentinel
