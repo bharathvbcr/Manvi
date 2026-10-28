@@ -233,6 +233,12 @@ type Client struct {
 	// headers until prefill is done. A timeout is reported as ErrHeaderTimeout
 	// and is retryable like any other transport fault.
 	ResponseHeaderTimeout time.Duration
+
+	// clock arms the response-header timer. Unexported because production has
+	// one clock and nil is it; the seam lets a test hold the timer's callback
+	// at the instant the response arrives, which no sleep can do reliably. See
+	// StallClock.
+	clock StallClock
 }
 
 // DefaultHostedHeaderTimeout is how long a hosted provider may take to answer
@@ -259,22 +265,52 @@ func (e *ErrHeaderTimeout) Timeout() bool { return true }
 
 // send issues one request under the client's response-header bound.
 //
-// The bound is a timer that cancels the request's own derived context, stopped
+// The bound is a timer that cancels the request's own derived context, disarmed
 // the instant Do returns. Cancelling is the only way to abandon a request that
-// is blocked in the runtime's poller, and stopping on return is what keeps the
+// is blocked in the runtime's poller, and disarming on return is what keeps the
 // bound from ever reaching the body: the derived context outlives Do and is
 // released when the caller closes the body, so a long healthy stream is not
 // subject to it.
+//
+// Who won is decided by a claim both sides take under one mutex, not by what
+// Stop returns. Stop reports false once the runtime has committed to running
+// the callback, which is not the same as the callback having cancelled
+// anything: reading that false as "the timer won" discarded a response Do had
+// already returned (and, when Stop was never consulted, a late callback
+// cancelled the context under a body the caller already held). With the claim, a
+// response that arrives first is kept whatever the callback does afterwards,
+// and a callback that fires first has cancelled the context before send looks.
 func (c *Client) send(ctx context.Context, req *http.Request) (*http.Response, error) {
 	limit := c.ResponseHeaderTimeout
 	if limit <= 0 {
 		return c.HTTP.Do(req)
 	}
 	reqCtx, cancel := context.WithCancelCause(ctx)
-	timer := time.AfterFunc(limit, func() { cancel(&ErrHeaderTimeout{After: limit}) })
+	clock := c.clock
+	if clock == nil {
+		clock = realTime{}
+	}
+	var (
+		mu      sync.Mutex
+		settled bool // Do has returned: the callback may no longer cancel
+		expired bool // the callback ran first and has cancelled reqCtx
+	)
+	timer := clock.AfterFunc(limit, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if settled {
+			return
+		}
+		expired = true
+		cancel(&ErrHeaderTimeout{After: limit})
+	})
 	resp, err := c.HTTP.Do(req.WithContext(reqCtx))
-	fired := !timer.Stop()
-	if fired {
+	mu.Lock()
+	settled = true
+	timedOut := expired
+	mu.Unlock()
+	timer.Stop()
+	if timedOut {
 		// The timer won the race against the headers. The body belongs to a
 		// cancelled context and cannot be read; report the timeout.
 		if resp != nil {

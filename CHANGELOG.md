@@ -162,6 +162,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A response that arrives in the same instant as the response-header timer is
+  no longer thrown away. `Client.send` read `timer.Stop()` returning false as
+  "the timer won": a 200 that `Do` had already returned was closed and reported
+  as `ErrHeaderTimeout` and retried, and when `Stop` had not reported a fire the
+  callback could still cancel the context under a body the caller already held
+  (`send` returned no response and no error at all in the first case). The
+  callback and `send` now take one claim under a mutex; a response that wins is
+  kept and a mute request is still a typed, retryable `ErrHeaderTimeout`.
+  (ft-4712431b criterion 5; the fix on `hx/wave2-header-timeout` never reached
+  main.)
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
