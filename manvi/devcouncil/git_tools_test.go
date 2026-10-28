@@ -457,6 +457,55 @@ func TestGitCapsAreNamedInThePayload(t *testing.T) {
 	}
 }
 
+// TestGitLogAndStatusSeparateNoCommitsFromAFailedRead: git exits 128 for "no
+// commits yet" and for "not a repository" and "bad object" alike, so treating
+// 128 as the first answered `{"commits":[]}` for a directory git could not read
+// at all, and a history nobody could see read as a history that was empty.
+func TestGitLogAndStatusSeparateNoCommitsFromAFailedRead(t *testing.T) {
+	t.Run("unborn", func(t *testing.T) {
+		f := newFixture(t)
+		if err := os.RemoveAll(filepath.Join(f.root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		run(t, f.root, "init", "-q")
+		log := f.payload("devcouncil_git_log", map[string]any{})
+		if commits, _ := log["commits"].([]any); len(commits) != 0 || log["note"] == nil {
+			t.Errorf("an unborn repository did not report 'no commits yet': %v", log)
+		}
+		status := f.payload("devcouncil_git_status", map[string]any{})
+		if head, present := status["head"]; !present || head != nil {
+			t.Errorf("an unborn repository's head = %v, want null", head)
+		}
+	})
+	t.Run("not a repository", func(t *testing.T) {
+		f := newFixture(t)
+		if err := os.RemoveAll(filepath.Join(f.root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range []string{"devcouncil_git_log", "devcouncil_git_status"} {
+			if res := f.call(tool, map[string]any{}); !res.IsError {
+				t.Errorf("%s answered for a directory that is not a repository: %s", tool, res.Text)
+			}
+		}
+	})
+	t.Run("unreadable object store", func(t *testing.T) {
+		f := newFixture(t)
+		objects := filepath.Join(f.root, ".git", "objects")
+		if err := os.RemoveAll(objects); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(objects, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range []string{"devcouncil_git_log", "devcouncil_git_status"} {
+			res := f.call(tool, map[string]any{})
+			if !res.IsError {
+				t.Errorf("%s answered over an object store that cannot be read: %s", tool, res.Text)
+			}
+		}
+	})
+}
+
 // stagedNames reads the index itself, the one place a stage that got past the
 // name check shows up.
 func stagedNames(t *testing.T, root string) []string {

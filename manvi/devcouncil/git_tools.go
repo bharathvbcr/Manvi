@@ -157,8 +157,11 @@ func (r *Registry) gitStatus(ctx context.Context, call tools.Call) tools.Result 
 		if sha, subject, ok := strings.Cut(strings.TrimRight(head, "\n"), "\x00"); ok {
 			payload["head"] = map[string]string{"sha": sha, "subject": subject}
 		}
-	} else {
+	} else if born, bornErr := headExists(ctx, r.deps.Root); bornErr == nil && !born {
 		payload["head"] = nil
+	} else {
+		// A HEAD that exists and cannot be read is not "no commits yet".
+		return unavailable("HEAD commit", headErr)
 	}
 	return ok(payload)
 }
@@ -296,8 +299,10 @@ func (r *Registry) gitLog(ctx context.Context, call tools.Call) tools.Result {
 		"--format=%H%x00%h%x00%an%x00%aI%x00%s%x1e")
 	if err != nil {
 		// Unborn repository: there is no history to list, and that is an
-		// answer rather than a failure — but it is stated, not implied.
-		if unborn(err) {
+		// answer rather than a failure — but it is stated, not implied. It is
+		// asked of git (HEAD names no commit), not read off the exit status: 128
+		// is also "not a repository" and "bad object".
+		if born, headErr := headExists(ctx, r.deps.Root); headErr == nil && !born {
 			return ok(map[string]any{"commits": []any{}, "note": "repository has no commits yet"})
 		}
 		return unavailable("commit log", err)
@@ -326,12 +331,6 @@ func (r *Registry) gitLog(ctx context.Context, call tools.Call) tools.Result {
 		degraded = append(degraded, fmt.Sprintf("git_log: requested %d commits, capped at %d", args.Max, maxGitLogCommits))
 	}
 	return okDegraded(map[string]any{"commits": commits}, degraded)
-}
-
-// unborn reports whether a git failure is the ordinary "no commits yet" case.
-func unborn(err error) bool {
-	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr) && exitErr.ExitCode() == 128
 }
 
 func (r *Registry) gitBranches(ctx context.Context, call tools.Call) tools.Result {

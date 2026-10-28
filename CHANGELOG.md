@@ -162,6 +162,11 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_git_log` and `devcouncil_git_status` no longer read every git
+  exit status of 128 as "no commits yet". git uses it for "not a repository" and
+  "bad object" too, so a directory git could not read answered
+  `{"commits":[]}`. Whether HEAD names a commit is now asked of git
+  (`rev-parse --verify`), and any other failure is an error result.
 - In a repository with no commits, `devcouncil_get_diff` and verification see
   the files that are staged. The fallback for a missing HEAD was a bare
   `git diff`, which compares the working tree with the index, so a file staged
