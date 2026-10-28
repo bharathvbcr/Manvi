@@ -505,6 +505,23 @@ func ok(payload any) tools.Result {
 	return tools.Result{Text: string(data)}
 }
 
+// okDegraded is ok for an answer that is narrower than it looks: a cap that cut
+// it, a capture that was truncated, a fallback that answered in place of the
+// asked-for source. The notes go into the payload the model reads and into
+// Result.Degraded, which feeds only the session log, and they go in *before*
+// the payload is marshalled — set afterwards they reach the log and nothing
+// else, and the model reads a prefix as the whole.
+func okDegraded(payload map[string]any, notes []string) tools.Result {
+	if len(notes) > 0 {
+		payload["degraded"] = notes
+	}
+	res := ok(payload)
+	if !res.IsError {
+		res.Degraded = notes
+	}
+	return res
+}
+
 // settingOn reads a boolean setting the way every caller in this package needs
 // it read: one answer, with the fallback stated at the call site.
 //

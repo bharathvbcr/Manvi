@@ -59,6 +59,19 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Behaviour change: repository hooks no longer run on any git command the
+  devcouncil package starts through `gitSpec`, which includes the commit
+  `devcouncil_git_commit` makes. `core.hooksPath` is pointed at the null device
+  for each of those children, so `pre-commit`, `prepare-commit-msg` and
+  `post-commit` (from `.git/hooks` or a `core.hooksPath` such as `.husky`) do not
+  fire; `--no-verify` would have left the last two running. A repository that
+  relies on a commit hook to format or lint will not get it from this tool. Git
+  started elsewhere (`manvi serve`'s `serve/git.go`, bootstrap) is not covered.
+  The reason is under **Fixed**. The same children also run with
+  `core.fsmonitor=false`: a `core.fsmonitor` program named
+  in the repository's config ran on `diff`, `ls-files`, `status` and `add`
+  outside the command gate, and one that reported "nothing changed" hid changes
+  from the diff the gates read.
 - `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
   running the turn on the first megabyte. The read stopped at the cap with no
   overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
@@ -249,6 +262,63 @@ under **Unreleased** in the same commit as the code.
   kept and a mute request is still a typed, retryable `ErrHeaderTimeout`.
   (ft-4712431b criterion 5; the fix on `hx/wave2-header-timeout` never reached
   main.)
+- `devcouncil_git_show` reports a git failure as one. Only `rev-parse`'s exit 1
+  means "does not name a commit"; a store git cannot read (exit 128) is now
+  "could not be determined", as `git_log` and `git_status` answer it, instead of
+  a refusal that blamed the argument.
+- `devcouncil_git_commit` can no longer land content the checks did not see.
+  The name, alias and content checks read the index and then `git commit` ran
+  the repository's hooks: with `core.hooksPath=.husky` (not a write-restricted
+  path) a `pre-commit` that wrote `leak.txt` and ran `git add leak.txt` put it in
+  the commit, with `SSH_AUTH_SOCK` and `GNUPGHOME` in the hook's environment and
+  no command gate in front of it. Hooks are off (see **Changed**), and the commit
+  is held to a post-condition: the staged tree is written before and after the
+  checks (an index that moved while it was examined is refused), and after the
+  commit its tree must equal the checked one or the commit is taken back
+  (`update-ref` to the previous commit, or the unborn branch for a root commit,
+  with the new commit as the expected value) and an error is returned. The
+  commit judged is only ever the one directly on the previous commit: if another
+  process moved the branch while the commit was being made, nothing is judged or
+  moved and the error says so, so the undo cannot drop someone else's commit.
+  `committed_paths` and `head` now come from the commit that exists
+  (`diff-tree --root`), not the pre-check list.
+- `devcouncil_git_log` and `devcouncil_git_status` no longer read every git
+  exit status of 128 as "no commits yet". git uses it for "not a repository" and
+  "bad object" too, so a directory git could not read answered
+  `{"commits":[]}`. Whether HEAD names a commit is now asked of git
+  (`rev-parse --verify`), and any other failure is an error result.
+- In a repository with no commits, `devcouncil_get_diff` and verification see
+  the files that are staged. The fallback for a missing HEAD was a bare
+  `git diff`, which compares the working tree with the index, so a file staged
+  and not edited since matched itself and was in no diff: the secret scan and the
+  gates never read the files a first commit was about to make permanent. The
+  working tree is now compared with the empty tree, and whether HEAD exists is
+  asked of git rather than inferred from a failed diff, so any other git failure
+  is an error. The scoped diff takes the same path.
+- Truncation and cap notes reach the model. `devcouncil_git_show` (patch cut at
+  128 KiB), `devcouncil_git_log` (`max` capped at 50) and
+  `devcouncil_dev_inspect` (capture cut, or output that was not JSON) recorded
+  the note in `Result.Degraded`, which feeds only the session log, and in the
+  two latter cases set it on the payload after the payload had been marshalled,
+  so the model read a prefix as the whole. The notes now go into the payload's
+  `degraded` list before it is encoded, through one helper (`okDegraded`).
+- `devcouncil_git_stage` paths are literal. The secret-path check judged the
+  spelling the agent gave while `git add` read it as a pathspec, so `.e*`, `*`
+  and `:(glob).env` staged `.env`; a directory (`.`, `app`) staged every file
+  under it unexamined. There is no unstage tool, so the commit-time refusal then
+  left the session wedged. `git add` now runs with `GIT_LITERAL_PATHSPECS=1` (a
+  file named `we*rd.txt` still stages by that name; the line the command gate
+  judges is unchanged, so existing grants still match), and before it runs git
+  is asked which files the paths would stage and those go through the same
+  secret-path and hard-link checks.
+- `devcouncil_git_show` answers only for a commit. The `object` check admitted
+  `:`, so `HEAD:deploy/cert.p12` named a blob, and `git show -s` prints a blob's
+  bytes whatever `--format` says: the NUL-split of them came back as `subject`,
+  `author` and `date`, a read the command gate refuses as
+  `command.git_read_argument`. The object is now resolved with
+  `rev-parse --verify <object>^{commit}`, so a blob, a tree or any revision
+  syntax that names one is refused, and the metadata and the patch are read from
+  the resolved id rather than the spelling.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are

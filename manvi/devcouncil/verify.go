@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -306,6 +307,31 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 // the turn with nothing to report.
 const gitTimeout = 2 * time.Minute
 
+// diffBase is the revision the working tree is compared with: HEAD, or in a
+// repository with no commits yet the empty tree, against which every file in the
+// index is an addition. The fallback used to be a bare `git diff`, which
+// compares the working tree to the index, so a file staged and not edited since
+// matched itself and was in no diff at all — the files a first commit is about to
+// make permanent, invisible to every gate that reads this. The empty tree's id is
+// asked of git because it depends on the repository's hash algorithm.
+//
+// Whether HEAD exists is asked, not inferred from a failed diff: any other way
+// git can fail here is an error, not a repository with no history.
+func diffBase(ctx context.Context, root string) (string, error) {
+	born, err := headExists(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if born {
+		return "HEAD", nil
+	}
+	out, err := runGit(ctx, root, "hash-object", "-t", "tree", "/dev/null")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // maxUntrackedRendered caps the per-file fan-out below.
 //
 // Untracked files are rendered one subprocess each, and how many there are is
@@ -326,13 +352,13 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 
 	var notes []string
 
-	tracked, trackedNote, err := runGitCapped(ctx, root, maxGitCaptureBytes, "diff", "HEAD")
+	base, err := diffBase(ctx, root)
 	if err != nil {
-		// A repository with no commits yet has no HEAD; fall back to the index.
-		tracked, trackedNote, err = runGitCapped(ctx, root, maxGitCaptureBytes, "diff")
-		if err != nil {
-			return "", nil, err
-		}
+		return "", nil, err
+	}
+	tracked, trackedNote, err := runGitCapped(ctx, root, maxGitCaptureBytes, "diff", base)
+	if err != nil {
+		return "", nil, err
 	}
 	if trackedNote != "" {
 		// Cut at the cap, then back to the last complete line: a header cut in
@@ -733,13 +759,34 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // fsmonitor in the repository runs with it, and the repository is not trusted
 // with the operator's provider keys.
 //
+// core.hooksPath at the null device means no hook is found, for every child:
+// the repository names programs git would run (a commit's pre-commit,
+// prepare-commit-msg and post-commit, an index write's post-index-change, a
+// ref update's reference-transaction), and the directories those usually live in
+// (.husky, .githooks) are ordinary writable paths. A hook runs outside the
+// command gate, with the environment git was given, and one that stages a file
+// puts content in a commit that no check saw. --no-verify would skip only some of
+// them. The gate judges the command line the caller built, not this argv: the
+// setting only narrows what git runs, and putting it in the judged line would
+// stop every allowlist entry and grant written against `git commit` matching it.
+// Repository hooks therefore do not run on any git this package starts through
+// here — a behaviour change for a repository that relies on a commit hook. The
+// claim is that wide and no wider: serve/git.go and bootstrap spawn git on their
+// own and are not covered.
+//
+// core.fsmonitor=false is the same class: the repository's config can name a
+// program that git runs on diff, ls-files, status and add, and one that answers
+// "nothing changed" hides changes from the read as well. DevCouncil's own
+// GitArgs sets it for the same reason.
+//
 // core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead of
 // C-style octal escapes. It is set here rather than in either parser because
 // crates/dc-verify reads this same format: unquoting on one side only would
 // give the two readers different answers for the same file.
 func gitSpec(root, index string, args []string) procSpec {
 	spec := procSpec{
-		argv:        append([]string{"git", "-c", "core.quotePath=false"}, withoutDiffPrograms(args)...),
+		argv: append([]string{"git", "-c", "core.quotePath=false", "-c", "core.hooksPath=" + os.DevNull,
+			"-c", "core.fsmonitor=false"}, withoutDiffPrograms(args)...),
 		dir:         root,
 		timeout:     gitTimeout,
 		stderrLimit: maxGitStderrBytes,
