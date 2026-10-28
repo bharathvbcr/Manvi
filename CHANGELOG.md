@@ -162,6 +162,17 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The SSE reader now follows the event-stream grammar for line endings and the
+  byte order mark. A stream ended its lines with CRLF or LF only, so a body
+  framed with a bare CR was one unterminated line that never dispatched until
+  the 32 MiB frame cap, and a leading UTF-8 BOM glued itself to the first field
+  name (`BOM + event: message_start` arrived nameless). A bare CR now ends a
+  line (CRLF stays one ending, however the chunks split it) and a leading BOM is
+  dropped. The stream preflight reads the opening frames with its own splitter,
+  which had the same gaps: `SplitFrame` and `FrameFields` now agree with the
+  reader, so an opening `overloaded_error` in either framing is judged and
+  retried. `event: ping` frames and `: ping` comments were already handled and
+  are now pinned with fixtures.
 - A server's `Retry-After` now carries jitter. `RetryPolicy.delayFor` returned
   it verbatim, so every client a provider rate-limited together was told the
   same value and came back in the same instant; only the computed backoff was

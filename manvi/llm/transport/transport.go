@@ -1252,23 +1252,102 @@ func (s *SSE) release() {
 	s.reader = nil
 }
 
-// payloadReader reports byte arrival to the stall watchdog.
+// payloadReader reports byte arrival to the stall watchdog, and puts the bytes
+// into the one shape the line parser reads.
 //
 // It only counts bytes that belong to a payload line. That distinction is the
 // whole point: a proxy emitting ": ping" heartbeats delivers bytes forever
 // while the stream produces nothing, and counting those as progress turns the
 // watchdog into a device that guarantees the turn budget is spent in full.
+//
+// The event-stream grammar allows a leading UTF-8 byte order mark and three line
+// endings (CRLF, LF and a bare CR); the parser above this reads LF-terminated
+// lines only. Normalising here, once, under the buffer, keeps that parser's
+// fast path (one ReadSlice per line) and means a BOM or a bare CR is handled
+// wherever a chunk boundary happens to fall.
 type payloadReader struct {
 	src io.Reader
 	sse *SSE
+
+	// bomDecided is set once the stream's first bytes have been judged. A byte
+	// order mark is only a mark at the very start of a stream.
+	bomDecided bool
+	// skipLF is set after a chunk that ended in CR, which was passed on as LF.
+	// A LF opening the next chunk is the other half of a CRLF and is dropped.
+	skipLF bool
 }
 
+// utf8BOM is the byte order mark the grammar says to discard.
+const utf8BOM = "\xEF\xBB\xBF"
+
 func (r *payloadReader) Read(p []byte) (int, error) {
-	n, err := r.src.Read(p)
-	if n > 0 && r.sse.payload && r.sse.watchdog != nil {
-		r.sse.watchdog.progress()
+	for {
+		n, err := r.src.Read(p)
+		if !r.bomDecided && n > 0 {
+			n, err = r.dropBOM(p, n, err)
+		}
+		n = r.endLines(p[:n])
+		if n > 0 && r.sse.payload && r.sse.watchdog != nil {
+			r.sse.watchdog.progress()
+		}
+		if n > 0 || err != nil {
+			return n, err
+		}
+	}
+}
+
+// dropBOM removes a leading byte order mark from the first bytes of the stream.
+// It reads on while what has arrived is a proper prefix of the mark, because a
+// mark split across reads is still a mark; nothing else ever waits here, since
+// a stream whose first byte is not 0xEF is decided at once.
+func (r *payloadReader) dropBOM(p []byte, n int, err error) (int, error) {
+	if len(p) < len(utf8BOM) {
+		r.bomDecided = true
+		return n, err
+	}
+	for n < len(utf8BOM) && err == nil && string(p[:n]) == utf8BOM[:n] {
+		var m int
+		m, err = r.src.Read(p[n:])
+		n += m
+	}
+	r.bomDecided = true
+	if n >= len(utf8BOM) && string(p[:len(utf8BOM)]) == utf8BOM {
+		n = copy(p, p[len(utf8BOM):n])
 	}
 	return n, err
+}
+
+// endLines rewrites a bare CR as LF, in place, and returns the new length. A CR
+// that opens a CRLF is left for the parser (which already trims it); a CR that
+// ends the chunk cannot be told from a bare one until the next read, so it
+// becomes LF now and the LF that may follow it is dropped by skipLF. The common
+// chunk holds no CR at all and costs one scan.
+func (r *payloadReader) endLines(p []byte) int {
+	if !r.skipLF && bytes.IndexByte(p, '\r') < 0 {
+		return len(p)
+	}
+	w := 0
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if r.skipLF {
+			r.skipLF = false
+			if c == '\n' {
+				continue
+			}
+		}
+		if c == '\r' {
+			switch {
+			case i+1 == len(p):
+				c = '\n'
+				r.skipLF = true
+			case p[i+1] != '\n':
+				c = '\n'
+			}
+		}
+		p[w] = c
+		w++
+	}
+	return w
 }
 
 // Terminated reports whether the stream ended because the Done sentinel

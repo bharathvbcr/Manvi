@@ -123,11 +123,18 @@ func PreflightStream(resp *http.Response, provider string, wait time.Duration, j
 
 		for frames < preflightFrames {
 			rest := seen.String()[consumed:]
+			if err != nil && strings.HasSuffix(rest, "\r") {
+				// No more bytes are coming, so a trailing CR is a line ending on
+				// its own and not the first half of a CRLF. SplitFrame holds it
+				// back otherwise, and a stream whose last frame ends in a bare CR
+				// would never have that frame judged.
+				rest += "\n"
+			}
 			frame, size, ok := SplitFrame(rest)
 			if !ok {
 				break
 			}
-			consumed += size
+			consumed = min(consumed+size, seen.Len())
 			frames++
 
 			preamble, failure := judge(frame)
@@ -152,43 +159,71 @@ func PreflightStream(resp *http.Response, provider string, wait time.Duration, j
 	return replay(&seen, resp.Body), nil
 }
 
-// frameTerminators are the byte sequences that end an SSE frame: a blank line,
-// whose line ending may be CRLF or LF, after a line whose ending may likewise
-// be either. A scanner that split on "\n\n" alone never saw a frame end in a
-// CRLF-framed stream, and the retry policy was skipped on nothing but a line
-// ending. SSE.Next accepts both, and two parsers disagreeing about where a
-// frame ends is a defect whether or not a live endpoint exercises it.
-//
-// Ordered longest-first so a boundary is consumed whole rather than leaving a
-// stray terminator at the head of the next frame.
-var frameTerminators = [...]string{"\r\n\r\n", "\r\n\n", "\n\r\n", "\n\n"}
+// lineEnding reports the width of the line ending at s[i]: 0 when there is none,
+// 2 for CRLF, 1 for LF or a bare CR, and -1 for a CR that is the last byte
+// seen, which may yet turn out to open a CRLF.
+func lineEnding(s string, i int) int {
+	switch s[i] {
+	case '\n':
+		return 1
+	case '\r':
+		switch {
+		case i+1 == len(s):
+			return -1
+		case s[i+1] == '\n':
+			return 2
+		}
+		return 1
+	}
+	return 0
+}
 
 // SplitFrame returns the first whole frame in rest and how many bytes it
 // occupied, terminator included.
+//
+// A frame ends at a blank line, and every line ending the event-stream grammar
+// allows — CRLF, LF, a bare CR, in any mix — counts. A scanner that split on
+// "\n\n" alone never saw a frame end in a CRLF-framed stream, and the retry
+// policy was skipped on nothing but a line ending. SSE.Next accepts all three,
+// and two parsers disagreeing about where a frame ends is a defect whether or
+// not a live endpoint exercises it. A trailing CR is undecided, so the frame is
+// not reported until the byte after it has arrived.
 func SplitFrame(rest string) (frame string, size int, ok bool) {
-	at, width := -1, 0
-	for _, sep := range frameTerminators {
-		i := strings.Index(rest, sep)
-		if i < 0 {
+	for i := 0; i < len(rest); {
+		first := lineEnding(rest, i)
+		switch {
+		case first < 0:
+			return "", 0, false
+		case first == 0:
+			i++
 			continue
 		}
-		if at < 0 || i < at || (i == at && len(sep) > width) {
-			at, width = i, len(sep)
+		next := i + first
+		if next == len(rest) {
+			return "", 0, false
 		}
+		second := lineEnding(rest, next)
+		switch {
+		case second < 0:
+			return "", 0, false
+		case second > 0:
+			return rest[:i], next + second, true
+		}
+		i = next
 	}
-	if at < 0 {
-		return "", 0, false
-	}
-	return rest[:at], at + width, true
+	return "", 0, false
 }
 
 // FrameFields reads the event name and the joined data lines out of one raw
-// SSE frame, as SSE.Next would: comments are ignored and CRLF endings are
-// tolerated.
+// SSE frame, as SSE.Next would: comments are ignored, a leading byte order mark
+// is dropped, and CRLF, LF and bare-CR endings are all line endings.
 func FrameFields(frame string) (name, data string) {
+	frame = strings.TrimPrefix(frame, utf8BOM)
+	if strings.Contains(frame, "\r") {
+		frame = strings.ReplaceAll(strings.ReplaceAll(frame, "\r\n", "\n"), "\r", "\n")
+	}
 	var parts []string
 	for _, line := range strings.Split(frame, "\n") {
-		line = strings.TrimRight(line, "\r")
 		switch {
 		case strings.HasPrefix(line, ":"):
 		case strings.HasPrefix(line, "event:"):
