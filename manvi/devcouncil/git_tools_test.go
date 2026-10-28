@@ -433,3 +433,60 @@ func TestGitShowRefusesObjectsThatAreNotCommits(t *testing.T) {
 		}
 	}
 }
+
+// stagedNames reads the index itself, the one place a stage that got past the
+// name check shows up.
+func stagedNames(t *testing.T, root string) []string {
+	t.Helper()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", root, "diff", "--cached", "--name-only", "-z").Output()
+	if err != nil {
+		t.Fatalf("diff --cached: %v", err)
+	}
+	var names []string
+	for _, n := range strings.Split(string(out), "\x00") {
+		if n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// TestGitStagePathsAreLiteral: secretPaths judges the spelling the agent gave,
+// and git read that spelling as a pathspec, so `.e*`, `*` and `:(glob).env`
+// matched no secret pattern and staged `.env`. There is no unstage tool, so the
+// commit-time refusal then wedged the session. A path is a path: a name no file
+// has stages nothing, and a directory is judged by the files it would stage.
+func TestGitStagePathsAreLiteral(t *testing.T) {
+	f := newFixtureWith(t, map[string]string{
+		flags.HarnessPosture:      flags.PostureYolo,
+		flags.GrantsAgentCommands: "true",
+	})
+	write(t, f.root, ".env", "TOKEN=hunter2\n")
+	write(t, f.root, "app/.env", "TOKEN=nested\n")
+	write(t, f.root, "app/main.go", "package app\n")
+	write(t, f.root, "we*rd.txt", "a file whose name is a glob\n")
+	checkout(t, f)
+
+	for _, spec := range []string{".e*", "*", ":(glob).env", ":(glob)**/.env", ":/.env", ":!seed.txt", ".", "app", "app/"} {
+		t.Run(spec, func(t *testing.T) {
+			f.call("devcouncil_git_stage", map[string]any{"paths": []string{spec}})
+			for _, name := range stagedNames(t, f.root) {
+				if strings.HasSuffix(name, ".env") {
+					t.Fatalf("staging %q put %s in the index", spec, name)
+				}
+			}
+		})
+	}
+	if names := stagedNames(t, f.root); len(names) != 0 {
+		t.Fatalf("a refused or unmatched stage left %v in the index", names)
+	}
+
+	// A file whose name is a glob is still stageable by that name.
+	res := f.call("devcouncil_git_stage", map[string]any{"paths": []string{"we*rd.txt"}})
+	if res.IsError {
+		t.Fatalf("a literal name with glob characters was refused: %s", res.Text)
+	}
+	if names := stagedNames(t, f.root); len(names) != 1 || names[0] != "we*rd.txt" {
+		t.Fatalf("staged %v, want exactly we*rd.txt", names)
+	}
+}

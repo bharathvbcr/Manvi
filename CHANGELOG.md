@@ -162,6 +162,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_git_stage` paths are literal. The secret-path check judged the
+  spelling the agent gave while `git add` read it as a pathspec, so `.e*`, `*`
+  and `:(glob).env` staged `.env`; a directory (`.`, `app`) staged every file
+  under it unexamined. There is no unstage tool, so the commit-time refusal then
+  left the session wedged. `git add` now runs with `GIT_LITERAL_PATHSPECS=1` (a
+  file named `we*rd.txt` still stages by that name; the line the command gate
+  judges is unchanged, so existing grants still match), and before it runs git
+  is asked which files the paths would stage and those go through the same
+  secret-path and hard-link checks.
 - `devcouncil_git_show` answers only for a commit. The `object` check admitted
   `:`, so `HEAD:deploy/cert.p12` named a blob, and `git show -s` prints a blob's
   bytes whatever `--format` says: the NUL-split of them came back as `subject`,

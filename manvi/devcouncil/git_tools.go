@@ -13,6 +13,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/safefile"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -483,11 +484,44 @@ func (r *Registry) gitStage(ctx context.Context, call tools.Call) tools.Result {
 		return aliasedRefusal("stage", aliased)
 	}
 
+	// The names above were judged as spelled, so git must read them as spelled:
+	// `.e*`, `*` and `:(glob).env` matched no secret pattern and staged `.env`,
+	// and a directory stages everything under it. What the paths would stage is
+	// asked of git and judged by the same two checks, literally.
+	listCtx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	would, err := runGit(listCtx, r.deps.Root,
+		append([]string{"ls-files", "-z", "--others", "--modified", "--deleted", "--exclude-standard", "--"},
+			literalSpecs(rel)...)...)
+	if err != nil {
+		return unavailable("staged-set check", err)
+	}
+	var expanded []string
+	for _, p := range strings.Split(would, "\x00") {
+		if p != "" {
+			expanded = append(expanded, p)
+		}
+	}
+	leaked, err = secretPaths(r.matcher(), expanded)
+	if err != nil {
+		return unavailable("secret-path check", err)
+	}
+	if len(leaked) > 0 {
+		return secretRefusal("stage", leaked)
+	}
+	if aliased := aliasedPaths(r.deps.Root, expanded); len(aliased) > 0 {
+		return aliasedRefusal("stage", aliased)
+	}
+
 	argv := append([]string{"add", "--"}, rel...)
 	commandLine := renderCommandLine(append([]string{"git"}, argv...))
+	// Literal through the environment rather than the argv, so the line the gate
+	// judges stays the command the shell equivalent would have been, which is
+	// what allowlists and grants are written against; the setting only narrows
+	// what git matches.
 	return r.gatedGit(ctx, "staging", commandLine, argv, map[string]any{
 		"staged": rel,
-	})
+	}, "GIT_LITERAL_PATHSPECS=1")
 }
 
 // gitCommit commits the staged set. The staged paths are re-checked against
@@ -584,7 +618,10 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 //
 // The executed argv and the evaluated command line are built from the same
 // slice, so the policy judged what actually ran.
-func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv []string, extra map[string]any) tools.Result {
+//
+// env is added to git's allowlisted environment, for settings that narrow what
+// git does without changing the command the gate is asked about.
+func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv []string, extra map[string]any, env ...string) tools.Result {
 	task, refusal := r.authorisingTask(ctx, verb)
 	if refusal != nil {
 		return *refusal
@@ -605,6 +642,7 @@ func (r *Registry) gatedGit(ctx context.Context, verb, commandLine string, argv 
 	// The same construction site as every read-side git child, so the paths
 	// in a commit summary are spelled the way the verifier reads them.
 	spec := gitSpec(r.deps.Root, "", argv)
+	spec.env = childenv.Git(env...)
 	spec.stdoutLimit = maxGitOutputBytes
 	res := runProc(ctx, spec)
 	if res.timedOut {
