@@ -169,10 +169,13 @@ under **Unreleased** in the same commit as the code.
   in the checkout while `close()` reported the agent reaped with no error. It now
   sends SIGKILL to the group, waits within the existing 5 s budget for it to be
   empty, and returns an error beside `Reaped: true` if a member is still alive,
-  so the run is recorded `unresolved` rather than `exited`. Whether the checkout
-  is held is unchanged (it still follows `Reaped`). A descendant that left the
-  group with `setsid` is out of reach, and off unix `close()` behaves as before
-  until the DevCouncil pin provides a Windows Job Object.
+  so the run is recorded `unresolved` rather than `exited`. A harness run whose
+  group is still alive after that (`Exit.GroupLive`) is treated like an unreaped
+  agent: its block stays in the checkout, the checkout is held, and the reaper
+  releases it when a later close finds the group gone. Plain runs keep today's
+  behaviour. A descendant that left the group with `setsid` is out of reach and
+  never holds, and off unix `close()` behaves as before until the DevCouncil pin
+  provides a Windows Job Object.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are

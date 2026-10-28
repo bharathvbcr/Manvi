@@ -122,14 +122,14 @@ func TestCloseReportsAProcessGroupThatOutlivesSIGKILL(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "still has a live member") {
 		t.Fatalf("close: err = %v, want the live group reported", err)
 	}
-	if !exit.Reaped || exit.Code != 0 {
-		t.Fatalf("close: exit = %+v, want the direct child reported reaped with code 0 beside the error", exit)
+	if !exit.Reaped || exit.Code != 0 || !exit.GroupLive {
+		t.Fatalf("close: exit = %+v, want the direct child reported reaped with code 0 and GroupLive beside the error", exit)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("close took %v, want it bounded by the reap budget", elapsed)
 	}
 	alive.Store(false)
-	if exit, err = c.close(); err != nil || !exit.Reaped {
+	if exit, err = c.close(); err != nil || !exit.Reaped || exit.GroupLive {
 		t.Fatalf("close once the group is gone: exit = %+v, err = %v, want a clean confirmation", exit, err)
 	}
 }

@@ -29,6 +29,9 @@ type managedTestSession struct {
 	unreaped       bool
 	// closeErr is what Close reports beside the exit; confirmed makes a later Close
 	// report the process reaped; closeDelay is how long Close takes; closes counts them.
+	// groupLive has Close report a live process group beside the reaped agent
+	// until confirmed, as the real Close does for a member that outlives SIGKILL.
+	groupLive  bool
 	closeErr   error
 	confirmed  atomic.Bool
 	closeDelay time.Duration
@@ -71,7 +74,7 @@ func (s *managedTestSession) Close() (codingagent.Exit, error) {
 	if s.closeDelay > 0 {
 		time.Sleep(s.closeDelay)
 	}
-	return codingagent.Exit{Reaped: !s.unreaped || s.confirmed.Load(), Code: 0}, s.closeErr
+	return codingagent.Exit{Reaped: !s.unreaped || s.confirmed.Load(), Code: 0, GroupLive: s.groupLive && !s.confirmed.Load()}, s.closeErr
 }
 func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	s.sent.Store(turn)

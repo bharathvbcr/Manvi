@@ -203,12 +203,26 @@ func (r *ManagedRunner) recheckHeld(info os.FileInfo) {
 	}
 }
 
-// exitConfirmed says whether the agent process has exited: Close reaped it. A Close
-// error beside a reaped process (os/exec's ErrWaitDelay, when an orphaned
-// grandchild still holds the agent's stdout) is about that pipe, not the agent, and
-// is recorded on the run as a note; it does not keep a checkout held. Whatever
-// outlives the agent is the process-group problem, which is not this check's.
-func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped }
+// exitConfirmed says whether the agent is gone: Close reaped it and found no member
+// of its process group alive. It is what a harness run's block restore and the
+// release of its checkout wait on, and it fails closed: a group member still alive
+// after Close's SIGKILL and bounded wait (Exit.GroupLive) is an anomaly (a process
+// in uninterruptible sleep, one this host may not signal, or a zombie that a host
+// without a reaping init never collects) and is treated as the agent still running.
+//
+// A Close error beside a reaped process with the group gone (os/exec's
+// ErrWaitDelay, when an orphaned grandchild still holds the agent's stdout) is
+// about that pipe, not the agent, and is recorded on the run as a note; it does not
+// keep a checkout held. The old reason for not looking at the group at all, that a
+// dev server left behind by a finished run would hold every checkout, no longer
+// applies: Close SIGKILLs the group before it looks, so such a process is dead by
+// then. A descendant that left the group with setsid is invisible to the probe and
+// so never holds; nothing here chases it.
+//
+// Only a harness run holds (finish restores or holds only a materialised block).
+// Whether a plain run, which has no block, should also wait for the group is the
+// owner's to decide and is not decided here.
+func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped && !exit.GroupLive }
 
 // unconfirmedSession is the session to hold a checkout for after a Close that returned
 // exit: the session itself when the exit is not confirmed, else nil.

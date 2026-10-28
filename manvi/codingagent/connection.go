@@ -45,11 +45,14 @@ type wireRead struct {
 }
 
 // Exit proves the direct child was reaped. A successful coding result requires
-// separate host evidence; an exit code alone proves neither. Descendants are
-// reported by close()'s error, not by Reaped: see connection.close.
+// separate host evidence; an exit code alone proves neither. GroupLive says the
+// agent's process group still had a live member after close() killed it and
+// waited out its budget (see connection.close); it is never set where the group
+// cannot be probed, and a descendant outside the group is not counted.
 type Exit struct {
-	Reaped bool
-	Code   int
+	Reaped    bool
+	Code      int
+	GroupLive bool
 }
 type connection struct {
 	ctx       context.Context
@@ -344,7 +347,8 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 // close ends the agent and reports whether everything in its process group is
 // gone. Exit.Reaped says only that the direct child was reaped. The error says
 // the rest: os/exec's, for a grandchild holding the agent's pipes, and one for a
-// group member still alive after SIGKILL within the budget. cmd.Cancel reaches
+// group member still alive after SIGKILL within the budget, which also sets
+// Exit.GroupLive for callers that must not read it from the message. cmd.Cancel reaches
 // the group only while Wait is pending, so once the agent has exited it is the
 // SIGKILL here that stops a grandchild which redirected its stdio away. A caller
 // must not read a nil error as a clean exit when this returns one.
@@ -366,7 +370,9 @@ func (c *connection) close() (Exit, error) {
 	if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) {
 		err = c.waitErr
 	}
-	return result, errors.Join(err, c.reapGroup(budget.C))
+	groupErr := c.reapGroup(budget.C)
+	result.GroupLive = groupErr != nil
+	return result, errors.Join(err, groupErr)
 }
 
 // reapGroup SIGKILLs whatever remains of the agent's process group and waits,
