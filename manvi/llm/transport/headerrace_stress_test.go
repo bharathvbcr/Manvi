@@ -52,7 +52,7 @@ func TestHeaderTimerRaceOnTheRealClock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 400; i++ {
-				req, _ := http.NewRequest(http.MethodPost, "http://x/y", nil)
+				req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://x/y", nil)
 				resp, err := c.send(context.Background(), req)
 				var to *ErrHeaderTimeout
 				switch {
@@ -62,7 +62,9 @@ func TestHeaderTimerRaceOnTheRealClock(t *testing.T) {
 						bad.Add(1)
 						t.Errorf("kept response unreadable: %q %v", b, rerr)
 					}
-					resp.Body.Close()
+					if err := resp.Body.Close(); err != nil {
+						t.Errorf("closing a kept response: %v", err)
+					}
 					kept.Add(1)
 				case errors.As(err, &to) && resp == nil:
 					timedOut.Add(1)

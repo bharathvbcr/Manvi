@@ -87,7 +87,7 @@ func heldHeaderClient(clock StallClock, rt http.RoundTripper) *Client {
 
 func headerRequest(t *testing.T) *http.Request {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, "http://example.invalid/x", strings.NewReader("{}"))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://example.invalid/x", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
