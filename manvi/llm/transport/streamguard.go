@@ -137,13 +137,27 @@ func PreflightStream(resp *http.Response, provider string, wait time.Duration, j
 	// the scan ever reaches the frame that matters.
 	consumed := 0
 	frames := 0
+	bomDecided := false
 	for frames < preflightFrames {
 		n, err := reader.Read(buf)
 		if n > 0 {
 			seen.Write(buf[:n])
 		}
 
-		for frames < preflightFrames {
+		// A byte order mark opening the stream is not part of the first frame. It
+		// is decided once, from the first bytes: a proper prefix of the mark is
+		// held until the rest arrives or the stream ends.
+		if !bomDecided {
+			switch head := seen.Bytes(); {
+			case bytes.HasPrefix(head, []byte(utf8BOM)):
+				consumed, bomDecided = len(utf8BOM), true
+			case len(head) > 0 && len(head) < len(utf8BOM) && bytes.HasPrefix([]byte(utf8BOM), head) && err == nil:
+			case len(head) > 0 || err != nil:
+				bomDecided = true
+			}
+		}
+
+		for bomDecided && frames < preflightFrames {
 			rest := seen.String()[consumed:]
 			if err != nil && strings.HasSuffix(rest, "\r") {
 				// No more bytes are coming, so a trailing CR is a line ending on
@@ -237,10 +251,11 @@ func SplitFrame(rest string) (frame string, size int, ok bool) {
 }
 
 // FrameFields reads the event name and the joined data lines out of one raw
-// SSE frame, as SSE.Next would: comments are ignored, a leading byte order mark
-// is dropped, and CRLF, LF and bare-CR endings are all line endings.
+// SSE frame, as SSE.Next would: comments are ignored and CRLF, LF and bare-CR
+// endings are all line endings. A byte order mark is not handled here: it is a
+// mark only at the start of a stream, which is PreflightStream's to know, and
+// one that opens a later frame is ordinary text, as it is to the stream reader.
 func FrameFields(frame string) (name, data string) {
-	frame = strings.TrimPrefix(frame, utf8BOM)
 	if strings.Contains(frame, "\r") {
 		frame = strings.ReplaceAll(strings.ReplaceAll(frame, "\r\n", "\n"), "\r", "\n")
 	}

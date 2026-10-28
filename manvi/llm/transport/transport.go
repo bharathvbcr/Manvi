@@ -148,7 +148,8 @@ type RetryPolicy struct {
 	BaseDelay time.Duration
 	// MaxDelay caps exponential growth.
 	MaxDelay time.Duration
-	// Jitter is the fraction of the delay randomised, in [0,1]. Without it,
+	// Jitter is the fraction of the delay randomised, in [0,1]; a value outside
+	// that range is held to it. Without it,
 	// every client that failed together retries together. A backoff is spread
 	// around its computed value; a server's Retry-After is only ever lengthened,
 	// by up to this fraction of it.
@@ -180,6 +181,19 @@ func DefaultRetryPolicy() RetryPolicy {
 	}
 }
 
+// jitterFraction is Jitter held to its documented range: a fraction in [0,1].
+// Outside it a spread goes negative (a retry before the server's time, or a
+// negative wait) or multiplies a wait the server bounded.
+func (p RetryPolicy) jitterFraction() float64 {
+	switch {
+	case !(p.Jitter > 0): // also NaN
+		return 0
+	case p.Jitter > 1:
+		return 1
+	}
+	return p.Jitter
+}
+
 // delayFor computes the backoff before attempt n (1-based), honouring a
 // server-supplied Retry-After above all else: never earlier than the server's
 // time (bounded by MaxRetryAfter), spread later by the policy's jitter.
@@ -207,8 +221,15 @@ func (p RetryPolicy) delayFor(attempt int, retryAfter time.Duration, rand01 func
 		// folded under it: clipping the sum would put every client that was told
 		// something larger back on the ceiling together. So the longest wait is
 		// the ceiling plus Jitter of it, and a hostile header cannot stretch it.
-		if p.Jitter > 0 && rand01 != nil {
-			retryAfter += time.Duration(rand01() * p.Jitter * float64(retryAfter))
+		// MaxRetryAfter is the operator's to set, so the sum saturates rather
+		// than wrapping to an instant retry.
+		if j := p.jitterFraction(); j > 0 && rand01 != nil {
+			base := min(retryAfter, math.MaxInt64/2)
+			spread := time.Duration(rand01() * j * float64(base))
+			if spread > math.MaxInt64-retryAfter {
+				return math.MaxInt64
+			}
+			retryAfter += spread
 		}
 		return retryAfter
 	}
@@ -216,8 +237,8 @@ func (p RetryPolicy) delayFor(attempt int, retryAfter time.Duration, rand01 func
 	if max := float64(p.MaxDelay); delay > max {
 		delay = max
 	}
-	if p.Jitter > 0 && rand01 != nil {
-		spread := delay * p.Jitter
+	if j := p.jitterFraction(); j > 0 && rand01 != nil {
+		spread := delay * j
 		delay = delay - spread/2 + rand01()*spread
 	}
 	return time.Duration(delay)
@@ -740,8 +761,18 @@ func retryAfter(e *Error) time.Duration {
 	if e == nil || e.retryHint == "" {
 		return 0
 	}
-	if seconds, err := strconv.Atoi(strings.TrimSpace(e.retryHint)); err == nil && seconds >= 0 {
+	hint := strings.TrimSpace(e.retryHint)
+	seconds, err := strconv.ParseInt(hint, 10, 64)
+	switch {
+	case err == nil && seconds >= 0:
+		// Saturating: seconds * time.Second wraps negative from 9223372037, and
+		// a header asking for the longest wait must not become the shortest.
+		if seconds > math.MaxInt64/int64(time.Second) {
+			return time.Duration(math.MaxInt64)
+		}
 		return time.Duration(seconds) * time.Second
+	case errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(hint, "-"):
+		return time.Duration(math.MaxInt64) // beyond int64, still a very long wait
 	}
 	if when, err := http.ParseTime(e.retryHint); err == nil {
 		if d := time.Until(when); d > 0 {
@@ -1280,20 +1311,35 @@ type payloadReader struct {
 // utf8BOM is the byte order mark the grammar says to discard.
 const utf8BOM = "\xEF\xBB\xBF"
 
+// maxEmptyReads is how many consecutive (0, nil) reads the source gets before
+// the stream gives up on it. It is bufio's own bound; the reads here sit under
+// a bufio.Reader that would report io.ErrNoProgress after the same number, and
+// this layer must not turn that guard into a spin.
+const maxEmptyReads = 100
+
 func (r *payloadReader) Read(p []byte) (int, error) {
-	for {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for empty := 0; empty < maxEmptyReads; empty++ {
 		n, err := r.src.Read(p)
 		if !r.bomDecided && n > 0 {
 			n, err = r.dropBOM(p, n, err)
 		}
-		n = r.endLines(p[:n])
-		if n > 0 && r.sse.payload && r.sse.watchdog != nil {
-			r.sse.watchdog.progress()
+		if n > 0 {
+			// One scan for the CR that most streams never contain; see endLines.
+			if first := bytes.IndexByte(p[:n], '\r'); first >= 0 || r.skipLF {
+				n = r.endLines(p[:n], first)
+			}
+			if n > 0 && r.sse.payload && r.sse.watchdog != nil {
+				r.sse.watchdog.progress()
+			}
 		}
 		if n > 0 || err != nil {
 			return n, err
 		}
 	}
+	return 0, io.ErrNoProgress
 }
 
 // dropBOM removes a leading byte order mark from the first bytes of the stream.
@@ -1305,10 +1351,18 @@ func (r *payloadReader) dropBOM(p []byte, n int, err error) (int, error) {
 		r.bomDecided = true
 		return n, err
 	}
-	for n < len(utf8BOM) && err == nil && string(p[:n]) == utf8BOM[:n] {
+	for empty := 0; n < len(utf8BOM) && err == nil && string(p[:n]) == utf8BOM[:n]; {
 		var m int
 		m, err = r.src.Read(p[n:])
 		n += m
+		switch {
+		case m > 0:
+			empty = 0
+		case err == nil:
+			if empty++; empty >= maxEmptyReads {
+				err = io.ErrNoProgress
+			}
+		}
 	}
 	r.bomDecided = true
 	if n >= len(utf8BOM) && string(p[:len(utf8BOM)]) == utf8BOM {
@@ -1317,37 +1371,42 @@ func (r *payloadReader) dropBOM(p []byte, n int, err error) (int, error) {
 	return n, err
 }
 
-// endLines rewrites a bare CR as LF, in place, and returns the new length. A CR
-// that opens a CRLF is left for the parser (which already trims it); a CR that
-// ends the chunk cannot be told from a bare one until the next read, so it
-// becomes LF now and the LF that may follow it is dropped by skipLF. The common
-// chunk holds no CR at all and costs one scan.
-func (r *payloadReader) endLines(p []byte) int {
-	if !r.skipLF && bytes.IndexByte(p, '\r') < 0 {
-		return len(p)
-	}
-	w := 0
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		if r.skipLF {
-			r.skipLF = false
-			if c == '\n' {
-				continue
-			}
+// endLines rewrites a bare CR as LF, in place, and returns the new length;
+// first is the index of the first CR in p, or -1 if there is none.
+//
+// A CR that opens a CRLF is left for the parser, which already trims it, so a
+// CRLF stream is not copied at all; a bare CR is overwritten where it stands. A
+// CR that ends the chunk cannot be told from a bare one until the next read, so
+// it becomes LF now and the LF that may open the next chunk is dropped by
+// skipLF: the one case that shifts bytes, and it needs a CRLF split exactly at a
+// chunk boundary.
+func (r *payloadReader) endLines(p []byte, first int) int {
+	if r.skipLF {
+		r.skipLF = false
+		if p[0] == '\n' {
+			p = p[:copy(p, p[1:])]
+			first = bytes.IndexByte(p, '\r')
 		}
-		if c == '\r' {
-			switch {
-			case i+1 == len(p):
-				c = '\n'
-				r.skipLF = true
-			case p[i+1] != '\n':
-				c = '\n'
-			}
-		}
-		p[w] = c
-		w++
 	}
-	return w
+	for i := first; i >= 0; {
+		switch {
+		case i+1 == len(p):
+			p[i] = '\n'
+			r.skipLF = true
+			return len(p)
+		case p[i+1] == '\n':
+			i += 2
+		default:
+			p[i] = '\n'
+			i++
+		}
+		next := bytes.IndexByte(p[i:], '\r')
+		if next < 0 {
+			break
+		}
+		i += next
+	}
+	return len(p)
 }
 
 // Terminated reports whether the stream ended because the Done sentinel

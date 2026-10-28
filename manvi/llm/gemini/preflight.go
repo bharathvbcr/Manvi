@@ -8,6 +8,11 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
+// preflightStream is transport.PreflightStream. It is a variable only so a test
+// can see the wait this adapter hands it: a pin on the constants alone leaves
+// the adapter free to pass something else.
+var preflightStream = transport.PreflightStream
+
 // preflight inspects the opening of a stream and decides whether the request
 // actually succeeded.
 //
@@ -34,7 +39,7 @@ import (
 // has begun producing output is never reported as a retryable failure — that
 // would re-issue a request whose first half the caller has already read.
 func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error) {
-	return transport.PreflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout),
+	return preflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout),
 		func(frame string) (bool, *transport.Error) {
 			if failure := errorInFrame(frame); failure != nil {
 				return false, failure

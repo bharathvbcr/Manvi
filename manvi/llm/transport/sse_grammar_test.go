@@ -167,7 +167,6 @@ func TestSplitFrameAndFrameFieldsFollowTheSameGrammar(t *testing.T) {
 		"lf":   "event: error\ndata: {\"a\":1}\ndata: 2",
 		"crlf": "event: error\r\ndata: {\"a\":1}\r\ndata: 2",
 		"cr":   "event: error\rdata: {\"a\":1}\rdata: 2",
-		"bom":  "\xEF\xBB\xBFevent: error\ndata: {\"a\":1}\ndata: 2",
 	} {
 		n, d := FrameFields(frame)
 		if n != "error" || d != "{\"a\":1}\n2" {

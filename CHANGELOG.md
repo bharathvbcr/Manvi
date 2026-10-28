@@ -162,6 +162,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A `Retry-After` of 9223372037 seconds or more no longer becomes a short
+  backoff. The delay-seconds value was multiplied by `time.Second` unchecked, so
+  it wrapped negative, and a value beyond int64 failed to parse and was treated
+  as absent. Both now saturate and meet the `MaxRetryAfter` ceiling. The jitter
+  added to a server's time saturates too (an operator-set `MaxRetryAfter` near
+  the duration limit wrapped to an instant retry), and `RetryPolicy.Jitter` is
+  held to its documented [0,1]: a larger value stretched a bounded wait and a
+  negative one shortened the server's time.
+- The SSE reader is hardened after review. A source that returns nothing for
+  ever no longer spins the reader (it reports `io.ErrNoProgress`, as the
+  buffered reader under it does, and a zero-length read returns at once); a byte
+  order mark is a mark only at the start of the stream, so the preflight's
+  `FrameFields` no longer strips one from a later frame and `PreflightStream`
+  skips only the stream's opening one; and bare-CR handling no longer copies
+  CRLF streams byte by byte (a CR before an LF is left alone and a bare CR is
+  overwritten in place), cutting the cost of CRLF framing several-fold.
 - Gemini's opening-frame judge now reads frames through the same field parser as
   the stream, so an opening `error` frame that arrives CR-framed or after a BOM
   is retried like the LF-framed one. `isPreamble` and `errorInFrame` split lines
