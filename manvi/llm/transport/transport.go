@@ -149,13 +149,16 @@ type RetryPolicy struct {
 	// MaxDelay caps exponential growth.
 	MaxDelay time.Duration
 	// Jitter is the fraction of the delay randomised, in [0,1]. Without it,
-	// every client that failed together retries together.
+	// every client that failed together retries together. A backoff is spread
+	// around its computed value; a server's Retry-After is only ever lengthened,
+	// by up to this fraction of it.
 	Jitter float64
 	// MaxRetryAfter bounds how long a server-supplied Retry-After can park the
 	// harness. It is an absolute ceiling rather than a multiple of MaxDelay:
 	// the two answer different questions, and deriving one from the other makes
 	// a short backoff silently shorten the limit on how long we will honour a
-	// server's own instruction. Zero means the default.
+	// server's own instruction. Zero means the default. It bounds what the
+	// server may ask for; the jitter added to that is on top of it.
 	MaxRetryAfter time.Duration
 }
 
@@ -178,7 +181,8 @@ func DefaultRetryPolicy() RetryPolicy {
 }
 
 // delayFor computes the backoff before attempt n (1-based), honouring a
-// server-supplied Retry-After above all else.
+// server-supplied Retry-After above all else: never earlier than the server's
+// time (bounded by MaxRetryAfter), spread later by the policy's jitter.
 //
 // rand01 supplies the jitter draw and returns a value in [0,1). It is a
 // function rather than a *rand.Rand so that the source can be swapped — a nil
@@ -194,7 +198,17 @@ func (p RetryPolicy) delayFor(attempt int, retryAfter time.Duration, rand01 func
 			ceiling = DefaultMaxRetryAfter
 		}
 		if retryAfter > ceiling {
-			return ceiling
+			retryAfter = ceiling
+		}
+		// Jitter rides on top of the server's time and never subtracts from it.
+		// Every client a server rate-limits together is told the same value, and
+		// waiting exactly that long brings them all back in the same instant.
+		// The spread is taken from the clamped value, after the ceiling and not
+		// folded under it: clipping the sum would put every client that was told
+		// something larger back on the ceiling together. So the longest wait is
+		// the ceiling plus Jitter of it, and a hostile header cannot stretch it.
+		if p.Jitter > 0 && rand01 != nil {
+			retryAfter += time.Duration(rand01() * p.Jitter * float64(retryAfter))
 		}
 		return retryAfter
 	}

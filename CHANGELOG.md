@@ -162,6 +162,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A server's `Retry-After` now carries jitter. `RetryPolicy.delayFor` returned
+  it verbatim, so every client a provider rate-limited together was told the
+  same value and came back in the same instant; only the computed backoff was
+  jittered. The delay is now the server's time (still bounded by
+  `MaxRetryAfter`) plus up to `Jitter` (20% by default) of it, never earlier.
+  The spread is added after the ceiling, so the longest wait is the ceiling plus
+  its spread and clients told something larger do not all land on the ceiling.
 - A response that arrives in the same instant as the response-header timer is
   no longer thrown away. `Client.send` read `timer.Stop()` returning false as
   "the timer won": a 200 that `Do` had already returned was closed and reported
