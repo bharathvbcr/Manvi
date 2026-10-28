@@ -182,6 +182,25 @@ under **Unreleased** in the same commit as the code.
   it reads as a live member, so such a checkout stays held until that parent
   exits or `manvi serve` restarts. Off unix `close()` behaves as before until the
   DevCouncil pin provides a Windows Job Object.
+- The session privacy scrub now rewrites JSON object keys as well as values. It
+  walked structured payloads with `for key, value := range obj` and passed only
+  the value to the scrubber, so a secret that sat in a key (a map keyed by
+  token, a URL carrying one, in tool-call arguments or any other event) reached
+  the session log, the saved file and the next provider request whole. Keys go
+  through the same scrubber as values, so a key-only rewrite counts as a rewrite
+  for `RestoreSensitiveLog` and the signed-reasoning drop. Keys that scrub to the
+  same name are all kept: the entries are taken in byte order of their original
+  keys and a later one gets `#2`, `#3`, ... after the name, so the result is the
+  same on every run and scrubbing it again changes nothing. Structural keys
+  (`kind`, `message`, `provenance`, ...) are never renamed: the session's own
+  field names, read off the payload types in one place (`schemaKeys`), keep their
+  names even when a watched value equals one, and so do they under an unarmed
+  credential scrubber, whose `Clean` answers every text with one notice and would
+  otherwise have given every field of every record the same name. Inside a tool
+  call's `arguments` the keys are the model's and are scrubbed like any other
+  text. Finding the next free `#n` is linear in the number of colliding keys
+  (it restarted at 2 for each, which took 19 s for 16,000 keys). This narrows
+  what is stored and sent; it widens nothing.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
