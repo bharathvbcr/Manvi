@@ -172,9 +172,15 @@ under **Unreleased** in the same commit as the code.
   same name are all kept: the entries are taken in byte order of their original
   keys and a later one gets `#2`, `#3`, ... after the name, so the result is the
   same on every run and scrubbing it again changes nothing. Structural keys
-  (`kind`, `message`, `provenance`, ...) are unchanged because no scrubber
-  target looks like one; a test over the payloads the agent emits pins that.
-  This narrows what is stored and sent; it widens nothing.
+  (`kind`, `message`, `provenance`, ...) are never renamed: the session's own
+  field names, read off the payload types in one place (`schemaKeys`), keep their
+  names even when a watched value equals one, and so do they under an unarmed
+  credential scrubber, whose `Clean` answers every text with one notice and would
+  otherwise have given every field of every record the same name. Inside a tool
+  call's `arguments` the keys are the model's and are scrubbed like any other
+  text. Finding the next free `#n` is linear in the number of colliding keys
+  (it restarted at 2 for each, which took 19 s for 16,000 keys). This narrows
+  what is stored and sent; it widens nothing.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
