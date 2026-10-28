@@ -434,6 +434,29 @@ func TestGitShowRefusesObjectsThatAreNotCommits(t *testing.T) {
 	}
 }
 
+// TestGitCapsAreNamedInThePayload: the model reads Text. A cap noted only in
+// Result.Degraded reaches the session log and nothing else, and a prefix reads
+// as the whole.
+func TestGitCapsAreNamedInThePayload(t *testing.T) {
+	f := newFixture(t)
+
+	log := f.payload("devcouncil_git_log", map[string]any{"max": maxGitLogCommits + 50})
+	if notes, _ := log["degraded"].([]any); len(notes) != 1 || !strings.Contains(notes[0].(string), "capped") {
+		t.Errorf("git_log cap is not in the payload: %v", log)
+	}
+
+	write(t, f.root, "big.txt", strings.Repeat("a line of text that adds up to a patch past the cap\n", maxShowPatchBytes/40))
+	run(t, f.root, "add", "big.txt")
+	run(t, f.root, "commit", "-qm", "big")
+	show := f.payload("devcouncil_git_show", map[string]string{})
+	if notes, _ := show["degraded"].([]any); len(notes) != 1 || !strings.Contains(notes[0].(string), "truncated") {
+		t.Errorf("git_show truncation is not in the payload: %v", show["degraded"])
+	}
+	if patch, _ := show["patch"].(string); len(patch) != maxShowPatchBytes {
+		t.Errorf("patch is %d bytes, want it cut at %d", len(patch), maxShowPatchBytes)
+	}
+}
+
 // stagedNames reads the index itself, the one place a stage that got past the
 // name check shows up.
 func stagedNames(t *testing.T, root string) []string {

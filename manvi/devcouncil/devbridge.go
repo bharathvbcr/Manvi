@@ -167,13 +167,11 @@ func (r *Registry) devInspect(ctx context.Context, call tools.Call) tools.Result
 	if tail := strings.TrimSpace(string(child.stderr)); tail != "" {
 		envelope["stderr_tail"] = tail
 	}
-	res := ok(envelope)
-	if len(notes) > 0 {
-		envelope["degraded"] = notes
-		res.Degraded = notes
-	}
 	if exitCode != 0 {
+		if len(notes) > 0 {
+			envelope["degraded"] = notes
+		}
 		return failure(envelope, fmt.Sprintf("devcouncil %s exited with code %d", section, exitCode))
 	}
-	return res
+	return okDegraded(envelope, notes)
 }

@@ -162,6 +162,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Truncation and cap notes reach the model. `devcouncil_git_show` (patch cut at
+  128 KiB), `devcouncil_git_log` (`max` capped at 50) and
+  `devcouncil_dev_inspect` (capture cut, or output that was not JSON) recorded
+  the note in `Result.Degraded`, which feeds only the session log, and in the
+  two latter cases set it on the payload after the payload had been marshalled,
+  so the model read a prefix as the whole. The notes now go into the payload's
+  `degraded` list before it is encoded, through one helper (`okDegraded`).
 - `devcouncil_git_stage` paths are literal. The secret-path check judged the
   spelling the agent gave while `git add` read it as a pathspec, so `.e*`, `*`
   and `:(glob).env` staged `.env`; a directory (`.`, `app`) staged every file

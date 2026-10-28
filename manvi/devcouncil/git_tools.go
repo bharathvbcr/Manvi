@@ -321,14 +321,11 @@ func (r *Registry) gitLog(ctx context.Context, call tools.Call) tools.Result {
 			"subject": parts[4],
 		})
 	}
-	payload := map[string]any{"commits": commits}
-	res := ok(payload)
+	var degraded []string
 	if args.Max > maxGitLogCommits {
-		note := fmt.Sprintf("git_log: requested %d commits, capped at %d", args.Max, maxGitLogCommits)
-		payload["degraded"] = []string{note}
-		res.Degraded = []string{note}
+		degraded = append(degraded, fmt.Sprintf("git_log: requested %d commits, capped at %d", args.Max, maxGitLogCommits))
 	}
-	return res
+	return okDegraded(map[string]any{"commits": commits}, degraded)
 }
 
 // unborn reports whether a git failure is the ordinary "no commits yet" case.
@@ -436,11 +433,7 @@ func (r *Registry) gitShow(ctx context.Context, call tools.Call) tools.Result {
 	if w := withheldPayload(withheld); w != nil {
 		payload["withheld"] = w
 	}
-	res := ok(payload)
-	if len(degraded) > 0 {
-		res.Degraded = degraded
-	}
-	return res
+	return okDegraded(payload, degraded)
 }
 
 // --- gated writes ---
