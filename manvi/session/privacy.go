@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
@@ -196,30 +197,47 @@ func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool,
 				return nil, err
 			}
 		}
-		for key, value := range obj {
+		// Keys are visited in byte order so that the names chosen when several
+		// keys collapse to one (see renameKeys) do not depend on map order.
+		keys := make([]string, 0, len(obj))
+		for key := range obj {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		out := make(map[string]json.RawMessage, len(obj))
+		var walked []string
+		for _, key := range keys {
+			value := obj[key]
 			if blockKind == "image" && key == "data" {
+				out[key] = value
 				continue
 			}
 			if blockKind == "reasoning" && key == "signature" {
-				if public {
-					delete(obj, key)
+				if !public {
+					out[key] = value
 				}
 				continue
 			}
 			if len(path) == 2 && path[0] == "message" && path[1] == "provenance" && key == "replay_state" {
-				if public {
-					delete(obj, key)
+				if !public {
+					out[key] = value
 				}
 				continue
 			}
+			// The path keeps the key as recorded: what a position means does
+			// not change with what the scrubber makes of its name.
 			next := append(append([]string(nil), path...), key)
 			rewritten, err := rewritePayload(value, scrub, public, next, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			obj[key] = rewritten
+			out[key] = rewritten
+			walked = append(walked, key)
 		}
-		return json.Marshal(obj)
+		if scrub != nil {
+			renameKeys(out, walked, scrub)
+		}
+		return json.Marshal(out)
 	case '[':
 		var values []json.RawMessage
 		if err := json.Unmarshal(raw, &values); err != nil {
@@ -247,6 +265,56 @@ func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool,
 			return nil, errors.New("session: invalid JSON value")
 		}
 		return raw, nil
+	}
+}
+
+// renameKeys runs the scrubber over the names of the walked keys, which are
+// listed in byte order, and moves each entry whose name changed. A secret can sit
+// in a key as easily as in a value: a map keyed by token, a URL that carries one.
+// The scrubber is the one the values pass through, so a rewritten name flips the
+// same flag a rewritten value does.
+//
+// Structural keys (kind, message, provenance, tool_call_id, arguments, ...) keep
+// their names only because no scrubber target looks like one; a scrubber that
+// rewrote them would corrupt the record, which the structural-keys test pins.
+// Keys the walk leaves opaque (image data, signatures, replay state) are never
+// renamed.
+//
+// Two keys can scrub to the same name. Neither entry is dropped: every key the
+// scrubber leaves alone keeps its name, and the rest take the scrubbed name in
+// byte order of their original keys, a later one getting "#2", "#3", ... after
+// it. The suffix is not secret-shaped, so scrubbing the result again changes
+// nothing.
+func renameKeys(obj map[string]json.RawMessage, walked []string, scrub func(string) string) {
+	renamed := make(map[string]string)
+	taken := make(map[string]bool, len(obj))
+	for key := range obj {
+		taken[key] = true
+	}
+	for _, key := range walked {
+		if name := scrub(key); name != key {
+			renamed[key] = name
+			delete(taken, key)
+		}
+	}
+	// Every renamed entry leaves before any arrives: one key's new name can be
+	// another's old one.
+	moved := make(map[string]json.RawMessage, len(renamed))
+	for _, key := range walked {
+		name, ok := renamed[key]
+		if !ok {
+			continue
+		}
+		candidate := name
+		for n := 2; taken[candidate]; n++ {
+			candidate = fmt.Sprintf("%s#%d", name, n)
+		}
+		taken[candidate] = true
+		moved[candidate] = obj[key]
+		delete(obj, key)
+	}
+	for name, value := range moved {
+		obj[name] = value
 	}
 }
 

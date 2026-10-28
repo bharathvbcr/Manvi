@@ -162,6 +162,19 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The session privacy scrub now rewrites JSON object keys as well as values. It
+  walked structured payloads with `for key, value := range obj` and passed only
+  the value to the scrubber, so a secret that sat in a key (a map keyed by
+  token, a URL carrying one, in tool-call arguments or any other event) reached
+  the session log, the saved file and the next provider request whole. Keys go
+  through the same scrubber as values, so a key-only rewrite counts as a rewrite
+  for `RestoreSensitiveLog` and the signed-reasoning drop. Keys that scrub to the
+  same name are all kept: the entries are taken in byte order of their original
+  keys and a later one gets `#2`, `#3`, ... after the name, so the result is the
+  same on every run and scrubbing it again changes nothing. Structural keys
+  (`kind`, `message`, `provenance`, ...) are unchanged because no scrubber
+  target looks like one; a test over the payloads the agent emits pins that.
+  This narrows what is stored and sent; it widens nothing.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are
