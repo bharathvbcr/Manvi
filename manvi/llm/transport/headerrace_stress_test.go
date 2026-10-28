@@ -41,7 +41,7 @@ func TestHeaderTimerRaceOnTheRealClock(t *testing.T) {
 			return nil, context.Cause(r.Context())
 		}
 		made.Add(1)
-		return &http.Response{StatusCode: 200, Request: r,
+		return &http.Response{StatusCode: http.StatusOK, Request: r,
 			Body: &trackBody{ctx: r.Context(), r: strings.NewReader("data: x\n\n"), closed: &closedN}}, nil
 	})
 	c := &Client{Provider: "p", BaseURL: "http://x", HTTP: &http.Client{Transport: rt}, ResponseHeaderTimeout: time.Millisecond}
@@ -52,12 +52,12 @@ func TestHeaderTimerRaceOnTheRealClock(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 400; i++ {
-				req, _ := http.NewRequest("POST", "http://x/y", nil)
+				req, _ := http.NewRequest(http.MethodPost, "http://x/y", nil)
 				resp, err := c.send(context.Background(), req)
 				var to *ErrHeaderTimeout
 				switch {
 				case err == nil && resp != nil:
-					b, rerr := io.ReadAll(resp.Body)
+					b, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 					if rerr != nil || string(b) != "data: x\n\n" {
 						bad.Add(1)
 						t.Errorf("kept response unreadable: %q %v", b, rerr)

@@ -135,7 +135,7 @@ func responseBeatsTheTimer(t *testing.T, stopWins bool) {
 	// The callback the runtime had already committed to now runs, late.
 	clock.fire()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil || string(body) != "data: x\n\n" {
 		t.Fatalf("body=%q err=%v; a late timer callback cancelled a response that had been returned", body, err)
 	}
