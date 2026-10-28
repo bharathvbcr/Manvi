@@ -20,6 +20,37 @@ import (
 // does for kill(2).
 func pidAlive(pid int) bool { return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) }
 
+// killOnCleanup SIGKILLs pid (a group when negative) once the test ends,
+// whatever it concluded. A target already gone is the expected case, not an
+// error.
+func killOnCleanup(t *testing.T, pid int) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("cleanup: kill %d: %v", pid, err)
+		}
+	})
+}
+
+// startStranger starts an unrelated process in a group of its own, standing in
+// for whatever takes a group number after the agent's group is gone. It is
+// killed and reaped on cleanup.
+func startStranger(t *testing.T) *exec.Cmd {
+	t.Helper()
+	stranger := exec.CommandContext(t.Context(), "/bin/sleep", "30")
+	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := stranger.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Wait reports the SIGKILL the group cleanup below sends (or the
+		// context's); reaping is all that is wanted from it.
+		_ = stranger.Wait()
+	})
+	killOnCleanup(t, -stranger.Process.Pid)
+	return stranger
+}
+
 // startGrandchildAgent starts perl as the provider with script, which receives
 // the path where its grandchild writes its pid, and returns the connection and
 // that pid once it is known. The grandchild is killed on cleanup whatever the
@@ -35,7 +66,11 @@ func startGrandchildAgent(t *testing.T, script string) (*connection, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.close() })
+	t.Cleanup(func() {
+		// The test asserts on its own close(); this one only makes sure the
+		// connection is shut, so a failed assertion leaves nothing running.
+		_, _ = c.close()
+	})
 	var pid int
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		raw, err := os.ReadFile(pidFile)
@@ -50,7 +85,7 @@ func startGrandchildAgent(t *testing.T, script string) (*connection, int) {
 	if pid == 0 {
 		t.Fatal("the grandchild never reported its pid")
 	}
-	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+	killOnCleanup(t, pid)
 	return c, pid
 }
 
@@ -129,12 +164,7 @@ func TestCloseNeverTouchesAGroupThatWasEmptyWhenTheAgentWasReaped(t *testing.T) 
 		t.Fatal(err)
 	}
 	<-c.done
-	stranger := exec.Command("/bin/sleep", "30")
-	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := stranger.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { syscall.Kill(-stranger.Process.Pid, syscall.SIGKILL); stranger.Wait() })
+	stranger := startStranger(t)
 	c.pid = stranger.Process.Pid // the number the agent's group had, now held by another group
 	exit, err := c.close()
 	if !exit.Reaped || exit.GroupLive || err != nil {
@@ -170,14 +200,11 @@ func TestCloseNeverSignalsAfterTheSweepEvenIfTheNumberIsReusedByAnotherGroup(t *
 		t.Fatal(err)
 	}
 	<-c.done
-	stranger := exec.Command("/bin/sleep", "30")
-	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := stranger.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { syscall.Kill(-stranger.Process.Pid, syscall.SIGKILL); stranger.Wait() })
+	stranger := startStranger(t)
 	c.pid = stranger.Process.Pid
-	c.close()
+	// The stranger's group reads as a live member, so close() reports one; what
+	// this test is about is that nothing but the sweep signalled.
+	_, _ = c.close()
 	if n := signals.Load(); n != 1 {
 		t.Fatalf("%d signals in all, want only the sweep's", n)
 	}
