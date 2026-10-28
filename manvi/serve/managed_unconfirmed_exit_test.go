@@ -262,3 +262,47 @@ func TestAReapedAgentWithAWaitDelayErrorReleasesTheCheckout(t *testing.T) {
 		t.Fatalf("HarnessBusy = %v after the agent exited", e)
 	}
 }
+
+// The agent is reaped but Close found a member of its process group still alive
+// after the group kill: whatever is left may still be writing the checkout, so
+// the run is held exactly as for an unreaped agent. The block stays, the checkout
+// is refused, and the reaper releases it when a later Close finds the group gone.
+// The typed Exit.GroupLive carries this; the Close error beside it is only a note.
+func TestAReapedAgentWithALiveProcessGroupKeepsTheCheckoutHeld(t *testing.T) {
+	root := scanRepo(t, map[string]string{"CLAUDE.md": "project rules\n"})
+	var session *managedTestSession
+	m := unconfirmedLifecycle(t, root, &session, func(s *managedTestSession) {
+		s.unreaped = false
+		s.groupLive = true
+		s.closeErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
+	})
+	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", `{"kind":"named","name":"registered"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activate(t, m, prepared)
+	run, raw := m.finished()
+	if run.State != "unresolved" {
+		t.Fatalf("a run whose process group is still alive is recorded %s, want unresolved: %s", run.State, raw)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); !strings.Contains(got, harnessBeginMarker) {
+		t.Errorf("the block was taken out from under a live process group:\n%s", got)
+	}
+	if e := m.runner.HarnessBusy(root); e == nil || e.Code != ErrHarnessBusy {
+		t.Fatalf("HarnessBusy = %v, want the checkout held while the group is alive", e)
+	}
+	if _, err := secondHarnessAttempt(m, root); busyCode(err) != ErrHarnessBusy {
+		t.Errorf("a second run was admitted beside a live process group: %v", err)
+	}
+	// An operator is told which group holds the checkout, from what Close said.
+	waitFor(t, "the refusal to name the live group", func() bool {
+		e := m.runner.HarnessBusy(root)
+		return e != nil && strings.Contains(e.Message, "process group 123 still has a live member")
+	})
+
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
+		t.Fatalf("the block was not taken out once the group was gone: %q", got)
+	}
+}
