@@ -372,16 +372,14 @@ func (r *Registry) scopedDiff(ctx context.Context, paths []string, baseline Base
 		// diff that follows is against the last commit, not the baseline.
 	}
 
-	args := append([]string{"diff", "HEAD", "--"}, paths...)
+	base, err := diffBase(ctx, r.deps.Root)
+	if err != nil {
+		return "", nil, err
+	}
+	args := append([]string{"diff", base, "--"}, paths...)
 	out, note, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, args...)
 	if err != nil {
-		// No HEAD yet — a repository with no commits. The index is the only
-		// baseline there is.
-		args = append([]string{"diff", "--"}, paths...)
-		out, note, err = runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, args...)
-		if err != nil {
-			return "", nil, err
-		}
+		return "", nil, err
 	}
 	var notes []string
 	if baseline.Captured() {

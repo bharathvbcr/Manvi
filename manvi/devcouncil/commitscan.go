@@ -170,9 +170,9 @@ func literalSpecs(paths []string) []string {
 
 // headExists reports whether HEAD names a commit. An unborn branch is a state,
 // not a failure; any other way `rev-parse` can fail is.
-func (r *Registry) headExists(ctx context.Context) (bool, error) {
+func headExists(ctx context.Context, root string) (bool, error) {
 	res := runProc(ctx, func() procSpec {
-		spec := gitSpec(r.deps.Root, "", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
+		spec := gitSpec(root, "", []string{"rev-parse", "--verify", "--quiet", "HEAD"})
 		spec.stdoutLimit = maxGitStderrBytes
 		spec.stderrLimit = maxGitStderrBytes
 		return spec
@@ -236,7 +236,7 @@ func (r *Registry) trackedSecretBlobs(ctx context.Context, secret []string) (map
 	if err := take(staged, "the index", false); err != nil {
 		return nil, err
 	}
-	born, err := r.headExists(ctx)
+	born, err := headExists(ctx, r.deps.Root)
 	if err != nil {
 		return nil, err
 	}

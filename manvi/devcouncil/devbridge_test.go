@@ -198,3 +198,44 @@ func TestDevInspectLabelsNonJSONOutput(t *testing.T) {
 		t.Error("non-JSON output was not reported as degraded")
 	}
 }
+
+// The notes are for the model, which reads Text, not for the session log alone:
+// a successful exit used to marshal the envelope before the notes went into it,
+// so the same two degradations were recorded and never shown.
+func TestDevInspectNotesReachTheModelOnSuccess(t *testing.T) {
+	f := newFixture(t)
+	dir := t.TempDir()
+	cases := map[string]string{
+		"not JSON":  writeFakeCLI(t, dir, "version mismatch, no JSON here", 0),
+		"truncated": writeTruncatingCLI(t, dir),
+	}
+	for name, bin := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(devInspectEnvBinary, bin)
+			res := f.call("devcouncil_dev_inspect", map[string]any{})
+			if res.IsError {
+				t.Fatalf("exit 0 reported failure: %.200s", res.Text)
+			}
+			var envelope struct {
+				Degraded []string `json:"degraded"`
+			}
+			if err := json.Unmarshal([]byte(res.Text), &envelope); err != nil {
+				t.Fatalf("unparseable: %v", err)
+			}
+			if len(envelope.Degraded) == 0 || len(envelope.Degraded) != len(res.Degraded) {
+				t.Fatalf("model sees degraded=%v, session log sees %v", envelope.Degraded, res.Degraded)
+			}
+		})
+	}
+}
+
+// writeTruncatingCLI prints a document past the capture cap.
+func writeTruncatingCLI(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fake-truncating")
+	script := "#!/bin/sh\nhead -c " + itoa(maxGitOutputBytes+4096) + " /dev/zero | tr '\\0' x\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

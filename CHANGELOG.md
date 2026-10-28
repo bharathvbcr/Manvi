@@ -59,6 +59,19 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- Behaviour change: repository hooks no longer run on any git command the
+  devcouncil package starts through `gitSpec`, which includes the commit
+  `devcouncil_git_commit` makes. `core.hooksPath` is pointed at the null device
+  for each of those children, so `pre-commit`, `prepare-commit-msg` and
+  `post-commit` (from `.git/hooks` or a `core.hooksPath` such as `.husky`) do not
+  fire; `--no-verify` would have left the last two running. A repository that
+  relies on a commit hook to format or lint will not get it from this tool. Git
+  started elsewhere (`manvi serve`'s `serve/git.go`, bootstrap) is not covered.
+  The reason is under **Fixed**. The same children also run with
+  `core.fsmonitor=false`: a `core.fsmonitor` program named
+  in the repository's config ran on `diff`, `ls-files`, `status` and `add`
+  outside the command gate, and one that reported "nothing changed" hid changes
+  from the diff the gates read.
 - `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
   running the turn on the first megabyte. The read stopped at the cap with no
   overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
@@ -162,6 +175,150 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- Closing a managed coding agent now kills and confirms its whole process group
+  on unix. The agent already led its own group, but the kill rode on `Wait`
+  being pending, so once the agent had exited, a grandchild that redirected its
+  stdout and stderr away (a backgrounded dev server, `nohup ... &`) kept running
+  in the checkout while `close()` reported the agent reaped with no error. The
+  group is now killed the moment the agent is reaped (and only if a probe just
+  showed it has a member, since an empty group's number may belong to someone
+  else), and `close()` waits within the existing 5 s budget for it to be empty,
+  returning an error beside `Reaped: true` if a member is still alive, so the run
+  is recorded `unresolved` rather than `exited`. A grandchild still running when
+  the agent exits (a `git` process, say) is therefore killed, which can leave
+  `.git/index.lock` behind. A harness run whose group is still alive
+  (`Exit.GroupLive`) is treated like an unreaped agent: its block stays in the
+  checkout, the checkout is held, the refusal names what Close last said (which
+  group), and the reaper releases it when a later close finds the group gone.
+  Plain runs keep today's behaviour. A descendant that left the group with
+  `setsid` is out of reach, and a zombie it leaves in the group without reaping
+  it reads as a live member, so such a checkout stays held until that parent
+  exits or `manvi serve` restarts. Off unix `close()` behaves as before until the
+  DevCouncil pin provides a Windows Job Object.
+- The session privacy scrub now rewrites JSON object keys as well as values. It
+  walked structured payloads with `for key, value := range obj` and passed only
+  the value to the scrubber, so a secret that sat in a key (a map keyed by
+  token, a URL carrying one, in tool-call arguments or any other event) reached
+  the session log, the saved file and the next provider request whole. Keys go
+  through the same scrubber as values, so a key-only rewrite counts as a rewrite
+  for `RestoreSensitiveLog` and the signed-reasoning drop. Keys that scrub to the
+  same name are all kept: the entries are taken in byte order of their original
+  keys and a later one gets `#2`, `#3`, ... after the name, so the result is the
+  same on every run and scrubbing it again changes nothing. Structural keys
+  (`kind`, `message`, `provenance`, ...) are never renamed: the session's own
+  field names, read off the payload types in one place (`schemaKeys`), keep their
+  names even when a watched value equals one, and so do they under an unarmed
+  credential scrubber, whose `Clean` answers every text with one notice and would
+  otherwise have given every field of every record the same name. Inside a tool
+  call's `arguments` the keys are the model's and are scrubbed like any other
+  text. Finding the next free `#n` is linear in the number of colliding keys
+  (it restarted at 2 for each, which took 19 s for 16,000 keys). This narrows
+  what is stored and sent; it widens nothing.
+- A `Retry-After` of 9223372037 seconds or more no longer becomes a short
+  backoff. The delay-seconds value was multiplied by `time.Second` unchecked, so
+  it wrapped negative, and a value beyond int64 failed to parse and was treated
+  as absent. Both now saturate and meet the `MaxRetryAfter` ceiling. The jitter
+  added to a server's time saturates too (an operator-set `MaxRetryAfter` near
+  the duration limit wrapped to an instant retry), and `RetryPolicy.Jitter` is
+  held to its documented [0,1]: a larger value stretched a bounded wait and a
+  negative one shortened the server's time.
+- The SSE reader is hardened after review. A source that returns nothing for
+  ever no longer spins the reader (it reports `io.ErrNoProgress`, as the
+  buffered reader under it does, and a zero-length read returns at once); a byte
+  order mark is a mark only at the start of the stream, so the preflight's
+  `FrameFields` no longer strips one from a later frame and `PreflightStream`
+  skips only the stream's opening one; and bare-CR handling no longer copies
+  CRLF streams byte by byte (a CR before an LF is left alone and a bare CR is
+  overwritten in place), cutting the cost of CRLF framing several-fold.
+- Gemini's opening-frame judge now reads frames through the same field parser as
+  the stream, so an opening `error` frame that arrives CR-framed or after a BOM
+  is retried like the LF-framed one. `isPreamble` and `errorInFrame` split lines
+  on LF themselves and saw one glued line.
+- The SSE reader now follows the event-stream grammar for line endings and the
+  byte order mark. A stream ended its lines with CRLF or LF only, so a body
+  framed with a bare CR was one unterminated line that never dispatched until
+  the 32 MiB frame cap, and a leading UTF-8 BOM glued itself to the first field
+  name (`BOM + event: message_start` arrived nameless). A bare CR now ends a
+  line (CRLF stays one ending, however the chunks split it) and a leading BOM is
+  dropped. The stream preflight reads the opening frames with its own splitter,
+  which had the same gaps: `SplitFrame` and `FrameFields` now agree with the
+  reader, so an opening `overloaded_error` in either framing is judged and
+  retried. `event: ping` frames and `: ping` comments were already handled and
+  are now pinned with fixtures.
+- A server's `Retry-After` now carries jitter. `RetryPolicy.delayFor` returned
+  it verbatim, so every client a provider rate-limited together was told the
+  same value and came back in the same instant; only the computed backoff was
+  jittered. The delay is now the server's time (still bounded by
+  `MaxRetryAfter`) plus up to `Jitter` (20% by default) of it, never earlier.
+  The spread is added after the ceiling, so the longest wait is the ceiling plus
+  its spread and clients told something larger do not all land on the ceiling.
+- A response that arrives in the same instant as the response-header timer is
+  no longer thrown away. `Client.send` read `timer.Stop()` returning false as
+  "the timer won": a 200 that `Do` had already returned was closed and reported
+  as `ErrHeaderTimeout` and retried, and when `Stop` had not reported a fire the
+  callback could still cancel the context under a body the caller already held
+  (`send` returned no response and no error at all in the first case). The
+  callback and `send` now take one claim under a mutex; a response that wins is
+  kept and a mute request is still a typed, retryable `ErrHeaderTimeout`.
+  (ft-4712431b criterion 5; the fix on `hx/wave2-header-timeout` never reached
+  main.)
+- `devcouncil_git_show` reports a git failure as one. Only `rev-parse`'s exit 1
+  means "does not name a commit"; a store git cannot read (exit 128) is now
+  "could not be determined", as `git_log` and `git_status` answer it, instead of
+  a refusal that blamed the argument.
+- `devcouncil_git_commit` can no longer land content the checks did not see.
+  The name, alias and content checks read the index and then `git commit` ran
+  the repository's hooks: with `core.hooksPath=.husky` (not a write-restricted
+  path) a `pre-commit` that wrote `leak.txt` and ran `git add leak.txt` put it in
+  the commit, with `SSH_AUTH_SOCK` and `GNUPGHOME` in the hook's environment and
+  no command gate in front of it. Hooks are off (see **Changed**), and the commit
+  is held to a post-condition: the staged tree is written before and after the
+  checks (an index that moved while it was examined is refused), and after the
+  commit its tree must equal the checked one or the commit is taken back
+  (`update-ref` to the previous commit, or the unborn branch for a root commit,
+  with the new commit as the expected value) and an error is returned. The
+  commit judged is only ever the one directly on the previous commit: if another
+  process moved the branch while the commit was being made, nothing is judged or
+  moved and the error says so, so the undo cannot drop someone else's commit.
+  `committed_paths` and `head` now come from the commit that exists
+  (`diff-tree --root`), not the pre-check list.
+- `devcouncil_git_log` and `devcouncil_git_status` no longer read every git
+  exit status of 128 as "no commits yet". git uses it for "not a repository" and
+  "bad object" too, so a directory git could not read answered
+  `{"commits":[]}`. Whether HEAD names a commit is now asked of git
+  (`rev-parse --verify`), and any other failure is an error result.
+- In a repository with no commits, `devcouncil_get_diff` and verification see
+  the files that are staged. The fallback for a missing HEAD was a bare
+  `git diff`, which compares the working tree with the index, so a file staged
+  and not edited since matched itself and was in no diff: the secret scan and the
+  gates never read the files a first commit was about to make permanent. The
+  working tree is now compared with the empty tree, and whether HEAD exists is
+  asked of git rather than inferred from a failed diff, so any other git failure
+  is an error. The scoped diff takes the same path.
+- Truncation and cap notes reach the model. `devcouncil_git_show` (patch cut at
+  128 KiB), `devcouncil_git_log` (`max` capped at 50) and
+  `devcouncil_dev_inspect` (capture cut, or output that was not JSON) recorded
+  the note in `Result.Degraded`, which feeds only the session log, and in the
+  two latter cases set it on the payload after the payload had been marshalled,
+  so the model read a prefix as the whole. The notes now go into the payload's
+  `degraded` list before it is encoded, through one helper (`okDegraded`).
+- `devcouncil_git_stage` paths are literal. The secret-path check judged the
+  spelling the agent gave while `git add` read it as a pathspec, so `.e*`, `*`
+  and `:(glob).env` staged `.env`; a directory (`.`, `app`) staged every file
+  under it unexamined. There is no unstage tool, so the commit-time refusal then
+  left the session wedged. `git add` now runs with `GIT_LITERAL_PATHSPECS=1` (a
+  file named `we*rd.txt` still stages by that name; the line the command gate
+  judges is unchanged, so existing grants still match), and before it runs git
+  is asked which files the paths would stage and those go through the same
+  secret-path and hard-link checks.
+- `devcouncil_git_show` answers only for a commit. The `object` check admitted
+  `:`, so `HEAD:deploy/cert.p12` named a blob, and `git show -s` prints a blob's
+  bytes whatever `--format` says: the NUL-split of them came back as `subject`,
+  `author` and `date`, a read the command gate refuses as
+  `command.git_read_argument`. The object is now resolved with
+  `rev-parse --verify <object>^{commit}`, so a blob, a tree or any revision
+  syntax that names one is refused, and the metadata and the patch are read from
+  the resolved id rather than the spelling.
 - A run of combining marks no longer stalls the frame. `Buffer.SetRune` appended
   every mark to the cell on its left with no bound, each append copying what the
   cell already held, so a line of n marks (a model reply or tool result; they are

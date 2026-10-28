@@ -31,6 +31,8 @@ func TestARetryableFailureIsFoundWhateverTheLineEnding(t *testing.T) {
 		{name: "LF, the shape this was written against", ending: "\n"},
 		{name: "CRLF, which the same reader downstream accepts", ending: "\r\n"},
 		{name: "a blank line whose ending differs from the line before it", ending: "mixed"},
+		{name: "a bare CR, which the event-stream grammar also allows", ending: "\r"},
+		{name: "a leading byte order mark", ending: "bom"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := reframe(overloadedFrames, tc.ending)
@@ -91,6 +93,8 @@ func reframe(body, ending string) string {
 	switch ending {
 	case "\n":
 		return body
+	case "bom":
+		return "\xEF\xBB\xBF" + body
 	case "mixed":
 		out := strings.ReplaceAll(body, "\n", "\r\n")
 		return strings.ReplaceAll(out, "\r\n\r\n", "\r\n\n")

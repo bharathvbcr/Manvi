@@ -191,6 +191,8 @@ func TestOverloadedErrorBeforeContentIsRetried(t *testing.T) {
 		"after msg_start": startFrame + overloadedFrame,
 		"api_error":       strings.Replace(overloadedFrame, "overloaded_error", "api_error", 1),
 		"CRLF framed":     strings.ReplaceAll(overloadedFrame, "\n", "\r\n"),
+		"lone CR framed":  strings.ReplaceAll(overloadedFrame, "\n", "\r"),
+		"after a BOM":     "\xEF\xBB\xBF" + overloadedFrame,
 	} {
 		t.Run(name, func(t *testing.T) {
 			adapter, attempts := scripted(t, first, okBody)
@@ -207,6 +209,34 @@ func TestOverloadedErrorBeforeContentIsRetried(t *testing.T) {
 			}
 			if resp.Message.Text() != "hello" {
 				t.Fatalf("text = %q; the retried attempt's content, once, was expected", resp.Message.Text())
+			}
+		})
+	}
+}
+
+// TestAWholeResponseInOtherEventStreamFramingDecodes: the event-stream grammar
+// allows a leading BOM and a bare CR as a line ending, and the ping events
+// anthropic interleaves arrive in whichever the proxy in front of it chose.
+func TestAWholeResponseInOtherEventStreamFramingDecodes(t *testing.T) {
+	ping := "event: ping\ndata: {\"type\": \"ping\"}\n\n"
+	for name, body := range map[string]string{
+		"BOM":             "\xEF\xBB\xBF" + okBody,
+		"lone CR":         strings.ReplaceAll(okBody, "\n", "\r"),
+		"BOM and lone CR": "\xEF\xBB\xBF" + strings.ReplaceAll(ping+okBody, "\n", "\r"),
+		"pings between":   ping + startFrame + ping + strings.TrimPrefix(okBody, startFrame),
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter, attempts := scripted(t, body)
+			stream, err := adapter.Stream(adaptertest.Ctx(), request())
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			_, resp, err := adaptertest.Drain(stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Message.Text() != "hello" || attempts.Load() != 1 {
+				t.Fatalf("text = %q after %d attempts, want \"hello\" after 1", resp.Message.Text(), attempts.Load())
 			}
 		})
 	}

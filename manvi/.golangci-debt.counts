@@ -122,9 +122,16 @@
 # rest. Every number below was measured with golangci-lint 2.14.0 on
 # GOOS=darwin and GOOS=linux, against DevCouncil acfaa229 and gusset 23e925b
 # (scripts/module-pins.txt), and is the same on both.
+#
+# Lowered 2026-10-27 on wave6: errcheck 179 -> 175, gosec 255 -> 247, noctx
+# 21 -> 19, measured on GOOS=darwin and GOOS=linux (the same on both) against
+# DevCouncil b1a29105 and gusset 320c56c2. The fall is waves 5 and 6 paying
+# debt in the files they touched; the wave-6 tests the ratchet first caught
+# (unchecked closes and kills, forced type assertions, requests without a
+# context) were fixed, not counted.
 bodyclose 14
 contextcheck 21
-errcheck 179
+errcheck 175
 errorlint 1
 forcetypeassert 54
 # gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
@@ -132,8 +139,8 @@ forcetypeassert 54
 # findings and pty_darwin_test.go had one, so a count measured on darwin
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
-gosec 255
+gosec 247
 nilerr 7
-noctx 21
+noctx 19
 staticcheck 33
 wastedassign 5

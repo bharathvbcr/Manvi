@@ -7,6 +7,11 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
 )
 
+// preflightStream is transport.PreflightStream. It is a variable only so a test
+// can see the wait this adapter hands it: a pin on the constants alone leaves
+// the adapter free to pass something else.
+var preflightStream = transport.PreflightStream
+
 // preflight judges the opening of a 200 streaming response.
 //
 // The streaming documentation says the API "may occasionally send errors in
@@ -18,8 +23,12 @@ import (
 // error. It is retried here for the same reason, and only while nothing but
 // message_start and ping has arrived — the first content_block_* event ends the
 // inspection, so an error after content has been emitted is never retried.
+//
+// The wait is the 15-minute first-token budget even though this is a hosted
+// endpoint; see transport.FirstTokenBudget for why a shorter bound is not
+// supported by anything measured here.
 func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error) {
-	return transport.PreflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout), judgeFrame)
+	return preflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout), judgeFrame)
 }
 
 // judgeFrame classifies one opening frame.

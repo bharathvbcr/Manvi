@@ -39,6 +39,28 @@ func TruncatedStream(provider, missing string) *Error {
 // SSE reader exists (PreflightStream) is bounded by the same number. A
 // non-positive idle means the operator disabled the watchdog, and the read is
 // then unbounded as well.
+//
+// Hosted providers get the same 15 minutes as a local server, on purpose and
+// not by inheritance. DefaultFirstTokenTimeout was sized from local prefill,
+// and a hosted prompt prefills far faster, so by prefill alone a shorter bound
+// would do. It is kept because the wait this number governs is not only
+// prefill. PreflightStream reads until the first frame that is not preamble,
+// and neither message_start nor a ping ends that wait or restarts it. With
+// thinking on, which is the default on current Anthropic models, and its
+// display left at the default "omitted", the documented stream is a thinking
+// block that opens, takes one empty thinking_delta and a single signature_delta,
+// and closes: nothing is documented about whether the block opens when thinking
+// starts or only once it is over, and the budget for thinking runs to many
+// minutes. A bound below that kills a healthy turn, and the retry that follows
+// re-issues a request that is billed again and thinks for as long. The cost of
+// the other error is a hung hosted stream held for up to this budget before
+// the typed, retryable stall. (Once the stream is flowing the stall watchdog's
+// 2-minute idle limit takes over, and it starts at the first payload line: any
+// event: or data: line, a ping event included, counts as output there, and only
+// ": " comments are padding. The "pings do not restart the wait" rule is the
+// preflight's alone.) No hosted time-to-first-token is measured anywhere in
+// this repository (docs/COMPARISON.md and the bench figures are local); lower
+// this only against such a measurement.
 func FirstTokenBudget(idle time.Duration) time.Duration {
 	if idle <= 0 {
 		return 0
@@ -115,19 +137,40 @@ func PreflightStream(resp *http.Response, provider string, wait time.Duration, j
 	// the scan ever reaches the frame that matters.
 	consumed := 0
 	frames := 0
+	bomDecided := false
 	for frames < preflightFrames {
 		n, err := reader.Read(buf)
 		if n > 0 {
 			seen.Write(buf[:n])
 		}
 
-		for frames < preflightFrames {
+		// A byte order mark opening the stream is not part of the first frame. It
+		// is decided once, from the first bytes: a proper prefix of the mark is
+		// held until the rest arrives or the stream ends.
+		if !bomDecided {
+			switch head := seen.Bytes(); {
+			case bytes.HasPrefix(head, []byte(utf8BOM)):
+				consumed, bomDecided = len(utf8BOM), true
+			case len(head) > 0 && len(head) < len(utf8BOM) && bytes.HasPrefix([]byte(utf8BOM), head) && err == nil:
+			case len(head) > 0 || err != nil:
+				bomDecided = true
+			}
+		}
+
+		for bomDecided && frames < preflightFrames {
 			rest := seen.String()[consumed:]
+			if err != nil && strings.HasSuffix(rest, "\r") {
+				// No more bytes are coming, so a trailing CR is a line ending on
+				// its own and not the first half of a CRLF. SplitFrame holds it
+				// back otherwise, and a stream whose last frame ends in a bare CR
+				// would never have that frame judged.
+				rest += "\n"
+			}
 			frame, size, ok := SplitFrame(rest)
 			if !ok {
 				break
 			}
-			consumed += size
+			consumed = min(consumed+size, seen.Len())
 			frames++
 
 			preamble, failure := judge(frame)
@@ -152,43 +195,72 @@ func PreflightStream(resp *http.Response, provider string, wait time.Duration, j
 	return replay(&seen, resp.Body), nil
 }
 
-// frameTerminators are the byte sequences that end an SSE frame: a blank line,
-// whose line ending may be CRLF or LF, after a line whose ending may likewise
-// be either. A scanner that split on "\n\n" alone never saw a frame end in a
-// CRLF-framed stream, and the retry policy was skipped on nothing but a line
-// ending. SSE.Next accepts both, and two parsers disagreeing about where a
-// frame ends is a defect whether or not a live endpoint exercises it.
-//
-// Ordered longest-first so a boundary is consumed whole rather than leaving a
-// stray terminator at the head of the next frame.
-var frameTerminators = [...]string{"\r\n\r\n", "\r\n\n", "\n\r\n", "\n\n"}
+// lineEnding reports the width of the line ending at s[i]: 0 when there is none,
+// 2 for CRLF, 1 for LF or a bare CR, and -1 for a CR that is the last byte
+// seen, which may yet turn out to open a CRLF.
+func lineEnding(s string, i int) int {
+	switch s[i] {
+	case '\n':
+		return 1
+	case '\r':
+		switch {
+		case i+1 == len(s):
+			return -1
+		case s[i+1] == '\n':
+			return 2
+		}
+		return 1
+	}
+	return 0
+}
 
 // SplitFrame returns the first whole frame in rest and how many bytes it
 // occupied, terminator included.
+//
+// A frame ends at a blank line, and every line ending the event-stream grammar
+// allows — CRLF, LF, a bare CR, in any mix — counts. A scanner that split on
+// "\n\n" alone never saw a frame end in a CRLF-framed stream, and the retry
+// policy was skipped on nothing but a line ending. SSE.Next accepts all three,
+// and two parsers disagreeing about where a frame ends is a defect whether or
+// not a live endpoint exercises it. A trailing CR is undecided, so the frame is
+// not reported until the byte after it has arrived.
 func SplitFrame(rest string) (frame string, size int, ok bool) {
-	at, width := -1, 0
-	for _, sep := range frameTerminators {
-		i := strings.Index(rest, sep)
-		if i < 0 {
+	for i := 0; i < len(rest); {
+		first := lineEnding(rest, i)
+		switch {
+		case first < 0:
+			return "", 0, false
+		case first == 0:
+			i++
 			continue
 		}
-		if at < 0 || i < at || (i == at && len(sep) > width) {
-			at, width = i, len(sep)
+		next := i + first
+		if next == len(rest) {
+			return "", 0, false
 		}
+		second := lineEnding(rest, next)
+		switch {
+		case second < 0:
+			return "", 0, false
+		case second > 0:
+			return rest[:i], next + second, true
+		}
+		i = next
 	}
-	if at < 0 {
-		return "", 0, false
-	}
-	return rest[:at], at + width, true
+	return "", 0, false
 }
 
 // FrameFields reads the event name and the joined data lines out of one raw
-// SSE frame, as SSE.Next would: comments are ignored and CRLF endings are
-// tolerated.
+// SSE frame, as SSE.Next would: comments are ignored and CRLF, LF and bare-CR
+// endings are all line endings. A byte order mark is not handled here: it is a
+// mark only at the start of a stream, which is PreflightStream's to know, and
+// one that opens a later frame is ordinary text, as it is to the stream reader.
 func FrameFields(frame string) (name, data string) {
+	if strings.Contains(frame, "\r") {
+		frame = strings.ReplaceAll(strings.ReplaceAll(frame, "\r\n", "\n"), "\r", "\n")
+	}
 	var parts []string
 	for _, line := range strings.Split(frame, "\n") {
-		line = strings.TrimRight(line, "\r")
 		switch {
 		case strings.HasPrefix(line, ":"):
 		case strings.HasPrefix(line, "event:"):

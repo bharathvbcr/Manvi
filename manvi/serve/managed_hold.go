@@ -43,6 +43,9 @@ type blockedCheckout struct {
 	interval time.Duration
 	attempts int
 	gaveUp   bool
+	// lastClose is what the provider's latest unconfirmed Close said (for a live
+	// process group, which group), so a refusal can name what holds the checkout.
+	lastClose string
 	// rechecks counts the times an attempt on the checkout restarted a reaper that
 	// had used its attempts.
 	rechecks int
@@ -65,6 +68,9 @@ func (b *blockedCheckout) holdMessage() string {
 		waiting = fmt.Sprintf("Manvi asked the provider %d times and has stopped asking; the next attempt on this checkout starts asking again", b.attempts)
 	case b.rechecks > 0:
 		waiting = fmt.Sprintf("Manvi had stopped asking after %d attempts and is re-checking with the provider now; it releases the checkout, taking the block out, when it confirms the exit", b.attempts)
+	}
+	if b.lastClose != "" {
+		waiting = fmt.Sprintf("The provider last answered: %s. %s", b.lastClose, waiting)
 	}
 	return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process exited, so the agent may still be running: its harness block (nonce=%s) stays in %s and this checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the record on disk is then applied as a dead run's block is",
 		b.runID, b.since.UTC().Format(time.RFC3339), b.nonce, b.file, waiting)
@@ -150,9 +156,15 @@ func (r *ManagedRunner) heldReason(info os.FileInfo) string {
 // at once, and every other checkout goes on.
 func (r *ManagedRunner) reap(b *blockedCheckout, stop <-chan struct{}) {
 	for attempt := 0; attempt < b.attempts; attempt++ {
-		if exit, _ := b.session.Close(); exitConfirmed(exit) {
+		exit, err := b.session.Close()
+		if exitConfirmed(exit) {
 			r.releaseHeld(b)
 			return
+		}
+		if err != nil {
+			r.mu.Lock()
+			b.lastClose = err.Error()
+			r.mu.Unlock()
 		}
 		select {
 		case <-stop:
@@ -203,12 +215,30 @@ func (r *ManagedRunner) recheckHeld(info os.FileInfo) {
 	}
 }
 
-// exitConfirmed says whether the agent process has exited: Close reaped it. A Close
-// error beside a reaped process (os/exec's ErrWaitDelay, when an orphaned
-// grandchild still holds the agent's stdout) is about that pipe, not the agent, and
-// is recorded on the run as a note; it does not keep a checkout held. Whatever
-// outlives the agent is the process-group problem, which is not this check's.
-func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped }
+// exitConfirmed says whether the agent is gone: Close reaped it and found no member
+// of its process group alive. It is what a harness run's block restore and the
+// release of its checkout wait on, and it fails closed: a group member still alive
+// after Close's SIGKILL and bounded wait (Exit.GroupLive) is an anomaly (a process
+// in uninterruptible sleep, one this host may not signal, or a zombie that a host
+// without a reaping init never collects) and is treated as the agent still running.
+//
+// A Close error beside a reaped process with the group gone (os/exec's
+// ErrWaitDelay, when an orphaned grandchild still holds the agent's stdout) is
+// about that pipe, not the agent, and is recorded on the run as a note; it does not
+// keep a checkout held. The old reason for not looking at the group at all, that a
+// dev server left behind by a finished run would hold every checkout, no longer
+// applies: Close SIGKILLs the group before it looks, so such a process is dead by
+// then. A descendant that left the group with setsid is invisible to the probe and
+// holds nothing itself; nothing here chases it. Its children that stayed in the
+// group are seen, and a zombie among them whose parent is outside the group and
+// never waits cannot be told from a running member: the checkout then stays held,
+// with Close's answer (which group) in the refusal, until that parent exits or
+// the host restarts. That is the fail-closed side of the same limit.
+//
+// Only a harness run holds (finish restores or holds only a materialised block).
+// Whether a plain run, which has no block, should also wait for the group is the
+// owner's to decide and is not decided here.
+func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped && !exit.GroupLive }
 
 // unconfirmedSession is the session to hold a checkout for after a Close that returned
 // exit: the session itself when the exit is not confirmed, else nil.

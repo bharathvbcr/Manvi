@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
@@ -16,7 +19,7 @@ func (e Event) Public() (Event, error) {
 		// The rewrite re-encodes an object or array into new bytes, so the
 		// event's own are not copied first only to be replaced. A bare scalar
 		// comes back as a window onto the input, and is copied.
-		raw, err := rewritePayload(e.Data, nil, true, nil, 0)
+		raw, err := rewritePayload(e.Data, nil, true, nil, false, 0)
 		if err != nil {
 			return Event{}, err
 		}
@@ -64,7 +67,7 @@ func scrubPayload(t Type, raw json.RawMessage, scrub func(string) string) (json.
 			return nil, false, err
 		}
 	}
-	out, err := rewritePayload(raw, watching, false, nil, 0)
+	out, err := rewritePayload(raw, watching, false, nil, false, 0)
 	return out, rewrote, err
 }
 
@@ -176,7 +179,10 @@ func messageBlocks(payload map[string]json.RawMessage) (message map[string]json.
 
 // Walk encoded values rather than replacing JSON bytes: quoted, escaped and
 // Unicode text receives exactly the same scrubber input as ordinary text.
-func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool, path []string, depth int) (json.RawMessage, error) {
+//
+// free is true inside a tool call's arguments, whose keys are the model's own
+// and not part of the record's schema; see renameKeys.
+func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool, path []string, free bool, depth int) (json.RawMessage, error) {
 	if depth > 128 {
 		return nil, errors.New("session: payload nesting exceeds 128")
 	}
@@ -197,27 +203,27 @@ func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool,
 			}
 		}
 		for key, value := range obj {
-			if blockKind == "image" && key == "data" {
-				continue
-			}
-			if blockKind == "reasoning" && key == "signature" {
-				if public {
+			if opaqueKey(blockKind, path, key) {
+				// Image data stays in the public projection; a signature and
+				// replay state are private and leave it.
+				if public && blockKind != "image" {
 					delete(obj, key)
 				}
 				continue
 			}
-			if len(path) == 2 && path[0] == "message" && path[1] == "provenance" && key == "replay_state" {
-				if public {
-					delete(obj, key)
-				}
-				continue
-			}
+			// The path keeps the key as recorded: what a position means does
+			// not change with what the scrubber makes of its name.
 			next := append(append([]string(nil), path...), key)
-			rewritten, err := rewritePayload(value, scrub, public, next, depth+1)
+			rewritten, err := rewritePayload(value, scrub, public, next, free || (key == "arguments" && (len(path) == 0 || blockKind == "tool_call")), depth+1)
 			if err != nil {
 				return nil, err
 			}
 			obj[key] = rewritten
+		}
+		if scrub != nil {
+			renameKeys(obj, scrub, func(key string) bool {
+				return opaqueKey(blockKind, path, key) || (!free && schemaKeys[key])
+			})
 		}
 		return json.Marshal(obj)
 	case '[':
@@ -226,7 +232,7 @@ func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool,
 			return nil, err
 		}
 		for i, value := range values {
-			v, err := rewritePayload(value, scrub, public, append(append([]string(nil), path...), "[]"), depth+1)
+			v, err := rewritePayload(value, scrub, public, append(append([]string(nil), path...), "[]"), free, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -247,6 +253,106 @@ func rewritePayload(raw json.RawMessage, scrub func(string) string, public bool,
 			return nil, errors.New("session: invalid JSON value")
 		}
 		return raw, nil
+	}
+}
+
+// opaqueKey reports whether the walk leaves this key's value alone: image
+// bytes, a reasoning signature, and an adapter's replay state are continuation
+// data the scrubber must not touch. Their names are not renamed either.
+func opaqueKey(blockKind string, path []string, key string) bool {
+	return (blockKind == "image" && key == "data") ||
+		(blockKind == "reasoning" && key == "signature") ||
+		(len(path) == 2 && path[0] == "message" && path[1] == "provenance" && key == "replay_state")
+}
+
+// schemaKeys is every key the session record's own readers look up, in one
+// place: the fields of each event payload and of the llm types a message is
+// built from, read off their json tags, and the wire keys of llm's codec, which
+// its unexported block type owns. A scrubber is told about secret values, and a
+// secret that happens to equal one of these names (an API key that is the word
+// "arguments") must not rename the field and break the record without an error,
+// so these names are never rewritten outside a tool call's free-form arguments.
+// TestSchemaKeysCoverEveryRecordField fails when a payload gains a field this
+// does not hold.
+var schemaKeys = collectSchemaKeys(
+	[]string{"kind", "role", "content", "provenance"},
+	SystemPromptData{}, NullResponseData{}, VerifyReportData{}, PromptAssembledData{}, StepEndData{},
+	MessageData{}, ToolCallData{}, ToolResultData{}, DenialData{}, QualificationData{}, GrantData{},
+	DropData{}, CompactionData{}, MalformedCallData{}, DecodingData{}, OverflowData{},
+	llm.TextBlock{}, llm.ReasoningBlock{}, llm.ImageBlock{}, llm.ToolCallBlock{}, llm.ToolResultBlock{},
+	llm.AssistantProvenance{}, llm.Drop{}, llm.Usage{},
+)
+
+func collectSchemaKeys(wire []string, payloads ...any) map[string]bool {
+	keys := make(map[string]bool)
+	for _, key := range wire {
+		keys[key] = true
+	}
+	for _, payload := range payloads {
+		t := reflect.TypeOf(payload)
+		for i := 0; i < t.NumField(); i++ {
+			if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+				keys[name] = true
+			}
+		}
+	}
+	return keys
+}
+
+// renameKeys runs the scrubber over the object's key names and moves each entry
+// whose name changed. A secret can sit in a key as easily as in a value: a map
+// keyed by token, a URL that carries one. The scrubber is the one the values
+// pass through, so a rewritten name flips the same flag a rewritten value does.
+// Keys for which keep reports true are never renamed: the opaque ones, and the
+// record's schema keys (see schemaKeys), which is also what keeps an unarmed
+// scrubber, whose Clean returns one notice for any text, from renaming every
+// field of the record.
+//
+// Two keys can scrub to the same name. Neither entry is dropped: every key the
+// scrubber leaves alone keeps its name, and the rest take the scrubbed name in
+// byte order of their original keys, a later one getting "#2", "#3", ... after
+// it. The suffix is not secret-shaped, so scrubbing the result again changes
+// nothing. Each name counts its own suffixes forward, so n colliding keys cost
+// n, not n squared.
+func renameKeys(obj map[string]json.RawMessage, scrub func(string) string, keep func(string) bool) {
+	type move struct {
+		key, name string
+		value     json.RawMessage
+	}
+	var moves []move
+	for key := range obj {
+		if keep(key) {
+			continue
+		}
+		if name := scrub(key); name != key {
+			moves = append(moves, move{key: key, name: name})
+		}
+	}
+	if len(moves) == 0 {
+		return
+	}
+	sort.Slice(moves, func(i, j int) bool { return moves[i].key < moves[j].key })
+	// Every renamed entry leaves before any arrives: one key's new name can be
+	// another's old one.
+	for i := range moves {
+		moves[i].value = obj[moves[i].key]
+		delete(obj, moves[i].key)
+	}
+	next := make(map[string]int)
+	for _, m := range moves {
+		candidate := m.name
+		if _, taken := obj[candidate]; taken {
+			n := max(next[m.name], 2)
+			for {
+				candidate = fmt.Sprintf("%s#%d", m.name, n)
+				n++
+				if _, taken := obj[candidate]; !taken {
+					break
+				}
+			}
+			next[m.name] = n
+		}
+		obj[candidate] = m.value
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -43,11 +44,15 @@ type wireRead struct {
 	err   error
 }
 
-// Exit proves the direct child was reaped. Descendant termination or a successful
-// coding result requires separate host evidence; an exit code alone proves neither.
+// Exit proves the direct child was reaped. A successful coding result requires
+// separate host evidence; an exit code alone proves neither. GroupLive says the
+// agent's process group still had a live member after close() killed it and
+// waited out its budget (see connection.close); it is never set where the group
+// cannot be probed, and a descendant outside the group is not counted.
 type Exit struct {
-	Reaped bool
-	Code   int
+	Reaped    bool
+	Code      int
+	GroupLive bool
 }
 type connection struct {
 	ctx       context.Context
@@ -61,6 +66,9 @@ type connection struct {
 	done      chan struct{}
 	waitErr   error
 	closeOnce sync.Once
+	// groupGone is set once the agent's process group is known to have no member:
+	// empty when sweepGroup first looked, or confirmed so by close().
+	groupGone atomic.Bool
 	validate  func([]byte) error
 }
 type limitedDiscard struct {
@@ -109,9 +117,48 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 	}
 	c := &connection{ctx: ctx, cancel: cancel, cmd: cmd, stdin: stdin, stdout: stdout, pid: cmd.Process.Pid, frames: make(chan wireRead, 64), done: make(chan struct{}), validate: validate}
 	go c.read()
-	go func() { c.waitErr = cmd.Wait(); output.Close(); close(c.done) }()
+	go func() {
+		c.waitErr = cmd.Wait()
+		c.sweepGroup()
+		output.Close()
+		close(c.done)
+	}()
 	return c, nil
 }
+
+// probeGroup is groupAlive and signalGroup is proc.KillGroup; tests replace them
+// to stand in for a member that outlives SIGKILL, which a real process cannot be
+// made to do, and to count the signals sent.
+var (
+	probeGroup  = groupAlive
+	signalGroup = proc.KillGroup
+)
+
+// sweepGroup is the one place the agent's process group is signalled after the
+// agent was reaped, and it runs as soon as Wait returns. cmd.Cancel reaches the
+// group only while the agent is still unreaped; once it is reaped, the group
+// number is held by whatever members remain and nothing else. An empty group
+// cannot gain a member, and its number is free for an unrelated process to take,
+// so a group found empty is latched (groupGone) and never signalled or probed
+// again, however late close() comes. A group found with members is still ours
+// (its number cannot be reused while a member exists) and is killed now rather
+// than at close(), by which time it may have emptied and been reused. The only
+// residue is the interval between this probe and this signal, in which the last
+// member would have to exit and a stranger's group take the number.
+func (c *connection) sweepGroup() {
+	if !probeGroup(c.pid) {
+		c.groupGone.Store(true)
+		return
+	}
+	signalGroup(c.pid)
+}
+
+// reapBudget bounds how long close() waits for the agent to be reaped and then
+// for the rest of its process group to be gone. Tests shorten it.
+var reapBudget = 5 * time.Second
+
+// groupPoll is how often close() re-probes a group it has killed.
+const groupPoll = 10 * time.Millisecond
 
 // agentEnv is the environment a managed provider starts with, given one that
 // childenv has already stripped of provider credentials. The agent keeps its
@@ -315,19 +362,59 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 		return packet{}, nil, c.ctx.Err()
 	}
 }
+
+// close ends the agent and reports whether everything in its process group is
+// gone. Exit.Reaped says only that the direct child was reaped. The error says
+// the rest: os/exec's, for a grandchild holding the agent's pipes, and one for a
+// group member still alive after SIGKILL within the budget, which also sets
+// Exit.GroupLive for callers that must not read it from the message. The group
+// is killed by cmd.Cancel while the agent is unreaped and by sweepGroup the
+// moment it is reaped, so a grandchild that redirected its stdio away is dead
+// before close() looks; close() itself never signals, because by then the group
+// number may belong to a stranger. A caller must not read a nil error as a clean
+// exit when this returns one.
+//
+// A descendant that left the group with setsid or setpgid is out of reach of a
+// group kill and a group probe alike; it is not chased. Its own children that
+// stayed in the group are in reach, and a zombie among them whose parent is
+// outside the group and never waits keeps the group probe positive for as long
+// as that parent lives; that is reported as a live group, failing closed.
 func (c *connection) close() (Exit, error) {
 	c.closeOnce.Do(func() { c.stdin.Close(); c.cancel(); c.stdout.Close() })
+	budget := time.NewTimer(reapBudget)
+	defer budget.Stop()
 	select {
 	case <-c.done:
-		result := Exit{Reaped: true, Code: c.cmd.ProcessState.ExitCode()}
-		var exit *exec.ExitError
-		if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) {
-			return result, c.waitErr
-		}
-		return result, nil
-	case <-time.After(5 * time.Second):
+	case <-budget.C:
 		return Exit{}, errors.New("managed provider did not confirm process reaping before shutdown deadline")
 	}
+	result := Exit{Reaped: true, Code: c.cmd.ProcessState.ExitCode()}
+	var err error
+	var exit *exec.ExitError
+	if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) {
+		err = c.waitErr
+	}
+	groupErr := c.awaitGroup(budget.C)
+	result.GroupLive = groupErr != nil
+	return result, errors.Join(err, groupErr)
+}
+
+// awaitGroup waits, until deadline fires, for the agent's process group, killed
+// by sweepGroup, to have no member. It only probes: nothing is signalled after
+// the agent was reaped except by sweepGroup.
+func (c *connection) awaitGroup(deadline <-chan time.Time) error {
+	for !c.groupGone.Load() {
+		if !probeGroup(c.pid) {
+			c.groupGone.Store(true)
+			break
+		}
+		select {
+		case <-deadline:
+			return fmt.Errorf("managed provider process group %d still has a live member after SIGKILL", c.pid)
+		case <-time.After(groupPoll):
+		}
+	}
+	return nil
 }
 
 // maxDeferredEvents bounds both the events one response preflight may drain
