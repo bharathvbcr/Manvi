@@ -162,6 +162,14 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- In a repository with no commits, `devcouncil_get_diff` and verification see
+  the files that are staged. The fallback for a missing HEAD was a bare
+  `git diff`, which compares the working tree with the index, so a file staged
+  and not edited since matched itself and was in no diff: the secret scan and the
+  gates never read the files a first commit was about to make permanent. The
+  working tree is now compared with the empty tree, and whether HEAD exists is
+  asked of git rather than inferred from a failed diff, so any other git failure
+  is an error. The scoped diff takes the same path.
 - Truncation and cap notes reach the model. `devcouncil_git_show` (patch cut at
   128 KiB), `devcouncil_git_log` (`max` capped at 50) and
   `devcouncil_dev_inspect` (capture cut, or output that was not JSON) recorded

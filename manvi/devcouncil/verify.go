@@ -306,6 +306,31 @@ func (r *Registry) runRigor(ctx context.Context, diff string, planned []string, 
 // the turn with nothing to report.
 const gitTimeout = 2 * time.Minute
 
+// diffBase is the revision the working tree is compared with: HEAD, or in a
+// repository with no commits yet the empty tree, against which every file in the
+// index is an addition. The fallback used to be a bare `git diff`, which
+// compares the working tree to the index, so a file staged and not edited since
+// matched itself and was in no diff at all — the files a first commit is about to
+// make permanent, invisible to every gate that reads this. The empty tree's id is
+// asked of git because it depends on the repository's hash algorithm.
+//
+// Whether HEAD exists is asked, not inferred from a failed diff: any other way
+// git can fail here is an error, not a repository with no history.
+func diffBase(ctx context.Context, root string) (string, error) {
+	born, err := headExists(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if born {
+		return "HEAD", nil
+	}
+	out, err := runGit(ctx, root, "hash-object", "-t", "tree", "/dev/null")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // maxUntrackedRendered caps the per-file fan-out below.
 //
 // Untracked files are rendered one subprocess each, and how many there are is
@@ -326,13 +351,13 @@ func gitDiff(ctx context.Context, root string) (string, []string, error) {
 
 	var notes []string
 
-	tracked, trackedNote, err := runGitCapped(ctx, root, maxGitCaptureBytes, "diff", "HEAD")
+	base, err := diffBase(ctx, root)
 	if err != nil {
-		// A repository with no commits yet has no HEAD; fall back to the index.
-		tracked, trackedNote, err = runGitCapped(ctx, root, maxGitCaptureBytes, "diff")
-		if err != nil {
-			return "", nil, err
-		}
+		return "", nil, err
+	}
+	tracked, trackedNote, err := runGitCapped(ctx, root, maxGitCaptureBytes, "diff", base)
+	if err != nil {
+		return "", nil, err
 	}
 	if trackedNote != "" {
 		// Cut at the cap, then back to the last complete line: a header cut in
