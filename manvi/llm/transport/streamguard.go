@@ -39,6 +39,28 @@ func TruncatedStream(provider, missing string) *Error {
 // SSE reader exists (PreflightStream) is bounded by the same number. A
 // non-positive idle means the operator disabled the watchdog, and the read is
 // then unbounded as well.
+//
+// Hosted providers get the same 15 minutes as a local server, on purpose and
+// not by inheritance. DefaultFirstTokenTimeout was sized from local prefill,
+// and a hosted prompt prefills far faster, so by prefill alone a shorter bound
+// would do. It is kept because the wait this number governs is not only
+// prefill. PreflightStream reads until the first frame that is not preamble,
+// and neither message_start nor a ping ends that wait or restarts it. With
+// thinking on, which is the default on current Anthropic models, and its
+// display left at the default "omitted", the documented stream is a thinking
+// block that opens, takes one empty thinking_delta and a single signature_delta,
+// and closes: nothing is documented about whether the block opens when thinking
+// starts or only once it is over, and the budget for thinking runs to many
+// minutes. A bound below that kills a healthy turn, and the retry that follows
+// re-issues a request that is billed again and thinks for as long. The cost of
+// the other error is a hung hosted stream held for up to this budget before
+// the typed, retryable stall. (Once the stream is flowing the stall watchdog's
+// 2-minute idle limit takes over, and it starts at the first payload line: any
+// event: or data: line, a ping event included, counts as output there, and only
+// ": " comments are padding. The "pings do not restart the wait" rule is the
+// preflight's alone.) No hosted time-to-first-token is measured anywhere in
+// this repository (docs/COMPARISON.md and the bench figures are local); lower
+// this only against such a measurement.
 func FirstTokenBudget(idle time.Duration) time.Duration {
 	if idle <= 0 {
 		return 0

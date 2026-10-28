@@ -18,6 +18,10 @@ import (
 // error. It is retried here for the same reason, and only while nothing but
 // message_start and ping has arrived — the first content_block_* event ends the
 // inspection, so an error after content has been emitted is never retried.
+//
+// The wait is the 15-minute first-token budget even though this is a hosted
+// endpoint; see transport.FirstTokenBudget for why a shorter bound is not
+// supported by anything measured here.
 func preflight(resp *http.Response) (transport.StreamAccepted, *transport.Error) {
 	return transport.PreflightStream(resp, Name, transport.FirstTokenBudget(transport.DefaultHostedStallTimeout), judgeFrame)
 }
