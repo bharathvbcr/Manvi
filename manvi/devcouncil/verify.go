@@ -772,14 +772,19 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // Repository hooks therefore do not run on any git this package starts — a
 // behaviour change for a repository that relies on a commit hook.
 //
+// core.fsmonitor=false is the same class: the repository's config can name a
+// program that git runs on diff, ls-files, status and add, and one that answers
+// "nothing changed" hides changes from the read as well. DevCouncil's own
+// GitArgs sets it for the same reason.
+//
 // core.quotePath=false makes git emit non-ASCII paths as raw UTF-8 instead of
 // C-style octal escapes. It is set here rather than in either parser because
 // crates/dc-verify reads this same format: unquoting on one side only would
 // give the two readers different answers for the same file.
 func gitSpec(root, index string, args []string) procSpec {
 	spec := procSpec{
-		argv: append([]string{"git", "-c", "core.quotePath=false", "-c", "core.hooksPath=" + os.DevNull},
-			withoutDiffPrograms(args)...),
+		argv: append([]string{"git", "-c", "core.quotePath=false", "-c", "core.hooksPath=" + os.DevNull,
+			"-c", "core.fsmonitor=false"}, withoutDiffPrograms(args)...),
 		dir:         root,
 		timeout:     gitTimeout,
 		stderrLimit: maxGitStderrBytes,

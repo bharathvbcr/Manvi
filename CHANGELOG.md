@@ -65,7 +65,11 @@ under **Unreleased** in the same commit as the code.
   `pre-commit`, `prepare-commit-msg` and `post-commit` (from `.git/hooks` or a
   `core.hooksPath` such as `.husky`) do not fire; `--no-verify` would have left
   the last two running. A repository that relies on a commit hook to format or
-  lint will not get it from this tool. The reason is under **Fixed**.
+  lint will not get it from this tool. The reason is under **Fixed**. The same
+  children also run with `core.fsmonitor=false`: a `core.fsmonitor` program named
+  in the repository's config ran on `diff`, `ls-files`, `status` and `add`
+  outside the command gate, and one that reported "nothing changed" hid changes
+  from the diff the gates read.
 - `manvi run` refuses a prompt on stdin over 1 MiB (1,048,576 bytes) instead of
   running the turn on the first megabyte. The read stopped at the cap with no
   overflow check, so a 1,048,662-byte prompt ran as 1,048,576 bytes and nothing
