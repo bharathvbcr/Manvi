@@ -49,11 +49,10 @@ Done after that, on the same day:
   passes all 18 Python tasks on the instrument. The manuscript discloses this in §3.2, §4.2,
   Limitation 12 and the conclusion. The released harness closes it with a checker/worker split.
 
-Still open:
-- **The exploitation audit of v2 and `ext-cerebras`** (DEVIATIONS O5, Limitation 12). It needs
-  the episode logs on the run host. This is the one result a reviewer is most likely to ask for.
-  Run it before submitting if you can, and put its result in the manuscript whatever it says.
-- **OpenReview profile and arXiv endorsement** (§2). Only you can do these.
+Still open: tracked on the GitPulse board as `gp-paper-route-a-submission`
+(`ft-750964a7`). It covers the v2 and `ext-cerebras` exploitation audit (DEVIATIONS O5,
+Limitation 12), the identifying-path check of the archived run directories, the OpenReview
+profile and arXiv endorsement (§2), and the arXiv and TMLR submissions.
 
 ## 1. What's left
 

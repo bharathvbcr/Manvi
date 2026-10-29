@@ -57,6 +57,11 @@ flowchart TD
     Verdict -- Passed --> ReportPass["Emit Verified Status (Passed)"]
 ```
 
+### Git Diff Security & Kept-Index Diff Acceleration
+
+- **External Diff Driver Prevention**: All Git invocations that generate diffs or patches (`diff`, `show`, `log -p`, `blame`, `format-patch`, etc.) pass `--no-textconv --no-ext-diff`. This prevents a repository under test from triggering arbitrary executable code execution via `.gitattributes` `diff.<driver>.textconv` or external diff programs.
+- **Kept-Index Scoped Diff**: To avoid quadratic full-tree walks on every mutating turn, `scopedDiff` seeds from the pre-turn baseline's kept index instead of re-walking the tree. It preserves racy-git timestamps (`mtime`) and accurately detects edits even when files are flagged with `assume-unchanged` or `skip-worktree` during the turn (matching the cold oracle), reducing diff calculation latency from 63 ms to 47 ms.
+
 ---
 
 ## 3. Test Coverage Intersection Pipeline

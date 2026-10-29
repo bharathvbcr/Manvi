@@ -83,8 +83,12 @@ selection and the campaign limit.
 
 The registry checks cancellation at entry, after approval, and immediately
 before dispatch. It snapshots caller-owned argument bytes before approval.
-This does not undo an effect already begun or replace a native broker's final
-epoch fence. Empty provider responses now consume the agent's hard step budget.
+For desktop broker communication (`computer.Client`), a call cancelled or timed out
+after its request was written now stops and retires the broker for all mutative/acting
+operations (`act`, `human_act`, `approve`, `attach`, `focus`, `resume`), ensuring delayed
+or orphaned actions cannot execute after the caller abandons the call. Read-only operations
+(`probe`, `observe`, `resolve`, `pause`, `detach`) only drop their pending map entry without
+retiring the broker. Empty provider responses consume the agent's hard step budget.
 
 ## Gemini continuation
 
@@ -188,10 +192,15 @@ permissions require separate physical platform qualification.
 
 `workflow/catalog` publishes synchronized staging files through atomic
 non-replacing links, rejects symlinks and mismatched artifact/path identities,
-and reserves `current.json` for promotion metadata. Reads and directory sizes
-are bounded. Rooted filesystem handles prevent path escape. Publication is
-atomic to readers; power-loss durability of directory metadata is not guaranteed
-without a platform-specific directory-sync contract.
+and reserves `current.json` for promotion metadata. Every read-modify-write of
+`current.json` (such as `Revoke`, `Approve`, `Promote`, and `SetStability`) holds
+an in-process mutex per identity directory and an exclusive cross-process file lock
+(`.current.lock` via `internal/filelock`), bound by a 10-second timeout, ensuring
+that concurrent processes (such as the Jarvis daemon and CLI) cannot overwrite revocations
+or promotions. `SetStability` rewrites only its targeted stability field to preserve
+unrelated metadata. Reads and directory sizes are bounded. Rooted filesystem handles
+prevent path escape. Publication is atomic to readers; directory metadata flushing
+is owned by `internal/syncdir`.
 
 ## Consumer: Jarvis
 

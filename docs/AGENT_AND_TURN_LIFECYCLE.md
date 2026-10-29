@@ -117,6 +117,19 @@ on the least information the harness will ever have.
 `manvi serve` is out of scope for all of this. The host owns the model call
 there, `agent.Loop` does not run, and the checkpoint never fires.
 
+### 1b. Pre-Turn Baseline & Wire Resilience
+
+1. **Concurrent Pre-Turn Baseline & Diff Seeding**:
+   - The pre-turn baseline capture runs concurrently beside the first model request rather than delaying it, reducing time-to-first-token from ~50 ms to under 0.1 ms.
+   - The turn's first tool call waits for the baseline capture if still in flight.
+   - Two new lifecycle events bracket this phase: `ToolsDispatching` before response tool calls run, and `TurnEnded` on every exit of a turn whose `TurnStarting` was published.
+   - The end-of-turn diff seeds from the pre-turn baseline's index rather than re-walking the tree, while preserving racy-git modification timestamps.
+2. **Provider Wire Protocol Hardening**:
+   - **Thinking Block Invariants**: Replayed Anthropic thinking blocks preserve their required `thinking` string and `signature` (and `data` on redacted thinking) even when empty, satisfying Messages API replay constraints.
+   - **Empty / Whitespace Suppression**: Anthropic omits `content` on empty tool results (sending `(no output)` on error results) and drops whitespace-only text blocks. OpenAI-compatible endpoints always ensure tool messages carry a string `content`.
+   - **Mid-Call Token Ceilings**: A stream cut off by `max_tokens` mid-tool-call settles as `StopMaxTokens` plus `MalformedCall`, prompting the model to resend a smaller request instead of failing the turn.
+   - **Abnormal Exit Cleanup**: Panics, cancellations, or abnormal exits answer all open tool calls with interrupted error results, ensuring session history never holds dangling `tool_use` blocks.
+
 ---
 
 ## 2. Tool Execution Pipeline & Waterfalls
@@ -125,7 +138,9 @@ Every tool call dispatched by the model passes through a three-stage pipeline su
 
 ```mermaid
 flowchart TD
-    ToolCall["Model Emits Tool Call (e.g. devcouncil_write_file)"] --> PreExec["1. tools/pre-execute Waterfall"]
+    ToolCall["Model Emits Tool Call (e.g. devcouncil_write_file)"] --> OfferCheck{"Was tool offered in step?<br/>(Enforces --chat-only & scopes)"}
+    OfferCheck -- No --> OfferError["Refusal: Tool Call Not Offered in Step"]
+    OfferCheck -- Yes --> PreExec["1. tools/pre-execute Waterfall"]
     PreExec --> PreHookCheck{"Pre-hook validation:<br/>Schema valid? Context alive?"}
     
     PreHookCheck -- Invalid --> PreError["Return Tool Error to Model"]
@@ -414,15 +429,20 @@ the server's own refusal is more informative than a pre-emptive one — but a
 request that is going to be truncated is never indistinguishable from one that
 fits.
 
-### Token budget
+### Token budget & Signed Reasoning Preservation
 
 The budget counts the system prompt, the messages, **and the tool schemas**,
 which are sent on every request and measure 1,755 real tokens on the shipped
-DevCouncil surface. The estimator is a byte heuristic and runs about 25% high
-against a real tokenizer, so every response's `prompt_tokens` — which the
-adapter already requests — is fed back into a smoothed correction ratio. The
-budget converges on what the tokenizer actually counts instead of what the
-heuristic guessed.
+DevCouncil surface. The estimator is calibrated against the raw uncalibrated token count
+(`CountRequestTokens`) of the request the host sends rather than feeding the calibrator
+its own corrected output, avoiding compounding distortion and converging accurately to true ratios.
+
+**Signed reasoning preservation**: On advanced frontier models (Claude 3.7/Fable 5.1/Opus),
+thinking block signatures bind previous messages and tools. Compaction shortens earlier tool
+results, representing an edit to prior history. Live appends scrub reasoning before minting
+new blocks, but retroactive log scrubs (`RestoreSensitiveLog`) drop subsequent signed reasoning blocks
+(`llm.DropSignedReasoning`) along with their signatures, recording redaction in `reasoning_redacted`
+to prevent invalid signatures from reaching providers.
 
 ---
 

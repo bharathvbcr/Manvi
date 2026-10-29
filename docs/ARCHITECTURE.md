@@ -359,6 +359,7 @@ Dev_Harness/
 │   ├── agent/                 # Turn loop and step state machine
 │   ├── agents/                # Predefined agent roles & subagent fan-out pool
 │   ├── cmd/manvi/             # Main executable CLI subcommands
+│   ├── computer/              # Desktop broker client & runner
 │   ├── core/
 │   │   ├── bus/               # Event bus
 │   │   └── plugin/            # Topological plugin container
@@ -372,9 +373,14 @@ Dev_Harness/
 │   ├── flags/                 # Settings catalog, origin tracking & postures
 │   ├── gate/                  # Composite policy & override gate
 │   ├── grants/                # Human & agent grant ledger
+│   ├── harness/               # Harness spec validation & role limits
 │   ├── internal/
+│   │   ├── filelock/          # In-process & cross-process file locks
 │   │   ├── fnmatch/           # Go fnmatch glob engine
+│   │   ├── ptytest/           # Shared PTY test fixtures
+│   │   ├── syncdir/           # Single owner of platform directory flushes
 │   │   └── testsupport/       # Test helper fixtures
+│   ├── lessons/               # Lessons store & structure protection
 │   ├── llm/                   # Multi-provider LLM seam & streaming codecs
 │   │   ├── anthropic/         # Anthropic Claude adapter
 │   │   ├── gemini/            # Google Gemini adapter
@@ -395,7 +401,9 @@ Dev_Harness/
 │       ├── render/            # Damage-diffed cell painter
 │       ├── term/              # Terminal control & raw mode
 │       └── tui/               # Elm-style full-screen interactive UI
+│   └── workflow/              # Workflow definitions & catalog store
 │
+├── native/                    # Native desktop broker workspace (Rust)
 ├── crates/                    # Mirror of DevCouncil's components (upstream: DevCouncil)
 │   ├── dc-glob/               # Zero-dependency glob engine (library, linked into dc-verify)
 │   ├── dc-grep/               # Ignore-aware repository search (ripgrep engine)

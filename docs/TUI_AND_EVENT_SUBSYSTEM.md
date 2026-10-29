@@ -262,6 +262,12 @@ flowchart TB
 7. **Rich Markdown, Syntax Highlighting & Unified Diffs**:
    - Syntax highlighting for `go`, `rust`, `json`, `bash`, `python`, and `sql` with inset container borders (`┌─ go ─┐` / `└────┘`).
    - Colored diff line rendering (`+` additions in green, `-` deletions in red, `@@` hunk headers in cyan).
+8. **Numbered Composer Paste Chips & Ordered Expansion**:
+   - Pastes collapsed into numbered chips (`[pasted N chars #k]`) with monotonically increasing sequence IDs.
+   - Chips are pruned when deleted from the editor buffer, dropped completely on prompt submit, and expanded strictly left-to-right once to prevent recursive or out-of-order expansion.
+9. **Clean Signal Shutdown & Crash Resilience**:
+   - Stop signals (`SIGTERM`, `SIGHUP`, `SIGINT`) follow the clean quit pathway: the alternate screen is exited, mouse reporting and bracketed paste are disabled, the tty is restored to cooked mode, running turns are cancelled and waited for, and held task leases are released before exit with status 1 (`stopped by <signal>`).
+   - Panics on turn goroutines are caught and converted to transcript errors, persisting the session log and writing stack traces to stderr only after the terminal is restored. Any open tool calls left by an interrupted turn receive explicit error results so that durable session logs never hold orphan `tool_use` entries.
 
 ### Complete Keyboard Shortcuts Reference
 
@@ -313,6 +319,8 @@ sequenceDiagram
 - **Zero Flicker**: No full-screen clear codes (`\x1b[2J`) during normal updates.
 - **Minimal Bandwidth**: Idle ticks write exactly 0 bytes over SSH connections.
 - **Accurate Widths**: Full East Asian Width (Ambiguous / Fullwidth) and emoji handling in pure Go.
+- **Combining Marks Cap**: Cells limit combining marks to at most 30 (`render.MaxCombPerCell`, conforming to UAX #15 Stream-Safe Text Format) to eliminate rendering stalls from runaway or adversarial Unicode combining sequences.
+- **Linear-Time Long Line Layout**: Long unbroken lines (minified JSON, base64 blobs) wrap in linear time (`render.Line.Wrap`). Streamed open lines keep rows before the last two in their final form, redrawing only the tail each frame.
 
 ---
 
@@ -341,7 +349,7 @@ flowchart TD
 
 1. **Tab vs Ctrl+I**: Disambiguated in raw mode by tracking modifier state.
 2. **Esc vs Arrow Keys**: Lone `0x1B` emits `KeyEscape` only when no CSI bytes follow within the read deadline.
-3. **Bracketed Paste**: Multi-line pasted text is parsed as a single `EventPaste` payload, preventing premature submission if the paste contains carriage returns.
+3. **Bracketed Paste**: Multi-line pasted text is parsed as a single `EventPaste` payload in linear time, bookmarking search offsets across chunk reads to avoid quadratic re-scans, and preventing premature submission if the paste contains carriage returns.
 
 ---
 
@@ -385,6 +393,14 @@ flowchart TD
     RequestReason --> IssueGrant["Issue Scoped Human Grant in Ledger"]
     IssueGrant --> ResumeExecution["Allow Tool Execution & Resume Turn"]
 ```
+
+### Type-Ahead Protection & Input Gating
+
+To prevent accidental permission grants when an operator is typing into the composer as an approval request arrives:
+- **Activation Quiet Period**: An approval card takes no input until it has been painted and 400 ms have passed since the later of that paint and the last input it refused. Type-ahead bursts of any length are dropped rather than replayed.
+- **Mouse Safety**: Only the left mouse button operates the card; middle or right clicks do nothing. Wheel scrolling over the card navigates choices without confirming.
+- **Escape / Quit Priority**: `Esc`, `Ctrl+C`, and quit shortcuts remain active immediately without activation delay to refuse or abort.
+- **Overlay Isolation**: Closing an overlay (such as the command palette) over a card restarts the 400 ms quiet period.
 
 ---
 
