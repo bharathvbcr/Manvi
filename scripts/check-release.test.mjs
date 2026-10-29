@@ -334,6 +334,16 @@ describe("fetch-modules --link-main", () => {
     assert.match(inMain.stderr, /is the main worktree/);
     assert.equal(run(wt, "--bogus").status, 2);
   });
+
+  it("accepts CRLF pins, which is what a Windows checkout writes", () => {
+    const { main } = nested();
+    const pins = path.join(main, "scripts", "module-pins.txt");
+    writeFileSync(pins, readFileSync(pins, "utf8").replace(/\n/g, "\r\n"));
+    const out = run(main);
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout, /DevCouncil already at/);
+    assert.match(out.stdout, /gusset already at/);
+  });
 });
 
 describe("verify gate", () => {

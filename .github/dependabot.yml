@@ -1,5 +1,9 @@
-# Four ecosystems, because this repository has four and each fails silently
-# in a different way when nobody is watching it.
+# Four ecosystems. The Rust one is native/, not crates/: crates/ members are
+# symlinks into the DevCouncil pin, and the updater aborts with
+# "Cargo.toml not found" on them (run 39973487284). Those versions are
+# DevCouncil's; manvi/devcouncil/crate_pins_test.go fails the build if this
+# workspace drifts from the pin. verify.sh's cargo audit still covers both
+# lockfiles. native/ is a real workspace, so that is the cargo directory below.
 #
 # verify.sh already runs govulncheck over the Go plane and cargo audit over the
 # Rust one, so a *vulnerable* dependency is caught on every run. Neither answers
@@ -34,10 +38,10 @@ updates:
       prefix: ""
     labels: []
 
-  # The Rust plane. rusqlite arrives with 22 transitive crates and ripgrep's
-  # engine with 31, which is most of what cargo audit is auditing.
+  # The desktop broker. Its members are directories in this repository, unlike
+  # crates/, whose members are symlinks Dependabot cannot fetch.
   - package-ecosystem: cargo
-    directory: /crates
+    directory: /native
     schedule:
       interval: weekly
     commit-message:

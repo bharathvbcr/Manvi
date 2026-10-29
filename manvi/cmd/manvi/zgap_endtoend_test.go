@@ -208,13 +208,30 @@ func e2eRunWith(t *testing.T, stdoutOnly bool, repo, baseURL string, args []stri
 	// own temp directory, and args come from the test that called this.
 	cmd := exec.CommandContext(t.Context(), e2eBinary(t), args...)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	// The child stands in a throwaway repository, so toolBinary's walk from
+	// the working directory never reaches this checkout's crates/target, and
+	// a runner's PATH does not have dcverify: verify.sh builds it only after
+	// this suite. The bare name is then a configured verifier that did not
+	// run, which is a blocking failure, and the turn bounces until the limit.
+	// These tests assert one completed turn, so they hand the child the
+	// binary the rest of the suite builds. An inherited MANVI_VERIFY_BINARY
+	// is dropped first: os/exec keeps the first value of a repeated key.
+	verifier := testsupport.DCVerify(t)
+	env := make([]string, 0, len(os.Environ())+6)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "MANVI_VERIFY_BINARY=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env,
 		// Init writes workspace guides into the repository; a run under test
 		// should change only what the turn changes.
 		"MANVI_HARNESS_INIT_ENABLED=false",
 		"MANVI_LLM_PROVIDER_DEFAULT=local",
 		"MANVI_LLM_LOCAL_BASE_URL="+baseURL,
 		"MANVI_LLM_LOCAL_MODEL=mock-model",
+		"MANVI_VERIFY_BINARY="+verifier,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	var out []byte

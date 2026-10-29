@@ -115,6 +115,13 @@ link_one() {
 
 count=0
 while IFS=$'\t' read -r name url sha || [[ -n "${name:-}" ]]; do
+  # A Windows checkout writes CRLF. `read` leaves the CR on the last field, and
+  # the 40-hex check then rejects a pin that is otherwise exact: the message
+  # prints the sha with the CR invisible, which is what the windows-latest job
+  # reported for every commit it fetched. Strip it before any check.
+  name="${name//$'\r'/}"
+  url="${url//$'\r'/}"
+  sha="${sha//$'\r'/}"
   [[ -z "${name//[[:space:]]/}" ]] && continue
   [[ "$name" == \#* ]] && continue
   if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
