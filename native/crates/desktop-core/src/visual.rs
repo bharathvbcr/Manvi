@@ -1,10 +1,10 @@
 use crate::{
     Action, ActionKind, Bounds, DesktopError, MAX_IMAGE_PIXELS, Node, Result, Screenshot, Window,
+    sha256_hex,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageFormat, ImageReader, Limits, RgbaImage};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
 const MAX_TEMPLATE_BYTES: usize = 96 * 1024;
@@ -193,7 +193,7 @@ fn matched_frame(
         anchor.height,
         MAX_TEMPLATE_BYTES,
     )?;
-    if format!("{:x}", Sha256::digest(&template_bytes)) != anchor.sha256 {
+    if sha256_hex(&template_bytes) != anchor.sha256 {
         return Err(failure(
             "visual_invalid",
             "Visual anchor PNG digest differs",
@@ -212,7 +212,7 @@ fn matched_frame(
         capture.height,
         12 * 1024 * 1024,
     )?;
-    let frame_hash = format!("{:x}", Sha256::digest(frame.as_raw()));
+    let frame_hash = sha256_hex(frame.as_raw());
     let mut found = None;
     let mut compared = 0u64;
     for y in anchor.search.y..=anchor.search.y + anchor.search.height - anchor.height {
@@ -287,7 +287,7 @@ pub fn resolve_visual(
     let binding = serde_json::to_vec(&(observation_id, window, anchor, matched, &frame_sha256))
         .map_err(|e| DesktopError::new("serialization", e.to_string()))?;
     Ok(VisualMatch {
-        target_id: format!("visual-{:x}", Sha256::digest(binding)),
+        target_id: format!("visual-{}", sha256_hex(binding)),
         anchor_sha256: anchor.sha256.clone(),
         frame_sha256,
         matched,
@@ -357,10 +357,9 @@ mod tests {
     use super::{
         MAX_COMPARISONS, PixelPoint, PixelRect, VisualAnchor, resolve_visual, revalidate_visual,
     };
-    use crate::{Action, ActionKind, Bounds, Effect, Screenshot, Selector, Window};
+    use crate::{Action, ActionKind, Bounds, Effect, Screenshot, Selector, Window, sha256_hex};
     use base64::{Engine, engine::general_purpose::STANDARD};
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-    use sha2::{Digest, Sha256};
     use std::io::Cursor;
 
     fn png(image: &RgbaImage) -> Vec<u8> {
@@ -392,7 +391,7 @@ mod tests {
         let bytes = png(&template);
         let anchor = VisualAnchor {
             png_base64: STANDARD.encode(&bytes),
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            sha256: sha256_hex(&bytes),
             width: 8,
             height: 8,
             frame_width: 64,
@@ -591,7 +590,7 @@ mod tests {
             }
             let bytes = png(&template);
             anchor.png_base64 = STANDARD.encode(&bytes);
-            anchor.sha256 = format!("{:x}", Sha256::digest(bytes));
+            anchor.sha256 = sha256_hex(bytes);
             assert_eq!(
                 resolve_visual(&window, &capture, &anchor, "o")
                     .unwrap_err()
@@ -609,7 +608,7 @@ mod tests {
         let frame = RgbaImage::from_pixel(256, 256, Rgba([0, 0, 0, 255]));
         let bytes = png(&template);
         anchor.png_base64 = STANDARD.encode(&bytes);
-        anchor.sha256 = format!("{:x}", Sha256::digest(bytes));
+        anchor.sha256 = sha256_hex(bytes);
         anchor.width = 128;
         anchor.height = 128;
         anchor.frame_width = 256;

@@ -22,6 +22,19 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Lowercase hex SHA-256, the form every binding, fingerprint and visual digest
+/// carries on the wire. digest 0.11's output array has no `LowerHex`, so this is
+/// the one place that spells it.
+pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for &byte in Sha256::digest(bytes).iter() {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -432,7 +445,7 @@ impl Action {
         action.approval_id = None;
         let bytes = serde_json::to_vec(&(session, run, epoch, action))
             .map_err(|e| DesktopError::new("serialization", e.to_string()))?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        Ok(sha256_hex(bytes))
     }
 }
 
@@ -489,7 +502,7 @@ pub fn state_fingerprint(nodes: &[Node]) -> Result<String> {
         .collect();
     let bytes = serde_json::to_vec(&state)
         .map_err(|e| DesktopError::new("serialization", e.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(sha256_hex(bytes))
 }
 
 /// Diagnostic contains only normalized paths and changed attribute names;
@@ -595,6 +608,22 @@ pub fn same_target(expected: &Node, actual: &Node) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sha256_hex_is_lowercase_two_digits_per_byte() {
+        // Vectors from `shasum -a 256`; the last pins zero-padding and both nibbles.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"hello world"),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        assert_eq!(
+            sha256_hex([0x00, 0x0f, 0xf0, 0xff]),
+            "18468ac83ad30a5794186af3abcbbfe310ab144ea15a908145a8f17890bf2e37"
+        );
+    }
     #[test]
     fn bounded_text_refuses_past_the_limit_and_keeps_text_at_it() {
         let at = "a".repeat(MAX_TEXT_BYTES);
