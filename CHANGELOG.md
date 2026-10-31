@@ -195,6 +195,20 @@ under **Unreleased** in the same commit as the code.
   it reads as a live member, so such a checkout stays held until that parent
   exits or `manvi serve` restarts. Off unix `close()` behaves as before until the
   DevCouncil pin provides a Windows Job Object.
+- An agent with a write lease can no longer rewrite the files that become its
+  next prompt or its tool surface. `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+  `mcp.json` and `.mcp.json` at any depth, the `.claude`, `.cursor` and
+  `.agents` skill roots, and plugin manifests under the plugin roots MANVI
+  discovers are refused as `path.restricted` under every posture, yolo
+  included, through file tools, `serve`'s `policy.check.file` and the
+  command plane, and through hard-link and symlink aliases of a root prompt
+  input. Reads are unaffected. A host's `internal` write is still allowed. The
+  DevCouncil pin moves from `782b9f16` to `84a9b35e`, which is `782b9f16` plus
+  that policy change only; no schema or verdict-contract change. Residuals the
+  rung does not model (interpreters, `sh -c`, archive extraction, history-
+  rewriting git commands and directory-level copies) are listed in
+  DevCouncil's `gate/zadv_prompt_input_test.go`.
+- Closing a managed coding agent now kills and confirms its whole process group
 - The session privacy scrub now rewrites JSON object keys as well as values. It
   walked structured payloads with `for key, value := range obj` and passed only
   the value to the scrubber, so a secret that sat in a key (a map keyed by
