@@ -217,7 +217,6 @@ under **Unreleased** in the same commit as the code.
   rung does not model (interpreters, `sh -c`, archive extraction, history-
   rewriting git commands and directory-level copies) are listed in
   DevCouncil's `gate/zadv_prompt_input_test.go`.
-- Closing a managed coding agent now kills and confirms its whole process group
 - The session privacy scrub now rewrites JSON object keys as well as values. It
   walked structured payloads with `for key, value := range obj` and passed only
   the value to the scrubber, so a secret that sat in a key (a map keyed by
