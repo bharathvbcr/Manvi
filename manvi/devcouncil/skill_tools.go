@@ -144,15 +144,10 @@ func (r *Registry) NoteListedSkills(names []string) {
 // SECURITY IMPACT: none widened. A skill body is untrusted repository content
 // entering the model's context through a tool result, the same way AGENTS.md
 // does through the prompt; it is no more trusted than a file the model could
-// read with read_file. Whether an agent can author a skill depends on the
-// posture. DevCouncil's write policy denies .agents/** (the ".agents/*" and
-// ".agents/**" entries of the protected-path list in policy/file.go), but that
-// rung is inside the hard-rule block, which the yolo posture switches off, so
-// under yolo an agent can write .agents/skills/** and then load what it wrote.
-// Until dh-4 (ft-d4be683f) makes prompt-input protection posture-independent,
-// that is the one posture where "a model cannot author its own skills" does
-// not hold; TestAgentSkillAuthoringByPosture pins the current behaviour and
-// fails when it changes.
+// read with read_file. An agent cannot author a skill under any posture:
+// DevCouncil's prompt-input rung (policy/promptinput.go) refuses writes to the
+// .agents/skills roots at any depth, and it sits outside the hard-rule block,
+// so yolo refuses them too. TestAgentSkillAuthoringByPosture pins that.
 func (r *Registry) loadSkill(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Name string `json:"name"`
