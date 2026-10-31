@@ -110,6 +110,13 @@ under **Unreleased** in the same commit as the code.
   together. The linked command gate adds the hard rule `command.harness_only`,
   which refuses review recording in agent shells. `contracts/verdict.schema.json`
   now lists that rule, matching DevCouncil at the pin. gusset stays at `320c56c2`.
+- The DevCouncil pin moves from `b1a29105` to `782b9f16` (135 commits), and gusset
+  moves from `320c56c2` to `e561435` (198 commits, crossing gusset v0.0.3).
+  `devmap-extract` moves from extraction schema 97 to 98; `dc-store` stays at
+  schema 11 with workbench 14, and `devmap-store` stays at 27 with readers
+  accepted from 25.
+- Dependabot configuration monitors `/native` for Cargo dependency updates,
+  replacing `/crates` (whose members are symlinks into the DevCouncil repository).
 - `manvi serve`'s verification critic (`work.verify.task`) now runs on the
   advisor tier, read-only, through the same provider, tier and effort setup as
   `manvi run`. It used to inherit the session's model, bypassing the tier
@@ -175,6 +182,8 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `desktop-core` in `native/` compiles against `sha2` 0.11.1 (`sha256_hex` helper
+  formats `hybrid_array::Array` digests without relying on `LowerHex`).
 - Closing a managed coding agent now kills and confirms its whole process group
   on unix. The agent already led its own group, but the kill rode on `Wait`
   being pending, so once the agent had exited, a grandchild that redirected its

@@ -121,12 +121,12 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
-| `devcouncil_git_status` | Read-only | *None* | Reports branch, HEAD, ahead/behind, and individually enumerated staged/unstaged/untracked files (`-uall`, NUL-safe parsing for awkward filenames). |
-| `devcouncil_git_log` | Read-only | `max` (int, optional; default 10, capped 50) | Lists recent commits with hash, author, ISO date, and subject. |
+| `devcouncil_git_status` | Read-only | *None* | Reports branch, HEAD, ahead/behind, and individually enumerated staged/unstaged/untracked files (`-uall`, NUL-safe parsing for awkward filenames). In unborn repositories, clean zero-commit status is reported. |
+| `devcouncil_git_log` | Read-only | `max` (int, optional; default 10, capped 50) | Lists recent commits with hash, author, ISO date, and subject; cap notes reach the model via `degraded`. Unborn repositories return an empty list. |
 | `devcouncil_git_branches` | Read-only | *None* | Lists local branches with the current one marked. |
-| `devcouncil_git_show` | Read-only | `object` (string, optional; default HEAD) | Shows one commit's metadata and patch; the patch is size-capped with the truncation reported. Object arguments are validated against option injection. |
-| `devcouncil_git_stage` | Write | `paths` (array of strings) | Stages named paths through the command policy gate — the same ladder as `devcouncil_exec_command`. Secret-path matches are refused as hard denials under every posture. |
-| `devcouncil_git_commit` | Write | `message` (string), `allow_empty` (bool, optional) | Commits the staged set through the command policy gate; re-checks the index against secret-path patterns at commit time and returns the new HEAD on success. |
+| `devcouncil_git_show` | Read-only | `object` (string, optional; default HEAD) | Shows one commit's metadata and patch; the patch is size-capped with truncation notes reaching the model via `degraded`. Resolves `<object>^{commit}` strictly, refusing blobs, trees, and `:` references. |
+| `devcouncil_git_stage` | Write | `paths` (array of strings) | Stages named paths through the command policy gate using literal pathspecs (`GIT_LITERAL_PATHSPECS=1`) with directory pre-expansion checks; secret-path matches are refused as hard denials under every posture. |
+| `devcouncil_git_commit` | Write | `message` (string), `allow_empty` (bool, optional) | Commits the staged set through the command policy gate without repository hooks (`core.hooksPath=os.DevNull`) or `core.fsmonitor`; verifies committed tree equals checked tree, rolling back on mismatch. |
 
 ---
 
@@ -134,7 +134,7 @@ schema means.
 
 | Native Tool | Access | Parameters | Description |
 |---|---|---|---|
-| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Runs a **pinned** inspect binary (`MANVI_DEVCOUNCIL_BINARY` required). PATH `dev`/`devcouncil` are not consulted: the Python CLI is deleted and Go `devcouncil` does not implement `status`/`gaps`/`check`. Prefer native `devcouncil_verify_task` and `manvi map` — both callable from the core profile, unlike `devcouncil_get_gaps`. When a pin is set, `check` still passes `--verify`; non-JSON output is labelled degraded, never parsed as structure. |
+| `devcouncil_dev_inspect` | Read-only | `section` (`status`\|`gaps`\|`check`), `task_id` (string, optional) | Runs a **pinned** inspect binary (`MANVI_DEVCOUNCIL_BINARY` required). PATH `dev`/`devcouncil` are not consulted: the Python CLI is deleted and Go `devcouncil` does not implement `status`/`gaps`/`check`. Prefer native `devcouncil_verify_task` and `manvi map` — both callable from the core profile, unlike `devcouncil_get_gaps`. When a pin is set, `check` still passes `--verify`; non-JSON output and truncation notes reach the model via `degraded`, never parsed as structure. |
 
 ---
 

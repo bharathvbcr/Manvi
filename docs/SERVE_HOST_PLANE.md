@@ -453,6 +453,13 @@ How the block is kept safe:
   applied: a diff taken then would not be the agent's. They refuse rather than exclude the span.
   A verification that is already running when a harness run starts on the same worktree is not
   stopped.
+- **Process group reaping and checkout holds**: On Unix, closing a managed coding agent
+  sweeps and kills its entire process group (`SIGKILL`), waiting up to 5s for all descendants
+  to exit so background dev servers or grandchildren redirecting stdio cannot outlive the run.
+  If any group member remains alive after close (`Exit.GroupLive`), the harness run treats the
+  checkout as held—keeping the harness block in place and refusing new harness runs or
+  verifications with `E_HARNESS_BUSY`—until the background reaper confirms the group has
+  exited and the checkout is clean.
 
 ---
 

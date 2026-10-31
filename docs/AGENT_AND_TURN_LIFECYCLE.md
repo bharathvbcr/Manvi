@@ -129,6 +129,9 @@ there, `agent.Loop` does not run, and the checkpoint never fires.
    - **Empty / Whitespace Suppression**: Anthropic omits `content` on empty tool results (sending `(no output)` on error results) and drops whitespace-only text blocks. OpenAI-compatible endpoints always ensure tool messages carry a string `content`.
    - **Mid-Call Token Ceilings**: A stream cut off by `max_tokens` mid-tool-call settles as `StopMaxTokens` plus `MalformedCall`, prompting the model to resend a smaller request instead of failing the turn.
    - **Abnormal Exit Cleanup**: Panics, cancellations, or abnormal exits answer all open tool calls with interrupted error results, ensuring session history never holds dangling `tool_use` blocks.
+   - **SSE Framing & Character Encoding**: SSE readers handle bare CR (`\r`) delimiters as well as CRLF/LF, and strip leading UTF-8 Byte Order Marks (BOM) from the first frame.
+   - **Transport Races & Retry Jitter**: Fast HTTP responses winning against header timeouts are preserved under a mutex. `Retry-After` delay arithmetic saturates at `MaxRetryAfter` on integer overflow, with jitter added on top of server backoff to prevent thundering herds. Hosted first-token timeout is pinned at 15 minutes.
+   - **Model-Visible Truncation Notes**: Truncation and ceiling notices for tools (`git_show`, `git_log`, `dev_inspect`) are placed in the payload `degraded` list before serialization so the model is aware of clipped results.
 
 ---
 

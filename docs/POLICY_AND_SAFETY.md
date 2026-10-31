@@ -343,6 +343,7 @@ flowchart LR
 - **`credentials.Scrubber`**: Exact-value scrubber: it replaces the credential values the process was given to watch (provider keys resolved from the environment and keychain) and recognises no key formats or high-entropy strings. A value split across stream fragments therefore matches nothing, which is why the session file does not persist `AssistantChunk` events at all.
   It fails closed: once a value it was given cannot be watched (no locked memory, or a secret that cannot be opened) or its guarded copies have been wiped, `Clean` returns `[withheld: the credential scrubber is not armed: <reason>]` in place of every text for the rest of the process, rather than passing text on as cleaned.
   Concurrent updates to watched needles use copy-on-write buffer management, ensuring concurrent turns and watchers never race on memory slices.
+- **JSON Object Key Scrubbing**: Structured session payloads (`rewritePayload`) scrub JSON object keys as well as values. Secret keys are redacted, and duplicate names created by scrubbing are disambiguated deterministically with linear `#2`, `#3` suffixes in byte order. Structural schema keys (`kind`, `message`, `provenance`, etc.) are protected from renaming to preserve JSON envelope decodability.
 - **`credentials.Secret` type**: Prevents in-memory strings from printing via `fmt.Sprintf` `%v` or `%s`.
 - **Signed Reasoning Scrubbing**: When the privacy scrubber modifies text inside a cryptographically signed thinking block, replaying that block with its original signature would fail provider validation (e.g., Anthropic 400 rejection). The scrubber drops modified signed thinking blocks whole along with their entire signed run (`reasoning_redacted`). Furthermore, retroactive history scrubs (`RestoreSensitiveLog`) drop subsequent assistant signed reasoning via `llm.DropSignedReasoning`, since upstream thinking signatures cryptographically bind earlier conversation history.
 - **`ui.Sanitize`**: Cleans bi-directional override characters (Bidi), terminal control codes, and malformed UTF-8 sequences.
@@ -356,17 +357,22 @@ Beyond write and command execution ladders, MANVI enforces fail-closed safety ac
 1. **Cross-Origin Transport Isolation**:
    - Provider HTTP clients strictly refuse cross-origin redirects (e.g. HTTP 307/308 redirects changing scheme, host, or port) with a permanent `ErrCrossOriginRedirect`.
    - Prevents credential headers (`x-api-key`, `x-goog-api-key`) and prompt payloads from leaking to foreign domains. Same-origin redirects are capped at 10 hops.
-2. **Git Diff Driver Hardening**:
+2. **Git Diff Driver & Hook Hardening**:
    - Every patch-producing Git invocation (`diff`, `show`, `log -p`, `blame`, `diff-tree`, `format-patch`, etc.) strictly enforces `--no-textconv --no-ext-diff`.
    - Prevents untrusted repositories from executing arbitrary local binaries via `.gitattributes` textconv or external diff configurations during verification or diff rendering.
-3. **Commit Tool Secret Scanning**:
+   - All Git subprocesses spawned by the `devcouncil` package enforce `core.hooksPath=os.DevNull` and `core.fsmonitor=false`, preventing repository hooks (`.husky`, `.git/hooks`) or background fsmonitor programs from executing un-gated scripts or staging uninspected files during agent turns.
+3. **Commit Tool Staging & Post-Condition Invariants**:
    - The commit tool scans only added content by blob across all versions Git holds (HEAD, index, working tree).
    - Binary files are streamed by blob from the object store to detect exact credential copies without buffering entire large files in memory.
    - Resource bounds (e.g. unreadable files or line limits) are emitted as non-fatal `scan_notes` rather than locking the agent out of committing unrelated work.
-4. **Untrusted Prompt Input & Hidden-Rune Validation**:
+   - Post-commit tree verification: the staged tree is verified before and after policy checks, and the newly committed tree must match the checked tree; any discrepancy triggers an immediate compare-and-swap rollback via `update-ref` that only affects this call's commit.
+4. **Literal Git Staging & Object Resolution**:
+   - `devcouncil_git_stage` executes with `GIT_LITERAL_PATHSPECS=1` and evaluates all directory expansions against secret-path rules prior to invoking `git add`, blocking wildcard-based bypasses (e.g., `.e*`).
+   - `devcouncil_git_show` resolves arguments strictly via `<object>^{commit}`, preventing `:` syntax from leaking blobs or trees into commit metadata.
+5. **Untrusted Prompt Input & Hidden-Rune Validation**:
    - Instruction files (`AGENTS.md`, `CLAUDE.md`) and skill files are read through gated readers and validated against an enumerated hidden-rune policy (`unicode/hidden.go`).
    - Rejects zero-width spaces, joiners, and bidi override controls designed to conceal prompt-injection payloads from human inspection while allowing legitimate multilingual Unicode text.
-5. **Lessons Database Integrity**:
+6. **Lessons Database Integrity**:
    - Lesson store inputs are validated to prevent markdown headings that mimic internal section markers (`lessons.Heading`), preventing structure forgery during persistence and restore.
 
 ---
