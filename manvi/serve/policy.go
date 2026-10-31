@@ -84,8 +84,9 @@ type FileCheckParams struct {
 	Op string `json:"op,omitempty"`
 	// Internal exempts the caller from the restricted-path rung and from the
 	// prompt-input rung (AGENTS.md, CLAUDE.md, GEMINI.md, mcp.json, plugin
-	// manifests, skill roots), for writes the harness itself makes: its own
-	// state directory, and the host-side materialisation of instructions. It
+	// manifests, skill roots), for writes a host makes on the harness's behalf.
+	// Manvi's own materialisation of instructions does not come through this
+	// field; it asks the policy in-process (harness_materialise.go). It
 	// is a host-trust assertion, not a property of the path: the host that sets
 	// it vouches that neither the flag nor the path came from model output, so
 	// a value derived from anything a model produced must never reach it. It

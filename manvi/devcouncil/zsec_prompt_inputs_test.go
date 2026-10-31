@@ -136,5 +136,5 @@ func seedPromptInputTask(t *testing.T, f *fixture) {
 		planned += `{"path":"` + name + `","allowed_change":"modify"}`
 	}
 	planned += `]`
-	insertTask(t, storeBinary(t), f.db, "TASK-002", planned)
+	insertTask(t, f.db, "TASK-002", planned)
 }

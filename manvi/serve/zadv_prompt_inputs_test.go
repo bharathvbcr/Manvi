@@ -66,9 +66,9 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-// A hard link to a prompt input is the same inode under another name. The rung
-// matches the name and the resolved name, never the identity, so a write to the
-// link is not seen.
+// A hard link to a prompt input is the same inode under another name, so
+// neither the name nor the resolved name matches. The write is refused by file
+// identity against the root's prompt inputs.
 func TestAdvHardLinkToPromptInputIsRefused(t *testing.T) {
 	for _, hard := range []bool{true, false} {
 		opts := hostOpts()
@@ -85,13 +85,14 @@ func TestAdvHardLinkToPromptInputIsRefused(t *testing.T) {
 		}
 		d := decodeDecision(t, roundTrip(t, opts, internalFileCheck(t, "1", root, "notes.txt", false))[0])
 		if d.Action != policy.Deny || d.Rule != policy.RuleRestrictedPath {
-			t.Errorf("BROKEN hard=%v: write through a hard link to AGENTS.md = %s/%s", hard, d.Action, d.Rule)
+			t.Errorf("hard=%v: write through a hard link to AGENTS.md = %s/%s", hard, d.Action, d.Rule)
 		}
 	}
 }
 
 // A repository that keeps AGENTS.md as a symlink to another file: the write
-// resolves to the target, whose name is not a prompt input.
+// resolves to the target, whose name is not a prompt input, so the lexical name
+// is what refuses it.
 func TestAdvPromptInputSymlinkedToOrdinaryFileIsRefused(t *testing.T) {
 	for _, hard := range []bool{true, false} {
 		opts := hostOpts()
@@ -111,7 +112,7 @@ func TestAdvPromptInputSymlinkedToOrdinaryFileIsRefused(t *testing.T) {
 		}
 		d := decodeDecision(t, roundTrip(t, opts, internalFileCheck(t, "1", root, "AGENTS.md", false))[0])
 		if d.Action != policy.Deny || d.Rule != policy.RuleRestrictedPath {
-			t.Errorf("BROKEN hard=%v: write to AGENTS.md -> docs/rules.md = %s/%s", hard, d.Action, d.Rule)
+			t.Errorf("hard=%v: write to AGENTS.md -> docs/rules.md = %s/%s", hard, d.Action, d.Rule)
 		}
 	}
 }
