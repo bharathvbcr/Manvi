@@ -1122,7 +1122,9 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 					break
 				}
 				if resumed {
-					ctx, cancel = turnContext(job)
+					// Derived from the job's context, not from the finished turn's, so
+					// nothing nests however many follow-ups a run takes.
+					ctx, cancel = turnContext(job) //nolint:fatcontext // see above
 					lastCheckpoint = time.Time{}
 					continue
 				}

@@ -389,6 +389,13 @@ an answer whose request, turn, thread or payload digest differs. Permission
 mode, sandbox and the effective configuration are fixed for the run and do not
 change per turn.
 
+Budgets that span turns: the two-hour bound on a managed job covers the whole
+run, parked time included, so eight 45-minute turns are not reachable; each
+turn gets its own 45-minute active-time budget inside it. The parked idle
+deadline is set once when the run parks and is not extended by a refused
+follow-up. The session's callback budget (2048 requests, 32 open) and the 32 MiB
+provider-output cap are per process, so they are shared by all of its turns.
+
 Executable lookup, validation and spawn errors are classified as known unstarted
 only by the process adapter. They finish as `failed` and release the repository
 reservation. A generic factory error stays `unresolved`; an error result containing

@@ -494,8 +494,17 @@ func TestContinueTurnRefusesWhileAnApprovalOfTheLastTurnIsOpen(t *testing.T) {
 		s.pending["a"] = &claudePending{source: Request{ID: "a"}, requestID: "a"}
 		requireRefused(t, s.ContinueTurn(t.Context(), "second"), ErrTurnInFlight)
 		s.pending["a"].sent = true
+		answered := s.pending["a"].source
 		if err := s.ContinueTurn(t.Context(), "second"); err != nil {
 			t.Fatal(err)
+		}
+		// An answered callback no longer counts against the pending cap, and a
+		// late answer to it is stale rather than delivered.
+		if len(s.pending) != 0 {
+			t.Fatalf("answered callbacks stayed pending: %d", len(s.pending))
+		}
+		if err := s.Respond(t.Context(), answered, Response{Decision: "allow_once"}); err == nil || !strings.Contains(err.Error(), "stale") {
+			t.Fatalf("a late answer to a finished turn's callback: %v", err)
 		}
 	})
 }

@@ -520,7 +520,15 @@ func (s *Claude) ContinueTurn(ctx context.Context, message string) error {
 	// The turn id is learned again from the new turn's first assistant message,
 	// which is what binds the new turn's approvals to it; a callback of the
 	// finished turn that was never answered would have refused the follow-up
-	// (see backlogged), and answered ones stay marked sent.
+	// (see backlogged). Answered ones are dropped so they do not count against
+	// the pending cap for the rest of the run: `seen` still refuses a request
+	// id used twice, and a late answer for one finds nothing pending and is
+	// refused as stale.
+	for id, p := range s.pending {
+		if p.sent {
+			delete(s.pending, id)
+		}
+	}
 	s.finished, s.sawInit, s.sawText, s.turnID = false, false, false, ""
 	s.ledger.turns++
 	if err := s.wire.sendRaw(ctx, encoded); err != nil {
