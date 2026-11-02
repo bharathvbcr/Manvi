@@ -23,6 +23,23 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- Follow-up turns for a managed run (additive within protocol 1). The optional
+  op `work.runs.managed.continue` takes `{id, request_id, message?}` and delivers
+  one follow-up to a run whose previous turn completed, in the same provider
+  process and on the same Claude session or Codex thread; without a `message` it
+  reads the run's state. It is opt-in per attempt through the new optional
+  `max_continuations` (0 to 8) on `work.runs.managed.prepare`: such a run parks
+  after a completed turn, recorded as `running`, instead of ending. A message is
+  at most 32 KiB, turns are bounded, follow-ups are at least two seconds apart,
+  and one is refused while a turn is in flight or after the run ended. A durable
+  claim is written to the run's saved output before the message is sent, and an
+  ambiguous delivery is reported `E_CONTINUE_UNRESOLVED`, ends the run
+  `unresolved` and is never sent again. `ManagedSession` gains `ContinueTurn`;
+  `codingagent.Claude` and `codingagent.Codex` implement it, and Claude now
+  accepts the `system/init` the CLI repeats for each turn. `max_continuations` is
+  refused for a provider without the mechanism before the attempt is claimed.
+  Documented in `docs/WORKBENCH.md`; `contracts/serve.ops.schema.json` declares
+  the op and its types.
 - Harness specs. `harness.spec` (operator scope, empty by default) selects a
   named spec: prompt sections after the fixed ones, a skills selection, a
   lessons library name and sub-agent roles, from a process catalogue or

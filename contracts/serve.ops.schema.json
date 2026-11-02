@@ -71,6 +71,7 @@
       "work.runs.get",
       "work.runs.list",
       "work.runs.managed.activate",
+      "work.runs.managed.continue",
       "work.runs.managed.follow",
       "work.runs.managed.prepare",
       "work.runs.managed.stop",
@@ -561,6 +562,51 @@
         }
       }
     },
+    "ManagedContinueParams": {
+      "type": "object",
+      "required": false,
+      "fields": {
+        "id": {
+          "type": "string",
+          "required": true
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "nullable": true
+        },
+        "request_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "ManagedContinueResult": {
+      "type": "object",
+      "required": false,
+      "fields": {
+        "idle_deadline": {
+          "type": "integer",
+          "required": false
+        },
+        "max_turns": {
+          "type": "integer",
+          "required": true
+        },
+        "request_id": {
+          "type": "string",
+          "required": false
+        },
+        "state": {
+          "type": "string",
+          "required": true
+        },
+        "turn": {
+          "type": "integer",
+          "required": true
+        }
+      }
+    },
     "ManagedPrepareParams": {
       "type": "object",
       "required": false,
@@ -587,6 +633,10 @@
         "id": {
           "type": "string",
           "required": true
+        },
+        "max_continuations": {
+          "type": "integer",
+          "required": false
         },
         "request_id": {
           "type": "string",

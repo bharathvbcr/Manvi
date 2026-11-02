@@ -32,6 +32,9 @@ func (s *ctxOnlySession) Effective() codingagent.Effective { return s.config }
 func (s *ctxOnlySession) StartTurn(context.Context, string) error {
 	return nil
 }
+func (s *ctxOnlySession) ContinueTurn(context.Context, string) error {
+	return codingagent.RefuseContinue(codingagent.ErrContinueUnsupported)
+}
 func (s *ctxOnlySession) Next(ctx context.Context) (codingagent.Event, error) {
 	<-ctx.Done()
 	return codingagent.Event{}, ctx.Err()

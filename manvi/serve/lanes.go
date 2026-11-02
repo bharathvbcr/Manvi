@@ -57,6 +57,11 @@ func laneFor(op string) string {
 		// One model call that outlives the work lane's minute: on its own lane it
 		// cannot hold the board reads and writes queued behind it.
 		return "refine"
+	case op == opManagedContinue:
+		// It waits for the drive loop to write the follow-up, which is bounded by
+		// continueSendBudget. Behind a prepare's handshake (up to three minutes) it
+		// would not be answered inside its own deadline, so it has its own lane.
+		return "managed-continue"
 	case strings.HasPrefix(op, "devmap."):
 		return "devmap"
 	case strings.HasPrefix(op, "work.scan."):

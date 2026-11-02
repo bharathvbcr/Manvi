@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,18 @@ type managedTestSession struct {
 	// leaveOpen withholds that completion so a test can observe the checkpoint.
 	prelude   []codingagent.Tool
 	leaveOpen bool
+	// Follow-up turns (work.runs.managed.continue). continueErr, when set, is
+	// what ContinueTurn answers for its nth call (counting from 1) instead of
+	// starting a turn; continueOpen leaves the follow-up turn running.
+	// continued records every message ContinueTurn was offered.
+	continueErr  func(n int) error
+	continueOpen bool
+	// continueApproval, when set, has a follow-up turn raise that callback id
+	// (bound to the follow-up turn's id) instead of completing; the answer then
+	// completes it, as Respond does for the first turn.
+	continueApproval string
+	continueMu       sync.Mutex
+	continued        []string
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {
@@ -109,6 +122,37 @@ func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	}
 	return nil
 }
+func (s *managedTestSession) ContinueTurn(_ context.Context, message string) error {
+	s.continueMu.Lock()
+	s.continued = append(s.continued, message)
+	n := len(s.continued)
+	s.continueMu.Unlock()
+	if s.continueErr != nil {
+		if err := s.continueErr(n); err != nil {
+			return err
+		}
+	}
+	turn := fmt.Sprintf("turn-%d", n+1)
+	s.events <- codingagent.Event{TurnID: turn}
+	if s.continueApproval != "" {
+		payload := `{"command":"git diff"}`
+		digest := sha256.Sum256([]byte(payload))
+		s.events <- codingagent.Event{Request: &codingagent.Request{ID: s.continueApproval, ThreadID: "thread", TurnID: turn, Kind: "permission", Payload: payload, Digest: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Minute)}}
+		return nil
+	}
+	if !s.continueOpen {
+		s.events <- codingagent.Event{Text: fmt.Sprintf("Follow-up %d answered", n), Status: "completed"}
+	}
+	return nil
+}
+
+// offered is every message ContinueTurn received, in order.
+func (s *managedTestSession) offered() []string {
+	s.continueMu.Lock()
+	defer s.continueMu.Unlock()
+	return append([]string(nil), s.continued...)
+}
+
 func (s *managedTestSession) Next(ctx context.Context) (codingagent.Event, error) {
 	select {
 	case e := <-s.events:
