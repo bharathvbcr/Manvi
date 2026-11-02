@@ -81,8 +81,12 @@ leaves it running.
 func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	posture := serve.PostureHost
 	workbenchDB := ""
-	listenPath := ""
-	idleExit, idleSet := defaultServeIdleExit, false
+	// The socket flags are taken out first, so the loop below reads exactly the
+	// arguments it always has.
+	listenPath, idleExit, args, err := takeSocketFlags(args)
+	if err != nil {
+		return err
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help", "help":
@@ -113,36 +117,9 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return fmt.Errorf("--workbench-db needs an absolute profile database path")
 			}
 			workbenchDB = filepath.Clean(args[i])
-		case "--listen":
-			if listenPath != "" {
-				return fmt.Errorf("--listen must be supplied only once")
-			}
-			value, ok := nextArg(args, i)
-			if !ok || !filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
-				return fmt.Errorf("--listen needs an absolute socket path")
-			}
-			i++
-			listenPath = filepath.Clean(value)
-		case "--idle-exit":
-			if idleSet {
-				return fmt.Errorf("--idle-exit must be supplied only once")
-			}
-			value, ok := nextArg(args, i)
-			if !ok {
-				return fmt.Errorf("--idle-exit needs a duration such as 90s or 5m")
-			}
-			i++
-			d, err := time.ParseDuration(value)
-			if err != nil || d <= 0 || d > serve.MaxIdleExit {
-				return fmt.Errorf("--idle-exit needs a duration between 1ns and %s, not %q", serve.MaxIdleExit, value)
-			}
-			idleExit, idleSet = d, true
 		default:
 			return fmt.Errorf("unknown argument %q\n\n%s", args[i], serveUsage)
 		}
-	}
-	if idleSet && listenPath == "" {
-		return fmt.Errorf("--idle-exit applies to --listen: a stdio server ends when its host closes stdin")
 	}
 
 	// Read through the same accessor the gate uses, so `manvi serve` and
@@ -317,12 +294,54 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	return err
 }
 
-// nextArg is the argument after args[i], and whether there is one.
-func nextArg(args []string, i int) (string, bool) {
-	if i < 0 || i+1 >= len(args) {
-		return "", false
+// takeSocketFlags removes --listen and --idle-exit, with their values, from args
+// and returns them with the arguments that are left. An empty path means stdio.
+// The idle period is the default unless given; giving it without --listen is
+// refused, since a stdio server ends when its host closes stdin.
+func takeSocketFlags(args []string) (path string, idle time.Duration, rest []string, err error) {
+	idle = defaultServeIdleExit
+	idleSet := false
+	rest = make([]string, 0, len(args))
+	skip := false
+	for i, arg := range args {
+		if skip {
+			skip = false
+			continue
+		}
+		var value string
+		switch arg {
+		case "--listen", "--idle-exit":
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
+		default:
+			rest = append(rest, arg)
+			continue
+		}
+		skip = true
+		if arg == "--listen" {
+			if path != "" {
+				return "", 0, nil, fmt.Errorf("--listen must be supplied only once")
+			}
+			if !filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
+				return "", 0, nil, fmt.Errorf("--listen needs an absolute socket path")
+			}
+			path = filepath.Clean(value)
+			continue
+		}
+		if idleSet {
+			return "", 0, nil, fmt.Errorf("--idle-exit must be supplied only once")
+		}
+		d, parseErr := time.ParseDuration(value)
+		if parseErr != nil || d <= 0 || d > serve.MaxIdleExit {
+			return "", 0, nil, fmt.Errorf("--idle-exit needs a duration between 1ns and %s such as 90s or 5m, not %q", serve.MaxIdleExit, value)
+		}
+		idle, idleSet = d, true
 	}
-	return args[i+1], true
+	if idleSet && path == "" {
+		return "", 0, nil, fmt.Errorf("--idle-exit applies to --listen: a stdio server ends when its host closes stdin")
+	}
+	return path, idle, rest, nil
 }
 
 // defaultServeIdleExit is how long a socket-served process with no client and no

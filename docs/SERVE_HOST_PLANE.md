@@ -480,6 +480,13 @@ socket mode reads no stdin and writes nothing to stdout.
 manvi serve --listen "$XDG_RUNTIME_DIR/manvi/serve.sock" --workbench-db /abs/profile.sqlite --idle-exit 5m
 ```
 
+What persists across connections is what the host-plane modules hold: the managed
+runner and its jobs, the store, the enhancement, scan and verification runners. What is
+per connection is what a stdio server also keeps for its one host: the `chat.*`
+compaction and calibration ledgers and the `capability.probe` reuse cache. A host that
+reconnects starts with those empty — a `chat.prepare` after a reconnect plans against a
+fresh ledger — exactly as it would after restarting a stdio server.
+
 The process is meant to be started detached. It catches `SIGHUP` (a closed terminal)
 and `SIGPIPE` (its starter's stderr pipe closing; the next log line would otherwise
 kill a Go process that writes to fd 2) and goes on. It ends on `SIGINT`/`SIGTERM`,
