@@ -184,6 +184,9 @@ type Codex struct {
 	wire         *connection
 	effective    Effective
 	turnID       string
+	// prior is the ids of the turns this session finished before turnID, at most
+	// 1+MaxContinuations of them.
+	prior        map[string]bool
 	started      bool
 	finished     bool
 	queue        []packet
@@ -411,6 +414,12 @@ func (s *Codex) startTurn(ctx context.Context, text string) error {
 	if json.Unmarshal(reply, &result) != nil || !opaque(result.Turn.ID) {
 		return errors.New("Codex did not return a valid turn identity")
 	}
+	if s.turnID != "" && s.turnID != result.Turn.ID {
+		if s.prior == nil {
+			s.prior = make(map[string]bool)
+		}
+		s.prior[s.turnID] = true
+	}
 	s.turnID = result.Turn.ID
 	return nil
 }
@@ -431,8 +440,19 @@ func (s *Codex) ContinueTurn(ctx context.Context, message string) error {
 		return RefuseContinue(ErrTurnInFlight)
 	}
 	defer s.mu.Unlock()
+	// Whatever the finished turn left in the pipe or in the queue (a late usage
+	// or diff notification, or what a rejected follow-up read past) is decoded
+	// now, so an event with no meaning is dropped here instead of making the
+	// session look busy, or being read after the new turn's id was adopted. A
+	// meaningful one is parked in deferred, which backlogged still counts.
+	drainErr := s.drain()
 	if err := s.ledger.admit(ctx, message, s.ready, s.started, s.finished, s.backlogged(), s.wire); err != nil {
 		return err
+	}
+	if drainErr != nil {
+		// Nothing has been written. The backlog could not be read, so what the
+		// last turn left is unknown and no follow-up is started on top of it.
+		return RefuseContinue(fmt.Errorf("the finished turn's events could not be read: %w", drainErr))
 	}
 	// The turn id stays the finished turn's until the reply names the new one;
 	// events of the new turn that arrive first wait in s.queue and are read
@@ -440,7 +460,7 @@ func (s *Codex) ContinueTurn(ctx context.Context, message string) error {
 	s.finished = false
 	s.ledger.turns++
 	if err := s.startTurn(ctx, message); err != nil {
-		if errors.Is(err, errProviderRejected) {
+		if errors.Is(err, ErrProviderRejected) {
 			s.finished = true
 			s.ledger.turns--
 			return RefuseContinue(err)
@@ -466,9 +486,9 @@ func (s *Codex) backlogged() bool {
 	return false
 }
 
-// errProviderRejected marks a JSON-RPC error response: the provider answered
+// ErrProviderRejected marks a JSON-RPC error response: the provider answered
 // that it did not do what was asked.
-var errProviderRejected = errors.New("provider rejected the request")
+var ErrProviderRejected = errors.New("provider rejected the request")
 
 // providerRejection keeps the message call has always produced while letting
 // ContinueTurn tell an answer from a failure to get one.
@@ -477,7 +497,7 @@ type providerRejection struct{ method string }
 func (e *providerRejection) Error() string {
 	return fmt.Sprintf("Codex rejected %s; provider error details are not copied into logs", e.method)
 }
-func (e *providerRejection) Is(target error) bool { return target == errProviderRejected }
+func (e *providerRejection) Is(target error) bool { return target == ErrProviderRejected }
 func (s *Codex) call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	id := s.wire.nextID()
 	if err := s.wire.send(ctx, packet{ID: id, Method: method, Params: params}); err != nil {
@@ -580,6 +600,14 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 	}
 	if v.ThreadID != "" && v.ThreadID != s.effective.Thread.ID {
 		return Event{}, false, errors.New("Codex event belongs to another thread")
+	}
+	// A notification that names a turn this session already finished is a late
+	// tail of it (a usage or diff update sent after turn/completed), not a fault
+	// of the current turn. It reaches here only when it overtook the follow-up's
+	// reply; its turn is over, so nothing is taken from it. A request is never
+	// ignored: a server request must be answered or refused, not dropped.
+	if len(p.ID) == 0 && (s.prior[v.TurnID] || s.prior[v.Turn.ID]) {
+		return Event{}, false, nil
 	}
 	if v.TurnID != "" && v.TurnID != s.turnID {
 		return Event{}, false, errors.New("Codex event belongs to another turn")

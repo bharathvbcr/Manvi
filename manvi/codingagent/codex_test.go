@@ -68,7 +68,7 @@ func TestProtocolChild(t *testing.T) {
 		case "turn/start":
 			turnStarts++
 			switch scenario {
-			case "multiturn", "multiturn-early", "multiturn-callback", "reject-second", "silent":
+			case "multiturn", "multiturn-early", "multiturn-callback", "reject-second", "silent", "late-tail", "late-tail-reject":
 				// The recorded shape of a second turn on one thread (codex-cli
 				// 0.153.4, ephemeral thread): a new turn id per turn/start, answered
 				// with turn/started and turn/completed carrying it.
@@ -77,7 +77,7 @@ func TestProtocolChild(t *testing.T) {
 					fmt.Printf("{\"id\":%s,\"result\":{\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", in.ID, id)
 					continue
 				}
-				if scenario == "reject-second" && turnStarts == 2 {
+				if (scenario == "reject-second" || scenario == "late-tail-reject") && turnStarts == 2 {
 					fmt.Printf("{\"id\":%s,\"error\":{\"code\":-32600,\"message\":\"busy\"}}\n", in.ID)
 					continue
 				}
@@ -91,6 +91,11 @@ func TestProtocolChild(t *testing.T) {
 					fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
 					fmt.Printf("{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"item\":{\"id\":\"answer-%d\",\"type\":\"agentMessage\",\"text\":\"REPLY_%s\"}}}\n", id, turnStarts, id)
 					fmt.Printf("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"completed\",\"items\":[]}}}\n", id)
+					if strings.HasPrefix(scenario, "late-tail") && turnStarts == 1 {
+						// A notification the first turn sends after it completed, which
+						// nothing reads until a follow-up asks for the pipe.
+						fmt.Printf("{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"tokenUsage\":{}}}\n", id)
+					}
 				}
 				reply := func() {
 					fmt.Printf("{\"id\":%s,\"result\":{\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", in.ID, id)

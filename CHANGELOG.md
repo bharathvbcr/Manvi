@@ -38,6 +38,12 @@ under **Unreleased** in the same commit as the code.
   `codingagent.Claude` and `codingagent.Codex` implement it, and Claude now
   accepts the `system/init` the CLI repeats for each turn. `max_continuations` is
   refused for a provider without the mechanism before the attempt is claimed.
+  A refusal that wrote nothing is retryable only for a turn in flight, the rate
+  window or an unknown outcome; a provider's rejection and an unrecognised
+  refusal are `E_DEPENDENCY`, not retryable. Codex ignores a late notification of
+  a turn it already finished instead of failing the follow-up, and a late
+  notification with no meaning no longer makes the session look busy after a
+  rejected follow-up.
   Documented in `docs/WORKBENCH.md`; `contracts/serve.ops.schema.json` declares
   the op and its types.
 - Harness specs. `harness.spec` (operator scope, empty by default) selects a

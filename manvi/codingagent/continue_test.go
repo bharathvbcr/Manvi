@@ -2,6 +2,7 @@ package codingagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -346,7 +347,7 @@ func TestCodexProviderRejectionIsARefusalAndTheSessionRecovers(t *testing.T) {
 	}
 	collectCodex(t, s)
 	err := s.ContinueTurn(t.Context(), "second")
-	requireRefused(t, err, errProviderRejected)
+	requireRefused(t, err, ErrProviderRejected)
 	if s.ledger.turns != 1 || !s.finished || s.ledger.halted {
 		t.Fatalf("a rejected follow-up left the session mid-turn: turns %d finished %t halted %t", s.ledger.turns, s.finished, s.ledger.halted)
 	}
@@ -355,6 +356,68 @@ func TestCodexProviderRejectionIsARefusalAndTheSessionRecovers(t *testing.T) {
 	}
 	if text, status := collectCodex(t, s); status != "completed" || !strings.Contains(text, "REPLY_turn-3") {
 		t.Fatalf("the retry after a rejection: %q %q", text, status)
+	}
+}
+
+// A notification the finished turn sends after turn/completed is still in the
+// pipe when a follow-up asks for it. It is read while the follow-up's reply is
+// awaited, so it used to be queued behind the new turn's id and rejected as
+// "belongs to another turn", failing a turn that did nothing wrong.
+func TestCodexLateNotificationOfTheFinishedTurnDoesNotFailTheFollowUp(t *testing.T) {
+	s := fixture(t, "late-tail")
+	if err := s.StartTurn(t.Context(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	collectCodex(t, s)
+	if err := s.ContinueTurn(t.Context(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	if text, status := collectCodex(t, s); status != "completed" || !strings.Contains(text, "REPLY_turn-2") {
+		t.Fatalf("the follow-up turn: %q %q", text, status)
+	}
+}
+
+// A rejected follow-up reads the pipe too. What it read past stays queued, and a
+// queue that is not empty used to make every later follow-up look like a turn in
+// flight, although the session was between turns and nothing would ever read it.
+func TestCodexRejectedFollowUpDoesNotLeaveTheSessionLookingBusy(t *testing.T) {
+	s := fixture(t, "late-tail-reject")
+	if err := s.StartTurn(t.Context(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	collectCodex(t, s)
+	requireRefused(t, s.ContinueTurn(t.Context(), "second"), ErrProviderRejected)
+	if err := s.ContinueTurn(t.Context(), "second, again"); err != nil {
+		t.Fatalf("the retry after a rejection was refused: %v", err)
+	}
+	if text, status := collectCodex(t, s); status != "completed" || !strings.Contains(text, "REPLY_turn-3") {
+		t.Fatalf("the retry after a rejection: %q %q", text, status)
+	}
+}
+
+// Only a notification of a turn this session finished is ignored; a request, a
+// notification of a turn it never ran, and one of the current turn still count.
+func TestCodexIgnoresOnlyNotificationsOfFinishedTurns(t *testing.T) {
+	s := fixture(t, "multiturn")
+	if err := s.StartTurn(t.Context(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	collectCodex(t, s)
+	if err := s.ContinueTurn(t.Context(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	notice := func(turn string) packet {
+		return packet{Method: "thread/tokenUsage/updated", Params: json.RawMessage(fmt.Sprintf(`{"threadId":"thread","turnId":%q}`, turn))}
+	}
+	if _, meaningful, err := s.event(notice("turn-1")); err != nil || meaningful {
+		t.Fatalf("a late notification of the finished turn: meaningful %t, %v", meaningful, err)
+	}
+	if _, _, err := s.event(notice("turn-9")); err == nil {
+		t.Fatal("a notification of a turn this session never ran was ignored")
+	}
+	request := packet{ID: json.RawMessage(`"late"`), Method: "item/commandExecution/requestApproval", Params: json.RawMessage(`{"threadId":"thread","turnId":"turn-1","itemId":"i","command":"ls","cwd":"/x","startedAtMs":1}`)}
+	if _, _, err := s.event(request); err == nil {
+		t.Fatal("a server request of a finished turn was dropped without being refused")
 	}
 }
 
