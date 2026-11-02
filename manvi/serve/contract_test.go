@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
@@ -56,6 +57,22 @@ var contractTypes = map[string]reflect.Type{
 	"ManagedContinueResult": reflect.TypeFor[ManagedContinueResult](),
 	"PrepareParams":         reflect.TypeFor[PrepareParams](),
 	"PrepareResult":         reflect.TypeFor[PrepareResult](),
+	// The ops of a socket-served server (`manvi serve --listen`): serve.status,
+	// serve.stop_all and serve.takeover.
+	"ServeStatusResult":   reflect.TypeFor[ServeStatusResult](),
+	"ServeJob":            reflect.TypeFor[ServeJob](),
+	"ServeStopAllParams":  reflect.TypeFor[ServeStopAllParams](),
+	"ServeStopAllResult":  reflect.TypeFor[ServeStopAllResult](),
+	"ServeTakeoverResult": reflect.TypeFor[ServeTakeoverResult](),
+}
+
+// noServerControl stands in for a socket server where the contract only needs
+// the ops it registers.
+type noServerControl struct{}
+
+func (noServerControl) Status() ServeStatusResult { return ServeStatusResult{} }
+func (noServerControl) StopAll(context.Context, time.Duration) ServeStopAllResult {
+	return ServeStopAllResult{}
 }
 
 type contractField struct {
@@ -181,6 +198,7 @@ func currentContract(t *testing.T) serveContract {
 		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Verify: verify, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{ForRoot: func(string) DevmapClient { return &fakeDevmap{} }},
 		HarnessModule{Resolver: &HarnessResolver{Reserved: func(string) []string { return nil }}},
+		ControlModule{Control: noServerControl{}},
 	}})
 	var optional []string
 	for _, op := range full {
@@ -353,6 +371,60 @@ func TestServeContractDeclaresManagedContinueAdditively(t *testing.T) {
 	}
 	if deadlineFor(opManagedContinue) <= continueSendBudget {
 		t.Fatalf("the op's deadline %s does not outlast the delivery budget %s", deadlineFor(opManagedContinue), continueSendBudget)
+	}
+}
+
+// serve.status, serve.stop_all and serve.takeover belong to a socket-served
+// server. They are optional ops, and every member of their shapes is declared,
+// so a host that adopts a running server reads the same file it vendors for the
+// rest of the protocol. None of it moves the protocol version.
+func TestServeContractDeclaresTheSocketServerOpsAdditively(t *testing.T) {
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed serveContract
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []string{OpServeStatus, OpServeStopAll, OpServeTakeover} {
+		if !slices.Contains(committed.Ops.Optional, op) || slices.Contains(committed.Ops.Always, op) {
+			t.Errorf("%s must be under ops.optional and not ops.always in the committed contract", op)
+		}
+	}
+	if committed.Protocol != ProtocolVersion || ProtocolVersion != 1 {
+		t.Fatalf("protocol = %d: this change is additive and does not move it", committed.Protocol)
+	}
+	for _, c := range []struct {
+		typ, field string
+		required   bool
+	}{
+		{"ServeStatusResult", "protocol", true},
+		{"ServeStatusResult", "owner_id", true},
+		{"ServeStatusResult", "process_id", true},
+		{"ServeStatusResult", "controller", true},
+		{"ServeStatusResult", "jobs", true},
+		{"ServeStatusResult", "idle_exit_ms", true},
+		{"ServeJob", "id", true},
+		{"ServeJob", "owner_id", true},
+		{"ServeJob", "session_id", true},
+		{"ServeJob", "process_id", true},
+		{"ServeJob", "phase", true},
+		{"ServeJob", "provider", false},
+		{"ServeJob", "activated", true},
+		{"ServeJob", "continue", false},
+		{"ServeStopAllParams", "wait_ms", false},
+		{"ServeStopAllResult", "stopped", true},
+		{"ServeStopAllResult", "pending", true},
+		{"ServeTakeoverResult", "controller", true},
+		{"ServeTakeoverResult", "took_over", true},
+	} {
+		typ := committed.Types[c.typ]
+		if typ == nil || typ.Fields[c.field] == nil {
+			t.Errorf("%s.%s is not in the committed contract", c.typ, c.field)
+		} else if typ.Fields[c.field].Required != c.required {
+			t.Errorf("%s.%s required = %t, want %t", c.typ, c.field, typ.Fields[c.field].Required, c.required)
+		}
 	}
 }
 

@@ -27,6 +27,7 @@ const serveUsage = `manvi serve — expose the harness's planes to a host proces
 
 Usage:
   manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite]
+  manvi serve --listen /absolute/dir/serve.sock [--idle-exit 5m] [--posture ...] [--workbench-db ...]
 
 Speaks NDJSON on stdin/stdout: one JSON request object per line in, one
 response object per line out, correlated by the caller's "id". Diagnostics go
@@ -58,6 +59,21 @@ the explicitly selected provider/model asynchronously after a durable claim;
 board reads and cancellation remain responsive. No model call starts on CRUD.
 
 Closing stdin shuts the server and its store processes down cleanly.
+
+--listen serves the same protocol on a unix socket instead of stdio, so the
+server (and the managed runs it hosts) can outlive the program that started it
+and a later program can reconnect and adopt them. stdin and stdout are not used;
+start it detached. The socket's directory is created 0700 if absent and must be
+owned by you and closed to everyone else; the socket is 0600; a symbolic link in
+either place is refused; a connection from another uid is closed. One client
+controls the server at a time: a second connection is answered E_CONTROLLER_BUSY
+(except serve.status, and serve.takeover to replace the first), and the slot is
+free again when the first disconnects. Managed runs keep running while no client
+is connected. serve.status reports the server's owner id and its live runs;
+serve.stop_all ends them. The server exits on SIGINT/SIGTERM, or after
+--idle-exit (default 5m, at most 24h) with no client and no live managed run.
+SIGHUP and SIGPIPE do not end it, so a closed terminal or a closed stderr pipe
+leaves it running.
 `
 
 // serveCommand runs the stdio server until stdin closes or the process is
@@ -65,6 +81,8 @@ Closing stdin shuts the server and its store processes down cleanly.
 func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	posture := serve.PostureHost
 	workbenchDB := ""
+	listenPath := ""
+	idleExit, idleSet := defaultServeIdleExit, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help", "help":
@@ -95,9 +113,36 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 				return fmt.Errorf("--workbench-db needs an absolute profile database path")
 			}
 			workbenchDB = filepath.Clean(args[i])
+		case "--listen":
+			if listenPath != "" {
+				return fmt.Errorf("--listen must be supplied only once")
+			}
+			value, ok := nextArg(args, i)
+			if !ok || !filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
+				return fmt.Errorf("--listen needs an absolute socket path")
+			}
+			i++
+			listenPath = filepath.Clean(value)
+		case "--idle-exit":
+			if idleSet {
+				return fmt.Errorf("--idle-exit must be supplied only once")
+			}
+			value, ok := nextArg(args, i)
+			if !ok {
+				return fmt.Errorf("--idle-exit needs a duration such as 90s or 5m")
+			}
+			i++
+			d, err := time.ParseDuration(value)
+			if err != nil || d <= 0 || d > serve.MaxIdleExit {
+				return fmt.Errorf("--idle-exit needs a duration between 1ns and %s, not %q", serve.MaxIdleExit, value)
+			}
+			idleExit, idleSet = d, true
 		default:
 			return fmt.Errorf("unknown argument %q\n\n%s", args[i], serveUsage)
 		}
+	}
+	if idleSet && listenPath == "" {
+		return fmt.Errorf("--idle-exit applies to --listen: a stdio server ends when its host closes stdin")
 	}
 
 	// Read through the same accessor the gate uses, so `manvi serve` and
@@ -239,14 +284,18 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		}
 		modules = append(modules, serve.WorkbenchModule{Client: client, Runner: runner, Configuration: &configuration, Managed: managed, Devmap: forRoot, Scan: scan, Verify: verify})
 	}
-	srv := serve.New(os.Stdout, serve.Options{
+	options := serve.Options{
 		HardRules:      hardRules,
 		AllowNeighbors: neighbors,
 		AllowSameDir:   sameDir,
 		Posture:        posture,
 		Modules:        modules,
-	})
-	err = srv.Serve(ctx, os.Stdin)
+	}
+	if listenPath != "" {
+		err = serveOnSocket(ctx, listenPath, idleExit, options, managed)
+	} else {
+		err = serve.New(os.Stdout, options).Serve(ctx, os.Stdin)
+	}
 	if managed != nil {
 		err = errors.Join(err, managed.Close())
 	}
@@ -266,6 +315,44 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	// After Shutdown, so the drain sees anything the drain logged.
 	_, _ = gussetcheck.DrainLogs(os.Stderr)
 	return err
+}
+
+// nextArg is the argument after args[i], and whether there is one.
+func nextArg(args []string, i int) (string, bool) {
+	if i < 0 || i+1 >= len(args) {
+		return "", false
+	}
+	return args[i+1], true
+}
+
+// defaultServeIdleExit is how long a socket-served process with no client and no
+// live managed run waits before it exits.
+const defaultServeIdleExit = 5 * time.Minute
+
+// serveOnSocket runs the host plane on a unix socket until ctx ends or the
+// server has been idle for idleExit. It returns once the socket is gone; the
+// caller then closes the runners, which is what ends any managed run still going
+// when the process is signalled.
+//
+// The process is meant to outlive the program that started it, which stdio never
+// had to cope with. A closed terminal sends SIGHUP and a closed stderr pipe makes
+// the next write to it raise SIGPIPE, which Go turns into the death of a process
+// that writes to fd 1 or 2. Neither is a reason to end it, so both are caught and
+// dropped here, and the writes return their errors instead.
+//
+// Caught rather than signal.Ignore'd: an ignored signal cannot be given back, and
+// a Notify is undone by Stop. Nothing reads the channel; the runtime never blocks
+// on a full one.
+func serveOnSocket(ctx context.Context, path string, idleExit time.Duration, options serve.Options, managed *serve.ManagedRunner) error {
+	detached := make(chan os.Signal, 1)
+	signal.Notify(detached, syscall.SIGHUP, syscall.SIGPIPE)
+	defer signal.Stop(detached)
+	server, err := serve.ListenSocket(ctx, serve.SocketConfig{Path: path, Options: options, Managed: managed, IdleExit: idleExit, Log: os.Stderr})
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "manvi serve: listening on %s (owner %s, pid %d); idle exit %s\n", server.Path(), server.OwnerID(), os.Getpid(), idleExit)
+	return server.Serve(ctx)
 }
 
 // serveHarnessResolver is what harness.resolve and a managed attempt's harness

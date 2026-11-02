@@ -383,8 +383,19 @@ A refusal that wrote nothing is not always one the host may retry. Only a turn
 in flight, the rate window, and an outcome not yet known are marked retryable.
 A provider that answered that it started no turn, and a refusal the host does
 not recognise, are `E_DEPENDENCY` and not retryable: the host is not told that a
-retry will help when it does not know why it was refused. A refusal that wrote
-nothing also leaves the rate window as it was; a delivery uses it up.
+retry will help when it does not know why it was refused. A retryable refusal
+that wrote nothing leaves the rate window as it was, so the host may offer the
+follow-up again at once; a delivery uses it up, and so does a refusal that
+cannot succeed. A host that loops on one of those is turned away with
+`E_CONTINUE_RATE` before the provider and before the saved output, so it adds one
+`[follow-up N not sent: ...]` note to the record, not one per attempt.
+
+A provider process that exits while the run is parked is noticed when it
+happens, not when the idle budget would have ended the run: the run ends as
+`failed`, with the reason "the provider process exited while the run was parked
+between turns" and a note in its saved output, and a follow-up claimed in the
+same instant is answered `E_RUN_ENDED`. It is not recorded as `completed`: the
+last turn did complete, but nobody asked for the run to end.
 
 Which of the two follow-up mechanisms to use. `runs.managed.follow` queues one
 message for a later attempt (`parent_run_id`, `resume`), which is a new process

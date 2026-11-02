@@ -17,6 +17,10 @@
 ```bash
 # Launch the host plane server
 manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite]
+
+# Or serve the same protocol on a unix socket, so the server and its managed runs
+# can outlive the program that started it (see "Socket-served mode")
+manvi serve --listen /absolute/private-dir/serve.sock [--idle-exit 5m] [--workbench-db ...]
 ```
 
 ---
@@ -34,6 +38,7 @@ manvi serve [--posture host|devcouncil] [--workbench-db /absolute/profile.sqlite
 | `chat.settle` | Parses completed model responses: reclassifies `<think>` tags, recovers tool calls, and handles truncations. |
 | `chat.forget` | Explicitly drops a conversation's compaction and calibration ledger. |
 | `harness.resolve` (optional) | Resolves a harness spec (`repo`, `named` or `inline`) into sections, roles, a bounded skills listing and a digest for the host to compose into its own `System`. Listed in `hello.ops` only when served; a host that does not see it runs with no harness. See [Host harness](#host-harness). |
+| `serve.status` / `serve.stop_all` / `serve.takeover` (optional, socket mode only) | Registered only by `manvi serve --listen`, so a stdio server's `hello.ops` is unchanged. `serve.status` reports the server's `owner_id` (`manvi-{pid}-{nanos}-{token}`), its pid, whether the asking connection is the controller, the live managed jobs and the idle period; `serve.stop_all {wait_ms?}` cancels every live managed job and says which ended and which are still ending; `serve.takeover` replaces the controlling client. See [Socket-served mode](#socket-served-mode-manvi-serve---listen). |
 | `devmap.status` | Reports devmap host-contract, schema, readiness, freshness, coverage gaps, and command capabilities. |
 | `devmap.query` | Runs a bounded `explore`, `impact`, `trace`, or `affected` query and preserves the producer's completeness envelope. |
 | `work.scan.gaps` / `work.scan.get` / `work.scan.cancel` (with `work.*`) | `work.scan.gaps {repo_root, since?, max_proposals?}` claims a no-model repository gap scan and answers at once with a `scan_id`; `work.scan.get {scan_id}` reads its `coverage`, `complete` flag and `proposals` (each with a `fingerprint`, a `new`/`known`/`attached` status and, for dead code, both signals); `work.scan.cancel` stops it. `repo_root` must be absolute, free of symlinks and the top of a git work tree, else `E_BAD_REQUEST`; an unbuilt or degraded DevMap index is refused with `E_DEPENDENCY` naming `devmap status`. The scan never writes the board: the host files a proposal with its `scan:<fp>` label and the `manvi-scan:` description line. Later scans dedupe on the label alone, because item cards omit descriptions; the description line is a trace for people and is not read back. Only open cards hold a finding (`archived:false` and not Done), so a finished or archived card does not silence a gap that has come back. `work.scan.cancel` frees the root at once: a `work.scan.gaps` for it afterwards starts a new scan, while the cancelled one, if still unwinding, keeps counting against the limit of two concurrent scans (`E_BUSY`, retryable). The claim is in-process (it does not survive a sidecar restart). |
@@ -460,6 +465,111 @@ How the block is kept safe:
   checkout as held—keeping the harness block in place and refusing new harness runs or
   verifications with `E_HARNESS_BUSY`—until the background reaper confirms the group has
   exited and the checkout is clean.
+
+---
+
+## Socket-served mode (`manvi serve --listen`)
+
+The stdio server lives and dies with the program that spawned it, and so do the
+managed runs it hosts. `--listen <absolute path>` serves **the same framed NDJSON
+protocol** on a unix socket instead, so a host can leave managed runs running when
+it quits and reconnect to them later. stdio is unchanged and still the default; the
+socket mode reads no stdin and writes nothing to stdout.
+
+```bash
+manvi serve --listen "$XDG_RUNTIME_DIR/manvi/serve.sock" --workbench-db /abs/profile.sqlite --idle-exit 5m
+```
+
+The process is meant to be started detached. It catches `SIGHUP` (a closed terminal)
+and `SIGPIPE` (its starter's stderr pipe closing; the next log line would otherwise
+kill a Go process that writes to fd 2) and goes on. It ends on `SIGINT`/`SIGTERM`,
+after `--idle-exit` (default 5 minutes, at most 24 hours) with **no client connected
+and no live managed run**, or if the listener fails. A client disconnecting is not
+one of them. On exit it closes the socket and removes the file it made; the caller
+then closes the managed runner, which is what ends any run still going when the
+process is signalled. Other background work (automatic enhancement, scans,
+verification) is not a managed job and does not hold the server up.
+
+### Security model
+
+- **Where.** The socket's directory is created `0700` if absent (the parent must
+  exist) and must be owned by the effective uid with no group or other access. An
+  existing directory is checked, never repaired: changing the mode of a directory the
+  operator pointed us at is not ours to do. The socket is `0600`. Because the
+  directory is closed to everyone else, no other user can reach the socket in the
+  moment between `bind` and `chmod`.
+- **No links, no clobbering.** The socket path and its directory must not be
+  symbolic links, and the path must name a socket or nothing. A regular file is never
+  removed. A socket is removed only when nothing answers on it (`ECONNREFUSED`); one
+  that answers is another server (`already being served`), and one that cannot be
+  classified is left alone. The path must fit a unix socket address (100 bytes).
+- **Peer check.** Every accepted connection is checked against the kernel's record of
+  the peer's uid (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on Linux) and closed without
+  a word unless it is this process's effective uid. A platform that cannot report it
+  refuses to start: a socket that authenticates nobody is not a fallback.
+- **What that authenticates.** The peer uid is the only authentication. Every process
+  running as the same user can drive the server, as it can already drive a stdio
+  server it spawned or write the profile database the server uses. The model does not
+  defend against the user's own other processes.
+- **Bounds.** At most 8 connections (the controller and those waiting); a waiting
+  connection is closed after 30 s with no request and may send lines of at most 4 KiB;
+  a client that stops reading is cut off after 30 s of a blocked write; the idle period
+  is bounded. A controlling client's lines are bounded as on stdio (8 MiB).
+
+### One controlling client
+
+Exactly one connection controls the server at a time. Only it can send ops, so there
+are never two writers.
+
+| Situation | What happens |
+|---|---|
+| The slot is free | The connection controls at once. No handshake is needed; a stdio host's bytes work unchanged. |
+| A controller is attached | The new connection is a *waiting* connection. Every request except `serve.status` and `serve.takeover` is answered `E_CONTROLLER_BUSY` (retryable) and never reaches an op. `serve.status` works and says `controller: false`. |
+| The controller disconnects (closes, or its process dies and the kernel closes the socket) | **Handover.** The next client to connect controls. The slot is free only once the previous controller's connection has been fully served out: requests it left in flight get 5 s to answer a half-closed peer and are then cancelled, so a new client never runs beside a request the old one left behind. |
+| `serve.takeover` on a waiting connection | The current controller is cancelled and its connection closed; the server waits (10 s) for its requests to end; only then does the caller control, and the answer says `took_over: true`. If they do not end in time the takeover is refused `E_CONTROLLER_BUSY` (retryable, "nothing changed hands") — failing closed beats two writers. Two takeovers at once leave exactly one able to write; a takeover replaces whoever controls, including one that took over a moment before. |
+| `serve.takeover` with the slot free, or by the controller | Claims the slot / reports that it already has it (`took_over: false`). |
+
+A client that wants to adopt what is running connects, sends `serve.status`, and
+decides: if it is the controller it has what it needs; if not, it waits and retries or
+takes over on purpose.
+
+### Adopting running jobs
+
+Managed jobs run on contexts of their own and keep running while no client is
+connected. `serve.status` returns:
+
+- `owner_id` — the server's identity, `manvi-{pid}-{nanos}-{token}` stamped when it
+  started: the same form a managed claim records, so reconciliation that proves a claim's
+  owner gone (no such pid, or one that started after the stamp) works on it unchanged.
+  Every job's own `owner_id` carries the **same pid**: while that process lives, the job is
+  not orphaned.
+- `jobs` — every managed job that has not ended (at most 64), in id order: `id`,
+  `owner_id`, `session_id`, `process_id`, `phase` (`preparing`, `awaiting_activation`,
+  `running`, or what it ended as), `provider`, `activated`, and, for a run prepared with
+  `max_continuations`, `continue` (the state `work.runs.managed.continue` reads:
+  `running`, `parked`, `unresolved`, `ended`, with turn counts). A job that is
+  `awaiting_activation` is given up after five minutes; a host that was between
+  `prepare` and `activate` when it went away may activate it. The id is what every
+  `work.runs.managed.*` op takes, so a reconnecting host drives an adopted run exactly as
+  the host that started it did.
+- `controller`, `idle_exit_ms`, `process_id`, `protocol`.
+
+`serve.stop_all {wait_ms?}` is the explicit end of every job: it cancels each live
+managed job the way `work.runs.managed.stop` cancels one, waits up to `wait_ms`
+(default 5000, at most 30000) and answers `{stopped: [...], pending: [...]}`. A job in
+`pending` is ending: read `serve.status` or the run. It does not close the runner or the
+server, and a job prepared afterwards runs as usual.
+
+### Output while no client is connected
+
+Nothing is lost and nothing is buffered for a client. The server never pushes a line the
+host did not ask for (every line is the one response to a request), so there is no
+outbound backlog to overflow. A job's text and tool snapshot are checkpointed into its
+run record (`runs.protocol` `output`, bounded by 128 KiB and marked `output_truncated`
+when it overflows) by the job's own drive loop, on a one-second cadence and at every
+turn boundary, whether or not anyone is connected. A reconnecting host reads the run
+record. A connection that ends cancels only its own in-flight requests; a job is never
+one of them.
 
 ---
 

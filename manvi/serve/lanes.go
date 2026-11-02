@@ -47,8 +47,14 @@ const laneQueue = 32
 func laneFor(op string) string {
 	switch op {
 	case OpHello, OpPolicyCheckFile, OpPolicyCheckCommand, OpChatPrepare, OpChatSettle, OpChatForget,
-		opManagedStop, opManagedWake, opManagedFollow:
+		opManagedStop, opManagedWake, opManagedFollow, OpServeStatus, OpServeTakeover:
+		// serve.status only reads, and serve.takeover on a controlling connection
+		// only says it already controls: neither may queue behind a slow lane.
 		return ""
+	case OpServeStopAll:
+		// It waits, up to a bound, for the jobs it cancelled to end. A lane of its
+		// own, so it neither holds the read loop nor queues behind a prepare.
+		return "control"
 	case OpCapabilityProbe, OpLocalScan:
 		return "local"
 	}
@@ -117,6 +123,9 @@ func opDeadline(op string) time.Duration {
 	case op == OpWorkRefine:
 		// The model call (enhancementJobTimeout) plus the grounding and board reads around it.
 		return enhancementJobTimeout + 30*time.Second
+	case op == OpServeStopAll:
+		// The longest wait the op accepts (maxStopAllWait) plus the cancels around it.
+		return maxStopAllWait + 30*time.Second
 	case strings.HasPrefix(op, "devmap."), strings.HasPrefix(op, "work."):
 		return time.Minute
 	default:
