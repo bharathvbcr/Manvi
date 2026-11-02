@@ -67,8 +67,11 @@ type managedTestSession struct {
 	// (bound to the follow-up turn's id) instead of completing; the answer then
 	// completes it, as Respond does for the first turn.
 	continueApproval string
-	continueMu       sync.Mutex
-	continued        []string
+	// onContinue runs as ContinueTurn is entered, before it records the message,
+	// so a test can look at the store at the moment of the provider write.
+	onContinue func()
+	continueMu sync.Mutex
+	continued  []string
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {
@@ -123,6 +126,9 @@ func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	return nil
 }
 func (s *managedTestSession) ContinueTurn(_ context.Context, message string) error {
+	if s.onContinue != nil {
+		s.onContinue()
+	}
 	s.continueMu.Lock()
 	s.continued = append(s.continued, message)
 	n := len(s.continued)

@@ -114,9 +114,12 @@ type ManagedContinueParams struct {
 // ManagedContinueResult is work.runs.managed.continue's answer.
 type ManagedContinueResult struct {
 	// State is one of:
-	//   delivered   the message was written; the new turn is running
+	//   delivered   the message was written to the provider; this does not say
+	//               the new turn has begun, which the state read shows
 	//   parked      between turns, ready for a message
-	//   running     a turn is in flight
+	//   running     a turn is in flight; also reported before the first turn
+	//               begins (turn 0) and while a finished turn is being settled,
+	//               before it parks
 	//   unresolved  an earlier delivery was ambiguous; no more are sent
 	//   ended       the run takes no more follow-ups
 	State     string `json:"state"`
@@ -198,7 +201,10 @@ func (rc *continueReceipt) finish(err *Error) {
 
 type continueRequest struct {
 	id, message string
-	receipt     *continueReceipt
+	// prevLast is the run's rate mark before this claim moved it, given back if
+	// the follow-up is refused having written nothing.
+	prevLast time.Time
+	receipt  *continueReceipt
 }
 
 func (j *managedJob) startedFirstTurn() {
@@ -341,12 +347,13 @@ func (r *ManagedRunner) claimContinuation(ctx context.Context, job *managedJob, 
 		return ManagedContinueResult{}, refusal
 	}
 	rc := &continueReceipt{digest: digest, turn: c.turns + 1, done: make(chan struct{})}
+	prevLast := c.last
 	c.parked, c.last = false, now
 	c.turns++
 	c.receipts[requestID] = rc
 	// Never blocks: parked was true, so the channel is empty, and it stays
 	// false until the loop has finished with this request.
-	c.requests <- &continueRequest{id: requestID, message: message, receipt: rc}
+	c.requests <- &continueRequest{id: requestID, message: message, receipt: rc, prevLast: prevLast}
 	job.mu.Unlock()
 	return job.awaitReceipt(ctx, requestID, rc)
 }
@@ -456,14 +463,14 @@ func (r *ManagedRunner) deliver(job *managedJob, c *continuation, req *continueR
 	defer stop()
 	claim := fmt.Sprintf("\n[follow-up %d claimed: request %q, %d bytes, sha256 %s]\n", n, req.id, len(req.message), req.receipt.digest)
 	if job.output.Len()+len(claim) > maxManagedOutput {
-		return r.refuseFollowUp(job, c, req, n, &Error{Code: ErrContinueLimit, Message: "the run's saved output has no room for the claim, so nothing was sent"}, false), nil
+		return r.refuseFollowUp(job, c, req, n, Error{Code: ErrContinueLimit, Message: "the run's saved output has no room for the claim, so nothing was sent"}, false), nil
 	}
 	job.output.WriteString(claim)
 	// The claim is durable once this checkpoint is acknowledged. If it is not,
 	// the store may or may not hold the line, but nothing was sent either way,
 	// and the note below says so.
 	if err := r.protocol(ctx, job, "running", thread, turn); err != nil {
-		e := dependencyError("the managed run store", err)
+		e := *dependencyError("the managed run store", err)
 		e.Message += " (the follow-up's claim could not be recorded, so nothing was sent)"
 		return r.refuseFollowUp(job, c, req, n, e, job.ctx.Err() != nil), nil
 	}
@@ -489,10 +496,15 @@ func (r *ManagedRunner) deliver(job *managedJob, c *continuation, req *continueR
 
 // refuseFollowUp gives the slot back after a follow-up that wrote nothing, so
 // the host may offer it again, or ends the run when it cannot take another.
-func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *continueRequest, n int, e *Error, ends bool) continueOutcome {
+//
+// The refusal is a value, not a pointer, so that every caller hands over a
+// refusal that cannot be nil.
+func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *continueRequest, n int, e Error, ends bool) continueOutcome {
 	appendNote(job, fmt.Sprintf("\n[follow-up %d not sent: %s]\n", n, e.Message))
 	job.mu.Lock()
 	c.turns--
+	// Nothing was written, so the attempt does not use up the rate window.
+	c.last = req.prevLast
 	delete(c.receipts, req.id)
 	if ends {
 		c.parked, c.ended = false, true
@@ -500,7 +512,7 @@ func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *co
 		c.parked = true
 	}
 	job.mu.Unlock()
-	req.receipt.finish(e)
+	req.receipt.finish(&e)
 	if ends {
 		return continueEnded
 	}
@@ -509,22 +521,35 @@ func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *co
 
 // continueRefusalError maps an adapter refusal to the wire error, and reports
 // whether the run can take no further follow-up after it.
-func continueRefusalError(err error) (*Error, bool) {
+//
+// Only the causes this names are retryable, and the fallback is not: it does not
+// know why the adapter refused, so it must not say a retry would help.
+func continueRefusalError(err error) (Error, bool) {
 	switch {
 	case errors.Is(err, codingagent.ErrSessionClosed):
-		return runEnded("the managed session is closed; nothing was sent"), true
+		return *runEnded("the managed session is closed; nothing was sent"), true
 	case errors.Is(err, codingagent.ErrContinuationHalted):
-		return &Error{Code: ErrContinueUnresolved, Message: "an earlier follow-up's delivery is unresolved; nothing was sent"}, true
+		return Error{Code: ErrContinueUnresolved, Message: "an earlier follow-up's delivery is unresolved; nothing was sent"}, true
 	case errors.Is(err, codingagent.ErrContinueUnsupported):
-		return continueUnsupported("this provider cannot take a follow-up turn; nothing was sent"), false
+		return *continueUnsupported("this provider cannot take a follow-up turn; nothing was sent"), false
+	case errors.Is(err, codingagent.ErrNoCompletedTurn):
+		return *continueUnsupported("the session has no completed turn to follow; nothing was sent"), false
 	case errors.Is(err, codingagent.ErrContinueLimit):
-		return &Error{Code: ErrContinueLimit, Message: "the session took all the turns it may; nothing was sent"}, false
+		return Error{Code: ErrContinueLimit, Message: "the session took all the turns it may; nothing was sent"}, false
 	case errors.Is(err, codingagent.ErrContinueMessage):
-		return badRequest("the provider refused the follow-up as blank or oversized; nothing was sent"), false
+		return *badRequest("the provider refused the follow-up as blank or oversized; nothing was sent"), false
+	case errors.Is(err, codingagent.ErrTurnInFlight):
+		return Error{Code: ErrTurnInFlight, Message: "the provider still has a turn, or events of the last one, in flight; nothing was sent", Retryable: true}, false
+	case errors.Is(err, codingagent.ErrProviderRejected):
+		// An answer, not a transient fault: the provider said it started nothing.
+		return Error{Code: ErrDependency, Message: "the provider rejected the follow-up and started no turn; nothing was sent"}, false
 	case errors.Is(err, context.DeadlineExceeded):
-		return &Error{Code: ErrContinuePending, Message: "the delivery budget ran out before anything was sent", Retryable: true}, false
+		return Error{Code: ErrContinuePending, Message: "the delivery budget ran out before anything was sent", Retryable: true}, false
+	case errors.Is(err, context.Canceled):
+		// The job's context ended: the run is being stopped or closed.
+		return *runEnded("the run is stopping; nothing was sent"), true
 	}
-	return &Error{Code: ErrTurnInFlight, Message: err.Error() + "; nothing was sent", Retryable: true}, false
+	return Error{Code: ErrDependency, Message: "the provider refused the follow-up for a reason this host does not know; nothing was sent"}, false
 }
 
 // appendNote adds a line to the run's saved output when it fits. The claim line

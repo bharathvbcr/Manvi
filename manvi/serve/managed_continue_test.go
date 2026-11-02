@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,21 +93,31 @@ func (m *managedLifecycle) stop() {
 	}
 }
 
-func wantContinueCode(t *testing.T, err error, code string) *Error {
+// wantContinueCode fails the test unless err is a typed error with that code.
+func wantContinueCode(t *testing.T, err error, code string) {
+	t.Helper()
+	continueErrorOf(t, err, code)
+}
+
+// continueErrorOf is wantContinueCode for a test that reads the error's other
+// members. It returns a copy, so no caller holds a pointer that might be nil.
+func continueErrorOf(t *testing.T, err error, code string) Error {
 	t.Helper()
 	var typed *Error
 	if !errors.As(err, &typed) || typed == nil || typed.Code != code {
 		t.Fatalf("got %v, want a %s error", err, code)
+		return Error{}
 	}
-	return typed
+	return *typed
 }
 
-// savedRun is the store's record of the run, with the saved output.
-func (m *managedLifecycle) savedRun() (state, providerState, output string) {
-	m.t.Helper()
-	_, raw, err := m.runner.run(m.t.Context(), "run")
+// readSavedRun is the store's record of the run, with the saved output. It
+// returns its error instead of failing the test, so a provider fake running on
+// the drive loop's goroutine may call it.
+func (m *managedLifecycle) readSavedRun() (state, providerState, output string, err error) {
+	_, raw, err := m.runner.run(context.Background(), "run")
 	if err != nil {
-		m.t.Fatal(err)
+		return "", "", "", err
 	}
 	var row struct {
 		Item struct {
@@ -115,9 +127,35 @@ func (m *managedLifecycle) savedRun() (state, providerState, output string) {
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(raw, &row); err != nil {
+		return "", "", "", err
+	}
+	return row.Item.State, row.Item.ProviderState, row.Item.Output, nil
+}
+
+// savedRun is readSavedRun for the test's own goroutine.
+func (m *managedLifecycle) savedRun() (state, providerState, output string) {
+	m.t.Helper()
+	state, providerState, output, err := m.readSavedRun()
+	if err != nil {
 		m.t.Fatal(err)
 	}
-	return row.Item.State, row.Item.ProviderState, row.Item.Output
+	return state, providerState, output
+}
+
+// claimFaultStore fails the checkpoint that carries a follow-up's claim, as a
+// store that is down at that moment would, and passes everything else on.
+type claimFaultStore struct {
+	managedStore
+	failClaims atomic.Bool
+	failed     atomic.Int32
+}
+
+func (s *claimFaultStore) Workbench(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	if method == "runs.protocol" && s.failClaims.Load() && strings.Contains(string(input), "claimed: request") {
+		s.failed.Add(1)
+		return nil, errors.New("store offline")
+	}
+	return s.managedStore.Workbench(ctx, method, input)
 }
 
 func TestManagedContinueDeliversFollowUpsOnTheSameRunUntilItsTurnBound(t *testing.T) {
@@ -194,7 +232,7 @@ func TestManagedContinueRefusesWhileATurnIsInFlight(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	_, err := m.send("early", "Too soon")
-	if e := wantContinueCode(t, err, ErrTurnInFlight); !e.Retryable {
+	if e := continueErrorOf(t, err, ErrTurnInFlight); !e.Retryable {
 		t.Fatal("an in-flight refusal is retryable once the turn ends")
 	}
 	if len(m.session.offered()) != 0 {
@@ -274,7 +312,7 @@ func TestManagedPrepareRefusesFollowUpsForAProviderThatCannotTakeThem(t *testing
 	t.Cleanup(func() { codingagent.ContinuableProviders = was })
 	m := continuable(t, nil) // the lifecycle's provider is claude
 	_, err := m.runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1,"max_continuations":2}`))
-	e := wantContinueCode(t, err, ErrContinueUnsupported)
+	e := continueErrorOf(t, err, ErrContinueUnsupported)
 	if !strings.Contains(e.Message, "claude") {
 		t.Fatalf("the refusal does not name the provider: %s", e.Message)
 	}
@@ -290,14 +328,22 @@ func TestManagedPrepareRefusesFollowUpsForAProviderThatCannotTakeThem(t *testing
 }
 
 func TestManagedContinueSessionThatRefusesIsReportedAndTheRunStaysParked(t *testing.T) {
+	// Only a cause the host knows would pass is retryable: an unrecognised or
+	// rejected refusal must not tell the host that a retry will help.
 	cases := map[string]struct {
-		refuse error
-		code   string
+		refuse    error
+		code      string
+		retryable bool
+		ends      bool
 	}{
-		"unsupported":    {codingagent.RefuseContinue(codingagent.ErrContinueUnsupported), ErrContinueUnsupported},
-		"in flight":      {codingagent.RefuseContinue(codingagent.ErrTurnInFlight), ErrTurnInFlight},
-		"session limit":  {codingagent.RefuseContinue(codingagent.ErrContinueLimit), ErrContinueLimit},
-		"refused halted": {codingagent.RefuseContinue(codingagent.ErrContinuationHalted), ErrContinueUnresolved},
+		"unsupported":       {codingagent.RefuseContinue(codingagent.ErrContinueUnsupported), ErrContinueUnsupported, false, false},
+		"in flight":         {codingagent.RefuseContinue(codingagent.ErrTurnInFlight), ErrTurnInFlight, true, false},
+		"session limit":     {codingagent.RefuseContinue(codingagent.ErrContinueLimit), ErrContinueLimit, false, false},
+		"refused halted":    {codingagent.RefuseContinue(codingagent.ErrContinuationHalted), ErrContinueUnresolved, false, true},
+		"no completed turn": {codingagent.RefuseContinue(codingagent.ErrNoCompletedTurn), ErrContinueUnsupported, false, false},
+		"provider rejected": {codingagent.RefuseContinue(codingagent.ErrProviderRejected), ErrDependency, false, false},
+		"stopping":          {codingagent.RefuseContinue(context.Canceled), ErrRunEnded, false, true},
+		"unrecognised":      {codingagent.RefuseContinue(errors.New("something new")), ErrDependency, false, false},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -312,9 +358,11 @@ func TestManagedContinueSessionThatRefusesIsReportedAndTheRunStaysParked(t *test
 			m.startContinuable(2)
 			m.awaitState("parked")
 			_, err := m.send("c1", "Try it")
-			wantContinueCode(t, err, c.code)
-			if name == "refused halted" {
-				// A halted session cannot take another; the run is over.
+			if e := continueErrorOf(t, err, c.code); e.Retryable != c.retryable {
+				t.Fatalf("retryable %v, want %v: %+v", e.Retryable, c.retryable, e)
+			}
+			if c.ends {
+				// A halted or stopping session cannot take another; the run is over.
 				m.awaitState("ended")
 				return
 			}
@@ -334,6 +382,33 @@ func TestManagedContinueSessionThatRefusesIsReportedAndTheRunStaysParked(t *test
 	}
 }
 
+// A follow-up that was refused having written nothing leaves the rate window as
+// it was: the host may offer it again at once, and is not told to wait out an
+// interval that no delivery started.
+func TestManagedContinueRefusedFollowUpDoesNotUseUpTheRateWindow(t *testing.T) {
+	m := continuable(t, func(s *managedTestSession) {
+		s.continueErr = func(n int) error {
+			if n == 1 {
+				return codingagent.RefuseContinue(codingagent.ErrTurnInFlight)
+			}
+			return nil
+		}
+	})
+	m.startContinuable(2)
+	m.awaitState("parked")
+	continueMinInterval = time.Hour
+	_, err := m.send("c1", "Refused first")
+	wantContinueCode(t, err, ErrTurnInFlight)
+	m.awaitState("parked")
+	if res, err := m.send("c1", "Refused first"); err != nil || res.State != "delivered" {
+		t.Fatalf("the retry right after a refusal: %+v %v", res, err)
+	}
+	// A delivery does use it up.
+	m.awaitState("parked")
+	_, err = m.send("c2", "Too soon after a delivery")
+	wantContinueCode(t, err, ErrContinueRate)
+}
+
 func TestManagedContinueAmbiguousDeliveryIsReportedUnresolvedAndNeverResent(t *testing.T) {
 	m := continuable(t, func(s *managedTestSession) {
 		s.continueErr = func(int) error { return errors.New("write |1: broken pipe") }
@@ -341,7 +416,7 @@ func TestManagedContinueAmbiguousDeliveryIsReportedUnresolvedAndNeverResent(t *t
 	m.startContinuable(3)
 	m.awaitState("parked")
 	_, err := m.send("c1", "Maybe delivered")
-	e := wantContinueCode(t, err, ErrContinueUnresolved)
+	e := continueErrorOf(t, err, ErrContinueUnresolved)
 	if e.Retryable || !strings.Contains(e.Message, `"c1"`) {
 		t.Fatalf("%+v", e)
 	}
@@ -423,7 +498,7 @@ func TestManagedContinueBoundsTheMessageTheRateAndThePreparation(t *testing.T) {
 	}
 	m.awaitState("parked")
 	_, err := m.send("c2", "Faster")
-	if e := wantContinueCode(t, err, ErrContinueRate); !e.Retryable {
+	if e := continueErrorOf(t, err, ErrContinueRate); !e.Retryable {
 		t.Fatal("a rate refusal is retryable")
 	}
 	continueMinInterval = 0
@@ -531,6 +606,9 @@ func TestManagedParkSettlesTheFinishedTurnsCallbacks(t *testing.T) {
 	m.runner.mu.Lock()
 	job := m.runner.jobs["run"]
 	m.runner.mu.Unlock()
+	if job == nil {
+		t.Fatal("the run's job is gone")
+	}
 	if len(job.callbacks) != 0 {
 		t.Fatalf("a parked run still holds %d callbacks", len(job.callbacks))
 	}
@@ -564,5 +642,77 @@ func TestManagedContinueSecondFollowUpTurnFailingEndsTheRunAsFailed(t *testing.T
 	run, _ := m.finished()
 	if run.ProviderState != "failed" {
 		t.Fatalf("a failed follow-up turn ended the run as %s/%s", run.State, run.ProviderState)
+	}
+}
+
+// The durable claim is written before the provider is touched, not merely
+// somewhere in the final record: at the moment ContinueTurn is entered, the
+// store already holds the claim line. Moving the checkpoint below the write
+// leaves the store without it at that moment, and this fails.
+func TestManagedContinueClaimIsDurableBeforeTheProviderWrite(t *testing.T) {
+	var seen struct {
+		sync.Mutex
+		output string
+		err    error
+		calls  int
+	}
+	var m *managedLifecycle
+	m = continuable(t, func(s *managedTestSession) {
+		s.onContinue = func() {
+			_, _, output, err := m.readSavedRun()
+			seen.Lock()
+			defer seen.Unlock()
+			seen.output, seen.err = output, err
+			seen.calls++
+		}
+	})
+	m.startContinuable(2)
+	m.awaitState("parked")
+	if _, err := m.send("c1", "Record me first"); err != nil {
+		t.Fatal(err)
+	}
+	seen.Lock()
+	defer seen.Unlock()
+	if seen.calls != 1 || seen.err != nil {
+		t.Fatalf("ContinueTurn ran %d times and the store read gave %v", seen.calls, seen.err)
+	}
+	if !strings.Contains(seen.output, `[follow-up 1 claimed: request "c1"`) {
+		t.Fatalf("the store did not hold the claim when the message was written:\n%s", seen.output)
+	}
+}
+
+// A claim the store will not acknowledge sends nothing: the provider is not
+// touched, the op says so, the run stays parked on its first turn, and the same
+// request id is accepted once the store is back.
+func TestManagedContinueClaimThatCannotBeRecordedSendsNothing(t *testing.T) {
+	m := continuable(t, nil)
+	fault := &claimFaultStore{managedStore: m.runner.client}
+	m.runner.client = fault
+	m.startContinuable(2)
+	m.awaitState("parked")
+
+	fault.failClaims.Store(true)
+	_, err := m.send("c1", "Cannot be recorded")
+	e := continueErrorOf(t, err, ErrDependency)
+	if !strings.Contains(e.Message, "nothing was sent") {
+		t.Fatalf("the refusal does not say nothing was sent: %q", e.Message)
+	}
+	if fault.failed.Load() == 0 {
+		t.Fatal("the claim checkpoint never reached the store")
+	}
+	if got := m.session.offered(); len(got) != 0 {
+		t.Fatalf("a follow-up reached the provider without a durable claim: %q", got)
+	}
+	if got := m.awaitState("parked"); got.Turn != 1 {
+		t.Fatalf("a claim that failed consumed a turn: %+v", got)
+	}
+
+	fault.failClaims.Store(false)
+	res, err := m.send("c1", "Cannot be recorded")
+	if err != nil || res.State != "delivered" || res.Turn != 2 {
+		t.Fatalf("the same request id after the store recovered: %+v %v", res, err)
+	}
+	if got := m.session.offered(); len(got) != 1 {
+		t.Fatalf("offered %q", got)
 	}
 }
