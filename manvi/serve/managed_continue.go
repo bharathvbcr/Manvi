@@ -393,6 +393,9 @@ const (
 // when a follow-up was delivered and a new turn is running; with neither
 // resumed nor an error the run ends as completed (idle budget spent, stopped,
 // or its session closed); unresolved says the error is an ambiguous delivery.
+// A provider process that exits while the run is parked is an error: the run
+// ends as failed the moment the session reports it, not when the idle budget
+// would have.
 //
 // Only the drive loop calls it, so the provider keeps a single caller.
 func (r *ManagedRunner) awaitContinuation(job *managedJob, thread string, turn *string) (resumed, unresolved bool, err error) {
@@ -420,11 +423,19 @@ func (r *ManagedRunner) awaitContinuation(job *managedJob, thread string, turn *
 	job.mu.Lock()
 	c.parked, c.idleUntil = true, time.Now().Add(managedIdleBudget)
 	job.mu.Unlock()
+	// Nothing reads the provider while the run waits for a message, so its exit is
+	// seen here and nowhere else. A nil channel (a session with no process of its
+	// own) never fires.
+	exited := job.provider.Done()
 	for {
 		var req *continueRequest
 		select {
 		case req = <-c.requests:
 		case <-idle.C:
+		case <-exited:
+			if job.ctx.Err() == nil {
+				return false, false, r.providerExitedWhileParked(job, c)
+			}
 		case <-job.ctx.Done():
 		}
 		if req == nil {
@@ -454,6 +465,25 @@ func (r *ManagedRunner) awaitContinuation(job *managedJob, thread string, turn *
 			return false, false, nil
 		}
 	}
+}
+
+// providerExitedWhileParked ends a parked run whose provider process is gone.
+// The last turn did complete, but the run cannot take another and nobody asked
+// for it to end, so it is recorded as failed with the cause, not as the clean
+// completion an idle budget or a stop gives. A follow-up claimed in the same
+// instant is answered, and later ones are refused as ended, before the drive
+// loop goes on to close the session and write the final record.
+func (r *ManagedRunner) providerExitedWhileParked(job *managedJob, c *continuation) error {
+	appendNote(job, "\n[the provider process exited while the run was parked between turns; no further follow-up can be taken]\n")
+	job.mu.Lock()
+	c.parked, c.ended = false, true
+	select {
+	case req := <-c.requests:
+		req.receipt.finish(runEnded("the provider process exited before the follow-up was sent; nothing was sent"))
+	default:
+	}
+	job.mu.Unlock()
+	return errors.New("the provider process exited while the run was parked between turns")
 }
 
 // deliver sends one claimed follow-up: durable claim first, then the write.
@@ -503,8 +533,14 @@ func (r *ManagedRunner) refuseFollowUp(job *managedJob, c *continuation, req *co
 	appendNote(job, fmt.Sprintf("\n[follow-up %d not sent: %s]\n", n, e.Message))
 	job.mu.Lock()
 	c.turns--
-	// Nothing was written, so the attempt does not use up the rate window.
-	c.last = req.prevLast
+	// Nothing was written, but only a refusal the host may usefully offer again
+	// gives the rate window back. A refusal that cannot succeed (an unsupported
+	// provider, a rejected follow-up, a cause this host does not know) keeps the
+	// window, so a host looping on it is rate-limited, and turned away before the
+	// provider and the saved output, instead of adding a note per attempt.
+	if e.Retryable {
+		c.last = req.prevLast
+	}
 	delete(c.receipts, req.id)
 	if ends {
 		c.parked, c.ended = false, true

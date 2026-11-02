@@ -360,6 +360,11 @@ func (s *Codex) verify(o Options, sandbox, approval, reviewer string) error {
 	return nil
 }
 func (s *Codex) PID() int { return s.wire.pid }
+
+// Done is closed when the provider process has exited and been reaped. A run
+// parked between turns reads no frames, so this is how it learns the process is
+// gone.
+func (s *Codex) Done() <-chan struct{} { return s.wire.done }
 func (s *Codex) Effective() Effective {
 	s.mu.Lock()
 	defer s.mu.Unlock()

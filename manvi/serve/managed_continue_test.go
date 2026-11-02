@@ -409,6 +409,91 @@ func TestManagedContinueRefusedFollowUpDoesNotUseUpTheRateWindow(t *testing.T) {
 	wantContinueCode(t, err, ErrContinueRate)
 }
 
+// A host that retries a refusal that cannot succeed is held to the rate window
+// like any other caller: only a refusal the host may usefully offer again gives
+// the window back. Otherwise a host looping on E_CONTINUE_UNSUPPORTED or
+// E_DEPENDENCY is never rate-limited and writes a note into the run's saved
+// output every time.
+func TestManagedContinueNonRetryableRefusalKeepsTheRateWindowAndWritesOneNote(t *testing.T) {
+	for name, c := range map[string]struct {
+		refusal error
+		code    string
+	}{
+		"unsupported":       {codingagent.RefuseContinue(codingagent.ErrContinueUnsupported), ErrContinueUnsupported},
+		"provider rejected": {codingagent.RefuseContinue(codingagent.ErrProviderRejected), ErrDependency},
+		"unrecognised":      {codingagent.RefuseContinue(errors.New("something new")), ErrDependency},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := continuable(t, func(s *managedTestSession) {
+				s.continueErr = func(int) error { return c.refusal }
+			})
+			m.startContinuable(3)
+			m.awaitState("parked")
+			continueMinInterval = time.Hour
+			_, err := m.send("c1", "Cannot be taken")
+			if e := continueErrorOf(t, err, c.code); e.Retryable {
+				t.Fatalf("the refusal must not be retryable: %+v", e)
+			}
+			m.awaitState("parked")
+			// The host retries, with the same id and with new ones: each is turned
+			// away by the rate window before it reaches the provider or the record.
+			for _, id := range []string{"c1", "c2", "c3", "c4", "c5"} {
+				_, err := m.send(id, "Cannot be taken")
+				if e := continueErrorOf(t, err, ErrContinueRate); !e.Retryable {
+					t.Fatalf("a rate refusal is retryable: %+v", e)
+				}
+			}
+			if got := m.session.offered(); len(got) != 1 {
+				t.Fatalf("a rate-limited retry reached the provider: %q", got)
+			}
+			// A refusal's note is in the saved record from the next checkpoint on; the
+			// run's end writes the last one.
+			m.stop()
+			m.finished()
+			_, _, output := m.savedRun()
+			if n := strings.Count(output, "[follow-up 1 not sent:"); n != 1 {
+				t.Fatalf("the refusal left %d notes in the saved output, want 1:\n%s", n, output)
+			}
+		})
+	}
+}
+
+// A provider that dies while the run is parked between turns is noticed at once.
+// Nothing reads the provider while the run waits for a message, so before the
+// session reported its own exit the status kept saying parked until the idle
+// budget (ten minutes here) ran out, and the run then ended as completed.
+func TestManagedParkedRunEndsPromptlyWhenItsProviderProcessExits(t *testing.T) {
+	m := continuable(t, nil)
+	m.startContinuable(3)
+	m.awaitState("parked")
+	m.session.die()
+	// awaitState gives up after ten seconds; the idle budget is ten minutes.
+	if got := m.awaitState("ended"); got.Turn != 1 {
+		t.Fatalf("%+v", got)
+	}
+	run, raw := m.finished()
+	if run.ProviderState != "failed" {
+		t.Fatalf("a provider that died while parked ended the run as %s/%s, not failed: %s", run.State, run.ProviderState, raw)
+	}
+	var row struct {
+		Item struct {
+			Reason string `json:"reason"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(raw, &row); err != nil || !strings.Contains(row.Item.Reason, "parked between turns") {
+		t.Fatalf("the reason does not say the process exited while the run was parked: %s", raw)
+	}
+	_, _, output := m.savedRun()
+	if !strings.Contains(output, "provider process exited while the run was parked") {
+		t.Fatalf("the saved output does not record the exit:\n%s", output)
+	}
+	_, err := m.send("late", "After the exit")
+	wantContinueCode(t, err, ErrRunEnded)
+	if got := m.session.offered(); len(got) != 0 || m.session.closes.Load() != 1 {
+		t.Fatalf("offered %q closes %d", got, m.session.closes.Load())
+	}
+}
+
 func TestManagedContinueAmbiguousDeliveryIsReportedUnresolvedAndNeverResent(t *testing.T) {
 	m := continuable(t, func(s *managedTestSession) {
 		s.continueErr = func(int) error { return errors.New("write |1: broken pipe") }

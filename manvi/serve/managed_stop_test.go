@@ -27,6 +27,7 @@ type ctxOnlySession struct {
 }
 
 func (s *ctxOnlySession) PID() int                         { return 123 }
+func (s *ctxOnlySession) Done() <-chan struct{}            { return nil }
 func (s *ctxOnlySession) Initialize(context.Context) error { return nil }
 func (s *ctxOnlySession) Effective() codingagent.Effective { return s.config }
 func (s *ctxOnlySession) StartTurn(context.Context, string) error {

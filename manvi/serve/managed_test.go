@@ -72,6 +72,21 @@ type managedTestSession struct {
 	onContinue func()
 	continueMu sync.Mutex
 	continued  []string
+	// exited is closed by die, as a provider process's exit closes the real
+	// adapter's Done channel; both are made on first use.
+	exitOnce, dieOnce sync.Once
+	exited            chan struct{}
+}
+
+func (s *managedTestSession) Done() <-chan struct{} {
+	s.exitOnce.Do(func() { s.exited = make(chan struct{}) })
+	return s.exited
+}
+
+// die is the provider process exiting on its own.
+func (s *managedTestSession) die() {
+	s.Done()
+	s.dieOnce.Do(func() { close(s.exited) })
 }
 
 func (s *managedTestSession) Initialize(_ context.Context) error {

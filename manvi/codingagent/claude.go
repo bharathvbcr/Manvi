@@ -297,6 +297,11 @@ func claudeResumeArgs(args []string) ([]string, error) {
 
 func (s *Claude) PID() int { return s.wire.pid }
 
+// Done is closed when the provider process has exited and been reaped. A run
+// parked between turns reads no frames, so this is how it learns the process is
+// gone.
+func (s *Claude) Done() <-chan struct{} { return s.wire.done }
+
 func (s *Claude) Effective() Effective {
 	s.mu.Lock()
 	defer s.mu.Unlock()

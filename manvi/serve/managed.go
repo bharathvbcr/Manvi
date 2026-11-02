@@ -31,6 +31,11 @@ type ManagedSession interface {
 	// other error means a frame may have gone and is never retried. A provider
 	// without the mechanism refuses with codingagent.ErrContinueUnsupported.
 	ContinueTurn(context.Context, string) error
+	// Done is closed once the provider process has exited and been reaped,
+	// whatever ended it. A run parked between turns reads nothing from the
+	// provider, so this is the only way it learns the process is gone. A session
+	// that owns no process returns a channel that is never closed (or nil).
+	Done() <-chan struct{}
 	Next(context.Context) (codingagent.Event, error)
 	ValidateResponse(codingagent.Request, codingagent.Response) error
 	Respond(context.Context, codingagent.Request, codingagent.Response) error
