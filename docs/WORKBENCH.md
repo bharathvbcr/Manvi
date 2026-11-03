@@ -733,9 +733,14 @@ carries thirteen; a Manvi built before that move refuses an upgraded profile.
 Fourteen gives items a validated `scope` (planned files, forbidden changes,
 allowed commands, expected tests, requirement links). It changes no table, and
 is a hard fence because a host that builds an item body without it would erase
-the scope of every task it saves. The release pin (`scripts/module-pins.txt`,
-DevCouncil `84a9b35e`) carries workbench 14 with `dc-store` 11, as recorded in
-`CHANGELOG.md`; a Manvi built before that move refuses an upgraded profile.
+the scope of every task it saves.
+Fifteen admits CI results: `signals.record` (a GitPulse write through the Rust
+store, not a Go or `manvi serve` op) stores `run_ci_passed`, `run_ci_failed` and
+`run_ci_cancelled` attention rows that a schema fourteen host cannot read. It
+changes no table, and is a hard fence for that reason. The release pin
+(`scripts/module-pins.txt`, DevCouncil `1f6d5452`) carries workbench 15 with
+`dc-store` 11, as recorded in `CHANGELOG.md`; a Manvi built before that move
+refuses an upgraded profile.
 
 `enhancements.create` requires the normal mutation identity plus `task_id`,
 `source_revision`, a nonempty `fields` subset of title/description, and nonblank

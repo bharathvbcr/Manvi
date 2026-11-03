@@ -109,6 +109,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to the workbench schema 15 store** (`1f6d5452`,
+  from `7926697d`). Schema 15 admits CI result attention rows (`run_ci_*`),
+  which GitPulse records through the Rust store; the Go workbench allowlist and
+  therefore `manvi serve` do not offer `signals.record`. A profile a schema 15
+  host upgrades is refused by a Manvi built at the previous pin with
+  `schema_unsupported`, so move every host that shares a profile together. The
+  pin also brings DevCouncil's dc-store late-index fix, dc-proc group-kill
+  escalation, the devmap CSR graph sidecar and the zstd advisory updates.
+  `contracts/lease.schema.md` (and its `CHECKSUMS` line) follows the pin: the
+  lease table gains `worktree_path` and `worktree_id`, with at most one active
+  lease per worktree.
+
 - Behaviour change: repository hooks no longer run on any git command the
   devcouncil package starts through `gitSpec`, which includes the commit
   `devcouncil_git_commit` makes. `core.hooksPath` is pointed at the null device
