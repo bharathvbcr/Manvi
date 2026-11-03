@@ -27,10 +27,14 @@ type ctxOnlySession struct {
 }
 
 func (s *ctxOnlySession) PID() int                         { return 123 }
+func (s *ctxOnlySession) Done() <-chan struct{}            { return nil }
 func (s *ctxOnlySession) Initialize(context.Context) error { return nil }
 func (s *ctxOnlySession) Effective() codingagent.Effective { return s.config }
 func (s *ctxOnlySession) StartTurn(context.Context, string) error {
 	return nil
+}
+func (s *ctxOnlySession) ContinueTurn(context.Context, string) error {
+	return codingagent.RefuseContinue(codingagent.ErrContinueUnsupported)
 }
 func (s *ctxOnlySession) Next(ctx context.Context) (codingagent.Event, error) {
 	<-ctx.Done()

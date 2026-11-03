@@ -23,6 +23,56 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- Follow-up turns for a managed run (additive within protocol 1). The optional
+  op `work.runs.managed.continue` takes `{id, request_id, message?}` and delivers
+  one follow-up to a run whose previous turn completed, in the same provider
+  process and on the same Claude session or Codex thread; without a `message` it
+  reads the run's state. It is opt-in per attempt through the new optional
+  `max_continuations` (0 to 8) on `work.runs.managed.prepare`: such a run parks
+  after a completed turn, recorded as `running`, instead of ending. A message is
+  at most 32 KiB, turns are bounded, follow-ups are at least two seconds apart,
+  and one is refused while a turn is in flight or after the run ended. A durable
+  claim is written to the run's saved output before the message is sent, and an
+  ambiguous delivery is reported `E_CONTINUE_UNRESOLVED`, ends the run
+  `unresolved` and is never sent again. `ManagedSession` gains `ContinueTurn`;
+  `codingagent.Claude` and `codingagent.Codex` implement it, and Claude now
+  accepts the `system/init` the CLI repeats for each turn. `max_continuations` is
+  refused for a provider without the mechanism before the attempt is claimed.
+  A refusal that wrote nothing is retryable only for a turn in flight, the rate
+  window or an unknown outcome; a provider's rejection and an unrecognised
+  refusal are `E_DEPENDENCY`, not retryable. Codex ignores a late notification of
+  a turn it already finished instead of failing the follow-up, and a late
+  notification with no meaning no longer makes the session look busy after a
+  rejected follow-up.
+  Documented in `docs/WORKBENCH.md`; `contracts/serve.ops.schema.json` declares
+  the op and its types.
+- `manvi serve --listen <absolute path> [--idle-exit 5m]`: the same framed NDJSON
+  protocol on a unix socket, so the server and the managed runs it hosts can
+  outlive the program that started it and a later host can reconnect and adopt
+  them. stdio is unchanged and still the default. The socket is `0600` in a
+  directory that is `0700` and owned by the effective uid (created if absent,
+  checked and never repaired if present); a symbolic link in either place, a file
+  that is not a socket, or a socket that answers is refused; every connection's
+  peer uid is read from the kernel and a connection from another user is closed,
+  and a platform that cannot read it does not start. One client controls at a
+  time: a second connection is answered `E_CONTROLLER_BUSY` (retryable) except for
+  `serve.status` and `serve.takeover`, the slot is free again only when the
+  previous controller's connection has been served out (its in-flight requests
+  get five seconds, then are cancelled), and `serve.takeover` replaces a live
+  controller only after that has happened, refusing retryably otherwise. Managed
+  runs keep running with no client attached and their output goes to the run
+  record as it always did; the server pushes nothing, so there is no backlog. The
+  server exits on `SIGINT`/`SIGTERM`, or after `--idle-exit` (default five
+  minutes, at most 24 hours) with no client and no live managed run; `SIGHUP` and
+  `SIGPIPE` do not end it. New optional ops, registered only in this mode:
+  `serve.status` (the server's `owner_id` in the `manvi-{pid}-{nanos}-{token}`
+  form, protocol, and the live jobs with their `owner_id`, `session_id`,
+  `process_id`, `phase` and follow-up state, so a reconnecting host can adopt),
+  `serve.stop_all {wait_ms?}`, and `serve.takeover`. New error code
+  `E_CONTROLLER_BUSY`. `ManagedRunner` gains `Jobs`, `LiveJobCount` and
+  `StopAll`. Documented in `docs/SERVE_HOST_PLANE.md`;
+  `contracts/serve.ops.schema.json` declares the ops and types (a host re-vendors
+  it); `contracts/CHECKSUMS` is refreshed.
 - Harness specs. `harness.spec` (operator scope, empty by default) selects a
   named spec: prompt sections after the fixed ones, a skills selection, a
   lessons library name and sub-agent roles, from a process catalogue or
@@ -182,6 +232,18 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- A managed run parked between turns noticed its provider process dying only when
+  the ten-minute idle budget ran out, and then recorded the run as `completed`.
+  `ManagedSession` has a `Done` channel, closed when the process is reaped
+  (`codingagent.Claude` and `codingagent.Codex` return their connection's), and
+  the parked wait selects on it: the run ends as `failed` at once, with the cause
+  as its reason and a note in its saved output, and a follow-up claimed in that
+  instant is answered `E_RUN_ENDED`.
+- `work.runs.managed.continue` gave the rate window back for every refusal, so a
+  host retrying one that cannot succeed (`E_DEPENDENCY`, `E_CONTINUE_UNSUPPORTED`)
+  was never rate-limited and added a note to the run's saved output per attempt.
+  The window is now restored only for a retryable refusal; the others are turned
+  away with `E_CONTINUE_RATE` before the provider and the record.
 - `desktop-core` in `native/` compiles against `sha2` 0.11.1 (`sha256_hex` helper
   formats `hybrid_array::Array` digests without relying on `LowerHex`).
 - Closing a managed coding agent now kills and confirms its whole process group

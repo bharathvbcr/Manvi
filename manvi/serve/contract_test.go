@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
@@ -51,8 +52,27 @@ var contractTypes = map[string]reflect.Type{
 	"HarnessResolveParams": reflect.TypeFor[HarnessResolveParams](),
 	"HarnessResolveResult": reflect.TypeFor[HarnessResolveResult](),
 	"ManagedPrepareParams": reflect.TypeFor[ManagedPrepareParams](),
-	"PrepareParams":        reflect.TypeFor[PrepareParams](),
-	"PrepareResult":        reflect.TypeFor[PrepareResult](),
+	// The managed follow-up op: work.runs.managed.continue.
+	"ManagedContinueParams": reflect.TypeFor[ManagedContinueParams](),
+	"ManagedContinueResult": reflect.TypeFor[ManagedContinueResult](),
+	"PrepareParams":         reflect.TypeFor[PrepareParams](),
+	"PrepareResult":         reflect.TypeFor[PrepareResult](),
+	// The ops of a socket-served server (`manvi serve --listen`): serve.status,
+	// serve.stop_all and serve.takeover.
+	"ServeStatusResult":   reflect.TypeFor[ServeStatusResult](),
+	"ServeJob":            reflect.TypeFor[ServeJob](),
+	"ServeStopAllParams":  reflect.TypeFor[ServeStopAllParams](),
+	"ServeStopAllResult":  reflect.TypeFor[ServeStopAllResult](),
+	"ServeTakeoverResult": reflect.TypeFor[ServeTakeoverResult](),
+}
+
+// noServerControl stands in for a socket server where the contract only needs
+// the ops it registers.
+type noServerControl struct{}
+
+func (noServerControl) Status() ServeStatusResult { return ServeStatusResult{} }
+func (noServerControl) StopAll(context.Context, time.Duration) ServeStopAllResult {
+	return ServeStopAllResult{}
 }
 
 type contractField struct {
@@ -178,6 +198,7 @@ func currentContract(t *testing.T) serveContract {
 		WorkbenchModule{Client: client, Runner: runner, Managed: managed, Scan: scan, Verify: verify, Configuration: &EnhancementConfiguration{}},
 		DevmapModule{ForRoot: func(string) DevmapClient { return &fakeDevmap{} }},
 		HarnessModule{Resolver: &HarnessResolver{Reserved: func(string) []string { return nil }}},
+		ControlModule{Control: noServerControl{}},
 	}})
 	var optional []string
 	for _, op := range full {
@@ -301,6 +322,108 @@ func TestServeContractDeclaresTheHarnessPlaneAdditively(t *testing.T) {
 		got, _ := json.Marshal(committed.Types[name])
 		if !bytes.Equal(want, got) {
 			t.Errorf("%s in the committed contract differs from the Go type:\n got  %s\n want %s", name, got, want)
+		}
+	}
+}
+
+// work.runs.managed.continue is an optional op, and the one member it adds to an
+// existing shape (max_continuations on the managed prepare) is optional: a host
+// built before it neither sees a new required field nor loses an op.
+func TestServeContractDeclaresManagedContinueAdditively(t *testing.T) {
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed serveContract
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(committed.Ops.Optional, opManagedContinue) || slices.Contains(committed.Ops.Always, opManagedContinue) {
+		t.Fatalf("%s must be under ops.optional and not ops.always in the committed contract", opManagedContinue)
+	}
+	if committed.Protocol != ProtocolVersion || ProtocolVersion != 1 {
+		t.Fatalf("protocol = %d: this change is additive and does not move it", committed.Protocol)
+	}
+	for _, c := range []struct {
+		typ, field string
+		required   bool
+	}{
+		{"ManagedPrepareParams", "max_continuations", false},
+		{"ManagedContinueParams", "id", true},
+		{"ManagedContinueParams", "request_id", false},
+		{"ManagedContinueParams", "message", false},
+		{"ManagedContinueResult", "state", true},
+		{"ManagedContinueResult", "turn", true},
+		{"ManagedContinueResult", "max_turns", true},
+		{"ManagedContinueResult", "idle_deadline", false},
+	} {
+		typ := committed.Types[c.typ]
+		if typ == nil || typ.Fields[c.field] == nil {
+			t.Errorf("%s.%s is not in the committed contract", c.typ, c.field)
+		} else if typ.Fields[c.field].Required != c.required {
+			t.Errorf("%s.%s required = %t, want %t", c.typ, c.field, typ.Fields[c.field].Required, c.required)
+		}
+	}
+	// The op is served on its own lane, with a server-side deadline the host can
+	// size its timeout from.
+	if laneFor(opManagedContinue) != "managed-continue" || laneFor(opManagedContinue) == laneFor("work.runs.managed.prepare") {
+		t.Fatalf("%s runs on lane %q", opManagedContinue, laneFor(opManagedContinue))
+	}
+	if deadlineFor(opManagedContinue) <= continueSendBudget {
+		t.Fatalf("the op's deadline %s does not outlast the delivery budget %s", deadlineFor(opManagedContinue), continueSendBudget)
+	}
+}
+
+// serve.status, serve.stop_all and serve.takeover belong to a socket-served
+// server. They are optional ops, and every member of their shapes is declared,
+// so a host that adopts a running server reads the same file it vendors for the
+// rest of the protocol. None of it moves the protocol version.
+func TestServeContractDeclaresTheSocketServerOpsAdditively(t *testing.T) {
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var committed serveContract
+	if err := json.Unmarshal(raw, &committed); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []string{OpServeStatus, OpServeStopAll, OpServeTakeover} {
+		if !slices.Contains(committed.Ops.Optional, op) || slices.Contains(committed.Ops.Always, op) {
+			t.Errorf("%s must be under ops.optional and not ops.always in the committed contract", op)
+		}
+	}
+	if committed.Protocol != ProtocolVersion || ProtocolVersion != 1 {
+		t.Fatalf("protocol = %d: this change is additive and does not move it", committed.Protocol)
+	}
+	for _, c := range []struct {
+		typ, field string
+		required   bool
+	}{
+		{"ServeStatusResult", "protocol", true},
+		{"ServeStatusResult", "owner_id", true},
+		{"ServeStatusResult", "process_id", true},
+		{"ServeStatusResult", "controller", true},
+		{"ServeStatusResult", "jobs", true},
+		{"ServeStatusResult", "idle_exit_ms", true},
+		{"ServeJob", "id", true},
+		{"ServeJob", "owner_id", true},
+		{"ServeJob", "session_id", true},
+		{"ServeJob", "process_id", true},
+		{"ServeJob", "phase", true},
+		{"ServeJob", "provider", false},
+		{"ServeJob", "activated", true},
+		{"ServeJob", "continue", false},
+		{"ServeStopAllParams", "wait_ms", false},
+		{"ServeStopAllResult", "stopped", true},
+		{"ServeStopAllResult", "pending", true},
+		{"ServeTakeoverResult", "controller", true},
+		{"ServeTakeoverResult", "took_over", true},
+	} {
+		typ := committed.Types[c.typ]
+		if typ == nil || typ.Fields[c.field] == nil {
+			t.Errorf("%s.%s is not in the committed contract", c.typ, c.field)
+		} else if typ.Fields[c.field].Required != c.required {
+			t.Errorf("%s.%s required = %t, want %t", c.typ, c.field, typ.Fields[c.field].Required, c.required)
 		}
 	}
 }

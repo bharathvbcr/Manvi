@@ -26,6 +26,16 @@ type ManagedSession interface {
 	Initialize(context.Context) error
 	Effective() codingagent.Effective
 	StartTurn(context.Context, string) error
+	// ContinueTurn sends a follow-up message on the same session after a turn
+	// completed. A refusal (codingagent.ContinueRefused) wrote nothing; any
+	// other error means a frame may have gone and is never retried. A provider
+	// without the mechanism refuses with codingagent.ErrContinueUnsupported.
+	ContinueTurn(context.Context, string) error
+	// Done is closed once the provider process has exited and been reaped,
+	// whatever ended it. A run parked between turns reads nothing from the
+	// provider, so this is the only way it learns the process is gone. A session
+	// that owns no process returns a channel that is never closed (or nil).
+	Done() <-chan struct{}
 	Next(context.Context) (codingagent.Event, error)
 	ValidateResponse(codingagent.Request, codingagent.Response) error
 	Respond(context.Context, codingagent.Request, codingagent.Response) error
@@ -165,6 +175,11 @@ type managedJob struct {
 	parentID      string
 	turnText      string
 	settled       bool
+	// maxContinue is the follow-up turns this run was prepared to take after its
+	// first, and cont their state; both are zero/nil for a run that takes one
+	// turn, which is every run unless the host asked. cont is guarded by mu.
+	maxContinue int
+	cont        *continuation
 }
 type managedCallback struct {
 	request  codingagent.Request
@@ -370,6 +385,12 @@ type ManagedPrepareParams struct {
 	// Harness is the harness to materialise into the checkout for this attempt.
 	// Optional; absent means the attempt runs as it always has.
 	Harness *ManagedHarness `json:"harness,omitempty"`
+	// MaxContinuations is how many follow-up turns this attempt may take after
+	// its first through work.runs.managed.continue. Optional; absent or zero
+	// means the attempt takes one turn and ends, as it always has. At most
+	// codingagent.MaxContinuations, and only for a provider in
+	// codingagent.ContinuableProviders. See managed_continue.go.
+	MaxContinuations int `json:"max_continuations,omitempty"`
 }
 
 // SetHarness gives the runner the means to resolve a harness. Without it an
@@ -492,9 +513,13 @@ func (r *ManagedRunner) run(ctx context.Context, id string) (managedRun, json.Ra
 // native host must inspect the returned PID's OS creation identity, then call
 // Activate. Merely reading a run or its status never starts a model turn.
 func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (ManagedPrepared, error) {
-	fields, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "harness", "parent_run_id")
+	fields, err := enhancementObject(raw, 4096, "id", "request_id", "expected_revision", "harness", "parent_run_id", "max_continuations")
 	if err != nil {
 		return ManagedPrepared{}, err
+	}
+	maxContinue, e := continuationBudget(fields["max_continuations"])
+	if e != nil {
+		return ManagedPrepared{}, e
 	}
 	var request generationRequest
 	if json.Unmarshal(raw, &request) != nil || request.ID == "" || request.RequestID == "" || request.ExpectedRevision < 1 {
@@ -560,10 +585,10 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			return ManagedPrepared{}, err
 		}
 		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, parentID: parentID, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), wake: make(chan struct{}, 1), phase: "preparing", callbacks: make(map[string]*managedCallback)}
+		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, parentID: parentID, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), wake: make(chan struct{}, 1), phase: "preparing", callbacks: make(map[string]*managedCallback), maxContinue: maxContinue, cont: newContinuation(maxContinue)}
 		r.jobs[request.ID] = job
 		go r.prepare(jobCtx, job)
-	} else if job.preparation != request || job.harnessRef != harnessRef || job.parentID != parentID {
+	} else if job.preparation != request || job.harnessRef != harnessRef || job.parentID != parentID || job.maxContinue != maxContinue {
 		r.mu.Unlock()
 		return ManagedPrepared{}, errors.New("retry the original managed preparation request")
 	}
@@ -588,6 +613,11 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 	run, _, err := r.run(ctx, job.id)
 	if err == nil {
 		job.providerName, job.cwd, job.mode = run.Provider, run.Cwd, run.Mode
+		// Refused before the claim and before the checkout is entered, so the
+		// saved attempt stays prepared and the host can retry without follow-ups.
+		if job.maxContinue > 0 && !codingagent.SupportsContinue(run.Provider) {
+			err = continueUnsupported("the %s adapter cannot take a follow-up turn, so a run prepared with max_continuations is refused rather than started without it", run.Provider)
+		}
 	}
 	// The bound is checked on the turn the provider will receive, not on the
 	// brief alone: a brief just under the adapter's limit would otherwise pass
@@ -937,17 +967,22 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	defer close(job.done)
 	defer job.cancel()
+	// Runs before done closes: no follow-up is taken once this loop is gone, and
+	// one that was claimed in the same instant is answered rather than left.
+	defer job.endContinuation()
 	// Derived from the job's context, never from Background: Stop and Close
 	// cancel the job, and that must end Initialize, StartTurn, Next and the
 	// decision round-trips for any ManagedSession, not only one whose reads die
 	// with its child process. The 45-minute bound is the model turn's
-	// active-time budget on top of that.
+	// active-time budget on top of that. A follow-up turn gets a budget of its
+	// own, so cancel is whichever turn's is current.
 	ctx, cancel := context.WithTimeout(job.ctx, managedTurnBudget)
-	defer cancel()
+	defer func() { cancel() }()
 	err := job.provider.Initialize(ctx)
 	status := "failed"
 	thread := ""
 	configured := false
+	unresolvedEnd := false
 	if err == nil {
 		var encoded []byte
 		// The adapter's own description, flattened, with the digest of the harness
@@ -966,6 +1001,7 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 	}
 	if err == nil {
+		job.startedFirstTurn()
 		err = job.provider.StartTurn(ctx, withHarnessNote(brief, job.harnessFile))
 	}
 	var turn *string
@@ -1079,6 +1115,25 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 		if e.Status != "" {
 			status = e.Status
+			// A completed turn of a run prepared for follow-ups does not end the
+			// run: it is checkpointed as still running and parked until the host
+			// sends the next message, the idle budget runs out, or the run is
+			// stopped. Any other status ends it as it always did.
+			if status == "completed" && turn != nil && job.canContinue() {
+				cancel() // the finished turn's active-time budget is spent
+				resumed, halted, parkErr := r.awaitContinuation(job, thread, turn)
+				if parkErr != nil {
+					err, unresolvedEnd = parkErr, halted
+					break
+				}
+				if resumed {
+					// Derived from the job's context, not from the finished turn's, so
+					// nothing nests however many follow-ups a run takes.
+					ctx, cancel = turnContext(job) //nolint:fatcontext // see above
+					lastCheckpoint = time.Time{}
+					continue
+				}
+			}
 			break
 		}
 		if configured && turn != nil && changed && !checkpointed && time.Since(lastCheckpoint) >= outputCheckpoint {
@@ -1092,22 +1147,19 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	err = errors.Join(err, closeErr)
 	receiptCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
-	for _, callback := range job.callbacks {
-		state, reason := "cancelled", "The managed connection ended; callback delivery may be uncertain"
-		if callback.delivered {
-			// Retries the receipt written at delivery, which is a no-op once the
-			// row is resolved.
-			state, reason = "resolved", deliveredReason
-		}
-		if resolveErr := r.resolve(receiptCtx, job, callback, state, reason); resolveErr != nil {
-			err = errors.Join(err, resolveErr)
-		}
+	if settleErr := r.settleCallbacks(receiptCtx, job, "The managed connection ended; callback delivery may be uncertain"); settleErr != nil {
+		err = errors.Join(err, settleErr)
 	}
 	if err != nil {
 		status = "failed"
 		if errors.Is(err, context.Canceled) {
 			status = "interrupted"
 		}
+	}
+	if unresolvedEnd {
+		// A follow-up whose delivery cannot be told from a lost one. The store
+		// accepts unresolved from running; the run's reason carries the cause.
+		status = "unresolved"
 	}
 	finalState := status
 	protocolOK := false

@@ -184,6 +184,9 @@ type Codex struct {
 	wire         *connection
 	effective    Effective
 	turnID       string
+	// prior is the ids of the turns this session finished before turnID, at most
+	// 1+MaxContinuations of them.
+	prior        map[string]bool
 	started      bool
 	finished     bool
 	queue        []packet
@@ -192,6 +195,8 @@ type Codex struct {
 	pending      map[string]*pendingRequest
 	seen         map[string]bool
 	requestCount int
+	// ledger counts turns and gates ContinueTurn; see continue.go.
+	ledger turnLedger
 }
 
 // codexArgs is the app-server launch line.
@@ -355,6 +360,11 @@ func (s *Codex) verify(o Options, sandbox, approval, reviewer string) error {
 	return nil
 }
 func (s *Codex) PID() int { return s.wire.pid }
+
+// Done is closed when the provider process has exited and been reaped. A run
+// parked between turns reads no frames, so this is how it learns the process is
+// gone.
+func (s *Codex) Done() <-chan struct{} { return s.wire.done }
 func (s *Codex) Effective() Effective {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -363,7 +373,12 @@ func (s *Codex) Effective() Effective {
 	}
 	return s.effective.clone()
 }
-func (s *Codex) Close() (Exit, error) { return s.wire.close() }
+func (s *Codex) Close() (Exit, error) {
+	// Before the wire is closed, and without s.mu, which a blocked read holds:
+	// a ContinueTurn that raced this Close must still refuse.
+	s.ledger.closed.Store(true)
+	return s.wire.close()
+}
 
 func (s *Codex) StartTurn(ctx context.Context, brief string) error {
 	s.mu.Lock()
@@ -372,6 +387,13 @@ func (s *Codex) StartTurn(ctx context.Context, brief string) error {
 		return errors.New("a managed connection accepts one bounded, nonblank task brief")
 	}
 	s.started = true // Uncertain send can never become a second model turn.
+	s.ledger.turns = 1
+	return s.startTurn(ctx, brief)
+}
+
+// startTurn sends `turn/start` on the session's thread and adopts the turn id
+// the provider answers with. The first turn and every follow-up take this path.
+func (s *Codex) startTurn(ctx context.Context, text string) error {
 	input, err := json.Marshal(struct {
 		ThreadID string `json:"threadId"`
 		Input    []struct {
@@ -381,7 +403,7 @@ func (s *Codex) StartTurn(ctx context.Context, brief string) error {
 	}{s.effective.Thread.ID, []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
-	}{{"text", brief}}})
+	}{{"text", text}}})
 	if err != nil {
 		return err
 	}
@@ -397,9 +419,90 @@ func (s *Codex) StartTurn(ctx context.Context, brief string) error {
 	if json.Unmarshal(reply, &result) != nil || !opaque(result.Turn.ID) {
 		return errors.New("Codex did not return a valid turn identity")
 	}
+	if s.turnID != "" && s.turnID != result.Turn.ID {
+		if s.prior == nil {
+			s.prior = make(map[string]bool)
+		}
+		s.prior[s.turnID] = true
+	}
 	s.turnID = result.Turn.ID
 	return nil
 }
+
+// ContinueTurn starts another turn on the same thread with a follow-up user
+// message, once the previous turn has finished. See continue.go for the
+// mechanism and the rules.
+//
+// Nothing is written until every precondition holds, and each failed one is a
+// refusal. Once `turn/start` is written, an error that is not the provider's
+// own JSON-RPC rejection is DeliveryUnresolved and halts the session. A
+// rejection is an answer: the provider said it started nothing, so the session
+// goes back to between turns and the follow-up may be offered again.
+func (s *Codex) ContinueTurn(ctx context.Context, message string) error {
+	// A read holds s.mu for as long as it blocks, and a session that is being
+	// read is not between turns.
+	if !s.mu.TryLock() {
+		return RefuseContinue(ErrTurnInFlight)
+	}
+	defer s.mu.Unlock()
+	// Whatever the finished turn left in the pipe or in the queue (a late usage
+	// or diff notification, or what a rejected follow-up read past) is decoded
+	// now, so an event with no meaning is dropped here instead of making the
+	// session look busy, or being read after the new turn's id was adopted. A
+	// meaningful one is parked in deferred, which backlogged still counts.
+	drainErr := s.drain()
+	if err := s.ledger.admit(ctx, message, s.ready, s.started, s.finished, s.backlogged(), s.wire); err != nil {
+		return err
+	}
+	if drainErr != nil {
+		// Nothing has been written. The backlog could not be read, so what the
+		// last turn left is unknown and no follow-up is started on top of it.
+		return RefuseContinue(fmt.Errorf("the finished turn's events could not be read: %w", drainErr))
+	}
+	// The turn id stays the finished turn's until the reply names the new one;
+	// events of the new turn that arrive first wait in s.queue and are read
+	// after it has been adopted.
+	s.finished = false
+	s.ledger.turns++
+	if err := s.startTurn(ctx, message); err != nil {
+		if errors.Is(err, ErrProviderRejected) {
+			s.finished = true
+			s.ledger.turns--
+			return RefuseContinue(err)
+		}
+		s.ledger.halted = true
+		return &unresolvedDelivery{cause: err}
+	}
+	// A fileChange the finished turn left half-reviewed belongs to that turn.
+	clear(s.items)
+	return nil
+}
+
+// backlogged reports unread events or unanswered callbacks of the last turn.
+func (s *Codex) backlogged() bool {
+	if len(s.deferred) > 0 || len(s.queue) > 0 {
+		return true
+	}
+	for _, p := range s.pending {
+		if !p.sent {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrProviderRejected marks a JSON-RPC error response: the provider answered
+// that it did not do what was asked.
+var ErrProviderRejected = errors.New("provider rejected the request")
+
+// providerRejection keeps the message call has always produced while letting
+// ContinueTurn tell an answer from a failure to get one.
+type providerRejection struct{ method string }
+
+func (e *providerRejection) Error() string {
+	return fmt.Sprintf("Codex rejected %s; provider error details are not copied into logs", e.method)
+}
+func (e *providerRejection) Is(target error) bool { return target == ErrProviderRejected }
 func (s *Codex) call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	id := s.wire.nextID()
 	if err := s.wire.send(ctx, packet{ID: id, Method: method, Params: params}); err != nil {
@@ -415,7 +518,7 @@ func (s *Codex) call(ctx context.Context, method string, params json.RawMessage)
 				return nil, errors.New("Codex returned an unrecognized response identity")
 			}
 			if len(p.Error) > 0 {
-				return nil, fmt.Errorf("Codex rejected %s; provider error details are not copied into logs", method)
+				return nil, &providerRejection{method: method}
 			}
 			if len(p.Result) == 0 {
 				return nil, errors.New("Codex response has no result")
@@ -503,6 +606,14 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 	if v.ThreadID != "" && v.ThreadID != s.effective.Thread.ID {
 		return Event{}, false, errors.New("Codex event belongs to another thread")
 	}
+	// A notification that names a turn this session already finished is a late
+	// tail of it (a usage or diff update sent after turn/completed), not a fault
+	// of the current turn. It reaches here only when it overtook the follow-up's
+	// reply; its turn is over, so nothing is taken from it. A request is never
+	// ignored: a server request must be answered or refused, not dropped.
+	if len(p.ID) == 0 && (s.prior[v.TurnID] || s.prior[v.Turn.ID]) {
+		return Event{}, false, nil
+	}
 	if v.TurnID != "" && v.TurnID != s.turnID {
 		return Event{}, false, errors.New("Codex event belongs to another turn")
 	}
@@ -534,6 +645,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 			return Event{}, false, errors.New("invalid Codex turn completion")
 		}
 		s.finished = true
+		s.ledger.last = v.Turn.Status
 		return Event{Status: v.Turn.Status}, true, nil
 	case "item/started", "item/completed":
 		var item struct {

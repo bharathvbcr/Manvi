@@ -20,6 +20,9 @@ func TestProtocolChild(t *testing.T) {
 	}
 	scenario := strings.TrimPrefix(args[len(args)-1], "codex-fixture:")
 	scan := bufio.NewScanner(os.Stdin)
+	// turnStarts counts the turn/start requests this process received, rejected
+	// ones included; the follow-up scenarios number their turns by it.
+	turnStarts := 0
 	for scan.Scan() {
 		var in struct {
 			ID     json.RawMessage `json:"id"`
@@ -63,6 +66,50 @@ func TestProtocolChild(t *testing.T) {
 			network := scenario == "widened-policy"
 			fmt.Printf("{\"id\":%s,\"result\":{\"cwd\":%q,\"approvalPolicy\":%q,\"approvalsReviewer\":%q,\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":%t},\"model\":\"fixture-model\",\"modelProvider\":\"fixture\",\"thread\":{\"id\":\"thread\",\"cwd\":%q,\"ephemeral\":true}}}\n", in.ID, p.Cwd, p.Approval, p.Reviewer, network, p.Cwd)
 		case "turn/start":
+			turnStarts++
+			switch scenario {
+			case "multiturn", "multiturn-early", "multiturn-callback", "reject-second", "silent", "late-tail", "late-tail-reject":
+				// The recorded shape of a second turn on one thread (codex-cli
+				// 0.153.4, ephemeral thread): a new turn id per turn/start, answered
+				// with turn/started and turn/completed carrying it.
+				id := fmt.Sprintf("turn-%d", turnStarts)
+				if scenario == "silent" {
+					fmt.Printf("{\"id\":%s,\"result\":{\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", in.ID, id)
+					continue
+				}
+				if (scenario == "reject-second" || scenario == "late-tail-reject") && turnStarts == 2 {
+					fmt.Printf("{\"id\":%s,\"error\":{\"code\":-32600,\"message\":\"busy\"}}\n", in.ID)
+					continue
+				}
+				events := func() {
+					if scenario == "multiturn-callback" && turnStarts == 2 {
+						// The second turn asks to run a command and waits.
+						fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
+						fmt.Printf("{\"id\":\"request-2\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"itemId\":\"item-2\",\"command\":\"git status\",\"cwd\":\"/x\",\"startedAtMs\":1}}\n", id)
+						return
+					}
+					fmt.Printf("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", id)
+					fmt.Printf("{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"item\":{\"id\":\"answer-%d\",\"type\":\"agentMessage\",\"text\":\"REPLY_%s\"}}}\n", id, turnStarts, id)
+					fmt.Printf("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread\",\"turn\":{\"id\":%q,\"status\":\"completed\",\"items\":[]}}}\n", id)
+					if strings.HasPrefix(scenario, "late-tail") && turnStarts == 1 {
+						// A notification the first turn sends after it completed, which
+						// nothing reads until a follow-up asks for the pipe.
+						fmt.Printf("{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"thread\",\"turnId\":%q,\"tokenUsage\":{}}}\n", id)
+					}
+				}
+				reply := func() {
+					fmt.Printf("{\"id\":%s,\"result\":{\"turn\":{\"id\":%q,\"status\":\"inProgress\",\"items\":[]}}}\n", in.ID, id)
+				}
+				if scenario == "multiturn-early" && turnStarts == 2 {
+					// The turn's events overtake the reply that names it.
+					events()
+					reply()
+				} else {
+					reply()
+					events()
+				}
+				continue
+			}
 			if scenario == "flood" {
 				fmt.Println(strings.Repeat("x", MaxFrameBytes+1))
 				continue

@@ -47,8 +47,14 @@ const laneQueue = 32
 func laneFor(op string) string {
 	switch op {
 	case OpHello, OpPolicyCheckFile, OpPolicyCheckCommand, OpChatPrepare, OpChatSettle, OpChatForget,
-		opManagedStop, opManagedWake, opManagedFollow:
+		opManagedStop, opManagedWake, opManagedFollow, OpServeStatus, OpServeTakeover:
+		// serve.status only reads, and serve.takeover on a controlling connection
+		// only says it already controls: neither may queue behind a slow lane.
 		return ""
+	case OpServeStopAll:
+		// It waits, up to a bound, for the jobs it cancelled to end. A lane of its
+		// own, so it neither holds the read loop nor queues behind a prepare.
+		return "control"
 	case OpCapabilityProbe, OpLocalScan:
 		return "local"
 	}
@@ -57,6 +63,11 @@ func laneFor(op string) string {
 		// One model call that outlives the work lane's minute: on its own lane it
 		// cannot hold the board reads and writes queued behind it.
 		return "refine"
+	case op == opManagedContinue:
+		// It waits for the drive loop to write the follow-up, which is bounded by
+		// continueSendBudget. Behind a prepare's handshake (up to three minutes) it
+		// would not be answered inside its own deadline, so it has its own lane.
+		return "managed-continue"
 	case strings.HasPrefix(op, "devmap."):
 		return "devmap"
 	case strings.HasPrefix(op, "work.scan."):
@@ -112,6 +123,9 @@ func opDeadline(op string) time.Duration {
 	case op == OpWorkRefine:
 		// The model call (enhancementJobTimeout) plus the grounding and board reads around it.
 		return enhancementJobTimeout + 30*time.Second
+	case op == OpServeStopAll:
+		// The longest wait the op accepts (maxStopAllWait) plus the cancels around it.
+		return maxStopAllWait + 30*time.Second
 	case strings.HasPrefix(op, "devmap."), strings.HasPrefix(op, "work."):
 		return time.Minute
 	default:

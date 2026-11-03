@@ -137,6 +137,15 @@ func (m WorkbenchModule) Configure(r *Router) error {
 		}); err != nil {
 			return err
 		}
+		if err := r.Register(opManagedContinue, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+			result, err := m.Managed.Continue(ctx, raw)
+			if err != nil {
+				return nil, workbenchHostError("managed continue", err)
+			}
+			return result, nil
+		}); err != nil {
+			return err
+		}
 	}
 	if err := r.Register(OpTasksSuggest, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
 		result, err := Suggest(ctx, m.Client, raw)

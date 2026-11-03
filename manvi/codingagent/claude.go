@@ -86,6 +86,8 @@ type Claude struct {
 	withdrawn    map[string]bool
 	seen         map[string]bool
 	requestCount int
+	// ledger counts turns and gates ContinueTurn; see continue.go.
+	ledger turnLedger
 }
 
 // StartClaude starts only the stdio process. The owner records its OS process
@@ -295,6 +297,11 @@ func claudeResumeArgs(args []string) ([]string, error) {
 
 func (s *Claude) PID() int { return s.wire.pid }
 
+// Done is closed when the provider process has exited and been reaped. A run
+// parked between turns reads no frames, so this is how it learns the process is
+// gone.
+func (s *Claude) Done() <-chan struct{} { return s.wire.done }
+
 func (s *Claude) Effective() Effective {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -304,7 +311,12 @@ func (s *Claude) Effective() Effective {
 	return s.effective.clone()
 }
 
-func (s *Claude) Close() (Exit, error) { return s.wire.close() }
+func (s *Claude) Close() (Exit, error) {
+	// Before the wire is closed, and without s.mu, which a blocked read holds:
+	// a ContinueTurn that raced this Close must still refuse.
+	s.ledger.closed.Store(true)
+	return s.wire.close()
+}
 
 // claudeFrame is the envelope plus the fields this adapter reads. Bodies that
 // vary per type (`message`, `request`) stay raw and are decoded where used.
@@ -471,13 +483,77 @@ func (s *Claude) StartTurn(ctx context.Context, brief string) error {
 		return errors.New("a managed connection accepts one bounded, nonblank task brief")
 	}
 	s.started = true // Uncertain send can never become a second model turn.
-	return s.send(ctx, map[string]any{
+	s.ledger.turns = 1
+	return s.send(ctx, claudeUserFrame(brief))
+}
+
+// claudeUserFrame is the `user` frame that carries one turn's message, for the
+// first turn and every follow-up alike.
+func claudeUserFrame(text string) map[string]any {
+	return map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
-			"content": []map[string]string{{"type": "text", "text": brief}},
+			"content": []map[string]string{{"type": "text", "text": text}},
 		},
-	})
+	}
+}
+
+// ContinueTurn sends a follow-up user message on the same session, once the
+// previous turn has finished. See continue.go for the mechanism and the rules.
+//
+// Nothing is written until every precondition holds, and each failed one is a
+// refusal. From the write on, a failure is DeliveryUnresolved and halts the
+// session: Claude acknowledges a user frame with nothing before the new turn's
+// own frames, so a write that errored cannot be told from one that landed.
+func (s *Claude) ContinueTurn(ctx context.Context, message string) error {
+	// A read holds s.mu for as long as it blocks, and a session that is being
+	// read is not between turns.
+	if !s.mu.TryLock() {
+		return RefuseContinue(ErrTurnInFlight)
+	}
+	defer s.mu.Unlock()
+	if err := s.ledger.admit(ctx, message, s.ready, s.started, s.finished, s.backlogged(), s.wire); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(claudeUserFrame(message))
+	if err != nil || len(encoded) > MaxFrameBytes {
+		return RefuseContinue(ErrContinueMessage)
+	}
+	// The next turn begins from clean per-turn state. `seen` and `requestCount`
+	// stay cumulative: the run's callback budget is for the run, not the turn.
+	// The turn id is learned again from the new turn's first assistant message,
+	// which is what binds the new turn's approvals to it; a callback of the
+	// finished turn that was never answered would have refused the follow-up
+	// (see backlogged). Answered ones are dropped so they do not count against
+	// the pending cap for the rest of the run: `seen` still refuses a request
+	// id used twice, and a late answer for one finds nothing pending and is
+	// refused as stale.
+	for id, p := range s.pending {
+		if p.sent {
+			delete(s.pending, id)
+		}
+	}
+	s.finished, s.sawInit, s.sawText, s.turnID = false, false, false, ""
+	s.ledger.turns++
+	if err := s.wire.sendRaw(ctx, encoded); err != nil {
+		s.ledger.halted = true
+		return &unresolvedDelivery{cause: err}
+	}
+	return nil
+}
+
+// backlogged reports unread events or unanswered callbacks of the last turn.
+func (s *Claude) backlogged() bool {
+	if len(s.deferred) > 0 || len(s.queue) > 0 {
+		return true
+	}
+	for _, p := range s.pending {
+		if !p.sent {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Claude) Next(ctx context.Context) (Event, error) {
@@ -566,6 +642,9 @@ func (s *Claude) withdraw(id string) (Event, bool, error) {
 func (s *Claude) system(f claudeFrame) (Event, bool, error) {
 	switch f.Subtype {
 	case "init":
+		// One init per turn: the CLI repeats `system/init` at the start of every
+		// turn (verified on 2.1.316), and ContinueTurn clears sawInit for it. A
+		// second one inside a turn is still a protocol fault.
 		if s.sawInit {
 			return Event{}, false, errors.New("Claude re-initialized an active managed session")
 		}
@@ -589,6 +668,11 @@ func (s *Claude) system(f claudeFrame) (Event, bool, error) {
 		// It is therefore absent from that record by construction — the record
 		// carries what could be verified before the turn, and nothing it could
 		// not.
+		if s.effective.Model != "" && s.effective.Model != f.Model {
+			// A later turn's init names the model again. The first one is what
+			// the run's record holds, so a different one is not the same run.
+			return Event{}, false, fmt.Errorf("Claude changed model from %q to %q between turns", s.effective.Model, f.Model)
+		}
 		s.effective.Model = f.Model
 		return Event{}, false, nil
 	case "permission_denied":
@@ -740,6 +824,7 @@ func (s *Claude) result(f claudeFrame) (Event, bool, error) {
 	case f.Subtype == "success" && !f.IsError:
 		status = "completed"
 	}
+	s.ledger.last = status
 	// The result text repeats the last assistant message, so it is carried
 	// only when it would otherwise be the run's only explanation.
 	text := ""

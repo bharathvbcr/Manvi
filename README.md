@@ -435,7 +435,7 @@ rather than searched past.
 | `manvi pull` | Fast-forward the current branch; refuses a dirty tree |
 | `manvi push` | Push the current branch to its configured upstream (never force) |
 | `manvi issues` | Report up to 100 open GitHub issues, newest activity first |
-| `manvi serve` | NDJSON stdio host plane for IDEs and desktop apps |
+| `manvi serve` | NDJSON stdio host plane for IDEs and desktop apps (`--listen <path>` serves it on a private unix socket that outlives the host) |
 | `manvi check PATH` | Dry-run a file write against policy (no mutation) |
 | `manvi allow PATH` | Record an audited human grant after a soft denial |
 | `manvi lease list` | Show active task leases and lock holders |

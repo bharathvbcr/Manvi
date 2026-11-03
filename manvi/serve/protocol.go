@@ -140,6 +140,10 @@ const (
 	// ErrBusy means the request's lane already holds as many requests as it
 	// queues. Always retryable: nothing about the request was wrong.
 	ErrBusy = "E_BUSY"
+	// ErrControllerBusy means a socket-served `manvi serve` already has a
+	// controlling client and this connection is not it. Retryable: the slot frees
+	// when that client disconnects, and serve.takeover replaces it on purpose.
+	ErrControllerBusy = "E_CONTROLLER_BUSY"
 )
 
 // Operations.
@@ -172,6 +176,13 @@ const (
 	OpScanGaps   = "work.scan.gaps"
 	OpScanGet    = "work.scan.get"
 	OpScanCancel = "work.scan.cancel"
+	// OpServeStatus, OpServeStopAll and OpServeTakeover belong to a server that
+	// outlives its host (`manvi serve --listen`): who it is and what it is
+	// running, an explicit stop of every managed job, and the one rule by which a
+	// second client replaces the first. See control.go and socket.go.
+	OpServeStatus   = "serve.status"
+	OpServeStopAll  = "serve.stop_all"
+	OpServeTakeover = "serve.takeover"
 )
 
 // HelloParams is what the host declares about itself.

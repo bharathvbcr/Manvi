@@ -114,6 +114,10 @@ func TestClaudeProtocolChild(t *testing.T) {
 	}
 	scan := bufio.NewScanner(os.Stdin)
 	scan.Buffer(make([]byte, 4096), MaxFrameBytes+1)
+	// userFrames counts the user frames this process was written, which is how a
+	// follow-up scenario tells the turns apart and how a test learns that a
+	// refused follow-up wrote nothing.
+	userFrames := 0
 	for scan.Scan() {
 		var in struct {
 			Type      string          `json:"type"`
@@ -152,7 +156,36 @@ func TestClaudeProtocolChild(t *testing.T) {
 			emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_3","role":"assistant","content":[{"type":"text","text":"decision:%s"}]},"uuid":"u3"}`, session, decision.Response.Response.Behavior)
 			emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"decision:%s","terminal_reason":"completed","uuid":"u-result"}`, session, decision.Response.Response.Behavior)
 		case "user":
+			userFrames++
 			switch scenario {
+			case "multiturn", "model-drift", "one-shot":
+				// The recorded shape of a second turn on one process (2.1.316): every
+				// user frame is answered by its own system/init, an assistant message
+				// with a new id, and a result.
+				model := "claude-sonnet-5"
+				if scenario == "model-drift" && userFrames == 2 {
+					model = "claude-other"
+				}
+				emit(`{"type":"system","subtype":"init","session_id":%q,"cwd":%q,"model":%q,"permissionMode":"default","claude_code_version":%q,"tools":["Bash"],"uuid":"u-init-%d"}`, session, cwd, model, build, userFrames)
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_t%d","role":"assistant","content":[{"type":"text","text":"TURN_%d"}]},"uuid":"u%d"}`, session, userFrames, userFrames, userFrames)
+				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"TURN_%d","terminal_reason":"completed","uuid":"u-result-%d"}`, session, userFrames, userFrames)
+				if scenario == "one-shot" {
+					os.Exit(0)
+				}
+				continue
+			case "multiturn-permission":
+				// Turn one completes; turn two asks for a permission and waits.
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_t%d","role":"assistant","content":[{"type":"text","text":"TURN_%d"}]},"uuid":"u%d"}`, session, userFrames, userFrames, userFrames)
+				if userFrames == 1 {
+					emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"TURN_1","terminal_reason":"completed","uuid":"u-result"}`, session)
+				} else {
+					emit(`{"type":"control_request","request_id":"req-2","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo hi"},"tool_use_id":"toolu_2","decision_reason_type":"rule"}}`)
+				}
+				continue
+			case "silent":
+				// Reads user frames and never answers: a turn that stays in flight.
+				continue
 			case "flood":
 				emit("%s", strings.Repeat("x", MaxFrameBytes+1))
 				continue

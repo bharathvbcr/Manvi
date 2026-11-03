@@ -289,7 +289,8 @@ OS-observed process birth; renderer-supplied process identity, a provider
 thread id, raw `runs.started`, `runs.finish`, `runs.protocol`, and the managed
 prepare/activate host operations are refused.
 
-The owning `manvi serve --workbench-db` host advertises five methods:
+The owning `manvi serve --workbench-db` host advertises six methods (the sixth,
+`runs.managed.continue`, is described after the list):
 
 1. `runs.managed.prepare` takes `id`, `request_id`, `expected_revision:1`. It
    consumes the canonical claim and starts only the stdio process. It returns
@@ -335,6 +336,101 @@ The owning `manvi serve --workbench-db` host advertises five methods:
    queued message. The queue lives in the sidecar process; when that process
    exits, a message that was not launched is gone. Bypass on the parent is not
    copied onto the new attempt.
+
+`runs.managed.continue` (wire op `work.runs.managed.continue`) is the sixth
+method: another turn for a run, in the same process and on the same session,
+after its previous turn completed. It is opt-in per attempt. `runs.managed.prepare`
+takes an optional `max_continuations` (0 to 8, absent is 0). A run prepared with
+more than 0 does not end when a turn completes: the drive loop settles that
+turn's callbacks, checkpoints the run as `running`, and parks with the provider
+process alive. A run prepared without it behaves exactly as above. Prepare
+refuses `max_continuations` for a provider without the mechanism
+(`E_CONTINUE_UNSUPPORTED`) before the claim, so the saved attempt stays prepared.
+Claude Code 2.1.316 and codex-cli 0.153.4 both support it, measured against the
+installed CLIs: Claude takes a second `user` frame on the same stream-json
+process (and repeats `system/init` for it); Codex takes a second `turn/start`
+for the same `threadId`, ephemeral threads included.
+
+The body is `{id, request_id, message?}`. With a `message` it delivers one
+follow-up; without one it reads the run's state and writes nothing. A message is
+nonblank, at most 32 KiB, and needs a `request_id`. The answer is
+`{state, request_id?, turn, max_turns, idle_deadline?}` with `state` one of
+`delivered` (the message was written to the provider; that does not say the
+new turn has begun, which the state read shows), `parked`, `running`,
+`unresolved` or `ended`. `running` is a turn in flight, and is also what a
+run reports before its first turn has begun (`turn` 0) and in the moment after
+a turn completes while its callbacks are settled and the checkpoint is written,
+before it parks. `turn` counts the turns started, the first
+included; `max_turns` is `1 + max_continuations`; `idle_deadline` (Unix
+seconds) is when a parked run ends if nothing arrives (10 minutes). A run on its
+last permitted turn ends when that turn completes.
+
+Refusals are typed and, except where marked, write nothing to the provider:
+`E_CONTINUE_UNSUPPORTED` (the provider, or a run prepared without
+`max_continuations`), `E_TURN_IN_FLIGHT` (retryable; a turn is running),
+`E_CONTINUE_LIMIT` (all turns used, or the run's saved output has no room for
+the claim), `E_CONTINUE_RATE` (retryable; follow-ups of one run are at least two
+seconds apart), `E_RUN_ENDED` (the run ended, was stopped, or is not this host's),
+`E_CONTINUE_PENDING` (retryable; the wait for the outcome ran out, ask again with
+the same `request_id`) and `E_BAD_REQUEST`. `E_CONTINUE_UNRESOLVED` is the one
+that is not a refusal: the delivery cannot be told from a lost one. The message
+is not sent again, the run ends with `provider_state` `unresolved`, and every
+later call for that run, the same `request_id` included, answers the same way.
+A retry of an answered `request_id` returns the first answer and sends nothing;
+reusing it for a different message is refused.
+
+A refusal that wrote nothing is not always one the host may retry. Only a turn
+in flight, the rate window, and an outcome not yet known are marked retryable.
+A provider that answered that it started no turn, and a refusal the host does
+not recognise, are `E_DEPENDENCY` and not retryable: the host is not told that a
+retry will help when it does not know why it was refused. A retryable refusal
+that wrote nothing leaves the rate window as it was, so the host may offer the
+follow-up again at once; a delivery uses it up, and so does a refusal that
+cannot succeed. A host that loops on one of those is turned away with
+`E_CONTINUE_RATE` before the provider and before the saved output, so it adds one
+`[follow-up N not sent: ...]` note to the record, not one per attempt.
+
+A provider process that exits while the run is parked is noticed when it
+happens, not when the idle budget would have ended the run: the run ends as
+`failed`, with the reason "the provider process exited while the run was parked
+between turns" and a note in its saved output, and a follow-up claimed in the
+same instant is answered `E_RUN_ENDED`. It is not recorded as `completed`: the
+last turn did complete, but nobody asked for the run to end.
+
+Which of the two follow-up mechanisms to use. `runs.managed.follow` queues one
+message for a later attempt (`parent_run_id`, `resume`), which is a new process
+that resumes the saved session after this run has ended. `runs.managed.continue`
+takes the next turn in the same process of a run that is still alive and
+parked. A host that prepared the run with `max_continuations` and sees `parked`
+should use `continue`. A `follow` queued on a parked run is armed when that run
+later ends and is launched as a new attempt then; it does not reach the parked
+process. The two do not share a queue, so a host should choose one per run.
+
+Before the message is written, a claim line (`[follow-up N claimed: request
+"...", B bytes, sha256 ...]`) is appended to the run's saved output and the
+checkpoint carrying it is acknowledged by the store; the store has no other
+field a follow-up could be recorded in. What the store shows differs from a
+one-turn run in two ways a reader must know. A parked run stays `running` with
+provider state `running`, because the store never lets a provider state leave
+`completed`; the state read above is how a host learns it is parked. And
+`provider_turn_id` stays the first turn's id for the whole run (it is
+immutable), while a follow-up turn's id is carried by the approvals raised in
+it: each decision row is bound to the follow-up turn, and the adapter refuses
+an answer whose request, turn, thread or payload digest differs. Permission
+mode, sandbox and the effective configuration are fixed for the run and do not
+change per turn.
+
+Budgets that span turns: the two-hour bound on a managed job covers the whole
+run, parked time included, so eight 45-minute turns are not reachable; each
+turn gets its own 45-minute active-time budget inside it. The parked idle
+deadline is set once when the run parks and is not extended by a refused
+follow-up. The session's callback budget (2048 requests, 32 open) and the 32 MiB
+provider-output cap are per process, so they are shared by all of its turns.
+A callback of a finished turn is settled in the store when the run parks (a
+decision already written is recorded as delivered, any other as cancelled). Claude
+also drops the finished turn's answered entries from its callback map at a
+follow-up; Codex removes an entry when the provider reports it resolved, so
+neither provider carries an answered callback into the next turn.
 
 Executable lookup, validation and spawn errors are classified as known unstarted
 only by the process adapter. They finish as `failed` and release the repository
