@@ -82,6 +82,12 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan *Response
 
+	// beforeWait, when set, runs in Call after the request is written and
+	// before it waits. It exists so a test can make a reply and a cancelled
+	// context both ready at the moment Call selects, which is otherwise a race
+	// that cannot be arranged on demand. Nil outside tests.
+	beforeWait func(id int64, respCh chan *Response)
+
 	// initMu guards the three fields below and is only ever held for a few
 	// instructions, never across a request: a second Initialize caller must be
 	// able to wait on its own context, and it cannot while queued on a mutex.
@@ -820,6 +826,9 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	id, respCh, err := c.send(ctx, method, params)
 	if err != nil {
 		return err
+	}
+	if c.beforeWait != nil {
+		c.beforeWait(id, respCh)
 	}
 
 	select {
