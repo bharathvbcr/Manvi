@@ -133,7 +133,9 @@ func TestInboundCancelledDoesNotAbortClientCall(t *testing.T) {
 	}
 }
 
-// The record keeps the newest entries and says how many older ones went.
+// The record keeps the newest entries; the suffix shows the last few and counts
+// every earlier one it leaves out (7 pushed out of the ring plus the 95 past
+// the message bound).
 func TestDiagnosticsKeepNewestAndCountDropped(t *testing.T) {
 	c, _ := newWiredClient()
 	for i := 0; i < maxServerErrors+7; i++ {
@@ -143,7 +145,7 @@ func TestDiagnosticsKeepNewestAndCountDropped(t *testing.T) {
 	if len(d) != maxServerErrors || d[len(d)-1] != fmt.Sprintf("line %d", maxServerErrors+6) {
 		t.Fatalf("want the newest %d entries, got %d ending %q", maxServerErrors, len(d), d[len(d)-1])
 	}
-	if s := c.diagnosticsSuffix(); !strings.Contains(s, "7 earlier entries dropped") {
+	if s := c.diagnosticsSuffix(); !strings.Contains(s, "102 earlier entries dropped") {
 		t.Fatalf("suffix does not report the dropped count: %q", s)
 	}
 }
