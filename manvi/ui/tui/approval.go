@@ -64,6 +64,12 @@ type ApprovalCard struct {
 	painted   bool
 	quietFrom time.Time
 	armed     bool
+	// returned is set when the operator left the session this card blocks after
+	// having seen it. The quiet period cannot be trusted across that absence, so
+	// leave closes the gate and the first input that reaches the card once it is
+	// painted again is dropped, restarting the period. A card nobody has seen
+	// takes the first-paint path instead.
+	returned bool
 
 	// cardRect is the whole card as last drawn, and optionRows and reasonRect
 	// are its controls, recorded against screen coordinates so a click is
@@ -128,6 +134,20 @@ func (c *ApprovalCard) markPainted() {
 	c.quietFrom = c.now()
 }
 
+// leave closes the gate when the card goes off screen. The operator who clicks
+// to another session and back has not been reading the card in between, yet the
+// clock kept running, so a key on return would find the gate open. Every way off
+// the card (a tab, a new session, cycling, the dashboard) calls this; it is
+// idempotent, so a second call while away does not lose the returned mark.
+func (c *ApprovalCard) leave() {
+	if c.painted {
+		c.returned = true
+	}
+	c.painted = false
+	c.armed = false
+	c.quietFrom = time.Time{}
+}
+
 func (c *ApprovalCard) now() time.Time {
 	if c.clock != nil {
 		return c.clock()
@@ -152,6 +172,11 @@ func (c *ApprovalCard) admit() bool {
 		return true
 	}
 	now := c.now()
+	if c.painted && c.returned {
+		c.returned = false
+		c.quietFrom = now
+		return false
+	}
 	if !c.painted || now.Sub(c.quietFrom) < approvalQuiet {
 		if c.painted {
 			c.quietFrom = now

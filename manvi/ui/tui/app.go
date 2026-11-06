@@ -138,12 +138,34 @@ func (a *App) Current() *AgentView {
 	return a.views[a.active]
 }
 
+// setActive is the one place the active session changes. Leaving a session
+// closes its approval card's gate: the card is about to be off screen, and the
+// time it spends there is not time the operator spent reading it.
+func (a *App) setActive(idx int) {
+	a.leaveCurrent()
+	a.active = idx
+}
+
+// showSession makes idx the session on screen.
+func (a *App) showSession(idx int) {
+	a.setActive(idx)
+	a.mode = ModeSession
+}
+
+// leaveCurrent takes the current session's card off screen without changing
+// which session is current, as the dashboard does.
+func (a *App) leaveCurrent() {
+	if card := a.Current().Approval(); card != nil {
+		card.leave()
+	}
+}
+
 // AddSession registers a session and makes it active.
 func (a *App) AddSession(id, title string) *AgentView {
 	v := NewAgentView(id, title)
 	v.Status = Status{Sessions: len(a.views) + 1}
 	a.views = append(a.views, v)
-	a.active = len(a.views) - 1
+	a.setActive(len(a.views) - 1)
 	a.dashboard.Invalidate()
 	a.syncCounts()
 	return v
@@ -507,8 +529,7 @@ func (a *App) accept() []Effect {
 	}
 	if a.mode == ModeDashboard {
 		if len(a.views) > 0 {
-			a.active = a.dashboard.Selected()
-			a.mode = ModeSession
+			a.showSession(a.dashboard.Selected())
 		}
 		return nil
 	}
@@ -619,7 +640,7 @@ func (a *App) RemoveSession(id string) {
 		}
 		a.views = append(a.views[:i], a.views[i+1:]...)
 		if a.active >= len(a.views) {
-			a.active = len(a.views) - 1
+			a.setActive(len(a.views) - 1)
 		}
 		a.dashboard.Clamp(len(a.views))
 		a.dashboard.Invalidate()

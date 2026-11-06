@@ -109,8 +109,7 @@ func (a *App) click(t ActionClick) []Effect {
 		}
 		if idx == a.dashboard.Selected() && t.Button == 1 && a.doubleClick(t.X, t.Y) {
 			// Second click on the highlighted row opens the session.
-			a.active = idx
-			a.mode = ModeSession
+			a.showSession(idx)
 			return nil
 		}
 		a.doubleClick(t.X, t.Y)
@@ -133,7 +132,7 @@ func (a *App) click(t ActionClick) []Effect {
 				return []Effect{EffectNewSession{}}
 			}
 			if tab.SessionIndex != a.active {
-				a.active = tab.SessionIndex
+				a.setActive(tab.SessionIndex)
 			}
 			return nil
 		}

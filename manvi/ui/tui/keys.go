@@ -614,6 +614,7 @@ func (a *App) toggleDashboard() []Effect {
 		a.mode = ModeSession
 		return nil
 	}
+	a.leaveCurrent()
 	a.mode = ModeDashboard
 	a.dashboard.Select(a.active)
 	a.dashboard.Clamp(len(a.views))
@@ -624,8 +625,7 @@ func (a *App) cycleSession(delta int) []Effect {
 	if len(a.views) == 0 {
 		return nil
 	}
-	a.active = (a.active + delta + len(a.views)) % len(a.views)
-	a.mode = ModeSession
+	a.showSession((a.active + delta + len(a.views)) % len(a.views))
 	return nil
 }
 
