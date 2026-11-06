@@ -12,6 +12,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
+	"github.com/bharathvbcr/Manvi/manvi/harness"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
@@ -78,16 +79,14 @@ func tierFlagDefs() []flags.Def {
 // tier keys, the repository config, the user config and the environment.
 //
 // The order is what makes the scope rule hold. The repository file is checked
-// for tier keys before anything loads it, so its refusal names the rule rather
+// for operator-scope keys before anything loads it, and before any posture it
+// sets is read, so its refusal names the rule rather
 // than reading as a typo. The tier keys are defined after it has loaded, so even
 // a path that skipped that check would find them unknown there. The environment
 // is read a second time once the tier keys exist, because LoadEnv reads only the
 // keys defined when it runs.
 func newRegistry(repoConfig string) (*flags.Registry, error) {
-	if err := refuseRepositoryTiers(repoConfig); err != nil {
-		return nil, err
-	}
-	if err := refuseRepositoryHarnessSpec(repoConfig); err != nil {
+	if err := refuseRepositoryOperatorKeys(repoConfig); err != nil {
 		return nil, err
 	}
 	reg, err := flags.NewHarnessRegistry(repoConfig)
@@ -143,30 +142,92 @@ func readConfigFile(path string) (flags.ConfigLayer, error) {
 	return layer, nil
 }
 
-// refuseRepositoryTiers refuses a repository config that sets any tier key.
+// operatorScopeRule is one class of key that only the operator may set. The
+// repository's config.yaml is a file a clone ships and an agent can write under
+// a relaxed posture, so each class is refused from it, naming the key, rather
+// than ignored: an ignored line is a setting that looks applied.
+type operatorScopeRule struct {
+	// matches reports whether a flattened config key belongs to the class. The
+	// parser flattens nested and dotted forms alike and stores a key exactly as
+	// written, so a match here is a key the registry would have stored.
+	matches func(key string) bool
+	// refusal builds the error for the keys of this class that the file sets,
+	// sorted.
+	refusal func(path string, keys []string) error
+}
+
+// endpointKeys are the settings that decide where a provider credential is
+// sent, or which credential is used. The adapters attach the resolved secret to
+// requests at the base URL, so a value from a clone would redirect it.
+var endpointKeys = []string{
+	flags.LLMXAIBaseURL,
+	flags.LLMGeminiBaseURL,
+	flags.LLMLocalBaseURL,
+	flags.LLMDefaultProvider,
+}
+
+// isEndpointKey reports whether a config key is one of endpointKeys.
+func isEndpointKey(key string) bool { return slices.Contains(endpointKeys, key) }
+
+// operatorScopeRules is the one table of what the repository file may not set.
+// Rules are tried in order and the first that matches names its keys.
+var operatorScopeRules = []operatorScopeRule{
+	{
+		matches: isTierKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, and tier settings are operator scope: they decide which model — "+
+				"and so which price — every agent runs at, and this file is one a repository ships and an agent "+
+				"can write. Remove those lines; set a tier with %s, in %s, or with 'manvi flags set'",
+				path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint())
+		},
+	},
+	{
+		matches: func(key string) bool { return key == harnessSpecKey },
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it selects text that joins every turn's system "+
+				"prompt, and this file ships with a clone and can be written by an agent under a relaxed posture. "+
+				"Remove that line; select a spec with %s or 'manvi flags set %s NAME'. The spec file itself can live in %s",
+				path, harnessSpecKey, flags.EnvKey(harnessSpecKey), harnessSpecKey, harness.SpecsDir)
+		},
+	},
+	{
+		matches: isEndpointKey,
+		refusal: func(path string, keys []string) error {
+			return fmt.Errorf("%s sets %s, which is operator scope: it decides where a provider's credential is "+
+				"sent or which credential is used, and this file ships with a clone and can be written by an agent "+
+				"under a relaxed posture, so a value in it could redirect the key. Remove those lines; set %s in "+
+				"the environment, or in %s, which lies outside the repository",
+				path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint())
+		},
+	},
+}
+
+// refuseRepositoryOperatorKeys refuses a repository config that sets any
+// operator-scope key. It reads the file as the registry will, and runs before
+// the registry loads it, so nothing the same file says — a relaxed posture
+// included — is consulted first.
 //
 // A file that cannot be read or parsed is reported from here, with the path and
 // the parser's own account of the line, which is what NewHarnessRegistry would
 // have said about it a moment later.
-func refuseRepositoryTiers(path string) error {
+func refuseRepositoryOperatorKeys(path string) error {
 	layer, err := readConfigFile(path)
 	if err != nil {
 		return err
 	}
-	var set []string
-	for key := range layer.Values {
-		if isTierKey(key) {
-			set = append(set, key)
+	for _, rule := range operatorScopeRules {
+		var set []string
+		for key := range layer.Values {
+			if rule.matches(key) {
+				set = append(set, key)
+			}
+		}
+		if len(set) > 0 {
+			slices.Sort(set)
+			return rule.refusal(path, set)
 		}
 	}
-	if len(set) == 0 {
-		return nil
-	}
-	slices.Sort(set)
-	return fmt.Errorf("%s sets %s, and tier settings are operator scope: they decide which model — "+
-		"and so which price — every agent runs at, and this file is one a repository ships and an agent "+
-		"can write. Remove those lines; set a tier with %s, in %s, or with 'manvi flags set'",
-		path, strings.Join(set, ", "), flags.EnvKey(set[0]), userConfigHint())
+	return nil
 }
 
 // envUserConfig moves the user config, as MANVI_ANTHROPIC_BUDGET_LEDGER moves
@@ -204,9 +265,10 @@ func userConfigHint() string {
 
 // loadUserConfig applies the user config to the config layer.
 //
-// It carries tier settings and nothing else. It shares the config layer with
-// the repository file, and for tier keys that is unambiguous — the repository
-// can never supply one — but for any other key an origin of "config" would no
+// It carries tier settings and the endpoint keys (isEndpointKey) and nothing
+// else. It shares the config layer with the repository file, and for these keys
+// that is unambiguous — the repository can never supply one, see
+// operatorScopeRules — but for any other key an origin of "config" would no
 // longer say which of the two files set it. Every other key is refused, naming
 // it, rather than dropped.
 //
@@ -230,14 +292,15 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 	}
 	var other []string
 	for key := range layer.Values {
-		if !isTierKey(key) {
+		if !isTierKey(key) && !isEndpointKey(key) {
 			other = append(other, key)
 		}
 	}
 	if len(other) > 0 {
 		slices.Sort(other)
-		return fmt.Errorf("user config %s sets %s; it carries %s* settings only — put the rest in the "+
-			"repository's config.yaml or the environment", path, strings.Join(other, ", "), tierPrefix)
+		return fmt.Errorf("user config %s sets %s; it carries %s* and provider endpoint settings (%s) only — "+
+			"put the rest in the repository's config.yaml or the environment",
+			path, strings.Join(other, ", "), tierPrefix, strings.Join(endpointKeys, ", "))
 	}
 	if err := reg.LoadLayer(layer); err != nil {
 		return fmt.Errorf("user config %s: %w", path, err)

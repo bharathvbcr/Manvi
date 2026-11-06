@@ -11,17 +11,6 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/xai"
 )
 
-// The four keys that decide where a provider credential is sent, or which
-// credential is used. They are operator scope: the repository's config.yaml is
-// shipped by a clone and writable by an agent under a relaxed posture, so a
-// value there would redirect the xAI bearer token or the Gemini key.
-var endpointKeys = []string{
-	flags.LLMXAIBaseURL,
-	flags.LLMGeminiBaseURL,
-	flags.LLMLocalBaseURL,
-	flags.LLMDefaultProvider,
-}
-
 // endpointValue is a plausible attacker-chosen value for each key.
 func endpointValue(key string) string {
 	if key == flags.LLMDefaultProvider {
@@ -172,7 +161,7 @@ func TestTheUserConfigOutsideTheRepositorySetsEndpointsAndProvider(t *testing.T)
 	body := "llm.xai.base_url: https://proxy.example/v1\n" +
 		"llm:\n  gemini:\n    base_url: https://gemini-proxy.example/v1beta\n" +
 		"llm.local.base_url: http://127.0.0.1:11434/v1\n" +
-		"llm.default_provider: local\n"
+		"llm.provider.default: local\n"
 	writeFile(t, outside, "config.yaml", body)
 	t.Setenv(envUserConfig, filepath.Join(outside, "config.yaml"))
 
