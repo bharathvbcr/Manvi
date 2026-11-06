@@ -39,7 +39,7 @@ type WorkspaceLease struct {
 	ContainerDir string
 	// HeadSHA is the commit Path was detached at when provisioned.
 	HeadSHA string
-	// DevmapSeeded reports whether `devmap seed --mode stacked` succeeded.
+	// DevmapSeeded reports whether `devmap seed --stacked` succeeded.
 	DevmapSeeded bool
 	// DevmapNote records why DevMap seeding was skipped or failed when
 	// DevmapSeeded is false.
@@ -55,7 +55,7 @@ type WorkspaceCoordinator interface {
 
 // GitWorktreeCoordinator provisions detached git worktrees from Root in
 // owner-only temporary directories and seeds each worktree's DevMap overlay via
-// `devmap seed --mode stacked`.
+// `devmap seed --stacked`.
 type GitWorktreeCoordinator struct {
 	Root         string
 	BaseDir      string
@@ -228,7 +228,7 @@ func (c *GitWorktreeCoordinator) seedDevmapStacked(ctx context.Context, wtPath s
 	}
 
 	res := runProc(ctx, procSpec{
-		argv:        []string{resolvedBin, "seed", "--mode", "stacked", "--from", c.Root, "--json", wtPath},
+		argv:        []string{resolvedBin, "seed", "--stacked", "--from", c.Root, "--json", wtPath},
 		dir:         wtPath,
 		env:         childenv.Inherit(),
 		timeout:     devmapSeedTimeout,

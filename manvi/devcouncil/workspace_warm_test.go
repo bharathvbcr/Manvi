@@ -48,6 +48,20 @@ func TestWorkspaceWarmMCPHelperProcess(t *testing.T) {
 	}
 
 	if len(args) >= 1 && args[0] == "seed" {
+		hasStacked := false
+		for _, a := range args[1:] {
+			if a == "--mode" || strings.HasPrefix(a, "--mode=") {
+				_, _ = os.Stderr.WriteString("error: unexpected argument '--mode' found\n")
+				os.Exit(2)
+			}
+			if a == "--stacked" {
+				hasStacked = true
+			}
+		}
+		if !hasStacked {
+			_, _ = os.Stderr.WriteString("error: expected --stacked flag for zero-copy seed\n")
+			os.Exit(2)
+		}
 		wtPath := args[len(args)-1]
 		record("seed:" + strings.Join(args, " "))
 		ci := filepath.Join(wtPath, ".devcouncil", "codeintel")
@@ -356,7 +370,7 @@ func TestGitWorktreeCoordinatorParallelIsolationRetentionAndCleanup(t *testing.T
 
 	seedCalls := 0
 	for _, entry := range readLog() {
-		if strings.HasPrefix(entry, "seed:seed --mode stacked --from "+root) {
+		if strings.HasPrefix(entry, "seed:seed --stacked --from "+root) {
 			seedCalls++
 		}
 	}
@@ -422,6 +436,76 @@ func TestGitWorktreeCoordinatorParallelIsolationRetentionAndCleanup(t *testing.T
 		if _, err := os.Stat(leases[i].ContainerDir); !os.IsNotExist(err) {
 			t.Fatalf("clean lane %d ContainerDir still exists on disk: %v", i, err)
 		}
+	}
+}
+
+func findStackedDevmapBinary(t *testing.T) string {
+	t.Helper()
+	manviRoot := repoRoot(t)
+	candidates := []string{
+		filepath.Join(manviRoot, "..", "DevCouncil", ".gitpulse", "worktrees", "zero-copy-worktrees-fix", "rust", "target", "debug", "devmap"),
+		filepath.Join(manviRoot, "..", "DevCouncil", "rust", "target", "debug", "devmap"),
+		filepath.Join(manviRoot, "..", "DevCouncil", "rust", "target", "release", "devmap"),
+	}
+	if p, err := exec.LookPath("devmap"); err == nil {
+		candidates = append(candidates, p)
+	}
+	for _, c := range candidates {
+		info, err := os.Stat(c)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out, err := exec.Command(c, "seed", "--help").CombinedOutput()
+		if err == nil && strings.Contains(string(out), "--stacked") {
+			return c
+		}
+	}
+	t.Skip("no devmap binary with `seed --stacked` support available on host")
+	return ""
+}
+
+func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
+	devmapBin := findStackedDevmapBinary(t)
+	root := initCommittedGitRepo(t, map[string]string{
+		"pkg/calc.go": "package pkg\n\nfunc ComputeAnswer() int { return 42 }\n",
+	})
+	buildCmd := exec.Command(devmapBin, "--root", root, "build", "--manifest", "--json")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("devmap build on fixture root failed: %v\n%s", err, out)
+	}
+
+	coord := &GitWorktreeCoordinator{
+		Root:         root,
+		BaseDir:      t.TempDir(),
+		DevmapBinary: devmapBin,
+	}
+	lease, err := coord.ProvisionWorktree(context.Background(), "real-stacked")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = coord.ReleaseWorktree(context.Background(), lease, false)
+	})
+	if !lease.DevmapSeeded {
+		t.Fatalf("real devmap binary stacked seed failed (DevmapSeeded=false): %s", lease.DevmapNote)
+	}
+	foundLease := false
+	for _, stateDir := range []string{".devmap", ".devcouncil"} {
+		if _, err := os.Stat(filepath.Join(lease.Path, stateDir, "codeintel", "stack_lease.json")); err == nil {
+			foundLease = true
+			break
+		}
+	}
+	if !foundLease {
+		t.Fatalf("real stacked worktree missing stack_lease.json under .devmap/.devcouncil")
+	}
+	statusCmd := exec.Command(devmapBin, "--root", lease.Path, "status", "--json")
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("devmap status on seeded worktree failed: %v\n%s", err, statusOut)
+	}
+	if !strings.Contains(string(statusOut), `"is_fresh":true`) {
+		t.Fatalf("seeded worktree status expected is_fresh:true, got: %s", statusOut)
 	}
 }
 
