@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
@@ -104,7 +105,14 @@ type Client struct {
 	doneCh       chan struct{}
 	stderrDone   chan struct{}
 	serverErrors []string
-	errMu        sync.Mutex
+	// droppedErrors counts the oldest entries pushed out of serverErrors.
+	droppedErrors int
+	// coalesceKey and coalesceCount describe a run of identical-kind records
+	// currently held in the last slot of serverErrors, so a server repeating
+	// one kind of notice produces one entry and a count.
+	coalesceKey   string
+	coalesceCount int
+	errMu         sync.Mutex
 }
 
 const (
@@ -354,13 +362,80 @@ func (c *Client) stderrLoop() {
 	}
 }
 
+// maxServerErrors bounds the retained record.
+const maxServerErrors = 100
+
 // recordError appends a diagnostic from one of the reader goroutines.
+//
+// The record is a ring that keeps the newest maxServerErrors entries: the
+// diagnostic that explains a death is the last thing a server says, and a
+// buffer that kept the first entries let a chatty or hostile server fill it
+// before that. What was pushed out is counted, not hidden, and
+// diagnosticsSuffix reports the count. Server-controlled text is escaped here,
+// the one owner every record passes through, so a stderr line or a frame
+// snippet cannot carry raw newlines or terminal escapes into an error message.
 func (c *Client) recordError(msg string) {
+	msg = escapeControl(msg)
 	c.errMu.Lock()
-	if len(c.serverErrors) < 100 {
-		c.serverErrors = append(c.serverErrors, msg)
-	}
+	c.appendErrorLocked(msg)
+	c.coalesceKey = ""
 	c.errMu.Unlock()
+}
+
+// recordCoalesced records msg under key, folding a run of consecutive records
+// with the same key into one entry that carries the latest text and a count.
+func (c *Client) recordCoalesced(key, msg string) {
+	msg = escapeControl(msg)
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	if c.coalesceKey == key && len(c.serverErrors) > 0 {
+		c.coalesceCount++
+		c.serverErrors[len(c.serverErrors)-1] = fmt.Sprintf("%s (repeated %d times; latest shown)", msg, c.coalesceCount)
+		return
+	}
+	c.appendErrorLocked(msg)
+	c.coalesceKey, c.coalesceCount = key, 1
+}
+
+func (c *Client) appendErrorLocked(msg string) {
+	if len(c.serverErrors) >= maxServerErrors {
+		copy(c.serverErrors, c.serverErrors[1:])
+		c.serverErrors = c.serverErrors[:len(c.serverErrors)-1]
+		c.droppedErrors++
+	}
+	c.serverErrors = append(c.serverErrors, msg)
+}
+
+// escapeControl renders control characters and invalid UTF-8 bytes in s as
+// visible \xNN / \uNNNN escapes. Backslashes and quotes are left alone, so
+// escaping is idempotent and nothing is double-quoted.
+func escapeControl(s string) string {
+	clean := true
+	for i, r := range s {
+		if unicode.IsControl(r) || (r == utf8.RuneError && !utf8.ValidString(s[i:i+1])) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && w == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case unicode.IsControl(r) && r < 0x100:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		case unicode.IsControl(r):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteString(s[i : i+w])
+		}
+		i += w
+	}
+	return b.String()
 }
 
 // Diagnostics returns what the server said about itself on stderr, plus the
@@ -396,6 +471,8 @@ func (c *Client) awaitExit(ctx context.Context) {
 	}
 }
 
+// It holds the newest entries only; diagnosticsSuffix says how many older ones
+// were pushed out.
 func (c *Client) Diagnostics() []string {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -406,21 +483,33 @@ func (c *Client) Diagnostics() []string {
 // is the reader that matters: a failure the server already explained must
 // arrive carrying the explanation.
 func (c *Client) diagnosticsSuffix() string {
-	diags := c.Diagnostics()
+	c.errMu.Lock()
+	diags := append([]string(nil), c.serverErrors...)
+	dropped := c.droppedErrors
+	c.errMu.Unlock()
 	if len(diags) == 0 {
 		return ""
 	}
 	if len(diags) > maxDiagnosticsInError {
+		dropped += len(diags) - maxDiagnosticsInError
 		diags = diags[len(diags)-maxDiagnosticsInError:]
 	}
 	for i, d := range diags {
 		diags[i] = truncateForMessage(d)
 	}
-	return " — the server reported: " + strings.Join(diags, " | ")
+	out := " — the server reported: " + strings.Join(diags, " | ")
+	if dropped > 0 {
+		out += fmt.Sprintf(" (%d earlier entries dropped)", dropped)
+	}
+	return out
 }
 
+// truncateForMessage bounds server-controlled text for an error message and
+// escapes its control characters, so it cannot forge lines or repaint a
+// terminal. The cut is made on the raw text, so the preview bound holds in
+// source bytes.
 func truncateForMessage(s string) string {
-	return truncateTo(strings.TrimSpace(s), unroutablePreview)
+	return escapeControl(truncateTo(strings.TrimSpace(s), unroutablePreview))
 }
 
 // truncateTo cuts s to at most n bytes without leaving a partial rune behind.
@@ -687,8 +776,9 @@ func (c *Client) answerServerFrame(line []byte, method string) {
 			// The server abandoned a request it issued, in its own id space, so
 			// it says nothing about any Call of ours and is never matched
 			// against pending ids; the spec asks only that the reason be logged.
-			c.recordError(fmt.Sprintf("server %s cancelled its request %s: %s",
-				c.Name(), truncateForMessage(string(probe.Params.RequestID)), truncateForMessage(probe.Params.Reason)))
+			c.recordCoalesced("inbound-cancelled", fmt.Sprintf("server %s cancelled its request %q: %q",
+				c.Name(), truncateTo(strings.TrimSpace(string(probe.Params.RequestID)), unroutablePreview),
+				truncateTo(strings.TrimSpace(probe.Params.Reason), unroutablePreview)))
 		}
 		return
 	}
@@ -803,8 +893,10 @@ func numericID(v any) (int64, bool) {
 		n, err := id.Int64()
 		return n, err == nil
 	case string:
-		n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
-		return n, err == nil
+		// Only the canonical decimal form a client would have issued: "01",
+		// "+1" and " 1 " are not the number 1 and are not accepted as it.
+		n, err := strconv.ParseInt(id, 10, 64)
+		return n, err == nil && strconv.FormatInt(n, 10) == id
 	default:
 		return 0, false
 	}

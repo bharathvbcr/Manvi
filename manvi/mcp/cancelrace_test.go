@@ -107,7 +107,7 @@ func TestInboundCancelledIsRecordedAndNotAnswered(t *testing.T) {
 		t.Fatalf("a notification was answered: %q", fr)
 	}
 	d := strings.Join(c.Diagnostics(), "\n")
-	if !strings.Contains(d, "cancelled its request 1") || !strings.Contains(d, "user gave up") {
+	if !strings.Contains(d, `cancelled its request "1"`) || !strings.Contains(d, "user gave up") {
 		t.Fatalf("inbound cancellation was not recorded with its id and reason: %q", d)
 	}
 }
@@ -129,5 +129,38 @@ func TestInboundCancelledDoesNotAbortClientCall(t *testing.T) {
 	}
 	if err := c.Call(context.Background(), "tools/call", nil, &out); err != nil || out.V != 3 {
 		t.Fatalf("call was aborted by an inbound cancellation: err=%v out=%+v", err, out)
+	}
+}
+
+// The record keeps the newest entries and says how many older ones went.
+func TestDiagnosticsKeepNewestAndCountDropped(t *testing.T) {
+	c, _ := newWiredClient()
+	for i := 0; i < maxServerErrors+7; i++ {
+		c.recordError(fmt.Sprintf("line %d", i))
+	}
+	d := c.Diagnostics()
+	if len(d) != maxServerErrors || d[len(d)-1] != fmt.Sprintf("line %d", maxServerErrors+6) {
+		t.Fatalf("want the newest %d entries, got %d ending %q", maxServerErrors, len(d), d[len(d)-1])
+	}
+	if s := c.diagnosticsSuffix(); !strings.Contains(s, "7 earlier entries dropped") {
+		t.Fatalf("suffix does not report the dropped count: %q", s)
+	}
+}
+
+// Repeated inbound cancellations fold into one entry with a count, and any
+// control characters in server text are escaped at the single recording owner.
+func TestCancelledRunsCoalesceAndRecordsAreEscaped(t *testing.T) {
+	c, _ := newWiredClient()
+	for i := 0; i < 5; i++ {
+		c.dispatch([]byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`))
+	}
+	if d := c.Diagnostics(); len(d) != 1 || !strings.Contains(d[0], "repeated 5 times") {
+		t.Fatalf("want one coalesced entry, got %q", d)
+	}
+	c.recordError("stderr\nforged\x1b[31m")
+	for _, d := range c.Diagnostics() {
+		if strings.ContainsAny(d, "\n\x1b") {
+			t.Fatalf("raw control characters recorded: %q", d)
+		}
 	}
 }
