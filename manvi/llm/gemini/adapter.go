@@ -421,6 +421,8 @@ type stream struct {
 	// call, so the rest wait here and are drained, in order, before another
 	// frame is read.
 	pending []llm.Chunk
+	// closed is set by Close; Next yields nothing after it.
+	closed bool
 
 	nextIndex int
 	textIndex int
@@ -697,8 +699,15 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err := s.ctx.Err(); err != nil {
 			return llm.Chunk{}, err
 		}
-		// Before the failure check, as the byte-limit refusal below is set so
-		// that a chunk its frame produced still reaches the caller first.
+		if s.closed {
+			return llm.Chunk{}, errStreamClosed
+		}
+		// Queued chunks drain before the failure check, deliberately and only
+		// for one failure: the byte-limit refusal below is set rather than
+		// returned so a chunk its frame produced still reaches the caller first.
+		// Every other failure clears the queue where it is set (see fail), so
+		// once Next has returned an error it never yields another chunk, and
+		// Close clears it too.
 		if len(s.pending) > 0 {
 			chunk := s.pending[0]
 			s.pending = s.pending[1:]
@@ -762,8 +771,7 @@ func (s *stream) Next() (llm.Chunk, error) {
 
 		chunk, emit, err := s.apply(kind, ev)
 		if err != nil {
-			s.failure = err
-			return llm.Chunk{}, err
+			return llm.Chunk{}, s.fail(err)
 		}
 		if !single {
 			err = s.continuation.observe(kind, event.Data, ev, s.calls)
@@ -771,8 +779,9 @@ func (s *stream) Next() (llm.Chunk, error) {
 			err = s.continuation.observeEnvelope(kind, &envelope, ev, s.calls)
 		}
 		if err != nil {
-			s.failure = err
-			return llm.Chunk{}, err
+			// apply may already have queued this frame's later parts; a frame
+			// the continuation refuses contributes nothing.
+			return llm.Chunk{}, s.fail(err)
 		}
 		// Checked once per event rather than per write, and by setting the
 		// failure rather than returning it, so a chunk this frame produced
@@ -1203,7 +1212,7 @@ func (s *stream) Response() (llm.Response, error) {
 	var (
 		calls     []llm.ToolCallBlock
 		malformed []llm.MalformedCall
-		withheld  droppedCalls
+		cut       []*callAccumulator
 	)
 	for _, acc := range s.order {
 		// A call is complete only when the stream framed it with step.stop, or
@@ -1241,7 +1250,7 @@ func (s *stream) Response() (llm.Response, error) {
 					"the arguments were cut off by the output limit after %d bytes and are not a complete JSON object",
 					acc.args.Len()),
 			})
-			withheld.add(acc)
+			cut = append(cut, acc)
 			continue
 		}
 		if unclosedAndEmpty {
@@ -1277,7 +1286,8 @@ func (s *stream) Response() (llm.Response, error) {
 	// needs to send its own history back, carried through the neutral log
 	// without the neutral layer interpreting them, and handed back only when
 	// the same provider is on both ends.
-	if sigs := s.signatures(); len(sigs) > 0 {
+	withheld := withheldCalls(s.order, cut)
+	if sigs := s.signatures(withheld); len(sigs) > 0 {
 		encoded, err := json.Marshal(replayState{CallSignatures: sigs})
 		if err != nil {
 			return llm.Response{}, err
@@ -1342,10 +1352,14 @@ type replayState struct {
 }
 
 // signatures collects the per-call signatures this stream observed.
-func (s *stream) signatures() map[string]string {
+//
+// A withheld call's signature is not collected: the message does not carry the
+// call, and a signature under an id a whole call shares would overwrite that
+// call's own.
+func (s *stream) signatures(withheld *droppedCalls) map[string]string {
 	var out map[string]string
 	for _, acc := range s.order {
-		if acc.signature == "" || acc.id == "" {
+		if acc.signature == "" || acc.id == "" || withheld.has(acc) {
 			continue
 		}
 		if out == nil {
@@ -1384,7 +1398,21 @@ func signatureFor(msg llm.Message, id llm.CallID) string {
 	return state.CallSignatures[string(id)]
 }
 
-func (s *stream) Close() error { return s.sse.Close() }
+func (s *stream) Close() error {
+	s.closed = true
+	s.pending = nil
+	return s.sse.Close()
+}
+
+var errStreamClosed = errors.New("gemini: stream is closed")
+
+// fail records err as the stream's failure and discards any chunks the failed
+// frame had queued.
+func (s *stream) fail(err error) error {
+	s.failure = err
+	s.pending = nil
+	return err
+}
 
 // failedStatus turns an interaction that ended in failure into an error that
 // names the status. A failed or cancelled interaction carries whatever content
