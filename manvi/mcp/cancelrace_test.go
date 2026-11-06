@@ -107,7 +107,7 @@ func TestInboundCancelledIsRecordedAndNotAnswered(t *testing.T) {
 		t.Fatalf("a notification was answered: %q", fr)
 	}
 	d := strings.Join(c.Diagnostics(), "\n")
-	if !strings.Contains(d, "notifications/cancelled") || !strings.Contains(d, "user gave up") || !strings.Contains(d, "1") {
+	if !strings.Contains(d, "cancelled its request 1") || !strings.Contains(d, "user gave up") {
 		t.Fatalf("inbound cancellation was not recorded with its id and reason: %q", d)
 	}
 }

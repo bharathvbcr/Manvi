@@ -676,9 +676,20 @@ func (c *Client) dispatch(line []byte) {
 // declared the capability).
 func (c *Client) answerServerFrame(line []byte, method string) {
 	var probe struct {
-		ID json.RawMessage `json:"id"`
+		ID     json.RawMessage `json:"id"`
+		Params struct {
+			RequestID json.RawMessage `json:"requestId"`
+			Reason    string          `json:"reason"`
+		} `json:"params"`
 	}
 	if json.Unmarshal(line, &probe) != nil || len(probe.ID) == 0 || string(probe.ID) == "null" {
+		if method == "notifications/cancelled" {
+			// The server abandoned a request it issued, in its own id space, so
+			// it says nothing about any Call of ours and is never matched
+			// against pending ids; the spec asks only that the reason be logged.
+			c.recordError(fmt.Sprintf("server %s cancelled its request %s: %s",
+				c.Name(), truncateForMessage(string(probe.Params.RequestID)), truncateForMessage(probe.Params.Reason)))
+		}
 		return
 	}
 	reply := struct {
@@ -831,19 +842,40 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		c.beforeWait(id, respCh)
 	}
 
+	// The pending map decides who owns the reply, not the order select happens
+	// to pick among ready cases. dispatch removes the entry and only then sends,
+	// so a context that ends at the same moment as a reply used to forget a
+	// reply that had already been delivered, cancel a request whose answer was
+	// in hand, and report a timeout the caller may retry a non-idempotent tool
+	// over. Whichever of ctx or doneCh fires, withdraw says whether anyone
+	// claimed the entry first.
 	select {
 	case <-ctx.Done():
-		c.forget(id)
-		c.cancelRequest(id, method, ctx.Err())
-		// Whatever the server said about itself travels with the timeout. A
-		// wedge whose cause was recorded on stderr and then discarded is how
-		// "the tool call hung" became the whole of an operator's evidence.
-		return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+		if c.withdraw(id) {
+			c.cancelRequest(id, method, ctx.Err())
+			// Whatever the server said about itself travels with the timeout. A
+			// wedge whose cause was recorded on stderr and then discarded is how
+			// "the tool call hung" became the whole of an operator's evidence.
+			return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+		}
+		return c.claimedReply(method, respCh, result)
 	case <-c.doneCh:
-		return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+		if c.withdraw(id) {
+			return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+		}
+		return c.claimedReply(method, respCh, result)
 	case resp, ok := <-respCh:
 		return c.replyResult(method, resp, ok, result)
 	}
+}
+
+// claimedReply returns the outcome of a request whose pending entry was already
+// taken by dispatch, failAllPending or the end-of-stream flush. Each of those
+// removes the entry and then sends exactly one value into the channel (cap 1,
+// so the send never blocks) or closes it, so this receive always completes.
+func (c *Client) claimedReply(method string, respCh chan *Response, result any) error {
+	resp, ok := <-respCh
+	return c.replyResult(method, resp, ok, result)
 }
 
 // callCeiling is the bound on a wait whose caller set none.
@@ -896,7 +928,7 @@ func (c *Client) send(ctx context.Context, method string, params any) (int64, ch
 	c.pendingMu.Unlock()
 
 	if writeErr := c.writeFrame(data); writeErr != nil {
-		c.forget(id)
+		c.withdraw(id)
 		// A write that fails because the child stopped reading is usually a
 		// child that is exiting, and what it said on the way out is still in
 		// flight. Returning now made the same failure read differently
@@ -907,12 +939,18 @@ func (c *Client) send(ctx context.Context, method string, params any) (int64, ch
 	return id, respCh, nil
 }
 
-// forget drops a request's pending entry, after which a reply to it is recorded
-// by dispatch as "no longer pending" and delivered nowhere.
-func (c *Client) forget(id int64) {
+// withdraw drops a request's pending entry, after which a reply to it is
+// recorded by dispatch as "no longer pending" and delivered nowhere. It reports
+// whether the entry was still there: false means dispatch, failAllPending or
+// the end-of-stream flush already claimed it, so a value or a close is on its
+// way to (or already in) the request's channel and the caller must take that
+// rather than abandon it.
+func (c *Client) withdraw(id int64) bool {
 	c.pendingMu.Lock()
+	_, was := c.pending[id]
 	delete(c.pending, id)
 	c.pendingMu.Unlock()
+	return was
 }
 
 // replyResult turns what arrived on a request's channel into Call's result. A
@@ -1278,14 +1316,15 @@ func (c *Client) initializeAs(ctx context.Context, f *initFlight, version string
 	select {
 	case resp, ok = <-respCh:
 	case <-c.doneCh:
-		// A reply that landed in the same instant is still a reply.
-		select {
-		case resp, ok = <-respCh:
-		default:
+		// A reply already claimed at the same instant is still a reply. The
+		// same arbiter as Call; initialize is never cancelled, so there is no
+		// notifications/cancelled to send either way.
+		if c.withdraw(id) {
 			return nil, fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
 		}
+		resp, ok = <-respCh
 	case <-f.abort:
-		c.forget(id)
+		c.withdraw(id)
 		return nil, c.closedReason()
 	}
 
