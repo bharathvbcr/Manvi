@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -30,13 +31,16 @@ type blockedCheckout struct {
 	info   os.FileInfo
 	reason string
 
-	// Set on a hold only.
-	session ManagedSession
-	runID   string
-	since   time.Time
-	root    string
-	file    string
-	nonce   string
+	// Set on a hold only. job is the held run, and revisable says its stored
+	// outcome may be revised when the hold ends (see reviseHeldRun).
+	session   ManagedSession
+	job       *managedJob
+	revisable bool
+	runID     string
+	since     time.Time
+	root      string
+	file      string
+	nonce     string
 	// interval and attempts are the reaper's pause and bound, taken when the hold
 	// is, so the reaper reads no package variable; gaveUp is set when it has used
 	// its attempts without a confirmation.
@@ -117,12 +121,12 @@ func (r *ManagedRunner) blockedReason(info os.FileInfo) string {
 // reaper, one per held run.
 func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession, m *harnessMaterialisation) {
 	job.mu.Lock()
-	info, root := job.checkoutInfo, job.checkout
+	info, root, revisable := job.checkoutInfo, job.checkout, job.revisableHold
 	job.mu.Unlock()
 	if info == nil {
 		return
 	}
-	b := &blockedCheckout{info: info, session: session, runID: job.id, since: time.Now(), root: root, file: m.File, nonce: m.pending.Nonce, interval: reapInterval, attempts: maxReapAttempts}
+	b := &blockedCheckout{info: info, session: session, job: job, revisable: revisable, runID: job.id, since: time.Now(), root: root, file: m.File, nonce: m.pending.Nonce, interval: reapInterval, attempts: maxReapAttempts}
 	r.mu.Lock()
 	r.dropBlocked(info)
 	r.blocked = append(r.blocked, b)
@@ -158,7 +162,7 @@ func (r *ManagedRunner) reap(b *blockedCheckout, stop <-chan struct{}) {
 	for attempt := 0; attempt < b.attempts; attempt++ {
 		exit, err := b.session.Close()
 		if exitConfirmed(exit) {
-			r.releaseHeld(b)
+			r.releaseHeld(b, exit, err)
 			return
 		}
 		if err != nil {
@@ -183,9 +187,26 @@ func (r *ManagedRunner) reap(b *blockedCheckout, stop <-chan struct{}) {
 // A restore that fails, or a block the agent edited inside, keeps the record and is
 // remembered, as it is when a run ends normally: HarnessBusy refuses naming it, and
 // the next attempt on the checkout reports it.
-func (r *ManagedRunner) releaseHeld(b *blockedCheckout) {
+func (r *ManagedRunner) releaseHeld(b *blockedCheckout, exit codingagent.Exit, closeErr error) {
+	if !r.releaseHold(b) {
+		return
+	}
+	r.reviseHeldRun(b, exit, closeErr)
+}
+
+// releaseHold takes a hold's block out and ends the hold, reporting whether this
+// call did: a hold already ended (by an earlier or a concurrent reap) is not ended
+// twice, and its block, which may by now be another run's, is not touched again.
+func (r *ManagedRunner) releaseHold(b *blockedCheckout) bool {
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
+	r.mu.Lock()
+	held := slices.Contains(r.blocked, b)
+	r.mu.Unlock()
+	if !held {
+		return false
+	}
+	// Restore first and only then stop holding, so no attempt is admitted between.
 	err := restoreHeldBlock(b.root, b.nonce)
 	r.mu.Lock()
 	r.blocked = slices.DeleteFunc(r.blocked, func(e *blockedCheckout) bool { return e == b })
@@ -194,6 +215,36 @@ func (r *ManagedRunner) releaseHeld(b *blockedCheckout) {
 		err = fmt.Errorf("run %s, whose agent process has since exited: %w", b.runID, err)
 	}
 	r.settleBlocked(b.info, b.root, err)
+	return true
+}
+
+// reviseHeldRun settles the stored run of a hold that has just ended. The run was
+// recorded unresolved because its Close could not confirm the agent's process
+// group gone; a later Close that does is what that Close would have been, so the
+// run is recorded as runOutcome says for it: exited with the agent's code, when
+// this Close too has nothing to add, and left unresolved otherwise, as the first
+// would have left it. It goes through recordRun, the writer of the first record,
+// and only from unresolved: a run already finalised (by a reconcile, or by a
+// concurrent revision) is not rewritten. A run that was not ended by its own
+// Close (revisable false) is unresolved by design and stays so.
+func (r *ManagedRunner) reviseHeldRun(b *blockedCheckout, exit codingagent.Exit, closeErr error) {
+	if !b.revisable || b.job == nil {
+		return
+	}
+	outcome, code := runOutcome(exit, closeErr)
+	if outcome != "exited" {
+		return
+	}
+	cause := errors.New("the agent process and its process group have since been confirmed gone; the outcome was unresolved only until then, and task acceptance still requires review")
+	written, err := r.recordRun(b.job, outcome, code, cause, "", "unresolved")
+	b.job.mu.Lock()
+	defer b.job.mu.Unlock()
+	switch {
+	case err != nil:
+		b.job.err = errors.Join(b.job.err, fmt.Errorf("revising run %s after its agent was confirmed gone: %w", b.runID, err))
+	case written:
+		b.job.phase = outcome
+	}
 }
 
 // recheckHeld restarts the reaper of a hold whose attempts ran out, when an attempt

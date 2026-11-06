@@ -130,6 +130,11 @@ type managedJob struct {
 	harnessDigest string
 	harnessFile   string
 	materialised  *harnessMaterialisation
+	// revisableHold is set by the finish of a run that ended through the run's own
+	// Close, so that a hold it takes may later revise the run (see reviseHeldRun).
+	// A run abandoned before it was active is recorded unresolved whatever Close
+	// says, and keeps that.
+	revisableHold bool
 	// checkout is the resolved directory this attempt runs in and checkoutInfo
 	// the directory itself, which is what checkouts are compared by (see
 	// sameCheckout); wantsHarness is whether it asked for a harness, and recovery
@@ -1171,17 +1176,12 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 		finalState = "" // The protocol record owns the initialized provider state.
 	}
-	outcome := "unresolved"
-	var code *int
-	// Provider failure and callback uncertainty do not imply that a reaped
-	// process is alive. Preserve their reasons; task acceptance remains separate.
-	if exit.Reaped && closeErr == nil {
-		outcome = "exited"
-		if exit.Code >= 0 {
-			v := exit.Code
-			code = &v
-		}
-	}
+	outcome, code := runOutcome(exit, closeErr)
+	// A hold taken by this finish is one a later Close may settle: the run is
+	// revised then to what outcome would have been had the group been gone now.
+	job.mu.Lock()
+	job.revisableHold = true
+	job.mu.Unlock()
 	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit))
 	// Arm only after finish has released the checkout, and never for a timeout.
 	// A provider-reported failure and a clean stop both arm. The queued message
@@ -1732,46 +1732,75 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 		job.mu.Unlock()
 		r.settleBlocked(info, root, fmt.Errorf("run %s: %w", job.id, restoreErr))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	run, _, err := r.run(ctx, job.id)
-	if err == nil {
-		reason := "Managed provider connection ended; task acceptance requires review"
-		if cause != nil {
-			reason = r.failureText(cause)
-			if len(reason) > 2048 {
-				reason = reason[:2048]
-				for !utf8.ValidString(reason) {
-					reason = reason[:len(reason)-1]
-				}
-			}
-		}
-		var id string
-		id, err = generationID()
-		if err == nil {
-			var input []byte
-			input, err = json.Marshal(struct {
-				ID            string `json:"id"`
-				Request       string `json:"request_id"`
-				Revision      int64  `json:"expected_revision"`
-				Owner         string `json:"owner_id"`
-				Session       string `json:"session_id"`
-				Outcome       string `json:"outcome"`
-				Exit          *int   `json:"exit_code"`
-				Reason        string `json:"reason"`
-				ProviderState string `json:"provider_state,omitempty"`
-			}{job.id, id, run.Revision, job.owner, job.session, outcome, code, reason, providerState})
-			if err == nil {
-				_, err = r.client.Workbench(ctx, "runs.finish", input)
-			}
-		}
-	}
-	storeErr := err
+	_, storeErr := r.recordRun(job, outcome, code, cause, providerState, "")
 	job.mu.Lock()
 	job.phase = outcome
 	job.err = errors.Join(cause, storeErr)
 	job.mu.Unlock()
 	return storeErr
+}
+
+// runOutcome is how a run whose provider was closed is recorded: exited, with the
+// agent's code, when Close reaped it and had nothing to add, else unresolved.
+// Provider failure and callback uncertainty do not imply that a reaped process is
+// alive. Their reasons are preserved; task acceptance remains separate.
+func runOutcome(exit codingagent.Exit, closeErr error) (string, *int) {
+	if !exit.Reaped || closeErr != nil {
+		return "unresolved", nil
+	}
+	if exit.Code < 0 {
+		return "exited", nil
+	}
+	code := exit.Code
+	return "exited", &code
+}
+
+// recordRun is the one place a run's end is written to the store (runs.finish),
+// for finish and for the revision of a held run alike. from, when set, is the
+// state the stored run must still be in: a run in any other state has been
+// finalised by someone and is not rewritten (written is false, the error nil).
+func (r *ManagedRunner) recordRun(job *managedJob, outcome string, code *int, cause error, providerState, from string) (written bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run, _, err := r.run(ctx, job.id)
+	if err != nil {
+		return false, err
+	}
+	if from != "" && run.State != from {
+		return false, nil
+	}
+	reason := "Managed provider connection ended; task acceptance requires review"
+	if cause != nil {
+		reason = r.failureText(cause)
+		if len(reason) > 2048 {
+			reason = reason[:2048]
+			for !utf8.ValidString(reason) {
+				reason = reason[:len(reason)-1]
+			}
+		}
+	}
+	id, err := generationID()
+	if err != nil {
+		return false, err
+	}
+	input, err := json.Marshal(struct {
+		ID            string `json:"id"`
+		Request       string `json:"request_id"`
+		Revision      int64  `json:"expected_revision"`
+		Owner         string `json:"owner_id"`
+		Session       string `json:"session_id"`
+		Outcome       string `json:"outcome"`
+		Exit          *int   `json:"exit_code"`
+		Reason        string `json:"reason"`
+		ProviderState string `json:"provider_state,omitempty"`
+	}{job.id, id, run.Revision, job.owner, job.session, outcome, code, reason, providerState})
+	if err != nil {
+		return false, err
+	}
+	if _, err = r.client.Workbench(ctx, "runs.finish", input); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (r *ManagedRunner) Stop(raw json.RawMessage) error {
 	if _, err := enhancementObject(raw, 1024, "id"); err != nil {

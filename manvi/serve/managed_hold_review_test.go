@@ -1,9 +1,12 @@
 package serve
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -260,4 +263,124 @@ func mustResolvedInfo(t *testing.T, dir string) os.FileInfo {
 		t.Fatalf("%s does not resolve", dir)
 	}
 	return info
+}
+
+// storedRun is the run as the store holds it now.
+func storedRun(t *testing.T, m *managedLifecycle) (managedRun, map[string]any) {
+	t.Helper()
+	run, raw, err := m.runner.run(t.Context(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	item, _ := fields["item"].(map[string]any)
+	return run, item
+}
+
+// A run held for a live process group was recorded unresolved because its first
+// Close could not confirm the group gone. When a later Close does, the group is
+// what it would have been had the first found it so: the run's outcome is what
+// the first Close would have recorded, exited with the agent's code, and it is
+// no longer uncertain. Before, only the checkout was released and the run stayed
+// unresolved for good.
+func TestALaterCloseThatFindsTheGroupGoneRevisesTheUnresolvedRun(t *testing.T) {
+	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"}, func(s *managedTestSession) {
+		s.unreaped = false
+		s.groupLive = true
+		s.liveGroupErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
+	})
+	if run, _ := storedRun(t, m); run.State != "unresolved" {
+		t.Fatalf("the held run is recorded %s, want unresolved", run.State)
+	}
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	waitFor(t, "the stored run to be revised", func() bool { run, _ := storedRun(t, m); return run.State == "exited" })
+	_, item := storedRun(t, m)
+	if item["outcome_uncertain"] != false || item["exit_code"] != float64(0) || item["finished_at"] == nil {
+		t.Fatalf("the revised run is not a settled exit with the agent's code: %v", item)
+	}
+	if reason, _ := item["reason"].(string); !strings.Contains(reason, "confirmed gone") {
+		t.Fatalf("the revised run does not say why it changed: %q", reason)
+	}
+}
+
+// A member alive when the reaper asks keeps the run unresolved, the checkout
+// held and the block in place, however many times it asks.
+func TestARunWhoseGroupStaysAliveStaysUnresolvedAndHeld(t *testing.T) {
+	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"}, func(s *managedTestSession) {
+		s.unreaped = false
+		s.groupLive = true
+		s.liveGroupErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
+	})
+	asked := session.closes.Load()
+	waitFor(t, "the reaper to ask again", func() bool { return session.closes.Load() >= asked+3 })
+	if run, _ := storedRun(t, m); run.State != "unresolved" {
+		t.Fatalf("the run is %s while a member of its group is alive, want unresolved", run.State)
+	}
+	if e := m.runner.HarnessBusy(root); e == nil || e.Code != ErrHarnessBusy {
+		t.Fatalf("HarnessBusy = %v, want the checkout held", e)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); !strings.Contains(got, harnessBeginMarker) {
+		t.Fatalf("the block was taken out under a live group:\n%s", got)
+	}
+}
+
+// What the first Close would have recorded had the group been gone is what the
+// later one records, and no more: a Close that still carries an error (the wait
+// error is sticky) leaves the run unresolved, as the first would have.
+func TestALaterCloseWithAnErrorLeavesTheRunUnresolved(t *testing.T) {
+	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"}, func(s *managedTestSession) {
+		s.unreaped = false
+		s.groupLive = true
+		s.closeErr = errors.New("exec: WaitDelay expired before I/O complete")
+	})
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	if run, _ := storedRun(t, m); run.State != "unresolved" {
+		t.Fatalf("the run is %s, want unresolved: the first Close would have kept it so", run.State)
+	}
+}
+
+// Two reaps that both find the group gone (a restarted reaper beside one that was
+// already asking, or the same release run twice) end the hold once and write the
+// run once; a run already finalised is not rewritten by a late revision.
+func TestRevisingAHeldRunIsIdempotentAndNeverRewritesAFinalisedRun(t *testing.T) {
+	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"}, func(s *managedTestSession) {
+		s.unreaped = false
+		s.groupLive = true
+		s.liveGroupErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
+	})
+	m.runner.mu.Lock()
+	var held *blockedCheckout
+	for _, b := range m.runner.blocked {
+		if b.session != nil {
+			held = b
+		}
+	}
+	m.runner.mu.Unlock()
+	if held == nil {
+		t.Fatal("no hold was taken")
+	}
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	waitFor(t, "the stored run to be revised", func() bool { run, _ := storedRun(t, m); return run.State == "exited" })
+	revised, _ := storedRun(t, m)
+
+	exit, err := session.Close()
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() { defer wg.Done(); m.runner.releaseHeld(held, exit, err) }()
+	}
+	wg.Wait()
+	m.runner.reviseHeldRun(held, exit, err)
+	if again, _ := storedRun(t, m); again.Revision != revised.Revision || again.State != "exited" {
+		t.Fatalf("the run was rewritten after it was finalised: revision %d -> %d, state %s", revised.Revision, again.Revision, again.State)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
+		t.Fatalf("a repeated release touched the file: %q", got)
+	}
 }
