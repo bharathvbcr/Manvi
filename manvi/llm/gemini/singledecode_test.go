@@ -50,7 +50,7 @@ func drainFrames(t *testing.T, body string, twice bool) decodeRun {
 	}
 	resp, err := s.Response()
 	run.response, run.respErr = resp, errText(err)
-	steps, err := s.continuation.steps()
+	steps, err := s.continuation.steps(nil)
 	for _, step := range steps {
 		run.steps = append(run.steps, string(step))
 	}
@@ -73,6 +73,7 @@ func streamState(s *stream) string {
 	}
 	fmt.Fprintf(&b, "text=%q reasoning=%q stop=%v usage=%+v done=%v failure=%q\n",
 		s.text.String(), s.reasoning.String(), s.stopReason, s.usage, s.done, errText(s.failure))
+	fmt.Fprintf(&b, "pending=%+v\n", s.pending)
 	fmt.Fprintf(&b, "next=%d text=%d reason=%d sig=%q decoded=%d\n",
 		s.nextIndex, s.textIndex, s.reasonIdx, s.lastSignature, s.decodedBytes())
 	for _, a := range s.order {
@@ -160,6 +161,11 @@ data: [DONE]
 // shape json will accept or refuse for it, duplicated, re-cased, nulled after
 // a value and a value after null.
 var adversarialFrames = []struct{ event, data string }{
+	// a step carrying several parts, which Next hands out one chunk at a time
+	{"step.delta", `{"step":{"type":"model_output","content":[{"type":"text","text":"a"},{"type":"thought","thought":"t"},{"type":"text","text":"b"}]},"event_type":"step.delta"}`},
+	{"step.delta", `{"index":0,"step":{"type":"model_output","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]},"event_type":"step.delta"}`},
+	// the output limit arriving as the terminal frame
+	{"interaction.completed", `{"interaction":{"status":"max_tokens"},"event_type":"interaction.completed"}`},
 	// index
 	{"step.delta", `{"index":null,"delta":{"type":"text","text":"x"},"event_type":"step.delta"}`},
 	{"step.delta", `{"delta":{"type":"text","text":"no index"},"event_type":"step.delta"}`},

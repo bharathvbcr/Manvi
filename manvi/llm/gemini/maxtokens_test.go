@@ -218,3 +218,27 @@ func TestACompletedStatusWithUnusableArgumentsIsStillAnErrorAndNeverDispatches(t
 		})
 	}
 }
+
+// TestAnAuthoritativeSnapshotDoesNotReplayTheWithheldCall: when the terminal
+// frame carries interaction.steps, that snapshot is the replay state, and it
+// lists the cut call. The message does not, so the snapshot is filtered or the
+// continuation check refuses a turn the decoder had just settled.
+func TestAnAuthoritativeSnapshotDoesNotReplayTheWithheldCall(t *testing.T) {
+	body := sse(
+		[2]string{"step.start", `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`},
+		[2]string{"step.delta", `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Let me read it."}}`},
+		[2]string{"step.start", `{"event_type":"step.start","index":1,"step":{"type":"function_call","id":"fc_1","name":"read_file","arguments":{}}}`},
+		[2]string{"step.delta", `{"event_type":"step.delta","index":1,"delta":{"type":"arguments_delta","arguments":"{\"path\":\"a."}}`},
+		[2]string{"interaction.completed", `{"event_type":"interaction.completed","interaction":{"status":"max_tokens","steps":[` +
+			`{"type":"model_output","content":[{"type":"text","text":"Let me read it."}]},` +
+			`{"type":"function_call","id":"fc_1","name":"read_file","arguments":{}}]}}`},
+		doneFrame)
+	resp, err := settle(t, body)
+	if err != nil {
+		t.Fatalf("turn died: %v", err)
+	}
+	assertCutCallReported(t, resp)
+	if resp.Message.Provenance != nil && strings.Contains(string(resp.Message.Provenance.ReplayState), "fc_1") {
+		t.Errorf("the withheld call is in the replay state: %s", resp.Message.Provenance.ReplayState)
+	}
+}

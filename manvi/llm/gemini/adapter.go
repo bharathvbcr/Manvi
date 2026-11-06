@@ -416,6 +416,12 @@ type stream struct {
 	done      bool
 	failure   error
 
+	// pending holds chunks a frame produced beyond the one apply returns. A
+	// step.delta can carry several content parts and Next yields one chunk per
+	// call, so the rest wait here and are drained, in order, before another
+	// frame is read.
+	pending []llm.Chunk
+
 	nextIndex int
 	textIndex int
 	reasonIdx int
@@ -690,6 +696,13 @@ func (s *stream) Next() (llm.Chunk, error) {
 	for {
 		if err := s.ctx.Err(); err != nil {
 			return llm.Chunk{}, err
+		}
+		// Before the failure check, as the byte-limit refusal below is set so
+		// that a chunk its frame produced still reaches the caller first.
+		if len(s.pending) > 0 {
+			chunk := s.pending[0]
+			s.pending = s.pending[1:]
+			return chunk, nil
 		}
 		if s.failure != nil {
 			return llm.Chunk{}, s.failure
@@ -1046,6 +1059,11 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 		}, true, nil
 
 	default:
+		// Every part, not the first: a step's content is an array and the parts
+		// after the first were being dropped, from the message and, because the
+		// continuation reads them all, into a refusal at Response. The first
+		// chunk is returned and the rest queued on s.pending.
+		var chunks []llm.Chunk
 		for _, content := range step.Content {
 			switch content.Type {
 			case DeltaText:
@@ -1057,7 +1075,7 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 					s.nextIndex++
 				}
 				s.text.WriteString(content.Text)
-				return llm.Chunk{Kind: llm.ChunkText, BlockIndex: s.textIndex, Text: content.Text}, true, nil
+				chunks = append(chunks, llm.Chunk{Kind: llm.ChunkText, BlockIndex: s.textIndex, Text: content.Text})
 			case DeltaThought:
 				thought := content.Thought
 				if thought == "" {
@@ -1071,10 +1089,14 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 					s.nextIndex++
 				}
 				s.reasoning.WriteString(thought)
-				return llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: s.reasonIdx, Text: thought}, true, nil
+				chunks = append(chunks, llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: s.reasonIdx, Text: thought})
 			}
 		}
-		return llm.Chunk{}, false, nil
+		if len(chunks) == 0 {
+			return llm.Chunk{}, false, nil
+		}
+		s.pending = append(s.pending, chunks[1:]...)
+		return chunks[0], true, nil
 	}
 }
 
@@ -1170,6 +1192,82 @@ func (s *stream) Response() (llm.Response, error) {
 		return llm.Response{}, errors.New("gemini: Response called before the stream was exhausted")
 	}
 
+	// An output budget that ends mid-call is the model's own limit, not a broken
+	// stream, so the stop reason is read before any call is judged. See the
+	// per-call settlement below.
+	stop := s.stopReason
+	if stop == "" {
+		stop = llm.StopOther
+	}
+
+	var (
+		calls     []llm.ToolCallBlock
+		malformed []llm.MalformedCall
+		withheld  droppedCalls
+	)
+	for _, acc := range s.order {
+		// A call is complete only when the stream framed it with step.stop, or
+		// when what arrived is a whole JSON object. One that was never closed and
+		// carries no argument bytes is a call whose arguments did not arrive, and
+		// turning it into `{}` runs the tool on arguments nobody sent.
+		unclosedAndEmpty := !acc.sealed && acc.args.Len() == 0
+		args := json.RawMessage(acc.args.String())
+		if len(args) == 0 {
+			args = json.RawMessage("{}")
+		}
+		// Checked as an object, not merely as valid JSON. A tool's arguments are
+		// an object by definition — every schema this harness sends declares
+		// "type":"object" — and the looser check let a bare JSON string through
+		// as if it were one. What reached the tool was a quoted string, and the
+		// tool reported a decode failure against its own schema, which reads as
+		// the model having sent nonsense rather than as the adapter having
+		// failed to unwrap the wire form.
+		if (unclosedAndEmpty || !isJSONObject(args)) && stop == llm.StopMaxTokens {
+			// The model ran out of output budget in the middle of the call. The
+			// turn survives: the call is reported as malformed, the loop tells the
+			// model it was cut off, and it can ask for less. Returning an error
+			// here discarded the prose and every completed step of the turn with
+			// it. The anthropic adapter settles the same case the same way.
+			//
+			// A call with no name still cannot be routed or told back to the
+			// model, so that stays an error, as it does there.
+			if acc.name == "" {
+				return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
+			}
+			malformed = append(malformed, llm.MalformedCall{
+				ID:   llm.CallID(acc.id),
+				Name: acc.name,
+				Reason: fmt.Sprintf(
+					"the arguments were cut off by the output limit after %d bytes and are not a complete JSON object",
+					acc.args.Len()),
+			})
+			withheld.add(acc)
+			continue
+		}
+		if unclosedAndEmpty {
+			return llm.Response{}, fmt.Errorf(
+				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
+					"it was not dispatched", acc.name)
+		}
+		if !isJSONObject(args) {
+			// Named as unusable rather than as incomplete. Truncation is the
+			// common cause and it is not the only one — arguments that are two
+			// concatenated objects are complete and still unusable — and
+			// telling a reader the stream was cut off when it was not sends
+			// them to investigate the wrong half of the system.
+			return llm.Response{}, fmt.Errorf(
+				"gemini: tool call %q arrived with arguments that are not a JSON object, so it was not "+
+					"dispatched — the stream was cut off mid-call, or the server framed two calls as "+
+					"one: %q", acc.name, args)
+		}
+		if acc.name == "" {
+			return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
+		}
+		calls = append(calls, llm.ToolCallBlock{
+			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
+		})
+	}
+
 	msg := llm.Message{
 		Role:       llm.RoleAssistant,
 		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
@@ -1186,9 +1284,15 @@ func (s *stream) Response() (llm.Response, error) {
 		}
 		msg.Provenance.ReplayState = encoded
 	}
-	if steps, err := s.continuation.steps(); err != nil {
+	// The continuation is built after the calls are judged, and without the ones
+	// withheld as malformed: the message does not carry them, so replaying their
+	// steps would send the provider a call the journal never held, and the
+	// partial arguments of one would fail the continuation's own object check.
+	steps, err := s.continuation.steps(withheld)
+	if err != nil {
 		return llm.Response{}, err
-	} else if len(steps) > 0 {
+	}
+	if len(steps) > 0 {
 		encoded, err := json.Marshal(replayState{Version: 2, Steps: steps})
 		if err != nil {
 			return llm.Response{}, err
@@ -1201,61 +1305,22 @@ func (s *stream) Response() (llm.Response, error) {
 	if s.text.Len() > 0 {
 		msg.Content = append(msg.Content, llm.TextBlock{Text: s.text.String()})
 	}
-	for _, acc := range s.order {
-		// An empty argument list is believed only for a call the stream framed
-		// as complete with step.stop. One that was never closed and carries no
-		// argument bytes is a call whose arguments did not arrive, and turning
-		// it into `{}` runs the tool on arguments nobody sent.
-		if !acc.sealed && acc.args.Len() == 0 {
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
-					"it was not dispatched", acc.name)
-		}
-		args := json.RawMessage(acc.args.String())
-		if len(args) == 0 {
-			args = json.RawMessage("{}")
-		}
-		// Checked as an object, not merely as valid JSON. A tool's arguments are
-		// an object by definition — every schema this harness sends declares
-		// "type":"object" — and the looser check let a bare JSON string through
-		// as if it were one. What reached the tool was a quoted string, and the
-		// tool reported a decode failure against its own schema, which reads as
-		// the model having sent nonsense rather than as the adapter having
-		// failed to unwrap the wire form.
-		if !isJSONObject(args) {
-			// Named as unusable rather than as incomplete. Truncation is the
-			// common cause and it is not the only one — arguments that are two
-			// concatenated objects are complete and still unusable — and
-			// telling a reader the stream was cut off when it was not sends
-			// them to investigate the wrong half of the system.
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q arrived with arguments that are not a JSON object, so it was not "+
-					"dispatched — the stream was cut off mid-call, or the server framed two calls as "+
-					"one: %q", acc.name, args)
-		}
-		if acc.name == "" {
-			return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
-		}
-		msg.Content = append(msg.Content, llm.ToolCallBlock{
-			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
-		})
+	for _, call := range calls {
+		msg.Content = append(msg.Content, call)
 	}
 
-	if steps, err := s.continuation.steps(); err != nil {
-		return llm.Response{}, err
-	} else if len(steps) > 0 {
+	if len(steps) > 0 {
 		if err := validateContinuation(msg, steps); err != nil {
 			return llm.Response{}, err
 		}
 	}
-	stop := s.stopReason
-	if stop == "" {
-		stop = llm.StopOther
-	}
-	if len(s.order) > 0 && stop == llm.StopEndTurn {
+	if len(calls) > 0 && stop == llm.StopEndTurn {
 		stop = llm.StopToolUse
 	}
-	return llm.Response{Message: msg, StopReason: stop, Usage: s.usage, MaxTokensApplied: s.maxTokensApplied}, nil
+	return llm.Response{
+		Message: msg, StopReason: stop, Usage: s.usage, MaxTokensApplied: s.maxTokensApplied,
+		Malformed: malformed,
+	}, nil
 }
 
 // isJSONObject reports whether raw is a complete JSON object.

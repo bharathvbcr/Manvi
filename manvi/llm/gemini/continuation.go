@@ -171,12 +171,56 @@ func (c *continuation) observeEnvelope(kind string, envelope *continuationEnvelo
 	return nil
 }
 
-func (c *continuation) steps() ([]json.RawMessage, error) {
+// droppedCalls are the calls Response withheld as malformed because the output
+// limit cut them off. They are not in the settled message, so the continuation
+// must not carry them either.
+type droppedCalls []*callAccumulator
+
+func (d *droppedCalls) add(acc *callAccumulator) { *d = append(*d, acc) }
+
+// has reports whether acc itself was withheld.
+func (d droppedCalls) has(acc *callAccumulator) bool {
+	for _, w := range d {
+		if w == acc {
+			return true
+		}
+	}
+	return false
+}
+
+// hasStep reports whether a snapshot's function_call step is a withheld call.
+// A snapshot carries no accumulator, so it is matched by the id and name the
+// MalformedCall reports.
+func (d droppedCalls) hasStep(id, name string) bool {
+	for _, w := range d {
+		if w.id == id && w.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// steps returns the steps to replay, less any call in dropped.
+func (c *continuation) steps(dropped droppedCalls) ([]json.RawMessage, error) {
 	if len(c.complete) > 0 {
-		return c.complete, nil
+		if len(dropped) == 0 {
+			return c.complete, nil
+		}
+		kept := make([]json.RawMessage, 0, len(c.complete))
+		for _, raw := range c.complete {
+			var step struct{ Type, ID, Name string }
+			if json.Unmarshal(raw, &step) == nil && step.Type == TypeFunctionCall && dropped.hasStep(step.ID, step.Name) {
+				continue
+			}
+			kept = append(kept, raw)
+		}
+		return kept, nil
 	}
 	var out []json.RawMessage
 	for _, s := range c.order {
+		if s.kind == TypeFunctionCall && s.call != nil && dropped.has(s.call) {
+			continue
+		}
 		fields := make(map[string]json.RawMessage, len(s.fields))
 		for k, v := range s.fields {
 			fields[k] = v
