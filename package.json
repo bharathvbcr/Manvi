@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "jsdom": "^30.1.3",
-    "mermaid": "^12.2.0"
+    "mermaid": "^12.3.0"
   },
   "overrides": {
     "lodash-es": "4.18.1",
