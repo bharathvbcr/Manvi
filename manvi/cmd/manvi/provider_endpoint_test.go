@@ -201,3 +201,16 @@ func TestTheUserConfigStillRefusesOtherKeys(t *testing.T) {
 		t.Fatalf("the user config set a key outside its scope: %v", err)
 	}
 }
+
+// Tier and spec keys are not defined when the registry loads the repository
+// file, so the registry itself rejects them there: the post-load check covers
+// only the endpoint keys, which are defined.
+func TestTheRegistryRejectsTierAndSpecKeysFromTheRepositoryFileItself(t *testing.T) {
+	for _, body := range []string{"llm.tier.heavy: claude-opus-5\n", "harness.spec: custom\n"} {
+		dir := t.TempDir()
+		writeFile(t, dir, "config.yaml", body)
+		if _, err := flags.NewHarnessRegistry(filepath.Join(dir, "config.yaml")); err == nil {
+			t.Errorf("the registry accepted %q from the repository file", body)
+		}
+	}
+}

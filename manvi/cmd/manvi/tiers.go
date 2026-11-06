@@ -78,6 +78,13 @@ func tierFlagDefs() []flags.Def {
 // newRegistry is the harness's settings registry: DevCouncil's catalogue, the
 // tier keys, the repository config, the user config and the environment.
 //
+// The pre-read refusal above is for its clear message; it reads the file with
+// its own open, and the registry opens it again, so a writer swapping the file
+// between the two could show them different bytes. The check that holds is the
+// one on what the registry loaded, refuseLoadedRepositoryEndpoints. Tier and
+// spec keys need no such second check: they are not defined when the repository
+// file loads, so the registry rejects them there as unknown keys.
+//
 // The order is what makes the scope rule hold. The repository file is checked
 // for operator-scope keys before anything loads it, and before any posture it
 // sets is read, so its refusal names the rule rather
@@ -91,6 +98,9 @@ func newRegistry(repoConfig string) (*flags.Registry, error) {
 	}
 	reg, err := flags.NewHarnessRegistry(repoConfig)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseLoadedRepositoryEndpoints(reg, repoConfig); err != nil {
 		return nil, err
 	}
 	if err := reg.Define(tierFlagDefs()...); err != nil {
@@ -123,11 +133,11 @@ func newRegistry(repoConfig string) (*flags.Registry, error) {
 // layer. The layer, not the flat map: its line numbers and block lists are what
 // let Registry.LoadLayer refuse a list written under a scalar setting, which
 // LoadConfig closes as an empty section.
-func readConfigFile(path string) (flags.ConfigLayer, error) {
+func readConfigFile(path string, open func(string) (*os.File, error)) (flags.ConfigLayer, error) {
 	if strings.TrimSpace(path) == "" {
 		return flags.ConfigLayer{}, nil
 	}
-	f, err := os.Open(filepath.Clean(path))
+	f, err := open(filepath.Clean(path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return flags.ConfigLayer{}, nil
@@ -190,16 +200,37 @@ var operatorScopeRules = []operatorScopeRule{
 				path, harnessSpecKey, flags.EnvKey(harnessSpecKey), harnessSpecKey, harness.SpecsDir)
 		},
 	},
-	{
-		matches: isEndpointKey,
-		refusal: func(path string, keys []string) error {
-			return fmt.Errorf("%s sets %s, which is operator scope: it decides where a provider's credential is "+
-				"sent or which credential is used, and this file ships with a clone and can be written by an agent "+
-				"under a relaxed posture, so a value in it could redirect the key. Remove those lines; set %s in "+
-				"the environment, or in %s, which lies outside the repository",
-				path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint())
-		},
-	},
+	{matches: isEndpointKey, refusal: refuseEndpointKeys},
+}
+
+// refuseEndpointKeys is the refusal for endpoint keys set in the repository file.
+func refuseEndpointKeys(path string, keys []string) error {
+	return fmt.Errorf("%s sets %s, which is operator scope: it decides where a provider's credential is "+
+		"sent or which credential is used, and this file ships with a clone and can be written by an agent "+
+		"under a relaxed posture, so a value in it could redirect the key. Remove those lines; set %s in "+
+		"the environment, or in %s, which lies outside the repository",
+		path, strings.Join(keys, ", "), flags.EnvKey(keys[0]), userConfigHint())
+}
+
+// refuseLoadedRepositoryEndpoints refuses an endpoint key whose value the
+// registry took from the repository config. It runs after the repository file
+// is loaded and before the user config and the environment are, so the config
+// origin can only mean that file. It asks the registry rather than the file,
+// so it judges the bytes that were actually loaded.
+func refuseLoadedRepositoryEndpoints(reg *flags.Registry, repoConfig string) error {
+	var set []string
+	for _, key := range endpointKeys {
+		if _, origin, err := reg.String(key); err != nil {
+			return err
+		} else if origin == flags.OriginConfig {
+			set = append(set, key)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	slices.Sort(set)
+	return refuseEndpointKeys(repoConfig, set)
 }
 
 // refuseRepositoryOperatorKeys refuses a repository config that sets any
@@ -211,7 +242,7 @@ var operatorScopeRules = []operatorScopeRule{
 // the parser's own account of the line, which is what NewHarnessRegistry would
 // have said about it a moment later.
 func refuseRepositoryOperatorKeys(path string) error {
-	layer, err := readConfigFile(path)
+	layer, err := readConfigFile(path, flags.OpenRegular)
 	if err != nil {
 		return err
 	}
@@ -286,7 +317,7 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 			"can write is not operator scope, so it was not read — move it, or point %s elsewhere",
 			path, root, envUserConfig)
 	}
-	layer, err := readConfigFile(path)
+	layer, err := readConfigFile(path, os.Open)
 	if err != nil {
 		return fmt.Errorf("user config: %w", err)
 	}
