@@ -665,7 +665,7 @@ func (r *Registry) ReadOnlySchemas() []llm.ToolSchema {
 }
 
 // Subset returns a registry holding only the tools that pass keep, sharing this
-// registry's event bus.
+// registry's event bus and credential scrubber.
 func (r *Registry) Subset(keep func(Tool) bool) *Registry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -674,6 +674,7 @@ func (r *Registry) Subset(keep func(Tool) bool) *Registry {
 		active:      make(map[string]bool, len(r.active)),
 		dynamicMode: r.dynamicMode,
 		bus:         r.bus,
+		scrub:       r.scrub,
 	}
 	for name, t := range r.tools {
 		if keep(t) {
@@ -684,6 +685,71 @@ func (r *Registry) Subset(keep func(Tool) bool) *Registry {
 		}
 	}
 	return out
+}
+
+// CloneEmpty returns an empty registry sharing this registry's event bus and
+// credential scrubber, so an isolated worktree child surface re-registers its
+// own filesystem-rooted tools without dropping result redaction.
+func (r *Registry) CloneEmpty() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return &Registry{
+		tools:  make(map[string]Tool, len(r.tools)),
+		active: make(map[string]bool, len(r.active)),
+		bus:    r.bus,
+		scrub:  r.scrub,
+	}
+}
+
+// MergeMissingFrom copies any tools registered on src whose names are not yet
+// registered on r.
+func (r *Registry) MergeMissingFrom(src *Registry) {
+	if src == nil {
+		return
+	}
+	src.mu.RLock()
+	extra := make([]Tool, 0)
+	for _, t := range src.tools {
+		extra = append(extra, t)
+	}
+	src.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range extra {
+		if _, exists := r.tools[t.Schema.Name]; !exists {
+			r.tools[t.Schema.Name] = t
+		}
+	}
+}
+
+// CopyModeFrom copies dynamic-activation state for registered tools from src.
+func (r *Registry) CopyModeFrom(src *Registry) {
+	if src == nil {
+		return
+	}
+	src.mu.RLock()
+	dyn := src.dynamicMode
+	active := make(map[string]bool, len(src.active))
+	for k, v := range src.active {
+		if v {
+			active[k] = true
+		}
+	}
+	src.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dynamicMode = dyn
+	if dyn {
+		r.active = make(map[string]bool, len(active))
+		for k := range active {
+			if _, ok := r.tools[k]; ok {
+				r.active[k] = true
+			}
+		}
+		r.resolveDependenciesLocked()
+	}
 }
 
 // stagePanic converts a panic in one pipeline stage into a refusal.

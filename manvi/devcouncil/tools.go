@@ -84,6 +84,10 @@ type Deps struct {
 	Approver ui.Approver
 	// SubAgent runs delegated work for devcouncil_spawn_subagents and subagents.
 	SubAgent SubAgentRunner
+	// Workspaces provisions isolated git worktrees for sub-agents dispatched
+	// with `workspace: "worktree"`. Nil keeps workspace isolation disabled and
+	// omitted from schemas.
+	Workspaces WorkspaceCoordinator
 
 	// Extended dynamic subsystems:
 	Artifacts        *artifacts.Store
@@ -213,6 +217,10 @@ func (r *Registry) Register(reg *tools.Registry) error {
 // half of this rule that can be stated mechanically; devcouncil's profile tests
 // enforce the other half against this file's own source.
 func (r *Registry) Tools() []tools.Tool {
+	spawnParams := `{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"prompt":{"type":"string"},"task_id":{"type":"string"},"read_only":{"type":"boolean"},"type":{"type":"string","description":"subagent role name; the role's model and system prompt are used (default: inherit this agent's)"}},"required":["label","prompt"]}}},"required":["tasks"]}`
+	if r.deps.Workspaces != nil {
+		spawnParams = `{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"prompt":{"type":"string"},"task_id":{"type":"string"},"read_only":{"type":"boolean"},"type":{"type":"string","description":"subagent role name; the role's model and system prompt are used (default: inherit this agent's)"},"workspace":{"type":"string","enum":["inherit","worktree"],"description":"optional checkout isolation: inherit (parent tree) or worktree (isolated git worktree with stacked DevMap seed)"}},"required":["label","prompt"]}}},"required":["tasks"]}`
+	}
 	set := []tools.Tool{
 		// --- task lifecycle ---
 		{
@@ -382,7 +390,7 @@ func (r *Registry) Tools() []tools.Tool {
 			Schema: schema("devcouncil_spawn_subagents",
 				"Concurrently dispatch sub-agent tasks in bounded worker pool with lease tracking and cancellation cleanup. "+
 					"Give a task a type to run it as a defined role, on that role's model.",
-				`{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"prompt":{"type":"string"},"task_id":{"type":"string"},"read_only":{"type":"boolean"},"type":{"type":"string","description":"subagent role name; the role's model and system prompt are used (default: inherit this agent's)"}},"required":["label","prompt"]}}},"required":["tasks"]}`),
+				spawnParams),
 			Group:    tools.GroupSubagent,
 			Handler:  r.spawnSubagents,
 			Extended: true,

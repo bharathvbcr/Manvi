@@ -117,6 +117,32 @@ func TestScrubbingOnlyRemovesWhatIsWatched(t *testing.T) {
 	}
 }
 
+func TestSubsetAndCloneEmptyPreserveScrubber(t *testing.T) {
+	parent := scrubbingRegistry(t)
+	leaky := Tool{
+		Schema: leakySchema("prints its environment"),
+		Handler: func(ctx context.Context, c Call) Result {
+			return Result{Text: "ANTHROPIC_API_KEY=" + fakeKey}
+		},
+	}
+	if err := parent.Register(leaky); err != nil {
+		t.Fatal(err)
+	}
+
+	sub := parent.Subset(func(Tool) bool { return true })
+	if res := sub.Run(context.Background(), Call{ID: "1", Name: "leaky", Arguments: []byte(`{}`)}); strings.Contains(res.Text, fakeKey) {
+		t.Fatalf("Subset dropped the credential scrubber: %q", res.Text)
+	}
+
+	cloned := parent.CloneEmpty()
+	if err := cloned.Register(leaky); err != nil {
+		t.Fatal(err)
+	}
+	if res := cloned.Run(context.Background(), Call{ID: "2", Name: "leaky", Arguments: []byte(`{}`)}); strings.Contains(res.Text, fakeKey) {
+		t.Fatalf("CloneEmpty dropped the credential scrubber: %q", res.Text)
+	}
+}
+
 func leakySchema(desc string) llm.ToolSchema { return namedSchema("leaky", desc) }
 
 func namedSchema(name, desc string) llm.ToolSchema {

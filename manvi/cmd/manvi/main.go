@@ -448,6 +448,15 @@ func mapClient(root string) *devmap.Client {
 	return devmap.New(toolBinary("MANVI_MAP_BINARY", "devmap"), root)
 }
 
+// warmMapClient builds a repo-navigation client backed by a warm `devmap mcp`
+// stdio session (`P0.3`), falling back transparently to CLI invocations when
+// the binary does not speak MCP. Caller owns Close().
+func warmMapClient(root string) *devmap.Client {
+	c := mapClient(root)
+	c.EnableWarmMCP()
+	return c
+}
+
 // grepClient builds the repository-search client.
 func grepClient(root string) *dcgrep.Client {
 	return dcgrep.New(toolBinary(dcgrep.BinaryEnv, "dcgrep"), root)

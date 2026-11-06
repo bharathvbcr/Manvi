@@ -75,6 +75,10 @@ func (r *Registry) fallbackPlane() *subagentPlane {
 }
 
 func (r *Registry) subagentTools() []tools.Tool {
+	invokeParams := `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
+	if r.deps.Workspaces != nil {
+		invokeParams = `{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"},"workspace":{"type":"string","enum":["inherit","worktree"],"description":"optional checkout isolation: inherit (parent tree) or worktree (isolated git worktree with stacked DevMap seed)"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`
+	}
 	return []tools.Tool{
 		{
 			Schema: schema("devcouncil_define_subagent",
@@ -87,7 +91,7 @@ func (r *Registry) subagentTools() []tools.Tool {
 		{
 			Schema: schema("devcouncil_invoke_subagent",
 				"Invoke one or more subagents concurrently by name with custom task prompts, returning their unique conversation IDs and execution outcomes.",
-				`{"type":"object","properties":{"subagents":{"type":"array","items":{"type":"object","properties":{"type_name":{"type":"string","description":"subagent type name"},"role":{"type":"string","description":"specific role description"},"prompt":{"type":"string","description":"actionable task description"},"model":{"type":"string","description":"optional tier for this child (basic, lite, heavy, advisor), at or below its role's tier; model ids and providers are refused"}},"required":["type_name","role","prompt"]}}},"required":["subagents"]}`),
+				invokeParams),
 			Group:    tools.GroupSubagent,
 			Handler:  r.invokeSubagents,
 			Extended: true,
@@ -237,15 +241,10 @@ func authoredTier(def agents.Definition) (agents.Tier, error) {
 
 // invokeRequest is one entry of devcouncil_invoke_subagent's subagents array.
 type invokeRequest struct {
-	TypeName string `json:"type_name"`
-	Role     string `json:"role"`
-	Prompt   string `json:"prompt"`
-	Model    string `json:"model,omitempty"`
-	// Workspace is decoded only so it can be refused. The schema no
-	// longer offers it and Definition no longer carries it, but
-	// json.Unmarshal drops an unknown key without a word, and a
-	// silently dropped isolation request is the exact defect the
-	// removal was for.
+	TypeName  string `json:"type_name"`
+	Role      string `json:"role"`
+	Prompt    string `json:"prompt"`
+	Model     string `json:"model,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
 }
 
@@ -259,11 +258,14 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 	if len(args.Subagents) == 0 {
 		return tools.Errorf("subagents array is required and must not be empty")
 	}
+	workspaceModes := make([]string, len(args.Subagents))
 	for i, s := range args.Subagents {
-		if mode := strings.TrimSpace(s.Workspace); mode != "" {
-			return tools.Errorf("subagents[%d] (%s) asks for workspace %q: %s",
-				i, s.Role, mode, unimplementedWorkspace)
+		mode, err := validateWorkspaceMode(r.deps.Workspaces, s.Workspace)
+		if err != nil {
+			return tools.Errorf("subagents[%d] (%s) asks for workspace %q: %v",
+				i, s.Role, strings.TrimSpace(s.Workspace), err)
 		}
+		workspaceModes[i] = mode
 	}
 
 	reg := r.getSubagentRegistry()
@@ -334,7 +336,7 @@ func (r *Registry) invokeSubagents(ctx context.Context, call tools.Call) tools.R
 		runner:     runner,
 		requests:   requests,
 		task: func(i int, req SubAgentRequest) agents.Task {
-			return invokeTask(args.Subagents[i], roles[i], req, mgr, runner)
+			return r.invokeTask(args.Subagents[i], roles[i], req, workspaceModes[i], mgr, runner)
 		},
 		runFailure: "invoking subagents failed",
 		verb:       "dispatched",
@@ -375,8 +377,8 @@ func invokeChildRequest(s invokeRequest, role resolvedRole, tier agents.Tier, wi
 // invokeTask is one devcouncil_invoke_subagent child: a tracked instance the
 // control plane can list and kill, running req under the role s names, as
 // resolved by resolveRole.
-func invokeTask(s invokeRequest, role resolvedRole, req SubAgentRequest,
-	mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
+func (r *Registry) invokeTask(s invokeRequest, role resolvedRole, req SubAgentRequest,
+	workspaceMode string, mgr *agents.InstanceManager, runner SubAgentRunner) agents.Task {
 	convID := fmt.Sprintf("subagent-%d-%d", time.Now().UnixMilli(), conversationCounter.Add(1))
 
 	return agents.Task{
@@ -403,33 +405,32 @@ func invokeTask(s invokeRequest, role resolvedRole, req SubAgentRequest,
 			}
 
 			if runner == nil {
-				// No runner means no model, which means no work was done.
-				//
-				// This branch used to return status "completed" with a
-				// summary it composed from the prompt — "subagent %s
-				// finished executing task: %s" — for a child that had never
-				// existed. A dispatching agent reading four of those reports
-				// four analyses it never received, and nothing anywhere
-				// says otherwise. "Standalone mode" is not a reason to
-				// report success; it is a reason to report that the
-				// capability is absent.
 				return nil, recordFailure(inst, fmt.Errorf(
 					"sub-agent %q cannot run: no model is attached to this invocation", s.Role))
 			}
 
-			// So a lease this child takes for itself is released by the same
-			// cleanup that releases one the dispatch named.
 			req := req
 			req.Leases = leaseSinkFor(holder)
-			out, err := runner.RunSubAgent(childCtx, req)
+
+			wt, err := r.provisionChildWorktree(childCtx, workspaceMode, s.Role)
 			if err != nil {
-				return leftBehind(out), recordFailure(inst, err)
+				return nil, recordFailure(inst, err)
+			}
+			if wt.lease != nil {
+				req.WorktreePath = wt.lease.Path
+				defer wt.ensureReleased(r.deps.Workspaces)
+			}
+
+			out, err := runner.RunSubAgent(childCtx, req)
+			wt.settle(r.deps.Workspaces, &out)
+			if err != nil {
+				return wt.attachLeftBehind(leftBehind(out)), recordFailure(inst, err)
 			}
 			// The same judgement the other dispatcher makes, from the same
 			// function rather than a second copy of it: a child that came
 			// back with nothing to say is not a completion.
 			if err := requireSummary(s.Role, out.Summary); err != nil {
-				return leftBehind(out), recordFailure(inst, err)
+				return wt.attachLeftBehind(leftBehind(out)), recordFailure(inst, err)
 			}
 
 			// Only now, with a result in hand, is "completed" claimed — and
@@ -439,13 +440,11 @@ func invokeTask(s invokeRequest, role resolvedRole, req SubAgentRequest,
 			// completed work is exactly the fabrication this file exists to
 			// prevent.
 			if err := inst.SetState(agents.StateCompleted, "done"); err != nil {
-				// Errored, not left in canceling: nothing else moves a
-				// canceling child on, so it would stay listed as terminating
-				// forever and a later kill would "terminate" it again.
-				return leftBehind(out), recordFailure(inst, fmt.Errorf(
+				return wt.attachLeftBehind(leftBehind(out)), recordFailure(inst, fmt.Errorf(
 					"sub-agent %q was terminated before it could report its work: %w", s.Role, err))
 			}
 			outcome := completedOutcome(out)
+			wt.annotate(outcome)
 			outcome["conversation_id"] = convID
 			outcome["role"] = s.Role
 			outcome["type"] = s.TypeName
@@ -877,6 +876,12 @@ type SubAgentRequest struct {
 	// Escalation is the fan-out's shared cap on re-runs onto a higher tier,
 	// set by the dispatcher. Nil means the child may not escalate.
 	Escalation *EscalationBudget
+	// WorktreePath, when non-empty, is the isolated git worktree provisioned
+	// for this child (`workspace: "worktree"`). The runner must re-root the
+	// child's filesystem, policy gate, DevMap navigator, and repository search
+	// onto WorktreePath or fail closed rather than running against the parent's
+	// working tree.
+	WorktreePath string
 }
 
 // SubAgentResult is what one sub-agent actually produced.
@@ -1043,11 +1048,12 @@ type SubAgentAdmitter interface {
 
 // spawnRequest is one entry of devcouncil_spawn_subagents' tasks array.
 type spawnRequest struct {
-	Label    string `json:"label"`
-	Prompt   string `json:"prompt"`
-	TaskID   string `json:"task_id,omitempty"`
-	ReadOnly bool   `json:"read_only,omitempty"`
-	Type     string `json:"type,omitempty"`
+	Label     string `json:"label"`
+	Prompt    string `json:"prompt"`
+	TaskID    string `json:"task_id,omitempty"`
+	ReadOnly  bool   `json:"read_only,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // spawnSubagents fans delegated work out across a bounded worker pool.
@@ -1080,6 +1086,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 	// but the schema is a request to the model, not a guarantee about what
 	// arrives, and a child dispatched with an empty prompt is a child that
 	// cannot do anything except report that it finished.
+	workspaceModes := make([]string, len(args.Tasks))
 	for i, t := range args.Tasks {
 		if strings.TrimSpace(t.Label) == "" {
 			return tools.Errorf("tasks[%d] has no label; a fan-out result nobody can attribute is not a result", i)
@@ -1087,6 +1094,12 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 		if strings.TrimSpace(t.Prompt) == "" {
 			return tools.Errorf("tasks[%d] (%s) has an empty prompt; there is nothing to delegate", i, t.Label)
 		}
+		mode, err := validateWorkspaceMode(r.deps.Workspaces, t.Workspace)
+		if err != nil {
+			return tools.Errorf("tasks[%d] (%s) asks for workspace %q: %v",
+				i, t.Label, strings.TrimSpace(t.Workspace), err)
+		}
+		workspaceModes[i] = mode
 	}
 
 	bounds, refusal := r.delegationBounds()
@@ -1145,7 +1158,7 @@ func (r *Registry) spawnSubagents(ctx context.Context, call tools.Call) tools.Re
 		runner:     runner,
 		requests:   requests,
 		task: func(i int, req SubAgentRequest) agents.Task {
-			return r.spawnTask(args.Tasks[i], req, rolesOf[i], runner)
+			return r.spawnTask(args.Tasks[i], req, rolesOf[i], workspaceModes[i], runner)
 		},
 		payload:    func(payload map[string]any) { reportUnknownRoles(payload, unknownTypes) },
 		runFailure: "subagent fan-out failed",
@@ -1178,10 +1191,18 @@ func spawnChildRequest(t spawnRequest, role resolvedRole, width int) SubAgentReq
 
 // spawnTask is one devcouncil_spawn_subagents child: it holds a lease on the
 // task it names, if it names one, and runs req under the role it was resolved to.
-func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedRole, runner SubAgentRunner) agents.Task {
+func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedRole, workspaceMode string, runner SubAgentRunner) agents.Task {
 	return agents.Task{
 		Label: t.Label,
 		Run: func(childCtx context.Context, holder *agents.Holder) (any, error) {
+			wt, err := r.provisionChildWorktree(childCtx, workspaceMode, t.Label)
+			if err != nil {
+				return nil, err
+			}
+			if wt.lease != nil {
+				defer wt.ensureReleased(r.deps.Workspaces)
+			}
+
 			if t.TaskID != "" {
 				acquire := store.AcquireRequest{
 					TaskID: t.TaskID,
@@ -1204,15 +1225,20 @@ func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedR
 			// cleanup that releases one the dispatch named.
 			req := req
 			req.Leases = leaseSinkFor(holder)
+			if wt.lease != nil {
+				req.WorktreePath = wt.lease.Path
+			}
 
 			out, err := runner.RunSubAgent(childCtx, req)
+			wt.settle(r.deps.Workspaces, &out)
 			if err != nil {
-				return leftBehind(out), fmt.Errorf("sub-agent %s: %w", t.Label, err)
+				return wt.attachLeftBehind(leftBehind(out)), fmt.Errorf("sub-agent %s: %w", t.Label, err)
 			}
 			if err := requireSummary(t.Label, out.Summary); err != nil {
-				return leftBehind(out), err
+				return wt.attachLeftBehind(leftBehind(out)), err
 			}
 			child := completedOutcome(out)
+			wt.annotate(child)
 			child["task_id"] = t.TaskID
 			role.annotate(child)
 			return child, nil
@@ -1542,18 +1568,122 @@ func leftBehind(out SubAgentResult) any {
 	return v
 }
 
-// carryLeftBehind puts a failed child's changed paths on its outcome, so the
-// dispatching model reads that the failure still changed files.
+// carryLeftBehind puts a failed child's changed paths and isolated worktree
+// state on its outcome, so the dispatching model reads that the failure still
+// changed files or left an inspectable dirty worktree.
 func carryLeftBehind(outcome map[string]any, value any) {
 	left, isMap := value.(map[string]any)
 	if !isMap {
 		return
 	}
-	for _, k := range []string{"wrote", "wrote_truncated", "escalations"} {
+	for _, k := range []string{
+		"wrote", "wrote_truncated", "escalations",
+		"workspace", "worktree_path", "worktree_retained",
+		"devmap_seeded", "devmap_note",
+		"worktree_wrote", "worktree_wrote_truncated", "worktree_release_error",
+	} {
 		if v, ok := left[k]; ok {
 			outcome[k] = v
 		}
 	}
+}
+
+type childWorktreeState struct {
+	mode       string
+	lease      *WorkspaceLease
+	settled    bool
+	retained   bool
+	releaseErr error
+	wrote      []string
+	wroteTrunc bool
+}
+
+func (r *Registry) provisionChildWorktree(ctx context.Context, mode, label string) (*childWorktreeState, error) {
+	state := &childWorktreeState{mode: mode}
+	if mode != WorkspaceWorktree {
+		return state, nil
+	}
+	if r.deps.Workspaces == nil {
+		return nil, fmt.Errorf("%s", unimplementedWorkspace)
+	}
+	lease, err := r.deps.Workspaces.ProvisionWorktree(ctx, label)
+	if err != nil {
+		return nil, fmt.Errorf("sub-agent %q could not provision isolated worktree: %w", label, err)
+	}
+	if lease == nil || strings.TrimSpace(lease.Path) == "" {
+		return nil, fmt.Errorf("sub-agent %q workspace coordinator returned an empty worktree lease", label)
+	}
+	state.lease = lease
+	return state, nil
+}
+
+func (s *childWorktreeState) ensureReleased(coord WorkspaceCoordinator) {
+	if s == nil || s.lease == nil || s.settled || coord == nil {
+		return
+	}
+	s.settled = true
+	s.retained, s.releaseErr = coord.ReleaseWorktree(context.Background(), s.lease, true)
+}
+
+func (s *childWorktreeState) settle(coord WorkspaceCoordinator, out *SubAgentResult) {
+	if s == nil || s.lease == nil {
+		return
+	}
+	if out != nil {
+		// Isolated worktree edits must not be attributed to the parent's working
+		// tree (`res.Wrote`), or the parent turn's checkpoint would look for
+		// files in `r.deps.Root` that exist only inside `s.lease.Path`.
+		s.wrote = out.Wrote
+		s.wroteTrunc = out.WroteTruncated
+		out.Wrote = nil
+		out.WroteTruncated = false
+	}
+	if !s.settled && coord != nil {
+		s.settled = true
+		s.retained, s.releaseErr = coord.ReleaseWorktree(context.Background(), s.lease, true)
+	}
+}
+
+func (s *childWorktreeState) annotate(m map[string]any) {
+	if s == nil || m == nil {
+		return
+	}
+	if s.mode != "" {
+		m["workspace"] = s.mode
+	}
+	if s.lease == nil {
+		return
+	}
+	m["worktree_path"] = s.lease.Path
+	m["worktree_retained"] = s.retained
+	m["devmap_seeded"] = s.lease.DevmapSeeded
+	if s.lease.DevmapNote != "" {
+		m["devmap_note"] = s.lease.DevmapNote
+	}
+	if len(s.wrote) > 0 {
+		m["worktree_wrote"] = s.wrote
+	}
+	if s.wroteTrunc {
+		m["worktree_wrote_truncated"] = true
+	}
+	if s.releaseErr != nil {
+		m["worktree_release_error"] = s.releaseErr.Error()
+	}
+}
+
+func (s *childWorktreeState) attachLeftBehind(base any) any {
+	if s == nil || (s.lease == nil && s.mode == "") {
+		return base
+	}
+	m, ok := base.(map[string]any)
+	if !ok || m == nil {
+		m = map[string]any{}
+	}
+	s.annotate(m)
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // childWrites folds every child's changed paths into one fan-out set with

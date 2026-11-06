@@ -156,8 +156,11 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 
 	// Every devmap client is built for a root the request named and the server
 	// validated, never for this process's working directory: GitPulse launches
-	// the sidecar in a scratch directory.
-	forRoot := func(root string) serve.DevmapClient { return mapClient(root) }
+	// the sidecar in a scratch directory. WarmDevmapPool reuses one bounded
+	// `devmap mcp` stdio session per canonical root (`P0.3`).
+	devmapPool := serve.NewWarmDevmapPool(toolBinary("MANVI_MAP_BINARY", "devmap"))
+	defer func() { _ = devmapPool.Close() }()
+	forRoot := func(root string) serve.DevmapClient { return devmapPool.ForRoot(root) }
 	resolver := serveHarnessResolver(reg)
 	modules := []serve.Module{serve.DevmapModule{ForRoot: forRoot}, serve.HarnessModule{Resolver: resolver}}
 	var runner *serve.EnhancementRunner
@@ -235,7 +238,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 		scan, err = serve.NewScanRunner(serve.ScanDeps{
 			// Every client is built for the root the scan validated, never for
 			// this process's working directory.
-			Devmap: func(root string) serve.ScanDevmap { return mapClient(root) },
+			Devmap: func(root string) serve.ScanDevmap { return devmapPool.ForRoot(root) },
 			Text:   func(root string) serve.ScanText { return grepClient(root) },
 			Gaps:   scanGapSource,
 			Board:  client,
@@ -253,7 +256,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 			Command:        operatorVerifyCommand(),
 			VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 			CoverageFile:   os.Getenv("MANVI_COVERAGE"),
-			Devmap:         func(worktree string) serve.DevmapClient { return mapClient(worktree) },
+			Devmap:         func(worktree string) serve.DevmapClient { return devmapPool.ForRoot(worktree) },
 			Busy:           managed.HarnessBusy,
 		})
 		if err != nil {
@@ -285,6 +288,7 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 	if verify != nil {
 		err = errors.Join(err, verify.Close())
 	}
+	err = errors.Join(err, devmapPool.Close())
 	// The policy plane's engine handle, if this build links one. Bounded: a
 	// stuck engine is reported as a shutdown error and left to process exit,
 	// never joined without a limit.

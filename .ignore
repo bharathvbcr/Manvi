@@ -1,0 +1,5 @@
+# External sibling crate symlinks into ../DevCouncil/rust/dc-* (canonical sources
+# live in DevCouncil and are verified by manvi/devcouncil/crate_pins_test.go).
+# Excluding them from WalkBuilder discovery avoids permanent discovery_refused
+# coverage gaps on Manvi index builds while keeping Git tracking and Cargo symlinks intact.
+/crates/dc-*

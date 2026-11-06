@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/Manvi/manvi/agent"
 	"github.com/bharathvbcr/Manvi/manvi/agents"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
@@ -270,7 +271,14 @@ type childTurn struct {
 	model    string
 	// notes are what placement changed about the parent's configuration that
 	// the dispatching model should hear about.
-	notes []string
+	notes   []string
+	cleanup func()
+}
+
+func (c childTurn) close() {
+	if c.cleanup != nil {
+		c.cleanup()
+	}
 }
 
 // RunSubAgent carries out one delegated instruction and reports what came back.
@@ -305,6 +313,7 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 	if err != nil {
 		return attemptResult{}, err
 	}
+	defer child.close()
 	loop, provider, model := child.loop, child.provider, child.model
 
 	// The child acts under its own lease session, copied from the dispatching
@@ -370,10 +379,6 @@ func (r *subAgentRunner) attempt(ctx context.Context, cfg *subAgentConfig, req d
 	for _, n := range outcomeNotices(outcome, maxSubAgentSteps) {
 		summary += "\n\n[this sub-agent: " + n.Text + "]"
 	}
-	for _, n := range child.notes {
-		summary += "\n\n[this sub-agent: " + n + "]"
-	}
-
 	for _, n := range child.notes {
 		summary += "\n\n[this sub-agent: " + n + "]"
 	}
@@ -491,7 +496,43 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 		return true
 	}
 
-	registry := cfg.registry.Subset(floor)
+	baseRegistry := cfg.registry
+	var cleanup func()
+	if wtRoot := strings.TrimSpace(req.WorktreePath); wtRoot != "" {
+		if cfg.native == nil {
+			return childTurn{}, fmt.Errorf(
+				"sub-agent %q cannot run in isolated worktree %s: no native tool surface is attached to re-root",
+				req.Label, wtRoot)
+		}
+		parentGate := cfg.native.Gate()
+		wtGate := &gate.Gate{
+			Flags:                 parentGate.Flags,
+			Ledger:                parentGate.Ledger,
+			Root:                  wtRoot,
+			Subsystems:            parentGate.Subsystems,
+			GlobalAllowedCommands: append([]string(nil), parentGate.GlobalAllowedCommands...),
+			Matcher:               parentGate.Matcher,
+			OnIssue:               parentGate.OnIssue,
+			OnChange:              parentGate.OnChange,
+		}
+		wtMap := warmMapClient(wtRoot)
+		wtNative, err := cfg.native.ForWorktree(wtRoot, wtGate, wtMap, grepClient(wtRoot))
+		if err != nil {
+			_ = wtMap.Close()
+			return childTurn{}, fmt.Errorf("sub-agent %q could not build isolated worktree surface: %w", req.Label, err)
+		}
+		reRooted := cfg.registry.CloneEmpty()
+		if err := wtNative.Register(reRooted); err != nil {
+			_ = wtMap.Close()
+			return childTurn{}, fmt.Errorf("sub-agent %q could not register isolated worktree tools: %w", req.Label, err)
+		}
+		reRooted.MergeMissingFrom(cfg.registry)
+		reRooted.CopyModeFrom(cfg.registry)
+		baseRegistry = reRooted
+		cleanup = func() { _ = wtMap.Close() }
+	}
+
+	registry := baseRegistry.Subset(floor)
 	if req.Surface.Constrains() {
 		// A role's declared surface removes further, and only further: Permits
 		// is consulted after the floor has already said yes, so naming a tool
@@ -502,10 +543,13 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 		// tools would leave `enable_mcp_tools: false` meaning "the model was
 		// not reminded of these", which is not what an operator writing it
 		// believes they wrote.
-		narrowed := cfg.registry.Subset(func(t tools.Tool) bool {
+		narrowed := baseRegistry.Subset(func(t tools.Tool) bool {
 			return floor(t) && req.Surface.Permits(t.Schema.Name, t.Group)
 		})
-		if stranded := surfaceDeadEnds(cfg.registry, registry, narrowed); len(stranded) > 0 {
+		if stranded := surfaceDeadEnds(baseRegistry, registry, narrowed); len(stranded) > 0 {
+			if cleanup != nil {
+				cleanup()
+			}
 			return childTurn{}, fmt.Errorf(
 				"sub-agent %q cannot run: its role's tool surface strands a tool that can never succeed — %s; "+
 					"name the prerequisite in allowed_tools, or drop the tool that needs it",
@@ -525,6 +569,9 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 
 	placed, err := r.place(cfg, req)
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return childTurn{}, err
 	}
 
@@ -570,9 +617,15 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 		tools:           registry,
 	})
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return childTurn{}, fmt.Errorf("sub-agent %q could not be started: %w", req.Label, err)
 	}
-	return childTurn{loop: loop, provider: placed.provider, model: placed.model, notes: placed.notes}, nil
+	return childTurn{
+		loop: loop, provider: placed.provider, model: placed.model,
+		notes: placed.notes, cleanup: cleanup,
+	}, nil
 }
 
 // AdmitSubAgents sizes what each child's first request will reserve against
@@ -606,10 +659,12 @@ func (r *subAgentRunner) AdmitSubAgents(reqs []devcouncil.SubAgentRequest) (agen
 		if err != nil {
 			continue
 		}
-		amount, err := metered.Estimate(child.loop.Draft(llm.Message{
+		draft := child.loop.Draft(llm.Message{
 			Role:    llm.RoleUser,
 			Content: []llm.ContentBlock{llm.TextBlock{Text: req.Prompt}},
-		}))
+		})
+		child.close()
+		amount, err := metered.Estimate(draft)
 		if err != nil {
 			continue
 		}

@@ -6,9 +6,79 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 )
+
+const maxWarmDevmapPoolEntries = 16
+
+// WarmDevmapPool maintains a bounded per-root pool of warm `devmap mcp` stdio
+// clients (`P0.3`). Up to maxWarmDevmapPoolEntries canonical repository roots
+// keep persistent warm sessions; any overflow root receives an unpooled CLI
+// client rather than evicting a session that may have an RPC in flight.
+type WarmDevmapPool struct {
+	binary  string
+	mu      sync.Mutex
+	closed  bool
+	clients map[string]*mapclient.Client
+}
+
+// NewWarmDevmapPool builds a bounded warm `devmap mcp` client pool for binary.
+func NewWarmDevmapPool(binary string) *WarmDevmapPool {
+	return &WarmDevmapPool{
+		binary:  binary,
+		clients: make(map[string]*mapclient.Client),
+	}
+}
+
+// ForRoot returns a warm `devmap` client scoped to root (canonicalized when
+// resolvable).
+func (p *WarmDevmapPool) ForRoot(root string) *mapclient.Client {
+	canon := root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
+		canon = resolved
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return mapclient.New(p.binary, canon)
+	}
+	if existing, ok := p.clients[canon]; ok {
+		return existing
+	}
+	c := mapclient.New(p.binary, canon)
+	if len(p.clients) < maxWarmDevmapPoolEntries {
+		c.EnableWarmMCP()
+		p.clients[canon] = c
+	}
+	return c
+}
+
+// Close terminates every pooled warm `devmap mcp` subprocess.
+func (p *WarmDevmapPool) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	toClose := make([]*mapclient.Client, 0, len(p.clients))
+	for _, c := range p.clients {
+		toClose = append(toClose, c)
+	}
+	p.clients = nil
+	p.mu.Unlock()
+
+	var joined error
+	for _, c := range toClose {
+		joined = errors.Join(joined, c.Close())
+	}
+	return joined
+}
 
 // DevmapClient is the narrow code-intelligence service a host module needs.
 // A host can supply the stock subprocess client or its own in-process adapter.

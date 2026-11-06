@@ -59,6 +59,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	// below exist. Until something attaches it the tool refuses, which is the
 	// behaviour that replaced it reporting completed work it never did.
 	subRunner := &subAgentRunner{}
+	mc := warmMapClient(root)
 
 	native, err := devcouncil.New(devcouncil.Deps{
 		Store:          storeClient(),
@@ -67,23 +68,28 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		LeaseTTL:       15 * time.Minute,
 		VerifierBinary: toolBinary("MANVI_VERIFY_BINARY", "dcverify"),
 		CoverageFile:   os.Getenv("MANVI_COVERAGE"),
-		Map:            mapClient(root),
+		Map:            mc,
 		Grep:           grepClient(root),
 		// Operator scope only. See operatorFetchHosts: an allowlist the agent
 		// could write into the repository would not be one.
-		Fetch:             core.fetch,
-		Subsystems:        subsystems,
-		Approver:          approver,
-		QuestionAsker:     questionAsker(approver),
-		Artifacts:         core.artifacts,
-		MCP:               core.mcp,
-		SubagentRegistry:  subRegistry,
-		SubagentMgr:       subMgr,
-		SubAgent:          subRunner,
+		Fetch:            core.fetch,
+		Subsystems:       subsystems,
+		Approver:         approver,
+		QuestionAsker:    questionAsker(approver),
+		Artifacts:        core.artifacts,
+		MCP:              core.mcp,
+		SubagentRegistry: subRegistry,
+		SubagentMgr:      subMgr,
+		SubAgent:         subRunner,
+		Workspaces: &devcouncil.GitWorktreeCoordinator{
+			Root:         root,
+			DevmapBinary: toolBinary("MANVI_MAP_BINARY", "devmap"),
+		},
 		KnownSecret:       knownSecretIn(toolScrubber, toolResolver),
 		KnownSecretMaxLen: knownSecretMaxLenIn(toolScrubber, toolResolver),
 	})
 	if err != nil {
+		_ = mc.Close()
 		_ = core.plugins.Close()
 		return nil, nil, err
 	}
@@ -92,6 +98,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	// result the session log writes to disk, goes through this.
 	pipeline.SetScrubber(armedClean(toolScrubber, toolResolver))
 	if err := native.Register(pipeline); err != nil {
+		_ = mc.Close()
 		_ = core.plugins.Close()
 		return nil, nil, err
 	}
@@ -107,7 +114,10 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 	// every tool surface passes through — so servers die with their harness
 	// instead of outliving it. CloseAll existed and was tested, but nothing
 	// ever called it until this teardown was registered.
-	onProcessExit(func() { _ = core.plugins.Close() })
+	onProcessExit(func() {
+		_ = mc.Close()
+		_ = core.plugins.Close()
+	})
 	rememberHarness(pipeline, subRunner, caps, core)
 	return native, pipeline, nil
 }
