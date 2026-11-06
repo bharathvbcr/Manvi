@@ -46,6 +46,8 @@ var contractTypes = map[string]reflect.Type{
 	"VerifyResult":       reflect.TypeFor[VerifyResult](),
 	"SuggestParams":      reflect.TypeFor[SuggestParams](),
 	"SuggestResult":      reflect.TypeFor[SuggestResult](),
+	"OrganizeParams":     reflect.TypeFor[OrganizeParams](),
+	"OrganizeResult":     reflect.TypeFor[OrganizeResult](),
 	// The harness plane. PrepareParams and PrepareResult are the chat plane's
 	// existing shapes, declared here for the first time so that the optional
 	// harness_digest and prefix_moved fields are part of what a host mirrors.

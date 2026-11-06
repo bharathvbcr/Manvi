@@ -173,6 +173,9 @@ type suggestItem struct {
 	Primary      string         `json:"primary_repository_id"`
 	Description  string         `json:"description"`
 	Links        *[]suggestLink `json:"links"`
+	// Revision is the card's revision. Suggest does not rank on it. Organize
+	// copies it onto a proposed change so a host can send expected_revision.
+	Revision int64 `json:"revision"`
 }
 
 func (i suggestItem) priority() int {

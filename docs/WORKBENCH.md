@@ -1078,6 +1078,36 @@ the list returned without links, and verification records for the best 12
 candidates only. `board.complete`, `board.unhydrated` and `verification` carry
 those numbers, so a capped read is never reported as the whole board.
 
+## Organising the board by priority
+
+`work.tasks.organize` (host only; nothing offers it to an agent) reads the open
+board and returns a proposal: each task it would re-prioritise, with the
+priority it has now, the priority it would have, and one named reason; an order
+for each column; and groups of tasks joined by `duplicate_of`. It never writes
+and it makes no model call. `method` is `deterministic`, so the same board
+gives the same proposal. A person accepts a row before the host writes it,
+through `items.put` with `expected_revision`. The op does not merge duplicates
+and it does not store a column order.
+
+A rule raises priority: critical severity to urgent, high severity to high, a
+due date a week or more overdue to urgent, a shorter overdue or a due date
+within two days to high, and a task that blocks other open work to high. The
+only rule that lowers a priority is `stale_high`: an inbox or backlog task that
+is urgent or high, untouched for 90 days, with no due date, no high or critical
+or medium severity, and nothing blocked on it, drops one step. `in_progress`
+and `review` are never lowered. A task whose links were not read is not lowered
+and is not treated as blocking. A task with no revision is counted under
+`coverage.unrevisioned` and left out of the proposal.
+
+Reads are bounded: ten pages of 200 per status column, and 2000 link reads.
+`coverage.read` is how many in-scope open tasks were fetched. `coverage.unread`
+is how many rows were not, taken from `items.list` `total`; when a cut page has
+no total the op fails rather than guess. `coverage.unhydrated` is how many
+fetched open tasks' links were not read. `coverage.complete` is false when a
+bound cuts the read. Column order is priority, then due date, on the proposed
+priority. Priority first uses those two signals on the stored priority. Suggest
+next also weighs severity, blockers, age, and verification (`differs`).
+
 ## Bounded reads and durable events
 
 - Pages default to 100 rows, accept 1–200, and stop fetching before a 2 MiB response
