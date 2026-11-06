@@ -153,8 +153,9 @@ func (c *connection) sweepGroup() {
 	signalGroup(c.pid)
 }
 
-// reapBudget bounds how long close() waits for the agent to be reaped and then
-// for the rest of its process group to be gone. Tests shorten it.
+// reapBudget bounds how long close() waits for the agent to be reaped, and,
+// separately and from the moment it is, for the rest of its process group to be
+// gone. Tests shorten it.
 var reapBudget = 5 * time.Second
 
 // groupPoll is how often close() re-probes a group it has killed.
@@ -379,13 +380,19 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 // stayed in the group are in reach, and a zombie among them whose parent is
 // outside the group and never waits keeps the group probe positive for as long
 // as that parent lives; that is reported as a live group, failing closed.
+//
+// Time: Wait gets reapBudget, and the group then gets a reapBudget of its own
+// that starts when Wait returns, so close() takes at most twice reapBudget (a
+// Wait that never returns still ends the call after one, with nothing said of
+// the group). No caller in this module adds a timeout of its own; the one bound
+// above them is ManagedRunner.Close, which waits five seconds for jobs to finish.
 func (c *connection) close() (Exit, error) {
 	c.closeOnce.Do(func() { c.stdin.Close(); c.cancel(); c.stdout.Close() })
-	budget := time.NewTimer(reapBudget)
-	defer budget.Stop()
+	reaped := time.NewTimer(reapBudget)
+	defer reaped.Stop()
 	select {
 	case <-c.done:
-	case <-budget.C:
+	case <-reaped.C:
 		return Exit{}, errors.New("managed provider did not confirm process reaping before shutdown deadline")
 	}
 	result := Exit{Reaped: true, Code: c.cmd.ProcessState.ExitCode()}
@@ -394,7 +401,11 @@ func (c *connection) close() (Exit, error) {
 	if c.waitErr != nil && !errors.As(c.waitErr, &exit) && !errors.Is(c.waitErr, context.Canceled) {
 		err = c.waitErr
 	}
-	groupErr := c.awaitGroup(budget.C)
+	// The group's budget starts now, not with close(): had Wait used most of the
+	// one budget, a group that empties a moment later would be reported live.
+	gone := time.NewTimer(reapBudget)
+	defer gone.Stop()
+	groupErr := c.awaitGroup(gone.C)
 	result.GroupLive = groupErr != nil
 	return result, errors.Join(err, groupErr)
 }
