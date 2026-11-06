@@ -273,38 +273,30 @@ func (s Store) setStatus(id, revision, sha string, status Status) error {
 	}
 	// The pointer is read, changed and replaced whole, so no other writer may
 	// run between the read and the rename: a revocation that landed in that gap
-	// would be overwritten with a stale "approved".
-	unlock, err := s.lockCurrent(dir, id)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	var prior Entry
-	if meta, err := readRegular(dir, "current.json"); err == nil {
-		if err := json.Unmarshal(meta, &prior); err != nil {
+	// would be overwritten with a stale "approved". updateCurrent holds the lock.
+	return s.updateCurrent(dir, id, true, func(prior Entry, exists bool, fields map[string]json.RawMessage) error {
+		if !exists && status == StatusRevoked {
+			return errors.New("cannot revoke without a catalog pointer")
+		}
+		e := Entry{
+			ID:          id,
+			Revision:    revision,
+			SHA256:      sha,
+			Description: c.Description,
+			Path:        filepath.Join(s.Root, id, revision+".json"),
+			Status:      status,
+			Promoted:    status == StatusApproved,
+		}
+		// Stability belongs to one digest: re-approving it keeps the stored object
+		// as written, a different revision starts without one.
+		kept, keep := fields["stability"]
+		keep = keep && prior.ID == id && prior.Revision == revision && prior.SHA256 == sha
+		if err := overlayOwned(fields, e); err != nil {
 			return err
 		}
-		normalizeStatus(&prior)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	} else if status == StatusRevoked {
-		return errors.New("cannot revoke without a catalog pointer")
-	}
-	e := Entry{
-		ID:          id,
-		Revision:    revision,
-		SHA256:      sha,
-		Description: c.Description,
-		Path:        filepath.Join(s.Root, id, revision+".json"),
-		Status:      status,
-		Promoted:    status == StatusApproved,
-	}
-	if prior.ID == id && prior.Revision == revision && prior.SHA256 == sha {
-		e.Stability = prior.Stability
-	}
-	metadata, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	return publish(dir, "current.json", metadata, true)
+		if keep {
+			fields["stability"] = kept
+		}
+		return nil
+	})
 }

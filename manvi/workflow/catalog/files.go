@@ -3,11 +3,13 @@ package catalog
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -170,6 +172,76 @@ func (s Store) lockCurrent(dir *os.Root, id string) (func(), error) {
 		return nil, waiting(err)
 	}
 	return func() { unlock(); <-slot }, nil
+}
+
+// updateCurrent is the one place that reads, edits and replaces an identity's
+// current.json, under lockCurrent. The pointer is edited as a raw object, never
+// rebuilt from a decoded Entry, so a key another writer stored (Jarvis shares
+// this file, and a newer catalog revision may add keys) is written back exactly
+// as found unless fn replaces it. The file is still decoded into Entry first, so
+// a pointer with a wrong type for a key this build owns is refused rather than
+// overwritten. When the file is absent, create decides: true runs fn on an empty
+// object, false returns the read error. Output keys are sorted, as for any map.
+func (s Store) updateCurrent(dir *os.Root, id string, create bool, fn func(prior Entry, exists bool, fields map[string]json.RawMessage) error) error {
+	unlock, err := s.lockCurrent(dir, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	var prior Entry
+	fields := map[string]json.RawMessage{}
+	raw, err := readRegular(dir, "current.json")
+	exists := err == nil
+	switch {
+	case exists:
+		if err := json.Unmarshal(raw, &prior); err != nil {
+			return err
+		}
+		normalizeStatus(&prior)
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return err
+		}
+		if decoded != nil {
+			fields = decoded
+		}
+	case !errors.Is(err, os.ErrNotExist) || !create:
+		return err
+	}
+	if err := fn(prior, exists, fields); err != nil {
+		return err
+	}
+	metadata, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return publish(dir, "current.json", metadata, true)
+}
+
+// overlayOwned makes fields carry exactly the keys v's type owns, taken from v:
+// every JSON key named by a tag of v's struct type is removed, then the ones v
+// marshals to (omitempty ones may not) are set. Keys the type does not name are
+// left alone. The owned set comes from the struct tags, so it cannot drift from
+// the type.
+func overlayOwned(fields map[string]json.RawMessage, v any) error {
+	t := reflect.TypeOf(v)
+	for i := 0; i < t.NumField(); i++ {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			delete(fields, name)
+		}
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	var owned map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &owned); err != nil {
+		return err
+	}
+	for k, val := range owned {
+		fields[k] = val
+	}
+	return nil
 }
 
 // Publish only after the full bytes have reached a synchronized staging file.
