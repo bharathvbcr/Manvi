@@ -117,7 +117,7 @@ func (s Store) SetStability(id, revision, sha string, st Stability) error {
 		return err
 	}
 	defer dir.Close()
-	return s.updateCurrent(dir, id, false, func(current Entry, _ bool, fields map[string]json.RawMessage) error {
+	_, err = s.updateCurrent(dir, id, false, false, func(current Entry, _ bool, fields map[string]json.RawMessage) error {
 		if current.ID != id || current.Revision != revision || current.SHA256 != sha {
 			return errors.New("stability does not match current catalog pointer")
 		}
@@ -136,13 +136,14 @@ func (s Store) SetStability(id, revision, sha string, st Stability) error {
 		if err := overlayOwned(inner, st); err != nil {
 			return err
 		}
-		merged, err := json.Marshal(inner)
+		merged, err := encodeFields(inner)
 		if err != nil {
 			return err
 		}
 		fields["stability"] = merged
 		return nil
 	})
+	return err
 }
 
 // ApplyQualifyReport parses a qualify N-run report and stores its Stability on

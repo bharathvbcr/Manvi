@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -177,15 +180,26 @@ func (s Store) lockCurrent(dir *os.Root, id string) (func(), error) {
 // updateCurrent is the one place that reads, edits and replaces an identity's
 // current.json, under lockCurrent. The pointer is edited as a raw object, never
 // rebuilt from a decoded Entry, so a key another writer stored (Jarvis shares
-// this file, and a newer catalog revision may add keys) is written back exactly
-// as found unless fn replaces it. The file is still decoded into Entry first, so
-// a pointer with a wrong type for a key this build owns is refused rather than
+// this file, and a newer catalog revision may add keys) is written back as found
+// unless fn replaces it. The file is still decoded into Entry first, so a
+// pointer with a wrong type for a key this build owns is refused rather than
 // overwritten. When the file is absent, create decides: true runs fn on an empty
-// object, false returns the read error. Output keys are sorted, as for any map.
-func (s Store) updateCurrent(dir *os.Root, id string, create bool, fn func(prior Entry, exists bool, fields map[string]json.RawMessage) error) error {
+// object, false returns the read error.
+//
+// Keys and values are decoded and re-encoded, so they come back as valid UTF-8
+// (an invalid byte in a key becomes U+FFFD), output keys are sorted, and a
+// repeated key collapses to its last value, which is the value every decoder
+// reads. HTML characters and U+2028/2029 are not escaped on the way out: a
+// value that fit under MaxArtifactBytes must not grow past it for being
+// rewritten.
+//
+// If the encoded pointer would still exceed MaxArtifactBytes and shrink is set,
+// the foreign keys are dropped and only the owned ones written; their names are
+// returned. Without shrink the write is refused and the file left untouched.
+func (s Store) updateCurrent(dir *os.Root, id string, create, shrink bool, fn func(prior Entry, exists bool, fields map[string]json.RawMessage) error) (dropped []string, err error) {
 	unlock, err := s.lockCurrent(dir, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
 	var prior Entry
@@ -195,41 +209,101 @@ func (s Store) updateCurrent(dir *os.Root, id string, create bool, fn func(prior
 	switch {
 	case exists:
 		if err := json.Unmarshal(raw, &prior); err != nil {
-			return err
+			return nil, err
 		}
 		normalizeStatus(&prior)
 		var decoded map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &decoded); err != nil {
-			return err
+			return nil, err
 		}
 		if decoded != nil {
 			fields = decoded
 		}
 	case !errors.Is(err, os.ErrNotExist) || !create:
-		return err
+		return nil, err
 	}
 	if err := fn(prior, exists, fields); err != nil {
-		return err
+		return nil, err
 	}
-	metadata, err := json.Marshal(fields)
+	metadata, err := encodeFields(fields)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return publish(dir, "current.json", metadata, true)
-}
-
-// overlayOwned makes fields carry exactly the keys v's type owns, taken from v:
-// every JSON key named by a tag of v's struct type is removed, then the ones v
-// marshals to (omitempty ones may not) are set. Keys the type does not name are
-// left alone. The owned set comes from the struct tags, so it cannot drift from
-// the type.
-func overlayOwned(fields map[string]json.RawMessage, v any) error {
-	t := reflect.TypeOf(v)
-	for i := 0; i < t.NumField(); i++ {
-		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
-			delete(fields, name)
+	if len(metadata) > workflow.MaxArtifactBytes {
+		if !shrink {
+			return nil, fmt.Errorf("catalog: current.json would be %d bytes, over the %d byte limit; refusing to write it", len(metadata), workflow.MaxArtifactBytes)
+		}
+		var kept map[string]json.RawMessage
+		if kept, dropped, err = ownedOnly(fields); err != nil {
+			return nil, err
+		}
+		if metadata, err = encodeFields(kept); err != nil {
+			return nil, err
+		}
+		if len(metadata) > workflow.MaxArtifactBytes {
+			return nil, errors.New("catalog: current.json over the size limit even without foreign keys")
 		}
 	}
+	return dropped, publish(dir, "current.json", metadata, true)
+}
+
+// encodeFields encodes the pointer without HTML escaping. json.Marshal would turn
+// each <, >, & and U+2028/2029 inside a foreign value into a six byte escape.
+func encodeFields(fields map[string]json.RawMessage) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(fields); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+}
+
+// jsonKeys lists the JSON key names a struct type's tags own.
+func jsonKeys(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// matchesOwned reports whether encoding/json would decode key into a field named
+// by one of owned. The decoder matches a key to a field by exact name or by
+// folding (Unicode simple case folding: "\u017f" matches s, "\u212a" matches k),
+// and when several keys match one field the last in document order wins, so a
+// folded variant that sorts after the real key can override it for every reader.
+// encoding/json's foldName is documented as equivalent to bytes.EqualFold.
+func matchesOwned(key string, owned []string) bool {
+	for _, name := range owned {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropNearDuplicates removes from fields every key that matches an owned name
+// without being it, so no stored key can shadow an owned one. A conflicting
+// near-duplicate of an owned key is not a foreign field worth preserving, and
+// dropping it is the safe choice. With keepExact the exact owned keys stay.
+func dropNearDuplicates(fields map[string]json.RawMessage, owned []string, keepExact bool) {
+	for k := range fields {
+		if matchesOwned(k, owned) && !(keepExact && slices.Contains(owned, k)) {
+			delete(fields, k)
+		}
+	}
+}
+
+// overlayOwned makes fields carry exactly the keys v's type owns, taken from v.
+// Every key that decodes into one of v's fields is removed first (including
+// case-folded variants, see matchesOwned), then the ones v marshals to are set
+// (omitempty ones may not be). Keys the type does not match are left alone. The
+// owned set comes from the struct tags, so it cannot drift from the type.
+func overlayOwned(fields map[string]json.RawMessage, v any) error {
+	dropNearDuplicates(fields, jsonKeys(reflect.TypeOf(v)), false)
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -242,6 +316,38 @@ func overlayOwned(fields map[string]json.RawMessage, v any) error {
 		fields[k] = val
 	}
 	return nil
+}
+
+// ownedOnly returns the pointer reduced to the keys this build owns, with the
+// names of what was dropped ("stability.<key>" for keys inside stability).
+func ownedOnly(fields map[string]json.RawMessage) (kept map[string]json.RawMessage, dropped []string, err error) {
+	entryKeys := jsonKeys(reflect.TypeOf(Entry{}))
+	stabilityKeys := jsonKeys(reflect.TypeOf(Stability{}))
+	kept = map[string]json.RawMessage{}
+	for k, v := range fields {
+		if !slices.Contains(entryKeys, k) {
+			dropped = append(dropped, k)
+			continue
+		}
+		if k == "stability" {
+			var inner map[string]json.RawMessage
+			if err := json.Unmarshal(v, &inner); err != nil {
+				return nil, nil, err
+			}
+			for ik := range inner {
+				if !slices.Contains(stabilityKeys, ik) {
+					dropped = append(dropped, "stability."+ik)
+					delete(inner, ik)
+				}
+			}
+			if v, err = encodeFields(inner); err != nil {
+				return nil, nil, err
+			}
+		}
+		kept[k] = v
+	}
+	sort.Strings(dropped)
+	return kept, dropped, nil
 }
 
 // Publish only after the full bytes have reached a synchronized staging file.

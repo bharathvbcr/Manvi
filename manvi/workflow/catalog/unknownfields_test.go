@@ -99,6 +99,15 @@ func TestStatusChangesKeepEveryUnownedCurrentKey(t *testing.T) {
 		}
 		after := readFields(t, path)
 		for k, v := range extra {
+			// "Status" and "PROMOTED" decode into owned fields, so they are
+			// near-duplicates of owned keys, which are dropped on purpose (see
+			// matchesOwned). "status " does not decode into one and survives.
+			if k == "Status" || k == "PROMOTED" {
+				if _, ok := after[k]; ok {
+					t.Errorf("%s kept %q, a near-duplicate of an owned key", step.name, k)
+				}
+				continue
+			}
 			got, ok := after[k]
 			if !ok {
 				t.Fatalf("%s dropped unowned key %q", step.name, k)

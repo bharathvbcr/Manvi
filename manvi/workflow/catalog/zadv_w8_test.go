@@ -107,7 +107,15 @@ func TestAdvFoldedPointerKeysCannotRedirectRevision(t *testing.T) {
 }
 
 func TestAdvFoldedStabilityKeysCannotOverrideWrittenValue(t *testing.T) {
-	for _, key := range []string{"ſuccess_rate", "Success_Rate", "ſource", "ruNs", "mean_rung_indeX"} {
+	// Each folded key is planted with a value of the owned field's own type, so the
+	// stock decoder would accept it and, if it survived, let it win.
+	for key, planted := range map[string]string{
+		"ſuccess_rate":    `99`,
+		"Success_Rate":    `99`,
+		"ſource":          `"planted"`,
+		"ruNs":            `99`,
+		"mean_rung_indeX": `99`,
+	} {
 		s, e, path := approvedStore(t)
 		if err := s.SetStability(e.ID, e.Revision, e.SHA256, Stability{SuccessRate: 0.1, Runs: 1, Source: "mine"}); err != nil {
 			t.Fatal(err)
@@ -117,7 +125,7 @@ func TestAdvFoldedStabilityKeysCannotOverrideWrittenValue(t *testing.T) {
 			if err := json.Unmarshal(f["stability"], &in); err != nil {
 				t.Fatal(err)
 			}
-			in[key] = json.RawMessage(`99`)
+			in[key] = json.RawMessage(planted)
 			f["stability"], _ = json.Marshal(in)
 		})
 		if err := s.SetStability(e.ID, e.Revision, e.SHA256, Stability{SuccessRate: 0.2, Runs: 2, Source: "second"}); err != nil {
@@ -226,7 +234,7 @@ func TestAdvHostileShapesInCurrent(t *testing.T) {
 	}
 }
 
-func TestAdvInvalidUTF8KeySurvivesByteForByte(t *testing.T) {
+func TestAdvInvalidUTF8KeyIsReencodedAsValidUTF8(t *testing.T) {
 	s, e, path := approvedStore(t)
 	raw, _ := os.ReadFile(path)
 	raw = bytes.TrimSuffix(raw, []byte("}"))
@@ -238,10 +246,15 @@ func TestAdvInvalidUTF8KeySurvivesByteForByte(t *testing.T) {
 		t.Skipf("refused: %v", err)
 	}
 	after, _ := os.ReadFile(path)
-	// A key with invalid UTF-8 is rewritten to U+FFFD by json.Marshal: the
-	// foreign key is not kept "exactly as found".
-	if !bytes.Contains(after, []byte("\"k\xff\"")) {
-		t.Errorf("foreign key with invalid UTF-8 was altered: %q", after)
+	// Documented on updateCurrent: keys are re-encoded as valid UTF-8, so the
+	// invalid byte comes back as U+FFFD (written as the escape \ufffd), and the
+	// pointer is valid JSON with its value intact.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(after, &fields); err != nil {
+		t.Fatalf("rewritten pointer is not valid JSON: %v", err)
+	}
+	if string(fields["k\ufffd"]) != `"v"` {
+		t.Errorf("foreign key with invalid UTF-8 not kept as k+U+FFFD: %q", after)
 	}
 }
 
