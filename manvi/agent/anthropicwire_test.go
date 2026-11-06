@@ -71,6 +71,15 @@ data: {"type":"content_block_stop","index":0}
 // repeats). It returns the request bodies the server saw.
 func driveAnthropic(t *testing.T, bodies []string, result tools.Result) ([]string, Outcome, error) {
 	t.Helper()
+	return driveWire(t, func(url string) llm.Provider {
+		return anthropic.New(url, adaptertest.Secret("sk-FIXTURE-not-a-real-key"))
+	}, "claude-opus-5-5", bodies, result)
+}
+
+// driveWire is driveAnthropic for any provider: newProvider builds the real
+// adapter against the fixture server's URL.
+func driveWire(t *testing.T, newProvider func(url string) llm.Provider, model string, bodies []string, result tools.Result) ([]string, Outcome, error) {
+	t.Helper()
 	var mu sync.Mutex
 	var reqs []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,8 +108,8 @@ func driveAnthropic(t *testing.T, bodies []string, result tools.Result) ([]strin
 		t.Fatal(err)
 	}
 	loop, err := NewLoop(Config{
-		Provider: anthropic.New(srv.URL, adaptertest.Secret("sk-FIXTURE-not-a-real-key")),
-		Model:    "claude-opus-5-5", SystemPrompt: "p", MaxSteps: 8, MaxTokens: 1024, AssertInvariant: true,
+		Provider: newProvider(srv.URL),
+		Model:    model, SystemPrompt: "p", MaxSteps: 8, MaxTokens: 1024, AssertInvariant: true,
 	}, b, log, reg)
 	if err != nil {
 		t.Fatal(err)
