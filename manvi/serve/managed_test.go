@@ -543,7 +543,11 @@ func TestManagedMissingExecutableEndsTheAttemptAndReleasesItsRepository(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runner.Close()
+	defer func() {
+		if err := runner.Close(); err != nil {
+			t.Errorf("closing the runner: %v", err)
+		}
+	}()
 	if _, err := runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`)); err == nil {
 		t.Fatal("missing executable started")
 	}
@@ -587,7 +591,11 @@ func TestManagedRunnerAdmitsEveryProviderWithAnAdapterAndNoOthers(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer runner.Close()
+			defer func() {
+				if err := runner.Close(); err != nil {
+					t.Errorf("closing the runner: %v", err)
+				}
+			}()
 			_, err = runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`))
 			admitted := err == nil
 			if admitted != codingagent.IsManagedProvider(provider) {
@@ -622,7 +630,11 @@ func TestManagedUncertainFactoryFailureRetainsItsClaimWithoutCallingANilSession(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runner.Close()
+	defer func() {
+		if err := runner.Close(); err != nil {
+			t.Errorf("closing the runner: %v", err)
+		}
+	}()
 	if _, err := runner.Prepare(t.Context(), json.RawMessage(`{"id":"run","request_id":"launch","expected_revision":1}`)); err == nil {
 		t.Fatal("uncertain start accepted")
 	}

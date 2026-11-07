@@ -616,7 +616,9 @@ func (r *ManagedRunner) Prepare(ctx context.Context, raw json.RawMessage) (Manag
 			r.mu.Unlock()
 			return ManagedPrepared{}, err
 		}
-		jobCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		// The job outlives the request that prepared it, so it keeps the request's
+		// values and drops its cancellation.
+		jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Hour)
 		job = &managedJob{id: request.ID, owner: owner, session: session, preparation: request, harnessRef: harnessRef, parentID: parentID, ctx: jobCtx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), wake: make(chan struct{}, 1), phase: "preparing", callbacks: make(map[string]*managedCallback), maxContinue: maxContinue, cont: newContinuation(maxContinue)}
 		r.jobs[request.ID] = job
 		go r.prepare(jobCtx, job)

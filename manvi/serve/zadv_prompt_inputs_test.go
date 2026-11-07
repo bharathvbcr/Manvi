@@ -77,7 +77,7 @@ func TestAdvHardLinkToPromptInputIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("rules"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("rules"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Link(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "notes.txt")); err != nil {
@@ -101,10 +101,10 @@ func TestAdvPromptInputSymlinkedToOrdinaryFileIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, "docs"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "docs", "rules.md"), []byte("rules"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "docs", "rules.md"), []byte("rules"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Symlink("docs/rules.md", filepath.Join(root, "AGENTS.md")); err != nil {

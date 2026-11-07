@@ -341,7 +341,7 @@ func organizeReadColumn(ctx context.Context, board SuggestStore, status string, 
 	cursor := ""
 	fetched := 0
 	var total *int
-	cut := false
+	var cut bool
 	for page := 0; ; page++ {
 		if page == organizeMaxPages {
 			cut = true
