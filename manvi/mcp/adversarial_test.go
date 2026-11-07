@@ -311,7 +311,13 @@ func TestAnOversizedStderrLineDoesNotWedgeTheServer(t *testing.T) {
 			skipped = true
 		}
 	}
-	if !skipped {
+	// The record keeps the newest entries, so the notice for a line skipped
+	// before 500 more may have been pushed out by them. It is then accounted
+	// for by the dropped counter rather than gone without trace.
+	c.errMu.Lock()
+	dropped := c.droppedErrors
+	c.errMu.Unlock()
+	if !skipped && dropped == 0 {
 		t.Fatalf("a dropped stderr line left no diagnostic, so a reader that could not "+
 			"read reports what a reader that read everything reports: %d entries retained", len(diags))
 	}

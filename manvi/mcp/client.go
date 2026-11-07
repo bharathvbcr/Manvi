@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
@@ -82,6 +83,12 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[int64]chan *Response
 
+	// beforeWait, when set, runs in Call after the request is written and
+	// before it waits. It exists so a test can make a reply and a cancelled
+	// context both ready at the moment Call selects, which is otherwise a race
+	// that cannot be arranged on demand. Nil outside tests.
+	beforeWait func(id int64, respCh chan *Response)
+
 	// initMu guards the three fields below and is only ever held for a few
 	// instructions, never across a request: a second Initialize caller must be
 	// able to wait on its own context, and it cannot while queued on a mutex.
@@ -98,7 +105,14 @@ type Client struct {
 	doneCh       chan struct{}
 	stderrDone   chan struct{}
 	serverErrors []string
-	errMu        sync.Mutex
+	// droppedErrors counts the oldest entries pushed out of serverErrors.
+	droppedErrors int
+	// coalesceKey and coalesceCount describe a run of identical-kind records
+	// currently held in the last slot of serverErrors, so a server repeating
+	// one kind of notice produces one entry and a count.
+	coalesceKey   string
+	coalesceCount int
+	errMu         sync.Mutex
 }
 
 const (
@@ -348,13 +362,80 @@ func (c *Client) stderrLoop() {
 	}
 }
 
+// maxServerErrors bounds the retained record.
+const maxServerErrors = 100
+
 // recordError appends a diagnostic from one of the reader goroutines.
+//
+// The record is a ring that keeps the newest maxServerErrors entries: the
+// diagnostic that explains a death is the last thing a server says, and a
+// buffer that kept the first entries let a chatty or hostile server fill it
+// before that. What was pushed out is counted, not hidden, and
+// diagnosticsSuffix reports the count. Server-controlled text is escaped here,
+// the one owner every record passes through, so a stderr line or a frame
+// snippet cannot carry raw newlines or terminal escapes into an error message.
 func (c *Client) recordError(msg string) {
+	msg = escapeControl(msg)
 	c.errMu.Lock()
-	if len(c.serverErrors) < 100 {
-		c.serverErrors = append(c.serverErrors, msg)
-	}
+	c.appendErrorLocked(msg)
+	c.coalesceKey = ""
 	c.errMu.Unlock()
+}
+
+// recordCoalesced records msg under key, folding a run of consecutive records
+// with the same key into one entry that carries the latest text and a count.
+func (c *Client) recordCoalesced(key, msg string) {
+	msg = escapeControl(msg)
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	if c.coalesceKey == key && len(c.serverErrors) > 0 {
+		c.coalesceCount++
+		c.serverErrors[len(c.serverErrors)-1] = fmt.Sprintf("%s (repeated %d times; latest shown)", msg, c.coalesceCount)
+		return
+	}
+	c.appendErrorLocked(msg)
+	c.coalesceKey, c.coalesceCount = key, 1
+}
+
+func (c *Client) appendErrorLocked(msg string) {
+	if len(c.serverErrors) >= maxServerErrors {
+		copy(c.serverErrors, c.serverErrors[1:])
+		c.serverErrors = c.serverErrors[:len(c.serverErrors)-1]
+		c.droppedErrors++
+	}
+	c.serverErrors = append(c.serverErrors, msg)
+}
+
+// escapeControl renders control characters and invalid UTF-8 bytes in s as
+// visible \xNN / \uNNNN escapes. Backslashes and quotes are left alone, so
+// escaping is idempotent and nothing is double-quoted.
+func escapeControl(s string) string {
+	clean := true
+	for i, r := range s {
+		if unicode.IsControl(r) || (r == utf8.RuneError && !utf8.ValidString(s[i:i+1])) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, w := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && w == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case unicode.IsControl(r) && r < 0x100:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		case unicode.IsControl(r):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteString(s[i : i+w])
+		}
+		i += w
+	}
+	return b.String()
 }
 
 // Diagnostics returns what the server said about itself on stderr, plus the
@@ -390,6 +471,8 @@ func (c *Client) awaitExit(ctx context.Context) {
 	}
 }
 
+// It holds the newest entries only; diagnosticsSuffix says how many older ones
+// were pushed out.
 func (c *Client) Diagnostics() []string {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -400,21 +483,33 @@ func (c *Client) Diagnostics() []string {
 // is the reader that matters: a failure the server already explained must
 // arrive carrying the explanation.
 func (c *Client) diagnosticsSuffix() string {
-	diags := c.Diagnostics()
+	c.errMu.Lock()
+	diags := append([]string(nil), c.serverErrors...)
+	dropped := c.droppedErrors
+	c.errMu.Unlock()
 	if len(diags) == 0 {
 		return ""
 	}
 	if len(diags) > maxDiagnosticsInError {
+		dropped += len(diags) - maxDiagnosticsInError
 		diags = diags[len(diags)-maxDiagnosticsInError:]
 	}
 	for i, d := range diags {
 		diags[i] = truncateForMessage(d)
 	}
-	return " — the server reported: " + strings.Join(diags, " | ")
+	out := " — the server reported: " + strings.Join(diags, " | ")
+	if dropped > 0 {
+		out += fmt.Sprintf(" (%d earlier entries dropped)", dropped)
+	}
+	return out
 }
 
+// truncateForMessage bounds server-controlled text for an error message and
+// escapes its control characters, so it cannot forge lines or repaint a
+// terminal. The cut is made on the raw text, so the preview bound holds in
+// source bytes.
 func truncateForMessage(s string) string {
-	return truncateTo(strings.TrimSpace(s), unroutablePreview)
+	return escapeControl(truncateTo(strings.TrimSpace(s), unroutablePreview))
 }
 
 // truncateTo cuts s to at most n bytes without leaving a partial rune behind.
@@ -670,9 +765,21 @@ func (c *Client) dispatch(line []byte) {
 // declared the capability).
 func (c *Client) answerServerFrame(line []byte, method string) {
 	var probe struct {
-		ID json.RawMessage `json:"id"`
+		ID     json.RawMessage `json:"id"`
+		Params struct {
+			RequestID json.RawMessage `json:"requestId"`
+			Reason    string          `json:"reason"`
+		} `json:"params"`
 	}
 	if json.Unmarshal(line, &probe) != nil || len(probe.ID) == 0 || string(probe.ID) == "null" {
+		if method == "notifications/cancelled" {
+			// The server abandoned a request it issued, in its own id space, so
+			// it says nothing about any Call of ours and is never matched
+			// against pending ids; the spec asks only that the reason be logged.
+			c.recordCoalesced("inbound-cancelled", fmt.Sprintf("server %s cancelled its request %q: %q",
+				c.Name(), truncateTo(strings.TrimSpace(string(probe.Params.RequestID)), unroutablePreview),
+				truncateTo(strings.TrimSpace(probe.Params.Reason), unroutablePreview)))
+		}
 		return
 	}
 	reply := struct {
@@ -786,8 +893,10 @@ func numericID(v any) (int64, bool) {
 		n, err := id.Int64()
 		return n, err == nil
 	case string:
-		n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
-		return n, err == nil
+		// Only the canonical decimal form a client would have issued: "01",
+		// "+1" and " 1 " are not the number 1 and are not accepted as it.
+		n, err := strconv.ParseInt(id, 10, 64)
+		return n, err == nil && strconv.FormatInt(n, 10) == id
 	default:
 		return 0, false
 	}
@@ -821,20 +930,44 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	if err != nil {
 		return err
 	}
+	if c.beforeWait != nil {
+		c.beforeWait(id, respCh)
+	}
 
+	// The pending map decides who owns the reply, not the order select happens
+	// to pick among ready cases. dispatch removes the entry and only then sends,
+	// so a context that ends at the same moment as a reply used to forget a
+	// reply that had already been delivered, cancel a request whose answer was
+	// in hand, and report a timeout the caller may retry a non-idempotent tool
+	// over. Whichever of ctx or doneCh fires, withdraw says whether anyone
+	// claimed the entry first.
 	select {
 	case <-ctx.Done():
-		c.forget(id)
-		c.cancelRequest(id, method, ctx.Err())
-		// Whatever the server said about itself travels with the timeout. A
-		// wedge whose cause was recorded on stderr and then discarded is how
-		// "the tool call hung" became the whole of an operator's evidence.
-		return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+		if c.withdraw(id) {
+			c.cancelRequest(id, method, ctx.Err())
+			// Whatever the server said about itself travels with the timeout. A
+			// wedge whose cause was recorded on stderr and then discarded is how
+			// "the tool call hung" became the whole of an operator's evidence.
+			return fmt.Errorf("mcp: %s on %s: %w%s", method, c.cfg.Name, ctx.Err(), c.diagnosticsSuffix())
+		}
+		return c.claimedReply(method, respCh, result)
 	case <-c.doneCh:
-		return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+		if c.withdraw(id) {
+			return fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
+		}
+		return c.claimedReply(method, respCh, result)
 	case resp, ok := <-respCh:
 		return c.replyResult(method, resp, ok, result)
 	}
+}
+
+// claimedReply returns the outcome of a request whose pending entry was already
+// taken by dispatch, failAllPending or the end-of-stream flush. Each of those
+// removes the entry and then sends exactly one value into the channel (cap 1,
+// so the send never blocks) or closes it, so this receive always completes.
+func (c *Client) claimedReply(method string, respCh chan *Response, result any) error {
+	resp, ok := <-respCh
+	return c.replyResult(method, resp, ok, result)
 }
 
 // callCeiling is the bound on a wait whose caller set none.
@@ -887,7 +1020,7 @@ func (c *Client) send(ctx context.Context, method string, params any) (int64, ch
 	c.pendingMu.Unlock()
 
 	if writeErr := c.writeFrame(data); writeErr != nil {
-		c.forget(id)
+		c.withdraw(id)
 		// A write that fails because the child stopped reading is usually a
 		// child that is exiting, and what it said on the way out is still in
 		// flight. Returning now made the same failure read differently
@@ -898,12 +1031,18 @@ func (c *Client) send(ctx context.Context, method string, params any) (int64, ch
 	return id, respCh, nil
 }
 
-// forget drops a request's pending entry, after which a reply to it is recorded
-// by dispatch as "no longer pending" and delivered nowhere.
-func (c *Client) forget(id int64) {
+// withdraw drops a request's pending entry, after which a reply to it is
+// recorded by dispatch as "no longer pending" and delivered nowhere. It reports
+// whether the entry was still there: false means dispatch, failAllPending or
+// the end-of-stream flush already claimed it, so a value or a close is on its
+// way to (or already in) the request's channel and the caller must take that
+// rather than abandon it.
+func (c *Client) withdraw(id int64) bool {
 	c.pendingMu.Lock()
+	_, was := c.pending[id]
 	delete(c.pending, id)
 	c.pendingMu.Unlock()
+	return was
 }
 
 // replyResult turns what arrived on a request's channel into Call's result. A
@@ -1269,14 +1408,15 @@ func (c *Client) initializeAs(ctx context.Context, f *initFlight, version string
 	select {
 	case resp, ok = <-respCh:
 	case <-c.doneCh:
-		// A reply that landed in the same instant is still a reply.
-		select {
-		case resp, ok = <-respCh:
-		default:
+		// A reply already claimed at the same instant is still a reply. The
+		// same arbiter as Call; initialize is never cancelled, so there is no
+		// notifications/cancelled to send either way.
+		if c.withdraw(id) {
 			return nil, fmt.Errorf("mcp: server %s exited unexpectedly%s", c.cfg.Name, c.diagnosticsSuffix())
 		}
+		resp, ok = <-respCh
 	case <-f.abort:
-		c.forget(id)
+		c.withdraw(id)
 		return nil, c.closedReason()
 	}
 
