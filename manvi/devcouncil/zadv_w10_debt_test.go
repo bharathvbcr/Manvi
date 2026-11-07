@@ -7,6 +7,7 @@ import (
 
 // oldPorcelainHasUserChanges is the pre-w10-debt loop (a3710a1), kept verbatim
 // so the rewrite is compared against it rather than against a restatement.
+// The only edit is dropping a dead `i++` before a `return true`.
 func oldPorcelainHasUserChanges(porcelain string) bool {
 	entries := strings.Split(porcelain, "\x00")
 	for i := 0; i < len(entries); i++ {
@@ -20,9 +21,6 @@ func oldPorcelainHasUserChanges(porcelain string) bool {
 		xy := rec[:2]
 		path := rec[3:]
 		if xy[0] == 'R' || xy[0] == 'C' || xy[1] == 'R' || xy[1] == 'C' {
-			if i+1 < len(entries) {
-				i++
-			}
 			return true
 		}
 		if xy == "??" && isHarnessStateRelPath(path) {

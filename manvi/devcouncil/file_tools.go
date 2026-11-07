@@ -983,7 +983,7 @@ func (p *plainDirs) plain(dir string) bool {
 		return verdict
 	}
 	fi, err := safefile.Lstat(filepath.Join(p.root, filepath.FromSlash(dir)))
-	verdict = err == nil && fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 && p.plain(path.Dir(dir))
+	verdict = err == nil && fi != nil && fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 && p.plain(path.Dir(dir))
 	p.mu.Lock()
 	p.known[dir] = verdict
 	p.mu.Unlock()
