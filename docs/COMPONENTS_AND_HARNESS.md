@@ -142,12 +142,23 @@ claim true, so it is not negotiable for convenience.
 ## 4. How the harness consumes them
 
 **Verified** (`cmd/manvi/toolbinary.go`): MANVI resolves each component as an
-executable and links none of them. Resolution is explicit-beats-PATH-beats-local:
+executable and links none of them. Resolution is explicit-beats-sibling-beats-PATH for a release-stamped binary
+(`-X main.stampedVersion`), and explicit-beats-PATH-beats-build-tree for a
+developer build:
 
 1. an environment variable, because an operator who named a path meant it;
-2. `PATH`, which is the installed case;
-3. a build in the local `crates/target`, so a compiled-but-not-installed artifact
-   is found rather than reported missing.
+2. release only: the directory holding the `manvi` binary, where an installer puts the companions;
+3. `PATH`, which is the installed case (the agent's shell cannot change the PATH of the running harness);
+4. developer builds only: a cargo build tree (`crates/target`, `rust/target`,
+   `DevCouncil/rust/target`) found by walking up from the `manvi` executable's own directory.
+
+A release is a binary with the `-X main.stampedVersion` stamp or a real
+main-module version (`go install module@vX`), the same test `manvi version`
+uses. In a release, the executable's directory and `PATH` candidates are
+skipped when they resolve inside the project root or the working directory,
+and a relative env value is made absolute against the working directory at
+launch. The working directory and the project root are never searched. They are where
+the agent can write, and these binaries run on the host outside the gate.
 
 | Component | Env override | Go client (in `DevCouncil/backend/go_orchestrator/`) |
 |---|---|---|

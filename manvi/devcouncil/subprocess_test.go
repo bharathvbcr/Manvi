@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -193,5 +194,105 @@ func TestRunProcCapsAndSaysSo(t *testing.T) {
 	}
 	if res.stdoutNote == "" || res.stderrNote == "" {
 		t.Fatal("a truncated capture did not say it was truncated")
+	}
+}
+
+const setsidHelperEnv = "MANVI_RUNPROC_SETSID_HELPER"
+
+// TestSetsidHelperProcess is not a test: it is the child that
+// TestRunProcLeavesASetsidDescendantRunning re-executes this binary as. "parent"
+// starts a long-lived descendant, a "sleeper" in its own session when
+// "parent-setsid" and in the parent's group otherwise, prints its pid and exits.
+func TestSetsidHelperProcess(t *testing.T) {
+	switch os.Getenv(setsidHelperEnv) {
+	case "sleeper":
+		time.Sleep(2 * time.Minute)
+	case "parent-setsid", "parent-samegroup":
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// #nosec G204 -- re-executes this very test binary.
+		cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestSetsidHelperProcess$")
+		cmd.Env = append(os.Environ(), setsidHelperEnv+"=sleeper")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv(setsidHelperEnv) == "parent-setsid"}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = os.Stdout.WriteString("pid=" + strconv.Itoa(cmd.Process.Pid) + "\n")
+	}
+}
+
+// startHelperTree runs the helper under runProc and returns the pid of the
+// descendant it left behind.
+func startHelperTree(t *testing.T, mode string) int {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := runProc(context.Background(), procSpec{
+		argv:        []string{exe, "-test.run=^TestSetsidHelperProcess$"},
+		env:         append(childenv.Inherit(), setsidHelperEnv+"="+mode),
+		timeout:     30 * time.Second,
+		stdoutLimit: 4096,
+	})
+	if res.err != nil || res.timedOut {
+		t.Fatalf("helper failed: err=%v timedOut=%v stderr=%s", res.err, res.timedOut, res.stderr)
+	}
+	for _, line := range strings.Split(string(res.stdout), "\n") {
+		if v, ok := strings.CutPrefix(line, "pid="); ok {
+			pid, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				t.Fatalf("bad pid line %q", line)
+			}
+			// Killed by pid, and only this pid: it is the one process this test
+			// started that runProc may have left running.
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			return pid
+		}
+	}
+	t.Fatalf("helper printed no pid: %q", res.stdout)
+	return 0
+}
+
+// processAlive reports a process that is running. kill(pid, 0) succeeds on a
+// zombie, a killed process whose parent has not reaped it yet, so where /proc
+// exists its state is read and Z counts as dead.
+func processAlive(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return true
+	}
+	// The state is the field after the command, which is parenthesised and may
+	// itself contain spaces or parentheses, so it is found from the last ")".
+	text := string(stat)
+	if i := strings.LastIndexByte(text, ')'); i >= 0 && i+2 < len(text) {
+		return text[i+2] != 'Z'
+	}
+	return true
+}
+
+// TestRunProcLeavesASetsidDescendantRunning pins what runProc's comment says it
+// bounds. A descendant in the child's group is killed with it; one that called
+// setsid is in another session and group and survives the group kill. The
+// comment used to say "nothing the child started survives the call", which this
+// test observes to be false for the second case.
+func TestRunProcLeavesASetsidDescendantRunning(t *testing.T) {
+	grouped := startHelperTree(t, "parent-samegroup")
+	escaped := startHelperTree(t, "parent-setsid")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for processAlive(grouped) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(grouped) {
+		t.Errorf("descendant %d in the child's group survived the group kill", grouped)
+	}
+	if !processAlive(escaped) {
+		t.Errorf("setsid descendant %d did not survive: the documented limit no longer holds, update runProc's comment", escaped)
 	}
 }

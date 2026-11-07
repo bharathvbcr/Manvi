@@ -52,7 +52,7 @@ The requirement is not symmetric at runtime:
 Discovery locates binaries automatically:
 1. `MANVI_*_BINARY` environment variables
 2. System `PATH`
-3. Sibling build artifacts in `crates/target/{release,debug}`
+3. Release builds: the directory of the `manvi` executable. Developer builds: build artifacts in `crates/target/{release,debug}` above the executable (never the working directory)
 
 Loosening the two-toolchain requirement would mean reimplementing the lease store in Go. However, the invariant it protects is a partial unique index in the SQLite schema (`WHERE status = 'active'`). Having two implementations of that would create two competing owners of a single guarantee—the exact architectural defect the dual-plane split was created to prevent.
 
