@@ -151,7 +151,7 @@ func liveTurn(t *testing.T) (*stateFixture, *exec.Cmd, *os.File, *os.File, *ptyO
 	// Let the first frame settle: keys that arrive before the composer exists
 	// are dropped, and a dropped prompt would leave nothing to wait on.
 	waitUntil(t, 30*time.Second, "the composer to draw", func() bool { return out.contains("mock-model") })
-	if _, err := master.Write([]byte("claim the task\r")); err != nil {
+	if _, err := master.WriteString("claim the task\r"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -261,7 +261,7 @@ func TestTUITurnPanicIsAnErrorWithTheTerminalRestored(t *testing.T) {
 	f := newStateFixture(t, "http://models.invalid/v1")
 	cmd, master, slave, out := tuiOnAPtyIn(t, f.work, append(f.env, tuiPanicEnv+"=1")...)
 	waitUntil(t, 30*time.Second, "the composer to draw", func() bool { return out.contains("mock-model") })
-	if _, err := master.Write([]byte("this turn will panic\r")); err != nil {
+	if _, err := master.WriteString("this turn will panic\r"); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 60*time.Second, "the panic to be reported as an error", func() bool {
