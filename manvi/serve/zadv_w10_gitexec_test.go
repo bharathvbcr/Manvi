@@ -132,7 +132,7 @@ func zadvIncludeCase(t *testing.T, run zadvRun, cond string) {
 		section = "[includeIf \"" + cond + "\"]\n\tpath = " + inc + "\n"
 	}
 	cfg := filepath.Join(r.root, ".git", "config")
-	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: the test's own repository config path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestAdvGitSpawnSitesAreTheKnownSet(t *testing.T) {
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		b, err := os.ReadFile(path) // #nosec G304 -- walks this module's own tree
+		b, err := os.ReadFile(path) //nolint:gosec // G304, G122: read-only walk of this module's own source tree
 		if err != nil {
 			return err
 		}
@@ -512,7 +512,7 @@ func TestAdvQuickActionsIsNotModelCallable(t *testing.T) {
 		if strings.HasPrefix(rel, "cmd/manvi/") {
 			return nil
 		}
-		b, err := os.ReadFile(path) // #nosec G304 -- walks this module's own tree
+		b, err := os.ReadFile(path) //nolint:gosec // G304, G122: read-only walk of this module's own source tree
 		if err != nil {
 			return err
 		}

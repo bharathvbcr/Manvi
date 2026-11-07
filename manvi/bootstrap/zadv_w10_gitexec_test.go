@@ -131,7 +131,7 @@ func zadvIncludeCase(t *testing.T, run zadvRun, cond string) {
 		section = "[includeIf \"" + cond + "\"]\n\tpath = " + inc + "\n"
 	}
 	cfg := filepath.Join(r.root, ".git", "config")
-	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // G304: the test's own repository config path
 	if err != nil {
 		t.Fatal(err)
 	}
