@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -229,82 +230,102 @@ func (s Store) Get(id, revision string) (Entry, error) {
 // Promote marks a revision approved (current pointer). Existing stability is
 // preserved when re-approving the same digest.
 func (s Store) Promote(id, revision, sha string) error {
-	return s.setStatus(id, revision, sha, StatusApproved)
+	_, err := s.setStatus(id, revision, sha, StatusApproved)
+	return err
 }
 
 // Approve is the draft→approved gate; identical to Promote.
 func (s Store) Approve(id, revision, sha string) error {
-	return s.setStatus(id, revision, sha, StatusApproved)
+	_, err := s.setStatus(id, revision, sha, StatusApproved)
+	return err
 }
 
 // Revoke marks the current approved (or already revoked) pointer as revoked.
 func (s Store) Revoke(id, revision, sha string) error {
+	_, err := s.RevokeReport(id, revision, sha)
+	return err
+}
+
+// RevokeReport is Revoke that also names the foreign current.json keys it had to
+// drop. A revocation must never fail for want of room: when keeping every key
+// another writer stored would push the pointer past the size every reader
+// accepts, the revoked pointer is written with only the keys this build owns and
+// the dropped names are returned. Approve, Promote and SetStability refuse
+// instead, because a refused approval is safe and a dropped restriction is not.
+func (s Store) RevokeReport(id, revision, sha string) (dropped []string, err error) {
 	return s.setStatus(id, revision, sha, StatusRevoked)
 }
 
-func (s Store) setStatus(id, revision, sha string, status Status) error {
+func (s Store) setStatus(id, revision, sha string, status Status) ([]string, error) {
 	if !segment.MatchString(id) || !segment.MatchString(revision) || revision == "current" {
-		return errors.New("invalid promotion identity")
+		return nil, errors.New("invalid promotion identity")
 	}
 	if status != StatusApproved && status != StatusRevoked {
-		return errors.New("catalog status must be approved or revoked")
+		return nil, errors.New("catalog status must be approved or revoked")
 	}
 	root, err := s.open(false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer root.Close()
 	dir, err := openChild(root, id, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer dir.Close()
 	raw, err := readRegular(dir, revision+".json")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p, err := workflow.Compile(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	c := p.Capability()
 	if c.ID != id || c.Revision != revision || p.Digest() != sha {
-		return errors.New("promotion does not match a compiled revision")
+		return nil, errors.New("promotion does not match a compiled revision")
 	}
 	// The pointer is read, changed and replaced whole, so no other writer may
 	// run between the read and the rename: a revocation that landed in that gap
-	// would be overwritten with a stale "approved".
-	unlock, err := s.lockCurrent(dir, id)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	var prior Entry
-	if meta, err := readRegular(dir, "current.json"); err == nil {
-		if err := json.Unmarshal(meta, &prior); err != nil {
+	// would be overwritten with a stale "approved". updateCurrent holds the lock.
+	return s.updateCurrent(dir, id, true, status == StatusRevoked, func(prior Entry, exists bool, fields map[string]json.RawMessage) error {
+		if !exists && status == StatusRevoked {
+			return errors.New("cannot revoke without a catalog pointer")
+		}
+		e := Entry{
+			ID:          id,
+			Revision:    revision,
+			SHA256:      sha,
+			Description: c.Description,
+			Path:        filepath.Join(s.Root, id, revision+".json"),
+			Status:      status,
+			Promoted:    status == StatusApproved,
+		}
+		// Stability belongs to one digest: re-approving it keeps the stored object
+		// as written, a different revision starts without one.
+		kept, keep := fields["stability"]
+		keep = keep && prior.ID == id && prior.Revision == revision && prior.SHA256 == sha
+		if err := overlayOwned(fields, e); err != nil {
 			return err
 		}
-		normalizeStatus(&prior)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	} else if status == StatusRevoked {
-		return errors.New("cannot revoke without a catalog pointer")
+		if keep {
+			if kept, err = withoutNearDuplicates(kept, jsonKeys(reflect.TypeOf(Stability{}))); err != nil {
+				return err
+			}
+			fields["stability"] = kept
+		}
+		return nil
+	})
+}
+
+// withoutNearDuplicates drops from a stored JSON object the keys that decode into
+// one of owned without being it, keeping the owned keys as written, so a kept
+// object cannot hide an override of its own fields (see matchesOwned).
+func withoutNearDuplicates(raw json.RawMessage, owned []string) (json.RawMessage, error) {
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &inner); err != nil || inner == nil {
+		return raw, err
 	}
-	e := Entry{
-		ID:          id,
-		Revision:    revision,
-		SHA256:      sha,
-		Description: c.Description,
-		Path:        filepath.Join(s.Root, id, revision+".json"),
-		Status:      status,
-		Promoted:    status == StatusApproved,
-	}
-	if prior.ID == id && prior.Revision == revision && prior.SHA256 == sha {
-		e.Stability = prior.Stability
-	}
-	metadata, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	return publish(dir, "current.json", metadata, true)
+	dropNearDuplicates(inner, owned, true)
+	return encodeFields(inner)
 }
