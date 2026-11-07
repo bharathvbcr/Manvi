@@ -391,7 +391,9 @@ func TestAdvDiffDriversWithCallerFlags(t *testing.T) {
 // a textconv. By decision they are the operator's configured commands, and the
 // callers' --no-ext-diff --no-textconv (pinned by the test above) are what keep
 // them from running today.
-func TestAdvDiffDriversRunWithoutCallerFlagsByDecision(t *testing.T) { zadvDiffDriverCase(t, zadvHelper) }
+func TestAdvDiffDriversRunWithoutCallerFlagsByDecision(t *testing.T) {
+	zadvDiffDriverCase(t, zadvHelper)
+}
 
 func zadvTransportCase(t *testing.T, run zadvRun) {
 	t.Run("sshCommand", func(t *testing.T) {
