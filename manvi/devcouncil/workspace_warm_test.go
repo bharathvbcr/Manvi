@@ -65,14 +65,21 @@ func TestWorkspaceWarmMCPHelperProcess(t *testing.T) {
 		wtPath := args[len(args)-1]
 		record("seed:" + strings.Join(args, " "))
 		ci := filepath.Join(wtPath, ".devcouncil", "codeintel")
-		if err := os.MkdirAll(ci, 0o755); err != nil {
+		// The seed writes only under the worktree it was handed, so it goes
+		// through an os.Root on that worktree.
+		wt, err := os.OpenRoot(wtPath)
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		if err := wt.MkdirAll(".devcouncil/codeintel", 0o750); err != nil {
 			_, _ = os.Stderr.WriteString(err.Error())
 			os.Exit(1)
 		}
 		leaseBody := fmt.Sprintf(`{"version":1,"base_db":%q,"delta_db":%q}`+"\n",
 			filepath.Join(repoRoot, ".devcouncil", "codeintel", "devmap.sqlite"),
 			filepath.Join(ci, "delta.sqlite"))
-		if err := os.WriteFile(filepath.Join(ci, "stack_lease.json"), []byte(leaseBody), 0o600); err != nil {
+		if err := wt.WriteFile(".devcouncil/codeintel/stack_lease.json", []byte(leaseBody), 0o600); err != nil {
 			_, _ = os.Stderr.WriteString(err.Error())
 			os.Exit(1)
 		}
@@ -196,11 +203,13 @@ func writeWarmHelperScript(t *testing.T, root string) (string, func() []string) 
 	wrapper := filepath.Join(dir, "devmap-helper")
 	script := fmt.Sprintf("#!/bin/sh\nexport GO_WANT_WORKSPACE_WARM_HELPER=1\nexport WORKSPACE_HELPER_LOG=%q\nexport WORKSPACE_HELPER_ROOT=%q\nexec %q -test.run=^TestWorkspaceWarmMCPHelperProcess$ -- \"$@\"\n",
 		logPath, root, exe)
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+	// The wrapper is exec'd by the code under test, so it needs the execute bit
+	// and no mode at or below 0600 can carry one.
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil { //nolint:gosec // G306: a script the test then execs must be executable
 		t.Fatal(err)
 	}
 	return wrapper, func() []string {
-		raw, err := os.ReadFile(logPath)
+		raw, err := os.ReadFile(filepath.Clean(logPath))
 		if err != nil {
 			return nil
 		}
@@ -282,7 +291,7 @@ func initCommittedGitRepo(t *testing.T, files map[string]string) string {
 	}
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // G204: literal git; args are this test's own fixture commands
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=Test",
@@ -297,7 +306,7 @@ func initCommittedGitRepo(t *testing.T, files map[string]string) string {
 	git("init", "-b", "main")
 	for rel, body := range files {
 		full := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
@@ -318,7 +327,7 @@ func TestGitWorktreeCoordinatorParallelIsolationRetentionAndCleanup(t *testing.T
 		"pkg/a.go":   "package pkg\n",
 	})
 	parentCI := filepath.Join(root, ".devcouncil", "codeintel")
-	if err := os.MkdirAll(parentCI, 0o755); err != nil {
+	if err := os.MkdirAll(parentCI, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(parentCI, "devmap.sqlite"), []byte("sqlite-stub"), 0o600); err != nil {
@@ -388,7 +397,7 @@ func TestGitWorktreeCoordinatorParallelIsolationRetentionAndCleanup(t *testing.T
 		t.Fatal(err)
 	}
 	// Lane 2: committed change on detached HEAD (working tree clean, HEAD moved).
-	commitCmd := exec.Command("git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+	commitCmd := exec.CommandContext(t.Context(), "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
 		"commit", "--allow-empty", "-m", "lane 2 commit")
 	commitCmd.Dir = leases[2].Path
 	if out, err := commitCmd.CombinedOutput(); err != nil {
@@ -455,13 +464,20 @@ func findStackedDevmapBinary(t *testing.T) string {
 		if err != nil || info.IsDir() {
 			continue
 		}
-		out, err := exec.Command(c, "seed", "--help").CombinedOutput()
+		out, err := exec.CommandContext(t.Context(), c, "seed", "--help").CombinedOutput() //nolint:gosec // G204: c is a devmap candidate the test locates on this host, probed with a fixed help flag
 		if err == nil && strings.Contains(string(out), "--stacked") {
 			return c
 		}
 	}
 	t.Skip("no devmap binary with `seed --stacked` support available on host")
 	return ""
+}
+
+// devmapCommand builds a command for the devmap binary findStackedDevmapBinary
+// located; the binary is found on this host and the arguments are the test's own.
+func devmapCommand(t *testing.T, bin string, args ...string) *exec.Cmd {
+	t.Helper()
+	return exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // G204: bin was probed by findStackedDevmapBinary, args are fixed by the caller
 }
 
 func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
@@ -475,19 +491,30 @@ func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
 		// mutate or open WAL sidecars in place. Restore owner write bits before
 		// t.TempDir()'s os.RemoveAll runs.
 		basesDir := filepath.Join(root, ".git", "devmap", "bases")
+		// os.Root keeps every chmod inside basesDir even if a path in the walk
+		// is swapped for a symlink while it runs.
+		bases, err := os.OpenRoot(basesDir)
+		if err != nil {
+			return
+		}
+		defer func() { _ = bases.Close() }()
 		_ = filepath.WalkDir(basesDir, func(p string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return nil
+				return walkErr
+			}
+			rel, relErr := filepath.Rel(basesDir, p)
+			if relErr != nil {
+				return relErr
 			}
 			if d.IsDir() {
-				_ = os.Chmod(p, 0o700)
+				_ = bases.Chmod(rel, 0o700)
 			} else {
-				_ = os.Chmod(p, 0o600)
+				_ = bases.Chmod(rel, 0o600)
 			}
 			return nil
 		})
 	})
-	buildCmd := exec.Command(devmapBin, "--root", root, "build", "--manifest", "--json")
+	buildCmd := devmapCommand(t, devmapBin, "--root", root, "build", "--manifest", "--json")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("devmap build on fixture root failed: %v\n%s", err, out)
 	}
@@ -517,7 +544,7 @@ func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
 	if !foundLease {
 		t.Fatalf("real stacked worktree missing stack_lease.json under .devmap/.devcouncil")
 	}
-	statusCmd := exec.Command(devmapBin, "--root", lease.Path, "status", "--json")
+	statusCmd := devmapCommand(t, devmapBin, "--root", lease.Path, "status", "--json")
 	statusOut, err := statusCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("devmap status on seeded worktree failed: %v\n%s", err, statusOut)

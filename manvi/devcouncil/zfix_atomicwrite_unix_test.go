@@ -51,7 +51,7 @@ func TestAWriteThatFailsPartWayLeavesTheOriginal(t *testing.T) {
 	root := t.TempDir()
 	original := strings.Repeat("O", 2048)
 	full := seedFile(t, root, "a.txt", original)
-	cmd := exec.Command(os.Args[0], "-test.run=^TestAWriteThatFailsPartWayLeavesTheOriginal$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAWriteThatFailsPartWayLeavesTheOriginal$")
 	cmd.Env = append(os.Environ(), "MANVI_FSIZE_CHILD_DIR="+root)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child: %v\n%s", err, out)

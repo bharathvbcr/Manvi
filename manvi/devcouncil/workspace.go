@@ -85,7 +85,7 @@ func (c *GitWorktreeCoordinator) ProvisionWorktree(ctx context.Context, label st
 	if err != nil {
 		return nil, fmt.Errorf("allocating isolated worktree container: %w", err)
 	}
-	if err := os.Chmod(container, 0o700); err != nil {
+	if err := os.Chmod(container, 0o700); err != nil { //nolint:gosec // G302: a directory needs its search bit, and 0700 is owner-only
 		_ = os.RemoveAll(container)
 		return nil, fmt.Errorf("securing isolated worktree container: %w", err)
 	}
@@ -184,8 +184,7 @@ func (c *GitWorktreeCoordinator) worktreeHasChanges(ctx context.Context, lease *
 
 func porcelainHasUserChanges(porcelain string) bool {
 	entries := strings.Split(porcelain, "\x00")
-	for i := 0; i < len(entries); i++ {
-		rec := entries[i]
+	for _, rec := range entries {
 		if rec == "" {
 			continue
 		}
@@ -195,9 +194,8 @@ func porcelainHasUserChanges(porcelain string) bool {
 		xy := rec[:2]
 		path := rec[3:]
 		if xy[0] == 'R' || xy[0] == 'C' || xy[1] == 'R' || xy[1] == 'C' {
-			if i+1 < len(entries) {
-				i++
-			}
+			// A rename or copy is a user change; the record that follows names
+			// the origin and is not read.
 			return true
 		}
 		if xy == "??" && isHarnessStateRelPath(path) {
