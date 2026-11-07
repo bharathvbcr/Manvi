@@ -43,6 +43,7 @@ export const TARGETS = Object.freeze([
   "darwin-arm64",
   "linux-amd64",
   "linux-arm64",
+  "windows-amd64",
 ]);
 
 const ZIP_LOCAL = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
@@ -63,11 +64,55 @@ export function parseTag(tag) {
 }
 
 /**
+ * The published name of one target's binary. A darwin binary that was not
+ * signed and notarized says so in its name (workflow_dispatch with
+ * allow_unsigned only; a tag push refuses to build it). Windows carries .exe.
+ *
  * @param {string} tag
+ * @param {string} target
+ * @param {{ unsigned?: boolean }} [opts]
+ * @returns {string}
+ */
+export function binaryName(tag, target, opts = {}) {
+  const os = target.split("-")[0];
+  let name = `manvi-${tag}-${target}`;
+  if (opts.unsigned && os === "darwin") name += "-UNSIGNED";
+  if (os === "windows") name += ".exe";
+  return name;
+}
+
+/**
+ * @param {string} binary
+ * @returns {string}
+ */
+export function sbomName(binary) {
+  return `${binary}.sbom.cdx.json`;
+}
+
+/**
+ * @param {string} tag
+ * @param {{ unsigned?: boolean }} [opts]
  * @returns {string[]}
  */
-export function expectedBinaries(tag) {
-  return TARGETS.map((target) => `manvi-${tag}-${target}`);
+export function expectedBinaries(tag, opts = {}) {
+  return TARGETS.map((target) => binaryName(tag, target, opts));
+}
+
+/**
+ * @param {string} tag
+ * @param {{ unsigned?: boolean }} [opts]
+ * @returns {string[]}
+ */
+export function expectedSboms(tag, opts = {}) {
+  return expectedBinaries(tag, opts).map(sbomName);
+}
+
+/**
+ * @param {string} file
+ * @returns {string}
+ */
+function sha256File(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 /**
@@ -120,14 +165,16 @@ export function notesProblems(notes, tag, label) {
 /**
  * @param {string} dir
  * @param {string} tag
+ * @param {{ unsigned?: boolean }} [opts]
  * @returns {string[]}
  */
-export function assetProblems(dir, tag) {
+export function assetProblems(dir, tag, opts = {}) {
   /** @type {string[]} */
   const errors = [];
-  const expected = expectedBinaries(tag);
+  const expected = expectedBinaries(tag, opts);
+  const sboms = expectedSboms(tag, opts);
   if (!existsSync(dir)) {
-    return expected.map((name) => `missing binary: ${name}`);
+    return [...expected.map((name) => `missing binary: ${name}`), ...sboms.map((name) => `missing sbom: ${name}`)];
   }
   for (const name of expected) {
     const full = path.join(dir, name);
@@ -155,12 +202,39 @@ export function assetProblems(dir, tag) {
       closeSync(handle);
     }
   }
+  expected.forEach((binary, i) => errors.push(...sbomProblems(dir, binary, sboms[i])));
   for (const entry of readdirSync(dir)) {
-    if (entry.startsWith("manvi-") && !expected.includes(entry)) {
+    if (entry.startsWith("manvi-") && !expected.includes(entry) && !sboms.includes(entry)) {
       errors.push(`unexpected release file: ${entry}`);
     }
   }
   return errors;
+}
+
+/**
+ * An SBOM is only evidence for the binary it names: it has to be CycloneDX
+ * and carry the SHA-256 of the file next to it.
+ *
+ * @param {string} dir
+ * @param {string} binary
+ * @param {string} sbom
+ * @returns {string[]}
+ */
+function sbomProblems(dir, binary, sbom) {
+  const full = path.join(dir, sbom);
+  if (!existsSync(full)) return [`missing sbom: ${sbom}`];
+  if (!existsSync(path.join(dir, binary))) return [];
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(full, "utf8"));
+  } catch (err) {
+    return [`sbom is not JSON: ${sbom}: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  if (doc?.bomFormat !== "CycloneDX") return [`sbom is not CycloneDX: ${sbom}`];
+  const hashes = doc?.metadata?.component?.hashes;
+  const want = sha256File(path.join(dir, binary));
+  const named = Array.isArray(hashes) && hashes.some((h) => h?.alg === "SHA-256" && h?.content === want);
+  return named ? [] : [`sbom ${sbom} does not carry the SHA-256 of ${binary} (${want})`];
 }
 
 /**
@@ -169,12 +243,12 @@ export function assetProblems(dir, tag) {
  *
  * @param {string} dir
  * @param {string} tag
+ * @param {{ unsigned?: boolean }} [opts]
  */
-export function writeChecksums(dir, tag) {
-  const lines = expectedBinaries(tag).map((name) => {
-    const hash = createHash("sha256").update(readFileSync(path.join(dir, name))).digest("hex");
-    return `${hash}  ${name}`;
-  });
+export function writeChecksums(dir, tag, opts = {}) {
+  const lines = [...expectedBinaries(tag, opts), ...expectedSboms(tag, opts)].map(
+    (name) => `${sha256File(path.join(dir, name))}  ${name}`,
+  );
   const body = `${lines.join("\n")}\n`;
   writeFileSync(path.join(dir, "SHA256SUMS"), body);
   return body;
@@ -273,6 +347,12 @@ export function workflowProblems(sources) {
       errors.push("release.yml interpolates an expression into a run script");
       break;
     }
+  }
+  if (/sh\.rustup\.rs/.test(releaseYaml) || /curl[^\n]*\|\s*(ba)?sh/.test(releaseYaml)) {
+    errors.push("release.yml pipes a download into a shell (rustup.rs); use the runner's rustup and fail when it is missing");
+  }
+  if (!releaseYaml.includes("scripts/release-sign-macos.sh") || !releaseYaml.includes("scripts/release-sbom.sh")) {
+    errors.push("release.yml does not sign (scripts/release-sign-macos.sh) and write an SBOM (scripts/release-sbom.sh) for each artifact");
   }
   const verifyParts = verifyYaml.split("./verify.sh");
   if (verifyParts.length < 2) {
@@ -597,6 +677,7 @@ function parseArgs(argv) {
     requireHead: false,
     requirePins: false,
     allowUnpinned: false,
+    unsigned: false,
     root: REPO_ROOT,
     help: false,
   };
@@ -608,6 +689,7 @@ function parseArgs(argv) {
     else if (arg === "--require-head") out.requireHead = true;
     else if (arg === "--require-pins") out.requirePins = true;
     else if (arg === "--allow-unpinned") out.allowUnpinned = true;
+    else if (arg === "--unsigned") out.unsigned = true;
     else if (arg === "--root") out.root = argv[++i] || out.root;
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -627,7 +709,7 @@ export function main(argv = process.argv.slice(2)) {
     return 2;
   }
   if (args.help) {
-    console.log("usage: check-release.mjs [--tag vX.Y.Z] [--require-head] [--require-pins] [--allow-unpinned] [--assets dir]");
+    console.log("usage: check-release.mjs [--tag vX.Y.Z] [--require-head] [--require-pins] [--allow-unpinned] [--unsigned] [--assets dir]");
     return 0;
   }
   /** @type {string[]} */
@@ -671,9 +753,9 @@ export function main(argv = process.argv.slice(2)) {
         if (!named.ok) errors.push(named.reason);
       }
       if (args.assets) {
-        const assetErrors = assetProblems(args.assets, parsed.tag);
+        const assetErrors = assetProblems(args.assets, parsed.tag, { unsigned: args.unsigned });
         errors.push(...assetErrors);
-        if (assetErrors.length === 0) writeChecksums(args.assets, parsed.tag);
+        if (assetErrors.length === 0) writeChecksums(args.assets, parsed.tag, { unsigned: args.unsigned });
       }
     }
   } else if (args.assets || args.requireHead) {

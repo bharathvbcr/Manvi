@@ -10,7 +10,9 @@ import {
   NOTES_LIMIT,
   assetProblems,
   contractMirrorProblems,
+  binaryName,
   expectedBinaries,
+  expectedSboms,
   notesProblems,
   main,
   parsePins,
@@ -91,31 +93,88 @@ describe("notes", () => {
   });
 });
 
+/** A CycloneDX stub that names the binary's digest, as sbomgen writes it. */
+function writeAsset(dir, name, content = name) {
+  writeFileSync(path.join(dir, name), content);
+}
+function writeSbomFor(dir, binary, sbomFile) {
+  const content = createHash("sha256").update(readFileSync(path.join(dir, binary))).digest("hex");
+  writeFileSync(
+    path.join(dir, sbomFile),
+    JSON.stringify({ bomFormat: "CycloneDX", metadata: { component: { hashes: [{ alg: "SHA-256", content }] } } }),
+  );
+}
+function writeCompleteSet(dir, tag, opts) {
+  const sboms = expectedSboms(tag, opts);
+  expectedBinaries(tag, opts).forEach((name, i) => {
+    writeAsset(dir, name);
+    writeSbomFor(dir, name, sboms[i]);
+  });
+}
+
 describe("assets", () => {
+  it("names the Windows binary with .exe and an unsigned darwin binary UNSIGNED", () => {
+    assert.ok(expectedBinaries("v0.0.5").includes("manvi-v0.0.5-windows-amd64.exe"));
+    assert.equal(binaryName("v0.0.5", "darwin-arm64", { unsigned: true }), "manvi-v0.0.5-darwin-arm64-UNSIGNED");
+    assert.equal(binaryName("v0.0.5", "linux-arm64", { unsigned: true }), "manvi-v0.0.5-linux-arm64");
+    assert.equal(binaryName("v0.0.5", "windows-amd64", { unsigned: true }), "manvi-v0.0.5-windows-amd64.exe");
+    assert.equal(expectedBinaries("v0.0.5").length, 5);
+    assert.equal(expectedSboms("v0.0.5")[0], "manvi-v0.0.5-darwin-amd64.sbom.cdx.json");
+  });
+
   it("rejects a missing binary, an empty file, a zip, and an extra name", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "manvi-rel-"));
     tempDirs.push(dir);
     const names = expectedBinaries("v0.0.5");
-    assert.deepEqual(assetProblems(dir, "v0.0.5"), names.map((name) => `missing binary: ${name}`));
+    assert.deepEqual(assetProblems(dir, "v0.0.5"), [
+      ...names.map((name) => `missing binary: ${name}`),
+      ...expectedSboms("v0.0.5").map((name) => `missing sbom: ${name}`),
+    ]);
 
-    for (const name of names) writeFileSync(path.join(dir, name), "binary");
+    for (const name of names) writeAsset(dir, name, "binary");
     writeFileSync(path.join(dir, names[0]), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00]));
     writeFileSync(path.join(dir, names[1]), Buffer.alloc(0));
-    writeFileSync(path.join(dir, "manvi-v0.0.5-windows-amd64"), "nope");
+    writeAsset(dir, "manvi-v0.0.5-windows-arm64", "nope");
     const problems = assetProblems(dir, "v0.0.5");
     assert.ok(problems.some((line) => line.includes("zip")));
     assert.ok(problems.some((line) => line.includes("empty")));
     assert.ok(problems.some((line) => line.includes("unexpected")));
   });
 
-  it("writes shasum-compatible checksums for a complete set", () => {
+  it("rejects an SBOM that is not CycloneDX, is not JSON, or names another binary's digest", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "manvi-rel-sbom-"));
+    tempDirs.push(dir);
+    writeCompleteSet(dir, "v0.0.5");
+    assert.deepEqual(assetProblems(dir, "v0.0.5"), []);
+    const sboms = expectedSboms("v0.0.5");
+    writeFileSync(path.join(dir, sboms[0]), "not json");
+    writeFileSync(path.join(dir, sboms[1]), JSON.stringify({ bomFormat: "SPDX" }));
+    writeSbomFor(dir, expectedBinaries("v0.0.5")[0], sboms[2]);
+    const problems = assetProblems(dir, "v0.0.5");
+    assert.ok(problems.some((line) => line.startsWith("sbom is not JSON")));
+    assert.ok(problems.some((line) => line.startsWith("sbom is not CycloneDX")));
+    assert.ok(problems.some((line) => line.includes("does not carry the SHA-256")));
+  });
+
+  it("writes shasum-compatible checksums over binaries and SBOMs", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "manvi-rel-ok-"));
     tempDirs.push(dir);
-    for (const name of expectedBinaries("v0.0.5")) writeFileSync(path.join(dir, name), name);
+    writeCompleteSet(dir, "v0.0.5");
     assert.deepEqual(assetProblems(dir, "v0.0.5"), []);
     const body = writeChecksums(dir, "v0.0.5");
     assert.match(body, /^[0-9a-f]{64} {2}manvi-v0\.0\.5-darwin-amd64\n/);
-    assert.equal(body.trim().split("\n").length, 4);
+    assert.equal(body.trim().split("\n").length, 10);
+    assert.match(body, / {2}manvi-v0\.0\.5-windows-amd64\.exe\.sbom\.cdx\.json\n/);
+  });
+
+  it("with unsigned set, accepts the -UNSIGNED darwin names and refuses the signed ones", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "manvi-rel-unsigned-"));
+    tempDirs.push(dir);
+    writeCompleteSet(dir, "v0.0.5", { unsigned: true });
+    assert.deepEqual(assetProblems(dir, "v0.0.5", { unsigned: true }), []);
+    const signedView = assetProblems(dir, "v0.0.5");
+    assert.ok(signedView.some((line) => line === "missing binary: manvi-v0.0.5-darwin-arm64"));
+    assert.ok(signedView.some((line) => line === "unexpected release file: manvi-v0.0.5-darwin-arm64-UNSIGNED"));
   });
 });
 
@@ -137,6 +196,25 @@ describe("workflow", () => {
     assert.ok(problems.some((line) => line.includes("persist-credentials")));
     assert.ok(problems.some((line) => line.includes("Rust toolchain")));
     assert.ok(problems.some((line) => line.includes("both the build and the publish job")));
+  });
+
+  it("rejects a release workflow that pipes rustup.rs into a shell, or has no signing or SBOM step", () => {
+    const current = {
+      releaseYaml: readFileSync(path.join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8"),
+      verifyYaml: readFileSync(path.join(REPO_ROOT, ".github", "workflows", "verify.yml"), "utf8"),
+      publishScript: readFileSync(path.join(REPO_ROOT, "scripts", "release-publish.sh"), "utf8"),
+      buildScript: readFileSync(path.join(REPO_ROOT, "scripts", "release-build.sh"), "utf8"),
+    };
+    const piped = workflowProblems({
+      ...current,
+      releaseYaml: `${current.releaseYaml}\n        run: curl -sSf https://sh.rustup.rs | sh -s -- -y\n`,
+    });
+    assert.ok(piped.some((line) => line.includes("pipes a download into a shell")));
+    const bare = workflowProblems({
+      ...current,
+      releaseYaml: current.releaseYaml.replaceAll("scripts/release-sign-macos.sh", "x").replaceAll("scripts/release-sbom.sh", "y"),
+    });
+    assert.ok(bare.some((line) => line.includes("does not sign")));
   });
 
   it("accepts the workflows in this tree", () => {

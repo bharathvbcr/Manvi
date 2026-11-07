@@ -261,16 +261,16 @@ jobs:
           go-version-file: manvi/go.mod
           cache-dependency-path: manvi/go.sum
       # The headless tests build dcverify themselves. ubuntu and macOS already
-      # have rustup from the gate job; this image may not, and a missing
-      # toolchain must fail here rather than as a bounce inside go test.
+      # have rustup from the gate job. windows-latest ships it too; if an image
+      # ever lacks it this step fails with a message (nothing is piped from the
+      # network into a shell) rather than as a bounce inside go test.
       - name: Rust toolchain
         shell: bash
         run: |
           . scripts/tool-versions.env
           if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "rustup is not on this runner image; the job does not install it from the network." >&2
+            exit 1
           fi
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"

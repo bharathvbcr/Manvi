@@ -1,0 +1,77 @@
+# Withdraw a bad release: mark it pre-release or draft, optionally delete its
+# assets, and restore the previous release as latest. Manual only.
+#
+# The git tag is never touched unless delete_tag is set, and the run does
+# nothing unless `confirm` repeats the tag exactly. docs/RELEASING.md covers
+# when to use each option. The work is in scripts/release-rollback.sh.
+name: rollback-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to withdraw, vX.Y.Z"
+        required: true
+        type: string
+      confirm:
+        description: "Type the tag again to confirm (must equal the tag)"
+        required: true
+        type: string
+      mode:
+        description: "How to withdraw it"
+        required: true
+        type: choice
+        default: prerelease
+        options:
+          - prerelease
+          - draft
+      delete_assets:
+        description: "Also delete the release's assets (cannot be undone)"
+        required: false
+        type: boolean
+        default: false
+      delete_tag:
+        description: "Also delete the git tag (cannot be undone; separate from everything above)"
+        required: false
+        type: boolean
+        default: false
+      previous_tag:
+        description: "Release to restore as latest (default: newest published release other than the tag)"
+        required: false
+        type: string
+      dry_run:
+        description: "Print the changes without making them"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rollback
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: withdraw ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Withdraw the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ROLLBACK_TAG: ${{ inputs.tag }}
+          CONFIRM_TAG: ${{ inputs.confirm }}
+          MODE: ${{ inputs.mode }}
+          DELETE_ASSETS: ${{ inputs.delete_assets }}
+          DELETE_TAG: ${{ inputs.delete_tag }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+          ROLLBACK_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: bash scripts/release-rollback.sh
