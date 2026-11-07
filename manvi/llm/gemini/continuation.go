@@ -171,12 +171,87 @@ func (c *continuation) observeEnvelope(kind string, envelope *continuationEnvelo
 	return nil
 }
 
-func (c *continuation) steps() ([]json.RawMessage, error) {
+// callKey is the identity a snapshot step carries: an id and a name, neither of
+// which a server is obliged to keep unique.
+type callKey struct{ id, name string }
+
+// droppedCalls are the calls Response withheld as malformed because the output
+// limit cut them off. They are not in the settled message, so neither the
+// continuation nor the signatures may carry them.
+//
+// One notion of identity serves both replay paths. The indexed path holds the
+// accumulator itself. A snapshot step holds only an id and a name, which two
+// calls can share (or both leave empty), so it is matched by occurrence: the
+// withheld call is the Nth of its (id, name) in stream order, and the Nth such
+// step in the snapshot is the one dropped. Matching on id and name alone dropped
+// a whole call that merely shared them.
+type droppedCalls struct {
+	accs     map[*callAccumulator]struct{}
+	ordinals map[callKey]map[int]struct{}
+}
+
+// withheldCalls records which of order's calls were withheld.
+func withheldCalls(order, withheld []*callAccumulator) *droppedCalls {
+	if len(withheld) == 0 {
+		return nil
+	}
+	d := &droppedCalls{
+		accs:     make(map[*callAccumulator]struct{}, len(withheld)),
+		ordinals: make(map[callKey]map[int]struct{}),
+	}
+	for _, w := range withheld {
+		d.accs[w] = struct{}{}
+	}
+	seen := map[callKey]int{}
+	for _, acc := range order {
+		key := callKey{acc.id, acc.name}
+		if _, cut := d.accs[acc]; cut {
+			if d.ordinals[key] == nil {
+				d.ordinals[key] = map[int]struct{}{}
+			}
+			d.ordinals[key][seen[key]] = struct{}{}
+		}
+		seen[key]++
+	}
+	return d
+}
+
+// has reports whether acc itself was withheld. Safe on a nil receiver.
+func (d *droppedCalls) has(acc *callAccumulator) bool {
+	if d == nil {
+		return false
+	}
+	_, cut := d.accs[acc]
+	return cut
+}
+
+// steps returns the steps to replay, less any call in dropped.
+func (c *continuation) steps(dropped *droppedCalls) ([]json.RawMessage, error) {
 	if len(c.complete) > 0 {
-		return c.complete, nil
+		if dropped == nil {
+			return c.complete, nil
+		}
+		kept := make([]json.RawMessage, 0, len(c.complete))
+		seen := map[callKey]int{}
+		for _, raw := range c.complete {
+			var step struct{ Type, ID, Name string }
+			if json.Unmarshal(raw, &step) == nil && step.Type == TypeFunctionCall {
+				key := callKey{step.ID, step.Name}
+				n := seen[key]
+				seen[key]++
+				if _, cut := dropped.ordinals[key][n]; cut {
+					continue
+				}
+			}
+			kept = append(kept, raw)
+		}
+		return kept, nil
 	}
 	var out []json.RawMessage
 	for _, s := range c.order {
+		if s.kind == TypeFunctionCall && s.call != nil && dropped.has(s.call) {
+			continue
+		}
 		fields := make(map[string]json.RawMessage, len(s.fields))
 		for k, v := range s.fields {
 			fields[k] = v

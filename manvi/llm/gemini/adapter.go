@@ -416,6 +416,14 @@ type stream struct {
 	done      bool
 	failure   error
 
+	// pending holds chunks a frame produced beyond the one apply returns. A
+	// step.delta can carry several content parts and Next yields one chunk per
+	// call, so the rest wait here and are drained, in order, before another
+	// frame is read.
+	pending []llm.Chunk
+	// closed is set by Close; Next yields nothing after it.
+	closed bool
+
 	nextIndex int
 	textIndex int
 	reasonIdx int
@@ -691,6 +699,20 @@ func (s *stream) Next() (llm.Chunk, error) {
 		if err := s.ctx.Err(); err != nil {
 			return llm.Chunk{}, err
 		}
+		if s.closed {
+			return llm.Chunk{}, errStreamClosed
+		}
+		// Queued chunks drain before the failure check, deliberately and only
+		// for one failure: the byte-limit refusal below is set rather than
+		// returned so a chunk its frame produced still reaches the caller first.
+		// Every other failure clears the queue where it is set (see fail), so
+		// once Next has returned an error it never yields another chunk, and
+		// Close clears it too.
+		if len(s.pending) > 0 {
+			chunk := s.pending[0]
+			s.pending = s.pending[1:]
+			return chunk, nil
+		}
 		if s.failure != nil {
 			return llm.Chunk{}, s.failure
 		}
@@ -749,8 +771,7 @@ func (s *stream) Next() (llm.Chunk, error) {
 
 		chunk, emit, err := s.apply(kind, ev)
 		if err != nil {
-			s.failure = err
-			return llm.Chunk{}, err
+			return llm.Chunk{}, s.fail(err)
 		}
 		if !single {
 			err = s.continuation.observe(kind, event.Data, ev, s.calls)
@@ -758,8 +779,9 @@ func (s *stream) Next() (llm.Chunk, error) {
 			err = s.continuation.observeEnvelope(kind, &envelope, ev, s.calls)
 		}
 		if err != nil {
-			s.failure = err
-			return llm.Chunk{}, err
+			// apply may already have queued this frame's later parts; a frame
+			// the continuation refuses contributes nothing.
+			return llm.Chunk{}, s.fail(err)
 		}
 		// Checked once per event rather than per write, and by setting the
 		// failure rather than returning it, so a chunk this frame produced
@@ -1046,6 +1068,11 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 		}, true, nil
 
 	default:
+		// Every part, not the first: a step's content is an array and the parts
+		// after the first were being dropped, from the message and, because the
+		// continuation reads them all, into a refusal at Response. The first
+		// chunk is returned and the rest queued on s.pending.
+		var chunks []llm.Chunk
 		for _, content := range step.Content {
 			switch content.Type {
 			case DeltaText:
@@ -1057,7 +1084,7 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 					s.nextIndex++
 				}
 				s.text.WriteString(content.Text)
-				return llm.Chunk{Kind: llm.ChunkText, BlockIndex: s.textIndex, Text: content.Text}, true, nil
+				chunks = append(chunks, llm.Chunk{Kind: llm.ChunkText, BlockIndex: s.textIndex, Text: content.Text})
 			case DeltaThought:
 				thought := content.Thought
 				if thought == "" {
@@ -1071,10 +1098,14 @@ func (s *stream) applyStep(ev wireEvent) (llm.Chunk, bool, error) {
 					s.nextIndex++
 				}
 				s.reasoning.WriteString(thought)
-				return llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: s.reasonIdx, Text: thought}, true, nil
+				chunks = append(chunks, llm.Chunk{Kind: llm.ChunkReasoning, BlockIndex: s.reasonIdx, Text: thought})
 			}
 		}
-		return llm.Chunk{}, false, nil
+		if len(chunks) == 0 {
+			return llm.Chunk{}, false, nil
+		}
+		s.pending = append(s.pending, chunks[1:]...)
+		return chunks[0], true, nil
 	}
 }
 
@@ -1170,47 +1201,25 @@ func (s *stream) Response() (llm.Response, error) {
 		return llm.Response{}, errors.New("gemini: Response called before the stream was exhausted")
 	}
 
-	msg := llm.Message{
-		Role:       llm.RoleAssistant,
-		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
+	// An output budget that ends mid-call is the model's own limit, not a broken
+	// stream, so the stop reason is read before any call is judged. See the
+	// per-call settlement below.
+	stop := s.stopReason
+	if stop == "" {
+		stop = llm.StopOther
 	}
-	// The signatures travel as adapter-private replay state, which is exactly
-	// what AssistantProvenance.ReplayState is for: opaque bytes this adapter
-	// needs to send its own history back, carried through the neutral log
-	// without the neutral layer interpreting them, and handed back only when
-	// the same provider is on both ends.
-	if sigs := s.signatures(); len(sigs) > 0 {
-		encoded, err := json.Marshal(replayState{CallSignatures: sigs})
-		if err != nil {
-			return llm.Response{}, err
-		}
-		msg.Provenance.ReplayState = encoded
-	}
-	if steps, err := s.continuation.steps(); err != nil {
-		return llm.Response{}, err
-	} else if len(steps) > 0 {
-		encoded, err := json.Marshal(replayState{Version: 2, Steps: steps})
-		if err != nil {
-			return llm.Response{}, err
-		}
-		msg.Provenance.ReplayState = encoded
-	}
-	if s.reasoning.Len() > 0 {
-		msg.Content = append(msg.Content, llm.ReasoningBlock{Text: s.reasoning.String()})
-	}
-	if s.text.Len() > 0 {
-		msg.Content = append(msg.Content, llm.TextBlock{Text: s.text.String()})
-	}
+
+	var (
+		calls     []llm.ToolCallBlock
+		malformed []llm.MalformedCall
+		cut       []*callAccumulator
+	)
 	for _, acc := range s.order {
-		// An empty argument list is believed only for a call the stream framed
-		// as complete with step.stop. One that was never closed and carries no
-		// argument bytes is a call whose arguments did not arrive, and turning
-		// it into `{}` runs the tool on arguments nobody sent.
-		if !acc.sealed && acc.args.Len() == 0 {
-			return llm.Response{}, fmt.Errorf(
-				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
-					"it was not dispatched", acc.name)
-		}
+		// A call is complete only when the stream framed it with step.stop, or
+		// when what arrived is a whole JSON object. One that was never closed and
+		// carries no argument bytes is a call whose arguments did not arrive, and
+		// turning it into `{}` runs the tool on arguments nobody sent.
+		unclosedAndEmpty := !acc.sealed && acc.args.Len() == 0
 		args := json.RawMessage(acc.args.String())
 		if len(args) == 0 {
 			args = json.RawMessage("{}")
@@ -1222,6 +1231,33 @@ func (s *stream) Response() (llm.Response, error) {
 		// tool reported a decode failure against its own schema, which reads as
 		// the model having sent nonsense rather than as the adapter having
 		// failed to unwrap the wire form.
+		if (unclosedAndEmpty || !isJSONObject(args)) && stop == llm.StopMaxTokens {
+			// The model ran out of output budget in the middle of the call. The
+			// turn survives: the call is reported as malformed, the loop tells the
+			// model it was cut off, and it can ask for less. Returning an error
+			// here discarded the prose and every completed step of the turn with
+			// it. The anthropic adapter settles the same case the same way.
+			//
+			// A call with no name still cannot be routed or told back to the
+			// model, so that stays an error, as it does there.
+			if acc.name == "" {
+				return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
+			}
+			malformed = append(malformed, llm.MalformedCall{
+				ID:   llm.CallID(acc.id),
+				Name: acc.name,
+				Reason: fmt.Sprintf(
+					"the arguments were cut off by the output limit after %d bytes and are not a complete JSON object",
+					acc.args.Len()),
+			})
+			cut = append(cut, acc)
+			continue
+		}
+		if unclosedAndEmpty {
+			return llm.Response{}, fmt.Errorf(
+				"gemini: tool call %q was never closed by step.stop and carried no arguments; "+
+					"it was not dispatched", acc.name)
+		}
 		if !isJSONObject(args) {
 			// Named as unusable rather than as incomplete. Truncation is the
 			// common cause and it is not the only one — arguments that are two
@@ -1236,26 +1272,65 @@ func (s *stream) Response() (llm.Response, error) {
 		if acc.name == "" {
 			return llm.Response{}, errors.New("gemini: a tool call arrived with no function name")
 		}
-		msg.Content = append(msg.Content, llm.ToolCallBlock{
+		calls = append(calls, llm.ToolCallBlock{
 			ID: llm.CallID(acc.id), Name: acc.name, Arguments: args,
 		})
 	}
 
-	if steps, err := s.continuation.steps(); err != nil {
+	msg := llm.Message{
+		Role:       llm.RoleAssistant,
+		Provenance: &llm.AssistantProvenance{Provider: Name, Model: s.model},
+	}
+	// The signatures travel as adapter-private replay state, which is exactly
+	// what AssistantProvenance.ReplayState is for: opaque bytes this adapter
+	// needs to send its own history back, carried through the neutral log
+	// without the neutral layer interpreting them, and handed back only when
+	// the same provider is on both ends.
+	withheld := withheldCalls(s.order, cut)
+	if sigs := s.signatures(withheld); len(sigs) > 0 {
+		encoded, err := json.Marshal(replayState{CallSignatures: sigs})
+		if err != nil {
+			return llm.Response{}, err
+		}
+		msg.Provenance.ReplayState = encoded
+	}
+	// The continuation is built after the calls are judged, and without the ones
+	// withheld as malformed: the message does not carry them, so replaying their
+	// steps would send the provider a call the journal never held, and the
+	// partial arguments of one would fail the continuation's own object check.
+	steps, err := s.continuation.steps(withheld)
+	if err != nil {
 		return llm.Response{}, err
-	} else if len(steps) > 0 {
+	}
+	if len(steps) > 0 {
+		encoded, err := json.Marshal(replayState{Version: 2, Steps: steps})
+		if err != nil {
+			return llm.Response{}, err
+		}
+		msg.Provenance.ReplayState = encoded
+	}
+	if s.reasoning.Len() > 0 {
+		msg.Content = append(msg.Content, llm.ReasoningBlock{Text: s.reasoning.String()})
+	}
+	if s.text.Len() > 0 {
+		msg.Content = append(msg.Content, llm.TextBlock{Text: s.text.String()})
+	}
+	for _, call := range calls {
+		msg.Content = append(msg.Content, call)
+	}
+
+	if len(steps) > 0 {
 		if err := validateContinuation(msg, steps); err != nil {
 			return llm.Response{}, err
 		}
 	}
-	stop := s.stopReason
-	if stop == "" {
-		stop = llm.StopOther
-	}
-	if len(s.order) > 0 && stop == llm.StopEndTurn {
+	if len(calls) > 0 && stop == llm.StopEndTurn {
 		stop = llm.StopToolUse
 	}
-	return llm.Response{Message: msg, StopReason: stop, Usage: s.usage, MaxTokensApplied: s.maxTokensApplied}, nil
+	return llm.Response{
+		Message: msg, StopReason: stop, Usage: s.usage, MaxTokensApplied: s.maxTokensApplied,
+		Malformed: malformed,
+	}, nil
 }
 
 // isJSONObject reports whether raw is a complete JSON object.
@@ -1277,10 +1352,14 @@ type replayState struct {
 }
 
 // signatures collects the per-call signatures this stream observed.
-func (s *stream) signatures() map[string]string {
+//
+// A withheld call's signature is not collected: the message does not carry the
+// call, and a signature under an id a whole call shares would overwrite that
+// call's own.
+func (s *stream) signatures(withheld *droppedCalls) map[string]string {
 	var out map[string]string
 	for _, acc := range s.order {
-		if acc.signature == "" || acc.id == "" {
+		if acc.signature == "" || acc.id == "" || withheld.has(acc) {
 			continue
 		}
 		if out == nil {
@@ -1319,7 +1398,21 @@ func signatureFor(msg llm.Message, id llm.CallID) string {
 	return state.CallSignatures[string(id)]
 }
 
-func (s *stream) Close() error { return s.sse.Close() }
+func (s *stream) Close() error {
+	s.closed = true
+	s.pending = nil
+	return s.sse.Close()
+}
+
+var errStreamClosed = errors.New("gemini: stream is closed")
+
+// fail records err as the stream's failure and discards any chunks the failed
+// frame had queued.
+func (s *stream) fail(err error) error {
+	s.failure = err
+	s.pending = nil
+	return err
+}
 
 // failedStatus turns an interaction that ended in failure into an error that
 // names the status. A failed or cancelled interaction carries whatever content
