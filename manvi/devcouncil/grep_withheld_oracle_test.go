@@ -201,7 +201,9 @@ func TestGrepRefusesAFanOutPastTheSubsearchBound(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("a search needing %d sub-searches ran: %s", grepMaxSubsearches+88, res.Text)
 	}
-	want := "working around 1 withheld file(s) would take 600 separate searches, " +
+	// 600 files in config/ plus the fixture's root-level seed.txt, which is its
+	// own target because the root also lies on the way to the refused file.
+	want := "working around 1 withheld file(s) would take 601 separate searches, " +
 		"over the limit of 512; search a narrower path — this is not a negative result, no search ran"
 	if !strings.Contains(res.Text, want) {
 		t.Errorf("refusal = %q, want it to contain %q", res.Text, want)
