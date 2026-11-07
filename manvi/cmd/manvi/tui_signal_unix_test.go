@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,7 +27,27 @@ func TestTUIPtyHelper(t *testing.T) {
 	if os.Getenv(tuiHelperEnv) == "" {
 		t.Skip("helper for the TUI pty tests")
 	}
+	if os.Getenv(tuiPanicEnv) != "" {
+		http.DefaultTransport = panickingModel{}
+	}
 	os.Exit(exitStatus(os.Stdout, os.Stderr, []string{"tui"}))
+}
+
+// withEnv returns base with each KEY=value in set replacing any earlier entry of
+// that key, so the child sees exactly one value per key.
+func withEnv(base []string, set ...string) []string {
+	replaced := map[string]bool{}
+	for _, kv := range set {
+		key, _, _ := strings.Cut(kv, "=")
+		replaced[key] = true
+	}
+	env := make([]string, 0, len(base)+len(set))
+	for _, kv := range base {
+		if key, _, _ := strings.Cut(kv, "="); !replaced[key] {
+			env = append(env, kv)
+		}
+	}
+	return append(env, set...)
 }
 
 // ptyOutput collects what the child writes to its terminal.
@@ -63,7 +84,14 @@ func (o *ptyOutput) contains(s string) bool {
 // to take the screen, and returns the process, the pty ends and its output.
 func tuiOnAPty(t *testing.T) (cmd *exec.Cmd, master, slave *os.File, out *ptyOutput) {
 	t.Helper()
-	work := t.TempDir()
+	return tuiOnAPtyIn(t, t.TempDir())
+}
+
+// tuiOnAPtyIn is tuiOnAPty in a directory the caller chose, with extra
+// environment entries (KEY=value) that replace any inherited value of the same
+// key.
+func tuiOnAPtyIn(t *testing.T, work string, extra ...string) (cmd *exec.Cmd, master, slave *os.File, out *ptyOutput) {
+	t.Helper()
 	// #nosec G204 -- a literal git invocation in a test directory.
 	if err := exec.CommandContext(t.Context(), "git", "init", "-q", work).Run(); err != nil {
 		t.Skipf("git is needed for the project the TUI opens: %v", err)
@@ -74,8 +102,9 @@ func tuiOnAPty(t *testing.T) (cmd *exec.Cmd, master, slave *os.File, out *ptyOut
 	// #nosec G204,G702 -- re-executes this test binary with a literal -test.run.
 	cmd = exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestTUIPtyHelper$")
 	cmd.Dir = work
-	cmd.Env = append(os.Environ(), tuiHelperEnv+"=1", "HOME="+t.TempDir(),
-		"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=en_US.UTF-8")
+	own := append([]string{tuiHelperEnv + "=1", "HOME=" + t.TempDir(),
+		"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=en_US.UTF-8"}, extra...)
+	cmd.Env = withEnv(os.Environ(), own...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
