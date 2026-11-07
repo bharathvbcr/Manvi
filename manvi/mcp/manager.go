@@ -311,8 +311,12 @@ func resolveExisting(path string) (string, error) {
 		}
 	}
 	resolved, queue := splitRooted(path)
-	links := 0
-	absent := false
+	links, retries := 0, 0
+	// absent counts the components appended past the last one that exists. A
+	// ".." pops one, and when none is left the walk is back on a directory that
+	// exists and follows links again: "out/absent/../into/f" reaches into/ by the
+	// kernel's rules once absent exists, so it must be compared there.
+	absent := 0
 	for len(queue) > 0 {
 		comp := queue[0]
 		queue = queue[1:]
@@ -321,17 +325,21 @@ func resolveExisting(path string) (string, error) {
 			continue
 		case "..":
 			resolved = filepath.Dir(resolved)
+			if absent > 0 {
+				absent--
+			}
 			continue
 		}
 		next := filepath.Join(resolved, comp)
-		if absent {
+		if absent > 0 {
 			resolved = next
+			absent++
 			continue
 		}
 		info, err := os.Lstat(next)
 		switch {
 		case err != nil && isAbsent(err):
-			absent = true
+			absent = 1
 			resolved = next
 		case err != nil:
 			return "", err
@@ -341,6 +349,16 @@ func resolveExisting(path string) (string, error) {
 			}
 			target, err := os.Readlink(next)
 			if err != nil {
+				// The component changed between Lstat and Readlink (a link
+				// replaced by a directory or removed). Look at it again, a
+				// bounded number of times; past that it is an error, never
+				// an answer.
+				if retries < maxResolveRetries && (errors.Is(err, syscall.EINVAL) || isAbsent(err)) {
+					retries++
+					links--
+					queue = append([]string{comp}, queue...)
+					continue
+				}
 				return "", err
 			}
 			if filepath.IsAbs(target) || os.IsPathSeparator(firstByte(target)) {
@@ -368,6 +386,10 @@ func resolveExisting(path string) (string, error) {
 // maxSymlinkDepth bounds the links one resolution follows. The kernel's own
 // limits are 32 to 40 depending on the system.
 const maxSymlinkDepth = 40
+
+// maxResolveRetries bounds how often one resolution re-examines a component that
+// changed under it.
+const maxResolveRetries = 3
 
 func firstByte(s string) byte {
 	if s == "" {
