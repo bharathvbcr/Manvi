@@ -172,6 +172,44 @@ func TestATrustFileThroughACaseVariantOfTheRepositoryIsNotHonoured(t *testing.T)
 	}
 }
 
+// A symlink cycle is an error (the depth cap), not an answer and not a hang.
+func TestPathIsInsideSymlinkLoopIsAnError(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
+	if err := os.Symlink(b, a); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if inside, err := PathIsInside(repo, filepath.Join(a, "f")); err == nil {
+		t.Fatalf("a symlink cycle was answered %v with no error", inside)
+	}
+}
+
+// A ".." in the part of the path that does not exist yet goes to the parent of
+// what has been resolved, so it cannot climb out of the root unnoticed.
+func TestPathIsInsideDotDotInAbsentTail(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(filepath.Separator)
+	mustInside(t, repo, repo+sep+"new"+sep+".."+sep+"f", true)
+	mustInside(t, repo, repo+sep+"new"+sep+".."+sep+".."+sep+"f", false)
+}
+
 func BenchmarkPathIsInside(b *testing.B) {
 	base, err := filepath.EvalSymlinks(b.TempDir())
 	if err != nil {

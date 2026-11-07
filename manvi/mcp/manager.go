@@ -286,28 +286,117 @@ func isAbsent(err error) bool {
 
 // resolveExisting resolves symlinks over the longest existing prefix of path,
 // so a file that does not exist yet is still compared at its real location.
+//
+// It walks the path one component at a time, as the kernel does, and never
+// cleans it lexically first: a ".." after a symlink names the parent of the
+// link's target, not of the link, so collapsing "out/link/../f" to "out/f"
+// would compare a different file from the one an open would reach. A symlink
+// is followed by its own target (Readlink), so a dangling one, whose target
+// does not exist yet, still leads to where the target will be created. Past the
+// first component that does not exist the rest is joined lexically; a ".." there
+// goes to the parent of what has been resolved. Whether a component is absent is
+// decided by isAbsent, the same test ancestorIsRoot uses, so one path cannot be
+// "absent" to one half of PathIsInside and an error to the other. Following more
+// than maxSymlinkDepth links is an error, as it is in the kernel.
 func resolveExisting(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	remainder := ""
-	current := filepath.Clean(abs)
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			return filepath.Join(resolved, remainder), nil
-		}
-		if !os.IsNotExist(err) {
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
 			return "", err
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return filepath.Join(current, remainder), nil
+		if vol := filepath.VolumeName(cwd); filepath.VolumeName(path) == "" && path != "" && os.IsPathSeparator(path[0]) {
+			path = vol + path
+		} else {
+			path = cwd + string(filepath.Separator) + path
 		}
-		remainder = filepath.Join(filepath.Base(current), remainder)
-		current = parent
 	}
+	resolved, queue := splitRooted(path)
+	links := 0
+	absent := false
+	for len(queue) > 0 {
+		comp := queue[0]
+		queue = queue[1:]
+		switch comp {
+		case ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, comp)
+		if absent {
+			resolved = next
+			continue
+		}
+		info, err := os.Lstat(next)
+		switch {
+		case err != nil && isAbsent(err):
+			absent = true
+			resolved = next
+		case err != nil:
+			return "", err
+		case info.Mode()&os.ModeSymlink != 0:
+			if links++; links > maxSymlinkDepth {
+				return "", fmt.Errorf("resolving %s: more than %d symbolic links", path, maxSymlinkDepth)
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+			if filepath.IsAbs(target) || os.IsPathSeparator(firstByte(target)) {
+				var tail []string
+				resolved, tail = splitRooted(rootedTarget(target, resolved))
+				queue = append(tail, queue...)
+			} else {
+				queue = append(splitComponents(target), queue...)
+			}
+		case info.Mode()&os.ModeIrregular != 0:
+			// A Windows junction or other reparse point is not reported as a
+			// symlink but is resolved by the system; let it say where it goes.
+			real, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", err
+			}
+			resolved = real
+		default:
+			resolved = next
+		}
+	}
+	return resolved, nil
+}
+
+// maxSymlinkDepth bounds the links one resolution follows. The kernel's own
+// limits are 32 to 40 depending on the system.
+const maxSymlinkDepth = 40
+
+func firstByte(s string) byte {
+	if s == "" {
+		return 0
+	}
+	return s[0]
+}
+
+// rootedTarget gives a symlink target that starts at a root its volume: on
+// Windows a target like \dir has no volume of its own and takes the link's.
+func rootedTarget(target, linkDir string) string {
+	if filepath.VolumeName(target) == "" {
+		return filepath.VolumeName(linkDir) + target
+	}
+	return target
+}
+
+// splitRooted splits an absolute path into its root (volume plus separator)
+// and its components, uncleaned.
+func splitRooted(path string) (root string, comps []string) {
+	vol := filepath.VolumeName(path)
+	return vol + string(filepath.Separator), splitComponents(path[len(vol):])
+}
+
+// splitComponents splits on path separators and drops the empty pieces that
+// doubled or trailing separators leave. "." and ".." are kept: they are the
+// caller's to interpret against what has been resolved.
+func splitComponents(path string) []string {
+	return strings.FieldsFunc(path, func(r rune) bool { return r < 128 && os.IsPathSeparator(byte(r)) })
 }
 
 // authorize decides whether a declaration may be spawned, and refuses in a way
