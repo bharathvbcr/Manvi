@@ -175,8 +175,10 @@ held in the harness's credential store ahead of the environment outranks all of 
 | `ANTHROPIC_WORKSPACE_ID_FALLBACK` | Workspace the fallback key acts in, under the same rules as `ANTHROPIC_WORKSPACE_ID`. It is the fallback's own: the primary's workspace belongs to the primary's organisation and is a 404 `Workspace not found` under any other key. Set without `ANTHROPIC_API_KEY_FALLBACK`, it is reported as misconfigured. |
 
 **Binaries.** Each names a path and is used as given when set; it is never second-guessed.
-Unset, the harness looks the program up on `PATH`, then in this repository's own
-`crates/target` builds, and otherwise reports it missing by its bare name.
+Unset, a release-stamped binary looks next to its own executable, then on `PATH`; a
+developer build looks on `PATH`, then in a cargo build tree above its own executable
+(`crates/target`). The working directory is never searched, because the agent can write
+there and these programs run outside the gate. Otherwise the program is reported missing by its bare name.
 
 | Variable | Program | Used by |
 |---|---|---|

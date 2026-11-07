@@ -142,12 +142,18 @@ claim true, so it is not negotiable for convenience.
 ## 4. How the harness consumes them
 
 **Verified** (`cmd/manvi/toolbinary.go`): MANVI resolves each component as an
-executable and links none of them. Resolution is explicit-beats-PATH-beats-local:
+executable and links none of them. Resolution is explicit-beats-sibling-beats-PATH for a release-stamped binary
+(`-X main.stampedVersion`), and explicit-beats-PATH-beats-build-tree for a
+developer build:
 
 1. an environment variable, because an operator who named a path meant it;
-2. `PATH`, which is the installed case;
-3. a build in the local `crates/target`, so a compiled-but-not-installed artifact
-   is found rather than reported missing.
+2. release only: the directory holding the `manvi` binary, where an installer puts the companions;
+3. `PATH`, which is the installed case (the agent's shell cannot change the PATH of the running harness);
+4. developer builds only: a cargo build tree (`crates/target`, `rust/target`,
+   `DevCouncil/rust/target`) found by walking up from the `manvi` executable's own directory.
+
+The working directory and the project root are never searched. They are where
+the agent can write, and these binaries run on the host outside the gate.
 
 | Component | Env override | Go client (in `DevCouncil/backend/go_orchestrator/`) |
 |---|---|---|

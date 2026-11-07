@@ -4,33 +4,74 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
+// toolExecutable names the running binary. It is a variable so a test can stand
+// the harness somewhere other than the test binary's temp directory.
+var toolExecutable = os.Executable
+
+// releaseBuild reports whether this binary carries a release stamp, the same
+// -ldflags "-X main.stampedVersion=..." that scripts/release-build.sh sets and
+// `manvi version` reports. Every other build is a developer's own.
+func releaseBuild() bool { return strings.TrimSpace(stampedVersion) != "" }
+
+// ownDir is the directory holding the running binary, symlinks resolved, or ""
+// when the platform cannot say.
+func ownDir() string {
+	exe, err := toolExecutable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
+}
+
 // toolBinary resolves one of the analysis-plane executables this harness execs.
+// These run on the host, outside the gate, so where they come from is a trust
+// decision: a directory the agent can write (its working directory, anything
+// under the project) must never be a source of an executable.
 //
-// The order is explicit-beats-PATH-beats-sibling:
+// A release-stamped binary resolves, in order:
 //
 //  1. the environment variable, because an operator who named a path meant it;
-//  2. PATH, which is the installed case;
-//  3. a build sitting in this repository's own crates/target.
+//  2. the directory holding this binary, which is where an installer puts the
+//     companions and is not agent-writable;
+//  3. PATH. The agent's shell cannot change the PATH of this already-running
+//     process, so PATH is operator-controlled; os/exec also refuses a relative
+//     PATH entry that resolves to a program in the current directory.
 //
-// Step three exists because of a failure that wasted a working setup. The Rust
-// binaries were built — they were sitting in crates/target/release — and every
-// store-backed tool still failed with `exec: "dcstore": executable file not
-// found in $PATH`. Nothing was broken except that a compiled artifact twenty
-// directories away from the process had not been copied onto PATH, and the
-// error named the symptom rather than that. The harness knows where its own
-// workspace is; it can look there before declaring the binary missing.
+// A developer build, one with no release stamp, tries PATH before the
+// environment's fallback of last resort: a cargo build tree found by walking up
+// from the binary's own directory (crates/target, rust/target,
+// DevCouncil/rust/target). The walk starts at the executable, never the working
+// directory or the project root: `cargo build` in the agent's shell can write
+// the latter, and a planted dcverify there would run on the host. That
+// fallback exists because a failure wasted a working setup: the Rust binaries
+// were built, sitting in crates/target/release, and every store-backed tool
+// still said `exec: "dcstore": executable file not found in $PATH`.
 //
-// It is a fallback, not a search: an explicitly named path is never
-// second-guessed, and an unfound binary is still returned by bare name so the
-// resulting error names what was actually looked for.
+// An explicitly named path is never second-guessed, and an unfound binary is
+// returned by bare name so the resulting error names what was looked for.
 func toolBinary(envKey, name string) string {
 	if v := os.Getenv(envKey); v != "" {
 		return v
 	}
+	released := releaseBuild()
+	if released {
+		if dir := ownDir(); dir != "" {
+			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
+				return candidate
+			}
+		}
+	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p
+	}
+	if released {
+		return name
 	}
 	for _, dir := range workspaceBuildDirs() {
 		candidate := filepath.Join(dir, name)
@@ -42,27 +83,17 @@ func toolBinary(envKey, name string) string {
 }
 
 // workspaceBuildDirs lists the cargo output directories that could hold a
-// sibling build, nearest first, release before debug.
+// sibling build, nearest first, release before debug, for a developer build.
 //
 // Release is preferred because a debug build of the verifier is slow enough to
 // change how a turn feels, and an operator who has both almost certainly means
-// the optimised one. Both the executable's own directory and the working
-// directory are walked up from: the first covers a binary run from a build
-// tree, the second covers `go run` and a binary installed elsewhere while the
-// operator stands in the repository.
+// the optimised one. Only the executable's own directory is walked up from,
+// which covers a binary run from a build tree. The working directory and the
+// project root are deliberately not roots: the agent controls both.
 func workspaceBuildDirs() []string {
 	var roots []string
-	if exe, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = resolved
-		}
-		roots = append(roots, filepath.Dir(exe))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		roots = append(roots, cwd)
-	}
-	if root := projectRoot(); root != "" {
-		roots = append(roots, root)
+	if dir := ownDir(); dir != "" {
+		roots = append(roots, dir)
 	}
 
 	seen := map[string]bool{}
