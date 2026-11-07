@@ -37,8 +37,12 @@ earlier builds print the same object without `workbench_schema`.
 
 The API is for the owning local host. Possession of that stdio connection permits
 profile CRUD. These operations are not registered as agent tools, do not grant
-execution permissions, and do not acquire or renew repository leases. A future
-agent-facing API needs explicit scope and authority checks before exposing writes.
+execution permissions, and do not acquire or renew repository leases. An
+agent-facing API with writes is decided (owner, 2026-11-07) but not built: it needs
+the scope and authority checks in
+[Owner decisions of 2026-11-07](#owner-decisions-of-2026-11-07) before any write
+is exposed. Until that implementation is reviewed and lands, nothing here is
+callable by an agent.
 
 ## Operations
 
@@ -975,7 +979,10 @@ Provider errors are redacted through the existing credential scrubber and bounde
 before persistence. Failure to persist a result leaves the running claim
 unresolved. Only a definite revision conflict permits rebuilding a completion
 request; transport uncertainty never silently retries it. Managed coding-agent
-integration remains outstanding. Configured selection, automatic saved-text
+integration remains outstanding: the owner decided on 2026-11-07 that generation
+moves to managed coding agents (see
+[Owner decisions of 2026-11-07](#owner-decisions-of-2026-11-07)); this section
+describes the direct provider path that still ships. Configured selection, automatic saved-text
 generation and the GitPulse generation/review UI are implemented. Board movement,
 selection and acceptance do not enqueue inference. Board activation may resume
 previously saved work.
@@ -1009,6 +1016,282 @@ with a qualified pass: five skipped Go cases, missing analysis tools, unavailabl
 incumbent lease interoperability, a stale navigation graph artifact and scripted
 cloud-provider coverage remain explicit gaps. Its live local-provider wire check
 passed separately; task-enhancement semantic quality still requires evaluation.
+
+## Owner decisions of 2026-11-07
+
+Recorded from board card ft-10d901e9. Both are decisions, not features: no code
+ships with this change, and each is built by its own implementation card, which
+must be reviewed before anything below becomes callable. Evidence labels:
+**verified** (read in code or schema at this commit), **inferred**, **gap** (no
+mechanism exists).
+
+### Decision 1: an agent-facing `work.*` API, including writes
+
+The owner decided yes. **This widens what an agent can write.** Today the
+operations are reachable only over the host's one controlling connection
+(`manvi/serve/workbench.go`, registered on the serve router; the socket server
+authenticates by peer uid alone and admits one controller, `serve/socket.go`
+security model). Nothing in `manvi/devcouncil`, `manvi/tools` or `manvi/agent`
+names a `work.` op (the card's `rg -uu` check, 2026-10-09). After this decision an
+agent process can change board records the user reads and launches work from.
+
+#### Security-impact statement
+
+- **What widens.** An agent gains read access to board records of its own
+  repository, and write access to a narrow set of fields (below). It gains no new
+  file, command or network permission.
+- **Self-escalation is the main risk.** GitPulse builds the `HostScope` that
+  bounds an agent's file writes and commands from the board task's `scope`
+  (`serve/policy.go`, `HostScope`: planned files, forbidden changes, allowed
+  commands; item `scope` is schema fourteen). An agent able to write its own
+  task's `scope`, `locked_fields`, `acceptance_criteria`, `owner` or repository
+  links could widen its own write policy or move its own goalposts. Those fields
+  are therefore never agent-writable, on any task. The same class is already open
+  for instruction files (board card "Dynamic harness 4/6 (security)").
+- **Untrusted text.** Task titles, descriptions and logs are model- and
+  user-supplied. An agent reading them is exposed to injected instructions from
+  other tasks; a task an agent creates is read later by other agents and by
+  automation. Agent-created text is treated as untrusted proposal text, never as
+  instruction.
+- **Amplification.** A saved task schedules an automatic enhancement when
+  automation is enabled (`items.put`, "Durable automatic scheduling"). Under
+  Decision 2 that is a managed-agent run. An agent that can create tasks could
+  therefore spend provider quota and start runs. Agent-created tasks are saved
+  with both enhancement fields locked, which removes the queue entry (verified,
+  lock semantics above); a human unlocks to opt in.
+- **Not a confidentiality boundary.** Same-uid processes can already read the
+  profile SQLite file directly (socket security model). This API bounds what a
+  cooperating agent can do through Manvi, not what a hostile same-uid process can.
+
+#### Operations exposed
+
+Names are the store methods; over `manvi serve` they would be `work.<method>`,
+but the agent surface is a separate registration (see "Seam" below), so the host
+connection's full set is never handed to an agent.
+
+| Class | Exposed | Notes |
+|---|---|---|
+| Read | `items.list`, `items.get`, `items.brief.get`, `items.history` | Forced to the session's repository. `events.list` is not exposed: it is profile-wide and has no repository filter. |
+| Read | `runs.get` for the session's own run | Source of the scope binding below. |
+| Write | create a task | Revision zero only, status `inbox`, linked to exactly the session's repository, no home workspace, both enhancement fields locked, label `agent-proposed`. |
+| Write | update the agent's own task | Field allow-list below. |
+| Write | add a `related` link from the agent's own task | `duplicate_of`, `blocks` and `parent` are not exposed. |
+
+**Stay host-only:** `items.delete` and `items.restore` (deletion is
+soft but removes a record the user relies on; an agent withdrawing its own
+proposal is done by the user), `workspaces.*`, `repositories.put` and `.relink`,
+`automation.*`, every `runs.*` and `runs.managed.*` method, `enhancements.accept`,
+`.undo`, `.dismiss`, `.recover`, `.claim` and `.complete`, `store.compact`,
+attention and decision methods, and any merge of tasks. Merge and delete rewrite
+or remove other people's records and are not argued into scope.
+
+#### Scope check: which board and repository a call may touch
+
+Scope is derived by the host from state the agent cannot supply, never from call
+parameters:
+
+1. **Identity of the session.** A managed run is prepared by the host against one
+   task, one repository snapshot and one checkout (`runs.prepare`;
+   `runs.claim` records `owner_id` and `session_id`, verified in
+   `dc-store/src/workbench/runs.rs`). The API resolves `{task_id, repository_id}`
+   from that run record. For the in-process Manvi agent the equivalent is its
+   `devcouncil.Session` (task id, lease token, owner; `devcouncil/session.go`),
+   carried on the call context, never in tool arguments.
+2. **Board.** Always the single profile board; there is no per-agent board. The
+   effective scope is the repository: reads and list filters are forced to the
+   run's `repository_id`, and an `items.get` for a task not linked to that
+   repository answers `not_found`, the same as an absent id (no existence oracle).
+3. **Own task.** The one task the run was prepared on. All agent writes other than
+   creation target it, and the call refuses any other id.
+4. **Lease.** A write requires the session still to hold a live lease at call time,
+   checked against the store on every write exactly as `devcouncil_write_file`
+   does (`devcouncil/file_tools.go`, "The lease is checked against the store on
+   every write, not once at checkout"). An inherited child session (`inherited`
+   in `devcouncil/session.go`) may read but not write the board, because it does
+   not own the lease.
+5. **Concurrency.** Every write sends `expected_revision` from the agent's last
+   read; a stale write is refused (existing behaviour of `items.put`).
+
+#### Authority check: who may create, update, complete, delete
+
+| Action | Agent | Human host |
+|---|---|---|
+| Create a task | Yes, inbox only, bounded (below) | Yes |
+| Edit its **own** task | `status` to `in_progress` or `review`, tick existing `checklist` entries, append to `logs`, add a `related` link | Everything |
+| **Complete** its own task | Move to `review` only. Never `done`. | Moves to `done` |
+| Edit **another** task | No write at all. It proposes by creating an inbox task with a `related` link to it. | Everything |
+| Delete or restore | No | Yes |
+| Merge | No | Yes |
+
+Completion of the agent's own task differs from editing others' tasks, and
+differs from a human move to Done: the agent's `review` move is a claim, not an
+acceptance. This follows the existing rule that a run outcome "never marks a task
+Done or accepts its work" (`runs.finish`) and that board status does not represent
+verification or human acceptance (Board queries, "Deletion is soft"). A later
+option, for the owner to decide separately, is letting a `work.verify.task`
+verdict for the current revision authorise the agent's move to `done`. The agent
+never writes `title`, `description`, `acceptance_criteria`, `scope`,
+`locked_fields`, `priority`, `severity`, `owner`, `due`, `kind`, `archived`,
+repository links or home workspace on any task. The agent edits through a host
+adapter that reads the item at `expected_revision`, applies only the allow-listed
+delta, and calls `items.put`; `items.put`'s omit-preserves rule for `logs`,
+`checklist`, `links`, `locked_fields` and `archived` makes that safe, but
+`.put` replaces every other field, so the adapter, not the agent, supplies them.
+
+#### Rate and size bounds
+
+Existing bounds the API inherits (verified): requests at most 256 KiB;
+descriptions 64 KiB; logs 256 KiB; checklist 128 entries; links 64; titles 300
+characters; mutations need `request_id`, `id` and `expected_revision`; per-op
+`lane` and `deadline_ms` in `hello.op_limits`; the store pool is at most eight
+children with a ten-second call deadline.
+
+Bounds the agent surface adds (acceptance criteria for the implementation card):
+description at most 16 KiB and title at most 200 characters on agent-created
+tasks; one `logs` append at most 16 KiB and at most 64 KiB appended per run; at
+most 5 tasks created and 30 writes per run; at most 50 open `agent-proposed`
+inbox tasks per repository, refused beyond that with both numbers reported.
+A refused write returns a typed error naming the cap; a cap is never applied by
+silent truncation.
+
+**Gap:** no per-session or per-profile write quota exists in the store ("Quota
+enforcement is still unspecified", in the retention paragraph on `store.compact`). The only
+quota is the enhancement slot and its 20 automatic reservations per hour. The
+per-run counters are therefore in-memory in the host adapter and do not survive a
+host restart; the per-repository cap must be counted by listing the board, and the
+implementation must confirm `items.list` can filter on the label before relying
+on it (inferred: the documented filters are `status` and plain-text `query`).
+
+#### Audit: recorded with the agent and session identity
+
+Every accepted mutation already commits a revision snapshot, an event and an
+idempotency receipt in one transaction (verified). **Gap:** `work_events` has
+columns `sequence, kind, entity_id, revision, at, payload` and `work_revisions`
+has `entity_type, entity_id, revision, body` (`schema.sql`); neither has an actor
+column. `work_requests` maps a `request_id` to its event `sequence`, but receipts
+are deleted past a seven-day replay window by `store.compact`.
+
+Until the store records an actor, the adapter records identity by three means
+that use only existing fields: (1) the host mints `request_id` as
+`agent_{run_id}_{session_id}_{n}` (an agent never chooses it; the identifier
+rule of letters, digits, hyphens and underscores, 128 characters, permits this); (2) each `logs` append is prefixed with the run and
+session ids and a timestamp; (3) created tasks carry the `agent-proposed` label
+and a description line naming the run. These survive compaction only as far as
+the task text does. A first-class actor on events and revisions is a DevCouncil
+schema change, which this repository's rules treat as cross-app (DevCouncil owns
+it; GitPulse re-vendors; Manvi's pin moves). It is not part of this decision and
+needs its own approval.
+
+#### Seam, and gaps in the existing mechanisms
+
+- The agent surface is a new registration beside the host's, not a widening of it.
+  The in-process Manvi agent already has the right seam: `devcouncil.Registry`
+  holds a `*store.Client`, the same client type `WorkbenchModule` uses, and tools
+  receive the acting `Session` on the call context. `work_*` tools register there.
+- **Gap, external agents.** Managed Codex and Claude run as child processes
+  (`codingagent`). Nothing in this repository gives those processes a channel back
+  to Manvi's ops; the host connection is single-controller and uid-authenticated.
+  Exposing `work.*` to them needs a per-run, host-brokered tool channel (for
+  example a per-run MCP endpoint) that does not exist. The implementation card
+  must design it, and that design is a second security statement, not an
+  extension of this one. The first release may be limited to the in-process agent.
+- **Gap, path to repository.** A task record carries repository ids, not paths
+  (stated in the refine card's log). The in-process agent knows `Deps.Root`, a
+  path. Mapping it to a workbench `repository_id` needs the `identity_key` match
+  on `repositories.put`; no code does that today.
+- **Gap, lease to item.** A DevCouncil lease is on a DevCouncil task
+  (`devcouncil_checkout_task`); a workbench item is a different record ("Repository
+  execution tasks and writer leases remain a separate model"). No mapping from a
+  held lease to the board item "the agent's own task" exists. For managed runs the
+  run record supplies it; for the in-process agent it must be added.
+- **Gap, `HostScope`.** It bounds file writes and commands only (verified, no
+  board field). It cannot express board authority and is not extended for it.
+
+No code ships with this decision. The implementation is a separate board card
+whose acceptance criteria are the checks above, and it must be reviewed before any
+write is exposed.
+
+### Decision 2: enhancement generation moves to managed coding agents
+
+The owner decided that generation moves from the direct provider HTTP path to
+managed coding agents. The scope is the model-calling code in
+`serve/enhancements.go`, `serve/enhancement_output.go` and `serve/automation.go`:
+the title/description rewrite, `work.enhancements.refine` and the automatic
+saved-text worker. `serve/scan.go` is described as a deterministic audit, and
+`work.tasks.suggest` and the organise proposal make no model call (Suggesting
+what to work on next), so there is nothing to route there unless a model step is
+added to them.
+
+This supersedes the earlier choice recorded on the refine card ("direct inference
+through the existing enhancement runner, not a managed coding agent"). What ships
+today stays as documented above until the implementation lands.
+
+**What changes.** Today generation offers no tools and no repository access, runs
+in one completion with a 110-second deadline, 8,192 output tokens and 256 KiB of
+output, and uses the provider factory and credential resolver (verified, "Asynchronous provider
+generation"; the request is built at `serve/enhancement_output.go`, an
+`llm.Request`). After the move it is a managed run: a process, a session, a
+checkout and an agent loop.
+
+**Consequences.**
+
+- **Cost.** A completion becomes an agent turn with its own startup and possibly
+  several model calls, and it draws on the coding-agent account (a seat or login)
+  rather than a provider API key. Not measured; none of the numbers here are. The
+  automatic worker (one debounced run per text save, up to 20 per hour) is the
+  multiplier, so the implementation must measure per-run cost before automatic
+  mode is allowed on a managed provider, and keep the existing 20-per-hour cap.
+- **Latency.** Process start, provider initialisation and activation precede the
+  first token. A pending proposal expires after 120 seconds and a claim carries a
+  120-second deadline; a prepared managed helper expires after five minutes. Those
+  deadlines were sized for one completion and probably need revisiting. Unmeasured.
+- **A checkout is required.** A managed run is prepared against a task, a
+  repository snapshot and a validated checkout, and only one prepared, active or
+  unresolved attempt may reserve a checkout (Run records). An enhancement of a
+  task title does not need repository files, but the run model has nowhere else to
+  stand. Consequences: an enhancement and a real run on the same checkout exclude
+  each other; a task linked to no usable checkout, or to several, has no defined
+  checkout; the harness block written into a checkout during a run
+  (`ManagedRunner.HarnessBusy`) refuses preparation while it is present. The
+  implementation must choose, and state, whether enhancement runs use the task's
+  primary checkout read-only, a detached linked worktree of it, or an empty scratch
+  directory with no repository content.
+- **Tools reach untrusted text.** The direct path's strongest property, that it
+  "offers no tools and grants no coding-agent permissions or repository write
+  access", does not carry over. Task text is untrusted and would now be read by an
+  agent that has tools. Required of the implementation: read-only sandbox and
+  approval posture, every permission request or question answered by denial rather
+  than left to time out, no access to the Decision 1 API (an enhancement run
+  holds none of its write operations), and a post-run check that the checkout is
+  unchanged. This sentence in "Asynchronous provider generation" must be corrected
+  in the same change that lands the implementation.
+- **Output validation stays.** The single-JSON-object contract, preservation
+  literals, size caps and refusal rules in `enhancement_output.go` remain the
+  canonical validator; the agent's final message is validated by it exactly as a
+  completion is today. Proposals still change a task only on explicit acceptance,
+  and `enhancements.recover` keeps its uncertain-outcome meaning.
+- **Failure modes new to this path.** The coding-agent CLI missing, wrapped or not
+  logged in (the open board cards on managed Claude and Codex launch identity
+  apply); an agent that edits files despite the sandbox; an agent that never
+  finishes while its tool grandchildren outlive it (board card "Managed coding
+  agents are not process-group owned"); provider selection that is a coding agent
+  (`claude`, `codex`) rather than a model, so the stored `provider` and `model`
+  labels change meaning; and capacity contention with real runs
+  (`max_active_runs`, default 8).
+- **One open question for the owner.** The `local` provider (a configured local
+  model) is not a coding agent. Whether it keeps a direct path or loses
+  enhancement generation is not decided here. "Replace, do not accumulate"
+  argues for deleting the direct path in the same change; that would remove local
+  enhancement. The implementation card asks before removing it.
+
+**Sequencing.** The managed-agent surface is in flux. At this commit another
+live session holds uncommitted changes in `manvi/codingagent/*` (`agy.go`,
+`claude_seat.go`, `claude.go`, `codex.go`, `connection.go`, `continue.go`,
+`executable.go` and tests) and `manvi/serve/managed.go`, plus `serve.go`,
+`toolbinary.go` and `harness_materialise.go` (GitPulse collision scan,
+2026-11-07: those 19 files, in the main checkout's worktree, no overlap with this
+branch). The implementation must wait for that work to land, then start from the
+resulting adapter surface. No code ships with this decision.
 
 ## Board queries
 
