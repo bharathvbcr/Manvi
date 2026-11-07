@@ -354,6 +354,22 @@ type PrepareParams struct {
 	// out. When it differs from the one this session last stated, the result
 	// notes a prefix move, once, and the ledger is left as it is.
 	HarnessDigest string `json:"harness_digest,omitempty"`
+
+	// Provider names the provider the host is about to call ("anthropic",
+	// "openai", "gemini", ...). Optional, and a host that omits it gets the
+	// behaviour this plane has always had.
+	//
+	// It matters for one provider. Anthropic signs each thinking block to the
+	// system prompt, the tools and every message before it, so a step this
+	// plane returned would rewrite an earlier tool result and invalidate every
+	// block signed after it, which is a 400 on an enforced account. This plane
+	// cannot repair that: a WireMessage carries no reasoning, so the host owns
+	// the blocks and only the host can strip them. It therefore returns no steps
+	// at all for that provider and says why in the result; the host sends
+	// `context_management` with `clear_tool_uses_20250919` instead (beta
+	// `context-management-2025-06-27`), which the history-editing check does
+	// not count as an edit.
+	Provider string `json:"provider,omitempty"`
 }
 
 // PrepareStep is one tool result to shorten, and the text to shorten it to.
@@ -405,7 +421,23 @@ type PrepareResult struct {
 	// that states no digest.
 	PrefixMoved bool   `json:"prefix_moved,omitempty"`
 	PrefixNote  string `json:"prefix_note,omitempty"`
+	// ServerSideEditing reports that the host named a provider that binds
+	// thinking to history, so Steps is empty by design and the budget figures
+	// above (Before, After, Threshold, Target) are zero: nothing was planned.
+	// The host shrinks the conversation with the provider's server-side
+	// context editing, and ServerSideNote says how.
+	ServerSideEditing bool   `json:"server_side_editing,omitempty"`
+	ServerSideNote    string `json:"server_side_note,omitempty"`
 }
+
+// serverSideEditingNote is what a host is told when no plan was made for a
+// provider whose thinking is bound to history.
+const serverSideEditingNote = "this provider binds each thinking block to the conversation before it, so " +
+	"rewriting an earlier tool result client-side would invalidate every block after it, and chat.prepare " +
+	"cannot strip them because the history it sees carries no reasoning; no steps were planned. " +
+	"Send context_management.edits [{\"type\":\"clear_tool_uses_20250919\"}] with the " +
+	"anthropic-beta header context-management-2025-06-27 instead: the server clears old tool " +
+	"results and the history-editing check does not count that as an edit"
 
 // prepare answers OpChatPrepare.
 func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
@@ -441,6 +473,20 @@ func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 
 	session := s.chat.get(p.SessionID)
 	prefixNote := session.noteHarness(p.HarnessDigest)
+
+	if llm.BindsThinkingToHistory(strings.ToLower(strings.TrimSpace(p.Provider))) {
+		// Before the ledger is touched: a plan that was never made leaves no
+		// entry that would substitute a shortened result into a later request.
+		return PrepareResult{
+			Steps:              []PrepareStep{},
+			CalibrationRatio:   session.calibrator.Ratio(),
+			CalibrationSamples: session.calibrator.Samples(),
+			PrefixMoved:        prefixNote != "",
+			PrefixNote:         prefixNote,
+			ServerSideEditing:  true,
+			ServerSideNote:     serverSideEditingNote,
+		}, nil
+	}
 
 	// Drop what this history no longer references before anything reads the
 	// ledger, so both the substitution below and the `already` set built from
