@@ -35,6 +35,10 @@ func gitOut(t *testing.T, root string, args ...string) string {
 func shellCommitFixture(t *testing.T, stageLeak bool) *fixture {
 	t.Helper()
 	f := newFixtureWith(t, map[string]string{flags.HarnessPosture: flags.PostureDev})
+	// These tests name the branch "main". `git init` names the first branch from
+	// init.defaultBranch, which verify.sh's isolated environment does not set
+	// (it gets "master"), so the fixture names it rather than inherit it.
+	nameBranchMain(t, f.root)
 	write(t, f.root, ".env", secretBody)
 	checkout(t, f)
 	write(t, f.root, "app.js", "const mode = 'development';\n")
@@ -45,6 +49,17 @@ func shellCommitFixture(t *testing.T, stageLeak bool) *fixture {
 		run(t, f.root, "add", "notes.txt")
 	}
 	return f
+}
+
+// nameBranchMain makes the checked-out branch "main", born or unborn.
+func nameBranchMain(t *testing.T, root string) {
+	t.Helper()
+	// #nosec G204 -- the binary is the literal "git" and the arguments are fixed.
+	if err := exec.CommandContext(t.Context(), "git", "-C", root, "rev-parse", "--verify", "-q", "HEAD").Run(); err != nil {
+		run(t, root, "symbolic-ref", "HEAD", "refs/heads/main")
+		return
+	}
+	run(t, root, "branch", "-M", "main")
 }
 
 type shellResult struct {
