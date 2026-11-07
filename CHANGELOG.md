@@ -121,7 +121,10 @@ under **Unreleased** in the same commit as the code.
   background reaper releases the checkout when a later Close finds the group gone.
   There is no block to restore, so the instruction file is not touched. The hold
   is process memory and ends when `manvi serve` restarts. A plain run whose group
-  is gone at close releases at once, as before. The `E_HARNESS_BUSY` code is
+  is gone at close releases at once, as before. The hold covers the tree: a run
+  or verification whose directory is inside, or contains, a held one is refused
+  too (unrelated siblings are not), and restarting `manvi serve` frees the
+  checkout while the group may still be writing it. The `E_HARNESS_BUSY` code is
   unchanged; no change to `contracts/serve.ops.schema.json`.
 - `close()` of a managed coding agent gives the process-group wait its own full
   5 s budget, started when the agent is reaped, instead of what was left of the

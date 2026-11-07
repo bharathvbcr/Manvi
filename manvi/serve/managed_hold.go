@@ -3,6 +3,7 @@ package serve
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"time"
@@ -87,10 +88,10 @@ func (b *blockedCheckout) holdMessage() string {
 		waiting = fmt.Sprintf("The provider last answered: %s. %s", b.lastClose, waiting)
 	}
 	if !b.block {
-		return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process, and every member of its process group, exited, so something it started may still be writing this checkout: no harness block was written, but the checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the hold is process memory and ends with it",
+		return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process, and every member of its process group, exited, so something it started may still be writing this checkout: no harness block was written, but the checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the hold is process memory and ends with it, so a restart frees the checkout while that process group may still be writing it",
 			b.runID, b.since.UTC().Format(time.RFC3339), waiting)
 	}
-	return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process exited, so the agent may still be running: its harness block (nonce=%s) stays in %s and this checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the record on disk is then applied as a dead run's block is",
+	return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process exited, so the agent may still be running: its harness block (nonce=%s) stays in %s and this checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the record on disk is then applied as a dead run's block is, and that frees the checkout while the agent's process group may still be writing it",
 		b.runID, b.since.UTC().Format(time.RFC3339), b.nonce, b.file, waiting)
 }
 
@@ -162,11 +163,11 @@ func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession, m 
 }
 
 // heldReason is why a checkout is held for an unconfirmed exit, or "".
-func (r *ManagedRunner) heldReason(info os.FileInfo) string {
+func (r *ManagedRunner) heldReason(path string, info os.FileInfo) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, b := range r.blocked {
-		if b.session != nil && sameCheckout(b.info, info) {
+		if b.session != nil && checkoutsOverlap(b.info, b.root, info, path) {
 			return b.holdMessage()
 		}
 	}
@@ -242,15 +243,29 @@ func (r *ManagedRunner) releaseHold(b *blockedCheckout) bool {
 	return true
 }
 
+// reviseAttempts and reviseBackoff bound the revision's retries: the hold has
+// ended and nothing will ask again, so a store that is busy for a moment must not
+// cost the run its record. Tests shorten the backoff.
+var (
+	reviseAttempts = 3
+	reviseBackoff  = 200 * time.Millisecond
+)
+
 // reviseHeldRun settles the stored run of a hold that has just ended. The run was
 // recorded unresolved because its Close could not confirm the agent's process
 // group gone; a later Close that does is what that Close would have been, so the
 // run is recorded as runOutcome says for it: exited with the agent's code, when
 // this Close too has nothing to add, and left unresolved otherwise, as the first
 // would have left it. It goes through recordRun, the writer of the first record,
-// and only from unresolved: a run already finalised (by a reconcile, or by a
-// concurrent revision) is not rewritten. A run that was not ended by its own
-// Close (revisable false) is unresolved by design and stays so.
+// and only from unresolved, or from running when the first write was refused and
+// never landed (the store enforces the expected revision, so a concurrent writer
+// loses cleanly): a run already finalised (by a reconcile, or by a concurrent
+// revision) is not rewritten. A run that was not ended by its own Close
+// (revisable false) is unresolved by design and stays so.
+//
+// A refused write is retried with a short backoff. One that is still refused is
+// logged, where an operator running `manvi serve` sees it, and kept on the job:
+// the run stays as it was, which the hold's own release has already told them.
 func (r *ManagedRunner) reviseHeldRun(b *blockedCheckout, exit codingagent.Exit, closeErr error) {
 	if !b.revisable || b.job == nil {
 		return
@@ -260,12 +275,23 @@ func (r *ManagedRunner) reviseHeldRun(b *blockedCheckout, exit codingagent.Exit,
 		return
 	}
 	cause := errors.New("the agent process and its process group have since been confirmed gone; the outcome was unresolved only until then, and task acceptance still requires review")
-	written, err := r.recordRun(b.job, outcome, code, cause, "", "unresolved")
+	var written bool
+	var err error
+	for attempt := 0; attempt < reviseAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(reviseBackoff << (attempt - 1))
+		}
+		if written, err = r.recordRun(b.job, outcome, code, cause, "", "unresolved", "running"); err == nil {
+			break
+		}
+	}
 	b.job.mu.Lock()
 	defer b.job.mu.Unlock()
 	switch {
 	case err != nil:
-		b.job.err = errors.Join(b.job.err, fmt.Errorf("revising run %s after its agent was confirmed gone: %w", b.runID, err))
+		err = fmt.Errorf("revising run %s after its agent was confirmed gone, after %d attempts: %w", b.runID, reviseAttempts, err)
+		log.Printf("%s", r.failureText(err))
+		b.job.err = errors.Join(b.job.err, err)
 	case written:
 		b.job.phase = outcome
 	}
@@ -274,14 +300,14 @@ func (r *ManagedRunner) reviseHeldRun(b *blockedCheckout, exit codingagent.Exit,
 // recheckHeld restarts the reaper of a hold whose attempts ran out, when an attempt
 // on the checkout comes in: the agent may have exited since. It starts the same
 // bounded reaper off the lane and returns at once; the attempt is refused either way.
-func (r *ManagedRunner) recheckHeld(info os.FileInfo) {
+func (r *ManagedRunner) recheckHeld(path string, info os.FileInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed || r.reapStop == nil {
 		return
 	}
 	for _, b := range r.blocked {
-		if b.session != nil && b.gaveUp && sameCheckout(b.info, info) {
+		if b.session != nil && b.gaveUp && checkoutsOverlap(b.info, b.root, info, path) {
 			b.gaveUp = false
 			b.rechecks++
 			go r.reap(b, r.reapStop)

@@ -472,9 +472,17 @@ How the block is kept safe:
   background reaper keeps asking, releases the checkout (taking the block out first, for a
   harness run) when a later close finds the group gone, and revises the stored run from
   `unresolved` to `exited` with the agent's code, unless that close still carries an error.
+  The hold covers the tree, not one spelling of the directory: a checkout overlaps another
+  when either is the other or lies inside it (resolved paths, so a run started in a
+  subdirectory of a held worktree is refused, and so is `work.verify.task` on it); unrelated
+  sibling directories do not overlap. A revision the store refuses is retried (3 attempts) and
+  then logged by `manvi serve`; a first finish the store refused (the run still `running`) is
+  repaired by the same revision.
   The hold is process memory: it ends with `manvi serve`, and restarting is the way out
   if the group never empties (a zombie left in the group by a parent outside it reads as live).
-  A plain run whose group is gone at close releases at once.
+  **A restart frees the checkout while the group may still be writing it**: the hold is not
+  carried over, so restart only when that process group is known to be gone or acceptable to
+  race. A plain run whose group is gone at close releases at once.
 
 ---
 

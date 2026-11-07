@@ -1,8 +1,10 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,7 +229,7 @@ func TestAnExhaustedHoldIsRecheckedWhenAnAttemptArrives(t *testing.T) {
 	t.Cleanup(func() { maxReapAttempts = prev })
 	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"})
 	info := mustResolvedInfo(t, root)
-	waitFor(t, "the reaper to give up", func() bool { return strings.Contains(m.runner.heldReason(info), "stopped asking") })
+	waitFor(t, "the reaper to give up", func() bool { return strings.Contains(m.runner.heldReason(root, info), "stopped asking") })
 
 	asks := session.closes.Load()
 	session.confirmed.Store(true) // the agent has exited since
@@ -469,4 +471,97 @@ func TestAPlainRunWhoseGroupIsGoneAtCloseReleasesTheCheckoutAtOnce(t *testing.T)
 	if err := m.runner.enterCheckout(m.otherAttempt("next", ManagedHarness{}), managedRun{Cwd: root}); err != nil {
 		t.Fatalf("the checkout of a cleanly ended plain run is held: %v", err)
 	}
+}
+
+// A hold covers the files the group can write, which is the tree below the
+// directory the run started in, and the tree above it that the run's writes reach.
+// A hold taken in a subdirectory refuses the worktree root, an unrelated sibling
+// of it is admitted, and a hold at the root refuses a subdirectory (the adversarial
+// test beside this one).
+func TestAHoldInASubdirectoryRefusesTheRootButNotASibling(t *testing.T) {
+	root := scanRepo(t, map[string]string{"CLAUDE.md": "project rules\n"})
+	sub, sibling := filepath.Join(root, "pkg", "inner"), filepath.Join(root, "pkg", "other")
+	for _, dir := range []string{sub, sibling} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var session *managedTestSession
+	m := unconfirmedLifecycle(t, root, &session, liveGroup)
+	m.runner.client = &managedCwd{managedStore: m.runner.client, cwd: sub}
+	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activate(t, m, prepared)
+	m.finished()
+	if e := m.runner.HarnessBusy(sub); e == nil {
+		t.Fatal("the run's own directory is not held, so the scenario did not arise")
+	}
+	if e := m.runner.HarnessBusy(root); e == nil {
+		t.Error("work.verify.task on the worktree root is not refused while a run in a subdirectory of it is held")
+	}
+	if err := m.runner.enterCheckout(m.otherAttempt("root", ManagedHarness{}), managedRun{Cwd: root}); busyCode(err) != ErrHarnessBusy {
+		t.Errorf("a run at the worktree root was admitted while a run in a subdirectory is held: %v", err)
+	}
+	if e := m.runner.HarnessBusy(sibling); e != nil {
+		t.Errorf("an unrelated sibling directory is refused: %v", e)
+	}
+	if err := m.runner.enterCheckout(m.otherAttempt("sibling", ManagedHarness{}), managedRun{Cwd: sibling}); err != nil {
+		t.Errorf("an unrelated sibling directory was not admitted: %v", err)
+	}
+}
+
+// A revision the store keeps refusing is retried a bounded number of times and
+// then logged for the operator, not dropped into a job error nothing reads.
+func TestARevisionTheStoreKeepsRefusingIsLoggedAfterBoundedRetries(t *testing.T) {
+	prevBackoff := reviseBackoff
+	reviseBackoff = time.Millisecond
+	t.Cleanup(func() { reviseBackoff = prevBackoff })
+	var logged strings.Builder
+	var mu sync.Mutex
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return logged.Write(p) }))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	root, session, m, fault := advPlainRun(t, 0, liveGroup)
+	fault.failFinish.Store(1 << 20)
+	before := fault.finishes.Load()
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	waitFor(t, "the revision to be logged", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Contains(logged.String(), "revising run run")
+	})
+	if got := fault.finishes.Load() - before; got != int32(reviseAttempts) {
+		t.Fatalf("the revision was attempted %d times, want %d", got, reviseAttempts)
+	}
+	if run, _ := storedRun(t, m); run.State != "unresolved" {
+		t.Fatalf("the run is %s although every write was refused", run.State)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// managedCwd has the store report a different cwd for the run, so a run can be
+// started in a subdirectory of the checkout its fixture was prepared in.
+type managedCwd struct {
+	managedStore
+	cwd string
+}
+
+func (s *managedCwd) Workbench(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error) {
+	raw, err := s.managedStore.Workbench(ctx, method, input)
+	if err != nil || method != "runs.get" {
+		return raw, err
+	}
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return raw, nil
+	}
+	if item, ok := doc["item"].(map[string]any); ok {
+		item["cwd"] = s.cwd
+	}
+	return json.Marshal(doc)
 }

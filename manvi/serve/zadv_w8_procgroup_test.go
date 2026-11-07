@@ -140,7 +140,7 @@ func TestConcurrentReapersAndAttemptsRevisePlainRunExactlyOnce(t *testing.T) {
 	t.Cleanup(func() { maxReapAttempts = prev })
 	root, session, m := plainRun(t, liveGroup)
 	info := mustResolvedInfo(t, root)
-	waitFor(t, "the reaper to give up", func() bool { return strings.Contains(m.runner.heldReason(info), "stopped asking") })
+	waitFor(t, "the reaper to give up", func() bool { return strings.Contains(m.runner.heldReason(root, info), "stopped asking") })
 	before, _ := storedRun(t, m)
 
 	var wg sync.WaitGroup

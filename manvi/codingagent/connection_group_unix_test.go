@@ -33,18 +33,21 @@ func killOnCleanup(t *testing.T, pid int) {
 }
 
 // startStranger starts an unrelated process in a group of its own, standing in
-// for whatever takes a group number after the agent's group is gone. It is
-// killed and reaped on cleanup.
+// for whatever takes a group number after the agent's group is gone. It is not
+// bound to t.Context(): that is cancelled before cleanups run, and os/exec would
+// then SIGKILL the stranger into an unreaped zombie, which Darwin's kill(2)
+// answers with EPERM when the cleanup signals its group. Only the cleanups end
+// it: the group is killed, then the process is reaped.
 func startStranger(t *testing.T) *exec.Cmd {
 	t.Helper()
-	stranger := exec.CommandContext(t.Context(), "/bin/sleep", "30")
+	stranger := exec.Command("/bin/sleep", "30")
 	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := stranger.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		// Wait reports the SIGKILL the group cleanup below sends (or the
-		// context's); reaping is all that is wanted from it.
+		// Wait reports the SIGKILL the group cleanup below sends; reaping is all
+		// that is wanted from it.
 		_ = stranger.Wait()
 	})
 	killOnCleanup(t, -stranger.Process.Pid)

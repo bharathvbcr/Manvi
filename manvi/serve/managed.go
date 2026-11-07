@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // ManagedSession is one provider connection, never an external terminal.
@@ -252,8 +254,8 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	}
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
-	if reason := r.heldReason(info); reason != "" {
-		r.recheckHeld(info)
+	if reason := r.heldReason(resolved, info); reason != "" {
+		r.recheckHeld(resolved, info)
 		return harnessBusy("%s", reason)
 	}
 	r.mu.Lock()
@@ -271,7 +273,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		default:
 		}
 		o.mu.Lock()
-		same, harnessed := sameCheckout(o.checkoutInfo, info), o.wantsHarness
+		same, harnessed := checkoutsOverlap(o.checkoutInfo, o.checkout, info, resolved), o.wantsHarness
 		o.mu.Unlock()
 		switch {
 		case !same:
@@ -318,6 +320,31 @@ func sameCheckout(a, b os.FileInfo) bool {
 	return a != nil && b != nil && os.SameFile(a, b)
 }
 
+// checkoutsOverlap says whether two checkouts can touch each other's files: they
+// are one directory (sameCheckout), or one lies inside the other. A run started in
+// a subdirectory of a worktree (a monorepo package is where agents are most often
+// pointed) writes files the worktree's other runs and verifications read, and a
+// run at the root writes the subdirectory's, so a hold or a live harness on either
+// holds the other. The paths are the resolved ones (resolvedCheckout), compared by
+// mcp.PathIsInside, the repository's one containment rule; two sibling
+// directories do not overlap. A path that cannot be compared is taken to overlap,
+// since this is a refusal's test and the failure it must not have is admitting.
+// A checkout with no directory (nil) overlaps nothing.
+func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath string) bool {
+	if sameCheckout(aInfo, bInfo) {
+		return true
+	}
+	if aInfo == nil || bInfo == nil || aPath == "" || bPath == "" {
+		return false
+	}
+	for _, pair := range [2][2]string{{aPath, bPath}, {bPath, aPath}} {
+		if inside, err := mcp.PathIsInside(pair[0], pair[1]); err != nil || inside {
+			return true
+		}
+	}
+	return false
+}
+
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
 // managed run with a harness is live on it, or one left a record that has not
 // been applied (and, when this process tried to apply it and could not, why).
@@ -343,13 +370,13 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		default:
 		}
 		j.mu.Lock()
-		live := sameCheckout(j.checkoutInfo, info) && j.materialised != nil
+		live := checkoutsOverlap(j.checkoutInfo, j.checkout, info, resolved) && j.materialised != nil
 		j.mu.Unlock()
 		if live {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
 		}
 	}
-	if reason := r.heldReason(info); reason != "" {
+	if reason := r.heldReason(resolved, info); reason != "" {
 		return harnessBusy("%s", reason)
 	}
 	if harnessRecordPending(resolved) {
@@ -1739,7 +1766,7 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 		job.mu.Unlock()
 		r.settleBlocked(info, root, fmt.Errorf("run %s: %w", job.id, restoreErr))
 	}
-	_, storeErr := r.recordRun(job, outcome, code, cause, providerState, "")
+	_, storeErr := r.recordRun(job, outcome, code, cause, providerState)
 	job.mu.Lock()
 	job.phase = outcome
 	job.err = errors.Join(cause, storeErr)
@@ -1763,17 +1790,17 @@ func runOutcome(exit codingagent.Exit, closeErr error) (string, *int) {
 }
 
 // recordRun is the one place a run's end is written to the store (runs.finish),
-// for finish and for the revision of a held run alike. from, when set, is the
-// state the stored run must still be in: a run in any other state has been
+// for finish and for the revision of a held run alike. from, when given, are the
+// states the stored run must still be in: a run in any other state has been
 // finalised by someone and is not rewritten (written is false, the error nil).
-func (r *ManagedRunner) recordRun(job *managedJob, outcome string, code *int, cause error, providerState, from string) (written bool, err error) {
+func (r *ManagedRunner) recordRun(job *managedJob, outcome string, code *int, cause error, providerState string, from ...string) (written bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	run, _, err := r.run(ctx, job.id)
 	if err != nil {
 		return false, err
 	}
-	if from != "" && run.State != from {
+	if len(from) > 0 && !slices.Contains(from, run.State) {
 		return false, nil
 	}
 	reason := "Managed provider connection ended; task acceptance requires review"
