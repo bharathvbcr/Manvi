@@ -469,6 +469,24 @@ func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
 	root := initCommittedGitRepo(t, map[string]string{
 		"pkg/calc.go": "package pkg\n\nfunc ComputeAnswer() int { return 42 }\n",
 	})
+	t.Cleanup(func() {
+		// `devmap seed --stacked` seals shared base snapshot directories (`0555`)
+		// and files (`0444`) under `.git/devmap/bases` so SQLite readers cannot
+		// mutate or open WAL sidecars in place. Restore owner write bits before
+		// t.TempDir()'s os.RemoveAll runs.
+		basesDir := filepath.Join(root, ".git", "devmap", "bases")
+		_ = filepath.WalkDir(basesDir, func(p string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				_ = os.Chmod(p, 0o700)
+			} else {
+				_ = os.Chmod(p, 0o600)
+			}
+			return nil
+		})
+	})
 	buildCmd := exec.Command(devmapBin, "--root", root, "build", "--manifest", "--json")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("devmap build on fixture root failed: %v\n%s", err, out)
