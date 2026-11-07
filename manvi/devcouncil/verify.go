@@ -772,7 +772,27 @@ func runGitWhole(ctx context.Context, root string, args ...string) (gitCapture, 
 // Repository hooks therefore do not run on any git this package starts through
 // here — a behaviour change for a repository that relies on a commit hook. The
 // claim is that wide and no wider: serve/git.go and bootstrap spawn git on their
-// own and are not covered.
+// own, and each carries the same core.hooksPath and core.fsmonitor settings in
+// its own helper (pinned by their tests); the operator's quick pull and push
+// run the operator's own hooks by design.
+//
+// Decisions recorded 2026-11-07 (card ft-6ff33aaf), each pinned by a
+// characterisation test in zgitexec_decisions_test.go:
+//   - Commit signing is the operator's. commit.gpgsign and gpg.program run
+//     exactly as configured; there is no flag here that skips signing and
+//     gpg.program is not blanked. .git/config is a protected write path, so the
+//     program is operator-chosen and the agent gains nothing it could not
+//     already do. A change that breaks signing must fail that test.
+//   - An operator-configured filter.<x>.clean, smudge or process is left alone
+//     on the same grounds. The agent can name the filter in a .gitattributes it
+//     can write, but that runs the operator's own command on content the agent
+//     already controls. A clean filter runs on add, and on diff and status.
+//   - devcouncil_exec_command running `git commit` keeps repository hooks. The
+//     agent's shell already runs arbitrary commands under the same command gate,
+//     so a hook it wrote or triggers runs nothing it could not run directly: no
+//     escalation. The post-exec ref guard (refguard.go) is the content control
+//     there. (Recorded here because tools.go, where exec_command is documented,
+//     was out of this change's scope.)
 //
 // core.fsmonitor=false is the same class: the repository's config can name a
 // program that git runs on diff, ls-files, status and add, and one that answers
