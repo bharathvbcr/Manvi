@@ -40,8 +40,8 @@ import (
 // log lines they write. A nil binding in Deps registers none of them.
 //
 // What the tools are scoped to is not in here, deliberately. The repository is
-// the one the Registry's own store is the board of (store.Client.LocalRepository,
-// the repository every task in that store names as its primary), and the own
+// the one the Registry's own store is the board of (the legacy local repository
+// every task in that store names as its primary, read and never created), and the own
 // task is the task the session holds the lease on. Both are state the host
 // already holds; neither is a parameter an agent could supply.
 type WorkBinding struct {
@@ -111,8 +111,16 @@ const (
 type workBoard interface {
 	Workbench(ctx context.Context, method string, input json.RawMessage) (json.RawMessage, error)
 	Valid(ctx context.Context, taskID, token string) (bool, error)
-	LocalRepository(ctx context.Context) (string, error)
 }
+
+// localRepositoryID is the repository every task in a repo-local store names as
+// its primary (dc_store::workbench::LOCAL_REPOSITORY_ID). The tools only read it:
+// store.Client.LocalRepository would create the row in whatever database it was
+// pointed at, and a tool must never create a repository. On a profile board
+// database this constant is not the real repository's id, so the tools cannot see
+// real-repository tasks there; reaching that board needs the identity_key
+// mapping, which is a follow-up and part of the host's wiring decision.
+const localRepositoryID = "this-repo"
 
 var _ workBoard = (*store.Client)(nil)
 
@@ -133,8 +141,20 @@ type workAPI struct {
 	mu       sync.Mutex
 	repo     string
 	sessions map[*Session]string
-	locks    map[string]*sync.Mutex
+	// storeKey names the store this adapter writes, so the process-wide lock
+	// below is per (store, repository) and two stores that happen to share a
+	// repository id do not serialise each other.
+	storeKey string
 }
+
+// workRepoLocks serialises count-then-create per (store, repository) across every
+// Registry in the process. It is package-level on purpose: two Registries over
+// one store each held their own mutex and could both pass a count that only one
+// of them fits.
+var (
+	workRepoLocksMu sync.Mutex
+	workRepoLocks   = map[string]*sync.Mutex{}
+)
 
 func newWorkAPI(board workBoard, binding WorkBinding) (*workAPI, error) {
 	if err := binding.validate(); err != nil {
@@ -150,7 +170,7 @@ func newWorkAPI(board workBoard, binding WorkBinding) (*workAPI, error) {
 	}
 	return &workAPI{
 		board: board, runID: runID, caps: defaultWorkCaps, now: time.Now,
-		sessions: map[*Session]string{}, locks: map[string]*sync.Mutex{},
+		sessions: map[*Session]string{}, storeKey: storeKeyOf(board),
 	}, nil
 }
 
@@ -168,13 +188,21 @@ func (a *workAPI) sessionID(s *Session) string {
 	return id
 }
 
+func storeKeyOf(board workBoard) string {
+	if client, isClient := board.(*store.Client); isClient {
+		return client.DB
+	}
+	return ""
+}
+
 func (a *workAPI) repoLock(repo string) *sync.Mutex {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	m, ok := a.locks[repo]
+	key := a.storeKey + "\x00" + repo
+	workRepoLocksMu.Lock()
+	defer workRepoLocksMu.Unlock()
+	m, ok := workRepoLocks[key]
 	if !ok {
 		m = &sync.Mutex{}
-		a.locks[repo] = m
+		workRepoLocks[key] = m
 	}
 	return m
 }
@@ -411,17 +439,27 @@ func (a *workAPI) repository(ctx context.Context) (string, *tools.Result) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, workStoreTimeout)
 	defer cancel()
-	id, err := a.board.LocalRepository(ctx)
-	if err != nil || !workIdent(id) {
+	// A read. The row is looked up, never created: an absent row is "no mapping",
+	// and the tools then refuse with zero writes.
+	raw, err := a.call(ctx, "repositories.get", map[string]string{"id": localRepositoryID})
+	var got struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &got)
+	}
+	if err != nil || got.Item.ID != localRepositoryID {
 		res := refuse("repository_unmapped",
 			"no repository could be resolved for this session's store, so the board tools refuse: the session has no mapping to a workbench repository_id",
 			"cause", errText(err))
 		return "", &res
 	}
 	a.mu.Lock()
-	a.repo = id
+	a.repo = localRepositoryID
 	a.mu.Unlock()
-	return id, nil
+	return localRepositoryID, nil
 }
 
 func errText(err error) string {
@@ -502,15 +540,42 @@ func (a *workAPI) live(ctx context.Context, sess *Session) (SessionState, *tools
 	return state, nil
 }
 
+// recheck is the liveness check immediately before the put. It judges exactly the
+// task and token the call began under, not whatever the session holds by now: a
+// session that gave that lease up and took another task between the check and the
+// put would otherwise have the new lease validated while the write landed on the
+// old task.
+func (a *workAPI) recheck(ctx context.Context, sess *Session, pinned SessionState) *tools.Result {
+	current := sess.State()
+	if current.TaskID != pinned.TaskID || current.Token != pinned.Token || current.Inherited {
+		res := refuse("lease_invalid", "the session no longer holds the lease this call began under; check the task out again before writing")
+		return &res
+	}
+	if err := ctx.Err(); err != nil {
+		res := refuse("cancelled", "the call was cancelled before a write was attempted")
+		return &res
+	}
+	valid, err := a.board.Valid(ctx, pinned.TaskID, pinned.Token)
+	if err != nil {
+		res := refuse("liveness_unknown", "the lease could not be checked against the store, so no write was made", "cause", err.Error())
+		return &res
+	}
+	if !valid {
+		res := refuse("lease_invalid", "the lease is no longer valid; check the task out again before writing")
+		return &res
+	}
+	return nil
+}
+
 // put is the only place the adapter writes. It rechecks liveness immediately
 // before items.put (the lease is re-read, not trusted from the start of the
 // call) and refuses on a cancelled call, a lost lease, or a store that cannot
 // answer.
-func (a *workAPI) put(ctx context.Context, sess *Session, body map[string]any) (map[string]any, *tools.Result) {
+func (a *workAPI) put(ctx context.Context, sess *Session, pinned SessionState, body map[string]any) (map[string]any, *tools.Result) {
 	if a.beforePut != nil {
 		a.beforePut(ctx)
 	}
-	if _, refused := a.live(ctx, sess); refused != nil {
+	if refused := a.recheck(ctx, sess, pinned); refused != nil {
 		return nil, refused
 	}
 	raw, err := a.call(ctx, "items.put", body)
@@ -681,9 +746,18 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 	if len(checklist) > a.caps.checklistEntries {
 		return capRefusal("checklist_entries", a.caps.checklistEntries, len(checklist))
 	}
-	for _, text := range append([]string{title, description}, checklist...) {
-		if err := validateAgentText("text", text); err != nil {
-			return refuse("invalid_arguments", err.Error())
+	if err := validateAgentText("title", title); err != nil {
+		return refuse("invalid_arguments", err.Error(), "field", "title")
+	}
+	if strings.ContainsAny(title, "\n\r\t") {
+		return refuse("invalid_arguments", "a title is a single line", "field", "title")
+	}
+	if err := validateAgentText("description", description); err != nil {
+		return refuse("invalid_arguments", err.Error(), "field", "description")
+	}
+	for _, text := range checklist {
+		if err := validateChecklistEntry(text); err != nil {
+			return refuse("invalid_arguments", err.Error(), "field", "checklist")
 		}
 	}
 	entries := make([]checkEntry, 0, len(checklist))
@@ -764,7 +838,7 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 		// budget never saw. That bias is the safe one.
 		body := own.resend(reserveReq, own.Status)
 		body["logs"] = appendLogEntry(own.Logs, ownRegion, entry)
-		if _, refused := a.put(ctx, sess, body); refused != nil {
+		if _, refused := a.put(ctx, sess, state, body); refused != nil {
 			return *refused
 		}
 	}
@@ -791,7 +865,7 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 	if len(entries) > 0 {
 		body["checklist"] = entries
 	}
-	receipt, refused := a.put(ctx, sess, body)
+	receipt, refused := a.put(ctx, sess, state, body)
 	if refused != nil {
 		return *refused
 	}
@@ -1051,7 +1125,7 @@ func (a *workAPI) update(ctx context.Context, sess *Session, call tools.Call) to
 	body["request_id"] = req
 	body["logs"] = appendLogEntry(own.Logs, region, entry)
 	body["expected_revision"] = *args.ExpectedRevision
-	receipt, refused := a.put(ctx, sess, body)
+	receipt, refused := a.put(ctx, sess, state, body)
 	if refused != nil {
 		return *refused
 	}

@@ -46,7 +46,11 @@ func (b *recBoard) Workbench(ctx context.Context, method string, input json.RawM
 		}
 	}
 	fail := b.failMethod
+	repoErr := b.repoErr
 	b.mu.Unlock()
+	if method == "repositories.get" && repoErr != nil {
+		return nil, repoErr
+	}
 	if fail != nil {
 		if err := fail(method, n); err != nil {
 			return nil, err
@@ -67,13 +71,6 @@ func (b *recBoard) Valid(ctx context.Context, taskID, token string) (bool, error
 		}
 	}
 	return b.inner.Valid(ctx, taskID, token)
-}
-
-func (b *recBoard) LocalRepository(ctx context.Context) (string, error) {
-	if b.repoErr != nil {
-		return "", b.repoErr
-	}
-	return b.inner.LocalRepository(ctx)
 }
 
 func (b *recBoard) called(method string) []recCall {

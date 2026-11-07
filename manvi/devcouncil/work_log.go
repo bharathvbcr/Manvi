@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -123,26 +124,67 @@ func newLogBlock(entry string) string {
 	return appendLogEntry("", logRegion{}, entry)
 }
 
+// lineBreakRunes are the characters a renderer may treat as the start of a new
+// line besides \n: the Unicode separators, NEL, vertical tab and form feed. A
+// \r is handled by indentNote as a newline too.
+const lineBreakRunes = "\u2028\u2029\u0085\v\f"
+
 // indentNote lays an agent's free text under its entry's first line, indented
-// so no line of it can look like an entry or like a marker's own line.
+// so no line of it can look like an entry or like a marker's own line. Every
+// character a renderer might read as a line break is made an ordinary newline
+// first, so none of them can start an unindented line even if one reaches here.
 func indentNote(note string) string {
 	note = strings.ReplaceAll(note, "\r\n", "\n")
-	note = strings.ReplaceAll(note, "\r", "\n")
+	for _, r := range "\r" + lineBreakRunes {
+		note = strings.ReplaceAll(note, string(r), "\n")
+	}
 	return "  " + strings.ReplaceAll(note, "\n", "\n  ")
 }
 
-// validateAgentText refuses text the adapter will not carry: invalid UTF-8,
-// NUL, or either log marker, which would let the agent close the block early
-// and write outside it.
+// validateAgentText refuses text the adapter will not carry: invalid UTF-8, NUL
+// and every other control character except newline, carriage return and tab; the
+// Unicode line and paragraph separators; format characters (unicode.Cf: bidi
+// overrides, zero-width and joiner characters, the byte-order mark), which can
+// make text read differently from what it is; and either log marker, which would
+// let the agent close the block early and write outside it.
 func validateAgentText(field, text string) error {
 	if !utf8.ValidString(text) {
 		return fmt.Errorf("%s is not valid UTF-8", field)
 	}
-	if strings.ContainsRune(text, 0) {
-		return fmt.Errorf("%s contains a NUL byte", field)
+	for _, r := range text {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+		case unicode.IsControl(r):
+			return fmt.Errorf("%s contains the control character U+%04X", field, r)
+		case r == '\u2028' || r == '\u2029':
+			return fmt.Errorf("%s contains the line separator U+%04X", field, r)
+		case unicode.Is(unicode.Cf, r):
+			return fmt.Errorf("%s contains the format character U+%04X (bidi and zero-width characters are refused)", field, r)
+		}
 	}
 	if strings.Contains(text, "<<<MANVI-AGENT-LOG") || strings.Contains(text, agentLogEnd) {
 		return fmt.Errorf("%s contains an agent-log marker; the marker is the host's and cannot be written by an agent", field)
+	}
+	return nil
+}
+
+// markupInChecklist matches what a plain-text checklist entry may not carry: an
+// HTML tag or comment, and Markdown link or image syntax. The fence neutralises
+// these for an agent that reads the entry, but a person's UI renders the
+// checklist, so they are refused at the door rather than left to the renderer.
+var markupInChecklist = regexp.MustCompile(`<[A-Za-z/!?]|\]\(|\]\[|^\s*!?\[`)
+
+// validateChecklistEntry holds one checklist entry to a single line of plain
+// text: the general text rules, no line break or tab at all, and no markup.
+func validateChecklistEntry(text string) error {
+	if err := validateAgentText("a checklist entry", text); err != nil {
+		return err
+	}
+	if strings.ContainsAny(text, "\n\r\t") {
+		return errors.New("a checklist entry must be a single line of plain text")
+	}
+	if markupInChecklist.MatchString(text) {
+		return errors.New("a checklist entry is plain text: HTML tags and Markdown links or images are refused")
 	}
 	return nil
 }

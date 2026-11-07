@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
@@ -203,7 +204,7 @@ func TestAdvWorkAgentTextCannotForgeAnAuditPrefix(t *testing.T) {
 		}
 	}
 	if len(breaks) > 0 {
-		t.Skipf("BREAK (low): agent log text starting a line after these separators carries a forged audit prefix that renderers show as its own line: %v", breaks)
+		t.Errorf("agent log text starting a line after these separators carries a forged audit prefix that renderers show as its own line: %v", breaks)
 	}
 }
 
@@ -289,7 +290,7 @@ func TestAdvWorkLeaseSwapBetweenCheckAndPutDoesNotWriteTheOldTask(t *testing.T) 
 	}
 	res := env.call("work_update_own_item", map[string]any{"expected_revision": own.Revision, "log": "late write"})
 	if !res.IsError || env.item("TASK-001").Revision != own.Revision {
-		t.Skip("BREAK: " + "an update built for TASK-001 was put after the session released it and took T2 (recheck validated the new lease); see test comment")
+		t.Fatalf("an update built for TASK-001 was put after the session released it and took T2: %s", res.Text)
 	}
 }
 
@@ -392,16 +393,33 @@ func TestAdvWorkTwoRegistriesInOneProcessCannotOvershootTheOpenCap(t *testing.T)
 	a.checkout("TASK-001")
 	b.checkout("T2")
 	fired := false
+	var bDone chan struct{}
 	a.api.beforePut = func(context.Context) {
 		if fired {
 			return
 		}
 		fired = true
-		b.success(b.call("work_create_item", map[string]string{"title": "from B"}))
+		// B creates while A sits between its count and its put. With one lock
+		// shared by every Registry in the process B cannot get in until A is done,
+		// so the hook gives it a bounded moment and moves on; with a lock per
+		// Registry B finishes inside the window and A then overshoots the cap.
+		bDone = make(chan struct{})
+		go func() {
+			defer close(bDone)
+			b.call("work_create_item", map[string]string{"title": "from B"})
+		}()
+		select {
+		case <-bDone:
+		case <-time.After(1500 * time.Millisecond):
+		}
 	}
 	a.call("work_create_item", map[string]string{"title": "from A"})
+	// Whichever of the two ran second was refused by the cap; let B finish.
+	if bDone != nil {
+		<-bDone
+	}
 	if n := len(a.agentProposed()); n > 1 {
-		t.Skipf("BREAK: %d open agent-proposed tasks at a cap of 1 (the repository mutex is per Registry)", n)
+		t.Errorf("%d open agent-proposed tasks at a cap of 1: two Registries in one process share one lock", n)
 	}
 }
 
@@ -426,7 +444,7 @@ func TestAdvWorkTwoRegistriesRacingStayWithinTheHourlyCapOrReportIt(t *testing.T
 	}
 	wg.Wait()
 	if n := len(a.agentProposed()); n > 4 {
-		t.Logf("racing Registries created %d tasks at an hourly cap of 4 (known: the mutex is per Registry; see the deterministic open-cap test)", n)
+		t.Errorf("racing Registries created %d tasks at an hourly cap of 4", n)
 	}
 }
 
@@ -564,7 +582,7 @@ func TestAdvWorkChecklistIsPlainText(t *testing.T) {
 		}
 	}
 	if len(accepted) > 0 {
-		t.Skipf("BREAK: checklist entries accepted as 'plain text': %q", accepted)
+		t.Errorf("checklist entries accepted as 'plain text': %q", accepted)
 	}
 }
 
@@ -597,15 +615,17 @@ func TestAdvWorkChecklistAndTextCaps(t *testing.T) {
 
 // --- 6. repository binding ---------------------------------------------------
 
-// LocalRepository answers a constant, not a mapping from the session to a
-// repository, and has a side effect: it ensures the "this-repo" row exists.
-func TestAdvWorkLocalRepositoryIsAConstantAndEnsuresARowInAnyDatabase(t *testing.T) {
+// The tools bind to the legacy local-repository constant and must only read it.
+// On a database that holds no such row (a fresh one, or a profile board) every
+// tool refuses with repository_unmapped and makes zero writes: no repository row
+// is created beside the real ones.
+func TestAdvWorkLocalRepositoryIsReadNeverCreated(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "profile.sqlite")
 	client := store.New(storeBinary(t), db)
 	if _, err := client.ActiveLeases(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	list := func() int {
+	rows := func() int {
 		out, err := client.Workbench(context.Background(), "repositories.list", json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatal(err)
@@ -616,21 +636,36 @@ func TestAdvWorkLocalRepositoryIsAConstantAndEnsuresARowInAnyDatabase(t *testing
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("repositories.list: %s", out)
 		return len(got.Items)
 	}
-	before := list()
-	id, err := client.LocalRepository(context.Background())
+	before := rows()
+	rec := &recBoard{inner: client}
+	api, err := newWorkAPI(rec, WorkBinding{RunID: "run1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	after := list()
-	t.Logf("repositories before=%d after=%d id=%q", before, after, id)
-	if id != "this-repo" {
-		t.Errorf("LocalRepository answered %q on a fresh database; the fixture assumes the constant this-repo", id)
+	for _, tc := range []struct {
+		name string
+		call func() tools.Result
+	}{
+		{"list", func() tools.Result { return api.list(context.Background(), &Session{}, tools.Call{}) }},
+		{"get", func() tools.Result {
+			return api.get(context.Background(), &Session{}, tools.Call{Arguments: json.RawMessage(`{"id":"x"}`)})
+		}},
+	} {
+		res := tc.call()
+		var p refusalPayload
+		if err := json.Unmarshal([]byte(res.Text), &p); err != nil || !res.IsError || p.Error != "repository_unmapped" {
+			t.Errorf("%s on a database with no local repository answered %q, want repository_unmapped", tc.name, res.Text)
+		}
 	}
-	if after != before {
-		t.Skipf("BREAK (design, low): LocalRepository wrote a repository row (%d -> %d) into a database it was only asked to read; on a profile or board database this creates %q beside the real repositories, and every task linked to a real repository id is invisible to the tools", before, after, id)
+	if after := rows(); after != before {
+		t.Errorf("the tools created a repository row (%d -> %d) in a database they were only asked to read", before, after)
+	}
+	for _, method := range []string{"repositories.put", "items.put"} {
+		if n := len(rec.called(method)); n != 0 {
+			t.Errorf("%d %s call(s) on a database with no local repository", n, method)
+		}
 	}
 }
 

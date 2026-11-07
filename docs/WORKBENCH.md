@@ -1065,17 +1065,19 @@ one-line wiring change in `cmd/manvi`, deliberately not made here.
 not.** Both were checked in code, not assumed.
 
 - *Repository.* The Registry's `Store` is the repository's own store
-  (`.devcouncil/state.sqlite` by default). Every task in that store names
-  `this-repo` (`dc_store::workbench::LOCAL_REPOSITORY_ID`) as its primary
-  repository, and `store.Client.LocalRepository` returns it. The adapter takes the
-  session's repository from that call, once, never from an argument. If the
-  store cannot name one, every tool refuses with `repository_unmapped`, which says
-  there is no mapping, and no board call is made. **Still a gap, unchanged:** a
-  path-to-`repository_id` match through `identity_key` on `repositories.put` for
-  a **profile board** (`manvi serve --workbench-db`) does not exist. These tools
-  scope to the repository-local store's `this-repo`; they are the board a person
-  sees in GitPulse only if `MANVI_STORE_DB` points the in-process agent at the
-  profile database.
+  (`.devcouncil/state.sqlite` by default). Every task in that store names the
+  legacy local repository `this-repo` (`dc_store::workbench::LOCAL_REPOSITORY_ID`)
+  as its primary repository. The adapter binds to that constant and **only reads
+  it** (`repositories.get`, once, never from an argument). It never calls
+  `store.Client.LocalRepository`, which creates the row in whatever database it is
+  pointed at, and no tool ever creates a repository. If the row is absent (a fresh
+  database, or a profile board that has no such row), every tool refuses with
+  `repository_unmapped`, which says there is no mapping, and makes zero writes.
+  **On a GitPulse or profile board database the tools therefore bind to the legacy
+  `this-repo` constant and cannot see tasks linked to a real repository.** Reaching
+  that board needs the `identity_key` mapping (a path-to-`repository_id` match
+  through `repositories.put`), which does not exist. It is a follow-up and part of
+  the owner's wiring decision; `Deps.Work` is not wired.
 - *Own task.* Since dc-store schema 10 a DevCouncil task is a workbench item in
   the same database (`lease.schema.md`), so the task the session holds the lease
   on (`Session.State().TaskID`, set by `devcouncil_checkout_task`) is a board item.
@@ -1109,7 +1111,8 @@ label and the tagged log block) and does not claim the banner.
   complete within twenty pages refuses (`count_unavailable`); it is never read as
   zero. A person who clears the log block clears that task's budget with it.
 - *Host mutex, not a store-level atomic count.* Count-then-create is serialised by
-  one mutex per repository in this process. Two host processes sharing one store
+  one process-wide mutex per (store, repository), shared by every Registry in the
+  process. Two host processes sharing one store
   can both pass a count at the cap; the reconciliation above bounds the overshoot
   to the next write, and a store-level atomic count is the real fix.
 - *Reads render everything in one fenced block.* `work_get_item`,
@@ -1117,6 +1120,18 @@ label and the tagged log block) and does not claim the banner.
   reply as JSON inside a code fence under a standing header that says the content
   is data and not instructions. The fence is one backtick longer than the longest
   run of backticks in the text, and never shorter than three.
+- *Agent text is plain.* Title, description, checklist and log text are refused
+  if they hold a control character other than newline, carriage return and tab,
+  the Unicode line and paragraph separators (U+2028, U+2029), NEL, vertical tab,
+  form feed, or any Unicode format character (`Cf`: bidi overrides, zero-width
+  characters, the byte-order mark; this also refuses emoji joiner sequences). A log
+  note's line breaks of every kind are indented, so no line of agent text can begin
+  with an audit prefix. A title is one line. A checklist entry is one line of
+  at most 300 characters, at most 32 entries, and **markup is refused, not
+  neutralised**: an HTML tag and Markdown link or image syntax are rejected,
+  because a person's UI renders the checklist. A description keeps Markdown: it is
+  free text the person reads as the proposal's body, and inside the fence an agent
+  reads it as inert data.
 - *`work_list_items` takes no arguments.* There is no cursor and no filter: it
   lists one page of at most 30 live, unarchived tasks linked to exactly this
   repository, and says whether there are more.
@@ -1385,9 +1400,9 @@ needs its own approval.
   board.** The earlier draft read: a task record carries repository ids, not paths,
   and mapping `Deps.Root` to a `repository_id` needs the `identity_key` match on
   `repositories.put`. For the Registry's own store the mapping is the store's:
-  every task in it names `this-repo`, and `store.Client.LocalRepository` returns
-  it (see "What shipped"). The `identity_key` match for a profile board still does
-  not exist, and these tools do not claim it.
+  every task in it names `this-repo`, which the tools read and never create (see
+  "What shipped"). The `identity_key` match for a profile board still does not
+  exist, and these tools do not claim it.
 - **Lease to item: closed for the in-process agent.** The earlier draft read: a
   DevCouncil lease is on a DevCouncil task and a workbench item is a different
   record. Since dc-store schema 10 they are the same record, so the leased task id
