@@ -256,7 +256,25 @@ func startHelperTree(t *testing.T, mode string) int {
 	return 0
 }
 
-func processAlive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+// processAlive reports a process that is running. kill(pid, 0) succeeds on a
+// zombie, a killed process whose parent has not reaped it yet, so where /proc
+// exists its state is read and Z counts as dead.
+func processAlive(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return true
+	}
+	// The state is the field after the command, which is parenthesised and may
+	// itself contain spaces or parentheses, so it is found from the last ")".
+	text := string(stat)
+	if i := strings.LastIndexByte(text, ')'); i >= 0 && i+2 < len(text) {
+		return text[i+2] != 'Z'
+	}
+	return true
+}
 
 // TestRunProcLeavesASetsidDescendantRunning pins what runProc's comment says it
 // bounds. A descendant in the child's group is killed with it; one that called

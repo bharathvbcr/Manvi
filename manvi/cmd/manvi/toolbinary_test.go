@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -203,5 +204,86 @@ func TestAReleaseBuildStillHonoursExplicitConfigurationAndPATH(t *testing.T) {
 	t.Setenv("PATH", pathDir)
 	if got := toolBinary("MANVI_TEST_UNSET_PATH", "dcstore-onpath"); got != onPath {
 		t.Fatalf("PATH lookup = %q, want %q", got, onPath)
+	}
+}
+
+// TestAReleaseBuildSkipsAPATHEntryInsideTheWorkspace: an operator PATH can name
+// a directory in the repository, which the agent can write.
+func TestAReleaseBuildSkipsAPATHEntryInsideTheWorkspace(t *testing.T) {
+	root := t.TempDir()
+	inRepo := filepath.Join(root, "bin")
+	planted := filepath.Join(inRepo, "dcverify-pathin")
+	advWriteScript(t, planted, filepath.Join(root, "marker"))
+	trusted := t.TempDir()
+	good := filepath.Join(trusted, "dcverify-pathin")
+	advWriteScript(t, good, filepath.Join(root, "marker2"))
+	advChdir(t, root)
+	releaseStandIn(t, filepath.Join(t.TempDir(), "install"))
+	t.Setenv("PATH", inRepo+string(os.PathListSeparator)+trusted)
+	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != good {
+		t.Fatalf("toolBinary = %q, want the PATH entry outside the workspace %q", got, good)
+	}
+	t.Setenv("PATH", inRepo)
+	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != "dcverify-pathin" {
+		t.Fatalf("toolBinary = %q from a PATH inside the workspace", got)
+	}
+}
+
+// TestAgentWritableIsByPathNotStringPrefix: a sibling that shares a prefix is
+// outside, and a symlink inside that points out is outside too, while a
+// symlink outside that points in is inside.
+func TestAgentWritableIsByPathNotStringPrefix(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	evil := filepath.Join(base, "repo-evil")
+	for _, d := range []string{root, evil} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lookalike := filepath.Join(evil, "tool")
+	inside := filepath.Join(root, "tool")
+	for _, f := range []string{lookalike, inside} {
+		if err := os.WriteFile(f, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkIn := filepath.Join(base, "link-to-inside")
+	if err := os.Symlink(inside, linkIn); err != nil {
+		t.Fatal(err)
+	}
+	advChdir(t, root)
+	t.Setenv("MANVI_PROJECT_ROOT", root)
+	if agentWritable(lookalike) {
+		t.Errorf("%s is outside %s", lookalike, root)
+	}
+	if !agentWritable(inside) {
+		t.Errorf("%s is inside %s", inside, root)
+	}
+	if !agentWritable(linkIn) {
+		t.Errorf("a symlink resolving into %s must count as inside", root)
+	}
+	if !agentWritable(filepath.Join(root, "missing")) {
+		t.Error("an unresolvable path must fail closed")
+	}
+}
+
+// TestAGoInstalledBuildIsARelease: `go install module@vX` records a real
+// main-module version, which is the one `manvi version` reports.
+func TestAGoInstalledBuildIsARelease(t *testing.T) {
+	prevInfo, prevStamp := buildInfo, stampedVersion
+	t.Cleanup(func() { buildInfo, stampedVersion = prevInfo, prevStamp })
+	stampedVersion = ""
+	for version, want := range map[string]bool{"v1.2.3": true, "(devel)": false, "": false} {
+		buildInfo = func() (*debug.BuildInfo, bool) {
+			return &debug.BuildInfo{Main: debug.Module{Path: "m", Version: version}}, true
+		}
+		if got := releaseBuild(); got != want {
+			t.Errorf("main module version %q: releaseBuild = %v, want %v", version, got, want)
+		}
+	}
+	buildInfo = func() (*debug.BuildInfo, bool) { return nil, false }
+	if releaseBuild() {
+		t.Error("no build info and no stamp counted as a release")
 	}
 }

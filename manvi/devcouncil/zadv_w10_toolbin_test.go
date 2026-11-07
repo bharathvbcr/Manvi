@@ -56,6 +56,6 @@ func TestAdvRunProcCommentNamesTheCredentialCondition(t *testing.T) {
 	}
 	window := text[i : i+400]
 	if !strings.Contains(strings.ToLower(window), "credential") && !strings.Contains(strings.ToLower(window), "leak") {
-		t.Skip("BREAK: subprocess.go says a survivor that moves a ref between calls 'is reported'; refguard.go judgeMoves reports only commits carrying a credential, and overlapping calls or unreadable refs drop the baseline (refguard.go:618-624). Comment overstates enforcement (low)")
+		t.Error("subprocess.go overstates the ref guard: it does not name the credential condition")
 	}
 }

@@ -88,17 +88,19 @@ func (r procResult) failedToRun() bool {
 //     started and left in that group does not survive the call: `sleep 30 &`
 //     used to outlive the tool call that ran it, unattached to anything that
 //     would clean it up.
-//     The limit is the group itself. A descendant that leaves it, by setsid or
-//     setpgid, or a double-forked daemon that does so, is not signalled and
-//     outlives the call, reparented to init/launchd. Nothing here bounds it
-//     afterwards: macOS has no subreaper, and on Linux PR_SET_CHILD_SUBREAPER
-//     would only let this process find such orphans, not stop them, so it is
-//     not used. The only things that bound an escapee are what it inherited
-//     (procWaitDelay stops its open pipes from holding the call) and the
-//     checks that do not depend on it dying: refguard.go's ref guard keeps the
-//     refs as the last call left them (refGuard.baseline) and compares the
-//     next call with that, so a survivor that moves a ref between calls is
-//     reported instead of being absorbed as the next baseline. See
+//     The limit is the group itself, and the group kill is unix-only:
+//     proc.ConfigureGroup and proc.KillGroup do nothing elsewhere. A
+//     descendant that leaves the group, by setsid or setpgid, or a
+//     double-forked daemon that does so, is not signalled and outlives the call,
+//     reparented to init/launchd. Nothing here bounds it afterwards: macOS has
+//     no subreaper, and on Linux PR_SET_CHILD_SUBREAPER would only let this
+//     process find such orphans, not stop them, so it is not used. What does
+//     bound an escapee is partial: procWaitDelay stops its open pipes from
+//     holding the call, and refguard.go's ref guard keeps the refs as the last
+//     call left them (refGuard.baseline) and compares the next call with that.
+//     That comparison reports only moved commits that carry a credential, not
+//     every moved ref, and overlapping calls or unreadable refs drop the
+//     baseline (guardFinish), so a survivor can move refs unreported. See
 //     TestRunProcLeavesASetsidDescendantRunning.
 //   - proc.RunBounded runs the whole call, Start included, under the deadline.
 //   - Both streams are captured through limitWriter, which caps without

@@ -40,7 +40,6 @@ func advChdir(t *testing.T, dir string) {
 // where scripts/release-build.sh puts it, or GOBIN inside the repo) has an
 // ownDir the agent can write. The agent drops dcverify next to it.
 func TestAdvReleaseOwnDirInsideWorkspaceIsAgentWritable(t *testing.T) {
-	t.Skip("BREAK: ownDir() is trusted unconditionally; a release binary running from inside the workspace execs a companion the agent planted next to it (see report, medium)")
 	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
 	dist := filepath.Join(root, "dist")
@@ -133,7 +132,6 @@ func TestAdvWhitespaceStampIsUnstamped(t *testing.T) {
 // the project root (DevCouncil dc/devmap/devmap.go:1176). The agent controls
 // that directory, so a relative value executes an agent-writable file.
 func TestAdvRelativeOperatorPathIsNotLeftRelative(t *testing.T) {
-	t.Skip("BREAK: toolBinary returns a relative env value verbatim; devmap/dcgrep/dcstore children run with Dir=project root, so it resolves under the agent-writable tree (see report, low/medium)")
 	t.Setenv("MANVI_ADV_REL", "target/release/dcverify")
 	got := toolBinary("MANVI_ADV_REL", "dcverify")
 	if !filepath.IsAbs(got) && strings.ContainsRune(got, os.PathSeparator) {
@@ -144,11 +142,15 @@ func TestAdvRelativeOperatorPathIsNotLeftRelative(t *testing.T) {
 // Every build script or workflow that compiles ./cmd/manvi for distribution
 // must stamp main.stampedVersion, or the artifact is a "developer build" that
 // walks up from its own directory (inside the repo, for dist/) to
-// crates/target.
+// crates/target. scripts/.dev-build.sh is a developer build by name and is
+// meant to stay unstamped, so it is the one exemption.
 func TestAdvEveryManviBuildScriptStampsTheVersion(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	var unstamped []string
 	scan := func(path string) {
+		if filepath.Base(path) == ".dev-build.sh" {
+			return
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return
@@ -166,7 +168,7 @@ func TestAdvEveryManviBuildScriptStampsTheVersion(t *testing.T) {
 		}
 	}
 	if len(unstamped) > 0 {
-		t.Skip("BREAK: these build manvi without -X main.stampedVersion and write into dist/ inside the repo: " + strings.Join(unstamped, ", "))
+		t.Errorf("these build manvi without -X main.stampedVersion: %s", strings.Join(unstamped, ", "))
 	}
 }
 

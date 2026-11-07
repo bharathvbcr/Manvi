@@ -152,7 +152,12 @@ developer build:
 4. developer builds only: a cargo build tree (`crates/target`, `rust/target`,
    `DevCouncil/rust/target`) found by walking up from the `manvi` executable's own directory.
 
-The working directory and the project root are never searched. They are where
+A release is a binary with the `-X main.stampedVersion` stamp or a real
+main-module version (`go install module@vX`), the same test `manvi version`
+uses. In a release, the executable's directory and `PATH` candidates are
+skipped when they resolve inside the project root or the working directory,
+and a relative env value is made absolute against the working directory at
+launch. The working directory and the project root are never searched. They are where
 the agent can write, and these binaries run on the host outside the gate.
 
 | Component | Env override | Go client (in `DevCouncil/backend/go_orchestrator/`) |
