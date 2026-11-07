@@ -432,17 +432,18 @@ func approvalAlwaysLive(binding string) bool {
 	return false
 }
 
-// noteOverlayInput counts input an overlay consumes against the card behind
-// it. The card is painted and the clock runs while a palette is open over it,
-// but the operator is reading the palette, not the card: without this, Esc to
-// close the palette followed by Enter would land on a card nobody has looked at.
+// noteOverlayInput treats input an overlay consumes as the operator being away
+// from the card behind it. The card is painted and the clock runs while a
+// palette is open over it, but the operator is reading the palette, not the
+// card: without this, Esc to close the palette followed by Enter would land on
+// a card nobody has looked at, and an already armed card would take it.
 func (a *App) noteOverlayInput() {
 	if a.overlay == nil {
 		return
 	}
 	if v := a.Current(); v != nil {
 		if card := v.Approval(); card != nil {
-			card.refuse()
+			card.leave()
 		}
 	}
 }
@@ -638,8 +639,16 @@ func (a *App) RemoveSession(id string) {
 		if v.ID != id {
 			continue
 		}
+		if i == a.active {
+			a.leaveCurrent()
+		}
 		a.views = append(a.views[:i], a.views[i+1:]...)
-		if a.active >= len(a.views) {
+		switch {
+		case i < a.active:
+			// The index named the view that was on screen; the splice moved
+			// it down one, and the screen must keep showing the same view.
+			a.setActive(a.active - 1)
+		case a.active >= len(a.views):
 			a.setActive(len(a.views) - 1)
 		}
 		a.dashboard.Clamp(len(a.views))

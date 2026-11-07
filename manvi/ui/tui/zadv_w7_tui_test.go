@@ -89,9 +89,11 @@ func TestAdvRemoveSessionBelowActiveLeavesTheOldCardOpen(t *testing.T) {
 	// S2's card is painted and quiet has passed; a stray wheel notch arms it.
 	a.Dispatch(ActionScroll{X: 1, Y: 1, Delta: 1})
 	a.RemoveSession("S1")
-	if a.Current().ID != "S3" {
-		t.Fatalf("setup: current is %q after removing S1", a.Current().ID)
+	if a.Current().ID != "S2" {
+		t.Fatalf("setup: removing a lower session changed the view on screen to %q", a.Current().ID)
 	}
+	clk.advance(time.Second)
+	a.cycleSession(1)
 	clk.advance(time.Second)
 	a.cycleSession(-1)
 	if a.Current().ID != "S2" {
@@ -108,6 +110,8 @@ func TestAdvRemoveSessionBelowActiveLeavesTheOldCardOpen(t *testing.T) {
 func TestAdvRemoveSessionBelowActiveUnarmedCardFirstKey(t *testing.T) {
 	a, clk, reply := advThree(t, blockedRequest(true))
 	a.RemoveSession("S1")
+	clk.advance(time.Second)
+	a.cycleSession(1)
 	clk.advance(time.Second)
 	a.cycleSession(-1)
 	drawAt(a, 100, 30)
@@ -390,5 +394,20 @@ func TestAdvSessionsOverlayReselectDropsTheFirstKey(t *testing.T) {
 	effects := a.Dispatch(ActionRune{Runes: []rune{'1'}})
 	if advDecided(effects, reply) {
 		t.Fatalf("re-selecting the session through the switcher kept the gate open: %+v", effects)
+	}
+}
+
+// Removing a session below the one on screen must leave the same view on
+// screen: the index names a view, and the splice moves the view, not the index.
+func TestRemoveSessionBelowActiveKeepsTheSameViewOnScreen(t *testing.T) {
+	a, _, _ := advThree(t, blockedRequest(true))
+	before := a.Current()
+	a.RemoveSession("S1")
+	if a.Current() != before {
+		t.Fatalf("the view on screen changed from %q to %q", before.ID, a.Current().ID)
+	}
+	a.RemoveSession("S3") // above the active one: nothing moves
+	if a.Current() != before {
+		t.Fatalf("removing a higher session changed the view on screen to %q", a.Current().ID)
 	}
 }

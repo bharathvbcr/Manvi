@@ -70,6 +70,10 @@ type ApprovalCard struct {
 	// painted again is dropped, restarting the period. A card nobody has seen
 	// takes the first-paint path instead.
 	returned bool
+	// wheelLive latches when the wheel's own quiet period has passed, so a run of
+	// notches scrolls the highlight after the first. It is the wheel's alone: it
+	// never lets a key through.
+	wheelLive bool
 
 	// cardRect is the whole card as last drawn, and optionRows and reasonRect
 	// are its controls, recorded against screen coordinates so a click is
@@ -145,6 +149,7 @@ func (c *ApprovalCard) leave() {
 	}
 	c.painted = false
 	c.armed = false
+	c.wheelLive = false
 	c.quietFrom = time.Time{}
 }
 
@@ -155,13 +160,26 @@ func (c *ApprovalCard) now() time.Time {
 	return time.Now()
 }
 
-// refuse counts an input that was not meant for the card as one the gate
-// refused: the quiet period restarts from now. It has no effect before the
-// first paint (the period starts there) or after the gate has opened.
-func (c *ApprovalCard) refuse() {
-	if c.painted && !c.armed {
-		c.quietFrom = c.now()
+// wheel decides whether a wheel notch may move the highlight. A notch is input
+// the operator can produce by brushing a trackpad, so it is never evidence of a
+// deliberate answer: it does not latch armed and it does not use up the drop
+// owed to a card the operator has just returned to. It does restart the quiet
+// period, so a key arriving right behind a notch is still type-ahead; it moves
+// the highlight only once a notch has found the period already passed, and then
+// the rest of the run moves it too.
+func (c *ApprovalCard) wheel() bool {
+	if c.armed {
+		return true
 	}
+	if !c.painted || c.returned {
+		return false
+	}
+	now := c.now()
+	if now.Sub(c.quietFrom) >= approvalQuiet {
+		c.wheelLive = true
+	}
+	c.quietFrom = now
+	return c.wheelLive
 }
 
 // admit reports whether an input arriving now may act on the card. An input
@@ -546,10 +564,12 @@ func (c *ApprovalCard) Draw(b *render.Buffer, r render.Rect, th Theme, tick int,
 	c.optionRows = c.optionRows[:0]
 	c.reasonRect = render.Rect{}
 	if inner.Empty() {
+		c.leave()
 		return render.Rect{}
 	}
 	inner = inner.Pad(1, 2, 1, 2)
 	if inner.Empty() {
+		c.leave()
 		return render.Rect{}
 	}
 	c.markPainted()

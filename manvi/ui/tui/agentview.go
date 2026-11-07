@@ -304,6 +304,7 @@ func (v *AgentView) Draw(b *render.Buffer, r render.Rect, th Theme, tick int, sp
 		// Too small to draw: it must also be unclickable, or a control the
 		// operator cannot see would still be answering clicks.
 		v.approval.cardRect = render.Rect{}
+		v.approval.leave()
 	}
 
 	v.Scroll.Draw(b, area, th, v.Focus == CtxScrollback)

@@ -27,9 +27,9 @@ func (a *App) scroll(t ActionScroll) []Effect {
 		// The card is modal for the wheel exactly as it is for keys and
 		// clicks: a notch moves the highlight between options, and the
 		// transcript behind an unanswered question does not scroll. A notch
-		// is input like any other, so until the card admits input it is
-		// dropped and restarts the quiet period.
-		if card.admit() {
+		// is input like any other, so until the card is ready for one it is
+		// dropped and restarts the quiet period; it never opens the gate.
+		if card.wheel() {
 			card.Next(sign(t.Delta))
 		}
 		return nil
