@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -14,10 +15,20 @@ import (
 // runGit runs git in dir and reads at most limit bytes of stdout. The read
 // is capped during the copy: a worktree holding an unignored dependency tree
 // lists millions of paths, and the bound has to hold before the answer exists.
+//
+// This runs on the host, in a worktree the agent can write, so the repository
+// is not trusted to name a program: core.hooksPath at the null device means no
+// hook is found (a tracked .husky or .githooks is an ordinary writable path),
+// and core.fsmonitor=false is the same for a monitor named in its config. The
+// listings and diffs here run no hook today; a post-index-change hook is the
+// one that could, and GIT_OPTIONAL_LOCKS=0 already stops git writing the index
+// for them. The setting holds the guarantee on the helper itself, so a later
+// caller that runs a subcommand which does run hooks cannot start one. The same
+// set is carried by bootstrap's git and, for the shell, by devcouncil's gitSpec.
 func runGit(ctx context.Context, dir string, limit int, args ...string) (out []byte, truncated bool, err error) {
 	// #nosec G204 -- the binary is the literal "git"; every caller places a
 	// request-supplied revision behind --end-of-options or verifies it first.
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false"}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "-c", "core.quotepath=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false"}, args...)...)
 	cmd.Dir = dir
 	// Built, not inherited: a hook or filter in the repository runs with it.
 	cmd.Env = childenv.Git("GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
