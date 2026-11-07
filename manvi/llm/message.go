@@ -221,6 +221,27 @@ type ReasoningReplayer interface {
 	ReplayableOn(fromModel, toModel string) bool
 }
 
+// providerAnthropic is the name the Anthropic adapter reports. It is repeated
+// here, not imported, because the adapter imports this package; a test in
+// llm/anthropic holds the two together.
+const providerAnthropic = "anthropic"
+
+// BindsThinkingToHistory reports whether a provider signs each thinking block
+// to the conversation that produced it: the system prompt, the tools and every
+// message before the block. Where it does, editing an earlier turn client-side
+// invalidates every later block (a 400 for an enforced account), and the way to
+// shrink a conversation is the provider's own server-side context editing, which
+// the check does not count as an edit because it compares the conversation as
+// sent (shared/model-migration.md, "Breaking change 3").
+//
+// One predicate for both consequences, because they are one fact: a provider
+// that binds thinking to history is a provider whose history the harness must
+// not rewrite, and whose rewrites must strip what they invalidated. Every other
+// provider keeps client-side compaction as it was.
+func BindsThinkingToHistory(provider string) bool {
+	return provider == providerAnthropic
+}
+
 // DropSignedReasoning removes from msg the reasoning a provider binds to the
 // conversation that produced it, a block that carries a signature (an encrypted
 // block carries its data there), and returns how many went. It is the other
