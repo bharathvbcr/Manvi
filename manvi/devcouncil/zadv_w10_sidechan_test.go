@@ -269,7 +269,7 @@ func TestAdvSearchTargetsCoverEveryUnrefusedFileExactlyOnce(t *testing.T) {
 	}
 
 	// Randomised trees.
-	rng := rand.New(rand.NewSource(0x6ff33aaf))
+	rng := rand.New(rand.NewSource(0x6ff33aaf)) //nolint:gosec // seeded test-data generator, not a security use of randomness
 	segs := []string{"a", "b", "c", "é", "d d", "x.y", "ab"}
 	for n := range 400 {
 		set := map[string]bool{}
@@ -450,7 +450,7 @@ func TestAdvCandidateRefusalsNeverMoreLenientThanReadRefusal(t *testing.T) {
 	}
 	t.Logf("probed %d listed names of %d created", len(list.Paths), made)
 	if len(breaks) > 0 {
-		t.Skipf("BREAK: candidateRefusals lets through names readRefusal refuses: %s; "+
+		t.Fatalf("BREAK: candidateRefusals lets through names readRefusal refuses: %s; "+
 			"repro in TestAdvGrepSearchesATrailingDotNameTheReadGateRefuses", strings.Join(breaks, ", "))
 	}
 }
@@ -520,7 +520,7 @@ if [ "$1" = search ]; then
 fi
 exec "$REAL" "$@"
 `, real, f.root)
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { //nolint:gosec // an executable wrapper script in a test temp dir
 		t.Fatal(err)
 	}
 	f.reg.deps.Grep = dcgrep.New(wrapper, f.root)
@@ -565,7 +565,7 @@ if [ "$1" = files ]; then
 fi
 exec %q "$@"
 `, real, rawList, real)
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { //nolint:gosec // an executable wrapper script in a test temp dir
 		t.Fatal(err)
 	}
 	f.reg.deps.Grep = dcgrep.New(wrapper, f.root)
@@ -575,7 +575,7 @@ exec %q "$@"
 		t.Errorf("ceiling refusal depends on the pattern:\n  %s\n  %s", a, b)
 	}
 	if !strings.Contains(a, "more than 200000 files") {
-		raw, _ := os.ReadFile(rawList)
+		raw, _ := os.ReadFile(rawList) //nolint:gosec // reads a path the test itself created
 		t.Skipf("could not force a truncated listing through the wrapper (reply %.200s, raw list %.900s); ceiling verified by reading only", a, raw)
 	}
 }
@@ -688,7 +688,7 @@ func TestAdvFetchTitleAndURLFoldEveryLineBreakBidiAndFormatRune(t *testing.T) {
 	}
 	// Invalid UTF-8.
 	out, lines, _, _ := advFrame(t, &fetch.Document{URL: "https://d.example/\xff\xfe\nx", Title: "\xc3\x28\nz", Text: "b"}, nonce)
-	if len(lines) != 7 || strings.ContainsAny(out, "\xff\xfe") {
+	if len(lines) != 7 || (strings.Contains(out, "\xff") || strings.Contains(out, "\xfe")) {
 		t.Errorf("invalid UTF-8 not folded: %q", out)
 	}
 }
@@ -771,6 +771,6 @@ func TestAdvGrepSearchesATrailingDotNameTheReadGateRefuses(t *testing.T) {
 	hit := advGrepRaw(t, f, `PRIVATEKEYBODY`, map[string]any{"include_ignored": true})
 	miss := advGrepRaw(t, f, `NOTTHERE`, map[string]any{"include_ignored": true})
 	if read.IsError && hit != miss {
-		t.Skipf("BREAK: grep reply depends on a file read_file refuses.\n  hit:  %s\n  miss: %s", hit, miss)
+		t.Fatalf("BREAK: grep reply depends on a file read_file refuses.\n  hit:  %s\n  miss: %s", hit, miss)
 	}
 }

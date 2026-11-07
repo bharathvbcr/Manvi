@@ -3,6 +3,7 @@ package devcouncil
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,69 @@ func TestCandidateRefusalsAgreeWithTheFullReadJudgement(t *testing.T) {
 		want := f.reg.readRefusal(name)
 		if got[name] != want {
 			t.Errorf("%s: candidateRefusals = %q, readRefusal = %q", name, got[name], want)
+		}
+	}
+}
+
+// The shortcut may be less strict than nothing: for any name at all, built from
+// an alphabet chosen to break path handling (dots, spaces, separators, Unicode
+// variants, case folds, credential stems), candidateRefusals must refuse
+// whatever readRefusal refuses. Where the file exists it must also be equal,
+// which is what the fallback to the full judgement guarantees.
+func TestCandidateRefusalsAreNeverMoreLenientOnHostileNames(t *testing.T) {
+	f := newFixture(t)
+	pieces := []string{
+		".", "..", " ", "/", "//", "\\", "e", "n", "v", "E", "N", "V", "_", "-",
+		"\u00e9", "e\u0301", "\u212a", "\u0131", "\u200b", "\u202e", "\x7f",
+		"id_rsa", ".env", ".ENV", "env", "pem", ".pem", "key", "credentials", "secrets",
+		".ssh", ".aws", "a", "b", "src", "CON", "nul", "COM1", "~", "%2e", ":",
+	}
+	rng := rand.New(rand.NewPCG(7, 11)) //nolint:gosec // seeded test-data generator, not a security use of randomness
+	names := make([]string, 0, 600)
+	for range 600 {
+		var b strings.Builder
+		for range 1 + rng.IntN(5) {
+			b.WriteString(pieces[rng.IntN(len(pieces))])
+		}
+		names = append(names, b.String())
+	}
+	created := 0
+	for i, name := range names {
+		if i%2 == 0 {
+			continue
+		}
+		full := filepath.Join(f.root, filepath.FromSlash(name))
+		if os.MkdirAll(filepath.Dir(full), 0o750) == nil && os.WriteFile(full, []byte("x\n"), 0o600) == nil {
+			created++
+		}
+	}
+	if created == 0 {
+		t.Skip("the filesystem accepted none of the generated names")
+	}
+	got := f.reg.candidateRefusals(names)
+	for _, name := range names {
+		want := f.reg.readRefusal(name)
+		if want != "" && got[name] == "" {
+			t.Errorf("%q: readRefusal = %q but candidateRefusals admits it", name, want)
+		}
+		if got[name] != want {
+			t.Errorf("%q: candidateRefusals = %q, readRefusal = %q", name, got[name], want)
+		}
+	}
+}
+
+func TestCleanNameRejectsEverythingThePlatformMayAlter(t *testing.T) {
+	for _, bad := range []string{
+		"", "a/", "/a", "a//b", "./a", "a/./b", "a/../b", "id_rsa.", "dir./x", "a b", "a\\b",
+		"caf\u00e9", "e\u0301", "a\x00b", "CON", "con.txt", "a/NUL", "COM1.log", "lpt9",
+	} {
+		if cleanName(bad) {
+			t.Errorf("cleanName(%q) = true", bad)
+		}
+	}
+	for _, ok := range []string{".env", "src/a.go", "cfg/.ENV", "a-b_c/d.e.f", "COM10", "console.go"} {
+		if !cleanName(ok) {
+			t.Errorf("cleanName(%q) = false", ok)
 		}
 	}
 }

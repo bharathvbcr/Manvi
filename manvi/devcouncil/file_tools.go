@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -863,10 +864,11 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 // was 15x the cost of the search it gated. A test holds the two equal on a
 // mixed tree.
 func (r *Registry) candidateRefusals(names []string) map[string]string {
-	// Each verdict is a pair of filesystem calls (lstat, then the no-follow
-	// open that counts links) and they are independent, so they run on a
-	// bounded pool: profiled at 3,000 files, the time was all in those calls.
+	// Each verdict is a few filesystem calls and they are independent, so they
+	// run on a bounded pool: profiled at 3,000 files, the time was all in those
+	// calls.
 	rules := make([]string, len(names))
+	dirs := &plainDirs{root: r.deps.Root, known: map[string]bool{}}
 	workers := min(grepRefusalWorkers, len(names))
 	var next atomic.Int64
 	var wg sync.WaitGroup
@@ -879,7 +881,7 @@ func (r *Registry) candidateRefusals(names []string) map[string]string {
 				if i >= len(names) {
 					return
 				}
-				rules[i] = r.candidateRefusal(names[i])
+				rules[i] = r.candidateRefusal(names[i], dirs)
 			}
 		}()
 	}
@@ -893,21 +895,99 @@ func (r *Registry) candidateRefusals(names []string) map[string]string {
 	return refused
 }
 
-func (r *Registry) candidateRefusal(name string) string {
+// candidateRefusal is the verdict for one listed name. The shortcut is used
+// only where every branch of readRefusal other than the credential-name rule
+// and the link count provably cannot fire:
+//
+//   - normalisation and containment (NUL, ".." and "." parts, empty parts,
+//     backslashes, a trailing dot or space that the platform may strip, a
+//     spelling that converges differently) cannot fire on a cleanName, which is
+//     plain ASCII with none of those;
+//   - symlink resolution cannot fire when every directory on the way is a real
+//     directory, checked once per directory by plainDirs, and the leaf is a
+//     regular file by lstat;
+//   - the on-disk-spelling rule cannot differ for an ASCII name that exists
+//     under that exact spelling, and the credential-name rule is run on it.
+//
+// Every other name, and any name whose file is not what the walk reported,
+// gets the full readRefusal. Conservative by construction: the fallback is the
+// definition, so the shortcut may only ever agree with it.
+func (r *Registry) candidateRefusal(name string, dirs *plainDirs) string {
+	if !cleanName(name) || !dirs.plain(path.Dir(name)) {
+		return r.readRefusal(name)
+	}
 	if policy.SecretPathSpelling(name) {
 		return string(policy.RuleSecretRead)
 	}
 	full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
 	fi, err := safefile.Lstat(full)
 	if err != nil || !fi.Mode().IsRegular() {
-		// Not the regular file the walk reported: it changed since, and the
-		// shortcut's premises no longer hold. Ask the full judgement.
 		return r.readRefusal(name)
 	}
 	if !singleNameFile(full, fi) {
 		return ruleAliasedRead
 	}
 	return ""
+}
+
+// cleanName reports whether a slash-separated name is made only of plain ASCII
+// components: letters, digits, and "_", "-", "." with no component empty, "."
+// or "..", none ending in a dot, and none a name Windows reserves. Case folds,
+// Unicode normalisation, separators and trailing characters the platform may
+// alter are all outside it, so none of them can make the shortcut diverge.
+func cleanName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".") {
+			return false
+		}
+		for i := range len(part) {
+			c := part[i]
+			plain := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+				c == '_' || c == '-' || c == '.'
+			if !plain {
+				return false
+			}
+		}
+		stem, _, _ := strings.Cut(strings.ToUpper(part), ".")
+		switch stem {
+		case "CON", "PRN", "AUX", "NUL":
+			return false
+		}
+		if len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) &&
+			stem[3] >= '0' && stem[3] <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// plainDirs answers, once per directory, whether every component of a
+// repository-relative directory is a real directory rather than a symlink.
+type plainDirs struct {
+	root  string
+	mu    sync.Mutex
+	known map[string]bool
+}
+
+func (p *plainDirs) plain(dir string) bool {
+	if dir == "." || dir == "" {
+		return true
+	}
+	p.mu.Lock()
+	verdict, seen := p.known[dir]
+	p.mu.Unlock()
+	if seen {
+		return verdict
+	}
+	fi, err := safefile.Lstat(filepath.Join(p.root, filepath.FromSlash(dir)))
+	verdict = err == nil && fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 && p.plain(path.Dir(dir))
+	p.mu.Lock()
+	p.known[dir] = verdict
+	p.mu.Unlock()
+	return verdict
 }
 
 // searchTargets covers every unrefused file in files with the fewest search
