@@ -1721,10 +1721,17 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 	// it, so it would overwrite the agent's edit in between and give the checkout
 	// to the next run while the agent may still be in it. The block and its record
 	// stay, the checkout is held (holdCheckout), and the run is recorded
-	// unresolved, as the caller already records it.
-	if m := job.takeMaterialised(); m != nil && unconfirmed != nil {
-		r.holdCheckout(job, unconfirmed, m)
-		cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+	// unresolved, as the caller already records it. A run with no block is held
+	// the same way, with nothing to leave in place: what it would give the next
+	// run is a checkout an agent, or a tool the agent started, may still be
+	// writing.
+	m := job.takeMaterialised()
+	if unconfirmed != nil && r.holdCheckout(job, unconfirmed, m) {
+		// A harness run says what it left behind. A plain run left nothing, and its
+		// reason stays what failed; the hold is told by the refusals (holdMessage).
+		if m != nil {
+			cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+		}
 	} else if restoreErr := m.Restore(); restoreErr != nil {
 		cause = errors.Join(cause, restoreErr)
 		job.mu.Lock()

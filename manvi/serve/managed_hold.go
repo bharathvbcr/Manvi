@@ -13,7 +13,9 @@ import (
 // What a managed run leaves in a checkout it could not give back, and how the
 // runner remembers it.
 //
-// blockedCheckout is a checkout whose harness block was left in place, and why.
+// blockedCheckout is a checkout that a run could not give back, and why: its
+// harness block was left in place, or (a hold) its agent's process group may still
+// be writing it.
 // That the block may be there is the record on disk, which this does not replace:
 // it is process memory kept so a verifier that is refused is told why, and, for a
 // hold, so the checkout stays held. Two kinds:
@@ -21,18 +23,22 @@ import (
 //   - a restore that failed (session nil): the reason is the restore's error.
 //     Nothing is held; the next attempt on the checkout tries the restore again.
 //   - a hold (session set): the run ended without its agent process confirmed
-//     gone (Close did not report it reaped), so the block was not taken out from
-//     under a process that may still be reading and writing the file, and no other
-//     run is admitted on the checkout. A hold ends when the provider confirms the
-//     exit, which a background reaper keeps asking for (see reap) and which then
-//     takes the block out, or when Manvi restarts: the hold is process memory, and
+//     gone (Close did not report it reaped, or found a group member alive), so a
+//     block, if the run had one, was not taken out from under a process that may
+//     still be reading and writing the file, and no other run is admitted on the
+//     checkout. A hold ends when the provider confirms the exit, which a background
+//     reaper keeps asking for (see reap) and which then takes the block out, if
+//     there is one, or when Manvi restarts: the hold is process memory, and
 //     the record on disk is then applied as any dead run's is.
 type blockedCheckout struct {
 	info   os.FileInfo
 	reason string
 
 	// Set on a hold only. job is the held run, and revisable says its stored
-	// outcome may be revised when the hold ends (see reviseHeldRun).
+	// outcome may be revised when the hold ends (see reviseHeldRun). block is
+	// whether a harness block was left in file (a plain run leaves none: nothing
+	// is restored when its hold ends, and file and nonce are empty).
+	block     bool
 	session   ManagedSession
 	job       *managedJob
 	revisable bool
@@ -66,15 +72,23 @@ var (
 // holdMessage is what a refused attempt, and a refused verification, is told about
 // a hold. It names the run, since when, and how it ends.
 func (b *blockedCheckout) holdMessage() string {
-	waiting := "Manvi keeps asking the provider and releases the checkout, taking the block out, when it confirms the exit"
+	release := "releases the checkout when it confirms the exit"
+	if b.block {
+		release = "releases the checkout, taking the block out, when it confirms the exit"
+	}
+	waiting := "Manvi keeps asking the provider and " + release
 	switch {
 	case b.gaveUp:
 		waiting = fmt.Sprintf("Manvi asked the provider %d times and has stopped asking; the next attempt on this checkout starts asking again", b.attempts)
 	case b.rechecks > 0:
-		waiting = fmt.Sprintf("Manvi had stopped asking after %d attempts and is re-checking with the provider now; it releases the checkout, taking the block out, when it confirms the exit", b.attempts)
+		waiting = fmt.Sprintf("Manvi had stopped asking after %d attempts and is re-checking with the provider now; it %s", b.attempts, release)
 	}
 	if b.lastClose != "" {
 		waiting = fmt.Sprintf("The provider last answered: %s. %s", b.lastClose, waiting)
+	}
+	if !b.block {
+		return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process, and every member of its process group, exited, so something it started may still be writing this checkout: no harness block was written, but the checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the hold is process memory and ends with it",
+			b.runID, b.since.UTC().Format(time.RFC3339), waiting)
 	}
 	return fmt.Sprintf("managed run %s ended at %s without confirmation that its agent process exited, so the agent may still be running: its harness block (nonce=%s) stays in %s and this checkout is held. %s. To recover without waiting, or if it never confirms, restart `manvi serve`: the record on disk is then applied as a dead run's block is",
 		b.runID, b.since.UTC().Format(time.RFC3339), b.nonce, b.file, waiting)
@@ -115,18 +129,23 @@ func (r *ManagedRunner) blockedReason(info os.FileInfo) string {
 	return ""
 }
 
-// holdCheckout keeps a checkout held after a run whose agent process is not
-// confirmed gone: its block stays in the file and its record on disk, and no run
-// is admitted on the checkout until the reaper confirms the exit. It starts that
-// reaper, one per held run.
-func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession, m *harnessMaterialisation) {
+// holdCheckout keeps a checkout held after a run whose agent process, or a member
+// of its process group, is not confirmed gone: no run is admitted on the checkout
+// and no verification is judged on it until the reaper confirms the exit. A run
+// with a harness block (m) also leaves the block and its record in place; a plain
+// run has none, and m is nil. It starts the reaper, one per held run, and reports
+// whether it held: a run with no resolved checkout has nothing to hold.
+func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession, m *harnessMaterialisation) bool {
 	job.mu.Lock()
 	info, root, revisable := job.checkoutInfo, job.checkout, job.revisableHold
 	job.mu.Unlock()
 	if info == nil {
-		return
+		return false
 	}
-	b := &blockedCheckout{info: info, session: session, job: job, revisable: revisable, runID: job.id, since: time.Now(), root: root, file: m.File, nonce: m.pending.Nonce, interval: reapInterval, attempts: maxReapAttempts}
+	b := &blockedCheckout{info: info, session: session, job: job, revisable: revisable, block: m != nil, runID: job.id, since: time.Now(), root: root, interval: reapInterval, attempts: maxReapAttempts}
+	if m != nil {
+		b.file, b.nonce = m.File, m.pending.Nonce
+	}
 	r.mu.Lock()
 	r.dropBlocked(info)
 	r.blocked = append(r.blocked, b)
@@ -139,6 +158,7 @@ func (r *ManagedRunner) holdCheckout(job *managedJob, session ManagedSession, m 
 	stop := r.reapStop
 	r.mu.Unlock()
 	go r.reap(b, stop)
+	return true
 }
 
 // heldReason is why a checkout is held for an unconfirmed exit, or "".
@@ -207,7 +227,11 @@ func (r *ManagedRunner) releaseHold(b *blockedCheckout) bool {
 		return false
 	}
 	// Restore first and only then stop holding, so no attempt is admitted between.
-	err := restoreHeldBlock(b.root, b.nonce)
+	// A plain run left no block, so there is nothing to take out of the file.
+	var err error
+	if b.block {
+		err = restoreHeldBlock(b.root, b.nonce)
+	}
 	r.mu.Lock()
 	r.blocked = slices.DeleteFunc(r.blocked, func(e *blockedCheckout) bool { return e == b })
 	r.mu.Unlock()
@@ -286,9 +310,9 @@ func (r *ManagedRunner) recheckHeld(info os.FileInfo) {
 // with Close's answer (which group) in the refusal, until that parent exits or
 // the host restarts. That is the fail-closed side of the same limit.
 //
-// Only a harness run holds (finish restores or holds only a materialised block).
-// Whether a plain run, which has no block, should also wait for the group is the
-// owner's to decide and is not decided here.
+// Every managed run holds on this, with a harness block or without (owner
+// decision 2026-11-06, ft-43e7cb92): a plain run has no block to leave in place,
+// but its group may still be writing the checkout a next run would be admitted on.
 func exitConfirmed(exit codingagent.Exit) bool { return exit.Reaped && !exit.GroupLive }
 
 // unconfirmedSession is the session to hold a checkout for after a Close that returned

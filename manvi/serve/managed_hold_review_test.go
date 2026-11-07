@@ -384,3 +384,89 @@ func TestRevisingAHeldRunIsIdempotentAndNeverRewritesAFinalisedRun(t *testing.T)
 		t.Fatalf("a repeated release touched the file: %q", got)
 	}
 }
+
+// plainRun is a run with no harness, ended through its own Close.
+func plainRun(t *testing.T, configure ...func(*managedTestSession)) (string, *managedTestSession, *managedLifecycle) {
+	t.Helper()
+	root := scanRepo(t, map[string]string{"CLAUDE.md": "project rules\n"})
+	var session *managedTestSession
+	m := unconfirmedLifecycle(t, root, &session, configure...)
+	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activate(t, m, prepared)
+	m.finished()
+	if session == nil {
+		t.Fatal("the factory never built the session")
+	}
+	return root, session, m
+}
+
+func liveGroup(s *managedTestSession) {
+	s.unreaped = false
+	s.groupLive = true
+	s.liveGroupErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
+}
+
+// A plain run (owner decision 2026-11-06, ft-43e7cb92) holds its checkout for as
+// long as a member of its agent's process group lives, as a harness run does: the
+// group can still write the checkout a second run would be admitted on. The
+// refusal says why and names the group; when the group is gone the reaper releases
+// the checkout and the run, recorded unresolved until then, is revised.
+func TestAPlainRunWhoseGroupOutlivesTheAgentKeepsTheCheckoutHeldUntilItIsGone(t *testing.T) {
+	root, session, m := plainRun(t, liveGroup)
+	if run, _ := storedRun(t, m); run.State != "unresolved" {
+		t.Fatalf("the run is recorded %s, want unresolved while its group lives", run.State)
+	}
+	e := m.runner.HarnessBusy(root)
+	if e == nil || e.Code != ErrHarnessBusy {
+		t.Fatalf("HarnessBusy = %v, want the checkout held for a plain run whose group lives", e)
+	}
+	for _, want := range []string{"managed run run ", "process group", "no harness block was written", "checkout is held", "restart `manvi serve`"} {
+		if !strings.Contains(e.Message, want) {
+			t.Errorf("the hold message lacks %q:\n%s", want, e.Message)
+		}
+	}
+	waitFor(t, "the refusal to name the live group", func() bool {
+		e := m.runner.HarnessBusy(root)
+		return e != nil && strings.Contains(e.Message, "process group 123 still has a live member")
+	})
+	// A second managed run, with a harness or without, is refused with the reason.
+	_, err := secondHarnessAttempt(m, root)
+	if busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
+		t.Errorf("a harness run was admitted on a held checkout, or not told why: %v", err)
+	}
+	err = m.runner.enterCheckout(m.otherAttempt("plain", ManagedHarness{}), managedRun{Cwd: root})
+	if busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
+		t.Errorf("a plain run was admitted on a held checkout, or not told why: %v", err)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
+		t.Fatalf("a hold with no block touched the instruction file: %q", got)
+	}
+
+	session.confirmed.Store(true)
+	waitFor(t, "the checkout to be released", func() bool { return m.runner.HarnessBusy(root) == nil })
+	waitFor(t, "the stored run to be revised", func() bool { run, _ := storedRun(t, m); return run.State == "exited" })
+	if err := m.runner.enterCheckout(m.otherAttempt("after", ManagedHarness{Kind: "named", Name: "x"}), managedRun{Cwd: root}); err != nil {
+		t.Fatalf("the released checkout was not admitted: %v", err)
+	}
+	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
+		t.Fatalf("the release touched the instruction file: %q", got)
+	}
+}
+
+// A plain run whose group is already gone when it closes holds nothing: it is the
+// ordinary exit, recorded exited, and the checkout is free at once.
+func TestAPlainRunWhoseGroupIsGoneAtCloseReleasesTheCheckoutAtOnce(t *testing.T) {
+	root, _, m := plainRun(t, func(s *managedTestSession) { s.unreaped = false })
+	if run, _ := storedRun(t, m); run.State != "exited" {
+		t.Fatalf("the run is recorded %s, want exited", run.State)
+	}
+	if e := m.runner.HarnessBusy(root); e != nil {
+		t.Fatalf("HarnessBusy = %v for a run whose group was gone at close", e)
+	}
+	if err := m.runner.enterCheckout(m.otherAttempt("next", ManagedHarness{}), managedRun{Cwd: root}); err != nil {
+		t.Fatalf("the checkout of a cleanly ended plain run is held: %v", err)
+	}
+}

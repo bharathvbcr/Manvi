@@ -109,6 +109,31 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **Behaviour change: plain managed runs now hold their checkout while the
+  agent's process group lives** (owner decision 2026-11-06, ft-43e7cb92
+  criterion 3). A managed run with no harness block whose Close finds a member of
+  the agent's process group still alive (`Exit.GroupLive`), or does not reap the
+  agent, used to release its checkout at once. It now holds it as a harness run
+  does: every `work.runs.managed.prepare` on the checkout, with a harness or
+  without, and every `work.verify.task` and `work.scan.gaps` on the worktree, is
+  refused with `E_HARNESS_BUSY`; the refusal says no harness block was written,
+  names the run and, once the provider has answered, the live group; and the
+  background reaper releases the checkout when a later Close finds the group gone.
+  There is no block to restore, so the instruction file is not touched. The hold
+  is process memory and ends when `manvi serve` restarts. A plain run whose group
+  is gone at close releases at once, as before. The `E_HARNESS_BUSY` code is
+  unchanged; no change to `contracts/serve.ops.schema.json`.
+- `close()` of a managed coding agent gives the process-group wait its own full
+  5 s budget, started when the agent is reaped, instead of what was left of the
+  one budget the reap wait used: a group that emptied a moment after a slow reap
+  was reported live and its checkout held. Its worst case is now 10 s, not 5 s.
+- A held run is no longer left `unresolved` for good: when the reaper finds the
+  agent's process group gone, it releases the checkout and revises the stored run
+  to `exited` with the agent's exit code, through the same `runs.finish` write as
+  the first record, and only if the run is still `unresolved`. A Close that still
+  carries an error (an `ErrWaitDelay`, say) leaves it `unresolved`, as the first
+  Close would have.
+
 - **The DevCouncil pin moves to the workbench schema 15 store** (`1f6d5452`,
   from `7926697d`). Schema 15 admits CI result attention rows (`run_ci_*`),
   which GitPulse records through the Rust store; the Go workbench allowlist and
