@@ -1,4 +1,4 @@
-# Build and publish manvi binaries for darwin and linux (amd64, arm64).
+# Build and publish manvi binaries for darwin and linux (amd64, arm64) and windows (amd64).
 #
 # Triggered by version tags (v*). Each matrix cell builds on a runner of its
 # own OS and links the Gusset engine (policy decisions use Go's fnmatch;
@@ -11,9 +11,17 @@
 # verify run, pinned modules and toolchain. A verify gate runs first: the tag's
 # commit must have a successful verify.yml run, or nothing is built. The
 # publish job fetches the module pins too, because scripts/check-release.mjs
-# compares the vendored contracts and the sibling checkouts with them. There is
-# no Windows target — see verify.yml for why
-# this tree does not build for GOOS=windows, and gusset is unix-only.
+# compares the vendored contracts and the sibling checkouts with them.
+#
+# Every artifact has a CycloneDX SBOM next to it (scripts/release-sbom.sh):
+# the Go module graph and, where the engine is linked, the Rust crates. The
+# darwin binaries are signed and notarized (scripts/release-sign-macos.sh,
+# APPLE_* secrets). A run without those secrets fails in the gate job, before
+# anything is built, unless workflow_dispatch sets allow_unsigned; those
+# darwin files are then named ...-UNSIGNED and the notes say so. The Windows
+# binary is built CGO_ENABLED=0 with no Gusset engine, because gusset supports
+# only unix targets; it is labelled that way in the notes and its SBOM. It is
+# not Authenticode-signed. Details: docs/RELEASING.md.
 #
 # The Go module replaces DevCouncil and gusset with sibling checkouts. Those
 # directories are not in this repository, so the build fetches the commits in
@@ -31,6 +39,11 @@ on:
         description: "Tag name to stamp (for a dry-run build without publishing)"
         required: true
         type: string
+      allow_unsigned:
+        description: "Build the macOS binaries UNSIGNED when the APPLE_* secrets are absent (dry runs only; a tag push never sets this)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,6 +69,7 @@ jobs:
       actions: read
     outputs:
       verify_run: ${{ steps.gate.outputs.run_url }}
+      signing: ${{ steps.signing.outputs.signing }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,10 +83,29 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         run: bash scripts/release-verify-gate.sh
 
+      # Fails here, before any runner time is spent, when the macOS signing
+      # secrets are absent and allow_unsigned was not set. Reports only which
+      # secrets are missing, never a value.
+      - name: macOS signing preflight
+        id: signing
+        env:
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned && 'true' || 'false' }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash scripts/release-sign-macos.sh preflight
+
   build:
     name: manvi (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: gate
     runs-on: ${{ matrix.runner }}
+    # Windows runs the same bash scripts as the others.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +130,12 @@ jobs:
             goarch: arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
+          # No engine on Windows (gusset is unix-only): CGO_ENABLED=0, so no
+          # Rust target either.
+          - goos: windows
+            goarch: amd64
+            runner: windows-latest
+            rust_target: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,16 +155,19 @@ jobs:
           go-version-file: manvi/go.mod
           cache-dependency-path: manvi/go.sum
 
-      # No third-party action for Rust, as in verify.yml. rustup is on the
-      # ubuntu and macOS images; installed here if an image lacks it.
+      # No third-party action for Rust, as in verify.yml. rustup is on every
+      # runner image used here. If an image ever lacks it the job stops with a
+      # message; nothing is downloaded and piped into a shell. The toolchain is
+      # RUST_TOOLCHAIN above, never a floating channel. Windows builds without
+      # cgo and has no Rust to install.
       - name: Rust toolchain
+        if: matrix.goos != 'windows'
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN"
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "rustup is not on this runner image. Use an image that ships it; the release does not install it from the network." >&2
+            exit 1
           fi
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
@@ -145,10 +187,32 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: bash scripts/release-build.sh
 
+      # Sign and notarize in place, then write the SBOM, so the SBOM's digest
+      # is that of the file that ships. An unsigned dispatch run renames the
+      # file to ...-UNSIGNED and updates $artifact.
+      - name: Sign and notarize (macOS)
+        if: matrix.goos == 'darwin'
+        env:
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned && 'true' || 'false' }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash scripts/release-sign-macos.sh sign "dist/$artifact"
+
+      - name: SBOM
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: bash scripts/release-sbom.sh
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.artifact }}
-          path: dist/${{ env.artifact }}
+          path: |
+            dist/${{ env.artifact }}
+            dist/${{ env.artifact }}.sbom.cdx.json
           if-no-files-found: error
           retention-days: 14
 
@@ -189,4 +253,5 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           VERIFY_RUN_URL: ${{ needs.gate.outputs.verify_run }}
+          RELEASE_UNSIGNED: ${{ needs.gate.outputs.signing == 'unsigned' && '1' || '0' }}
         run: bash scripts/release-publish.sh

@@ -13,6 +13,11 @@
 # unwind table links and matches and then aborts on that panic, which is the
 # failure this step exists to catch.
 #
+# Windows is built CGO_ENABLED=0 and has no engine: gusset supports only unix
+# targets and fails the build on GOOS=windows (gusset docs/platforms.md). That
+# is the one binary the release ships without it, and it is labelled so in the
+# release notes and in its SBOM. It runs `version` instead of `gusset-check`.
+#
 # MANVI_RELEASE_ENGINE=0 builds the old CGO_ENABLED=0 binary, which has no
 # engine to check. For a local dry run only; the workflow never sets it.
 set -euo pipefail
@@ -30,13 +35,14 @@ goos="${GOOS:-}"
 goarch="${GOARCH:-}"
 
 case "${goos}/${goarch}" in
-  darwin/amd64|darwin/arm64|linux/amd64|linux/arm64) ;;
+  darwin/amd64|darwin/arm64|linux/amd64|linux/arm64|windows/amd64) ;;
   *)
     echo "unsupported target ${goos}/${goarch}" >&2
     exit 1
     ;;
 esac
 
+rust_triple=""
 args=(--tag "$version")
 if [[ "$event" != "workflow_dispatch" ]]; then
   args+=(--require-head)
@@ -44,12 +50,19 @@ fi
 node scripts/check-release.mjs "${args[@]}"
 
 out="manvi-${version}-${goos}-${goarch}"
+engine=1
+if [[ "$goos" == windows ]]; then
+  out+=".exe"
+  engine=0
+elif [[ "${MANVI_RELEASE_ENGINE:-1}" == "0" ]]; then
+  engine=0
+fi
 mkdir -p dist
 ldflags="-s -w -X main.stampedVersion=${version}"
 tags=""
 
-if [[ "${MANVI_RELEASE_ENGINE:-1}" == "0" ]]; then
-  echo "MANVI_RELEASE_ENGINE=0: building without the engine (CGO_ENABLED=0)" >&2
+if [[ "$engine" == 0 ]]; then
+  echo "building ${goos}/${goarch} without the engine (CGO_ENABLED=0)" >&2
   export CGO_ENABLED=0
 else
   case "${goos}/${goarch}" in
@@ -72,6 +85,7 @@ else
   fi
   # Captured before eval: `eval "$(failing)"` evaluates the empty output and
   # succeeds, and the build then links whatever archive is lying around.
+  rust_triple="$triple"
   exports="$("$cgo_env" --export --target="$triple")"
   eval "$exports"
   if [[ "$goos" == linux ]]; then
@@ -96,7 +110,13 @@ go -C manvi build \
   ./cmd/manvi
 test -s "dist/${out}"
 
-if [[ "${MANVI_RELEASE_ENGINE:-1}" != "0" ]]; then
+if [[ "$engine" == 0 ]]; then
+  # No engine to check; prove the binary at least starts. A Windows binary
+  # runs on the windows runner it was built on.
+  if [[ "$goos" == windows ]]; then
+    "dist/${out}" version
+  fi
+else
   if [[ "$goos" == linux ]] && ! file "dist/${out}" | grep -q "statically linked"; then
     echo "dist/${out} is not statically linked:" >&2
     file "dist/${out}" >&2
@@ -119,5 +139,6 @@ if [[ "${MANVI_RELEASE_ENGINE:-1}" != "0" ]]; then
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   printf 'artifact=%s\n' "$out" >> "$GITHUB_ENV"
+  printf 'rust_triple=%s\n' "${rust_triple:-}" >> "$GITHUB_ENV"
 fi
 echo "built dist/${out}"
