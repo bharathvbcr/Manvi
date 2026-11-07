@@ -21,7 +21,7 @@ func TestServerRecordsConcurrentRequests(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			req, err := http.NewRequest(http.MethodPost, s.URL, strings.NewReader("body"))
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.URL, strings.NewReader("body"))
 			if err != nil {
 				t.Error(err)
 				return
@@ -58,7 +58,12 @@ func TestServerRecordsConcurrentRequests(t *testing.T) {
 func TestRequestsCopy(t *testing.T) {
 	s := NewStatusServer(t, http.StatusTooManyRequests, "slow down")
 
-	resp, err := http.Post(s.URL, "application/json", strings.NewReader("first"))
+	first, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.URL, strings.NewReader("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(first)
 	if err != nil {
 		t.Fatal(err)
 	}

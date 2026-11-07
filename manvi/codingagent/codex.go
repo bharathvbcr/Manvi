@@ -641,7 +641,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		}
 		return Event{TurnID: s.turnID}, true, nil
 	case "turn/completed":
-		if v.Turn.ID != s.turnID || s.finished || !s.started || !(v.Turn.Status == "completed" || v.Turn.Status == "failed" || v.Turn.Status == "interrupted") {
+		if v.Turn.ID != s.turnID || s.finished || !s.started || (v.Turn.Status != "completed" && v.Turn.Status != "failed" && v.Turn.Status != "interrupted") {
 			return Event{}, false, errors.New("invalid Codex turn completion")
 		}
 		s.finished = true

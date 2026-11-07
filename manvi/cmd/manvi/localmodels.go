@@ -36,7 +36,7 @@ func showLocal(ctx context.Context, out io.Writer, reg *flags.Registry, args []s
 	timeout := 15 * time.Second
 	resolveOnly := false
 	for i := 0; i < len(args); i++ {
-		raw := ""
+		var raw string
 		switch {
 		case args[i] == "--resolve":
 			resolveOnly = true

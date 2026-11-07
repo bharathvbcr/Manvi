@@ -106,7 +106,9 @@ func TestStoreIsSentExplicitlyAsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	var body map[string]any
 	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
@@ -179,7 +181,9 @@ func TestToolResultReferencesItsCallByCallID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	// Decoded into a bare map so a field the encoder should no longer send is
 	// visible rather than silently ignored by a typed struct.
@@ -193,7 +197,7 @@ func TestToolResultReferencesItsCallByCallID(t *testing.T) {
 	var found bool
 	for _, item := range body.Input {
 		var kind string
-		json.Unmarshal(item["type"], &kind)
+		decodeField(t, item["type"], &kind)
 		if kind != TypeFunctionResult {
 			continue
 		}
@@ -208,11 +212,11 @@ func TestToolResultReferencesItsCallByCallID(t *testing.T) {
 		}
 
 		var callID, name string
-		json.Unmarshal(item["call_id"], &callID)
+		decodeField(t, item["call_id"], &callID)
 		if callID != "fc_1" {
 			t.Errorf("call_id = %q, want fc_1", callID)
 		}
-		json.Unmarshal(item["name"], &name)
+		decodeField(t, item["name"], &name)
 		if name != "read_file" {
 			t.Errorf("name = %q, want read_file — a result without it is refused", name)
 		}
@@ -261,7 +265,9 @@ func TestAFailedToolResultSaysSoInItsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	sent := server.Requests()[0]
 	if strings.Contains(sent, `"is_error"`) {
@@ -331,7 +337,9 @@ func TestReasoningTextIsNeverPutOnTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a message carrying reasoning was refused outright: %v", err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	if strings.Contains(server.Requests()[0], "PRIVATE-THINKING") {
 		t.Errorf("reasoning text reached the wire: %s", server.Requests()[0])
@@ -364,7 +372,9 @@ func TestThinkingLevelCarriesTheRequestedEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	var body struct {
 		GenerationConfig *struct {
@@ -394,7 +404,9 @@ func TestNoEffortSendsNoThinkingLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	var body map[string]any
 	if err := json.Unmarshal([]byte(server.Requests()[0]), &body); err != nil {
@@ -438,7 +450,9 @@ func TestAnUnsignedCallIsDroppedRatherThanRefusingTheRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	if strings.Contains(server.Requests()[0], `"function_call"`) {
 		t.Errorf("an unsigned function_call was replayed; the live API refuses it: %s",
@@ -482,7 +496,9 @@ func TestAssistantProseIsDroppedFromAToolUsingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	if strings.Contains(server.Requests()[0], "PROSE-THAT-MUST-NOT-BE-SENT") {
 		t.Errorf("assistant prose was sent alongside a tool result; the live API refuses "+
@@ -515,7 +531,9 @@ func TestAssistantProseSurvivesWhenNoToolWasUsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	if !strings.Contains(server.Requests()[0], "KEEP-THIS-PROSE") {
 		t.Errorf("assistant prose was dropped from a history with no tool results at all: %s",
@@ -587,7 +605,9 @@ func TestASignedCallIsReplayedSoTheModelSeesItsOwnWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.Drain(stream)
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatalf("draining the stream: %v", err)
+	}
 
 	var body struct {
 		Input []map[string]json.RawMessage `json:"input"`
@@ -598,13 +618,13 @@ func TestASignedCallIsReplayedSoTheModelSeesItsOwnWork(t *testing.T) {
 	var found bool
 	for _, item := range body.Input {
 		var kind string
-		json.Unmarshal(item["type"], &kind)
+		decodeField(t, item["type"], &kind)
 		if kind != TypeFunctionCall {
 			continue
 		}
 		found = true
 		var sig string
-		json.Unmarshal(item["signature"], &sig)
+		decodeField(t, item["signature"], &sig)
 		if sig != "SIG-ABC" {
 			t.Errorf("signature = %q, want SIG-ABC — an unsigned call is refused", sig)
 		}
@@ -714,5 +734,19 @@ func TestMidFlightFailureSettlesTheStream(t *testing.T) {
 	_, respErr := stream.Response()
 	if respErr == nil || !strings.Contains(respErr.Error(), firstErr.Error()) {
 		t.Fatalf("Response() = %v, want the stream's own failure (%v)", respErr, firstErr)
+	}
+}
+
+// decodeField decodes one field of a captured request item. An absent field
+// leaves the target at its zero value, as the bare Unmarshal this replaced did;
+// a field that is present and does not decode fails the test instead of being
+// read as the zero value.
+func decodeField(t *testing.T, raw json.RawMessage, v any) {
+	t.Helper()
+	if len(raw) == 0 {
+		return
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatalf("decoding %s: %v", raw, err)
 	}
 }

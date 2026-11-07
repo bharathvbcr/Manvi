@@ -116,7 +116,7 @@ func initTestRepoForSubagents(t *testing.T) string {
 	}
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // G204: literal git; args are this test's own fixture commands
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=Test",
@@ -197,7 +197,7 @@ func TestParallelWorktreeSubagentsMutateSameFileWithoutTouchingParentCheckout(t 
 	}
 
 	// Parent checkout's shared.txt must be completely untouched.
-	parentBytes, err := os.ReadFile(filepath.Join(repo, "shared.txt"))
+	parentBytes, err := os.ReadFile(filepath.Clean(filepath.Join(repo, "shared.txt")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestParallelWorktreeSubagentsMutateSameFileWithoutTouchingParentCheckout(t 
 		if !retained || wtPath == "" || wtPath == repo {
 			t.Fatalf("%s: retained=%v worktree_path=%q", tc.label, retained, wtPath)
 		}
-		gotBytes, err := os.ReadFile(filepath.Join(wtPath, "shared.txt"))
+		gotBytes, err := os.ReadFile(filepath.Clean(filepath.Join(wtPath, "shared.txt")))
 		if err != nil {
 			t.Fatalf("%s worktree shared.txt missing: %v", tc.label, err)
 		}
