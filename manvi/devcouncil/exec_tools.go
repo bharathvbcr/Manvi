@@ -75,9 +75,7 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	// string cannot be read well enough to say what it will commit, so the check
 	// is on the refs it leaves behind. Where the refs cannot be recorded in a
 	// repository, nothing runs: an unrecorded start is a check that cannot run.
-	snapCtx, snapCancel := context.WithTimeout(ctx, guardTimeout)
-	before, err := r.snapshotRefs(snapCtx)
-	snapCancel()
+	run, err := r.guardBegin(ctx)
 	if err != nil {
 		return unavailable("the ref snapshot taken before the command", err)
 	}
@@ -91,9 +89,14 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 
 	res := r.commandResult(args.Command, decision, outText, exitCode, timedOut, runErr, elapsed)
 	// After the command however it ended, including a timeout or a failure.
-	if violation := r.verifyRefs(ctx, before, args.Command); violation != nil {
-		return violation.withViolation(res)
+	violation, between := r.guardFinish(ctx, run, args.Command)
+	if violation != nil {
+		res = violation.withViolation(res)
 	}
+	if between != nil {
+		res = between.withViolation(res)
+	}
+	res.Degraded = append(res.Degraded, run.notes...)
 	return res
 }
 

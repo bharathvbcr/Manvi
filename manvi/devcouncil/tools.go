@@ -125,6 +125,8 @@ type Registry struct {
 	// scan holds the commit content check's bounds and file-open seam; its zero
 	// value is production's. See commitScanSeams.
 	scan commitScanSeams
+	// guard is the ref guard's memory between exec_command calls; see refguard.go.
+	guard refGuard
 }
 
 // New builds the tool surface.

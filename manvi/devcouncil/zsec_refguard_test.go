@@ -2,8 +2,11 @@ package devcouncil
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -273,7 +276,7 @@ func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
 		if err != nil || snap == nil {
 			t.Fatalf("snapshot: %v", err)
 		}
-		if v := f.reg.verifyRefs(ctx, snap, "true"); v != nil {
+		if v, _ := f.reg.verifyRefs(ctx, snap, "true"); v != nil {
 			t.Fatalf("unchanged refs reported: %+v", v)
 		}
 	}
@@ -281,5 +284,120 @@ func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
 	t.Logf("guard overhead with %d refs: %s per exec_command (snapshot + check, refs unchanged)", len(strings.Split(gitOut(t, f.root, "for-each-ref"), "\n")), perCall)
 	if perCall > 500*time.Millisecond {
 		t.Errorf("the guard costs %s per command", perCall)
+	}
+}
+
+// A commit made outside any call (standing in for a descendant that left the
+// process group and outlived the call) is reported by the next call, is not
+// rolled back, and is reported once.
+func TestRefChangedBetweenCallsIsReportedNotRolledBack(t *testing.T) {
+	f := shellCommitFixture(t, true)
+	if res := shell(f, "echo one"); res.IsError {
+		t.Fatalf("a plain call failed: %+v", res)
+	}
+	run(t, f.root, "commit", "-qm", "leak made between calls")
+	leak := headOf(t, f.root)
+
+	res := shell(f, "echo two")
+	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) ||
+		!strings.Contains(res.Text, "ref_changed_between_calls") || !strings.Contains(res.Text, "between agent calls") ||
+		!strings.Contains(res.Text, leak) || !strings.Contains(res.Text, "notes.txt") {
+		t.Fatalf("the between-call leak was not reported: %+v", res)
+	}
+	if strings.Contains(res.Text, "AUDITsecretVALUE") || strings.Contains(res.Text, `"restored":true`) {
+		t.Errorf("value shown or a rollback claimed: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "two") {
+		t.Errorf("the command itself did not run: %s", res.Text)
+	}
+	if got := headOf(t, f.root); got != leak {
+		t.Fatalf("the operator's ref was rewritten: %s, want %s", got, leak)
+	}
+	if again := shell(f, "echo three"); again.IsError {
+		t.Fatalf("the same leak was reported twice: %+v", again)
+	}
+}
+
+func TestCleanCommitsBetweenCallsAreNotReported(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	shell(f, "echo one")
+	run(t, f.root, "commit", "-qm", "operator's clean commit")
+	before := headOf(t, f.root)
+	if res := shell(f, "echo two"); res.IsError || res.Rule != "" && res.Rule != string(policy.RuleCommandNotAllowed) {
+		t.Fatalf("a clean commit between calls was reported: %+v", res)
+	}
+	if got := headOf(t, f.root); got != before {
+		t.Fatalf("HEAD moved: %s -> %s", before, got)
+	}
+}
+
+// A baseline that cannot be compared (the repository was re-created) is a
+// reported problem, not a silent pass.
+func TestBaselineThatCannotBeComparedIsReported(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	shell(f, "echo one")
+	if err := os.RemoveAll(filepath.Join(f.root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, f.root, "init", "-q")
+	run(t, f.root, "config", "user.email", "h@test")
+	run(t, f.root, "config", "user.name", "h")
+	run(t, f.root, "add", "app.js")
+	run(t, f.root, "commit", "-qm", "fresh history")
+	res := shell(f, "echo two")
+	if !res.IsError || !strings.Contains(res.Text, "could not be listed") {
+		t.Fatalf("an incomparable baseline was passed silently: %+v", res)
+	}
+}
+
+// Overlapping calls drop the baseline and say so on the next call.
+func TestOverlappingCallsDropTheBaselineAndSayWhy(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			shell(f, "sleep 1; echo overlapped")
+		}()
+	}
+	wg.Wait()
+	r := f.call("devcouncil_exec_command", map[string]string{"command": "echo after"})
+	if len(r.Degraded) == 0 || !strings.Contains(strings.Join(r.Degraded, " "), "overlapped") {
+		t.Fatalf("the dropped baseline was not noted: %+v", r)
+	}
+}
+
+// A commit on a detached HEAD in a linked worktree, created inside the call, is
+// caught and the worktree's HEAD is put back where the new commits began.
+func TestLeakOnADetachedHeadOfALinkedWorktreeIsRestored(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	base := headOf(t, f.root)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-guard")
+	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ngit worktree add -q --detach "+wt+"\ncp notes.txt "+wt+"/leak.txt\ncd "+wt+"\ngit add leak.txt\ngit commit -qm leak-in-worktree\n")
+	res := shell(f, "sh mk.sh")
+	if !res.IsError || res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "worktree:") || !strings.Contains(res.Text, "leak.txt") {
+		t.Fatalf("the worktree leak was not reported: %+v", res)
+	}
+	if got := gitOut(t, wt, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("the worktree HEAD was not restored: %s, want %s", got, base)
+	}
+	if strings.Contains(res.Text, "AUDITsecretVALUE") {
+		t.Errorf("value shown: %s", res.Text)
+	}
+}
+
+// A per-worktree ref (refs/worktree/*) of another worktree is seen and removed.
+func TestLeakOnAPerWorktreeRefOfALinkedWorktreeIsRestored(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-own")
+	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+	write(t, f.root, "mk.sh", "#!/bin/sh\nset -e\ncp notes.txt "+wt+"/leak.txt\ncd "+wt+"\ngit add leak.txt\ngit update-ref refs/worktree/leak \"$(git commit-tree \"$(git write-tree)\" -p HEAD -m x)\"\n")
+	res := shell(f, "sh mk.sh")
+	if !res.IsError || res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "refs/worktree/leak") {
+		t.Fatalf("the per-worktree ref leak was not reported: %+v", res)
+	}
+	if out := gitOut(t, wt, "for-each-ref", "refs/worktree"); out != "" {
+		t.Fatalf("the per-worktree ref survived: %s", out)
 	}
 }
