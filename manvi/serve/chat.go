@@ -425,10 +425,10 @@ type PrepareResult struct {
 // this for its own Anthropic conversations: llm/anthropic.ContextEditsFor, and
 // agent.ServerSideEditing for why its client-side planner stands down). A host
 // that must keep applying steps to a conversation holding signed thinking has
-// to strip the `thinking` and `redacted_thinking` blocks of the assistant turns
-// that follow a shortened result and were recorded before it was shortened (see
-// session.Log.StripStaleReasoning), and only those, and never between a tool_use
-// and its tool_result.
+// to strip every `thinking` and `redacted_thinking` block from the first
+// shortened result onward (see session.Log.StripStaleReasoning: only a leading
+// run may be removed, so keeping later blocks is not an option), keep the ones
+// before it, and never edit between a tool_use and its tool_result.
 //
 // This stays documentation, not a behaviour, because teaching the op the
 // provider would add a field to PrepareParams, and that is a change to the

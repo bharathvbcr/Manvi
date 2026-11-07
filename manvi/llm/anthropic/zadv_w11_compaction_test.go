@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"encoding/json"
-	"os"
 	"sort"
 	"testing"
 
@@ -14,16 +13,6 @@ import (
 // Shapes are compared with the saved Context editing page
 // (scratchpad/w11/context-editing.md, "Configuration options for tool result
 // clearing" and the "Advanced configuration" example).
-
-// advBreak skips a test that demonstrates a confirmed break. Setting
-// ADV_W11_BREAKS=1 runs it so the failure can be reproduced.
-func advBreak(t *testing.T, msg string) {
-	t.Helper()
-	if os.Getenv("ADV_W11_BREAKS") != "" {
-		return
-	}
-	t.Skip(msg)
-}
 
 func advKeys(raw json.RawMessage) []string {
 	var m map[string]json.RawMessage
@@ -137,13 +126,14 @@ func TestAdvW11ToollessRequestHeaderWithoutField(t *testing.T) {
 }
 
 // ChatOnly runs (agent.Config.ChatOnly) offer the model no tools but resume a
-// history that may be full of tool calls and results. Client-side compaction
-// has stood down on Anthropic, and the adapter sends context_management only
-// when req.Tools is non-empty, so a chat-only conversation on Anthropic is
-// never shrunk by either side. The check: history that holds tool results must
-// carry the edit even when no tools are offered this step.
-func TestAdvW11ToollessRequestWithToolHistoryStillAsksForClearing(t *testing.T) {
-	advBreak(t, "BREAK: ContextEditsFor is only attached when len(req.Tools) > 0 (adapter.go buildRequest), but agent compaction stands down for the whole provider; a ChatOnly turn over a log with tool history is shrunk by nobody. Inferred: whether the API accepts context_management on a request without tools is not stated in the saved doc, whose every example has tools.")
+// history that may be full of tool results. This adapter does not send
+// context_management on a request with no tools, because the docs show the
+// strategy only on requests that have them and the combination is not stated to
+// be accepted. That used to leave such a conversation shrunk by nobody; it is
+// now the loop's job (agent.Loop.compact runs client-side for a request that
+// offers no tools, at a turn boundary, and the strip follows). This test pins
+// the adapter's half of that division: no field, whatever the history holds.
+func TestAdvW11ToollessRequestNeverCarriesContextManagementEvenOverToolHistory(t *testing.T) {
 	adapter, server := adapterFor(t, happyStream)
 	req := request()
 	req.Tools = nil
@@ -156,8 +146,8 @@ func TestAdvW11ToollessRequestWithToolHistoryStillAsksForClearing(t *testing.T) 
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "now just chat"}}},
 	}
 	fields, _, _ := sentRequest(t, adapter, server, req)
-	if _, ok := fields["context_management"]; !ok {
-		t.Fatal("history with tool results, no tools offered: no context_management, and no client-side compaction either")
+	if _, ok := fields["context_management"]; ok {
+		t.Fatal("a request with no tools carried context_management; its acceptance without tools is unverified")
 	}
 }
 
