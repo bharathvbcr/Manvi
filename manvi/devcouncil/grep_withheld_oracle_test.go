@@ -3,6 +3,8 @@ package devcouncil
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -207,5 +209,56 @@ func TestGrepRefusesAFanOutPastTheSubsearchBound(t *testing.T) {
 		"over the limit of 512; search a narrower path — this is not a negative result, no search ran"
 	if !strings.Contains(res.Text, want) {
 		t.Errorf("refusal = %q, want it to contain %q", res.Text, want)
+	}
+}
+
+// candidateRefusals is the cheap form of readRefusal for names the walk
+// produced. If it were ever more lenient than the full judgement, the grep
+// oracle would reopen, so this holds the two exactly equal across every shape of
+// name the read gate has a rule for: names, case variants, nested names, hard
+// links, directories named like credentials, and symlinks.
+func TestCandidateRefusalsAgreeWithTheFullReadJudgement(t *testing.T) {
+	f := newFixture(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "id_rsa"), []byte("key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFile(t, f.root, ".env", "TOKEN=abc\n")
+	writeRepoFile(t, f.root, "cfg/.ENV", "TOKEN=abc\n")
+	writeRepoFile(t, f.root, "cfg/.Env", "TOKEN=abc\n")
+	writeRepoFile(t, f.root, "cfg/id_rsa", "key\n")
+	writeRepoFile(t, f.root, "cfg/credentials.json", "{}\n")
+	writeRepoFile(t, f.root, "a/b/c/.env.local", "TOKEN=abc\n")
+	writeRepoFile(t, f.root, "a/b/server.pem", "key\n")
+	writeRepoFile(t, f.root, "src/a.go", "package src\n")
+	writeRepoFile(t, f.root, ".ssh/config", "Host x\n")
+	writeRepoFile(t, f.root, ".aws/notes.txt", "n\n")
+	writeRepoFile(t, f.root, "realdir/.env", "TOKEN=abc\n")
+	writeRepoFile(t, f.root, "realdir/plain.txt", "plain\n")
+	linkSecret(t, f.root, "secret.pem", "innocent.txt", "key\n")
+	for link, target := range map[string]string{
+		"linkdir":    filepath.Join(f.root, "realdir"),
+		"linkfile":   filepath.Join(outside, "id_rsa"),
+		"linkplain":  filepath.Join(f.root, "src", "a.go"),
+		"sshlink":    filepath.Join(f.root, ".ssh"),
+		"linkenvdir": filepath.Join(f.root, "realdir", ".env"),
+	} {
+		if err := os.Symlink(target, filepath.Join(f.root, link)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+
+	names := []string{
+		".env", "cfg/.ENV", "cfg/.Env", "cfg/id_rsa", "cfg/credentials.json",
+		"a/b/c/.env.local", "a/b/server.pem", "src/a.go", ".ssh/config", ".aws/notes.txt",
+		"secret.pem", "innocent.txt", "realdir/plain.txt",
+		"linkdir/.env", "linkdir/plain.txt", "linkfile", "linkplain", "sshlink/config", "linkenvdir",
+	}
+	got := f.reg.candidateRefusals(names)
+	for _, name := range names {
+		want := f.reg.readRefusal(name)
+		if got[name] != want {
+			t.Errorf("%s: candidateRefusals = %q, readRefusal = %q", name, got[name], want)
+		}
 	}
 }

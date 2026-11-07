@@ -776,12 +776,7 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 		return nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
 			"withholds cannot all be identified; search a narrower path", grepListCeiling)
 	}
-	refused := map[string]string{}
-	for _, name := range listing.Paths {
-		if rule := r.readRefusal(name); rule != "" {
-			refused[name] = rule
-		}
-	}
+	refused := r.candidateRefusals(listing.Paths)
 	if len(refused) > 0 {
 		discard()
 	}
@@ -852,6 +847,39 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 		}
 	}
 	return out, refused, nil
+}
+
+// candidateRefusals is readRefusal for names the walk itself produced, which is
+// what makes it cheap enough to ask of every file in a repository. A listed
+// path is a regular file reached without following a symlink, inside the root,
+// spelled as it is on disk, so the three things readRefusal pays for per path
+// (containment, resolving links on the way, reading back the on-disk spelling)
+// have nothing left to find, and the verdict reduces to the credential-name
+// rule and the link count. Measured on 3,000 files, the full judgement per path
+// was 15x the cost of the search it gated. A test holds the two equal on a
+// mixed tree.
+func (r *Registry) candidateRefusals(names []string) map[string]string {
+	refused := map[string]string{}
+	for _, name := range names {
+		if policy.SecretPathSpelling(name) {
+			refused[name] = string(policy.RuleSecretRead)
+			continue
+		}
+		full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
+		fi, err := safefile.Lstat(full)
+		if err != nil || !fi.Mode().IsRegular() {
+			// Not the regular file the walk reported: it changed since, and
+			// the shortcut's premises no longer hold. Ask the full judgement.
+			if rule := r.readRefusal(name); rule != "" {
+				refused[name] = rule
+			}
+			continue
+		}
+		if !singleNameFile(full, fi) {
+			refused[name] = ruleAliasedRead
+		}
+	}
+	return refused
 }
 
 // searchTargets covers every unrefused file in files with the fewest search
