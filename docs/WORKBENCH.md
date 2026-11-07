@@ -1022,21 +1022,132 @@ passed separately; task-enhancement semantic quality still requires evaluation.
 
 ## Owner decisions of 2026-11-07
 
-Recorded from board card ft-10d901e9. Both are decisions, not features: no code
-ships with this change, and each is built by its own implementation card, which
-must be reviewed before anything below becomes callable. Evidence labels:
-**verified** (read in code or schema at this commit), **inferred**, **gap** (no
-mechanism exists).
+Recorded from board card ft-10d901e9. Both are decisions, and each is built by
+its own implementation card. **Decision 1 is built, as its in-process release
+only** (card ft-ad5dfc70; see "What shipped: the in-process release" below).
+Decision 2 is not built: no code for it ships, and its sequencing note stands.
+Evidence labels: **verified** (read in code or schema at this commit),
+**inferred**, **gap** (no mechanism exists).
 
 ### Decision 1: an agent-facing `work.*` API, including writes
 
-The owner decided yes. **This widens what an agent can write.** Today the
-operations are reachable only over the host's one controlling connection
+The owner decided yes. **This widens what an agent can write.** Before the
+in-process release the operations were reachable only over the host's one
+controlling connection
 (`manvi/serve/workbench.go`, registered on the serve router; the socket server
 authenticates by peer uid alone and admits one controller, `serve/socket.go`
 security model). Nothing in `manvi/devcouncil`, `manvi/tools` or `manvi/agent`
-names a `work.` op (the card's `rg -uu` check, 2026-10-09). After this decision an
-agent process can change board records the user reads and launches work from.
+named a `work.` op (the card's `rg -uu` check, 2026-10-09). With the in-process
+release an agent process whose host opted in can change board records of its own
+repository's store; the sections below are the specification and the statement it
+was built to, and "What shipped" says where the build differs from them.
+
+#### What shipped: the in-process release
+
+**This is the in-process release.** The tools are `work_list_items`,
+`work_get_item`, `work_get_brief`, `work_get_history`, `work_create_item` and
+`work_update_own_item`, in `manvi/devcouncil/work_tools.go` (adapter, tools) and
+`work_log.go` (the tagged log region and the untrusted-data fence), registered
+in the in-process `devcouncil.Registry` beside the `devcouncil_*` tools. They are
+not exposed to managed Codex or Claude runs, which are separate processes with no
+channel back to Manvi; that exposure needs a per-run host-brokered channel and
+its own security-impact statement, and is **not shipped**. `hello.ops` and the
+host connection's `work.*` set are unchanged (`serve/` gained tests only).
+
+**Off unless the host opts in.** The tools exist only when the host sets
+`devcouncil.Deps.Work` (a `WorkBinding`). With it nil the Registry registers none
+of them, as it registers no fetch tool without a configured host, and the
+documented tool counts do not move. **No shipped command sets it yet**: enabling
+the tools in `manvi run` or the TUI is a separate host decision and a
+one-line wiring change in `cmd/manvi`, deliberately not made here.
+
+**How the two mappings the earlier draft called gaps resolve, and where they do
+not.** Both were checked in code, not assumed.
+
+- *Repository.* The Registry's `Store` is the repository's own store
+  (`.devcouncil/state.sqlite` by default). Every task in that store names the
+  legacy local repository `this-repo` (`dc_store::workbench::LOCAL_REPOSITORY_ID`)
+  as its primary repository. The adapter binds to that constant and **only reads
+  it** (`repositories.get`, once, never from an argument). It never calls
+  `store.Client.LocalRepository`, which creates the row in whatever database it is
+  pointed at, and no tool ever creates a repository. If the row is absent (a fresh
+  database, or a profile board that has no such row), every tool refuses with
+  `repository_unmapped`, which says there is no mapping, and makes zero writes.
+  **On a GitPulse or profile board database the tools therefore bind to the legacy
+  `this-repo` constant and cannot see tasks linked to a real repository.** Reaching
+  that board needs the `identity_key` mapping (a path-to-`repository_id` match
+  through `repositories.put`), which does not exist. It is a follow-up and part of
+  the owner's wiring decision; `Deps.Work` is not wired.
+- *Own task.* Since dc-store schema 10 a DevCouncil task is a workbench item in
+  the same database (`lease.schema.md`), so the task the session holds the lease
+  on (`Session.State().TaskID`, set by `devcouncil_checkout_task`) is a board item.
+  The own task is that one, derived from the lease and not from an argument. It
+  counts as the agent's own task only while it is a live item linked to exactly the
+  session's repository; otherwise `work_update_own_item` refuses with
+  `own_task_unmapped` naming the task, and creation still works. The agent chooses
+  which ready task to check out, as it always has; the repository link check
+  bounds what that choice can reach.
+
+**Criteria that do not apply in the in-process release.** The managed-run
+liveness rule (run state `running` with matching `owner_id` and `session_id`) and
+the `runs.get` projection need a run record, and the in-process agent has none:
+no `runs.prepare` precedes it. No tool takes a run id, and none returns a run.
+The launch UI's provenance banner on agent-proposed or agent-logged tasks is
+GitPulse's, not Manvi's; Manvi supplies what it keys on (the `agent-proposed`
+label and the tagged log block) and does not claim the banner.
+
+**Where the build differs from the specification below, on purpose.**
+
+- *Counters are not a file.* The caps are read from the store on every write, so a
+  host restart cannot reset them and nothing can drift from them. Writes and
+  created tasks per task are the entries in the own task's tagged log block, each
+  entry carrying its kind; a create writes its own task's entry before it creates
+  the task, so a failure leaves a counted slot rather than an uncounted task. The
+  open and hourly counts page the repository's tasks and filter on the
+  `agent-proposed` label client-side (`items.list` has no label filter; the
+  interim does not use a label query). The hourly count is an upper bound, because
+  a task's update time moves forward on an edit; a person moving a proposal out of
+  the inbox frees an open slot but not an hourly one. A count that cannot be made
+  complete within twenty pages refuses (`count_unavailable`); it is never read as
+  zero. A person who clears the log block clears that task's budget with it.
+- *Host mutex, not a store-level atomic count.* Count-then-create is serialised by
+  one process-wide mutex per (store, repository), shared by every Registry in the
+  process. Two host processes sharing one store
+  can both pass a count at the cap; the reconciliation above bounds the overshoot
+  to the next write, and a store-level atomic count is the real fix.
+- *Reads render everything in one fenced block.* `work_get_item`,
+  `work_get_brief`, `work_get_history` and `work_list_items` return the store's
+  reply as JSON inside a code fence under a standing header that says the content
+  is data and not instructions. The fence is one backtick longer than the longest
+  run of backticks in the text, and never shorter than three.
+- *Agent text is plain.* Title, description, checklist and log text are refused
+  if they hold a control character other than newline, carriage return and tab,
+  the Unicode line and paragraph separators (U+2028, U+2029), NEL, vertical tab,
+  form feed, or any Unicode format character (`Cf`: bidi overrides, zero-width
+  characters, the byte-order mark; this also refuses emoji joiner sequences). A log
+  note's line breaks of every kind are indented, so no line of agent text can begin
+  with an audit prefix. A title is one line. A checklist entry is one line of
+  at most 300 characters, at most 32 entries, and **markup is refused, not
+  neutralised**: an HTML tag and Markdown link or image syntax are rejected,
+  because a person's UI renders the checklist. A description keeps Markdown: it is
+  free text the person reads as the proposal's body, and inside the fence an agent
+  reads it as inert data.
+- *`work_list_items` takes no arguments.* There is no cursor and no filter: it
+  lists one page of at most 30 live, unarchived tasks linked to exactly this
+  repository, and says whether there are more.
+- *Request ids.* `agent_{run}_{session}_{n}`: the run id is the host's
+  (`WorkBinding.RunID`, or minted at start), the session id is host-minted per
+  `Session` (not the owner string, which `devcouncil_checkout_task` takes from the
+  agent), and `n` is the first sixteen hex digits of a SHA-256 over the phase, the
+  target, the revision written against and the canonical content. It is the same
+  after a restart for the same write, differs for any other, and the whole id is
+  checked against the identifier rule and 128 characters before it is sent. A
+  request id already recorded in the task's agent log is refused as
+  `request_replayed`; an `idempotency_conflict` from the store is refused as
+  `request_conflict`; neither is treated as a write.
+- *One refusal for every task the agent may not see.* An absent id, a deleted
+  task, a task in another repository and a task linked to several repositories all
+  answer the same `not_found` bytes, naming no id.
 
 #### Security-impact statement
 
@@ -1076,7 +1187,7 @@ connection's full set is never handed to an agent.
 |---|---|---|
 | Read | `items.list` | The adapter pins `repository_id` to the session's repository, `deleted:false`, `archived:false`, no `workspace_id`, and forces `limit` (page cap). It accepts no other filter from the agent. `events.list` is not exposed: it is profile-wide and has no repository filter. |
 | Read | `items.get`, `items.brief.get`, `items.history` | Only for a task linked to the session's repository and no other (see "Scope check"). `items.history` covers linked, non-deleted tasks only. |
-| Read | `runs.get` for the session's own run | A projection only: task id, repository id, state and run id. Never `output`, `effective_configuration`, `item.brief` or any other field. |
+| Read | `runs.get` for the session's own run | A projection only: task id, repository id, state and run id. Never `output`, `effective_configuration`, `item.brief` or any other field. **Not built in the in-process release:** that agent has no run record, so no tool returns a run. It applies to the managed-run release. |
 | Write | create a task | Closed allow-list: `title`, `description` and an optional plain-text `checklist`. See "Create allow-list". |
 | Write | update the agent's own task | Field allow-list below. |
 | Write | add a `related` link from the agent's own task | The target must pass the same repository check as a read. `duplicate_of`, `blocks` and `parent` are not exposed. |
@@ -1224,12 +1335,15 @@ Bounds the agent surface adds (acceptance criteria for the implementation card):
 enforcement is still unspecified", in the retention paragraph on `store.compact`).
 A store-level atomic count is the real fix, and it is a cross-app schema change
 (DevCouncil owns it; GitPulse re-vendors; Manvi's pin moves) that needs approval;
-the host mutex and persisted counters are the interim. `items.list` has no label
-filter (documented filters are `status`, `query`, scope, `archived`, `deleted`,
-`order`), so the open `agent-proposed` count cannot be a label query; the
-persisted counter is the source, reconciled by listing the repository's inbox.
-Required tests: concurrent creates at the cap, and a continuation that shares the
-budget of its first run.
+the host mutex is the interim, and the counts are read from the store's own
+records (the repository's listing and the tagged log block), not from a counter
+file; see "What shipped". **Still open and needing approval:** the store-level
+atomic count, because the mutex covers one host process only. `items.list` has no
+label filter (documented filters are `status`, `query`, scope, `archived`,
+`deleted`, `order`), so the open `agent-proposed` count cannot be a label query;
+the listing is filtered client-side. Tests: concurrent creates at the cap, a
+restart that keeps the count, and a continuation that shares the budget of its
+first run.
 
 #### Audit: recorded with the agent and session identity
 
@@ -1274,28 +1388,33 @@ needs its own approval.
   The in-process Manvi agent already has the right seam: `devcouncil.Registry`
   holds a `*store.Client`, the same client type `WorkbenchModule` uses, and tools
   receive the acting `Session` on the call context. `work_*` tools register there.
-- **Gap, external agents.** Managed Codex and Claude run as child processes
+- **Gap, external agents (open; the shipped release is in-process only).** Managed
+  Codex and Claude run as child processes
   (`codingagent`). Nothing in this repository gives those processes a channel back
   to Manvi's ops; the host connection is single-controller and uid-authenticated.
   Exposing `work.*` to them needs a per-run, host-brokered tool channel (for
-  example a per-run MCP endpoint) that does not exist. The implementation card
-  must design it, and that design is a second security statement, not an
-  extension of this one. The first release may be limited to the in-process agent.
-- **Gap, path to repository.** A task record carries repository ids, not paths
-  (stated in the refine card's log). The in-process agent knows `Deps.Root`, a
-  path. Mapping it to a workbench `repository_id` needs the `identity_key` match
-  on `repositories.put`; no code does that today.
-- **Gap, lease to item.** A DevCouncil lease is on a DevCouncil task
-  (`devcouncil_checkout_task`); a workbench item is a different record ("Repository
-  execution tasks and writer leases remain a separate model"). No mapping from a
-  held lease to the board item "the agent's own task" exists. For managed runs the
-  run record supplies it; for the in-process agent it must be added.
+  example a per-run MCP endpoint) that does not exist. That design is a second
+  security statement, not an extension of this one, and is not part of the
+  in-process release.
+- **Path to repository: closed for the repository-local store, open for a profile
+  board.** The earlier draft read: a task record carries repository ids, not paths,
+  and mapping `Deps.Root` to a `repository_id` needs the `identity_key` match on
+  `repositories.put`. For the Registry's own store the mapping is the store's:
+  every task in it names `this-repo`, which the tools read and never create (see
+  "What shipped"). The `identity_key` match for a profile board still does not
+  exist, and these tools do not claim it.
+- **Lease to item: closed for the in-process agent.** The earlier draft read: a
+  DevCouncil lease is on a DevCouncil task and a workbench item is a different
+  record. Since dc-store schema 10 they are the same record, so the leased task id
+  is the board item id (`lease.schema.md`: "A task is a live `work_items` row whose
+  primary repository is `this-repo`"). The own task is derived from the lease. For
+  managed runs the run record would supply it, and that path is not shipped.
 - **Gap, `HostScope`.** It bounds file writes and commands only (verified, no
   board field). It cannot express board authority and is not extended for it.
 
-No code ships with this decision. The implementation is a separate board card
-whose acceptance criteria are the checks above, and it must be reviewed before any
-write is exposed.
+Managed Codex and Claude exposure is not shipped; it needs the host-brokered
+channel above and its own review. The in-process release is the one built, under
+this section's acceptance criteria.
 
 ### Decision 2: enhancement generation moves to managed coding agents
 
@@ -1378,7 +1497,7 @@ live session holds uncommitted changes in `manvi/codingagent/*` (`agy.go`,
 `toolbinary.go` and `harness_materialise.go` (GitPulse collision scan,
 2026-11-07: those 19 files, in the main checkout's worktree, no overlap with this
 branch). The implementation must wait for that work to land, then start from the
-resulting adapter surface. No code ships with this decision.
+resulting adapter surface. No code ships for Decision 2.
 
 ## Board queries
 

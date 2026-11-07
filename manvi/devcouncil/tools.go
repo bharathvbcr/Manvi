@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -108,6 +109,15 @@ type Deps struct {
 	// less than that length for a credential straddling the edge to be found.
 	// Nil with a non-nil KnownSecret assumes defaultKnownSecretMaxLen.
 	KnownSecretMaxLen func() int
+	// Work, when set, registers the work_* board tools (work_tools.go): the
+	// in-process agent's reads of its repository's board and a closed, bounded
+	// set of writes. Nil registers none, so a host that did not opt in offers
+	// no board tool at all.
+	//
+	// SECURITY IMPACT: this widens what an agent can write to records a person
+	// reads and launches work from. See docs/WORKBENCH.md, "Owner decisions of
+	// 2026-11-07".
+	Work *WorkBinding
 }
 
 // Registry holds the tool set and the per-agent session.
@@ -127,6 +137,9 @@ type Registry struct {
 	scan commitScanSeams
 	// guard is the ref guard's memory between exec_command calls; see refguard.go.
 	guard refGuard
+	// work is the board adapter, built on first use from Deps.Work.
+	workMu sync.Mutex
+	work   *workAPI
 }
 
 // New builds the tool surface.
@@ -139,6 +152,9 @@ func New(deps Deps) (*Registry, error) {
 	}
 	if deps.Root == "" {
 		return nil, errors.New("devcouncil: no repository root")
+	}
+	if err := deps.Work.validate(); err != nil {
+		return nil, err
 	}
 	if deps.LeaseTTL <= 0 {
 		deps.LeaseTTL = 15 * time.Minute
@@ -487,6 +503,8 @@ func (r *Registry) Tools() []tools.Tool {
 	// a host allowlist, so an unconfigured harness offers no network tool at
 	// all rather than one that always refuses.
 	set = append(set, r.webTools()...)
+	// The board tools. Contributes nothing without a Work binding.
+	set = append(set, r.workTools()...)
 	return set
 }
 
