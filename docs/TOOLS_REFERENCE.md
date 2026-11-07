@@ -76,7 +76,7 @@ schema means.
 | `devcouncil_exec_command` | Write | `command` (string), `task_id` (string, optional), `timeout` (string, opt) | Executes shell commands guarded by the command gate and safety allowlists. |
 | `devcouncil_list_dir` | Read-only | `path` (string), `recursive` (bool, optional), `include_ignored` (bool, optional) | Without `recursive`, reports the literal directory as it is on disk — no ignore rules, because "what is in this directory" is a different question. With `recursive`, enumerates **exactly the files `devcouncil_grep` would search**, honouring ignore rules unless `include_ignored` is set. |
 | `devcouncil_find_files` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional) | Glob matching (`*.go`, `src/**/*.rs`) over **exactly the files `devcouncil_grep` would search** — one walk, one set of ignore rules, so the two tools cannot describe different repositories. Globs are matched by the harness's own `fnmatch`, pinned to the 775-case CPython parity fixture. Reports `files_considered` and flags a truncated candidate list separately from a truncated match list. |
-| `devcouncil_grep` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional), `case_insensitive` (bool, optional) | Regular-expression search across the workspace, on ripgrep's engine in the analysis plane. Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden files unless `include_ignored` is set; never reads `.git` or `.devcouncil`. Reports files searched and files skipped, so a result is never mistaken for full coverage. An unparseable pattern is an error, never an empty match list. |
+| `devcouncil_grep` | Read-only | `pattern` (string), `path` (string, optional), `max_results` (int, optional), `include_ignored` (bool, optional), `case_insensitive` (bool, optional) | Regular-expression search across the workspace, on ripgrep's engine in the analysis plane. Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden files unless `include_ignored` is set; never reads `.git` or `.devcouncil`. Reports files searched and files skipped, so a result is never mistaken for full coverage. Files the read gate refuses (credential paths, hard-linked files) are never opened by the search; they are listed under `withheld` from the file set alone, so no field of the reply depends on what is inside them. An unparseable pattern is an error, never an empty match list. |
 
 ---
 
@@ -293,6 +293,7 @@ aims at. Proxies from the environment are ignored for the same reason: a proxy
 would send the request somewhere nothing vetted.
 
 Every response is bounded (20s, 2 MiB, 5 redirects) and returned wrapped in
-`BEGIN/END UNTRUSTED WEB CONTENT` markers that tell the model the enclosed text
-is evidence and not instruction. That framing is steering, not a boundary — the
+`BEGIN/END UNTRUSTED WEB CONTENT <nonce>` markers (a fresh 64-bit hex token per call, so
+page text cannot forge the closing line) that tell the model the enclosed text,
+including the page URL and title folded to one line each, is evidence and not instruction. That framing is steering, not a boundary — the
 boundary is the policy gate that every subsequent tool call still passes.

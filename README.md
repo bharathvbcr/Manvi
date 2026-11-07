@@ -358,8 +358,10 @@ MANVI_FETCH_HOSTS="go.dev,pkg.go.dev,docs.python.org" manvi
 Addresses are re-resolved and re-checked inside the dialer, which then connects to
 the vetted literal rather than the name — resolving once and handing the name to
 the transport is the hole DNS rebinding aims at. Responses are bounded (20s, 2 MiB,
-5 hops) and wrapped in `BEGIN/END UNTRUSTED WEB CONTENT` markers stating that the
-enclosed text is evidence, not instruction. That framing is steering; the boundary
+5 hops) and wrapped in `BEGIN/END UNTRUSTED WEB CONTENT <nonce>` markers (a fresh 64-bit
+random token per call, so page text cannot forge the closing line; the URL and
+title sit inside the frame, folded to one line) stating that the enclosed text is
+evidence, not instruction. That framing is steering; the boundary
 is still the gate every subsequent tool call passes.
 
 ---

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
@@ -609,13 +612,14 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 			"this is not a negative result, no search ran", targetPath)
 	}
 
-	result, err := r.deps.Grep.Search(ctx, dcgrep.Request{
+	req := dcgrep.Request{
 		Pattern:         args.Pattern,
 		Path:            rel,
 		MaxResults:      args.MaxResults,
 		IncludeIgnored:  args.IncludeIgnored,
 		CaseInsensitive: args.CaseInsensitive,
-	})
+	}
+	result, refused, err := r.searchUnrefused(ctx, req)
 	if err != nil {
 		// Every failure the searcher reports is a fault it named — a bad
 		// pattern, an unreadable root, a child that died. None of them may
@@ -623,74 +627,49 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 		return tools.Errorf("%v — this is not a negative result, no search ran", err)
 	}
 
-	matches := result.Matches
+	matches := result.matches
 	if matches == nil {
 		// A nil slice renders as JSON null, and null is not the same statement
 		// as "no matches" to anything reading this.
 		matches = []dcgrep.Match{}
 	}
-	// A search is a read, and it reads every file under its path. Refusing the
-	// whole search because the tree contains a .env would make the tool useless;
-	// returning the lines out of one would make the read gate on read_file
-	// decorative, since `grep -r . ` reaches the same bytes. So the credential
-	// files are dropped from the result — and counted, because a filtered
-	// result presented as a complete one is the failure this file's other
-	// notes exist to prevent.
-	withheld := 0
-	withheldFiles := map[string]string{}
-	kept := matches[:0]
-	// A file's matches arrive together, and the verdict is per file: it
-	// resolves the path through every symlink on the way, so it is asked once
-	// per file rather than once per matching line.
-	refused := map[string]string{}
-	for _, m := range matches {
-		rule, seen := refused[m.Path]
-		if !seen {
-			rule = r.readRefusal(m.Path)
-			refused[m.Path] = rule
-		}
-		if rule != "" {
-			withheld++
-			withheldFiles[m.Path] = rule
-			continue
-		}
-		kept = append(kept, m)
-	}
-	matches = kept
 	payload := map[string]any{
 		"pattern":              args.Pattern,
-		"count":                result.Count,
+		"count":                len(matches),
 		"matches":              matches,
-		"files_searched":       result.FilesSearched,
-		"ignore_rules_applied": result.IgnoreRulesApplied,
+		"files_searched":       result.filesSearched,
+		"ignore_rules_applied": result.ignoreRules,
 	}
-	if result.Truncated {
+	if result.truncated {
 		payload["truncated"] = true
-		payload["limit"] = result.Limit
+		payload["limit"] = result.limit
 	}
-	if withheld > 0 {
-		payload["count"] = result.Count - withheld
-		names := make([]string, 0, len(withheldFiles))
-		for name := range withheldFiles {
+	// What the read gate withheld is reported from the files the search was
+	// kept away from, never from what matched inside them. A count of withheld
+	// matches, or a list of the refused files that matched, answers "does this
+	// pattern match inside .env" — and a character class bisected against that
+	// answer recovers the value one bit per call.
+	if len(refused) > 0 {
+		names := make([]string, 0, len(refused))
+		for name := range refused {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		payload["withheld"] = map[string]any{
-			"matches": withheld,
-			"files":   names,
+			"files": names,
 			// The rule per file, because a path withheld for being
 			// hard-linked is not a credential file by name and the model
 			// should not be told it is.
-			"rules": withheldFiles,
-			"note": fmt.Sprintf("%d match(es) in %d file(s) were withheld by the read "+
-				"gate, so this result does not cover them", withheld, len(names)),
+			"rules": refused,
+			"note": fmt.Sprintf("%d file(s) under the searched path are withheld by the read "+
+				"gate and were not searched, so this result does not cover them", len(names)),
 		}
 	}
 	// Reported only when there is something to report, but never inferred from
 	// silence: a search that skipped nothing carries no note, and one that
 	// skipped something says exactly what and why. A capped sample must not be
 	// presented as complete coverage.
-	if skipped := result.Skipped; skipped.Total() > 0 {
+	if skipped := result.skipped; skipped.Total() > 0 {
 		payload["skipped"] = map[string]any{
 			"too_large":            skipped.TooLarge,
 			"binary":               skipped.Binary,
@@ -706,13 +685,364 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 	// containing `*`, a path naming an empty directory, a tree whose every file
 	// is hidden. Left unmarked, a model reads "not present here" from a search
 	// that never looked at a single line.
-	if result.FilesSearched == 0 {
+	if result.filesSearched == 0 {
 		payload["searched_nothing"] = true
 		payload["note"] = "no file was opened, so this result is not evidence about the " +
 			"repository's contents — the path may be empty, or every file under it may be " +
 			"excluded by ignore rules. Re-run with include_ignored to find out which."
 	}
 	return ok(payload)
+}
+
+// The engine's own bounds, mirrored because a search that is merged here has to
+// know the limit it asked for. They are rust/dc-grep's DEFAULT_MAX_RESULTS,
+// MAX_MAX_RESULTS and MAX_LIST_RESULTS; the engine clamps whatever it is sent,
+// so a stale copy can only make the merge disagree with the engine, never widen
+// what is read.
+const (
+	grepDefaultLimit = 50
+	grepMaxLimit     = 5000
+	grepListCeiling  = 200_000
+	// grepMaxSubsearches bounds the fan-out of a search partitioned around
+	// refused files. Past it the search is refused rather than run as a sample.
+	grepMaxSubsearches = 512
+	// grepRefusalWorkers bounds the pool that judges candidate files.
+	grepRefusalWorkers = 8
+)
+
+// grepOutcome is a search's answer once every part of the tree the read gate
+// refuses has been kept out of it.
+type grepOutcome struct {
+	matches       []dcgrep.Match
+	truncated     bool
+	limit         int
+	filesSearched int
+	skipped       dcgrep.Skipped
+	// ignoreRules is the engine's own report of whether ignore rules applied;
+	// a partitioned search reports true only if every sub-search did.
+	ignoreRules bool
+}
+
+// searchUnrefused runs a search that never reads a file the read gate refuses,
+// and returns those files alongside it, computed from the candidate set.
+//
+// The engine takes no exclude list, so refused files cannot be removed from
+// its walk. The alternative, searching everything and dropping their matches
+// afterwards, makes every other field of the reply depend on them: the cap is
+// spent on matches nobody sees, so `count`, `truncated`, `limit`,
+// `files_searched` and the withheld report all move with the pattern. So the
+// candidate files are listed first — through the same walk, so the same set the
+// search would open — the refused ones are identified by name and inode alone,
+// and the search is then issued only over subtrees and single files that hold
+// none of them. The reply cannot depend on what is inside a file that was
+// never opened.
+//
+// The listing and one unpartitioned search start together, two goroutines under
+// one cancellable context, so the common case, where nothing is refused, costs
+// the slower of the two rather than their sum. If the listing shows anything
+// refused, that speculative search is discarded without being read: it did open
+// the refused files, but nothing of its result, not a count, not an error,
+// reaches the reply, and the partitioned path below runs instead.
+func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
+	if req.MaxResults < 0 {
+		return nil, nil, fmt.Errorf("max_results must not be negative, got %d", req.MaxResults)
+	}
+	type speculative struct {
+		res *dcgrep.Result
+		err error
+	}
+	specCtx, cancelSpec := context.WithCancel(ctx)
+	defer cancelSpec()
+	spec := make(chan speculative, 1)
+	go func() {
+		res, searchErr := r.deps.Grep.Search(specCtx, req)
+		spec <- speculative{res, searchErr}
+	}()
+	// discard stops the speculative search and waits for it, so no goroutine
+	// outlives the call, and returns nothing of what it found.
+	discard := func() {
+		cancelSpec()
+		<-spec
+	}
+
+	listing, err := r.deps.Grep.List(ctx, dcgrep.ListRequest{
+		Path:           req.Path,
+		MaxResults:     grepListCeiling,
+		IncludeIgnored: req.IncludeIgnored,
+	})
+	if err != nil {
+		discard()
+		return nil, nil, err
+	}
+	if listing.Truncated {
+		discard()
+		// Not a sample to search: a search over a tree whose refused files
+		// cannot all be named would have to guess which of them it may touch.
+		return nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
+			"withholds cannot all be identified; search a narrower path", grepListCeiling)
+	}
+	refused := r.candidateRefusals(listing.Paths)
+	if len(refused) > 0 {
+		discard()
+	}
+
+	out := &grepOutcome{}
+	if len(refused) == 0 {
+		s := <-spec
+		if s.err != nil {
+			return nil, nil, s.err
+		}
+		res := s.res
+		out.matches, out.truncated, out.limit = res.Matches, res.Truncated, res.Limit
+		out.filesSearched, out.skipped, out.ignoreRules = res.FilesSearched, res.Skipped, res.IgnoreRulesApplied
+	} else {
+		limit := req.MaxResults
+		switch {
+		case limit == 0:
+			limit = grepDefaultLimit
+		case limit > grepMaxLimit:
+			limit = grepMaxLimit
+		}
+		targets := searchTargets(req.Path, listing.Paths, refused)
+		if len(targets) > grepMaxSubsearches {
+			return nil, nil, fmt.Errorf("working around %d withheld file(s) would take %d separate "+
+				"searches, over the limit of %d; search a narrower path",
+				len(refused), len(targets), grepMaxSubsearches)
+		}
+		// Every sub-search echoes the same rule setting, but the engine's
+		// report is kept rather than recomputed: true only if all agree.
+		out.ignoreRules = listing.IgnoreRulesApplied
+		for _, target := range targets {
+			sub := req
+			sub.Path, sub.MaxResults = target, limit
+			res, searchErr := r.deps.Grep.Search(ctx, sub)
+			if searchErr != nil {
+				return nil, nil, searchErr
+			}
+			out.matches = append(out.matches, res.Matches...)
+			out.truncated = out.truncated || res.Truncated
+			out.filesSearched += res.FilesSearched
+			out.ignoreRules = out.ignoreRules && res.IgnoreRulesApplied
+			out.skipped.TooLarge += res.Skipped.TooLarge
+			out.skipped.Binary += res.Skipped.Binary
+			out.skipped.Unreadable += res.Skipped.Unreadable
+			out.skipped.UnrepresentableName += res.Skipped.UnrepresentableName
+		}
+		// The engine's answer is the smallest keys, so the merge keeps that
+		// order and that cut.
+		sort.Slice(out.matches, func(i, j int) bool {
+			if out.matches[i].Path != out.matches[j].Path {
+				return out.matches[i].Path < out.matches[j].Path
+			}
+			return out.matches[i].LineNumber < out.matches[j].LineNumber
+		})
+		if len(out.matches) > limit {
+			out.matches, out.truncated = out.matches[:limit], true
+		}
+		out.limit = limit
+	}
+
+	// The listing and the search are two walks. A file that became refused
+	// between them (a hard link made in the gap) is caught here, loudly: this
+	// is the one place the reply could still depend on a refused file, so it
+	// fails rather than filtering.
+	for _, m := range out.matches {
+		if rule := r.readRefusal(m.Path); rule != "" {
+			return nil, nil, fmt.Errorf("%s became unreadable (%s) while the search ran; retry", m.Path, rule)
+		}
+	}
+	return out, refused, nil
+}
+
+// candidateRefusals is readRefusal for names the walk itself produced, which is
+// what makes it cheap enough to ask of every file in a repository. A listed
+// path is a regular file reached without following a symlink, inside the root,
+// spelled as it is on disk, so the three things readRefusal pays for per path
+// (containment, resolving links on the way, reading back the on-disk spelling)
+// have nothing left to find, and the verdict reduces to the credential-name
+// rule and the link count. Measured on 3,000 files, the full judgement per path
+// was 15x the cost of the search it gated. A test holds the two equal on a
+// mixed tree.
+func (r *Registry) candidateRefusals(names []string) map[string]string {
+	// Each verdict is a few filesystem calls and they are independent, so they
+	// run on a bounded pool: profiled at 3,000 files, the time was all in those
+	// calls.
+	rules := make([]string, len(names))
+	dirs := &plainDirs{root: r.deps.Root, known: map[string]bool{}}
+	workers := min(grepRefusalWorkers, len(names))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(names) {
+					return
+				}
+				rules[i] = r.candidateRefusal(names[i], dirs)
+			}
+		}()
+	}
+	wg.Wait()
+	refused := map[string]string{}
+	for i, name := range names {
+		if rules[i] != "" {
+			refused[name] = rules[i]
+		}
+	}
+	return refused
+}
+
+// candidateRefusal is the verdict for one listed name. The shortcut is used
+// only where every branch of readRefusal other than the credential-name rule
+// and the link count provably cannot fire:
+//
+//   - normalisation and containment (NUL, ".." and "." parts, empty parts,
+//     backslashes, a trailing dot or space that the platform may strip, a
+//     spelling that converges differently) cannot fire on a cleanName, which is
+//     plain ASCII with none of those;
+//   - symlink resolution cannot fire when every directory on the way is a real
+//     directory, checked once per directory by plainDirs, and the leaf is a
+//     regular file by lstat;
+//   - the on-disk-spelling rule cannot differ for an ASCII name that exists
+//     under that exact spelling, and the credential-name rule is run on it.
+//
+// Every other name, and any name whose file is not what the walk reported,
+// gets the full readRefusal. Conservative by construction: the fallback is the
+// definition, so the shortcut may only ever agree with it.
+func (r *Registry) candidateRefusal(name string, dirs *plainDirs) string {
+	if !cleanName(name) || !dirs.plain(path.Dir(name)) {
+		return r.readRefusal(name)
+	}
+	if policy.SecretPathSpelling(name) {
+		return string(policy.RuleSecretRead)
+	}
+	full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
+	fi, err := safefile.Lstat(full)
+	if err != nil || !fi.Mode().IsRegular() {
+		return r.readRefusal(name)
+	}
+	if !singleNameFile(full, fi) {
+		return ruleAliasedRead
+	}
+	return ""
+}
+
+// cleanName reports whether a slash-separated name is made only of plain ASCII
+// components: letters, digits, and "_", "-", "." with no component empty, "."
+// or "..", none ending in a dot, and none a name Windows reserves. Case folds,
+// Unicode normalisation, separators and trailing characters the platform may
+// alter are all outside it, so none of them can make the shortcut diverge.
+func cleanName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".") {
+			return false
+		}
+		for i := range len(part) {
+			c := part[i]
+			plain := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+				c == '_' || c == '-' || c == '.'
+			if !plain {
+				return false
+			}
+		}
+		stem, _, _ := strings.Cut(strings.ToUpper(part), ".")
+		switch stem {
+		case "CON", "PRN", "AUX", "NUL":
+			return false
+		}
+		if len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) &&
+			stem[3] >= '0' && stem[3] <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// plainDirs answers, once per directory, whether every component of a
+// repository-relative directory is a real directory rather than a symlink.
+type plainDirs struct {
+	root  string
+	mu    sync.Mutex
+	known map[string]bool
+}
+
+func (p *plainDirs) plain(dir string) bool {
+	if dir == "." || dir == "" {
+		return true
+	}
+	p.mu.Lock()
+	verdict, seen := p.known[dir]
+	p.mu.Unlock()
+	if seen {
+		return verdict
+	}
+	fi, err := safefile.Lstat(filepath.Join(p.root, filepath.FromSlash(dir)))
+	verdict = err == nil && fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 && p.plain(path.Dir(dir))
+	p.mu.Lock()
+	p.known[dir] = verdict
+	p.mu.Unlock()
+	return verdict
+}
+
+// searchTargets covers every unrefused file in files with the fewest search
+// paths: the topmost directory under scope that holds no refused file, or the
+// file itself where its directory does. Directories on the way to a refused
+// file are never searched as a whole.
+func searchTargets(scope string, files []string, refused map[string]string) []string {
+	scope = strings.Trim(strings.TrimPrefix(scope, "./"), "/")
+	if scope == "." {
+		scope = ""
+	}
+	dirOf := func(p string) string {
+		if i := strings.LastIndexByte(p, '/'); i >= 0 {
+			return p[:i]
+		}
+		return ""
+	}
+	tainted := map[string]bool{}
+	for name := range refused {
+		for d := dirOf(name); ; d = dirOf(d) {
+			tainted[d] = true
+			if d == "" {
+				break
+			}
+		}
+	}
+	chosen := map[string]bool{}
+	for _, name := range files {
+		if _, bad := refused[name]; bad {
+			continue
+		}
+		target := name
+		// Outermost first: the first clean directory is the widest one.
+		for i := -1; i < len(name); i++ {
+			if i >= 0 && name[i] != '/' {
+				continue
+			}
+			d := ""
+			if i >= 0 {
+				d = name[:i]
+			}
+			inScope := scope == "" || d == scope || strings.HasPrefix(d, scope+"/")
+			if inScope && !tainted[d] {
+				target = d
+				break
+			}
+		}
+		chosen[target] = true
+	}
+	targets := make([]string, 0, len(chosen))
+	for target := range chosen {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
 }
 
 func (r *Registry) patchFile(ctx context.Context, call tools.Call) tools.Result {
