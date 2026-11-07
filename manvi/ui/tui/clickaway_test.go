@@ -13,7 +13,7 @@ import (
 func twoSessions(t *testing.T, req ui.Request) (*App, *fakeClock, chan ui.Decision) {
 	t.Helper()
 	a, _ := newTestApp()
-	a.AddSession("S2", "session two")
+	_ = a.AddSession("S2", "session two")
 	clk := newFakeClock(a)
 	drawAt(a, 100, 30)
 	clickTab(t, a, 0)
@@ -107,7 +107,7 @@ func TestNewSessionClickAndBackDropsTheFirstKey(t *testing.T) {
 		t.Fatalf("the new button produced %#v", effects)
 	}
 	// The host answers the effect by adding the session, which takes focus.
-	a.AddSession("S3", "session three")
+	_ = a.AddSession("S3", "session three")
 	clk.advance(time.Second)
 	clickTab(t, a, 0)
 	afterReturn(t, a, clk, reply, '2')

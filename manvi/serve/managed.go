@@ -669,7 +669,7 @@ func (r *ManagedRunner) prepare(ctx context.Context, job *managedJob) {
 		err = errors.New("a managed attempt must be fresh, name a provider with a managed adapter, and carry a complete brief within 128 KiB")
 	}
 	if err == nil {
-		err = r.enterCheckout(job, run)
+		err = r.enterCheckout(job, run) //nolint:contextcheck // the reaper recheckHeld may start is a runner-lifetime worker ended by Close; this attempt's context must not end it
 	}
 	// A harness is resolved and judged before the attempt is claimed, so a
 	// refused one leaves the saved attempt prepared and the host free to

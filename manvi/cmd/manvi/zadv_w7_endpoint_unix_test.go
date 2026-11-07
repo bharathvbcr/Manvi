@@ -25,17 +25,18 @@ func TestZAdvRepositoryConfigFIFODoesNotHang(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("newRegistry returned %v", err)
 	case <-time.After(3 * time.Second):
 		// Release every blocked reader (the refusal's, then DevCouncil's own
 		// retired-key scan) so no goroutine outlives the test.
 		for {
-			if w, err := os.OpenFile(cfg, os.O_RDWR, 0); err == nil {
+			if w, err := os.OpenFile(cfg, os.O_RDWR, 0); err == nil { // #nosec G304 -- the test's own FIFO path under t.TempDir
 				_ = w.Close()
 			}
 			select {
-			case <-done:
-				t.Fatal("newRegistry blocked on a FIFO at the repository config path: Manvi's readConfigFile and DevCouncil's refuseRetiredConfig both open it with a plain os.Open")
+			case err := <-done:
+				t.Fatalf("newRegistry returned %v only once the FIFO was opened: it blocked on a FIFO at the repository config path: Manvi's readConfigFile and DevCouncil's refuseRetiredConfig both open it with a plain os.Open", err)
 			case <-time.After(50 * time.Millisecond):
 			}
 		}

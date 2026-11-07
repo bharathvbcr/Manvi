@@ -291,7 +291,7 @@ func matchesOwned(key string, owned []string) bool {
 // dropping it is the safe choice. With keepExact the exact owned keys stay.
 func dropNearDuplicates(fields map[string]json.RawMessage, owned []string, keepExact bool) {
 	for k := range fields {
-		if matchesOwned(k, owned) && !(keepExact && slices.Contains(owned, k)) {
+		if matchesOwned(k, owned) && (!keepExact || !slices.Contains(owned, k)) {
 			delete(fields, k)
 		}
 	}

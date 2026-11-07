@@ -16,8 +16,8 @@ import (
 func advThree(t *testing.T, req ui.Request) (*App, *fakeClock, chan ui.Decision) {
 	t.Helper()
 	a, _ := newTestApp()
-	a.AddSession("S2", "session two")
-	a.AddSession("S3", "session three")
+	_ = a.AddSession("S2", "session two")
+	_ = a.AddSession("S3", "session three")
 	clk := newFakeClock(a)
 	drawAt(a, 100, 30)
 	clickTab(t, a, 1)

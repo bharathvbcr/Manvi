@@ -348,7 +348,7 @@ func TestAdvReadBoundaryInsideStartMarkerWithGapPastEscapeDelay(t *testing.T) {
 // marker survives.
 func TestAdvDeadlineRacesEndMarker(t *testing.T) {
 	const dl = 20 * time.Millisecond
-	rng := rand.New(rand.NewSource(7))
+	rng := rand.New(rand.NewSource(7)) // #nosec G404 -- a fixed-seed sweep: reproducing a failing draw is the point, secrecy is not.
 	for i := 0; i < 150; i++ {
 		h := newPasteHarness(t, func(r *Reader) {
 			r.SetEscapeDelay(5 * time.Millisecond)

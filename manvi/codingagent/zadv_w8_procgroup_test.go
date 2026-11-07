@@ -3,6 +3,7 @@
 package codingagent
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"runtime"
@@ -29,7 +30,7 @@ func TestAZombieOnlyGroupAnswersKillWithEPERMOnDarwin(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("EPERM for a zombie-only group is Darwin's answer; Linux signals a zombie successfully")
 	}
-	zombie := exec.Command("/bin/sleep", "30")
+	zombie := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/sleep", "30")
 	zombie.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := zombie.Start(); err != nil {
 		t.Fatal(err)

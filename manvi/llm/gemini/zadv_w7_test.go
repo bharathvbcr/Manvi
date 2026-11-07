@@ -75,11 +75,12 @@ func TestZAdvStreamAndMessageAgreeOnHostileContent(t *testing.T) {
 		if i > 0 {
 			ten.WriteString(",")
 		}
-		if i%3 == 0 {
+		switch i % 3 {
+		case 0:
 			fmt.Fprintf(&ten, `{"type":"text","text":"t%d"}`, i)
-		} else if i%3 == 1 {
+		case 1:
 			fmt.Fprintf(&ten, `{"type":"thought","thought":"r%d"}`, i)
-		} else {
+		default:
 			fmt.Fprintf(&ten, `{"type":"mystery_%d","text":"SHOULD-NOT-APPEAR"}`, i)
 		}
 	}

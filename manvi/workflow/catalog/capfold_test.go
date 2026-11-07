@@ -27,7 +27,7 @@ func TestMatchesOwnedAgreesWithTheDecoder(t *testing.T) {
 	names := jsonKeys(reflect.TypeOf(owned{}))
 	keys := []string{
 		"status", "Status", "STATUS", "sTatus", "statuS", "ſtatus", "ſtatuſ", "STATUſ",
-		"status ", " status", "status​", "statu", "statuss", "stat\xffus", "",
+		"status ", " status", "status\u200b", "statu", "statuss", "stat\xffus", "",
 		"sha256", "ſha256", "SHA256", "ſhA256", "sha-256", "sha2560",
 		"mean_rung_index", "mean_rung_indeX", "MEAN_RUNG_INDEX", "mean_rung_indeχ",
 		"k", "K", "K", "K", "kk", "ǩ",
@@ -131,7 +131,7 @@ func inflatingPointer(t *testing.T, path string) []byte {
 	if len(raw) >= workflow.MaxArtifactBytes {
 		t.Fatalf("setup too big: %d", len(raw))
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	return raw
@@ -184,7 +184,7 @@ func TestCheckUnattendedFailsClosedOnAnUnreadablePointer(t *testing.T) {
 	s, e, path := approvedStore(t)
 	raw, _ := os.ReadFile(path) // #nosec G304 -- test temp dir
 	big := append(raw[:len(raw)-1], []byte(`,"pad":"`+strings.Repeat("x", workflow.MaxArtifactBytes)+`"}`)...)
-	if err := os.WriteFile(path, big, 0o600); err != nil {
+	if err := os.WriteFile(path, big, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	got, err := s.Get(e.ID, e.Revision)

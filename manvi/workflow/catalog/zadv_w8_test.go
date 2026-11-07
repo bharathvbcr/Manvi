@@ -33,7 +33,7 @@ func rewriteCurrent(t *testing.T, path string, mutate func(map[string]json.RawMe
 // What a stock decoder, as any other reader of this file would be, sees.
 func stockDecode(t *testing.T, path string) Entry {
 	t.Helper()
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +45,14 @@ func stockDecode(t *testing.T, path string) Entry {
 }
 
 func TestAdvFoldedStatusKeyCannotResurrectApprovalAfterRevoke(t *testing.T) {
-	for _, key := range []string{"ſtatus", "ſtatuſ", "STATUS", "sTatus", "status​"} {
+	for _, key := range []string{"ſtatus", "ſtatuſ", "STATUS", "sTatus", "status\u200b"} {
 		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
 			s, e, path := approvedStore(t)
 			rewriteCurrent(t, path, func(f map[string]json.RawMessage) { f[key] = json.RawMessage(`"approved"`) })
 			if err := s.Revoke(e.ID, e.Revision, e.SHA256); err != nil {
 				t.Fatal(err)
 			}
-			raw, _ := os.ReadFile(path)
+			raw, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 			got, err := s.Get(e.ID, e.Revision)
 			if err != nil {
 				t.Fatalf("Get after revoke: %v (file %s)", err, raw)
@@ -147,11 +147,11 @@ func TestAdvRewriteCannotPushCurrentOverReadCap(t *testing.T) {
 	blob, _ := json.Marshal(strings.Repeat("a", 400<<10))
 	// Write the value unescaped, by hand, as another writer could.
 	rewriteCurrent(t, path, func(f map[string]json.RawMessage) {})
-	raw, _ := os.ReadFile(path)
+	raw, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	raw = bytes.TrimSuffix(raw, []byte("}"))
 	raw = append(raw, []byte(`,"zz_foreign":"`+strings.Repeat("&", 400<<10)+`"}`)...)
 	_ = blob
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	if len(raw) >= 1<<20 {
@@ -177,16 +177,16 @@ func TestAdvRewriteCannotPushCurrentOverReadCap(t *testing.T) {
 func TestAdvRevokeBeyondCapRefusedBeforeWrite(t *testing.T) {
 	// A pointer that is already over the cap must be refused and left untouched.
 	s, e, path := approvedStore(t)
-	raw, _ := os.ReadFile(path)
+	raw, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	raw = bytes.TrimSuffix(raw, []byte("}"))
 	raw = append(raw, []byte(`,"zz":"`+strings.Repeat("x", 1<<20)+`"}`)...)
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	if err := s.Revoke(e.ID, e.Revision, e.SHA256); err == nil {
 		t.Fatal("Revoke succeeded on an oversize pointer")
 	}
-	after, _ := os.ReadFile(path)
+	after, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	if !bytes.Equal(raw, after) {
 		t.Error("oversize pointer was modified by a refused Revoke")
 	}
@@ -205,14 +205,14 @@ func TestAdvHostileShapesInCurrent(t *testing.T) {
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
 			s, e, path := approvedStore(t)
-			raw, _ := os.ReadFile(path)
+			raw, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 			raw = bytes.TrimSuffix(raw, []byte("}"))
 			raw = append(raw, []byte(","+extra+"}")...)
-			if err := os.WriteFile(path, raw, 0o600); err != nil {
+			if err := os.WriteFile(path, raw, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 				t.Fatal(err)
 			}
 			err := s.Revoke(e.ID, e.Revision, e.SHA256)
-			after, _ := os.ReadFile(path)
+			after, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 			if err != nil {
 				// Refusal is fine, but it must not have altered or truncated the file.
 				if !bytes.Equal(raw, after) {
@@ -236,16 +236,16 @@ func TestAdvHostileShapesInCurrent(t *testing.T) {
 
 func TestAdvInvalidUTF8KeyIsReencodedAsValidUTF8(t *testing.T) {
 	s, e, path := approvedStore(t)
-	raw, _ := os.ReadFile(path)
+	raw, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	raw = bytes.TrimSuffix(raw, []byte("}"))
 	raw = append(raw, []byte("\x2c\"k\xff\":\"v\"}")...)
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	if err := s.Revoke(e.ID, e.Revision, e.SHA256); err != nil {
 		t.Skipf("refused: %v", err)
 	}
-	after, _ := os.ReadFile(path)
+	after, _ := os.ReadFile(path) // #nosec G304 -- a file under this test's own t.TempDir
 	// Documented on updateCurrent: keys are re-encoded as valid UTF-8, so the
 	// invalid byte comes back as U+FFFD (written as the escape \ufffd), and the
 	// pointer is valid JSON with its value intact.

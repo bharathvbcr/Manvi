@@ -402,7 +402,7 @@ func FuzzPasteReadSplits(f *testing.F) {
 		stream := "a" + pasteStart + body + pasteEnd + "b"
 		want := collectAll(t, []string{stream})
 
-		rng := rand.New(rand.NewSource(seed))
+		rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- a fixed-seed sweep: reproducing a failing draw is the point, secrecy is not.
 		var chunks []string
 		for rest := stream; len(rest) > 0; {
 			n := min(1+rng.Intn(int(maxChunk)+1), len(rest))

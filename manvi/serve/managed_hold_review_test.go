@@ -535,7 +535,7 @@ func TestARevisionTheStoreKeepsRefusingIsLoggedAfterBoundedRetries(t *testing.T)
 		defer mu.Unlock()
 		return strings.Contains(logged.String(), "revising run run")
 	})
-	if got := fault.finishes.Load() - before; got != int32(reviseAttempts) {
+	if got := fault.finishes.Load() - before; int(got) != reviseAttempts {
 		t.Fatalf("the revision was attempted %d times, want %d", got, reviseAttempts)
 	}
 	if run, _ := storedRun(t, m); run.State != "unresolved" {
@@ -561,7 +561,7 @@ func (s *managedCwd) Workbench(ctx context.Context, method string, input json.Ra
 	}
 	var doc map[string]any
 	if json.Unmarshal(raw, &doc) != nil {
-		return raw, nil
+		return raw, nil //nolint:nilerr // an unparseable reply is passed through untouched; the decoder's own error is the test's concern
 	}
 	if item, ok := doc["item"].(map[string]any); ok {
 		item["cwd"] = s.cwd

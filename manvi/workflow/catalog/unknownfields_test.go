@@ -263,7 +263,7 @@ func TestDuplicateKeysCollapseToTheLastValue(t *testing.T) {
 	}
 	dup := strings.Replace(string(raw), "{", `{"reviewed_by":"first","status":"draft",`, 1)
 	dup = strings.TrimSuffix(dup, "}") + `,"reviewed_by":"last"}`
-	if err := os.WriteFile(path, []byte(dup), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(dup), 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)
 	}
 	if err := s.Revoke(e.ID, e.Revision, e.SHA256); err != nil {

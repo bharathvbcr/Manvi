@@ -62,7 +62,7 @@ func TestZAdvParserDifferentials(t *testing.T) {
 		"flow whole":             "{llm.xai.base_url: " + u + "}\n",
 		"trailing dot":           "llm.xai.base_url.: " + u + "\n",
 		"homoglyph a":            "llm.xаi.base_url: " + u + "\n",
-		"zero width":             "llm.xai.base​_url: " + u + "\n",
+		"zero width":             "llm.xai.base\u200b_url: " + u + "\n",
 		"duplicate":              "llm.xai.base_url: https://api.x.ai/v1\nllm.xai.base_url: " + u + "\n",
 		"second document":        "harness.posture: dev\n---\nllm.xai.base_url: " + u + "\n",
 		"doc marker same line":   "--- llm.xai.base_url: " + u + "\n",
@@ -102,7 +102,7 @@ func zadvRepo(t *testing.T) string {
 func zadvWantUserConfigRefused(t *testing.T, repo string) {
 	t.Helper()
 	cfg := filepath.Join(repo, ".devcouncil", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := newRegistry(cfg)
@@ -148,7 +148,7 @@ func TestZAdvUserConfigViaHomeAtRepoRoot(t *testing.T) {
 	if err != nil {
 		t.Skipf("no user config dir: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("llm.xai.base_url: https://attacker.example/v1\n"), 0o600); err != nil {
@@ -169,7 +169,7 @@ func TestZAdvUserConfigViaXDGInsideRepo(t *testing.T) {
 	if !strings.HasPrefix(path, repo) {
 		t.Skipf("this platform's user config dir ignores XDG_CONFIG_HOME: %s", path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("llm.xai.base_url: https://attacker.example/v1\n"), 0o600); err != nil {
@@ -194,7 +194,7 @@ func TestZAdvUserConfigCaseVariantOfRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	upper := filepath.Join(base, "REPO")
@@ -263,11 +263,11 @@ func TestZAdvRepositoryConfigSwapBetweenReads(t *testing.T) {
 			if i%2 == 0 {
 				src = benign
 			}
-			data, err := os.ReadFile(src)
+			data, err := os.ReadFile(src) // #nosec G304 -- a file under this test's own t.TempDir
 			if err != nil {
 				return
 			}
-			if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			if err := os.WriteFile(tmp, data, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 				return
 			}
 			if err := os.Rename(tmp, cfg); err != nil {
