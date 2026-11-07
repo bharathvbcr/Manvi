@@ -33,18 +33,21 @@ func killOnCleanup(t *testing.T, pid int) {
 }
 
 // startStranger starts an unrelated process in a group of its own, standing in
-// for whatever takes a group number after the agent's group is gone. It is
-// killed and reaped on cleanup.
+// for whatever takes a group number after the agent's group is gone. It is not
+// bound to t.Context(): that is cancelled before cleanups run, and os/exec would
+// then SIGKILL the stranger into an unreaped zombie, which Darwin's kill(2)
+// answers with EPERM when the cleanup signals its group. Only the cleanups end
+// it: the group is killed, then the process is reaped.
 func startStranger(t *testing.T) *exec.Cmd {
 	t.Helper()
-	stranger := exec.CommandContext(t.Context(), "/bin/sleep", "30")
+	stranger := exec.Command("/bin/sleep", "30")
 	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := stranger.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		// Wait reports the SIGKILL the group cleanup below sends (or the
-		// context's); reaping is all that is wanted from it.
+		// Wait reports the SIGKILL the group cleanup below sends; reaping is all
+		// that is wanted from it.
 		_ = stranger.Wait()
 	})
 	killOnCleanup(t, -stranger.Process.Pid)
@@ -291,5 +294,56 @@ func TestCloseReportsAProcessGroupThatOutlivesSIGKILL(t *testing.T) {
 	alive.Store(false)
 	if exit, err = c.close(); err != nil || !exit.Reaped || exit.GroupLive {
 		t.Fatalf("close once the group is gone: exit = %+v, err = %v, want a clean confirmation", exit, err)
+	}
+}
+
+// slowWaitConnection is a connection whose Wait finishes only after waitTakes,
+// measured from the call, and whose group, as probed, empties groupGoneAfter
+// later still: the shape a single timer shared by Wait and the group got wrong.
+func slowWaitConnection(t *testing.T, budget, waitTakes, groupGoneAfter time.Duration) (*connection, *atomic.Bool) {
+	t.Helper()
+	var alive atomic.Bool
+	alive.Store(true)
+	oldProbe, oldBudget := probeGroup, reapBudget
+	probeGroup, reapBudget = func(int) bool { return alive.Load() }, budget
+	t.Cleanup(func() { probeGroup, reapBudget = oldProbe, oldBudget })
+	c, err := startConnection(t.Context(), "/bin/sh", []string{"-c", "exit 0"}, t.TempDir(), func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done // the real Wait is over; the one close() sees is staged below
+	staged := make(chan struct{})
+	c.done = staged
+	go func() {
+		time.Sleep(waitTakes)
+		close(staged)
+		time.Sleep(groupGoneAfter)
+		alive.Store(false)
+	}()
+	return c, &alive
+}
+
+// Wait taking most of the budget must not leave the group none: a member that is
+// gone a moment after Wait returned is gone, and the group gets a budget of its
+// own that starts when Wait does.
+func TestCloseGivesTheGroupItsOwnBudgetAfterASlowWait(t *testing.T) {
+	c, _ := slowWaitConnection(t, 400*time.Millisecond, 350*time.Millisecond, 200*time.Millisecond)
+	exit, err := c.close()
+	if err != nil || !exit.Reaped || exit.GroupLive {
+		t.Fatalf("close: exit = %+v, err = %v, want the group confirmed gone: it emptied 200ms after Wait returned, inside a fresh 400ms budget", exit, err)
+	}
+}
+
+// A member still alive at the end of the group's own budget is still reported
+// live (the hold stays), and the whole of close() stays within two budgets.
+func TestCloseStillFailsClosedWhenTheGroupOutlivesItsOwnBudget(t *testing.T) {
+	c, _ := slowWaitConnection(t, 200*time.Millisecond, 150*time.Millisecond, time.Hour)
+	start := time.Now()
+	exit, err := c.close()
+	if err == nil || !strings.Contains(err.Error(), "still has a live member") || !exit.Reaped || !exit.GroupLive {
+		t.Fatalf("close: exit = %+v, err = %v, want the live group reported", exit, err)
+	}
+	if elapsed := time.Since(start); elapsed < 300*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("close took %v, want the Wait (150ms) plus the group's full 200ms budget, and no more than two budgets", elapsed)
 	}
 }

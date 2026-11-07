@@ -459,12 +459,30 @@ How the block is kept safe:
   A verification that is already running when a harness run starts on the same worktree is not
   stopped.
 - **Process group reaping and checkout holds**: On Unix, closing a managed coding agent
-  sweeps and kills its entire process group (`SIGKILL`), waiting up to 5s for all descendants
-  to exit so background dev servers or grandchildren redirecting stdio cannot outlive the run.
-  If any group member remains alive after close (`Exit.GroupLive`), the harness run treats the
-  checkout as held—keeping the harness block in place and refusing new harness runs or
-  verifications with `E_HARNESS_BUSY`—until the background reaper confirms the group has
-  exited and the checkout is clean.
+  sweeps and kills its entire process group (`SIGKILL`), then waits up to 5s for the agent to
+  be reaped and, from that moment, a further 5s for all descendants to exit, so background dev
+  servers or grandchildren redirecting stdio cannot outlive the run. If the agent is not
+  reaped, or any group member remains alive after close (`Exit.GroupLive`), the run is
+  recorded `unresolved` and the checkout is held, for every managed run, with a harness block
+  or without (a plain run has no block to leave in place, and its instruction file is not
+  touched). While held, every `work.runs.managed.prepare` on the checkout (with a harness or
+  without) and every `work.verify.task` and `work.scan.gaps` on the worktree refuses with
+  `E_HARNESS_BUSY`; the message names the run, since when, that no harness block was written
+  (for a plain run) and, once the provider has answered, the live process group. The
+  background reaper keeps asking, releases the checkout (taking the block out first, for a
+  harness run) when a later close finds the group gone, and revises the stored run from
+  `unresolved` to `exited` with the agent's code, unless that close still carries an error.
+  The hold covers the tree, not one spelling of the directory: a checkout overlaps another
+  when either is the other or lies inside it (resolved paths, so a run started in a
+  subdirectory of a held worktree is refused, and so is `work.verify.task` on it); unrelated
+  sibling directories do not overlap. A revision the store refuses is retried (3 attempts) and
+  then logged by `manvi serve`; a first finish the store refused (the run still `running`) is
+  repaired by the same revision.
+  The hold is process memory: it ends with `manvi serve`, and restarting is the way out
+  if the group never empties (a zombie left in the group by a parent outside it reads as live).
+  **A restart frees the checkout while the group may still be writing it**: the hold is not
+  carried over, so restart only when that process group is known to be gone or acceptable to
+  race. A plain run whose group is gone at close releases at once.
 
 ---
 

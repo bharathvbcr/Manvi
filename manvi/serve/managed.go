@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/harness"
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // ManagedSession is one provider connection, never an external terminal.
@@ -130,6 +132,11 @@ type managedJob struct {
 	harnessDigest string
 	harnessFile   string
 	materialised  *harnessMaterialisation
+	// revisableHold is set by the finish of a run that ended through the run's own
+	// Close, so that a hold it takes may later revise the run (see reviseHeldRun).
+	// A run abandoned before it was active is recorded unresolved whatever Close
+	// says, and keeps that.
+	revisableHold bool
 	// checkout is the resolved directory this attempt runs in and checkoutInfo
 	// the directory itself, which is what checkouts are compared by (see
 	// sameCheckout); wantsHarness is whether it asked for a harness, and recovery
@@ -247,8 +254,8 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 	}
 	r.checkoutMu.Lock()
 	defer r.checkoutMu.Unlock()
-	if reason := r.heldReason(info); reason != "" {
-		r.recheckHeld(info)
+	if reason := r.heldReason(resolved, info); reason != "" {
+		r.recheckHeld(resolved, info)
 		return harnessBusy("%s", reason)
 	}
 	r.mu.Lock()
@@ -266,7 +273,7 @@ func (r *ManagedRunner) enterCheckout(job *managedJob, run managedRun) error {
 		default:
 		}
 		o.mu.Lock()
-		same, harnessed := sameCheckout(o.checkoutInfo, info), o.wantsHarness
+		same, harnessed := checkoutsOverlap(o.checkoutInfo, o.checkout, info, resolved), o.wantsHarness
 		o.mu.Unlock()
 		switch {
 		case !same:
@@ -313,6 +320,31 @@ func sameCheckout(a, b os.FileInfo) bool {
 	return a != nil && b != nil && os.SameFile(a, b)
 }
 
+// checkoutsOverlap says whether two checkouts can touch each other's files: they
+// are one directory (sameCheckout), or one lies inside the other. A run started in
+// a subdirectory of a worktree (a monorepo package is where agents are most often
+// pointed) writes files the worktree's other runs and verifications read, and a
+// run at the root writes the subdirectory's, so a hold or a live harness on either
+// holds the other. The paths are the resolved ones (resolvedCheckout), compared by
+// mcp.PathIsInside, the repository's one containment rule; two sibling
+// directories do not overlap. A path that cannot be compared is taken to overlap,
+// since this is a refusal's test and the failure it must not have is admitting.
+// A checkout with no directory (nil) overlaps nothing.
+func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath string) bool {
+	if sameCheckout(aInfo, bInfo) {
+		return true
+	}
+	if aInfo == nil || bInfo == nil || aPath == "" || bPath == "" {
+		return false
+	}
+	for _, pair := range [2][2]string{{aPath, bPath}, {bPath, aPath}} {
+		if inside, err := mcp.PathIsInside(pair[0], pair[1]); err != nil || inside {
+			return true
+		}
+	}
+	return false
+}
+
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
 // managed run with a harness is live on it, or one left a record that has not
 // been applied (and, when this process tried to apply it and could not, why).
@@ -338,13 +370,13 @@ func (r *ManagedRunner) HarnessBusy(worktree string) *Error {
 		default:
 		}
 		j.mu.Lock()
-		live := sameCheckout(j.checkoutInfo, info) && j.materialised != nil
+		live := checkoutsOverlap(j.checkoutInfo, j.checkout, info, resolved) && j.materialised != nil
 		j.mu.Unlock()
 		if live {
 			return harnessBusy("a managed harness run is in progress on this worktree: its block is in the checkout until the run ends, so its diff is not the agent's; verify again when the run has ended")
 		}
 	}
-	if reason := r.heldReason(info); reason != "" {
+	if reason := r.heldReason(resolved, info); reason != "" {
 		return harnessBusy("%s", reason)
 	}
 	if harnessRecordPending(resolved) {
@@ -1171,17 +1203,12 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 		}
 		finalState = "" // The protocol record owns the initialized provider state.
 	}
-	outcome := "unresolved"
-	var code *int
-	// Provider failure and callback uncertainty do not imply that a reaped
-	// process is alive. Preserve their reasons; task acceptance remains separate.
-	if exit.Reaped && closeErr == nil {
-		outcome = "exited"
-		if exit.Code >= 0 {
-			v := exit.Code
-			code = &v
-		}
-	}
+	outcome, code := runOutcome(exit, closeErr)
+	// A hold taken by this finish is one a later Close may settle: the run is
+	// revised then to what outcome would have been had the group been gone now.
+	job.mu.Lock()
+	job.revisableHold = true
+	job.mu.Unlock()
 	finishErr := r.finish(job, outcome, code, err, finalState, unconfirmedSession(job.provider, exit))
 	// Arm only after finish has released the checkout, and never for a timeout.
 	// A provider-reported failure and a clean stop both arm. The queued message
@@ -1721,10 +1748,17 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 	// it, so it would overwrite the agent's edit in between and give the checkout
 	// to the next run while the agent may still be in it. The block and its record
 	// stay, the checkout is held (holdCheckout), and the run is recorded
-	// unresolved, as the caller already records it.
-	if m := job.takeMaterialised(); m != nil && unconfirmed != nil {
-		r.holdCheckout(job, unconfirmed, m)
-		cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+	// unresolved, as the caller already records it. A run with no block is held
+	// the same way, with nothing to leave in place: what it would give the next
+	// run is a checkout an agent, or a tool the agent started, may still be
+	// writing.
+	m := job.takeMaterialised()
+	if unconfirmed != nil && r.holdCheckout(job, unconfirmed, m) {
+		// A harness run says what it left behind. A plain run left nothing, and its
+		// reason stays what failed; the hold is told by the refusals (holdMessage).
+		if m != nil {
+			cause = errors.Join(cause, errors.New("the agent process is not confirmed to have exited, so its harness block was left in the checkout and the checkout is held"))
+		}
 	} else if restoreErr := m.Restore(); restoreErr != nil {
 		cause = errors.Join(cause, restoreErr)
 		job.mu.Lock()
@@ -1732,46 +1766,75 @@ func (r *ManagedRunner) finish(job *managedJob, outcome string, code *int, cause
 		job.mu.Unlock()
 		r.settleBlocked(info, root, fmt.Errorf("run %s: %w", job.id, restoreErr))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	run, _, err := r.run(ctx, job.id)
-	if err == nil {
-		reason := "Managed provider connection ended; task acceptance requires review"
-		if cause != nil {
-			reason = r.failureText(cause)
-			if len(reason) > 2048 {
-				reason = reason[:2048]
-				for !utf8.ValidString(reason) {
-					reason = reason[:len(reason)-1]
-				}
-			}
-		}
-		var id string
-		id, err = generationID()
-		if err == nil {
-			var input []byte
-			input, err = json.Marshal(struct {
-				ID            string `json:"id"`
-				Request       string `json:"request_id"`
-				Revision      int64  `json:"expected_revision"`
-				Owner         string `json:"owner_id"`
-				Session       string `json:"session_id"`
-				Outcome       string `json:"outcome"`
-				Exit          *int   `json:"exit_code"`
-				Reason        string `json:"reason"`
-				ProviderState string `json:"provider_state,omitempty"`
-			}{job.id, id, run.Revision, job.owner, job.session, outcome, code, reason, providerState})
-			if err == nil {
-				_, err = r.client.Workbench(ctx, "runs.finish", input)
-			}
-		}
-	}
-	storeErr := err
+	_, storeErr := r.recordRun(job, outcome, code, cause, providerState)
 	job.mu.Lock()
 	job.phase = outcome
 	job.err = errors.Join(cause, storeErr)
 	job.mu.Unlock()
 	return storeErr
+}
+
+// runOutcome is how a run whose provider was closed is recorded: exited, with the
+// agent's code, when Close reaped it and had nothing to add, else unresolved.
+// Provider failure and callback uncertainty do not imply that a reaped process is
+// alive. Their reasons are preserved; task acceptance remains separate.
+func runOutcome(exit codingagent.Exit, closeErr error) (string, *int) {
+	if !exit.Reaped || closeErr != nil {
+		return "unresolved", nil
+	}
+	if exit.Code < 0 {
+		return "exited", nil
+	}
+	code := exit.Code
+	return "exited", &code
+}
+
+// recordRun is the one place a run's end is written to the store (runs.finish),
+// for finish and for the revision of a held run alike. from, when given, are the
+// states the stored run must still be in: a run in any other state has been
+// finalised by someone and is not rewritten (written is false, the error nil).
+func (r *ManagedRunner) recordRun(job *managedJob, outcome string, code *int, cause error, providerState string, from ...string) (written bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run, _, err := r.run(ctx, job.id)
+	if err != nil {
+		return false, err
+	}
+	if len(from) > 0 && !slices.Contains(from, run.State) {
+		return false, nil
+	}
+	reason := "Managed provider connection ended; task acceptance requires review"
+	if cause != nil {
+		reason = r.failureText(cause)
+		if len(reason) > 2048 {
+			reason = reason[:2048]
+			for !utf8.ValidString(reason) {
+				reason = reason[:len(reason)-1]
+			}
+		}
+	}
+	id, err := generationID()
+	if err != nil {
+		return false, err
+	}
+	input, err := json.Marshal(struct {
+		ID            string `json:"id"`
+		Request       string `json:"request_id"`
+		Revision      int64  `json:"expected_revision"`
+		Owner         string `json:"owner_id"`
+		Session       string `json:"session_id"`
+		Outcome       string `json:"outcome"`
+		Exit          *int   `json:"exit_code"`
+		Reason        string `json:"reason"`
+		ProviderState string `json:"provider_state,omitempty"`
+	}{job.id, id, run.Revision, job.owner, job.session, outcome, code, reason, providerState})
+	if err != nil {
+		return false, err
+	}
+	if _, err = r.client.Workbench(ctx, "runs.finish", input); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (r *ManagedRunner) Stop(raw json.RawMessage) error {
 	if _, err := enhancementObject(raw, 1024, "id"); err != nil {

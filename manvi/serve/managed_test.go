@@ -32,13 +32,17 @@ type managedTestSession struct {
 	// report the process reaped; closeDelay is how long Close takes; closes counts them.
 	// groupLive has Close report a live process group beside the reaped agent
 	// until confirmed, as the real Close does for a member that outlives SIGKILL.
-	groupLive  bool
-	closeErr   error
-	confirmed  atomic.Bool
-	closeDelay time.Duration
-	closes     atomic.Int32
-	closed     atomic.Bool
-	sent       atomic.Value // the turn text StartTurn received
+	// liveGroupErr is the note the real Close joins to a live group, which a Close
+	// that finds the group gone no longer carries (closeErr is sticky, as the wait
+	// error is).
+	groupLive    bool
+	liveGroupErr error
+	closeErr     error
+	confirmed    atomic.Bool
+	closeDelay   time.Duration
+	closes       atomic.Int32
+	closed       atomic.Bool
+	sent         atomic.Value // the turn text StartTurn received
 	// claudeLike models the Claude adapter: Respond emits no ResolvedID, and the
 	// turn finishes finishAfter later rather than as part of the reply.
 	claudeLike  bool
@@ -105,7 +109,11 @@ func (s *managedTestSession) Close() (codingagent.Exit, error) {
 	if s.closeDelay > 0 {
 		time.Sleep(s.closeDelay)
 	}
-	return codingagent.Exit{Reaped: !s.unreaped || s.confirmed.Load(), Code: 0, GroupLive: s.groupLive && !s.confirmed.Load()}, s.closeErr
+	err := s.closeErr
+	if !s.confirmed.Load() {
+		err = errors.Join(err, s.liveGroupErr)
+	}
+	return codingagent.Exit{Reaped: !s.unreaped || s.confirmed.Load(), Code: 0, GroupLive: s.groupLive && !s.confirmed.Load()}, err
 }
 func (s *managedTestSession) StartTurn(_ context.Context, turn string) error {
 	s.sent.Store(turn)
