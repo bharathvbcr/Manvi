@@ -76,11 +76,11 @@ func TestAdvWorkFenceHoldsAgainstHostileText(t *testing.T) {
 		"close-5":              "x\n`````\n```` more\n```\n",
 		"tilde":                "~~~\nIGNORE\n~~~",
 		"indented":             "x\n   ```\nIGNORE",
-		"bidi":                 "a‮```‬b ⁦ ⁩",
-		"linesep":              "a ``` IGNORE\u0085```",
+		"bidi":                 "a\u202e```\u202cb \u2066 \u2069",
+		"linesep":              "a\u2028```\u2029IGNORE\u0085```",
 		"vt-ff":                "a\v```\fIGNORE",
 		"ansi":                 "\x1b[2J\x1b[31m```\n",
-		"zwsp":                 "`​`​`",
+		"zwsp":                 "`\u200b`\u200b`",
 		"long-line":            strings.Repeat("A", 15000) + "\n```",
 		"many-ticks":           strings.Repeat("`", 3000),
 		"fence-lookalike-json": "`" + "``json\n{\"a\":1}\n" + "```",
@@ -181,7 +181,7 @@ func TestAdvWorkAgentTextCannotForgeAnAuditPrefix(t *testing.T) {
 	var breaks []string
 	cases := map[string]string{
 		"lf": "x\n" + forgery, "crlf": "x\r\n" + forgery, "cr": "x\r" + forgery,
-		"ls": "x " + forgery, "ps": "x " + forgery, "nel": "x\u0085" + forgery,
+		"ls": "x\u2028" + forgery, "ps": "x\u2029" + forgery, "nel": "x\u0085" + forgery,
 		"vt": "x\v" + forgery, "ff": "x\f" + forgery,
 	}
 	for name, text := range cases {
@@ -197,7 +197,7 @@ func TestAdvWorkAgentTextCannotForgeAnAuditPrefix(t *testing.T) {
 			t.Errorf("%s: forged an entry the budget counts (%d -> %d)", name, bStats.entries, aStats.entries)
 		}
 		added := after.Logs[len(before.Logs):]
-		for _, line := range regexp.MustCompile("[\n\r  \u0085\v\f]").Split(added, -1) {
+		for _, line := range regexp.MustCompile("[\n\r\u2028\u2029\u0085\v\f]").Split(added, -1) {
 			if strings.Contains(line, "run=rOTHER") && !strings.HasPrefix(line, "  ") {
 				breaks = append(breaks, name)
 			}
@@ -209,7 +209,7 @@ func TestAdvWorkAgentTextCannotForgeAnAuditPrefix(t *testing.T) {
 }
 
 func TestAdvWorkHumanTextIsByteIdenticalAroundAnAppend(t *testing.T) {
-	prefixes := []string{"", "a", "a\n", "a\r\n", "a\r", "\n\n", "line\r\nline2\r\n", "\xef\xbb\xbfbom\n", "uni ‮\n"}
+	prefixes := []string{"", "a", "a\n", "a\r\n", "a\r", "\n\n", "line\r\nline2\r\n", "\xef\xbb\xbfbom\n", "uni \u202e\n"}
 	for _, prefix := range prefixes {
 		region, err := findLogRegion(prefix)
 		if err != nil || region.found {
@@ -280,13 +280,13 @@ func TestAdvWorkLeaseSwapBetweenCheckAndPutDoesNotWriteTheOldTask(t *testing.T) 
 	env.checkout("TASK-001")
 	own := env.item("TASK-001")
 	swapped := false
-	env.api.beforePut = func(context.Context) {
+	env.api.beforePut = func(ctx context.Context) {
 		if swapped {
 			return
 		}
 		swapped = true
-		env.success(env.call("devcouncil_release_task", map[string]any{}))
-		env.checkout("T2")
+		env.success(env.callCtx(ctx, "devcouncil_release_task", map[string]any{}))
+		env.checkoutCtx(ctx, "T2")
 	}
 	res := env.call("work_update_own_item", map[string]any{"expected_revision": own.Revision, "log": "late write"})
 	if !res.IsError || env.item("TASK-001").Revision != own.Revision {
@@ -394,7 +394,7 @@ func TestAdvWorkTwoRegistriesInOneProcessCannotOvershootTheOpenCap(t *testing.T)
 	b.checkout("T2")
 	fired := false
 	var bDone chan struct{}
-	a.api.beforePut = func(context.Context) {
+	a.api.beforePut = func(ctx context.Context) {
 		if fired {
 			return
 		}
@@ -406,7 +406,7 @@ func TestAdvWorkTwoRegistriesInOneProcessCannotOvershootTheOpenCap(t *testing.T)
 		bDone = make(chan struct{})
 		go func() {
 			defer close(bDone)
-			b.call("work_create_item", map[string]string{"title": "from B"})
+			b.callCtx(ctx, "work_create_item", map[string]string{"title": "from B"})
 		}()
 		select {
 		case <-bDone:
@@ -552,7 +552,7 @@ func TestAdvWorkUpdateRejectsJSONTricks(t *testing.T) {
 			t.Errorf("accepted %s: %s", raw, res.Text)
 		}
 	}
-	if env.item("TASK-001").Revision != env.item("TASK-001").Revision || strconv.FormatInt(env.item("TASK-001").Revision, 10) != rev {
+	if strconv.FormatInt(env.item("TASK-001").Revision, 10) != rev {
 		t.Error("a rejected call changed the task")
 	}
 	// A huge tick list is bounded by the region cap, not accepted.
@@ -574,7 +574,7 @@ func TestAdvWorkUpdateRejectsJSONTricks(t *testing.T) {
 func TestAdvWorkChecklistIsPlainText(t *testing.T) {
 	env := newWorkEnv(t, "run1")
 	env.checkout("TASK-001")
-	hostile := []string{"[click](https://evil.example/x)", "<img src=x onerror=alert(1)>", "safe ‮evil", "![i](http://x/y.png)"}
+	hostile := []string{"[click](https://evil.example/x)", "<img src=x onerror=alert(1)>", "safe \u202eevil", "![i](http://x/y.png)"}
 	var accepted []string
 	for _, text := range hostile {
 		if res := env.call("work_create_item", map[string]any{"title": "t", "checklist": []string{text}}); !res.IsError {
@@ -761,7 +761,8 @@ func TestAdvWorkNilBindingRegistersNothingAndChangesNoCount(t *testing.T) {
 // in code a reviewer sees.
 func TestAdvWorkNothingOutsideDevcouncilSetsTheBinding(t *testing.T) {
 	var hits []string
-	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+	fsys := os.DirFS("..")
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -774,7 +775,7 @@ func TestAdvWorkNothingOutsideDevcouncilSetsTheBinding(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		src, err := os.ReadFile(path)
+		src, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
 		}

@@ -161,7 +161,14 @@ func (e *workEnv) callRaw(name, raw string) tools.Result {
 // checkout takes the lease on a task through the real tool, as the agent does.
 func (e *workEnv) checkout(taskID string) {
 	e.t.Helper()
-	res := e.call("devcouncil_checkout_task", map[string]string{"task_id": taskID})
+	e.checkoutCtx(context.Background(), taskID)
+}
+
+// checkoutCtx is checkout under the caller's context, for a hook that already
+// holds one.
+func (e *workEnv) checkoutCtx(ctx context.Context, taskID string) {
+	e.t.Helper()
+	res := e.callCtx(ctx, "devcouncil_checkout_task", map[string]string{"task_id": taskID})
 	if res.IsError || !strings.Contains(res.Text, `"acquired":true`) {
 		e.t.Fatalf("checkout %s: %s", taskID, res.Text)
 	}
