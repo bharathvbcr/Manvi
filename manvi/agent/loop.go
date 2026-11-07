@@ -465,7 +465,17 @@ func (l *Loop) Budget() Budget {
 }
 
 // compact plans, records and re-derives. It returns the history to send.
+//
+// On a provider that binds thinking to the history before it, it does nothing:
+// shrinking is the provider's job there (see ServerSideEditing in
+// agent/compaction.go), and a client-side rewrite of an earlier result would
+// invalidate every thinking block signed after it. That holds at every step,
+// and in particular between a tool_use and its tool_result, where the turn's
+// own reasoning must go back untouched.
 func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
+	if ServerSideEditing(l.cfg.Provider) {
+		return messages, nil
+	}
 	schemas := l.schemas()
 	// The ledger of what is already compacted is read from the log, not held
 	// on the Loop. A Loop lasts one turn; the log lasts the session, and a
@@ -1711,6 +1721,18 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 // waterfall and checked before anything goes on the wire.
 func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm.Request, error) {
 	schemas := l.schemas()
+
+	// A log written by a build that compacted client-side still holds edits,
+	// and the projection replays them. Where thinking is bound to the history
+	// that is a 400 on every block signed behind an edit, so those blocks go
+	// before anything else looks at the history (see session.StripStaleReasoning).
+	if ServerSideEditing(l.cfg.Provider) {
+		stripped, _, err := l.log.StripStaleReasoning(messages)
+		if err != nil {
+			return llm.Request{}, err
+		}
+		messages = stripped
+	}
 
 	// Provider-private state that this target cannot replay is stripped here,
 	// and the removal is logged. Cross-provider handoff is explicitly lossy.

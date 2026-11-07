@@ -36,6 +36,46 @@ import (
 // immediately and pays that cost again. Landing well under it makes compaction
 // a rare event, which is the only way it is affordable at all.
 
+// On a provider that binds thinking to history, none of this runs.
+//
+// Anthropic signs each thinking block to the system prompt, the tools and every
+// message before it, so rewriting an earlier tool result is an edit that
+// invalidates every block after it (a 400 on an enforced account, the silent
+// loss of that reasoning otherwise). The planner below is the client-side
+// rewrite; for that provider the same job is done by the API's server-side
+// context editing, which the history-editing check does not count as an edit
+// because it compares the conversation as the client sent it (claude-api skill,
+// shared/model-migration.md, "Breaking change 3": "server-side compaction and
+// context editing ... don't count as edits"). The Anthropic adapter sends
+// context_management with the clear_tool_uses_20250919 strategy under beta
+// context-management-2025-06-27 (llm/anthropic.ContextEditsFor).
+//
+// What each operation of this file becomes there:
+//
+//	head-and-tail text cut of an old tool result   clear_tool_uses_20250919: the
+//	    server replaces the whole result with placeholder text and keeps the
+//	    most recent tool uses. Coarser, because the head and tail are not kept.
+//	image removal with a notice (ImageRemovalMarker)   the same strategy: images
+//	    are part of the cleared result and the placeholder stands in for the notice.
+//	protected tail (ProtectedTail messages)   the strategy's keep, in tool uses.
+//	headroom (CompactionHeadroomNum/Den)   the strategy's clear_at_least, so a
+//	    clear is skipped unless it buys that much and the cache write is worth it.
+//	summarisation   Manvi has none; threshold compaction (compact_20260112) is a
+//	    different feature that the docs say not to combine with this one.
+//
+// A client-side edit that is still present on such a conversation (a log
+// written before this change replays its ToolResultCompacted records) is made
+// safe by stripping, not by avoiding it: session.Log.StripStaleReasoning removes
+// only the thinking and redacted_thinking blocks that sit behind the edit and
+// were recorded before it. No edit is ever made between a tool_use and its
+// tool_result, because none is made at all.
+//
+// Providers that do not bind thinking (OpenAI-compatible, Gemini, local) keep
+// everything below unchanged.
+func ServerSideEditing(p llm.Provider) bool {
+	return p != nil && llm.BindsThinkingToHistory(p.Name())
+}
+
 const (
 	// ProtectedTail is how many trailing messages are never compacted. A tool
 	// loop alternates assistant and results, so this is roughly three
