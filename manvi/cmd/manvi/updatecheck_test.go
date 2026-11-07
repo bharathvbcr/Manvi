@@ -401,14 +401,25 @@ func TestUpdateCheckFollowsARedirectWithinTheSameHost(t *testing.T) {
 	}
 }
 
+// redirectRequest builds a request for a redirect-policy test, failing the test
+// on a malformed URL rather than handing the policy a nil request.
+func redirectRequest(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
 func TestSameSiteRedirectsRefusesADowngrade(t *testing.T) {
-	first, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example/x", nil)
-	down, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example/x", nil)
+	first := redirectRequest(t, "https://api.example/x")
+	down := redirectRequest(t, "http://api.example/x")
 	if err := sameSiteRedirects(down, []*http.Request{first}); err == nil {
 		t.Error("https -> http was followed")
 	}
-	up, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example/y", nil)
-	plain, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example/x", nil)
+	up := redirectRequest(t, "https://api.example/y")
+	plain := redirectRequest(t, "http://api.example/x")
 	if err := sameSiteRedirects(up, []*http.Request{plain}); err != nil {
 		t.Errorf("http -> https refused: %v", err)
 	}
