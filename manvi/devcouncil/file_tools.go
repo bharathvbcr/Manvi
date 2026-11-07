@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
@@ -703,6 +705,8 @@ const (
 	// grepMaxSubsearches bounds the fan-out of a search partitioned around
 	// refused files. Past it the search is refused rather than run as a sample.
 	grepMaxSubsearches = 512
+	// grepRefusalWorkers bounds the pool that judges candidate files.
+	grepRefusalWorkers = 8
 )
 
 // grepOutcome is a search's answer once every part of the tree the read gate
@@ -859,27 +863,51 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 // was 15x the cost of the search it gated. A test holds the two equal on a
 // mixed tree.
 func (r *Registry) candidateRefusals(names []string) map[string]string {
-	refused := map[string]string{}
-	for _, name := range names {
-		if policy.SecretPathSpelling(name) {
-			refused[name] = string(policy.RuleSecretRead)
-			continue
-		}
-		full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
-		fi, err := safefile.Lstat(full)
-		if err != nil || !fi.Mode().IsRegular() {
-			// Not the regular file the walk reported: it changed since, and
-			// the shortcut's premises no longer hold. Ask the full judgement.
-			if rule := r.readRefusal(name); rule != "" {
-				refused[name] = rule
+	// Each verdict is a pair of filesystem calls (lstat, then the no-follow
+	// open that counts links) and they are independent, so they run on a
+	// bounded pool: profiled at 3,000 files, the time was all in those calls.
+	rules := make([]string, len(names))
+	workers := min(grepRefusalWorkers, len(names))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1)) - 1
+				if i >= len(names) {
+					return
+				}
+				rules[i] = r.candidateRefusal(names[i])
 			}
-			continue
-		}
-		if !singleNameFile(full, fi) {
-			refused[name] = ruleAliasedRead
+		}()
+	}
+	wg.Wait()
+	refused := map[string]string{}
+	for i, name := range names {
+		if rules[i] != "" {
+			refused[name] = rules[i]
 		}
 	}
 	return refused
+}
+
+func (r *Registry) candidateRefusal(name string) string {
+	if policy.SecretPathSpelling(name) {
+		return string(policy.RuleSecretRead)
+	}
+	full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
+	fi, err := safefile.Lstat(full)
+	if err != nil || !fi.Mode().IsRegular() {
+		// Not the regular file the walk reported: it changed since, and the
+		// shortcut's premises no longer hold. Ask the full judgement.
+		return r.readRefusal(name)
+	}
+	if !singleNameFile(full, fi) {
+		return ruleAliasedRead
+	}
+	return ""
 }
 
 // searchTargets covers every unrefused file in files with the fewest search
