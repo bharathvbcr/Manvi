@@ -60,6 +60,7 @@ Usage:
   manvi logo [--svg]                Print the mark, or emit it as SVG
   manvi version, --version          Print which build this is: version, revision, toolchain
   manvi version --json              The same as JSON, with the provider env no child inherits
+  manvi version --check [--prerelease]  Ask GitHub releases whether a newer release exists (only when you run it)
   manvi help, -h, --help            Show this help
 
 Commands that keep state — the face, run, reflect, serve, watch, doctor, tool, allow,
@@ -244,6 +245,15 @@ func statusFor(err error, notes io.Writer) int {
 		// treated every block as a pass. The decision and the `manvi allow`
 		// line that clears it are already printed.
 		return 6
+	case errors.Is(err, errUpdateCheckFailed):
+		// `version --check` could not find out. Its own status so a script
+		// never reads "could not ask" as "nothing newer", which exit 0 means.
+		_, _ = fmt.Fprintf(notes, "manvi: %v\n", err)
+		return 8
+	case errors.Is(err, errUpdateCannotCompare):
+		// This build has no release version to compare; also not an answer.
+		_, _ = fmt.Fprintf(notes, "manvi: %v\n", err)
+		return 9
 	case errors.Is(err, errCheckHardBlocked):
 		// As 6, but no grant clears it. Separate so a caller does not retry
 		// after issuing an override that was never going to apply.
@@ -291,15 +301,11 @@ func run(out, notes io.Writer, args []string) error {
 	// half-configured harness which binary it just ran must still get an
 	// answer.
 	if len(args) > 0 && (args[0] == "--version" || args[0] == "version") {
-		switch {
-		case len(args) == 1:
-			writeVersion(out)
-			return nil
-		case len(args) == 2 && args[1] == "--json":
-			return writeVersionJSON(out)
-		default:
-			return fmt.Errorf("usage: version [--json]")
+		v, err := parseVersionArgs(args[1:])
+		if err != nil {
+			return err
 		}
+		return runVersion(out, v)
 	}
 
 	// A setting that no longer applies must not look like a setting that did.

@@ -147,16 +147,20 @@ type versionReport struct {
 	Module      string `json:"module,omitempty"`
 	Go          string `json:"go"`
 	Platform    string `json:"platform"`
+	// Update is present only for `version --check`: the outcome of the
+	// explicit release lookup, whatever it was.
+	Update *updateReport `json:"update_check,omitempty"`
 	childenv.Capability
 }
 
-// writeVersionJSON prints versionReport as one JSON object.
-func writeVersionJSON(out io.Writer) error {
+// writeVersionJSON prints versionReport as one JSON object. update is nil
+// unless the caller asked for the release check.
+func writeVersionJSON(out io.Writer, update *updateReport) error {
 	id := currentBuild()
 	return json.NewEncoder(out).Encode(versionReport{
 		Name: "manvi", Version: id.Version, VersionFrom: id.VersionFrom,
 		Revision: id.Revision, TreeState: id.TreeState, Committed: id.Built, Module: id.Module,
-		Go: id.Go, Platform: id.Platform,
+		Go: id.Go, Platform: id.Platform, Update: update,
 		Capability: childenv.Advertised(),
 	})
 }
