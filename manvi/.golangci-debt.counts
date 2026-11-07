@@ -146,10 +146,12 @@
 # errcheck: the Close calls in codex_test.go and managed_test.go report.
 # staticcheck/wastedassign: a dead i++ in porcelainHasUserChanges, De Morgan in
 # codex.go, and `var x` for four values that were set and overwritten unread.
-# Eight narrow suppressions, each with its reason on the line:
+# Nine narrow suppressions, each with its reason on the line:
 # G306 on the helper script the warm-workspace test execs, G302 on the 0700
-# worktree container directory, and G204 on six launches of a literal git or a
-# probed devmap binary. gosec is 233 because session/store.go has six findings
+# worktree container directory, G204 on six launches of a literal git or a
+# probed devmap binary, and nilerr on the sealed-base cleanup's WalkDir, which
+# skips an unreadable entry on purpose so the rest still get their write bit
+# back before t.TempDir removes them. gosec is 233 because session/store.go has six findings
 # that only the darwin nocgo leg reports; darwin cgo and linux nocgo measure 227,
 # so the file records the maximum. nilerr is 6 on all three. Measured with
 # golangci-lint 2.15.0 on GOOS=darwin CGO_ENABLED=0 and CGO_ENABLED=1 and on

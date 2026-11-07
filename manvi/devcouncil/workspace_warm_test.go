@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -498,18 +499,14 @@ func TestGitWorktreeCoordinatorRealDevmapBinaryStackedSeed(t *testing.T) {
 			return
 		}
 		defer func() { _ = bases.Close() }()
-		_ = filepath.WalkDir(basesDir, func(p string, d os.DirEntry, walkErr error) error {
+		_ = fs.WalkDir(bases.FS(), ".", func(p string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
-			}
-			rel, relErr := filepath.Rel(basesDir, p)
-			if relErr != nil {
-				return relErr
+				return nil //nolint:nilerr // best-effort cleanup: an unreadable entry is skipped so the rest still get their write bit back
 			}
 			if d.IsDir() {
-				_ = bases.Chmod(rel, 0o700)
+				_ = bases.Chmod(p, 0o700)
 			} else {
-				_ = bases.Chmod(rel, 0o600)
+				_ = bases.Chmod(p, 0o600)
 			}
 			return nil
 		})
