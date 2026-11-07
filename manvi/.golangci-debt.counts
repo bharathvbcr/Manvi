@@ -129,9 +129,36 @@
 # debt in the files they touched; the wave-6 tests the ratchet first caught
 # (unchecked closes and kills, forced type assertions, requests without a
 # context) were fixed, not counted.
+#
+# Lowered 2026-11-07 on w10-debt, after the nocgo leg measured over its counts
+# at the integration head a3710a1 (contextcheck 26, errcheck 180, gosec 274,
+# noctx 27, staticcheck 34, wastedassign 7) from main commits since a1503d2. The
+# excess was fixed rather than counted. contextcheck: child-worktree release in
+# devcouncil/subagent_tools.go now takes the child's ctx and releases under
+# context.WithoutCancel(ctx), and ManagedRunner.Prepare derives the job's
+# lifetime from context.WithoutCancel(ctx), not Background. noctx: git and devmap
+# launches in the warm-workspace, worktree-isolation and managed-concurrency tests
+# take t.Context(), as do the geminiproxy, adaptertest, crate_pins, hardlink,
+# spawncost and atomicwrite ones. gosec: modes at 0600/0750, os.Root for the
+# warm-workspace helper's writes and its sealed-base cleanup, and
+# gemini/adapter_test.go's fifteen G104 (those ten Drains and five Unmarshals
+# now check their error, which also takes errcheck down by fifteen).
+# errcheck: the Close calls in codex_test.go and managed_test.go report.
+# staticcheck/wastedassign: a dead i++ in porcelainHasUserChanges, De Morgan in
+# codex.go, and `var x` for four values that were set and overwritten unread.
+# Eight narrow suppressions, each with its reason on the line:
+# G306 on the helper script the warm-workspace test execs, G302 on the 0700
+# worktree container directory, and G204 on six launches of a literal git or a
+# probed devmap binary. gosec is 233 because session/store.go has six findings
+# that only the darwin nocgo leg reports; darwin cgo and linux nocgo measure 227,
+# so the file records the maximum. nilerr is 6 on all three. Measured with
+# golangci-lint 2.15.0 on GOOS=darwin CGO_ENABLED=0 and CGO_ENABLED=1 and on
+# GOOS=linux CGO_ENABLED=0, against DevCouncil 947090b7 and gusset e561435.
+# GOOS=linux CGO_ENABLED=1 cannot typecheck from this host (cgo preprocessing of
+# gusset/internal/ffi fails), so that leg was not run.
 bodyclose 14
 contextcheck 21
-errcheck 175
+errcheck 159
 errorlint 1
 forcetypeassert 54
 # gosec is 392 on both darwin and linux after the pty ioctl unsafe.Pointer
@@ -139,8 +166,8 @@ forcetypeassert 54
 # findings and pty_darwin_test.go had one, so a count measured on darwin
 # failed the Ubuntu job by one. Do not lower this number from a darwin-only
 # recount that still includes those lines.
-gosec 247
-nilerr 7
-noctx 19
-staticcheck 33
-wastedassign 5
+gosec 233
+nilerr 6
+noctx 11
+staticcheck 32
+wastedassign 2
