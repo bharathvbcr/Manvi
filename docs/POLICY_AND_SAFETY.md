@@ -233,6 +233,12 @@ Command policy normalization is pinned across 256 test vectors in `testdata/comm
 - Detects refspec force pushes (e.g. `git push origin +main:main`).
 - Intercepts `--no-gpg-sign` on git commit and push (`--no-verify` is allowed).
 
+### Shell `git commit` and the content scan
+
+The command policy allows `git commit` in the shell (hooks and `--no-verify` included), but Manvi's staged-content secret scan is not a hook: `devcouncil_exec_command` runs the same scan as `devcouncil_git_commit` on the index before a shell commit, under every posture. A shell commit is vouched for only as a single `git commit` with nothing else on the command line and no option, `GIT_*` variable or global git option that changes what is committed; `-a`, pathspecs, `--include`/`--only`, `git add && git commit` chains, `GIT_INDEX_FILE`, `-C`/`--git-dir`/`--work-tree` and unrecognised options are refused with a pointer to the commit tool. `sh -c`, `env`, `xargs` and git aliases are unwrapped and judged the same way.
+
+Not covered (and not denied): `am`, `cherry-pick`, `rebase`, `revert`, `merge`, `commit-tree`, `pull` (merge commits), `stash`, scripts and interpreters that commit on their own, and hooks that rewrite the index. Their content is not in the index before they run.
+
 ---
 
 ## 5. The Grants Ledger & Overrides

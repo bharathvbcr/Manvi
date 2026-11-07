@@ -535,6 +535,63 @@ func (r *Registry) stagedBinaries(ctx context.Context) (map[string]bool, error) 
 	return binary, nil
 }
 
+// checkStagedForCommit is every check a commit makes on the index before it is
+// taken: the staged names against the secret patterns, hard links, and the
+// staged content against what secret files and this process hold. It is the one
+// owner of that sequence, shared by the commit tool and by the shell's
+// `git commit` (see shellCommitRefusal), so a commit made either way is judged
+// the same.
+//
+// A non-nil refusal means nothing may be committed; a check that could not run
+// is a refusal, never a clean pass. Otherwise it returns the tree that was
+// checked, taken before the checks and re-read after them so an index that moves
+// while it is examined is refused rather than committed on the strength of a
+// read of something else, and the scan's degradation notes.
+func (r *Registry) checkStagedForCommit(ctx context.Context) (refusal *tools.Result, checkedTree string, notes []scanNote) {
+	refuse := func(res tools.Result) (*tools.Result, string, []scanNote) { return &res, "", nil }
+	checkedTree, err := runGit(ctx, r.deps.Root, "write-tree")
+	if err != nil {
+		return refuse(unavailable("staged tree", err))
+	}
+	checkedTree = strings.TrimSpace(checkedTree)
+	staged, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return refuse(unavailable("staged file list", err))
+	}
+	var stagedPaths []string
+	for _, p := range strings.Split(staged, "\x00") {
+		if p != "" {
+			stagedPaths = append(stagedPaths, p)
+		}
+	}
+	leaked, err := secretPaths(r.matcher(), stagedPaths)
+	if err != nil {
+		return refuse(unavailable("secret-path check", err))
+	}
+	if len(leaked) > 0 {
+		return refuse(secretRefusal("commit", leaked))
+	}
+	if aliased := aliasedPaths(r.deps.Root, stagedPaths); len(aliased) > 0 {
+		return refuse(aliasedRefusal("commit", aliased))
+	}
+	// By content, after the names: a credential copied to an innocent name
+	// matches nothing above. A check that could not run refuses; it is never
+	// reported as a clean pass.
+	contentLeaks, scanNotes, err := r.stagedContentLeaks(ctx)
+	if err != nil {
+		return refuse(unavailable("staged-content secret check", err))
+	}
+	if len(contentLeaks) > 0 {
+		return refuse(contentRefusal(contentLeaks, scanNotes))
+	}
+	if again, err := runGit(ctx, r.deps.Root, "write-tree"); err != nil {
+		return refuse(unavailable("staged tree", err))
+	} else if strings.TrimSpace(again) != checkedTree {
+		return refuse(tools.Errorf("the index changed while it was being checked; nothing was committed. Stage again and retry"))
+	}
+	return nil, checkedTree, scanNotes
+}
+
 // stagedContentLeaks judges what is staged by its content. A nil result with a
 // nil error means the check ran and found nothing; the notes it returns are
 // degradations that did not change that answer (see below), for the caller to

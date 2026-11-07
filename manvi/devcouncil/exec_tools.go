@@ -71,6 +71,13 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 		}
 	}
 
+	// The last check before the shell: whatever the policy decided, a command
+	// that would commit is held to the commit tool's secret scan, because the
+	// content scan is not a repository hook the owner's policy waives.
+	if refused := r.shellCommitRefusal(ctx, args.Command); refused != nil {
+		return *refused
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
