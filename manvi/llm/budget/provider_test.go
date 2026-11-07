@@ -272,7 +272,12 @@ func TestMeteringKeepsTheInnerReplayRule(t *testing.T) {
 	if !ok {
 		t.Fatal("the metered provider hides the inner provider's replay rule")
 	}
-	if !r.ReplayableOn(model, model) || r.ReplayableOn(model, "claude-sonnet-5-5") || r.ReplayableOn("", "") {
+	// A reasoning sibling is replayable under the anthropic rule (a switch is not
+	// an edit; llm/anthropic.ReplayableOn says why) where the wrapper's own
+	// same-model fallback would say no, so this pair tells the forwarded rule
+	// from the fallback. A model that does not reason is not.
+	if !r.ReplayableOn(model, model) || !r.ReplayableOn(model, "claude-sonnet-5-5") ||
+		r.ReplayableOn(model, "claude-haiku-4-5") || r.ReplayableOn("", "") {
 		t.Fatal("the metered provider answers differently from the anthropic rule")
 	}
 }

@@ -50,6 +50,81 @@ const (
 	APIVersion    = "2023-06-01"
 )
 
+// Server-side context editing: the API clears old tool results itself, so the
+// harness never rewrites earlier turns. Shapes are from the Context editing
+// page (platform.claude.com/docs/en/build-with-claude/context-editing, fetched
+// 2026-11-07) and the claude-api skill (SKILL.md "Context Editing", shared/
+// tool-use-concepts.md "Context Editing"):
+//
+//   - beta header `anthropic-beta: context-management-2025-06-27`;
+//   - `context_management.edits[]` with `type: clear_tool_uses_20250919` and the
+//     optional `trigger`, `keep` and `clear_at_least`, each `{type, value}`.
+//
+// It is the strategy, and not compact_20260112 (beta compact-2026-01-12), that
+// matches what Manvi's compaction does: it clears old tool results. The docs
+// say not to send both, and this adapter sends only this one.
+const (
+	// BetaHeader carries the beta flags a request opts into.
+	BetaHeader = "anthropic-beta"
+	// BetaContextManagement enables context_management on a request.
+	BetaContextManagement = "context-management-2025-06-27"
+	// EditClearToolUses clears old tool results (and, optionally, their inputs).
+	EditClearToolUses = "clear_tool_uses_20250919"
+
+	// editKeepToolUses is how many of the most recent tool uses the server
+	// keeps. Three exchanges is what the client-side planner protects too
+	// (agent.ProtectedTail is six messages).
+	editKeepToolUses = 3
+	// contextEditOverhead is the chat-scaffolding allowance agent.Budget holds
+	// back, repeated because this package cannot import agent.
+	contextEditOverhead   = 2048
+	contextEditMinTrigger = 4096
+)
+
+// ContextEdit is one context_management edit as this adapter sends it.
+type ContextEdit struct {
+	Type         string      `json:"type"`
+	Trigger      *EditAmount `json:"trigger,omitempty"`
+	Keep         *EditAmount `json:"keep,omitempty"`
+	ClearAtLeast *EditAmount `json:"clear_at_least,omitempty"`
+}
+
+// EditAmount is a `{type, value}` pair, which the API uses for every threshold
+// of a clearing strategy: input_tokens for trigger and clear_at_least,
+// tool_uses for keep.
+type EditAmount struct {
+	Type  string `json:"type"`
+	Value int    `json:"value"`
+}
+
+// ContextEditsFor is the clearing the API is asked to do for a request to
+// model with maxTokens reserved for the answer.
+//
+// The trigger is the point agent.Budget calls the threshold, for the same
+// reason: the server's own default is 100,000 tokens, which on a million-token
+// window would clear results the conversation had room for, and every clear
+// invalidates the cached prefix. clear_at_least is the gap between that
+// threshold and the target compaction aims for (agent.Budget.Target), so a
+// clear that would not buy that much is skipped. A model the catalogue does not
+// hold gets no thresholds and the server's defaults.
+func ContextEditsFor(model string, maxTokens int) []ContextEdit {
+	edit := ContextEdit{Type: EditClearToolUses}
+	if c, ok := Capability(model); ok && c.ContextWindow > 0 {
+		reserved := int64(maxTokens)
+		if reserved <= 0 || reserved > int64(c.ContextWindow)/2 {
+			reserved = int64(c.ContextWindow) / 2
+		}
+		threshold := int64(c.ContextWindow) - reserved - contextEditOverhead
+		if threshold < contextEditMinTrigger {
+			threshold = contextEditMinTrigger
+		}
+		edit.Trigger = &EditAmount{Type: "input_tokens", Value: int(threshold)}
+		edit.ClearAtLeast = &EditAmount{Type: "input_tokens", Value: int(threshold - threshold*7/10)}
+	}
+	edit.Keep = &EditAmount{Type: "tool_uses", Value: editKeepToolUses}
+	return []ContextEdit{edit}
+}
+
 // WorkspaceHeader names the workspace a request acts in. A key created for one
 // workspace runs there when the header is omitted; a key that is not scoped to
 // one (a multi-workspace personal or service-account key) is refused with a
@@ -176,6 +251,9 @@ func newClient(baseURL, workspace string, resolve func() (credentials.Secret, er
 		h := http.Header{}
 		h.Set(APIKeyHeader, key)
 		h.Set(VersionHeader, APIVersion)
+		// Enables the context_management field, which only a request that
+		// carries tools sends. The header alone changes nothing.
+		h.Set(BetaHeader, BetaContextManagement)
 		if workspace != "" {
 			h.Set(WorkspaceHeader, workspace)
 		}
@@ -299,6 +377,15 @@ type wireRequest struct {
 	OutputConfig *wireOutputConf `json:"output_config,omitempty"`
 	Thinking     *wireThinking   `json:"thinking,omitempty"`
 	CacheControl *wireCache      `json:"cache_control,omitempty"`
+	// ContextManagement asks the API to clear old tool results server-side. It
+	// sits outside system, tools and messages, so the history-editing check
+	// does not compare it and a change to it never invalidates a thinking block.
+	ContextManagement *wireContextManagement `json:"context_management,omitempty"`
+}
+
+// wireContextManagement is the context_management request field.
+type wireContextManagement struct {
+	Edits []ContextEdit `json:"edits"`
 }
 
 // wireCache is top-level automatic prompt caching: the API places the
@@ -477,6 +564,11 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 	}
 	if req.Effort != "" {
 		out.OutputConfig = &wireOutputConf{Effort: req.Effort}
+	}
+	// Clearing old tool results needs tool results to clear. Where there are
+	// none to offer, the request carries no edit at all.
+	if len(req.Tools) > 0 {
+		out.ContextManagement = &wireContextManagement{Edits: ContextEditsFor(req.Model, maxTokens)}
 	}
 	for _, tool := range req.Tools {
 		out.Tools = append(out.Tools, wireTool{
@@ -1092,7 +1184,9 @@ func wholePrompt(u llm.Usage) llm.Usage {
 }
 
 // ReplayableOn answers the ReasoningReplayer question for this adapter.
-// Anthropic signs thinking blocks per model, so replay is same-model only.
+// Which model wrote a block does not decide replay: the API drops, unbilled,
+// what the target cannot read, and stripping on a switch would itself edit the
+// history. See the package function for the one exception.
 func (a *Adapter) ReplayableOn(fromModel, toModel string) bool {
 	return ReplayableOn(fromModel, toModel)
 }

@@ -229,8 +229,16 @@ func TestReplayabilityMatchesTheDocumentedRule(t *testing.T) {
 	if !ReplayableOn("claude-opus-5", "claude-opus-5") {
 		t.Fatal("thinking replays on the model that produced it")
 	}
-	if ReplayableOn("claude-opus-5", "claude-opus-4-8") {
-		t.Fatal("a sibling model must not inherit reasoning state")
+	// The pre-5.x reading of this rule was "same model only", and it stripped on
+	// every switch. The current docs say the API drops what the target cannot
+	// read, unbilled, and that stripping on a switch is itself an edit of earlier
+	// turns, so a reasoning target is replayable; a model that does not reason
+	// is still handed history without thinking.
+	if !ReplayableOn("claude-opus-5", "claude-opus-4-8") {
+		t.Fatal("a switch between reasoning models is not an edit and must not strip")
+	}
+	if ReplayableOn("claude-opus-5", "claude-haiku-4-5") {
+		t.Fatal("a model that does not reason must not be handed thinking blocks")
 	}
 	if ReplayableOn("", "") {
 		t.Fatal("an unknown origin is not replayable")
@@ -257,8 +265,13 @@ func TestNeutralLayerAgreesWithTheProviderRule(t *testing.T) {
 	}
 
 	sibling, drops := llm.PrepareHistoryFor(history, &Adapter{}, "claude-opus-4-8")
-	if len(drops) != 1 || len(sibling[0].Content) != 1 {
-		t.Fatal("sibling model: reasoning must be dropped and reported, matching ReplayableOn")
+	if len(drops) != 0 || len(sibling[0].Content) != 2 {
+		t.Fatal("sibling reasoning model: reasoning must survive, matching ReplayableOn")
+	}
+
+	plain, drops := llm.PrepareHistoryFor(history, &Adapter{}, "claude-haiku-4-5")
+	if len(drops) != 1 || len(plain[0].Content) != 1 {
+		t.Fatal("non-reasoning model: reasoning must be dropped and reported, matching ReplayableOn")
 	}
 }
 
