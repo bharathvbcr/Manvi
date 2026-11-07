@@ -44,9 +44,7 @@ func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			built := filepath.Join(release, "dcstore-testonly")
-			if err := os.WriteFile(built, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			writeExecutable(t, built, "#!/bin/sh\nexit 0\n")
 
 			buildTreeBinary(t, root)
 
@@ -117,9 +115,7 @@ func plantInCwd(t *testing.T, root, name string) string {
 		t.Fatal(err)
 	}
 	planted := filepath.Join(release, name)
-	if err := os.WriteFile(planted, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, planted, "#!/bin/sh\nexit 0\n")
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -181,9 +177,7 @@ func TestAReleaseBuildFindsACompanionNextToItself(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	install := t.TempDir()
 	companion := filepath.Join(install, "dcstore-sibling")
-	if err := os.WriteFile(companion, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, companion, "#!/bin/sh\nexit 0\n")
 	releaseStandIn(t, install)
 	if got := toolBinary("MANVI_TEST_UNSET_SIB", "dcstore-sibling"); got != companion {
 		t.Fatalf("toolBinary = %q, want the companion at %q", got, companion)
@@ -198,9 +192,7 @@ func TestAReleaseBuildStillHonoursExplicitConfigurationAndPATH(t *testing.T) {
 	}
 	pathDir := t.TempDir()
 	onPath := filepath.Join(pathDir, "dcstore-onpath")
-	if err := os.WriteFile(onPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, onPath, "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", pathDir)
 	if got := toolBinary("MANVI_TEST_UNSET_PATH", "dcstore-onpath"); got != onPath {
 		t.Fatalf("PATH lookup = %q, want %q", got, onPath)
@@ -244,9 +236,7 @@ func TestAgentWritableIsByPathNotStringPrefix(t *testing.T) {
 	lookalike := filepath.Join(evil, "tool")
 	inside := filepath.Join(root, "tool")
 	for _, f := range []string{lookalike, inside} {
-		if err := os.WriteFile(f, []byte("x"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		writeExecutable(t, f, "x")
 	}
 	linkIn := filepath.Join(base, "link-to-inside")
 	if err := os.Symlink(inside, linkIn); err != nil {
@@ -285,5 +275,13 @@ func TestAGoInstalledBuildIsARelease(t *testing.T) {
 	buildInfo = func() (*debug.BuildInfo, bool) { return nil, false }
 	if releaseBuild() {
 		t.Error("no build info and no stamp counted as a release")
+	}
+}
+
+// writeExecutable writes an executable stand-in for a tool binary.
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // the file must be executable to stand in for a tool; it lives under t.TempDir
+		t.Fatal(err)
 	}
 }

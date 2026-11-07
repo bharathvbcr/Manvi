@@ -19,9 +19,7 @@ func advWriteScript(t *testing.T, path, marker string) {
 		t.Fatal(err)
 	}
 	body := "#!/bin/sh\necho ran > '" + marker + "'\nexit 0\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, path, body)
 }
 
 func advChdir(t *testing.T, dir string) {
@@ -77,7 +75,7 @@ func TestAdvReleaseRelativePathEntriesNeverExecPlantedBinary(t *testing.T) {
 			if filepath.IsAbs(got) || strings.ContainsRune(got, os.PathSeparator) {
 				t.Fatalf("toolBinary returned %q for a relative PATH entry %q", got, entry)
 			}
-			cmd := exec.Command(got)
+			cmd := exec.CommandContext(t.Context(), got) //nolint:gosec // runs the resolver's answer, a planted script under t.TempDir, to prove it does not execute
 			cmd.Dir = root
 			err := cmd.Run()
 			if _, statErr := os.Stat(marker); statErr == nil {
@@ -99,7 +97,7 @@ func TestAdvDeveloperBuildRelativePathEntryNeverExecs(t *testing.T) {
 	advChdir(t, root)
 	t.Setenv("PATH", ".")
 	got := toolBinary("MANVI_ADV_UNSET_DEVDOT", "dcverify-advdev")
-	cmd := exec.Command(got)
+	cmd := exec.CommandContext(t.Context(), got) //nolint:gosec // runs the resolver's answer, a planted script under t.TempDir, to prove it does not execute
 	cmd.Dir = root
 	_ = cmd.Run()
 	if _, err := os.Stat(marker); err == nil {
@@ -151,7 +149,7 @@ func TestAdvEveryManviBuildScriptStampsTheVersion(t *testing.T) {
 		if filepath.Base(path) == ".dev-build.sh" {
 			return
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // a repository script path the test enumerated
 		if err != nil {
 			return
 		}
@@ -195,7 +193,7 @@ func TestAdvToolResolverSweepRatchet(t *testing.T) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err
 		}
-		raw, rerr := os.ReadFile(path)
+		raw, rerr := os.ReadFile(path) //nolint:gosec // a source path found by walking this module
 		if rerr != nil {
 			return rerr
 		}
@@ -237,7 +235,7 @@ func TestAdvEveryToolClientIsBuiltFromToolBinary(t *testing.T) {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
-		raw, _ := os.ReadFile(f)
+		raw, _ := os.ReadFile(f) //nolint:gosec // a Go source file in this package directory
 		for _, m := range pat.FindAllStringSubmatch(string(raw), -1) {
 			arg := m[2] + m[4]
 			if strings.TrimSpace(arg) == "" || strings.Contains(arg, "func(") {
@@ -264,7 +262,7 @@ func TestAdvNoPathMutationOrErrDotOptOut(t *testing.T) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err
 		}
-		raw, rerr := os.ReadFile(path)
+		raw, rerr := os.ReadFile(path) //nolint:gosec // a source path found by walking this module
 		if rerr != nil {
 			return rerr
 		}

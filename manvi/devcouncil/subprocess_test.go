@@ -213,7 +213,7 @@ func TestSetsidHelperProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 		// #nosec G204 -- re-executes this very test binary.
-		cmd := exec.Command(exe, "-test.run=^TestSetsidHelperProcess$")
+		cmd := exec.CommandContext(context.Background(), exe, "-test.run=^TestSetsidHelperProcess$")
 		cmd.Env = append(os.Environ(), setsidHelperEnv+"=sleeper")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv(setsidHelperEnv) == "parent-setsid"}
 		if err := cmd.Start(); err != nil {
