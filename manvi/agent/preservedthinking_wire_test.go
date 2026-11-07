@@ -125,6 +125,14 @@ type wireRequest struct {
 func drivePreserved(t *testing.T, window int, name string, script []string, result string,
 	seed func(*session.Log), prompt string) preservedRun {
 	t.Helper()
+	return drivePreservedWith(t, false, window, name, script, result, seed, prompt)
+}
+
+// drivePreservedWith is drivePreserved with the loop's ChatOnly switch, which
+// offers the model no tools.
+func drivePreservedWith(t *testing.T, chatOnly bool, window int, name string, script []string, result string,
+	seed func(*session.Log), prompt string) preservedRun {
+	t.Helper()
 	var mu sync.Mutex
 	var run preservedRun
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +167,7 @@ func drivePreserved(t *testing.T, window int, name string, script []string, resu
 	provider := windowed{Provider: anthropic.New(srv.URL, adaptertest.Secret("sk-FIXTURE-not-a-real-key")), window: window, name: name}
 	loop, err := NewLoop(Config{
 		Provider: provider, Model: "claude-opus-5-5", SystemPrompt: "p",
-		MaxSteps: 16, MaxTokens: 1024, AssertInvariant: true,
+		MaxSteps: 16, MaxTokens: 1024, AssertInvariant: true, ChatOnly: chatOnly,
 	}, b, log, reg)
 	if err != nil {
 		t.Fatal(err)
@@ -376,11 +384,10 @@ func legacyConversation(t *testing.T, note string) func(*session.Log) {
 
 // A history that already carries a client-side edit, which is what a session
 // resumed from an older build is, replayed to a provider that binds thinking.
-// Reasoning produced before the edited result stays valid, reasoning produced
-// after the edit was recorded stays valid, and only the reasoning in between
-// was signed against a prefix that no longer exists. That is the part that
-// goes, and text and tool calls stay.
-func TestEditedAnthropicHistoryStripsOnlyTheReasoningItInvalidated(t *testing.T) {
+// Reasoning before the edited result stays valid. Every signed block from the
+// edited position on goes, however late it was recorded, and text and tool calls
+// stay.
+func TestEditedAnthropicHistoryStripsReasoningFromTheEditOnward(t *testing.T) {
 	note := "[40 line(s) omitted to fit the context window]"
 	run := drivePreserved(t, 1_000_000, "", []string{thinkingAnswer("sig-5")}, "ok", legacyConversation(t, note), "second task")
 	if run.err != nil {
@@ -403,9 +410,12 @@ func TestEditedAnthropicHistoryStripsOnlyTheReasoningItInvalidated(t *testing.T)
 			t.Errorf("%s was produced against a prefix that was edited afterwards and was replayed", stale)
 		}
 	}
-	for _, fresh := range []string{"sig-3", "sig-4"} {
-		if _, ok := got[fresh]; !ok {
-			t.Errorf("%s was produced after the edit and was stripped for nothing: %v", fresh, got)
+	// Reasoning recorded after the edit goes too: each block records the one
+	// before it, and only a leading run may be removed, so keeping sig-3 and
+	// sig-4 while removing sig-1 and sig-2 would be a removal from the middle.
+	for _, later := range []string{"sig-3", "sig-4"} {
+		if _, ok := got[later]; ok {
+			t.Errorf("%s follows a removed block and was replayed: %v", later, got)
 		}
 	}
 	body := string(run.raw[0])

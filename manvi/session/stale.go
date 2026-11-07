@@ -16,13 +16,17 @@ import (
 // while the full text was in the prefix now sits behind a prefix that no longer
 // exists.
 //
-// Which blocks that is has an exact answer, and it is narrower than "everything
-// after the edit". A block is stale when it comes after the edited result and
-// was recorded before the compaction was. A block before the result was signed
-// against a prefix that never contained it, and a block recorded after the
-// compaction was signed against the shortened history, because the request that
-// produced it was built from this same projection. Both stay valid, so stripping
-// them would throw away reasoning for nothing.
+// The rule is: every signed block from the first edited position onward goes,
+// including blocks recorded after the edit, and every block before it stays. A
+// block before the edited result was signed against a prefix that never
+// contained it, so it is valid. Blocks after it are not all stale (one recorded
+// after the compaction was signed against whatever history its request carried)
+// but each block records the one before it, and the documented removals that
+// keep later blocks valid are only a leading run, oldest first
+// (shared/model-migration.md, Breaking change 3). Removing the stale blocks and
+// keeping later ones would be a removal from the middle, which invalidates what
+// is kept. So the cut is a suffix: nothing signed follows a block that was
+// removed.
 
 // StripStaleReasoning removes the signed reasoning that the log's compactions
 // invalidated from the assistant messages of msgs, and returns the history with
@@ -155,10 +159,10 @@ func staleMessages(events []Event) ([]bool, error) {
 		if first < 0 {
 			continue
 		}
+		// Everything from the edited position on, recorded before the edit or
+		// after it. See the rule at the top of this file.
 		for i := first + 1; i < len(messageSeq); i++ {
-			if messageSeq[i] < edit.seq {
-				stale[i] = true
-			}
+			stale[i] = true
 		}
 	}
 	return stale, nil

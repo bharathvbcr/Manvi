@@ -3,7 +3,6 @@ package session
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
@@ -15,16 +14,6 @@ import (
 //
 // Layout of staleFixture(n): message 0 is the user turn; round i is the
 // assistant message at 1+2i and its result at 2+2i.
-
-// advBreak skips a test that demonstrates a confirmed break. Setting
-// ADV_W11_BREAKS=1 runs it so the failure can be reproduced.
-func advBreak(t *testing.T, msg string) {
-	t.Helper()
-	if os.Getenv("ADV_W11_BREAKS") != "" {
-		return
-	}
-	t.Skip(msg)
-}
 
 func advSigned(msgs []llm.Message) map[int]string { return signaturesOf(msgs) }
 
@@ -53,8 +42,7 @@ func TestAdvW11StripEditOfFirstResult(t *testing.T) {
 	advWant(t, advSigned(out), map[int]string{1: "sig-0"})
 }
 
-// Two edits: the stale set is the union, and a block produced after the first
-// edit but before the second is stale under the second.
+// Two edits: the cut starts at the earliest edited position.
 func TestAdvW11StripMultipleEdits(t *testing.T) {
 	log := NewLog()
 	staleFixture(t, log, 2) // rounds 0,1
@@ -63,8 +51,10 @@ func TestAdvW11StripMultipleEdits(t *testing.T) {
 	compact(t, log, "c1", true)
 	staleRound(t, log, 3)
 	out, _ := strip(t, log)
-	// round 1 (msg 3) is behind edit 1; round 2 (msg 5) is behind edit 2.
-	advWant(t, advSigned(out), map[int]string{1: "sig-0", 7: "sig-3"})
+	// Everything from the first edited position on goes, including round 3's
+	// block (msg 7), which was recorded after both edits: keeping it would be a
+	// removal from the middle of the chain of signed blocks.
+	advWant(t, advSigned(out), map[int]string{1: "sig-0"})
 }
 
 // An edit recorded after the last thinking block still invalidates every block
@@ -206,7 +196,6 @@ func TestAdvW11StripCompactionOfAbsentCallIsInert(t *testing.T) {
 // prefix that no longer exists. Invariant checked here: after the strip, no
 // retained signed block follows a removed one.
 func TestAdvW11StripRemovesOnlyALeadingRun(t *testing.T) {
-	advBreak(t, "BREAK: StripStaleReasoning removes stale blocks (e.g. sig-1, sig-2) but keeps later ones (sig-3) that were signed with the removed blocks in their prefix; per model-migration.md 'removing a thinking block from anywhere other than the start of the run' invalidates later blocks. stale_test.go TestOnlyReasoningBehindTheEditAndBeforeItIsStripped encodes the opposite expectation (inferred from docs, no live probe).")
 	log := NewLog()
 	staleFixture(t, log, 3)
 	compact(t, log, "c1", true)

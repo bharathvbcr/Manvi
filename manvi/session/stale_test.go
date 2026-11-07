@@ -101,10 +101,15 @@ func TestAnUneditedLogIsHandedBackUntouched(t *testing.T) {
 }
 
 // Messages: 0 user, then (assistant, results) per round at 1/2, 3/4, 5/6, 7/8.
-// A compaction of round 1's result, recorded after round 2 and before round 3,
-// invalidates the reasoning of rounds 2 only: round 1's own reasoning precedes
-// the result it was shortened after, round 0 precedes the edit entirely, and
-// round 3 was produced against the shortened history.
+// A compaction of round 1's result, recorded after round 2 and before round 3.
+// Everything signed from the edited position onward goes, including round 3's
+// block, which was recorded after the compaction. Round 3 may well have been
+// signed against the shortened history, but each block records the one before
+// it and the documented removals that keep later blocks valid are only a leading
+// run (shared/model-migration.md, Breaking change 3), so removing round 2's block
+// and keeping round 3's would be a removal from the middle. An earlier version
+// of this test kept round 3 (7: sig-3); that expectation was wrong. What stays is
+// what precedes the edited result: round 0, and round 1's own reasoning.
 func TestOnlyReasoningBehindTheEditAndBeforeItIsStripped(t *testing.T) {
 	log := NewLog()
 	staleFixture(t, log, 3)
@@ -113,8 +118,8 @@ func TestOnlyReasoningBehindTheEditAndBeforeItIsStripped(t *testing.T) {
 
 	out, n := strip(t, log)
 	got := signaturesOf(out)
-	want := map[int]string{1: "sig-0", 3: "sig-1", 7: "sig-3"}
-	if n != 1 || len(got) != len(want) {
+	want := map[int]string{1: "sig-0", 3: "sig-1"}
+	if n != 2 || len(got) != len(want) {
 		t.Fatalf("stripped %d, surviving %v, want 1 stripped and %v", n, got, want)
 	}
 	for i, sig := range want {
