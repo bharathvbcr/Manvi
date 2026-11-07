@@ -33,7 +33,7 @@ func benchRepo(tb testing.TB, tracked, untracked, ignored int) string {
 	root := tb.TempDir()
 	git := func(args ...string) {
 		tb.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(tb.Context(), "git", args...)
 		cmd.Dir = root
 		if out, err := cmd.CombinedOutput(); err != nil {
 			testsupport.Unavailable(tb, "git %v: %v %s", args, err, out)

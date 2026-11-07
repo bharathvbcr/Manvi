@@ -418,11 +418,11 @@ func (r *Registry) invokeTask(s invokeRequest, role resolvedRole, req SubAgentRe
 			}
 			if wt.lease != nil {
 				req.WorktreePath = wt.lease.Path
-				defer wt.ensureReleased(r.deps.Workspaces)
+				defer wt.ensureReleased(childCtx, r.deps.Workspaces)
 			}
 
 			out, err := runner.RunSubAgent(childCtx, req)
-			wt.settle(r.deps.Workspaces, &out)
+			wt.settle(childCtx, r.deps.Workspaces, &out)
 			if err != nil {
 				return wt.attachLeftBehind(leftBehind(out)), recordFailure(inst, err)
 			}
@@ -1200,7 +1200,7 @@ func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedR
 				return nil, err
 			}
 			if wt.lease != nil {
-				defer wt.ensureReleased(r.deps.Workspaces)
+				defer wt.ensureReleased(childCtx, r.deps.Workspaces)
 			}
 
 			if t.TaskID != "" {
@@ -1230,7 +1230,7 @@ func (r *Registry) spawnTask(t spawnRequest, req SubAgentRequest, role resolvedR
 			}
 
 			out, err := runner.RunSubAgent(childCtx, req)
-			wt.settle(r.deps.Workspaces, &out)
+			wt.settle(childCtx, r.deps.Workspaces, &out)
 			if err != nil {
 				return wt.attachLeftBehind(leftBehind(out)), fmt.Errorf("sub-agent %s: %w", t.Label, err)
 			}
@@ -1617,15 +1617,18 @@ func (r *Registry) provisionChildWorktree(ctx context.Context, mode, label strin
 	return state, nil
 }
 
-func (s *childWorktreeState) ensureReleased(coord WorkspaceCoordinator) {
+// ensureReleased and settle release the child's worktree under the child's
+// values but not its cancellation (context.WithoutCancel): the release is what a
+// cancelled child most needs, and a cancelled context would skip it.
+func (s *childWorktreeState) ensureReleased(ctx context.Context, coord WorkspaceCoordinator) {
 	if s == nil || s.lease == nil || s.settled || coord == nil {
 		return
 	}
 	s.settled = true
-	s.retained, s.releaseErr = coord.ReleaseWorktree(context.Background(), s.lease, true)
+	s.retained, s.releaseErr = coord.ReleaseWorktree(context.WithoutCancel(ctx), s.lease, true)
 }
 
-func (s *childWorktreeState) settle(coord WorkspaceCoordinator, out *SubAgentResult) {
+func (s *childWorktreeState) settle(ctx context.Context, coord WorkspaceCoordinator, out *SubAgentResult) {
 	if s == nil || s.lease == nil {
 		return
 	}
@@ -1640,7 +1643,7 @@ func (s *childWorktreeState) settle(coord WorkspaceCoordinator, out *SubAgentRes
 	}
 	if !s.settled && coord != nil {
 		s.settled = true
-		s.retained, s.releaseErr = coord.ReleaseWorktree(context.Background(), s.lease, true)
+		s.retained, s.releaseErr = coord.ReleaseWorktree(context.WithoutCancel(ctx), s.lease, true)
 	}
 }
 

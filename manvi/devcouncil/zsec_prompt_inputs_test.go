@@ -44,12 +44,12 @@ func TestAgentCannotWritePromptInputs(t *testing.T) {
 				}
 				path := filepath.Join(f.root, name)
 				const original = "original\n"
-				if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+				if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 					t.Fatal(err)
 				}
 
 				res := f.call("devcouncil_write_file", map[string]string{"path": name, "content": "rewritten\n"})
-				got, err := os.ReadFile(path)
+				got, err := os.ReadFile(filepath.Clean(path))
 				if err != nil {
 					t.Fatal(err)
 				}

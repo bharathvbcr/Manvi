@@ -161,7 +161,7 @@ func TestSecretPathsFoldCase(t *testing.T) {
 
 func gitStagedNames(t *testing.T, root string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "diff", "--cached", "--name-only").Output()
+	out, err := exec.CommandContext(t.Context(), "git", "-C", root, "diff", "--cached", "--name-only").Output()
 	if err != nil {
 		t.Fatalf("diff --cached: %v", err)
 	}

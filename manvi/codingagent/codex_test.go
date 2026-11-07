@@ -464,7 +464,9 @@ func TestCodexRejectsWidenedEffectivePolicyBeforeTurn(t *testing.T) {
 	}
 	s, err := openCodex(t.Context(), Options{Program: bin, Cwd: t.TempDir(), Mode: "ask"}, []string{"-test.run=^TestProtocolChild$", "--", "codex-fixture:widened-policy"})
 	if s != nil {
-		s.Close()
+		if _, err := s.Close(); err != nil {
+			t.Errorf("closing the session: %v", err)
+		}
 	}
 	if err == nil {
 		t.Fatal("provider widened network policy")
@@ -553,7 +555,11 @@ func TestInstalledCodexHandshakeWithoutModelTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if _, err := s.Close(); err != nil {
+			t.Errorf("closing the session: %v", err)
+		}
+	}()
 	e := s.Effective()
 	wanted, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -581,7 +587,11 @@ func TestInstalledCodexReadOnlyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if _, err := s.Close(); err != nil {
+			t.Errorf("closing the session: %v", err)
+		}
+	}()
 	if err := s.StartTurn(ctx, "Reply with MANVI_CODEX_TURN_OK only. Do not call tools or change files."); err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ import (
 func TestManagedRunnerParallelDistinctWorktreesAndSameCheckoutBusy(t *testing.T) {
 	wtA := scanRepo(t, map[string]string{"CLAUDE.md": "rules\n"})
 	wtBRaw := filepath.Join(t.TempDir(), "lane-b")
-	addCmd := exec.Command("git", "worktree", "add", "--detach", wtBRaw, "HEAD")
+	addCmd := exec.CommandContext(t.Context(), "git", "worktree", "add", "--detach", wtBRaw, "HEAD") //nolint:gosec // G204: literal git; wtBRaw is a path under t.TempDir()
 	addCmd.Dir = wtA
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
@@ -32,7 +32,7 @@ func TestManagedRunnerParallelDistinctWorktreesAndSameCheckoutBusy(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		rm := exec.Command("git", "worktree", "remove", "--force", wtB)
+		rm := exec.CommandContext(context.WithoutCancel(t.Context()), "git", "worktree", "remove", "--force", wtB) //nolint:gosec // G204: literal git; wtB is the worktree this test added
 		rm.Dir = wtA
 		_, _ = rm.CombinedOutput()
 	})

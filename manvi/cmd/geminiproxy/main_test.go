@@ -26,7 +26,7 @@ func TestProxyRecordsBodyAndHeaderNamesWithoutHeaderValues(t *testing.T) {
 	}
 	p := &proxy{capture: capture, upstream: upstream.URL, client: upstream.Client()}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1beta/interactions?alt=sse", strings.NewReader(`{"model":"gemini-3.7-flash"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1beta/interactions?alt=sse", strings.NewReader(`{"model":"gemini-3.7-flash"}`))
 	req.Header.Set("x-goog-api-key", "secret-key-value")
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, req)
@@ -64,7 +64,7 @@ func TestProxyReportsUpstreamTransportFailure(t *testing.T) {
 	}
 	p := &proxy{capture: capture, upstream: upstream.URL, client: &http.Client{}}
 	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1beta/interactions", strings.NewReader("{}")))
+	p.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1beta/interactions", strings.NewReader("{}")))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status %d", rec.Code)
 	}

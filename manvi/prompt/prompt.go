@@ -253,7 +253,7 @@ func (a *Assembler) Assemble() (string, Report) {
 				// An essential section is never trimmed. A model told it may
 				// write anywhere, because the scope section did not fit, is a
 				// model that will try — so the budget yields instead.
-				reason := ""
+				var reason string
 				if overTokenBudget {
 					reason = fmt.Sprintf("exceeded the %d-token budget but was kept: an essential section is never trimmed", a.MaxTokens)
 				} else {
@@ -264,7 +264,7 @@ func (a *Assembler) Assemble() (string, Report) {
 					Reason: reason,
 				})
 			} else {
-				reason := ""
+				var reason string
 				if overTokenBudget {
 					reason = fmt.Sprintf("dropped: %d tokens would exceed the %d-token budget", tokens, a.MaxTokens)
 				} else {
