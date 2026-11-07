@@ -96,7 +96,7 @@ func TestClickAwayAndBackDoesNotEnterTheReasonStageOnAnAllow(t *testing.T) {
 	clk.advance(time.Second)
 	clickTab(t, a, 0)
 	afterReturn(t, a, clk, reply, '2')
-	if a.Current().Approval().stage != stageReason {
+	if ap := a.Current().Approval(); ap == nil || ap.stage != stageReason {
 		t.Fatal("a deliberate digit after the pause did not enter the reason stage")
 	}
 }
@@ -139,6 +139,9 @@ func TestACardForABackgroundSessionIsNotArmedUntilPainted(t *testing.T) {
 	bg := make(chan ui.Decision, 1)
 	a.Dispatch(ActionApprovalRequest{SessionID: "S2", Request: blockedRequest(true), Reply: bg})
 	card := a.views[1].Approval()
+	if card == nil {
+		t.Fatal("the background session has no approval card")
+	}
 	drawAt(a, 100, 30) // S1 is on screen
 	clk.advance(time.Hour)
 	if card.painted || card.armed {

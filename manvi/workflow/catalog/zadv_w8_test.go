@@ -163,7 +163,11 @@ func TestAdvRewriteCannotPushCurrentOverReadCap(t *testing.T) {
 	if err := s.Revoke(e.ID, e.Revision, e.SHA256); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if st, _ := os.Stat(path); st.Size() > 1<<20 {
+	st, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if st.Size() > 1<<20 {
 		t.Errorf("Revoke inflated current.json from %d to %d bytes (> MaxArtifactBytes)", len(raw), st.Size())
 	}
 	if _, err := s.Get(e.ID, e.Revision); err != nil {

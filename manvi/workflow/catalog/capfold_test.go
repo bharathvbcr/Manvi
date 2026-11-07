@@ -147,7 +147,11 @@ func TestRevokeOverTheCapDropsForeignKeysAndSaysSo(t *testing.T) {
 	if len(dropped) != 2 || dropped[0] != "reviewed_by" {
 		t.Fatalf("dropped = %d names, want the two foreign keys", len(dropped))
 	}
-	if st, _ := os.Stat(path); st.Size() > workflow.MaxArtifactBytes {
+	st, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if st.Size() > workflow.MaxArtifactBytes {
 		t.Fatalf("current.json is %d bytes", st.Size())
 	}
 	got, err := s.Get(e.ID, e.Revision)
@@ -182,7 +186,10 @@ func TestOtherWritersRefuseWhenThePointerWouldPassTheCap(t *testing.T) {
 // A pointer no reader can load must not admit unattended replay.
 func TestCheckUnattendedFailsClosedOnAnUnreadablePointer(t *testing.T) {
 	s, e, path := approvedStore(t)
-	raw, _ := os.ReadFile(path) // #nosec G304 -- test temp dir
+	raw, readErr := os.ReadFile(path) // #nosec G304 -- test temp dir
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
 	big := append(raw[:len(raw)-1], []byte(`,"pad":"`+strings.Repeat("x", workflow.MaxArtifactBytes)+`"}`)...)
 	if err := os.WriteFile(path, big, 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 		t.Fatal(err)

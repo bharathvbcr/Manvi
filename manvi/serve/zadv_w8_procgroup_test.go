@@ -217,6 +217,9 @@ func TestShutdownWithASlowProviderCloseIsBoundedAndTheRunStillSettles(t *testing
 	m.runner.mu.Lock()
 	job := m.runner.jobs["run"]
 	m.runner.mu.Unlock()
+	if job == nil || session == nil {
+		t.Fatal("the activated run has no job or no provider session")
+	}
 
 	start := time.Now()
 	err = m.runner.Close()

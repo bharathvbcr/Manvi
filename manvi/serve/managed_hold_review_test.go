@@ -439,11 +439,11 @@ func TestAPlainRunWhoseGroupOutlivesTheAgentKeepsTheCheckoutHeldUntilItIsGone(t 
 	})
 	// A second managed run, with a harness or without, is refused with the reason.
 	_, err := secondHarnessAttempt(m, root)
-	if busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
+	if err == nil || busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
 		t.Errorf("a harness run was admitted on a held checkout, or not told why: %v", err)
 	}
 	err = m.runner.enterCheckout(m.otherAttempt("plain", ManagedHarness{}), managedRun{Cwd: root})
-	if busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
+	if err == nil || busyCode(err) != ErrHarnessBusy || !strings.Contains(err.Error(), "may still be writing this checkout") {
 		t.Errorf("a plain run was admitted on a held checkout, or not told why: %v", err)
 	}
 	if got := readFile(t, root, "CLAUDE.md"); got != "project rules\n" {
