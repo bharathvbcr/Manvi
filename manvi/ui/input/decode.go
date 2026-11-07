@@ -23,10 +23,16 @@ func decode(buf []byte, flush bool) (Event, int) { return decodeAt(buf, flush, n
 // DefaultMaxPasteBytes bounds how much of one open paste the reader holds before
 // it delivers what it has. It is large enough that no paste a person makes into
 // a prompt reaches it (the stream tests push 4 and 8 MB through as one Paste),
-// and small enough that a terminal that opens a paste and never closes it cannot
-// grow the buffer without limit. Reaching it is not an error: the paste is
-// delivered in pieces, see pasteScan.continued.
+// and small enough that a stream that opens a paste and never closes it cannot
+// grow the buffer without limit. Reaching it means the stream is live, so the
+// paste is delivered in pieces and the rest is still paste text; see
+// pasteScan.continued.
 const DefaultMaxPasteBytes = 16 << 20
+
+// ctrlC is the byte a raw-mode terminal sends for Ctrl+C. It is never paste
+// text: no paste is ever worth losing the user's way to cancel, so every paste
+// state ends at it. See decodePasteBody.
+const ctrlC = 0x03
 
 // pasteScan is the state a stream carries about a paste that has not closed.
 //
@@ -38,12 +44,13 @@ const DefaultMaxPasteBytes = 16 << 20
 // buffer that has grown at the end since it was recorded, so the caller resets
 // it whenever decode consumes bytes.
 //
-// continued means a paste was delivered before its end marker arrived — the
-// reader's paste deadline fired or the byte limit was reached — and the buffer
-// now holds the rest of its body. Everything up to the real end marker is still
-// paste text and is delivered as further Paste events, never as keys: a newline
-// in it must not become Enter, and the marker must not become stray keystrokes.
-// It survives consumption and is cleared only by the end marker.
+// continued means a paste reached the byte limit and was delivered before its
+// end marker arrived, so the buffer now holds the rest of its body. Everything
+// up to the real end marker is still paste text and is delivered as further
+// Paste events, never as keys. Only a live stream gets here, so the reader also
+// ends the state when input goes idle (Reader.pasteIdle) and Ctrl+C ends it at
+// once. A deadline flush does not set it: a paste whose end marker was lost must
+// not keep the keyboard.
 //
 // limit is the byte count at which an open paste is delivered; zero means
 // DefaultMaxPasteBytes.
@@ -376,11 +383,17 @@ func decodePaste(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 // decodePasteBody decodes paste text from buf, whose first prefix bytes are the
 // opening marker (zero when the paste was already delivered in part).
 //
-// An open paste is delivered early only when flush is set or, on a stream, when
-// it has reached the scan's byte limit; either way the scan is left continued so
-// the rest of the body is still paste. A delivered piece never ends inside a
-// UTF-8 character or inside what could be the start of the closing marker: those
-// bytes stay in the buffer to be completed by the next read.
+// A paste ends at its end marker or at a Ctrl+C byte, whichever comes first. The
+// Ctrl+C is found here, before the text is classified, so it cannot be absorbed
+// into an open paste: the text before it is delivered as a Paste and the byte is
+// left in the buffer to decode as the key.
+//
+// An open paste is otherwise delivered early in two ways. Flush (the reader's
+// paste deadline, or end of input) delivers all of it and leaves paste mode, so
+// what follows is keys. On a stream, reaching the scan's byte limit delivers the
+// text but leaves the scan continued; that piece never ends inside a UTF-8
+// character or inside what could be the start of the closing marker, which stay
+// in the buffer for the next read.
 func decodePasteBody(buf []byte, prefix int, flush bool, scan *pasteScan) (Event, int) {
 	rest := buf[prefix:]
 	// Resume where the last search stopped, backed up far enough that a marker
@@ -393,36 +406,56 @@ func decodePasteBody(buf []byte, prefix int, flush bool, scan *pasteScan) (Event
 		pasteSearchHook(len(rest) - from)
 	}
 	idx := bytes.Index(rest[from:], pasteEndBytes)
+	cc := bytes.IndexByte(rest[from:], ctrlC)
+	if cc >= 0 && (idx < 0 || cc < idx) {
+		cc += from
+		if scan != nil {
+			scan.continued = false
+		}
+		switch {
+		case cc > 0:
+			return Paste{Text: sanitizePaste(string(rest[:cc]))}, prefix + cc
+		case prefix > 0:
+			return nil, prefix
+		}
+		return decodeByte(buf)
+	}
 	if idx >= 0 {
 		idx += from
 		consumed := prefix + idx + len(pasteEnd)
+		wasContinued := scan != nil && scan.continued
 		if scan != nil {
-			wasContinued := scan.continued
 			scan.continued = false
-			if wasContinued && idx == 0 {
-				// The delivered pieces already carried the whole body.
-				return nil, consumed
-			}
+		}
+		if wasContinued && idx == 0 {
+			// The delivered pieces already carried the whole body.
+			return nil, consumed
 		}
 		return Paste{Text: sanitizePaste(string(rest[:idx]))}, consumed
 	}
-	if scan == nil {
-		if flush {
-			// The terminal opened a paste and never closed it. Delivering what
-			// arrived is better than discarding it, and better than waiting
-			// forever on a close that is not coming.
-			return Paste{Text: sanitizePaste(string(rest))}, len(buf)
+	if flush || scan == nil {
+		if !flush {
+			return nil, 0
 		}
-		return nil, 0
+		// The paste is not going to close. Delivering what arrived is better
+		// than discarding it, and better than waiting forever on a close that is
+		// not coming. Paste mode ends here.
+		if scan != nil {
+			scan.continued = false
+		}
+		if len(rest) == 0 {
+			return nil, len(buf)
+		}
+		return Paste{Text: sanitizePaste(string(rest))}, len(buf)
 	}
-	if !flush && !scan.continued && len(rest) < scan.maxBytes() {
+	if !scan.continued && len(rest) < scan.maxBytes() {
 		scan.searched = len(rest)
 		return nil, 0
 	}
-	// Deliver what is safe to deliver and remember that the paste is still open.
+	// The byte limit, or the next piece of a paste already delivered in part.
 	keep := pasteTailToKeep(rest)
 	n := len(rest) - keep
-	if n == 0 && scan.continued {
+	if n == 0 {
 		return nil, 0
 	}
 	scan.continued = true

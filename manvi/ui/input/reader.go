@@ -31,9 +31,41 @@ const DefaultEscapeDelay = 50 * time.Millisecond
 // It is deliberately not extended by arriving bytes. Memory is bounded by
 // DefaultMaxPasteBytes, not by time, so there is nothing for an extension to
 // protect, and a trickle of bytes must not be able to hold the deadline off
-// forever. A legitimate paste that outlasts it is not damaged: it is delivered
-// in pieces and the rest is still paste text (see pasteScan.continued).
+// forever. When it fires the paste is delivered and paste mode ends: what
+// arrives next is keys. A genuine paste that was merely slow loses nothing but
+// its tail's paste framing, which is the cost of never letting a lost end
+// marker hold the keyboard. Ctrl+C ends a paste at once, at any point.
 const DefaultPasteDeadline = 5 * time.Second
+
+// DefaultPasteIdle is how long input must stay silent before a paste that was
+// delivered at the byte limit stops being continued. A stream that is still
+// producing a paste after DefaultMaxPasteBytes is live, so its next read is
+// well inside this; a second of silence means no end marker is coming.
+const DefaultPasteIdle = time.Second
+
+// timerSlot is a timer and the channel to select on, nil while unarmed. Run
+// owns three of them; an unarmed slot blocks forever in a select.
+type timerSlot struct {
+	t *time.Timer
+	C <-chan time.Time
+}
+
+// armIfIdle starts the timer unless one is already running, so the time it
+// measures runs from the first call, not the latest.
+func (s *timerSlot) armIfIdle(d time.Duration) {
+	if s.t == nil {
+		s.t = time.NewTimer(d)
+		s.C = s.t.C
+	}
+}
+
+func (s *timerSlot) stop() {
+	if s.t != nil {
+		s.t.Stop()
+		s.t = nil
+		s.C = nil
+	}
+}
 
 // Reader turns a byte stream into a channel of events.
 type Reader struct {
@@ -43,6 +75,7 @@ type Reader struct {
 	closeOnce     sync.Once
 	escapeDelay   time.Duration
 	pasteDeadline time.Duration
+	pasteIdle     time.Duration
 	pasteLimit    int
 
 	// peakPending is the largest the undecoded buffer grew. Run writes it and
@@ -60,6 +93,7 @@ func NewReader(src io.Reader) *Reader {
 		escapeDelay: DefaultEscapeDelay,
 
 		pasteDeadline: DefaultPasteDeadline,
+		pasteIdle:     DefaultPasteIdle,
 		pasteLimit:    DefaultMaxPasteBytes,
 	}
 }
@@ -68,8 +102,13 @@ func NewReader(src io.Reader) *Reader {
 func (r *Reader) SetEscapeDelay(d time.Duration) { r.escapeDelay = d }
 
 // SetPasteDeadline overrides how long an open paste waits for its end marker.
-// Like SetEscapeDelay it must be called before Run.
+// Like SetEscapeDelay it must be called before Run: Run reads the value without
+// synchronisation, so changing it while the reader runs is a data race.
 func (r *Reader) SetPasteDeadline(d time.Duration) { r.pasteDeadline = d }
+
+// SetPasteIdle overrides how long input may stay silent before a paste
+// delivered at the byte limit stops being continued. Call it before Run.
+func (r *Reader) SetPasteIdle(d time.Duration) { r.pasteIdle = d }
 
 // SetMaxPasteBytes overrides how many bytes of one open paste are held before
 // they are delivered. It must be called before Run.
@@ -159,88 +198,91 @@ func (r *Reader) Run() {
 		}
 		return ev, n
 	}
-	var timer *time.Timer
-	var timeout <-chan time.Time
-	stopTimer := func() {
-		if timer != nil {
-			timer.Stop()
-			timer = nil
-			timeout = nil
-		}
-	}
-	defer stopTimer()
-
-	// The paste deadline runs separately from the escape timer: it is armed once
-	// when a paste opens and is not restarted by the chunks that follow.
-	var pasteTimer *time.Timer
-	var pasteTimeout <-chan time.Time
-	stopPasteTimer := func() {
-		if pasteTimer != nil {
-			pasteTimer.Stop()
-			pasteTimer = nil
-			pasteTimeout = nil
-		}
-	}
-	defer stopPasteTimer()
+	// escape is the lone-escape grace. paste is the deadline of an open paste,
+	// armed once when it opens and not restarted by the chunks that follow. idle
+	// ends a paste continued past the byte limit when input stops.
+	var escape, paste, idle timerSlot
+	defer escape.stop()
+	defer paste.stop()
+	defer idle.stop()
 
 	for {
-		// Drain everything the buffer can decide on its own.
+		// Drain everything the buffer can decide on its own. Consuming bytes
+		// ends whatever the paste deadline was timing: a paste that just closed
+		// must not lend its deadline to one that opens right behind it.
 		for len(pending) > 0 {
 			ev, n := next(false)
 			if n == 0 {
 				break
 			}
+			paste.stop()
 			pending = pending[n:]
 			if ev != nil && !r.emit(ev) {
 				return
 			}
 		}
 
-		// What is left after draining is undecidable. Three kinds of it wait
-		// differently: an open paste waits for its end marker until the paste
-		// deadline; the rest of an already-delivered paste waits for the next
-		// read with no timer, because it is paste text and never a key; anything
-		// else is a possible escape sequence and gets the short grace period.
-		openPaste := len(pending) > 0 && !scan.continued && bytes.HasPrefix(pending, pasteStartBytes)
+		// What is left after draining is undecidable, and three kinds of it
+		// wait differently. An open paste, or a buffer that is the start of a
+		// paste marker beyond a bare "ESC [", waits for its end until the paste
+		// deadline. The rest of a paste continued past the byte limit is paste
+		// text and is held for the next read, with the idle timer as its bound.
+		// Anything else is a possible escape sequence and gets the short grace.
+		pasteHeld := len(pending) > 0 && !scan.continued &&
+			(bytes.HasPrefix(pending, pasteStartBytes) ||
+				(len(pending) > 2 && bytes.HasPrefix(pasteStartBytes, pending)))
 		switch {
 		case len(pending) == 0:
-			stopTimer()
-			stopPasteTimer()
-		case openPaste:
-			stopTimer()
-			if pasteTimer == nil {
-				pasteTimer = time.NewTimer(r.pasteDeadline)
-				pasteTimeout = pasteTimer.C
-			}
+			escape.stop()
+			paste.stop()
+		case pasteHeld:
+			escape.stop()
+			paste.armIfIdle(r.pasteDeadline)
 		case scan.continued:
-			stopTimer()
-			stopPasteTimer()
+			escape.stop()
+			paste.stop()
 		default:
-			stopPasteTimer()
-			if timer == nil {
-				timer = time.NewTimer(r.escapeDelay)
-				timeout = timer.C
-			}
+			paste.stop()
+			escape.armIfIdle(r.escapeDelay)
+		}
+		if scan.continued {
+			idle.armIfIdle(r.pasteIdle)
+		} else {
+			idle.stop()
 		}
 
 		select {
 		case chunk := <-raw:
-			stopTimer()
+			escape.stop()
+			idle.stop()
 			pending = append(pending, chunk...)
 			r.peakPending = max(r.peakPending, len(pending))
 
-		case <-pasteTimeout:
-			stopPasteTimer()
-			// The end marker is not coming in time. Deliver the paste once; the
-			// scan stays continued, so what follows is still paste text.
+		case <-paste.C:
+			paste.stop()
+			// The end marker is not coming in time. Deliver what is held and
+			// leave paste mode: what follows is keys.
 			ev, n := next(true)
 			pending = pending[n:]
 			if ev != nil && !r.emit(ev) {
 				return
 			}
 
-		case <-timeout:
-			stopTimer()
+		case <-idle.C:
+			idle.stop()
+			// A paste continued past the byte limit went quiet. End it, and
+			// deliver the few bytes held back as a possible marker or character.
+			if len(pending) > 0 {
+				ev, n := next(true)
+				pending = pending[n:]
+				if ev != nil && !r.emit(ev) {
+					return
+				}
+			}
+			scan.continued = false
+
+		case <-escape.C:
+			escape.stop()
 			// Nothing more is coming. Force a decision on what is held.
 			for len(pending) > 0 {
 				ev, n := next(true)
@@ -282,7 +324,7 @@ func (r *Reader) Run() {
 				}
 				break
 			}
-			stopTimer()
+			escape.stop()
 			// Whatever is buffered is decoded before the error is reported, so
 			// a final keystroke is not lost to the stream ending.
 			for len(pending) > 0 {

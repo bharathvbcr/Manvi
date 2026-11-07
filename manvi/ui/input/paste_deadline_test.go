@@ -114,8 +114,9 @@ func TestPasteEndMarkerReturnsToKeys(t *testing.T) {
 }
 
 // Criterion 3a: a paste that never closes is delivered at the paste deadline,
-// not before, and the rest of it is still paste text.
-func TestUnclosedPasteIsFlushedAtTheDeadlineAndItsTailIsNotTyped(t *testing.T) {
+// not before, and paste mode ends there: what follows is keys, and a later stray
+// end marker is a no-op rather than a key.
+func TestUnclosedPasteIsFlushedAtTheDeadlineThenKeysAreKeys(t *testing.T) {
 	h := newPasteHarness(t, func(r *Reader) {
 		r.SetEscapeDelay(10 * time.Millisecond)
 		r.SetPasteDeadline(300 * time.Millisecond)
@@ -128,19 +129,20 @@ func TestUnclosedPasteIsFlushedAtTheDeadlineAndItsTailIsNotTyped(t *testing.T) {
 	if waited := time.Since(start); waited < 250*time.Millisecond {
 		t.Fatalf("the paste was delivered after %v, before its deadline: the escape grace was applied", waited)
 	}
-	h.write("\ntail\r")
-	h.drainPaste("\ntail\n")
-	h.write("\x1b[201")
-	h.write("~z")
-	h.expectKeys("z")
+	h.write("ok" + pasteEnd + "z")
+	h.expectKeys("ok")
+	h.expectKeys("z") // the stray end marker between them produced nothing
 }
 
-// The deadline is measured from the start of the paste: bytes arriving inside it
-// do not push it back.
+// The deadline is measured from the start of the paste: bytes arriving inside
+// it do not push it back. A byte every 30 ms is far inside a 300 ms deadline, so
+// a deadline restarted by each chunk never fires, and one that fires early is the
+// escape grace applied to a paste; both are caught by bounding when it fires.
 func TestPasteDeadlineIsNotExtendedByProgress(t *testing.T) {
+	const deadline = 300 * time.Millisecond
 	h := newPasteHarness(t, func(r *Reader) {
 		r.SetEscapeDelay(10 * time.Millisecond)
-		r.SetPasteDeadline(300 * time.Millisecond)
+		r.SetPasteDeadline(deadline)
 	})
 	start := time.Now()
 	h.write(pasteStart)
@@ -151,18 +153,141 @@ func TestPasteDeadlineIsNotExtendedByProgress(t *testing.T) {
 			select {
 			case <-stop:
 				return
-			case <-time.After(40 * time.Millisecond):
+			case <-time.After(30 * time.Millisecond):
 				if _, err := h.pw.Write([]byte("x")); err != nil {
 					return
 				}
 			}
 		}
 	}()
-	if _, ok := h.next().(Paste); !ok {
-		t.Fatal("want a Paste at the deadline")
+	ev, ok := advRecv(h, 3*deadline)
+	if !ok {
+		t.Fatalf("no Paste within %v: a trickle of bytes held the deadline off", 3*deadline)
 	}
-	if waited := time.Since(start); waited > 2*time.Second {
-		t.Fatalf("a trickle held the deadline off for %v", waited)
+	if _, isPaste := ev.(Paste); !isPaste {
+		t.Fatalf("got %#v, want a Paste", ev)
+	}
+	waited := time.Since(start)
+	if waited < deadline*3/4 || waited > deadline*2 {
+		t.Fatalf("the paste was delivered after %v; want about the %v deadline from its start", waited, deadline)
+	}
+}
+
+// A Ctrl+C byte is never paste text. It ends an open paste at once: the text
+// before it is delivered, then the key.
+func TestCtrlCInsideAnOpenPasteIsAKeyAtOnce(t *testing.T) {
+	h := newPasteHarness(t, nil) // default 5 s deadline: nothing here may wait for it
+	h.write(pasteStart + "abc\ndef\x03")
+	if p, ok := h.next().(Paste); !ok || p.Text != "abc\ndef" {
+		t.Fatalf("want the text before ^C as a Paste, got %#v", p)
+	}
+	if ev := h.next(); !advIsCtrl(ev, 'c') {
+		t.Fatalf("got %#v, want Ctrl+C", ev)
+	}
+	// Paste mode is over: a carriage return is Enter again and a stray marker is a no-op.
+	h.write("\r" + pasteEnd + "z")
+	if k, ok := h.next().(Key); !ok || k.Type != KeyEnter {
+		t.Fatalf("after ^C a carriage return must be Enter, got %#v", k)
+	}
+	h.expectKeys("z")
+}
+
+func TestCtrlCRightAfterPasteStartEmitsNoEmptyPaste(t *testing.T) {
+	h := newPasteHarness(t, nil)
+	h.write(pasteStart + "\x03")
+	if ev := h.next(); !advIsCtrl(ev, 'c') {
+		t.Fatalf("got %#v, want Ctrl+C first, with no empty Paste before it", ev)
+	}
+}
+
+// The invariant that makes a lost or injected ESC[200~ survivable: Ctrl+C works
+// immediately, and every key works once the paste deadline has passed.
+func TestInjectedPasteStartNeverLocksTheKeyboard(t *testing.T) {
+	const deadline = 200 * time.Millisecond
+	configure := func(r *Reader) {
+		r.SetEscapeDelay(10 * time.Millisecond)
+		r.SetPasteDeadline(deadline)
+	}
+	h := newPasteHarness(t, configure)
+	h.write(pasteStart)
+	h.write("\x03")
+	if ev, ok := advRecv(h, deadline/2); !ok || !advIsCtrl(ev, 'c') {
+		t.Fatalf("Ctrl+C inside an injected paste: got %#v (ok=%v), want Ctrl+C before the deadline", ev, ok)
+	}
+
+	h = newPasteHarness(t, configure)
+	h.write(pasteStart)
+	time.Sleep(deadline + 100*time.Millisecond)
+	h.write("hi\x04\x1b")
+	h.expectKeys("hi")
+	if ev := h.next(); !advIsCtrl(ev, 'd') {
+		t.Fatalf("got %#v, want Ctrl+D", ev)
+	}
+	if k, ok := h.next().(Key); !ok || k.Type != KeyEscape {
+		t.Fatalf("want a lone Escape after the deadline, got %#v", k)
+	}
+}
+
+// A paste that reaches the byte limit is a live stream, so its end marker is
+// still expected; but when input goes quiet the continuation ends and keys are
+// keys, with a stray end marker a no-op.
+func TestContinuationEndsWhenInputGoesIdle(t *testing.T) {
+	h := newPasteHarness(t, func(r *Reader) {
+		r.SetEscapeDelay(10 * time.Millisecond)
+		r.SetMaxPasteBytes(64)
+		r.SetPasteIdle(150 * time.Millisecond)
+	})
+	h.write(pasteStart + strings.Repeat("p", 100))
+	h.drainPaste(strings.Repeat("p", 100))
+	time.Sleep(400 * time.Millisecond)
+	h.write("k" + pasteEnd + "j")
+	h.expectKeys("kj")
+}
+
+// Inside a continuation, Ctrl+C is a key at once and ends it.
+func TestCtrlCEndsAContinuation(t *testing.T) {
+	h := newPasteHarness(t, func(r *Reader) {
+		r.SetMaxPasteBytes(64)
+		r.SetPasteIdle(time.Minute)
+	})
+	h.write(pasteStart + strings.Repeat("p", 100))
+	h.drainPaste(strings.Repeat("p", 100))
+	h.write("more\x03")
+	h.drainPaste("more")
+	if ev := h.next(); !advIsCtrl(ev, 'c') {
+		t.Fatalf("got %#v, want Ctrl+C", ev)
+	}
+	h.write("q")
+	h.expectKeys("q")
+}
+
+// A second paste opening right behind the first gets its own deadline, from its
+// own start, not what remained of the first one's.
+func TestSecondPasteGetsItsOwnDeadline(t *testing.T) {
+	const deadline = 400 * time.Millisecond
+	h := newPasteHarness(t, func(r *Reader) {
+		r.SetEscapeDelay(10 * time.Millisecond)
+		r.SetPasteDeadline(deadline)
+	})
+	h.write(pasteStart + "a")
+	time.Sleep(250 * time.Millisecond)
+	second := time.Now()
+	h.write(pasteEnd + pasteStart + "b")
+	for {
+		ev, ok := advRecv(h, 3*time.Second)
+		if !ok {
+			t.Fatal("no event for the second paste")
+		}
+		p, isPaste := ev.(Paste)
+		if !isPaste {
+			t.Fatalf("got %#v", ev)
+		}
+		if p.Text == "b" {
+			if waited := time.Since(second); waited < deadline*3/4 {
+				t.Fatalf("paste 2 was flushed %v after it opened; its deadline is %v", waited, deadline)
+			}
+			return
+		}
 	}
 }
 
@@ -218,16 +343,18 @@ func TestPasteOverTheByteLimitIsFlushedAndBounded(t *testing.T) {
 	}
 }
 
-// A paste cut mid-character by a forced flush does not corrupt the character.
-func TestForcedFlushDoesNotSplitARuneOrTheEndMarker(t *testing.T) {
+// A continuation piece cut at the byte limit does not split a character or the
+// end marker: those bytes wait for the next read.
+func TestLimitFlushDoesNotSplitARuneOrTheEndMarker(t *testing.T) {
 	h := newPasteHarness(t, func(r *Reader) {
-		r.SetEscapeDelay(10 * time.Millisecond)
-		r.SetPasteDeadline(100 * time.Millisecond)
+		r.SetMaxPasteBytes(16)
+		r.SetPasteIdle(time.Minute)
 	})
-	snow := "☃"
-	h.write(pasteStart + "a" + snow[:2])
-	if p, ok := h.next().(Paste); !ok || p.Text != "a" {
-		t.Fatalf("want Paste a with the partial rune held back, got %#v", p)
+	snow := "\u2603"
+	filler := strings.Repeat("a", 14)
+	h.write(pasteStart + filler + snow[:2])
+	if p, ok := h.next().(Paste); !ok || p.Text != filler {
+		t.Fatalf("want the filler with the partial rune held back, got %#v", p)
 	}
 	h.write(snow[2:] + "\x1b[20")
 	h.drainPaste(snow)
