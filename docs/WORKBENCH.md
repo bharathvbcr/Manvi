@@ -63,9 +63,12 @@ All names below receive a `work.` prefix over `manvi serve`.
 `.put` creates or replaces a record. Supply every editable field that should
 survive replacement; omitted optional fields return to their defaults. It is not
 a partial patch, with these exceptions on `items.put`: `locked_fields`, `logs`,
-`archived`, `checklist` and `links` keep their stored value when omitted or
-null, so a host that does not edit a field (an agent's status move, a merge, an
-older code path) cannot silently unlock, unarchive, uncheck or unlink a task.
+`archived`, `checklist`, `links` and `scope` keep their stored value when omitted
+or null, so a host that does not edit a field (an agent's status move, a merge, an
+older code path) cannot silently unlock, unarchive, uncheck, unlink or rescope a
+task. That set is exact: `labels` and every other editable field are replaced
+when omitted. A test pins the set (omit each preserved field and read it back
+unchanged; omit `labels` and read it back cleared).
 Supply `[]`, `""` or `false` to clear explicitly. `completed_at` belongs to the
 store; an `items.put` naming it is refused as an unknown field. Automation
 settings also preserve the provider/model pair when
@@ -1071,11 +1074,12 @@ connection's full set is never handed to an agent.
 
 | Class | Exposed | Notes |
 |---|---|---|
-| Read | `items.list`, `items.get`, `items.brief.get`, `items.history` | Forced to the session's repository. `events.list` is not exposed: it is profile-wide and has no repository filter. |
-| Read | `runs.get` for the session's own run | Source of the scope binding below. |
-| Write | create a task | Revision zero only, status `inbox`, linked to exactly the session's repository, no home workspace, both enhancement fields locked, label `agent-proposed`. |
+| Read | `items.list` | The adapter pins `repository_id` to the session's repository, `deleted:false`, `archived:false`, no `workspace_id`, and forces `limit` (page cap). It accepts no other filter from the agent. `events.list` is not exposed: it is profile-wide and has no repository filter. |
+| Read | `items.get`, `items.brief.get`, `items.history` | Only for a task linked to the session's repository and no other (see "Scope check"). `items.history` covers linked, non-deleted tasks only. |
+| Read | `runs.get` for the session's own run | A projection only: task id, repository id, state and run id. Never `output`, `effective_configuration`, `item.brief` or any other field. |
+| Write | create a task | Closed allow-list: `title`, `description` and an optional plain-text `checklist`. See "Create allow-list". |
 | Write | update the agent's own task | Field allow-list below. |
-| Write | add a `related` link from the agent's own task | `duplicate_of`, `blocks` and `parent` are not exposed. |
+| Write | add a `related` link from the agent's own task | The target must pass the same repository check as a read. `duplicate_of`, `blocks` and `parent` are not exposed. |
 
 **Stay host-only:** `items.delete` and `items.restore` (deletion is
 soft but removes a record the user relies on; an agent withdrawing its own
@@ -1084,6 +1088,16 @@ proposal is done by the user), `workspaces.*`, `repositories.put` and `.relink`,
 `.undo`, `.dismiss`, `.recover`, `.claim` and `.complete`, `store.compact`,
 attention and decision methods, and any merge of tasks. Merge and delete rewrite
 or remove other people's records and are not argued into scope.
+
+**Create allow-list.** An agent-created task carries `title`, `description` and
+an optional checklist of plain-text entries (each `done:false`), and nothing else.
+The adapter, not the agent, fixes every other `items.put` field: `expected_revision`
+zero, status `inbox`, priority 2, kind `task`, no severity, owner or due date,
+no `acceptance_criteria`, no `scope`, no `links`, no home workspace, one
+repository link (the session's, also primary), `locked_fields` of both `title`
+and `description`, and the `agent-proposed` label. A call that carries any other
+field is rejected, not ignored: the agent's tool decodes with unknown fields
+refused. Each forged field has its own test.
 
 #### Scope check: which board and repository a call may touch
 
@@ -1098,28 +1112,45 @@ parameters:
    `devcouncil.Session` (task id, lease token, owner; `devcouncil/session.go`),
    carried on the call context, never in tool arguments.
 2. **Board.** Always the single profile board; there is no per-agent board. The
-   effective scope is the repository: reads and list filters are forced to the
-   run's `repository_id`, and an `items.get` for a task not linked to that
-   repository answers `not_found`, the same as an absent id (no existence oracle).
-3. **Own task.** The one task the run was prepared on. All agent writes other than
+   effective scope is the repository.
+3. **Repository link check on every item id.** Every call that names an item id,
+   whether a read (`items.get`, `items.brief.get`, `items.history`), a write
+   target, or the target of a `related` link, first loads the task and requires
+   that it is linked to the session's repository and to no other. Anything else
+   answers a `not_found` that is byte-identical to the answer for an absent id,
+   including for link targets (no existence oracle). A task linked to several
+   repositories is refused, not redacted: refusal is simpler and cannot leak the
+   other repositories' fields. Mutating a link set is not exposed, so a task
+   cannot be moved into scope.
+4. **Own task.** The one task the run was prepared on. All agent writes other than
    creation target it, and the call refuses any other id.
-4. **Lease.** A write requires the session still to hold a live lease at call time,
-   checked against the store on every write exactly as `devcouncil_write_file`
-   does (`devcouncil/file_tools.go`, "The lease is checked against the store on
-   every write, not once at checkout"). An inherited child session (`inherited`
-   in `devcouncil/session.go`) may read but not write the board, because it does
-   not own the lease.
-5. **Concurrency.** Every write sends `expected_revision` from the agent's last
+5. **Liveness, defined per path, and rechecked at the write.** A write is allowed
+   only while the session is live, and "live" has a different meaning on each path:
+   - *Managed run.* Managed runs hold no DevCouncil lease. Live means the run
+     record's state is `running` and its `owner_id` and `session_id` match the
+     session's. `unresolved` refuses, as does any other state.
+   - *In-process session.* Live means `Store.Valid` on the session's lease, checked
+     against the store on every write exactly as `devcouncil_write_file` does
+     (`devcouncil/file_tools.go`, "The lease is checked against the store on every
+     write, not once at checkout"). An inherited child session (`inherited` in
+     `devcouncil/session.go`) may read but not write the board, because it does
+     not own the lease.
+
+   The run or lease is re-read immediately before `items.put`, not trusted from the
+   start of the call. A store error on that read, or the process exiting mid-call,
+   refuses the write. Required test: the run ends between the liveness check and
+   the put, and the write is refused.
+6. **Concurrency.** Every write sends `expected_revision` from the agent's last
    read; a stale write is refused (existing behaviour of `items.put`).
 
 #### Authority check: who may create, update, complete, delete
 
 | Action | Agent | Human host |
 |---|---|---|
-| Create a task | Yes, inbox only, bounded (below) | Yes |
+| Create a task | Yes, inbox only, closed allow-list, bounded (below) | Yes |
 | Edit its **own** task | `status` to `in_progress` or `review`, tick existing `checklist` entries, append to `logs`, add a `related` link | Everything |
 | **Complete** its own task | Move to `review` only. Never `done`. | Moves to `done` |
-| Edit **another** task | No write at all. It proposes by creating an inbox task with a `related` link to it. | Everything |
+| Edit **another** task | No write at all. It proposes by creating an inbox task. | Everything |
 | Delete or restore | No | Yes |
 | Merge | No | Yes |
 
@@ -1132,11 +1163,34 @@ option, for the owner to decide separately, is letting a `work.verify.task`
 verdict for the current revision authorise the agent's move to `done`. The agent
 never writes `title`, `description`, `acceptance_criteria`, `scope`,
 `locked_fields`, `priority`, `severity`, `owner`, `due`, `kind`, `archived`,
-repository links or home workspace on any task. The agent edits through a host
-adapter that reads the item at `expected_revision`, applies only the allow-listed
-delta, and calls `items.put`; `items.put`'s omit-preserves rule for `logs`,
-`checklist`, `links`, `locked_fields` and `archived` makes that safe, but
-`.put` replaces every other field, so the adapter, not the agent, supplies them.
+repository links or home workspace on any task.
+
+The agent edits through a host adapter that reads the item at `expected_revision`,
+applies only the allow-listed delta, and calls `items.put`. Which fields survive
+an omitted value matters here, and is exactly this set: `locked_fields`, `logs`,
+`archived`, `checklist`, `links` and `scope`. `labels` is **not** preserved, nor
+is any other field, so the adapter supplies every other editable field from the
+read (including `labels`, `owner`, `due` and the repository links) and an
+adapter test asserts a status move leaves each of them unchanged.
+
+**Status moves and enhancement.** `items.put` schedules automatic enhancement only
+when the save changes title or description (Durable automatic scheduling), and the
+host wakes the worker only when the receipt carries `automatic_enhancement_queued`
+(`serve/workbench.go`, the `Queued` check). An agent status move changes neither
+field. Required tests: an agent status move enqueues nothing and wakes nothing, and
+the wake path stays conditional on `automatic_enhancement_queued`. A second
+invariant, for Decision 2: an enhancement run holds no `work_*` tool. A test
+asserts the enhancement run's tool surface contains none.
+
+#### Prompt injection and provenance
+
+Agent-authored `logs`, descriptions and titles are untrusted text that other
+agents and humans will read later. `items.brief.get` and any agent-facing read
+render agent-authored regions inside a fenced untrusted-data block under a
+standing header stating the content is not instructions. The launch UI shows a
+provenance banner on any task whose text carries the `agent-proposed` label or an
+agent log region. Test: a log entry containing an injection string and a closing
+fence stays inside the fence, and the header is present on every render.
 
 #### Rate and size bounds
 
@@ -1147,20 +1201,35 @@ characters; mutations need `request_id`, `id` and `expected_revision`; per-op
 children with a ten-second call deadline.
 
 Bounds the agent surface adds (acceptance criteria for the implementation card):
-description at most 16 KiB and title at most 200 characters on agent-created
-tasks; one `logs` append at most 16 KiB and at most 64 KiB appended per run; at
-most 5 tasks created and 30 writes per run; at most 50 open `agent-proposed`
-inbox tasks per repository, refused beyond that with both numbers reported.
-A refused write returns a typed error naming the cap; a cap is never applied by
-silent truncation.
+
+- Description at most 16 KiB and title at most 200 characters on agent-created
+  tasks; one `logs` append at most 16 KiB.
+- **Budgets are keyed by (repository, task), not by run**, so a continuation or a
+  follow-up run on the same task shares them: at most 5 tasks created and 30
+  writes per (repository, task).
+- **Repository-wide creation rate cap**: at most 10 agent-created tasks per
+  repository per hour, and at most 50 open `agent-proposed` inbox tasks per
+  repository, refused beyond either with both numbers reported.
+- **Serialised and persisted.** Count-then-create runs behind a per-repository host
+  mutex so concurrent creates cannot both pass the check. The counters are
+  persisted, not held in memory, so a host restart does not reset them.
+- **Log space.** Total agent-appended bytes per task are capped at 64 KiB. The
+  agent region of `logs` is tagged (a delimited block with a fixed marker) so a
+  human can clear it, and the adapter never rewrites the human's prefix: it only
+  appends inside the tagged region.
+- A cap returns a typed error naming the cap; it is never applied by silent
+  truncation.
 
 **Gap:** no per-session or per-profile write quota exists in the store ("Quota
-enforcement is still unspecified", in the retention paragraph on `store.compact`). The only
-quota is the enhancement slot and its 20 automatic reservations per hour. The
-per-run counters are therefore in-memory in the host adapter and do not survive a
-host restart; the per-repository cap must be counted by listing the board, and the
-implementation must confirm `items.list` can filter on the label before relying
-on it (inferred: the documented filters are `status` and plain-text `query`).
+enforcement is still unspecified", in the retention paragraph on `store.compact`).
+A store-level atomic count is the real fix, and it is a cross-app schema change
+(DevCouncil owns it; GitPulse re-vendors; Manvi's pin moves) that needs approval;
+the host mutex and persisted counters are the interim. `items.list` has no label
+filter (documented filters are `status`, `query`, scope, `archived`, `deleted`,
+`order`), so the open `agent-proposed` count cannot be a label query; the
+persisted counter is the source, reconciled by listing the repository's inbox.
+Required tests: concurrent creates at the cap, and a continuation that shares the
+budget of its first run.
 
 #### Audit: recorded with the agent and session identity
 
@@ -1169,17 +1238,34 @@ idempotency receipt in one transaction (verified). **Gap:** `work_events` has
 columns `sequence, kind, entity_id, revision, at, payload` and `work_revisions`
 has `entity_type, entity_id, revision, body` (`schema.sql`); neither has an actor
 column. `work_requests` maps a `request_id` to its event `sequence`, but receipts
-are deleted past a seven-day replay window by `store.compact`.
+are deleted past a seven-day replay window by `store.compact`. **Events and
+revisions are pruned too**: `store.compact` removes events older than 30 days
+(`event_retention_seconds`) beyond the newest `keep_events` (default 1,000), and
+keeps only the newest `keep_revisions` (default 50) per record. The log prefix is
+therefore the only durable trace of which agent acted.
 
 Until the store records an actor, the adapter records identity by three means
-that use only existing fields: (1) the host mints `request_id` as
-`agent_{run_id}_{session_id}_{n}` (an agent never chooses it; the identifier
-rule of letters, digits, hyphens and underscores, 128 characters, permits this); (2) each `logs` append is prefixed with the run and
-session ids and a timestamp; (3) created tasks carry the `agent-proposed` label
-and a description line naming the run. These survive compaction only as far as
-the task text does. A first-class actor on events and revisions is a DevCouncil
-schema change, which this repository's rules treat as cross-app (DevCouncil owns
-it; GitPulse re-vendors; Manvi's pin moves). It is not part of this decision and
+that use only existing fields: (1) the host mints `request_id` (an agent never
+chooses it); (2) each `logs` append is prefixed with the run and session ids and a
+timestamp, inside the tagged agent region; (3) created tasks carry the
+`agent-proposed` label and a description line naming the run.
+
+**The `request_id` must be durable and replay-safe.** A counter held in memory
+restarts at zero with the host, and the store answers a reused `request_id` with
+the old receipt without writing anything (`mutate` in `dc-store/src/workbench/mod.rs`:
+a prior row with the same method and input is replayed, and a different input is
+`idempotency_conflict`). A restarted counter would make a new, different write
+look like a replay or fail as a conflict, or worse silently report an old success.
+So `n` is derived durably: a hash of the canonical request content together with
+the own task's current revision, or a persisted counter, not an in-memory one.
+The form is `agent_{run_id}_{session_id}_{n}` within the identifier rule (letters,
+digits, hyphens, underscores) and the adapter asserts the whole id is at most 128
+characters. The adapter fails closed and reports on any replayed receipt or
+`idempotency_conflict`; it never treats either as a successful new write. Required
+test: restart the host mid-run and write again.
+
+A first-class actor on events and revisions is a DevCouncil schema change, which
+this repository's rules treat as cross-app. It is not part of this decision and
 needs its own approval.
 
 #### Seam, and gaps in the existing mechanisms
@@ -1278,11 +1364,12 @@ checkout and an agent loop.
   (`claude`, `codex`) rather than a model, so the stored `provider` and `model`
   labels change meaning; and capacity contention with real runs
   (`max_active_runs`, default 8).
-- **One open question for the owner.** The `local` provider (a configured local
-  model) is not a coding agent. Whether it keeps a direct path or loses
-  enhancement generation is not decided here. "Replace, do not accumulate"
-  argues for deleting the direct path in the same change; that would remove local
-  enhancement. The implementation card asks before removing it.
+- **Open owner question (unanswered, not decided here).** The `local` provider (a
+  configured local model) is not a coding agent. Does it keep a direct enhancement
+  path? Recommendation: keep local direct, because it is not a coding agent and
+  removing the path would remove local enhancement entirely. "Replace, do not
+  accumulate" argues the other way. Until the owner answers, the implementation
+  card must not delete the direct path.
 
 **Sequencing.** The managed-agent surface is in flux. At this commit another
 live session holds uncommitted changes in `manvi/codingagent/*` (`agy.go`,
