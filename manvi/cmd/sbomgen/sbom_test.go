@@ -184,14 +184,14 @@ func TestRunReadsForeignBinary(t *testing.T) {
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	if err := os.WriteFile(src, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(src, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tiny\n\ngo 1.21\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/tiny\n\ngo 1.21\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	exe := filepath.Join(dir, "tiny.exe")
-	cmd := exec.Command("go", "build", "-o", exe, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exe, ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0", "GOFLAGS=-mod=mod")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -202,7 +202,7 @@ func TestRunReadsForeignBinary(t *testing.T) {
 	if err := run([]string{"-binary", exe, "-tag", "v0.0.1", "-o", outFile}, &stderr); err != nil {
 		t.Fatalf("run: %v (%s)", err, stderr.String())
 	}
-	raw, err := os.ReadFile(outFile)
+	raw, err := os.ReadFile(filepath.Clean(outFile))
 	if err != nil {
 		t.Fatal(err)
 	}

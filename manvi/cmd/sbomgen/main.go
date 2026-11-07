@@ -88,19 +88,25 @@ func run(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out, body, 0o644); err != nil {
+	if err := os.WriteFile(*out, body, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", *out, err)
 	}
-	fmt.Fprintf(stderr, "sbomgen: wrote %s (%d Go and Rust components)\n", *out, len(bom.Components))
+	if _, err := fmt.Fprintf(stderr, "sbomgen: wrote %s (%d Go and Rust components)\n", *out, len(bom.Components)); err != nil {
+		return fmt.Errorf("report to stderr: %w", err)
+	}
 	return nil
 }
 
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
+func fileSHA256(path string) (sum string, err error) {
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			sum, err = "", fmt.Errorf("close %s: %w", path, cerr)
+		}
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("hash %s: %w", path, err)
