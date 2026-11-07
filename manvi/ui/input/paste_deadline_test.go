@@ -295,6 +295,10 @@ func collectAll(t *testing.T, chunks []string) string {
 	t.Helper()
 	pr, pw := io.Pipe()
 	r := NewReader(pr)
+	// The fuzzer runs many workers; a scheduling stall of 50 ms between two
+	// reads would fire the real escape timer and make the split observable,
+	// which is the timing behaviour tested elsewhere, not this property.
+	r.SetEscapeDelay(time.Minute)
 	go r.Run()
 	defer r.Close()
 	go func() {
