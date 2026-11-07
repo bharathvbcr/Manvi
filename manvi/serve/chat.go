@@ -408,6 +408,32 @@ type PrepareResult struct {
 }
 
 // prepare answers OpChatPrepare.
+//
+// Hosts that call Anthropic must not apply its steps, and this plane cannot
+// make them safe. Anthropic signs each thinking block to the system prompt, the
+// tools and every message before it, so a step that shortens an earlier tool
+// result invalidates every block signed after it: a 400 on an enforced account
+// (claude-api skill, shared/model-migration.md, "Breaking change 3"). The
+// history this op receives is WireMessage, which carries no reasoning, so the
+// host owns the blocks and only the host could strip them; nothing here can
+// tell that it is being asked about Anthropic at all.
+//
+// What to do instead is the provider's own server-side context editing:
+// `context_management.edits` of `{"type": "clear_tool_uses_20250919"}` under
+// the `anthropic-beta: context-management-2025-06-27` header, which the
+// history-editing check does not count as an edit (the harness does exactly
+// this for its own Anthropic conversations: llm/anthropic.ContextEditsFor, and
+// agent.ServerSideEditing for why its client-side planner stands down). A host
+// that must keep applying steps to a conversation holding signed thinking has
+// to strip the `thinking` and `redacted_thinking` blocks of the assistant turns
+// that follow a shortened result and were recorded before it was shortened (see
+// session.Log.StripStaleReasoning), and only those, and never between a tool_use
+// and its tool_result.
+//
+// This stays documentation, not a behaviour, because teaching the op the
+// provider would add a field to PrepareParams, and that is a change to the
+// published serve contract (contracts/serve.ops.schema.json, vendored into
+// GitPulse) that the owner has to take on its own terms.
 func (s *Server) prepare(raw json.RawMessage) (any, *Error) {
 	var p PrepareParams
 	if err := json.Unmarshal(raw, &p); err != nil {

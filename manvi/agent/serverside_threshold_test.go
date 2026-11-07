@@ -6,6 +6,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
 	"github.com/bharathvbcr/Manvi/manvi/llm/adaptertest"
 	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
@@ -48,5 +49,23 @@ func TestServerSideClearingStartsWhereTheLoopWouldHaveCompacted(t *testing.T) {
 		if d := edit.ClearAtLeast.Value - gap; d < -1 || d > 1 {
 			t.Errorf("%s window=%d max=%d: clear_at_least %d, loop gap %d", tc.model, tc.window, tc.maxTokens, edit.ClearAtLeast.Value, gap)
 		}
+	}
+}
+
+// The provider the loop sees in production is the adapter, or the adapter
+// inside the metering wrapper when a budget is set (cmd/manvi meterAnthropic).
+// The decision to stand down must hold through the wrapper, or the real binary
+// would still compact client-side while every test on the bare adapter passed.
+func TestServerSideEditingHoldsThroughTheMeteringWrapper(t *testing.T) {
+	bare := anthropic.New("http://unused", adaptertest.Secret("k"))
+	metered := &budget.Provider{Inner: bare}
+	if !ServerSideEditing(bare) || !ServerSideEditing(metered) {
+		t.Errorf("anthropic adapter: bare=%v metered=%v, want both true", ServerSideEditing(bare), ServerSideEditing(metered))
+	}
+	if ServerSideEditing(nil) {
+		t.Error("no provider is not a provider that edits server-side")
+	}
+	if ServerSideEditing(fixedCapProvider{window: 1, maxOut: 1}) {
+		t.Error("a provider that does not bind thinking must keep client-side compaction")
 	}
 }
