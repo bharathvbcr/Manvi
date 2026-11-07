@@ -100,13 +100,21 @@ type EditAmount struct {
 // ContextEditsFor is the clearing the API is asked to do for a request to
 // model with maxTokens reserved for the answer.
 //
-// The trigger is the point agent.Budget calls the threshold, for the same
-// reason: the server's own default is 100,000 tokens, which on a million-token
-// window would clear results the conversation had room for, and every clear
-// invalidates the cached prefix. clear_at_least is the gap between that
-// threshold and the target compaction aims for (agent.Budget.Target), so a
-// clear that would not buy that much is skipped. A model the catalogue does not
-// hold gets no thresholds and the server's defaults.
+// The trigger is agent.Budget's threshold formula (window, less the output
+// reserved, less 2048, floored at 4096) applied to the max_tokens this request
+// actually sends, and for the same reason: the server's own default is 100,000
+// tokens, which on a million-token window would clear results the conversation
+// had room for, and every clear invalidates the cached prefix. clear_at_least is
+// the gap between that threshold and the target compaction aims for
+// (agent.Budget.Target), so a clear that would not buy that much is skipped.
+//
+// It is not always the loop's own threshold. The loop reserves the model's full
+// output ceiling when Config.MaxTokens is unset, while the request then carries
+// the adapter's default (8192), so the trigger is later than the loop's number
+// in that case only (989,760 against 869,952 on a 1M window with a 128K ceiling).
+// The later one is the true one for what is sent. The loop's overflow report
+// keeps the loop's own, more conservative, threshold. A model the catalogue does
+// not hold gets no thresholds and the server's defaults.
 func ContextEditsFor(model string, maxTokens int) []ContextEdit {
 	edit := ContextEdit{Type: EditClearToolUses}
 	if c, ok := Capability(model); ok && c.ContextWindow > 0 {

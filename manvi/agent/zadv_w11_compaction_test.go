@@ -2,7 +2,8 @@ package agent
 
 import (
 	"encoding/json"
-	"os"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
@@ -19,16 +20,6 @@ import (
 
 // Adversarial tests for lane w11-compaction (card ft-f7993787), agent half.
 // Reuses drivePreserved, windowed and bigOutput from this package's tests.
-
-// advBreak skips a test that demonstrates a confirmed break. Setting
-// ADV_W11_BREAKS=1 runs it so the failure can be reproduced.
-func advBreak(t *testing.T, msg string) {
-	t.Helper()
-	if os.Getenv("ADV_W11_BREAKS") != "" {
-		return
-	}
-	t.Skip(msg)
-}
 
 // advNamed is a provider that only has a name, for the predicate.
 type advNamed struct {
@@ -146,13 +137,13 @@ func TestAdvW11ThinkingOnlyTurnBehindEditReachesTheWireNonEmpty(t *testing.T) {
 	}
 }
 
-// A ChatOnly run offers no tools, so the adapter attaches no context_management
-// (it only does so when tools are offered), and Loop.compact has stood down for
-// Anthropic. A resumed conversation with a long tool history is then shrunk by
-// no one. Either the loop must still compact, or the request must still carry
-// the edit.
-func TestAdvW11ChatOnlyAnthropicHistoryIsShrunkBySomeone(t *testing.T) {
-	advBreak(t, "BREAK: ChatOnly + Anthropic: Loop.compact returns early (ServerSideEditing) and anthropic buildRequest sends context_management only when len(req.Tools) > 0, so a ChatOnly session over a tool-heavy log never shrinks (before the lane, client compaction handled it). Severity medium-low; inferred, no live run.")
+// A ChatOnly run offers no tools, so the server has no tool set for its
+// clearing to act on and the adapter sends no context_management (that
+// combination is not documented). Anthropic's own stand-down therefore does not
+// apply to such a request: the loop compacts client-side, at a turn boundary,
+// and the strip removes the signed reasoning the edit invalidated.
+func chatOnlyOverToolHistory(t *testing.T, endWithUserText bool) (*Loop, *session.Log, []llm.Message) {
+	t.Helper()
 	b := bus.New()
 	log := session.NewLog()
 	reg := tools.NewRegistry(b)
@@ -179,14 +170,94 @@ func TestAdvW11ChatOnlyAnthropicHistoryIsShrunkBySomeone(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if endWithUserText {
+		if _, err := log.Append(session.UserMessage, session.MessageData{Message: llm.Message{
+			Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "now just chat"}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	msgs, err := log.DeriveMessages()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return loop, log, msgs
+}
+
+func TestAdvW11ChatOnlyAnthropicHistoryIsShrunkAtATurnBoundary(t *testing.T) {
+	loop, log, msgs := chatOnlyOverToolHistory(t, true)
+	if len(loop.schemas()) != 0 {
+		t.Fatalf("a ChatOnly loop offers %d tools", len(loop.schemas()))
+	}
 	if _, err := loop.compact(msgs); err != nil {
 		t.Fatal(err)
 	}
-	if compactionEvents(log) == 0 && len(loop.schemas()) == 0 {
-		t.Fatal("history is far over the window; no client-side compaction and no tools to hang a server-side edit on")
+	if compactionEvents(log) == 0 {
+		t.Fatal("history is far over the window with no tools to hang a server-side edit on, and the loop compacted nothing")
+	}
+}
+
+// The same history, ending in a tool result, is mid tool round: the edit waits
+// for the turn boundary, because the assistant turn whose tool_use was just
+// answered must go back with its reasoning intact.
+func TestAdvW11ChatOnlyAnthropicEditWaitsForTheTurnBoundary(t *testing.T) {
+	loop, log, msgs := chatOnlyOverToolHistory(t, false)
+	if AtTurnBoundary(msgs) {
+		t.Fatal("a history ending in a tool result was called a turn boundary")
+	}
+	if _, err := loop.compact(msgs); err != nil {
+		t.Fatal(err)
+	}
+	if n := compactionEvents(log); n != 0 {
+		t.Fatalf("%d tool results were edited between a tool_use and its tool_result", n)
+	}
+}
+
+// And the edit is followed by the strip on the wire: a ChatOnly run over
+// signed reasoning behind its own compaction sends none from the edit onward.
+func TestAdvW11ChatOnlyAnthropicCompactionIsFollowedByTheStripOnTheWire(t *testing.T) {
+	seed := func(log *session.Log) {
+		t.Helper()
+		appendMsg := func(typ session.Type, msg llm.Message) {
+			if _, err := log.Append(typ, session.MessageData{Message: msg}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := log.Append(session.TurnStart, nil); err != nil {
+			t.Fatal(err)
+		}
+		appendMsg(session.UserMessage, llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "first"}}})
+		for n := 0; n < 8; n++ {
+			id := llm.CallID(fmt.Sprintf("toolu_%d", n))
+			appendMsg(session.AssistantMessage, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				llm.ReasoningBlock{Text: "plan", Signature: fmt.Sprintf("sig-%d", n)},
+				llm.ToolCallBlock{ID: id, Name: "echo", Arguments: json.RawMessage(`{"v":1}`)},
+			}})
+			if _, err := log.Append(session.ToolResult, session.ToolResultData{ToolCallID: id, Text: bigOutput(260, "r")}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		appendMsg(session.AssistantMessage, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+			llm.ReasoningBlock{Text: "done", Signature: "sig-last"},
+			llm.TextBlock{Text: "that is everything"},
+		}})
+	}
+	run := drivePreservedWith(t, true, 8192, "", []string{thinkingAnswer("sig-new")}, "ok", seed, "now just chat")
+	if run.err != nil {
+		t.Fatalf("turn failed: %v", run.err)
+	}
+	if compactionEvents(run.log) == 0 {
+		t.Fatal("nothing was compacted; the fixture no longer overflows its window")
+	}
+	body := string(run.raw[0])
+	if strings.Contains(body, "context_management") {
+		t.Error("a request with no tools carried context_management")
+	}
+	// Every signed block that survives sits before the first edited result, and
+	// nothing signed follows a removed block: the last turns' reasoning is gone
+	// even though it was recorded after the edit was planned.
+	for _, b := range signedBlocks(t, run.requests[0]) {
+		if b.signature == "sig-last" || b.signature == "sig-7" {
+			t.Errorf("%s follows an edited result and was replayed", b.signature)
+		}
 	}
 }

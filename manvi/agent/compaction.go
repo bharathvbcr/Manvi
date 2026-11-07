@@ -63,17 +63,92 @@ import (
 //	summarisation   Manvi has none; threshold compaction (compact_20260112) is a
 //	    different feature that the docs say not to combine with this one.
 //
-// A client-side edit that is still present on such a conversation (a log
-// written before this change replays its ToolResultCompacted records) is made
-// safe by stripping, not by avoiding it: session.Log.StripStaleReasoning removes
-// only the thinking and redacted_thinking blocks that sit behind the edit and
-// were recorded before it. No edit is ever made between a tool_use and its
-// tool_result, because none is made at all.
+// A client-side edit that is still present on such a conversation is made safe
+// by stripping, not by avoiding it: session.Log.StripStaleReasoning removes
+// every thinking and redacted_thinking block from the first edited position
+// onward (a leading run is the only removal that keeps later blocks valid), and
+// keeps the blocks before it. Two cases remain.
+//
+// A log written before this change replays its ToolResultCompacted records.
+//
+// And a request that offers no tools (a ChatOnly run) has nothing for the
+// server's clear_tool_uses strategy to act on, and the adapter does not send
+// context_management without tools, because that combination is not documented.
+// So ServerSideClearing is false for that request, the planner below runs, and
+// its edit is followed by the strip. That edit lands only at a turn boundary,
+// never while the last message is a tool result (see AtTurnBoundary): the turn
+// in progress must go back with its reasoning intact.
 //
 // Providers that do not bind thinking (OpenAI-compatible, Gemini, local) keep
 // everything below unchanged.
 func ServerSideEditing(p llm.Provider) bool {
 	return p != nil && llm.BindsThinkingToHistory(p.Name())
+}
+
+// ServerSideClearing reports whether the server will clear tool results for the
+// request that offers tools: the provider edits server-side, and there is a tool
+// set for the strategy to apply to.
+func ServerSideClearing(p llm.Provider, tools []llm.ToolSchema) bool {
+	return ServerSideEditing(p) && len(tools) > 0
+}
+
+// AtTurnBoundary reports whether history ends where a client-side edit may
+// land: it does not end in tool results. A history whose last message carries a
+// tool result is mid tool round, with an assistant turn whose tool_use has just
+// been answered and whose signed reasoning must go back untouched.
+func AtTurnBoundary(messages []llm.Message) bool {
+	if len(messages) == 0 {
+		return true
+	}
+	for _, b := range messages[len(messages)-1].Content {
+		if _, ok := b.(llm.ToolResultBlock); ok {
+			return false
+		}
+	}
+	return true
+}
+
+// serverKeepToolUses is how many of the most recent tool uses the server keeps
+// when it clears, which llm/anthropic.ContextEditsFor asks for. A test holds the
+// two together.
+const serverKeepToolUses = 3
+
+// clearedPlaceholder stands for the text the server puts in a cleared result.
+// Its exact wording is not documented; a short one is the honest estimate.
+const clearedPlaceholder = "[tool result cleared]"
+
+// EstimateAfterServerClearing estimates the request once the server has cleared
+// every tool result but the most recent serverKeepToolUses, which is the most
+// clearing can do. What is left is what only a smaller history or a bigger
+// window can fix.
+func EstimateAfterServerClearing(systemPrompt string, tools []llm.ToolSchema, messages []llm.Message) int {
+	results := 0
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if _, ok := b.(llm.ToolResultBlock); ok {
+				results++
+			}
+		}
+	}
+	clear := results - serverKeepToolUses
+	out := make([]llm.Message, len(messages))
+	for i, m := range messages {
+		out[i] = m
+		if clear <= 0 {
+			continue
+		}
+		content := make([]llm.ContentBlock, len(m.Content))
+		for j, b := range m.Content {
+			content[j] = b
+			if tr, ok := b.(llm.ToolResultBlock); ok && clear > 0 {
+				clear--
+				tr.Content = []llm.ContentBlock{llm.TextBlock{Text: clearedPlaceholder}}
+				content[j] = tr
+			}
+		}
+		out[i].Content = content
+	}
+	return CountRequestTokens(systemPrompt, tools, out)
 }
 
 const (
