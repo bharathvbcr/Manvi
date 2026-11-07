@@ -71,11 +71,15 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 		}
 	}
 
-	// The last check before the shell: whatever the policy decided, a command
-	// that would commit is held to the commit tool's secret scan, because the
-	// content scan is not a repository hook the owner's policy waives.
-	if refused := r.shellCommitRefusal(ctx, args.Command); refused != nil {
-		return *refused
+	// The refs as they stand before the shell runs; see refguard.go. A command
+	// string cannot be read well enough to say what it will commit, so the check
+	// is on the refs it leaves behind. Where the refs cannot be recorded in a
+	// repository, nothing runs: an unrecorded start is a check that cannot run.
+	snapCtx, snapCancel := context.WithTimeout(ctx, guardTimeout)
+	before, err := r.snapshotRefs(snapCtx)
+	snapCancel()
+	if err != nil {
+		return unavailable("the ref snapshot taken before the command", err)
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -85,6 +89,16 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	outText, exitCode, timedOut, runErr := runShell(cmdCtx, r.deps.Root, args.Command)
 	elapsed := time.Since(start)
 
+	res := r.commandResult(args.Command, decision, outText, exitCode, timedOut, runErr, elapsed)
+	// After the command however it ended, including a timeout or a failure.
+	if violation := r.verifyRefs(ctx, before, args.Command); violation != nil {
+		return violation.withViolation(res)
+	}
+	return res
+}
+
+// commandResult is what the model is told about a command that ran.
+func (r *Registry) commandResult(command string, decision policy.Decision, outText string, exitCode int, timedOut bool, runErr error, elapsed time.Duration) tools.Result {
 	if timedOut {
 		return annotate(tools.Result{
 			Text:    "command timed out after 5m:\n" + outText,
@@ -93,7 +107,7 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	}
 	if runErr != nil {
 		return annotate(tools.Result{
-			Text:    fmt.Sprintf("failed to execute command %q: %v", args.Command, runErr),
+			Text:    fmt.Sprintf("failed to execute command %q: %v", command, runErr),
 			IsError: true,
 		}, decision)
 	}

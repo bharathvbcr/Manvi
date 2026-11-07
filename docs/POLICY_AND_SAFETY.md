@@ -233,11 +233,18 @@ Command policy normalization is pinned across 256 test vectors in `testdata/comm
 - Detects refspec force pushes (e.g. `git push origin +main:main`).
 - Intercepts `--no-gpg-sign` on git commit and push (`--no-verify` is allowed).
 
-### Shell `git commit` and the content scan
+### Shell commits and the post-exec ref guard
 
-The command policy allows `git commit` in the shell (hooks and `--no-verify` included), but Manvi's staged-content secret scan is not a hook: `devcouncil_exec_command` runs the same scan as `devcouncil_git_commit` on the index before a shell commit, under every posture. A shell commit is vouched for only as a single `git commit` with nothing else on the command line and no option, `GIT_*` variable or global git option that changes what is committed; `-a`, pathspecs, `--include`/`--only`, `git add && git commit` chains, `GIT_INDEX_FILE`, `-C`/`--git-dir`/`--work-tree` and unrecognised options are refused with a pointer to the commit tool. `sh -c`, `env`, `xargs` and git aliases are unwrapped and judged the same way.
+The command policy allows `git commit` in the shell (hooks and `--no-verify` included), and a command string is not a boundary the harness can read: sh builds words at run time (`git${IFS}commit`, `{git,commit}`, `xargs git`, `| sh`), and a renamed git, an interpreter, `make`, a script, a pre-commit hook or `commit-tree` + `update-ref` can commit without the line saying so. Manvi's staged-content secret scan is not a hook, so it is not waived. `devcouncil_exec_command` therefore checks the outcome rather than the command (`manvi/devcouncil/refguard.go`):
 
-Not covered (and not denied): `am`, `cherry-pick`, `rebase`, `revert`, `merge`, `commit-tree`, `pull` (merge commits), `stash`, scripts and interpreters that commit on their own, and hooks that rewrite the index. Their content is not in the index before they run.
+1. Before the shell runs, every ref (including `refs/stash`, and a detached `HEAD`) is recorded. If the refs cannot be recorded in a repository, the command is not run. A directory that is not a git repository is not guarded.
+2. After it returns, however it ended, each ref that changed or appeared is read and the commits newly reachable from it and from no recorded oid are listed (more than 200 is reported as a violation, never scanned in part).
+3. Each new commit is judged against its parent(s) by `treeContentLeaks`, the same content scanner the commit tool uses on the tree it is about to commit, plus the secret-path names. A merge is blamed only for what leaks against every parent.
+4. **Rollback (owner may veto this):** only a ref whose new commits leak is restored, with `git update-ref <ref> <old> <current>` (a ref that did not exist is deleted with `update-ref -d <ref> <current>`), so a ref moved meanwhile is not clobbered. The result is a hard `secret.path` violation naming the ref, the commit and the files, never the value. The index and working tree are untouched. If the snapshot, scan or restore fails, the result is a violation that says MANUAL INTERVENTION NEEDED with the exact ref and oid state; it is never a pass.
+
+The commit tool keeps its pre-commit scan and refuses before committing.
+
+Residuals: commit and push in one command line (the objects have left before the check; the guard names the remote when a remote-tracking ref moved onto the leak and says so when the command mentions push, but cannot recall it; plain `git push` is allowed by the command policy, only force pushes are denied); dangling objects and the reflog hold the secret until git expires them; repositories other than the one at the registry root (a fresh `git init` or clone elsewhere; linked worktrees share refs and are covered); objects written but never referenced; and the secret set is read after the command. A `git stash` whose contents leak is rolled back like any other ref (the stash commit id is in the report for recovery).
 
 ---
 

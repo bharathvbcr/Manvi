@@ -7,12 +7,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 )
 
-// Adversarial attacks on the shell `git commit` secret scan (shellcommit.go).
-// A LEAK means the shell ended with HEAD moved and notes.txt (the staged copy
-// of the .env value) inside the new HEAD. Subtests that pass are attacks that
-// held; a failing subtest is a finding.
+// Adversarial attacks on the shell's secret scan. Under the post-exec ref guard
+// (refguard.go) a command's spelling does not matter: a LEAK means the shell
+// ended with HEAD moved and notes.txt (the staged copy of the .env value)
+// inside the new HEAD, i.e. a leaking commit left reachable. Subtests that pass
+// are attacks the guard undid; a failing subtest is a finding.
 
 // realGit is the git binary behind the macOS /usr/bin/git shim, which refuses
 // to run under another name.
@@ -269,8 +272,8 @@ func TestZAdvFalseRefusals(t *testing.T) {
 			before := headOf(t, f.root)
 			res := shell(f, c.cmd)
 			t.Logf("cmd %q -> error=%v: %.300s", c.cmd, res.IsError, res.Text)
-			if strings.Contains(res.Text, "staged-content secret check cannot vouch") {
-				t.Errorf("FALSE REFUSAL by the scan (clean index): %q -> %.300s", c.cmd, res.Text)
+			if res.Rule == string(policy.RuleSecretPath) {
+				t.Errorf("FALSE VIOLATION on a clean index: %q -> %.300s", c.cmd, res.Text)
 			} else if after := headOf(t, f.root); after == before {
 				t.Logf("not committed, but not by the scan (policy or git): %q", c.cmd)
 			}
@@ -393,46 +396,4 @@ func TestZAdvRobustness(t *testing.T) {
 			t.Errorf("LEAK through an included config alias")
 		}
 	})
-}
-
-// The scan's own verdict, with no policy in front of it: policy refuses some
-// of these shapes in dev posture and not in others, so the scan must stand on
-// its own. vouched means the scan would let the command run unscanned (no
-// commit found, no refusal reason): a command that really commits and is
-// vouched for is a bypass.
-func TestZAdvScanVerdictWithoutPolicy(t *testing.T) {
-	noAliases := func() (map[string]string, error) { return map[string]string{}, nil }
-	verdict := func(command string) (vouchedNothing, refused bool) {
-		s := &shellCommitScan{raw: command, aliases: noAliases}
-		s.inspect(command, 0)
-		multi := s.commits > 1 || (s.commits > 0 && s.others > 0)
-		return s.commits == 0 && len(s.reasons) == 0, len(s.reasons) > 0 || multi
-	}
-	mustFlag := []string{
-		"git \\\ncommit -m x", "git comm\\\nit -m x", "g\\\nit commit -m x", "git\\\n commit -m x",
-		`git $'commit' -m x`, `git ${X:-commit} -m x`, `git "$(echo commit)" -m x`, `git commit${IFS}-m${IFS}x`,
-		`{git,commit} -m x`, `/usr/bin/gi? commit -m x`, `env -S "git commit -m x"`, `sh -c 'git "$@"' _ commit -m x`,
-		`echo commit -m x | xargs git`, `echo 'git commit -m x' | xargs -I{} sh -c '{}'`,
-		`echo 'git com''mit -m x' | sh`, `"$(git --exec-path)/git-commit" -m x`,
-	}
-	for _, c := range mustFlag {
-		t.Run("flag/"+c, func(t *testing.T) {
-			if v, _ := verdict(c); v {
-				t.Errorf("scan vouches for (finds no commit, no reason) a command sh runs as a commit: %q", c)
-			}
-		})
-	}
-	mustAllow := []string{
-		`git commit -m "fix: handle a && b"`, "git commit -m 'a\n\nb'", `git commit -m x # message`,
-		"git commit -F - <<'EOF'\nsubject\nEOF", "git commit -m \"$(cat <<'EOF'\nsubject\nEOF\n)\"",
-		`git commit -m "$(cat msg.txt)"`, "git add app.js && git commit -m x", "git commit -m x 2>&1 | tail -3",
-		"git commit -m x && git log --oneline -1", "# note\ngit commit -m x", "git log --oneline | grep commit",
-	}
-	for _, c := range mustAllow {
-		t.Run("allow/"+c, func(t *testing.T) {
-			if _, r := verdict(c); r {
-				t.Errorf("a clean commit shape is refused by the scan: %q", c)
-			}
-		})
-	}
 }

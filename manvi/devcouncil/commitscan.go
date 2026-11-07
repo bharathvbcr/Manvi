@@ -514,8 +514,8 @@ func (e stagedEntry) content() bool {
 // prints "-\t-" for them, a verdict that already folds in gitattributes
 // (`binary`, `-diff`) and diff.<driver>.binary — which is why this is asked of
 // git and not guessed from the bytes.
-func (r *Registry) stagedBinaries(ctx context.Context) (map[string]bool, error) {
-	out, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--numstat", "-z", "--no-renames", "--no-textconv", "--no-ext-diff")
+func (r *Registry) stagedBinaries(ctx context.Context, base, tree string) (map[string]bool, error) {
+	out, err := runGit(ctx, r.deps.Root, "diff", "--numstat", "-z", "--no-renames", "--no-textconv", "--no-ext-diff", base, tree)
 	if err != nil {
 		return nil, fmt.Errorf("classifying the staged files as text or binary: %w", err)
 	}
@@ -535,12 +535,31 @@ func (r *Registry) stagedBinaries(ctx context.Context) (map[string]bool, error) 
 	return binary, nil
 }
 
+// commitBase is what a commit made now would be diffed against: HEAD, or the
+// empty tree before the first commit.
+func (r *Registry) commitBase(ctx context.Context) (string, error) {
+	born, err := headExists(ctx, r.deps.Root)
+	if err != nil {
+		return "", err
+	}
+	if born {
+		return "HEAD", nil
+	}
+	return r.emptyTree(ctx)
+}
+
+// emptyTree is the id of the empty tree in this repository's object format.
+func (r *Registry) emptyTree(ctx context.Context) (string, error) {
+	out, err := runGit(ctx, r.deps.Root, "hash-object", "-t", "tree", "/dev/null")
+	return strings.TrimSpace(out), err
+}
+
 // checkStagedForCommit is every check a commit makes on the index before it is
 // taken: the staged names against the secret patterns, hard links, and the
 // staged content against what secret files and this process hold. It is the one
-// owner of that sequence, shared by the commit tool and by the shell's
-// `git commit` (see shellCommitRefusal), so a commit made either way is judged
-// the same.
+// owner of that sequence before the commit tool commits. A commit made by any
+// other route is judged afterwards by the same content scanner
+// (treeContentLeaks, through the ref guard in refguard.go).
 //
 // A non-nil refusal means nothing may be committed; a check that could not run
 // is a refusal, never a clean pass. Otherwise it returns the tree that was
@@ -577,7 +596,11 @@ func (r *Registry) checkStagedForCommit(ctx context.Context) (refusal *tools.Res
 	// By content, after the names: a credential copied to an innocent name
 	// matches nothing above. A check that could not run refuses; it is never
 	// reported as a clean pass.
-	contentLeaks, scanNotes, err := r.stagedContentLeaks(ctx)
+	base, err := r.commitBase(ctx)
+	if err != nil {
+		return refuse(unavailable("HEAD", err))
+	}
+	contentLeaks, scanNotes, err := r.treeContentLeaks(ctx, base, checkedTree)
 	if err != nil {
 		return refuse(unavailable("staged-content secret check", err))
 	}
@@ -592,15 +615,25 @@ func (r *Registry) checkStagedForCommit(ctx context.Context) (refusal *tools.Res
 	return nil, checkedTree, scanNotes
 }
 
-// stagedContentLeaks judges what is staged by its content. A nil result with a
+// treeContentLeaks judges what a tree adds over base by its content. It is the
+// one content scanner: the commit tool calls it with the tree it is about to
+// commit and HEAD, and the post-exec ref guard (refguard.go) calls it with each
+// newly reachable commit and its parent, so a commit made by any route is
+// judged by the same code. base and tree are tree-ishes. A nil result with a
 // nil error means the check ran and found nothing; the notes it returns are
 // degradations that did not change that answer (see below), for the caller to
 // report.
-func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []scanNote, error) {
+func (r *Registry) treeContentLeaks(ctx context.Context, base, tree string) ([]stagedLeak, []scanNote, error) {
 	set, err := r.collectSecretFiles(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
+	return r.treeContentLeaksWith(ctx, set, base, tree)
+}
+
+// treeContentLeaksWith is treeContentLeaks against a secret set the caller
+// already collected, for a caller judging many trees against one set.
+func (r *Registry) treeContentLeaksWith(ctx context.Context, set secretFileSet, base, tree string) ([]stagedLeak, []scanNote, error) {
 
 	leaks := map[string]map[string]bool{}
 	note := func(path, reason string) {
@@ -611,7 +644,7 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []scan
 	}
 	notes := set.notes
 
-	raw, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev")
+	raw, err := runGit(ctx, r.deps.Root, "diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, tree)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the staged blobs: %w", err)
 	}
@@ -629,7 +662,7 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []scan
 		staged = append(staged, stagedEntry{path: fields[i+1], mode: meta[1], id: meta[3], status: meta[4]})
 	}
 
-	binary, err := r.stagedBinaries(ctx)
+	binary, err := r.stagedBinaries(ctx, base, tree)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -642,8 +675,8 @@ func (r *Registry) stagedContentLeaks(ctx context.Context) ([]stagedLeak, []scan
 	// lines, and a patch of that size is refused by the capture cap, which
 	// turned deleting or renaming a large binary into a refused commit. A text
 	// blob's added lines are here; a binary is read from the object store below.
-	patch, capNote, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, "diff", "--cached", "--no-renames",
-		"--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0")
+	patch, capNote, err := runGitCapped(ctx, r.deps.Root, maxGitCaptureBytes, "diff", "--no-renames",
+		"--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", base, tree)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the staged patch: %w", err)
 	}
