@@ -385,3 +385,31 @@ func TestUpdateCheckerUsesTheDocumentedOverride(t *testing.T) {
 		t.Errorf("blank override gave %q", c.baseURL)
 	}
 }
+
+func TestUpdateCheckFollowsARedirectWithinTheSameHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/moved" {
+			http.Redirect(w, r, "/moved", http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"tag_name":"v2.0.0"}]`)
+	}))
+	defer srv.Close()
+	rep, err := checkerAt(srv, false).check(context.Background(), stamped("v1.0.0"))
+	if err != nil || rep.Latest != "v2.0.0" {
+		t.Fatalf("same-host redirect not followed: %+v %v", rep, err)
+	}
+}
+
+func TestSameSiteRedirectsRefusesADowngrade(t *testing.T) {
+	first, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example/x", nil)
+	down, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example/x", nil)
+	if err := sameSiteRedirects(down, []*http.Request{first}); err == nil {
+		t.Error("https -> http was followed")
+	}
+	up, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example/y", nil)
+	plain, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example/x", nil)
+	if err := sameSiteRedirects(up, []*http.Request{plain}); err != nil {
+		t.Errorf("http -> https refused: %v", err)
+	}
+}

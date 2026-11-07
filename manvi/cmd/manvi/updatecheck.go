@@ -136,15 +136,19 @@ func (c updateChecker) check(ctx context.Context, id buildIdentity) (updateRepor
 		return rep, fmt.Errorf("%w: %s", errUpdateCheckFailed, rep.Error)
 	}
 
-	endpoint, err := c.releasesURL()
+	target, err := c.releasesURL()
 	if err != nil {
 		return fail("%v", err)
 	}
+	// Everything printed or serialised names the endpoint through Redacted, so
+	// credentials an operator put in the override URL never reach a CI log. The
+	// request itself still carries the operator's own URL.
+	endpoint := target.Redacted()
 	rep.Source = endpoint
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return fail("building the request: %v", err)
 	}
@@ -152,7 +156,11 @@ func (c updateChecker) check(ctx context.Context, id buildIdentity) (updateRepor
 	req.Header.Set("User-Agent", "manvi/"+id.Version)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.client.Do(req)
+	// The redirect policy is set here rather than trusted to whoever built the
+	// client, so no caller can end up with the permissive default.
+	client := *c.client
+	client.CheckRedirect = sameSiteRedirects
+	resp, err := client.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
 			return fail("no answer from %s within %s", endpoint, c.timeout)
@@ -206,16 +214,52 @@ func (c updateChecker) check(ctx context.Context, id buildIdentity) (updateRepor
 
 // releasesURL joins the configured root with this project's release list,
 // refusing anything that is not an http(s) URL with a host.
-func (c updateChecker) releasesURL() (string, error) {
+func (c updateChecker) releasesURL() (*url.URL, error) {
 	u, err := url.Parse(c.baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("%s is not an http(s) URL: %q", updateAPIEnv, sanitizeLine(c.baseURL))
+	if err != nil {
+		// The text is not echoed: a malformed value may still hold credentials.
+		return nil, fmt.Errorf("%s is not a valid URL", updateAPIEnv)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("%s is not an http(s) URL: %q", updateAPIEnv, sanitizeLine(u.Redacted()))
 	}
 	u = u.JoinPath("repos", releaseRepo, "releases")
 	q := u.Query()
 	q.Set("per_page", strconv.Itoa(updatePageSize))
 	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return u, nil
+}
+
+// sameSiteRedirects follows a redirect only within the host the request was
+// sent to, and never from https to http, so a response cannot move the request
+// (and its User-Agent) to a host the operator never named. The hop limit is
+// the standard library's own default of 10.
+func sameSiteRedirects(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	first := via[0].URL
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing a redirect to the %q scheme", sanitizeLine(req.URL.Scheme))
+	}
+	if req.URL.Host != first.Host {
+		return fmt.Errorf("refusing a redirect to another host (%s)", sanitizeLine(req.URL.Hostname()))
+	}
+	if first.Scheme == "https" && req.URL.Scheme != "https" {
+		return errors.New("refusing a redirect from https to http")
+	}
+	return nil
+}
+
+// linkHosts are the hosts a release page may be on: GitHub itself, and for an
+// override the site that goes with the configured API host (api.example ->
+// example).
+func (c updateChecker) linkHosts() []string {
+	hosts := []string{"github.com"}
+	if u, err := url.Parse(c.baseURL); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, strings.TrimPrefix(strings.ToLower(u.Hostname()), "api."))
+	}
+	return hosts
 }
 
 // newest picks the highest-versioned release the user is entitled to hear
@@ -248,7 +292,7 @@ func (c updateChecker) newest(releases []releaseEntry) (tag, link string, ver se
 		if !found || semverCompare(v, ver) > 0 {
 			r.TagName = name
 			tag, ver, found = name, v, true
-			link = releasePage(r)
+			link = c.releasePage(r)
 		}
 	}
 	if !found {
@@ -257,15 +301,28 @@ func (c updateChecker) newest(releases []releaseEntry) (tag, link string, ver se
 	return tag, link, ver, skipped, nil
 }
 
-// releasePage is the page the user is sent to. The API's own link is used
-// when it is a plain http(s) URL; anything else is replaced, because the
-// value is printed to a terminal and comes from a server the operator may have
-// pointed anywhere.
-func releasePage(r releaseEntry) string {
-	if u, err := url.Parse(r.HTMLURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && sanitizeLine(r.HTMLURL) == r.HTMLURL {
-		return r.HTMLURL
+// releasePage is the page the user is sent to. The API's own link is used only
+// when it is https, on a host from linkHosts, with no userinfo and no explicit
+// port, and carries no control or format characters; and what is printed is the
+// parsed URL, not the feed's string. Anything else is replaced by the tag URL
+// on GitHub, because the value goes to a terminal and comes from a server the
+// operator may have pointed anywhere.
+func (c updateChecker) releasePage(r releaseEntry) string {
+	fallback := "https://github.com/" + releaseRepo + "/releases/tag/" + url.PathEscape(r.TagName)
+	u, err := url.Parse(r.HTMLURL)
+	if err != nil || sanitizeLine(r.HTMLURL) != r.HTMLURL {
+		return fallback
 	}
-	return "https://github.com/" + releaseRepo + "/releases/tag/" + url.PathEscape(r.TagName)
+	if u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Opaque != "" {
+		return fallback
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, h := range c.linkHosts() {
+		if host == h {
+			return u.String()
+		}
+	}
+	return fallback
 }
 
 func isTimeout(err error) bool {
@@ -273,11 +330,13 @@ func isTimeout(err error) bool {
 	return errors.As(err, &t) && t.Timeout()
 }
 
-// sanitizeLine drops control characters so a value from the network or the
-// environment cannot rewrite the terminal.
+// sanitizeLine drops control characters (Cc), format characters (Cf: bidi
+// overrides and isolates, zero-width marks) and line and paragraph separators
+// (Zl, Zp), so a value from the network or the environment can neither rewrite
+// the terminal nor reorder what is printed around it.
 func sanitizeLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return -1
 		}
 		return r

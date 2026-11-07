@@ -59,7 +59,10 @@ func TestAdvBodyCapBoundary(t *testing.T) {
 func TestAdvChunkedEndlessBodyIsCappedWhileReading(t *testing.T) {
 	var written atomic.Int64
 	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) {
-		fl := w.(http.Flusher)
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
 		chunk := bytes.Repeat([]byte(" "), 64<<10)
 		for i := 0; i < 4096; i++ { // up to 256 MiB, no Content-Length
 			n, err := w.Write(chunk)
@@ -127,7 +130,10 @@ func TestAdvProductionTimeoutsAreTenSeconds(t *testing.T) {
 
 func TestAdvSlowDripBodyCannotHang(t *testing.T) {
 	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) {
-		fl := w.(http.Flusher)
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
 		_, _ = io.WriteString(w, "[")
 		for i := 0; i < 100; i++ {
 			if _, err := io.WriteString(w, " "); err != nil {
@@ -181,8 +187,8 @@ func TestAdvRedirectToFileSchemeFails(t *testing.T) {
 func TestAdvRedirectLoopTerminatesAsFailure(t *testing.T) {
 	var hits atomic.Int32
 	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		http.Redirect(w, r, r.URL.Path+"x", http.StatusFound)
+		n := hits.Add(1)
+		http.Redirect(w, r, fmt.Sprintf("/hop/%d", n), http.StatusFound)
 	})
 	rep, err := advCheckAt(srv).check(context.Background(), stamped("v1.0.0"))
 	if !errors.Is(err, errUpdateCheckFailed) || rep.Status != updateFailed {
@@ -194,9 +200,6 @@ func TestAdvRedirectLoopTerminatesAsFailure(t *testing.T) {
 }
 
 func TestAdvRedirectToAnotherHostIsNotFollowed(t *testing.T) {
-	t.Skip("BREAK (low): the default redirect policy follows up to 10 redirects to ANY host (and https->http), " +
-		"so a mirror/MITM-less 302 sends the request, including the User-Agent, to a host the operator never named, " +
-		"and the report's source still names the original endpoint. Repro: run this test with the Skip removed.")
 	var otherHits atomic.Int32
 	other := advSrv(t, func(w http.ResponseWriter, r *http.Request) {
 		otherHits.Add(1)
@@ -275,9 +278,6 @@ func TestAdvFlagsAsStringsOrNullEntriesAreFailuresNotUpToDate(t *testing.T) {
 	} {
 		srv, _ := fakeReleases(t, 200, body)
 		rep, err := advCheckAt(srv).check(context.Background(), stamped("v1.0.0"))
-		if body == `[{"tag_name":"v9.0.0"}] trailing` {
-			// json.Unmarshal rejects trailing data.
-		}
 		if !errors.Is(err, errUpdateCheckFailed) || rep.Status == updateUpToDate {
 			t.Errorf("body %q: %+v %v", body, rep, err)
 		}
@@ -285,11 +285,6 @@ func TestAdvFlagsAsStringsOrNullEntriesAreFailuresNotUpToDate(t *testing.T) {
 }
 
 func TestAdvReleaseLinkHostIsConstrained(t *testing.T) {
-	t.Skip("BREAK (low/medium, misleading output): releasePage accepts any http(s) html_url from the feed, so " +
-		"html_url=\"https://github.com@evil.example/x\" or \"http://evil.example/\" is printed under 'release' as the " +
-		"place to fetch the update from. Repro: serve [{\"tag_name\":\"v9.0.0\",\"html_url\":\"https://github.com@evil.example/\"}] " +
-		"and run `MANVI_UPDATE_API_URL=<srv> manvi version --check` with a stamped build. Fix: require the link's host to equal " +
-		"github.com (or the configured API host's site) and reject userinfo, else fall back to the constructed tag URL.")
 	for _, link := range []string{"https://github.com@evil.example/x", "http://evil.example/", "https://evil.example:8443/x", "https://user:pw@github.com/x"} {
 		list := releasesJSON(t, releaseEntry{TagName: "v9.0.0", HTMLURL: link})
 		srv, _ := fakeReleases(t, 200, list)
@@ -312,11 +307,6 @@ func TestAdvReleaseLinkRejectsNonHTTPAndControls(t *testing.T) {
 }
 
 func TestAdvReleaseLinkCarriesNoBidiOrFormatCharacters(t *testing.T) {
-	t.Skip("BREAK (low/medium, terminal spoofing): sanitizeLine strips only unicode.IsControl (Cc). Format characters " +
-		"(Cf: U+202E RLO, U+2066-2069 isolates, U+200B, U+FEFF) pass, and releasePage returns html_url RAW, so " +
-		"html_url=\"https://github.com/bharathvbcr/Manvi/releases/tag/v9.0.0\u202e...\" is printed with the right-to-left " +
-		"override active. Same gap in the Retry-After hint. Fix: also drop unicode.Is(unicode.Cf, r) (and Zl/Zp), or " +
-		"print u.String() (percent-escaped) instead of the raw feed string.")
 	for _, ch := range []string{"\u202e", "\u2066", "\u200b", "\ufeff", "\u2028"} {
 		link := "https://github.com/bharathvbcr/Manvi/releases/tag/v9.0.0" + ch + "gpj.exe"
 		list := releasesJSON(t, releaseEntry{TagName: "v9.0.0", HTMLURL: link})
@@ -346,7 +336,7 @@ func TestAdvNameAndBodyFieldsAreNeverPrinted(t *testing.T) {
 func TestAdvRetryAfterHintHasNoControls(t *testing.T) {
 	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30\x1b[2Jx")
-		w.WriteHeader(429)
+		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	rep, err := advCheckAt(srv).check(context.Background(), stamped("v1.0.0"))
 	if !errors.Is(err, errUpdateCheckFailed) || strings.ContainsRune(rep.Error, 0x1b) {
@@ -420,7 +410,7 @@ func TestAdvExitCodesNeverZeroOnFailure(t *testing.T) {
 }
 
 func TestAdvJSONFailureStillSetsStatusAndReportsIt(t *testing.T) {
-	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) })
+	srv := advSrv(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	code, out, _ := advExit(t, "v1.0.0", srv.URL, "version", "--check", "--json")
 	var got struct {
 		Update *updateReport `json:"update_check"`
@@ -438,11 +428,6 @@ func TestAdvJSONFailureStillSetsStatusAndReportsIt(t *testing.T) {
 }
 
 func TestAdvCredentialsInOverrideURLAreNotEchoed(t *testing.T) {
-	t.Skip("BREAK (low, operator-scope): MANVI_UPDATE_API_URL userinfo (http://user:secret@host) is echoed verbatim in " +
-		"the endpoint inside failure messages on stderr/stdout and in update_check.source/error in --json. The operator " +
-		"supplied it, but this output is routinely captured in CI logs. Repro: MANVI_UPDATE_API_URL=http://u:s3cret@127.0.0.1:1 " +
-		"manvi version --check (stamped build) -> 'could not reach http://u:s3cret@127.0.0.1:1/repos/...'. Fix: redact " +
-		"u.User with u.Redacted() when building endpoint strings for messages.")
 	code, out, errb := advExit(t, "v1.0.0", "http://u:s3cret@127.0.0.1:1", "version", "--check", "--json")
 	if code != 8 || strings.Contains(out+errb, "s3cret") {
 		t.Errorf("exit %d, secret echoed: %q %q", code, out, errb)
@@ -514,12 +499,13 @@ func TestAdvUpdateCheckIsReachableOnlyFromTheVersionDispatch(t *testing.T) {
 		if info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		b, rerr := os.ReadFile(p)
+		b, rerr := os.ReadFile(p) //nolint:gosec // G304,G122: a test reading the module's own source tree, with no untrusted path
 		if rerr != nil {
 			return rerr
 		}
+		inDispatch := filepath.Base(filepath.Dir(p)) == "manvi" && allowed[filepath.Base(p)]
 		for _, n := range needles {
-			if strings.Contains(string(b), n) && !(filepath.Base(filepath.Dir(p)) == "manvi" && allowed[filepath.Base(p)]) {
+			if strings.Contains(string(b), n) && !inDispatch {
 				t.Errorf("%s references %q outside the version dispatch", p, n)
 			}
 		}
