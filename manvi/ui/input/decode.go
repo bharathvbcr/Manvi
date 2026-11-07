@@ -20,16 +20,45 @@ import (
 // out its grace period, the caller passes flush to force a decision.
 func decode(buf []byte, flush bool) (Event, int) { return decodeAt(buf, flush, nil) }
 
-// pasteScan remembers how much of a paste that is still waiting for its closing
-// marker has already been searched.
+// DefaultMaxPasteBytes bounds how much of one open paste the reader holds before
+// it delivers what it has. It is large enough that no paste a person makes into
+// a prompt reaches it (the stream tests push 4 and 8 MB through as one Paste),
+// and small enough that a terminal that opens a paste and never closes it cannot
+// grow the buffer without limit. Reaching it is not an error: the paste is
+// delivered in pieces, see pasteScan.continued.
+const DefaultMaxPasteBytes = 16 << 20
+
+// pasteScan is the state a stream carries about a paste that has not closed.
 //
-// A paste arrives in reads of at most a few kilobytes and is decoded again on
-// each one. Searching the whole buffer every time makes a paste cost the square
-// of its size over the read size; with this the search resumes where the last
-// one stopped, so each byte is searched once. It is valid only for a buffer that
-// has grown at the end since it was recorded, so the caller resets it whenever
-// decode consumes bytes.
-type pasteScan struct{ searched int }
+// searched is how much of a paste still waiting for its closing marker has been
+// searched. A paste arrives in reads of at most a few kilobytes and is decoded
+// again on each one. Searching the whole buffer every time makes a paste cost
+// the square of its size over the read size; with this the search resumes where
+// the last one stopped, so each byte is searched once. It is valid only for a
+// buffer that has grown at the end since it was recorded, so the caller resets
+// it whenever decode consumes bytes.
+//
+// continued means a paste was delivered before its end marker arrived — the
+// reader's paste deadline fired or the byte limit was reached — and the buffer
+// now holds the rest of its body. Everything up to the real end marker is still
+// paste text and is delivered as further Paste events, never as keys: a newline
+// in it must not become Enter, and the marker must not become stray keystrokes.
+// It survives consumption and is cleared only by the end marker.
+//
+// limit is the byte count at which an open paste is delivered; zero means
+// DefaultMaxPasteBytes.
+type pasteScan struct {
+	searched  int
+	continued bool
+	limit     int
+}
+
+func (s *pasteScan) maxBytes() int {
+	if s.limit > 0 {
+		return s.limit
+	}
+	return DefaultMaxPasteBytes
+}
 
 // decodeAt is decode with the scan state of a stream. A nil scan decodes the
 // buffer from scratch, which is what a caller that has no stream wants.
@@ -38,6 +67,9 @@ func decodeAt(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 		return nil, 0
 	}
 
+	if scan != nil && scan.continued {
+		return decodePasteBody(buf, 0, flush, scan)
+	}
 	if buf[0] == 0x1b {
 		return decodeEscape(buf, flush, scan)
 	}
@@ -338,7 +370,19 @@ func decodeSS3(buf []byte, flush bool) (Event, int) {
 
 // decodePaste collects everything up to the closing bracket.
 func decodePaste(buf []byte, flush bool, scan *pasteScan) (Event, int) {
-	rest := buf[len(pasteStart):]
+	return decodePasteBody(buf, len(pasteStart), flush, scan)
+}
+
+// decodePasteBody decodes paste text from buf, whose first prefix bytes are the
+// opening marker (zero when the paste was already delivered in part).
+//
+// An open paste is delivered early only when flush is set or, on a stream, when
+// it has reached the scan's byte limit; either way the scan is left continued so
+// the rest of the body is still paste. A delivered piece never ends inside a
+// UTF-8 character or inside what could be the start of the closing marker: those
+// bytes stay in the buffer to be completed by the next read.
+func decodePasteBody(buf []byte, prefix int, flush bool, scan *pasteScan) (Event, int) {
+	rest := buf[prefix:]
 	// Resume where the last search stopped, backed up far enough that a marker
 	// split across two reads is still found.
 	from := 0
@@ -349,21 +393,62 @@ func decodePaste(buf []byte, flush bool, scan *pasteScan) (Event, int) {
 		pasteSearchHook(len(rest) - from)
 	}
 	idx := bytes.Index(rest[from:], pasteEndBytes)
-	if idx < 0 {
+	if idx >= 0 {
+		idx += from
+		consumed := prefix + idx + len(pasteEnd)
+		if scan != nil {
+			wasContinued := scan.continued
+			scan.continued = false
+			if wasContinued && idx == 0 {
+				// The delivered pieces already carried the whole body.
+				return nil, consumed
+			}
+		}
+		return Paste{Text: sanitizePaste(string(rest[:idx]))}, consumed
+	}
+	if scan == nil {
 		if flush {
 			// The terminal opened a paste and never closed it. Delivering what
 			// arrived is better than discarding it, and better than waiting
 			// forever on a close that is not coming.
 			return Paste{Text: sanitizePaste(string(rest))}, len(buf)
 		}
-		if scan != nil {
-			scan.searched = len(rest)
-		}
 		return nil, 0
 	}
-	idx += from
-	text := string(rest[:idx])
-	return Paste{Text: sanitizePaste(text)}, len(pasteStart) + idx + len(pasteEnd)
+	if !flush && !scan.continued && len(rest) < scan.maxBytes() {
+		scan.searched = len(rest)
+		return nil, 0
+	}
+	// Deliver what is safe to deliver and remember that the paste is still open.
+	keep := pasteTailToKeep(rest)
+	n := len(rest) - keep
+	if n == 0 && scan.continued {
+		return nil, 0
+	}
+	scan.continued = true
+	return Paste{Text: sanitizePaste(string(rest[:n]))}, prefix + n
+}
+
+// pasteTailToKeep reports how many trailing bytes of an unfinished paste body
+// cannot be delivered yet: a partial UTF-8 character, or a prefix of the closing
+// marker. Delivering either would corrupt the text or leak marker bytes.
+func pasteTailToKeep(rest []byte) int {
+	keep := 0
+	for k := min(len(pasteEnd)-1, len(rest)); k > 0; k-- {
+		if bytes.HasPrefix(pasteEndBytes, rest[len(rest)-k:]) {
+			keep = k
+			break
+		}
+	}
+	for k := 1; k <= utf8.UTFMax-1 && k <= len(rest); k++ {
+		if b := rest[len(rest)-k]; utf8.RuneStart(b) {
+			if !utf8.FullRune(rest[len(rest)-k:]) {
+				keep = max(keep, k)
+			}
+			break
+		}
+	}
+	return keep
 }
 
 // sanitizePaste strips control characters from pasted content, keeping the
