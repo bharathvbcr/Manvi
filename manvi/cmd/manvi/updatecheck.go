@@ -69,8 +69,11 @@ type updateReport struct {
 	Current string `json:"current,omitempty"`
 	Latest  string `json:"latest,omitempty"`
 	URL     string `json:"url,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Error   string `json:"error,omitempty"`
+	// SkippedTags counts release tags that are not semantic versions and so
+	// took no part in the comparison; they are skipped, not fatal.
+	SkippedTags int    `json:"skipped_tags,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // updateChecker holds everything the check touches outside the process, so a
@@ -185,7 +188,8 @@ func (c updateChecker) check(ctx context.Context, id buildIdentity) (updateRepor
 		return fail("the response from %s is not a release list: %v", endpoint, err)
 	}
 
-	tag, link, latest, err := c.newest(releases)
+	tag, link, latest, skipped, err := c.newest(releases)
+	rep.SkippedTags = skipped
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -215,35 +219,42 @@ func (c updateChecker) releasesURL() (string, error) {
 }
 
 // newest picks the highest-versioned release the user is entitled to hear
-// about. Drafts are never offered; prereleases only on request. An entry with
-// no tag, or a candidate whose tag is not a semantic version, is an error
-// rather than a skip: a feed that cannot be read is not a feed that says
-// nothing is newer.
-func (c updateChecker) newest(releases []releaseEntry) (tag, link string, ver semver, err error) {
+// about. Drafts are never offered; prereleases only on request. A tag that is
+// not a semantic version is skipped and counted: what must be readable is the
+// feed, and one stray tag would otherwise disable the check for everyone until
+// it was deleted. An entry with an empty tag is still an error, because that is
+// a malformed feed rather than a foreign tag.
+func (c updateChecker) newest(releases []releaseEntry) (tag, link string, ver semver, skipped int, err error) {
 	var found bool
 	for _, r := range releases {
 		if r.Draft {
 			continue
 		}
-		if strings.TrimSpace(r.TagName) == "" {
-			return "", "", semver{}, errors.New("the release list contains an entry with an empty tag")
+		// Trimmed once, here: parseSemver accepts surrounding whitespace, and
+		// the tag is printed, so only the trimmed (and therefore fully
+		// validated, control-character-free) form leaves this function.
+		name := strings.TrimSpace(r.TagName)
+		if name == "" {
+			return "", "", semver{}, skipped, errors.New("the release list contains an entry with an empty tag")
 		}
-		v, ok := parseSemver(r.TagName)
+		v, ok := parseSemver(name)
 		if !ok {
-			return "", "", semver{}, fmt.Errorf("release tag %q is not a semantic version", sanitizeLine(r.TagName))
+			skipped++
+			continue
 		}
 		if !c.prerelease && (r.Prerelease || len(v.pre) > 0) {
 			continue
 		}
 		if !found || semverCompare(v, ver) > 0 {
-			tag, ver, found = r.TagName, v, true
+			r.TagName = name
+			tag, ver, found = name, v, true
 			link = releasePage(r)
 		}
 	}
 	if !found {
-		return "", "", semver{}, errors.New("the release list holds no eligible release")
+		return "", "", semver{}, skipped, errors.New("the release list holds no eligible semantic-version release")
 	}
-	return tag, link, ver, nil
+	return tag, link, ver, skipped, nil
 }
 
 // releasePage is the page the user is sent to. The API's own link is used
@@ -486,5 +497,8 @@ func writeUpdateReport(out io.Writer, rep updateReport) {
 		_, _ = fmt.Fprintf(out, "  status     cannot compare: %s\n", rep.Error)
 	default:
 		_, _ = fmt.Fprintf(out, "  status     check failed: %s\n", rep.Error)
+	}
+	if rep.SkippedTags > 0 {
+		_, _ = fmt.Fprintf(out, "  skipped    %d release tag(s) that are not semantic versions\n", rep.SkippedTags)
 	}
 }

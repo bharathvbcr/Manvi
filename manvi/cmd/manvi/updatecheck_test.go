@@ -131,9 +131,12 @@ func TestUpdateCheckFailuresAreDistinctFromUpToDate(t *testing.T) {
 		{"malformed json", 200, `{not json`, "not a release list"},
 		{"not a list", 200, `{"tag_name":"v1.0.0"}`, "not a release list"},
 		{"empty tag", 200, `[{"tag_name":""}]`, "empty tag"},
-		{"non-semver tag", 200, `[{"tag_name":"nightly"}]`, "not a semantic version"},
-		{"no releases", 200, `[]`, "no eligible release"},
-		{"only drafts and prereleases", 200, `[{"tag_name":"v2.0.0","draft":true},{"tag_name":"v2.1.0-rc1","prerelease":true}]`, "no eligible release"},
+		// A lone non-semver tag used to be an error of its own. That was the
+		// wrong expectation: it is skipped, so what fails is that nothing
+		// eligible remains. Exit 8 still holds; only the reason differs.
+		{"only non-semver tags", 200, `[{"tag_name":"nightly"}]`, "no eligible"},
+		{"no releases", 200, `[]`, "no eligible"},
+		{"only drafts and prereleases", 200, `[{"tag_name":"v2.0.0","draft":true},{"tag_name":"v2.1.0-rc1","prerelease":true}]`, "no eligible"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,6 +149,48 @@ func TestUpdateCheckFailuresAreDistinctFromUpToDate(t *testing.T) {
 				t.Errorf("report = %+v, want error containing %q", rep, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateCheckSkipsAStrayTagBesideARealRelease(t *testing.T) {
+	body := `[{"tag_name":"nightly"},{"tag_name":"v2.0.0"},{"tag_name":"latest"},{"tag_name":"v1.0.0"}]`
+	srv, _ := fakeReleases(t, 200, body)
+	rep, err := checkerAt(srv, false).check(context.Background(), stamped("v1.0.0"))
+	if err != nil {
+		t.Fatalf("a stray tag disabled the check: %v", err)
+	}
+	if rep.Status != updateAvailable || rep.Latest != "v2.0.0" || rep.SkippedTags != 2 {
+		t.Fatalf("report = %+v", rep)
+	}
+	var out bytes.Buffer
+	writeUpdateReport(&out, rep)
+	if !strings.Contains(out.String(), "skipped    2 release tag(s)") {
+		t.Errorf("text does not report the skipped tags:\n%s", out.String())
+	}
+	j, _ := json.Marshal(rep)
+	if !strings.Contains(string(j), `"skipped_tags":2`) {
+		t.Errorf("json = %s", j)
+	}
+}
+
+func TestUpdateCheckPrintedTagCarriesNoControlCharacters(t *testing.T) {
+	// Whitespace around a tag parses as semver; control characters inside do
+	// not, and are skipped. Neither may reach the terminal.
+	body := `[{"tag_name":"v3.0.0\u001b[31m"},{"tag_name":" v2.0.0\n","html_url":"https://x.example/a\u001b[0m"}]`
+	srv, _ := fakeReleases(t, 200, body)
+	rep, err := checkerAt(srv, false).check(context.Background(), stamped("v1.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	writeUpdateReport(&out, rep)
+	for _, r := range out.String() {
+		if r < ' ' && r != '\n' || r == 0x7f {
+			t.Fatalf("control character %q in output:\n%q", r, out.String())
+		}
+	}
+	if rep.Latest != "v2.0.0" || rep.SkippedTags != 1 || !strings.HasSuffix(rep.URL, "/releases/tag/v2.0.0") {
+		t.Errorf("report = %+v", rep)
 	}
 }
 
