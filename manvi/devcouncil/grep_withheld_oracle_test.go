@@ -185,3 +185,25 @@ func TestGrepSearchesAroundAWithheldFileInANestedDirectory(t *testing.T) {
 		t.Errorf("count = %v, want 4", payload["count"])
 	}
 }
+
+// A directory holding one refused file makes each sibling its own search, so a
+// large one exceeds the fan-out bound. That is refused outright, with the
+// numbers, rather than run as a sample: the message is pinned because it is the
+// documented behaviour of the bound.
+func TestGrepRefusesAFanOutPastTheSubsearchBound(t *testing.T) {
+	f := newFixture(t)
+	for i := range grepMaxSubsearches + 88 {
+		writeRepoFile(t, f.root, fmt.Sprintf("config/f%d.txt", i), "x\n")
+	}
+	writeRepoFile(t, f.root, "config/.env", "TOKEN=abc\n")
+
+	res := f.call("devcouncil_grep", map[string]any{"pattern": "x", "include_ignored": true})
+	if !res.IsError {
+		t.Fatalf("a search needing %d sub-searches ran: %s", grepMaxSubsearches+88, res.Text)
+	}
+	want := "working around 1 withheld file(s) would take 600 separate searches, " +
+		"over the limit of 512; search a narrower path — this is not a negative result, no search ran"
+	if !strings.Contains(res.Text, want) {
+		t.Errorf("refusal = %q, want it to contain %q", res.Text, want)
+	}
+}

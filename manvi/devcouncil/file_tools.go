@@ -635,7 +635,7 @@ func (r *Registry) grepSearch(ctx context.Context, call tools.Call) tools.Result
 		"count":                len(matches),
 		"matches":              matches,
 		"files_searched":       result.filesSearched,
-		"ignore_rules_applied": !args.IncludeIgnored,
+		"ignore_rules_applied": result.ignoreRules,
 	}
 	if result.truncated {
 		payload["truncated"] = true
@@ -713,6 +713,9 @@ type grepOutcome struct {
 	limit         int
 	filesSearched int
 	skipped       dcgrep.Skipped
+	// ignoreRules is the engine's own report of whether ignore rules applied;
+	// a partitioned search reports true only if every sub-search did.
+	ignoreRules bool
 }
 
 // searchUnrefused runs a search that never reads a file the read gate refuses,
@@ -729,21 +732,45 @@ type grepOutcome struct {
 // none of them. The reply cannot depend on what is inside a file that was
 // never opened.
 //
-// With nothing refused the search is the single call it always was, at the cost
-// of one extra walk to learn that.
+// The listing and one unpartitioned search start together, two goroutines under
+// one cancellable context, so the common case, where nothing is refused, costs
+// the slower of the two rather than their sum. If the listing shows anything
+// refused, that speculative search is discarded without being read: it did open
+// the refused files, but nothing of its result, not a count, not an error,
+// reaches the reply, and the partitioned path below runs instead.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	if req.MaxResults < 0 {
 		return nil, nil, fmt.Errorf("max_results must not be negative, got %d", req.MaxResults)
 	}
+	type speculative struct {
+		res *dcgrep.Result
+		err error
+	}
+	specCtx, cancelSpec := context.WithCancel(ctx)
+	defer cancelSpec()
+	spec := make(chan speculative, 1)
+	go func() {
+		res, searchErr := r.deps.Grep.Search(specCtx, req)
+		spec <- speculative{res, searchErr}
+	}()
+	// discard stops the speculative search and waits for it, so no goroutine
+	// outlives the call, and returns nothing of what it found.
+	discard := func() {
+		cancelSpec()
+		<-spec
+	}
+
 	listing, err := r.deps.Grep.List(ctx, dcgrep.ListRequest{
 		Path:           req.Path,
 		MaxResults:     grepListCeiling,
 		IncludeIgnored: req.IncludeIgnored,
 	})
 	if err != nil {
+		discard()
 		return nil, nil, err
 	}
 	if listing.Truncated {
+		discard()
 		// Not a sample to search: a search over a tree whose refused files
 		// cannot all be named would have to guess which of them it may touch.
 		return nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
@@ -755,15 +782,19 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 			refused[name] = rule
 		}
 	}
+	if len(refused) > 0 {
+		discard()
+	}
 
 	out := &grepOutcome{}
 	if len(refused) == 0 {
-		res, searchErr := r.deps.Grep.Search(ctx, req)
-		if searchErr != nil {
-			return nil, nil, searchErr
+		s := <-spec
+		if s.err != nil {
+			return nil, nil, s.err
 		}
+		res := s.res
 		out.matches, out.truncated, out.limit = res.Matches, res.Truncated, res.Limit
-		out.filesSearched, out.skipped = res.FilesSearched, res.Skipped
+		out.filesSearched, out.skipped, out.ignoreRules = res.FilesSearched, res.Skipped, res.IgnoreRulesApplied
 	} else {
 		limit := req.MaxResults
 		switch {
@@ -778,6 +809,9 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 				"searches, over the limit of %d; search a narrower path",
 				len(refused), len(targets), grepMaxSubsearches)
 		}
+		// Every sub-search echoes the same rule setting, but the engine's
+		// report is kept rather than recomputed: true only if all agree.
+		out.ignoreRules = listing.IgnoreRulesApplied
 		for _, target := range targets {
 			sub := req
 			sub.Path, sub.MaxResults = target, limit
@@ -788,6 +822,7 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 			out.matches = append(out.matches, res.Matches...)
 			out.truncated = out.truncated || res.Truncated
 			out.filesSearched += res.FilesSearched
+			out.ignoreRules = out.ignoreRules && res.IgnoreRulesApplied
 			out.skipped.TooLarge += res.Skipped.TooLarge
 			out.skipped.Binary += res.Skipped.Binary
 			out.skipped.Unreadable += res.Skipped.Unreadable
