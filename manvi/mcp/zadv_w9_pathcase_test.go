@@ -34,7 +34,7 @@ func TestZAdvW9DotDotAfterSymlinkIsResolvedByTheKernelNotLexically(t *testing.T)
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
 	for _, d := range []string{filepath.Join(repo, "sub"), out} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +46,7 @@ func TestZAdvW9DotDotAfterSymlinkIsResolvedByTheKernelNotLexically(t *testing.T)
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	candidate := out + string(filepath.Separator) + "link" + string(filepath.Separator) + ".." + string(filepath.Separator) + "cfg.yaml"
-	if _, err := os.ReadFile(candidate); err != nil {
+	if _, err := os.ReadFile(candidate); err != nil { // #nosec G304 -- a file under this test's own t.TempDir
 		t.Fatalf("precondition: the kernel does not open the repository file through %q: %v", candidate, err)
 	}
 	mustInside(t, repo, candidate, true)
@@ -61,7 +61,7 @@ func TestZAdvW9DanglingSymlinkIntoRepoIsInside(t *testing.T) {
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
 	for _, d := range []string{repo, out} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,7 +80,7 @@ func TestZAdvW9FirmlinkSpellingIsInside(t *testing.T) {
 	}
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	data := "/System/Volumes/Data"
@@ -100,7 +100,7 @@ func TestZAdvW9UnicodeNormalizationVariantIsInside(t *testing.T) {
 	nfc := "café"
 	nfd := "café"
 	repo := filepath.Join(base, nfc)
-	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(base, nfd)); err != nil {
@@ -110,7 +110,7 @@ func TestZAdvW9UnicodeNormalizationVariantIsInside(t *testing.T) {
 	mustInside(t, repo, filepath.Join(base, nfd, "sub", "new", "f.yaml"), true)
 	mustInside(t, filepath.Join(base, nfd), filepath.Join(repo, "sub", "f.yaml"), true)
 	// A sibling that only shares the prefix, in the other normalization form.
-	if err := os.MkdirAll(filepath.Join(base, nfc+"2"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(base, nfc+"2"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	mustInside(t, repo, filepath.Join(base, nfd+"2", "f.yaml"), false)
@@ -124,7 +124,7 @@ func TestZAdvW9CaseVariantAcrossSymlinks(t *testing.T) {
 	repo := filepath.Join(base, "repo")
 	out := filepath.Join(base, "out")
 	for _, d := range []string{filepath.Join(repo, "sub"), out} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -148,7 +148,7 @@ func TestZAdvW9CaseVariantAcrossSymlinks(t *testing.T) {
 func TestZAdvW9PathologicalPathsAreNeverOutside(t *testing.T) {
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "afile"), nil, 0o600); err != nil {
@@ -177,7 +177,7 @@ func TestZAdvW9PathologicalPathsAreNeverOutside(t *testing.T) {
 func TestZAdvW9AtomicAliasSwapNeverReadsOutside(t *testing.T) {
 	base := advBase(t)
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(base, "alias")
@@ -236,7 +236,7 @@ func TestZAdvW9AbsentRootIsOutsideNotAnError(t *testing.T) {
 	base := advBase(t)
 	repo := filepath.Join(base, "gone-repo")
 	other := filepath.Join(base, "cfg", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(other), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	mustInside(t, repo, other, false)
@@ -249,7 +249,7 @@ func TestZAdvW9CaseVariantSiblingPrefixesStayOutside(t *testing.T) {
 	base := caseInsensitiveBase(t)
 	repo := filepath.Join(base, "repo")
 	for _, d := range []string{"repo", "repo2", "repo-evil", "REPO3"} {
-		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}

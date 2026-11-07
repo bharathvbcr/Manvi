@@ -418,7 +418,7 @@ func splitRooted(path string) (root string, comps []string) {
 // doubled or trailing separators leave. "." and ".." are kept: they are the
 // caller's to interpret against what has been resolved.
 func splitComponents(path string) []string {
-	return strings.FieldsFunc(path, func(r rune) bool { return r < 128 && os.IsPathSeparator(byte(r)) })
+	return strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == rune(os.PathSeparator) })
 }
 
 // authorize decides whether a declaration may be spawned, and refuses in a way

@@ -21,7 +21,7 @@ import (
 // to run under another name.
 func realGit(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command("xcrun", "-f", "git").Output()
+	out, err := exec.CommandContext(t.Context(), "xcrun", "-f", "git").Output()
 	if err != nil {
 		return "/usr/bin/git"
 	}
@@ -34,7 +34,7 @@ func leaked(t *testing.T, root, before string) bool {
 	if after == before {
 		return false
 	}
-	return exec.Command("git", "-C", root, "cat-file", "-e", after+":notes.txt").Run() == nil
+	return exec.CommandContext(t.Context(), "git", "-C", root, "cat-file", "-e", after+":notes.txt").Run() == nil // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 }
 
 type advCase struct {
@@ -51,7 +51,7 @@ func (c advCase) apply(t *testing.T, f *fixture) {
 	for name, body := range c.files {
 		write(t, f.root, name, body)
 		if strings.HasPrefix(body, "#!") {
-			if err := os.Chmod(filepath.Join(f.root, name), 0o755); err != nil {
+			if err := os.Chmod(filepath.Join(f.root, name), 0o755); err != nil { // #nosec G302 -- a script the test execs, in a temp dir; it has to be executable
 				t.Fatal(err)
 			}
 		}
@@ -181,7 +181,7 @@ func TestZAdvIndirection(t *testing.T) {
 func TestZAdvHookResidualOnceInstalled(t *testing.T) {
 	f := shellCommitFixture(t, false)
 	write(t, f.root, ".git/hooks/pre-commit", "#!/bin/sh\ngit add notes.txt\n")
-	if err := os.Chmod(filepath.Join(f.root, ".git/hooks/pre-commit"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(f.root, ".git/hooks/pre-commit"), 0o755); err != nil { // #nosec G302 -- a script the test execs, in a temp dir; it has to be executable
 		t.Fatal(err)
 	}
 	before := headOf(t, f.root)
@@ -359,11 +359,11 @@ func TestZAdvRobustness(t *testing.T) {
 	t.Run("corrupt-git-config-alias", func(t *testing.T) {
 		f := shellCommitFixture(t, true)
 		cfg := filepath.Join(f.root, ".git", "config")
-		body, err := os.ReadFile(cfg)
+		body, err := os.ReadFile(cfg) // #nosec G304 -- a file under this test's own t.TempDir
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(cfg, append(body, []byte("\n[alias\n  zz = commit\n=garbage\n")...), 0o600); err != nil {
+		if err := os.WriteFile(cfg, append(body, []byte("\n[alias\n  zz = commit\n=garbage\n")...), 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 			t.Fatal(err)
 		}
 		res := shell(f, "git zz -m x")
@@ -375,8 +375,8 @@ func TestZAdvRobustness(t *testing.T) {
 	t.Run("corrupt-git-config-plain-commit", func(t *testing.T) {
 		f := shellCommitFixture(t, true)
 		cfg := filepath.Join(f.root, ".git", "config")
-		body, _ := os.ReadFile(cfg)
-		if err := os.WriteFile(cfg, append(body, []byte("\n[broken\n")...), 0o600); err != nil {
+		body, _ := os.ReadFile(cfg)                                                              // #nosec G304 -- a file under this test's own t.TempDir
+		if err := os.WriteFile(cfg, append(body, []byte("\n[broken\n")...), 0o600); err != nil { // #nosec G703 -- a path under this test's own t.TempDir
 			t.Fatal(err)
 		}
 		res := shell(f, "git commit -m x")

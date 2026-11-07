@@ -17,7 +17,7 @@ func TestCheckoutsOverlapRefusesACaseVariantSpellingOfAHeldCheckout(t *testing.T
 		t.Fatal(err)
 	}
 	held := filepath.Join(base, "repo")
-	if err := os.MkdirAll(filepath.Join(held, "pkg", "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(held, "pkg", "sub"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(base, "REPO")); err != nil {

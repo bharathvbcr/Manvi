@@ -21,7 +21,7 @@ const sep = string(filepath.Separator)
 func mkdirs(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -346,7 +346,7 @@ func TestZAdvW9SecondRaceSwapLinkAndDir(t *testing.T) {
 			case 2: // real directory (remove link then mkdir: a gap where it is absent)
 				if fi, err := os.Lstat(comp); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 					_ = os.Remove(comp)
-					_ = os.MkdirAll(filepath.Join(comp, "sub"), 0o755)
+					_ = os.MkdirAll(filepath.Join(comp, "sub"), 0o750)
 				}
 			}
 			if i%3 == 2 {
@@ -409,7 +409,7 @@ func TestZAdvW9SecondPropertyAgainstKernel(t *testing.T) {
 	checked, kernelOutside, kernelInside, errCount := 0, 0, 0, 0
 	for i := 0; i < cases; i++ {
 		seed := int64(propSeed) + int64(i)
-		rng := rand.New(rand.NewSource(seed))
+		rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- a fixed-seed sweep: reproducing a failing draw is the point, secrecy is not.
 		base, err := filepath.EvalSymlinks(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -484,12 +484,12 @@ func buildRandomTree(t *testing.T, rng *rand.Rand, base, repo string) string {
 		if _, err := os.Lstat(p); err == nil {
 			return
 		}
-		if os.Mkdir(p, 0o755) == nil {
+		if os.Mkdir(p, 0o750) == nil {
 			dirs = append(dirs, p)
 			desc = append(desc, "dir  "+p)
 		}
 	}
-	if err := os.Mkdir(repo, 0o755); err != nil {
+	if err := os.Mkdir(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5+rng.Intn(6); i++ {
@@ -588,7 +588,7 @@ func repoIdentities(t *testing.T, repo string) []fs.FileInfo {
 	var out []fs.FileInfo
 	_ = filepath.WalkDir(repo, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // best-effort walk: an entry that cannot be read is skipped, not a failure
 		}
 		if fi, e := os.Lstat(p); e == nil {
 			out = append(out, fi)

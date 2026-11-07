@@ -22,7 +22,7 @@ func headOf(t *testing.T, root string) string {
 
 func gitOut(t *testing.T, root string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...).CombinedOutput() // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
@@ -263,7 +263,7 @@ func TestShellRefGuardLatencyWith1000Refs(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		fmt.Fprintf(&in, "create refs/heads/bulk/b%04d %s\n", i, head)
 	}
-	cmd := exec.Command("git", "-C", f.root, "update-ref", "--stdin")
+	cmd := exec.CommandContext(t.Context(), "git", "-C", f.root, "update-ref", "--stdin") // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 	cmd.Stdin = strings.NewReader(in.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("creating refs: %v\n%s", err, out)

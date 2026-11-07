@@ -48,7 +48,7 @@ func mustInside(t *testing.T, root, path string, want bool) {
 func TestPathIsInsideCaseVariantSpelling(t *testing.T) {
 	base := caseInsensitiveBase(t)
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	existing := filepath.Join(repo, "sub", "evil.yaml")
@@ -73,7 +73,7 @@ func TestPathIsInsideSiblingsAndPrefixTricks(t *testing.T) {
 	}
 	repo := filepath.Join(base, "repo")
 	for _, d := range []string{"repo", "repo2", "repo-evil", "other"} {
-		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -95,7 +95,7 @@ func TestPathIsInsideFollowsSymlinks(t *testing.T) {
 	repo := filepath.Join(base, "repo")
 	outside := filepath.Join(base, "outside")
 	for _, d := range []string{repo, outside} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,16 +123,16 @@ func TestPathIsInsideUnreadableAncestorIsAnError(t *testing.T) {
 	}
 	repo := filepath.Join(base, "repo")
 	locked := filepath.Join(base, "locked")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(locked, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) //nolint:gosec // G302: a directory, not a file; it must be searchable again so TempDir can remove it
 
 	if inside, err := PathIsInside(repo, filepath.Join(locked, "inner", "f")); err == nil {
 		t.Fatalf("an unreadable ancestor was answered %v with no error", inside)
@@ -145,7 +145,7 @@ func TestPathIsInsideUnreadableAncestorIsAnError(t *testing.T) {
 func TestATrustFileThroughACaseVariantOfTheRepositoryIsNotHonoured(t *testing.T) {
 	base := caseInsensitiveBase(t)
 	root := filepath.Join(base, "repo")
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	inside := filepath.Join(base, "REPO", "mcp-trust.json")
@@ -179,7 +179,7 @@ func TestPathIsInsideSymlinkLoopIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	a, b := filepath.Join(base, "a"), filepath.Join(base, "b")
@@ -202,7 +202,7 @@ func TestPathIsInsideDotDotInAbsentTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(base, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	sep := string(filepath.Separator)
@@ -219,7 +219,7 @@ func BenchmarkPathIsInside(b *testing.B) {
 	deep := filepath.Join(repo, "a", "b", "c")
 	other := filepath.Join(base, "elsewhere", "a", "b", "c")
 	for _, d := range []string{deep, other} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			b.Fatal(err)
 		}
 	}
