@@ -249,11 +249,34 @@ func ValidateRequest(req llm.Request, mode ThinkingMode) error {
 // ReplayableOn reports whether reasoning produced by (fromModel) can be sent
 // back to (toModel) intact.
 //
-// Anthropic's rule is exact: thinking blocks must be echoed back unchanged on
-// the same model, and other models drop them. The harness's neutral layer
-// implements the general form of this in llm.PrepareHistoryFor; this function is
-// the provider-specific statement of it, kept here so the rule has one owner
-// per provider rather than being inferred at the call site.
+// Anthropic's rule is that thinking blocks are echoed back unchanged and the API
+// decides what the current model can read: a block it cannot read is dropped
+// before the model sees it, the request succeeds, and the dropped block is not
+// billed (claude-api skill, shared/model-migration.md, "Breaking change 3" of
+// Claude Opus 5.5, Claude Sonnet 5.5 and Claude Fable 5.1: "Keep passing blocks
+// back unchanged when you switch models; don't strip them yourself").
+//
+// Stripping on a switch is not neutral. It is a client-side edit of earlier
+// turns, and it removes reasoning the new model could have read (Claude Opus 5.5
+// reads Claude Sonnet 5.5's, and the other way round on the Claude API). So any
+// two models are replayable, with one exception that is about the target and
+// not the switch: a model that does not reason is sent no thinking
+// configuration, and handing it history full of thinking blocks is not a case
+// the docs cover, so it keeps getting history without them.
+//
+// The harness's neutral layer implements the general form of this in
+// llm.PrepareHistoryFor; this function is the provider-specific statement of
+// it, kept here so the rule has one owner per provider rather than being
+// inferred at the call site. The escalation ladder (cmd/manvi/escalate.go) does
+// not strip: its re-run is a fresh conversation, so nothing it sends was signed
+// against another prefix.
 func ReplayableOn(fromModel, toModel string) bool {
-	return fromModel == toModel && fromModel != ""
+	if fromModel == "" || toModel == "" {
+		return false
+	}
+	if fromModel == toModel {
+		return true
+	}
+	target, ok := Capability(toModel)
+	return ok && target.SupportsReasoning
 }

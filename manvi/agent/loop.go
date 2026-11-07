@@ -465,8 +465,25 @@ func (l *Loop) Budget() Budget {
 }
 
 // compact plans, records and re-derives. It returns the history to send.
+//
+// On a provider that binds thinking to the history before it, a request that
+// offers tools is shrunk by the server, so this plans nothing for it (see
+// ServerSideEditing in agent/compaction.go) and only reports when even the
+// server's clearing leaves the history over budget. A client-side rewrite of an
+// earlier result would invalidate every thinking block signed after it.
+//
+// A request on such a provider that offers no tools gets no server-side
+// clearing, so it is compacted here, and only at a turn boundary: never while
+// the last message is a tool result. The edit is then followed by the strip in
+// assembleRequest.
 func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 	schemas := l.schemas()
+	if ServerSideClearing(l.cfg.Provider, schemas) {
+		return messages, l.reportServerSideOverflow(messages, schemas)
+	}
+	if ServerSideEditing(l.cfg.Provider) && !AtTurnBoundary(messages) {
+		return messages, nil
+	}
 	// The ledger of what is already compacted is read from the log, not held
 	// on the Loop. A Loop lasts one turn; the log lasts the session, and a
 	// per-turn ledger silently re-compacts everything from the previous turn.
@@ -525,6 +542,24 @@ func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
 	// thing that decides what a compaction means, and reading it back here is
 	// what guarantees the request and the log cannot disagree.
 	return l.log.DeriveMessages()
+}
+
+// reportServerSideOverflow records the overflow the server cannot fix. The
+// server clears old tool results at its trigger, so the history can only stay
+// over budget when what remains after clearing all but the most recent tool uses
+// is still over Manvi's own threshold. That is the same condition the
+// client-side planner reports as Insufficient, and it is recorded and flagged
+// the same way.
+func (l *Loop) reportServerSideOverflow(messages []llm.Message, schemas []llm.ToolSchema) error {
+	budget := l.Budget()
+	if CountRequestTokens(l.cfg.SystemPrompt, schemas, messages) <= budget.Threshold() {
+		return nil
+	}
+	after := EstimateAfterServerClearing(l.cfg.SystemPrompt, schemas, messages)
+	if after <= budget.Threshold() {
+		return nil
+	}
+	return l.reportOverflow(CompactionPlan{Before: after, After: after, Insufficient: true})
 }
 
 // reportOverflow records that history still exceeds the window after
@@ -1711,6 +1746,18 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 // waterfall and checked before anything goes on the wire.
 func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm.Request, error) {
 	schemas := l.schemas()
+
+	// A log written by a build that compacted client-side still holds edits,
+	// and the projection replays them. Where thinking is bound to the history
+	// that is a 400 on every block signed behind an edit, so those blocks go
+	// before anything else looks at the history (see session.StripStaleReasoning).
+	if ServerSideEditing(l.cfg.Provider) {
+		stripped, _, err := l.log.StripStaleReasoning(messages)
+		if err != nil {
+			return llm.Request{}, err
+		}
+		messages = stripped
+	}
 
 	// Provider-private state that this target cannot replay is stripped here,
 	// and the removal is logged. Cross-provider handoff is explicitly lossy.
