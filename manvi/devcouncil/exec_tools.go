@@ -71,6 +71,15 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 		}
 	}
 
+	// The refs as they stand before the shell runs; see refguard.go. A command
+	// string cannot be read well enough to say what it will commit, so the check
+	// is on the refs it leaves behind. Where the refs cannot be recorded in a
+	// repository, nothing runs: an unrecorded start is a check that cannot run.
+	run, err := r.guardBegin(ctx)
+	if err != nil {
+		return unavailable("the ref snapshot taken before the command", err)
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -78,6 +87,21 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	outText, exitCode, timedOut, runErr := runShell(cmdCtx, r.deps.Root, args.Command)
 	elapsed := time.Since(start)
 
+	res := r.commandResult(args.Command, decision, outText, exitCode, timedOut, runErr, elapsed)
+	// After the command however it ended, including a timeout or a failure.
+	violation, between := r.guardFinish(ctx, run, args.Command)
+	if violation != nil {
+		res = violation.withViolation(res)
+	}
+	if between != nil {
+		res = between.withViolation(res)
+	}
+	res.Degraded = append(res.Degraded, run.notes...)
+	return res
+}
+
+// commandResult is what the model is told about a command that ran.
+func (r *Registry) commandResult(command string, decision policy.Decision, outText string, exitCode int, timedOut bool, runErr error, elapsed time.Duration) tools.Result {
 	if timedOut {
 		return annotate(tools.Result{
 			Text:    "command timed out after 5m:\n" + outText,
@@ -86,7 +110,7 @@ func (r *Registry) execCommand(ctx context.Context, call tools.Call) tools.Resul
 	}
 	if runErr != nil {
 		return annotate(tools.Result{
-			Text:    fmt.Sprintf("failed to execute command %q: %v", args.Command, runErr),
+			Text:    fmt.Sprintf("failed to execute command %q: %v", command, runErr),
 			IsError: true,
 		}, decision)
 	}

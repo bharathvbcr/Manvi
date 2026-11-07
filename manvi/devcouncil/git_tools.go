@@ -538,49 +538,9 @@ func (r *Registry) gitCommit(ctx context.Context, call tools.Call) tools.Result 
 
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	// The tree the checks below are about, taken before them and again after,
-	// so an index that moves while it is being examined is refused rather than
-	// committed on the strength of a read of something else.
-	checkedTree, err := runGit(ctx, r.deps.Root, "write-tree")
-	if err != nil {
-		return unavailable("staged tree", err)
-	}
-	checkedTree = strings.TrimSpace(checkedTree)
-	staged, err := runGit(ctx, r.deps.Root, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return unavailable("staged file list", err)
-	}
-	var stagedPaths []string
-	for _, p := range strings.Split(staged, "\x00") {
-		if p != "" {
-			stagedPaths = append(stagedPaths, p)
-		}
-	}
-	leaked, err := secretPaths(r.matcher(), stagedPaths)
-	if err != nil {
-		return unavailable("secret-path check", err)
-	}
-	if len(leaked) > 0 {
-		return secretRefusal("commit", leaked)
-	}
-	if aliased := aliasedPaths(r.deps.Root, stagedPaths); len(aliased) > 0 {
-		return aliasedRefusal("commit", aliased)
-	}
-	// By content, after the names: a credential copied to an innocent name
-	// matches nothing above. A check that could not run refuses; it is never
-	// reported as a clean pass.
-	contentLeaks, scanNotes, err := r.stagedContentLeaks(ctx)
-	if err != nil {
-		return unavailable("staged-content secret check", err)
-	}
-	if len(contentLeaks) > 0 {
-		return contentRefusal(contentLeaks, scanNotes)
-	}
-
-	if again, err := runGit(ctx, r.deps.Root, "write-tree"); err != nil {
-		return unavailable("staged tree", err)
-	} else if strings.TrimSpace(again) != checkedTree {
-		return tools.Errorf("the index changed while it was being checked; nothing was committed. Stage again and retry")
+	refusal, checkedTree, scanNotes := r.checkStagedForCommit(ctx)
+	if refusal != nil {
+		return *refusal
 	}
 	// Where the branch stands now, so a commit that has to be taken back can
 	// be taken back to it.
