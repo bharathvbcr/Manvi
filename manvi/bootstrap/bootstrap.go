@@ -687,11 +687,17 @@ func inWorkTree(ctx context.Context, root string) (bool, error) {
 // forced so the one message inWorkTree reads is the one it looks for.
 //
 // The project root is a repository the operator did not necessarily author, and
-// this runs on the host, outside any command gate. core.hooksPath at the null
-// device means no hook is found (a tracked .husky is an ordinary writable path),
-// and core.fsmonitor=false stops a program named in the repository's config
-// from answering for the work tree. ls-files and rev-parse run no hook today;
-// the setting keeps that true of this helper whatever a later caller asks of it.
+// this runs on the host, outside any command gate. The helper pins two channels:
+// core.hooksPath at the null device means no hook is found (a tracked .husky is
+// an ordinary writable path), and core.fsmonitor=false stops a program named in
+// the repository's config from answering for the work tree. ls-files and
+// rev-parse run no hook today.
+//
+// It does not pin diff drivers, filters, core.sshCommand, core.editor or
+// gpg.program, and the callers' subcommands never reach them. They are the
+// operator's configured commands (the gitSpec decision block in
+// devcouncil/verify.go, 2026-11-07): .git/config is a protected write path, so a
+// later caller that reaches one runs the operator's own program.
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	// #nosec G204 -- the binary is the literal "git"; every argument is a literal, the project root, or a file name this package created.
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false"}, args...)...)

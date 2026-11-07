@@ -13,8 +13,9 @@ import (
 // Adversarial review of the w10-gitexec lane: every test here builds a
 // repository whose config or hooks the agent could author, runs the helper's
 // git over it, and checks that no program the repository names ran. A test that
-// finds a program running is guarded: it skips with a BREAK reason so the suite
-// stays green, unless ZADV_STRICT is set, which turns each break into a failure.
+// finds a program running fails, except for the channels the owner decided to
+// leave to the operator's config (filters, diff drivers, ssh, editor, gpg): those
+// tests pin that behaviour with zadvPinned, so changing it fails them.
 
 type zadvRun func(t *testing.T, dir string, args ...string) error
 
@@ -96,10 +97,18 @@ func zadvVerdict(t *testing.T, marker, what string) {
 	if _, err := os.Stat(marker); err != nil {
 		return
 	}
-	if os.Getenv("ZADV_STRICT") != "" {
-		t.Fatalf("BREAK: %s", what)
+	t.Fatalf("%s", what)
+}
+
+// zadvPinned asserts the decided behaviour for a channel that is operator
+// config: ran says whether the program named in the repository's config runs
+// under the helper. A change in either direction fails.
+func zadvPinned(t *testing.T, marker string, ran bool, what string) {
+	t.Helper()
+	_, err := os.Stat(marker)
+	if got := err == nil; got != ran {
+		t.Fatalf("%s: ran=%v, decided behaviour is ran=%v", what, got, ran)
 	}
-	t.Skipf("BREAK: %s", what)
 }
 
 var zadvCommit = []string{"-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "x"}
@@ -329,13 +338,14 @@ func zadvFilterCase(t *testing.T, run zadvRun) {
 			t.Run(kind+"/"+strings.Join(args[:2], "_"), func(t *testing.T) {
 				r, marker := zadvFilterSetup(t, kind)
 				_ = run(t, r.root, args...)
-				zadvVerdict(t, marker, "filter."+kind+" named in repository config ran under helper args "+strings.Join(args, " "))
+				// ls-files only lists; it never compares content, so no filter runs.
+				zadvPinned(t, marker, args[0] == "diff", "filter."+kind+" named in operator config under helper args "+strings.Join(args, " "))
 			})
 		}
 	}
 }
 
-func TestAdvFilterNamedInRepoConfigRunsNothing(t *testing.T) { zadvFilterCase(t, zadvHelper) }
+func TestAdvOperatorFilterRunsUnderHelperByDecision(t *testing.T) { zadvFilterCase(t, zadvHelper) }
 
 func zadvDiffDriverCase(t *testing.T, run zadvRun, extra ...string) {
 	for _, driver := range []string{"external", "textconv"} {
@@ -355,7 +365,7 @@ func zadvDiffDriverCase(t *testing.T, run zadvRun, extra ...string) {
 			}
 			args := append([]string{"diff", "--no-color", "HEAD", "--"}, extra...)
 			_ = run(t, r.root, args...)
-			zadvVerdict(t, marker, "diff."+driver+" named in repository config ran")
+			zadvPinned(t, marker, true, "diff."+driver+" named in operator config, caller flags absent")
 		})
 	}
 }
@@ -379,9 +389,10 @@ func TestAdvDiffDriversWithCallerFlags(t *testing.T) {
 }
 
 // A diff that omits the flags: the helper itself does not stop diff.external or
-// a textconv, so the guarantee "host git helpers never execute a program the
-// repository names" rests on every caller remembering the flags.
-func TestAdvHelperAloneRunsNoDiffDriver(t *testing.T) { zadvDiffDriverCase(t, zadvHelper) }
+// a textconv. By decision they are the operator's configured commands, and the
+// callers' --no-ext-diff --no-textconv (pinned by the test above) are what keep
+// them from running today.
+func TestAdvDiffDriversRunWithoutCallerFlagsByDecision(t *testing.T) { zadvDiffDriverCase(t, zadvHelper) }
 
 func zadvTransportCase(t *testing.T, run zadvRun) {
 	t.Run("sshCommand", func(t *testing.T) {
@@ -389,28 +400,28 @@ func zadvTransportCase(t *testing.T, run zadvRun) {
 		prog, marker := r.script(t, "ssh")
 		zadvSh(t, r.root, "config", "core.sshCommand", prog)
 		_ = run(t, r.root, "ls-remote", "ssh://zadv.invalid/x")
-		zadvVerdict(t, marker, "core.sshCommand from repository config ran")
+		zadvPinned(t, marker, true, "core.sshCommand from repository config ran")
 	})
 	t.Run("editor", func(t *testing.T) {
 		r := zadvNew(t)
 		prog, marker := r.script(t, "ed")
 		zadvSh(t, r.root, "config", "core.editor", prog)
 		_ = run(t, r.root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty")
-		zadvVerdict(t, marker, "core.editor from repository config ran")
+		zadvPinned(t, marker, true, "core.editor from repository config ran")
 	})
 	t.Run("gpg.program", func(t *testing.T) {
 		r := zadvNew(t)
 		prog, marker := r.script(t, "gpg")
 		zadvSh(t, r.root, "config", "gpg.program", prog)
 		_ = run(t, r.root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=true", "commit", "--allow-empty", "-m", "x")
-		zadvVerdict(t, marker, "gpg.program from repository config ran on a signed commit")
+		zadvPinned(t, marker, true, "gpg.program from repository config ran on a signed commit")
 	})
 	t.Run("packObjectsHook", func(t *testing.T) {
 		r := zadvNew(t)
 		prog, marker := r.script(t, "pack")
 		zadvSh(t, r.root, "config", "uploadpack.packObjectsHook", prog)
 		_ = run(t, r.root, "fetch", "--no-write-fetch-head", r.root, "HEAD")
-		zadvVerdict(t, marker, "uploadpack.packObjectsHook from repository config ran")
+		zadvPinned(t, marker, false, "uploadpack.packObjectsHook from repository config ran")
 	})
 	t.Run("pager", func(t *testing.T) {
 		r := zadvNew(t)
@@ -418,18 +429,18 @@ func zadvTransportCase(t *testing.T, run zadvRun) {
 		zadvSh(t, r.root, "config", "core.pager", prog)
 		zadvSh(t, r.root, "config", "pager.log", prog)
 		_ = run(t, r.root, "log", "-1")
-		zadvVerdict(t, marker, "core.pager from repository config ran")
+		zadvPinned(t, marker, false, "core.pager from repository config ran")
 	})
 	t.Run("alias", func(t *testing.T) {
 		r := zadvNew(t)
 		prog, marker := r.script(t, "alias")
 		zadvSh(t, r.root, "config", "alias.status", "!"+prog)
 		_ = run(t, r.root, "status", "--porcelain")
-		zadvVerdict(t, marker, "an alias shadowing a builtin ran")
+		zadvPinned(t, marker, false, "an alias shadowing a builtin ran")
 	})
 }
 
-func TestAdvOtherChannels(t *testing.T) { zadvTransportCase(t, zadvHelper) }
+func TestAdvOperatorConfigChannelsByDecision(t *testing.T) { zadvTransportCase(t, zadvHelper) }
 
 // ---- is any other git spawn in agent-writable territory unprotected? -----
 
