@@ -93,12 +93,24 @@ case "$cmd" in
     trap cleanup EXIT
 
     # The certificate lives in a throwaway keychain, removed on exit.
+    #
+    # argv exposure, stated plainly: `security create-keychain -p`,
+    # `unlock-keychain -p`, `set-key-partition-list -k` and `import -P` take
+    # their passwords only as arguments (the alternative is a GUI or tty
+    # prompt, impossible on a runner). GitHub masks secrets in the job log but
+    # NOT in `ps` on the runner. What is exposed is short-lived: the keychain
+    # password is a random value for a keychain deleted on exit, and the .p12
+    # password only opens a file that is removed right after the import, on an
+    # ephemeral single-job VM. The Apple ID app password, the one long-lived
+    # credential that would be useful elsewhere, never appears in argv (below).
     kc_pass="$(uuidgen)"
     printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$work/cert.p12"
     security create-keychain -p "$kc_pass" "$keychain"
     security set-keychain-settings -lut 21600 "$keychain"
     security unlock-keychain -p "$kc_pass" "$keychain"
-    security import "$work/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+    # -T names the one tool allowed to use the key; -A (any application) is not used.
+    security import "$work/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -t cert -f pkcs12 \
+      -T /usr/bin/codesign -k "$keychain"
     security set-key-partition-list -S apple-tool:,apple: -k "$kc_pass" "$keychain" >/dev/null
     # shellcheck disable=SC2086
     security list-keychains -d user -s "$keychain" $previous_keychains
@@ -109,19 +121,29 @@ case "$cmd" in
       --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" "$file"
     codesign --verify --strict --verbose=2 "$file"
 
+    # The app password goes into the throwaway keychain through
+    # `notarytool store-credentials`, which reads it from its secure prompt, not
+    # from argv. The prompt reads a terminal, so it runs under `script`, which
+    # supplies a pty and forwards our stdin. Every later notarytool call names
+    # the profile, never the password. store-credentials validates the
+    # credentials with Apple before saving; a failure stops the job.
+    profile="manvi-notary"
+    printf '%s\n' "$APPLE_APP_PASSWORD" | script -q /dev/null \
+      xcrun notarytool store-credentials "$profile" \
+        --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --keychain "$keychain" >/dev/null
+
     # notarytool takes a zip, pkg or dmg, so the zip is only the submission
     # vehicle; the file that ships is the signed binary.
     ditto -c -k --keepParent "$file" "$work/notarize.zip"
     xcrun notarytool submit "$work/notarize.zip" \
-      --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+      --keychain-profile "$profile" --keychain "$keychain" \
       --wait --output-format json > "$work/notary.json"
     status="$(jq -r '.status // "unknown"' "$work/notary.json")"
     id="$(jq -r '.id // empty' "$work/notary.json")"
     if [[ "$status" != "Accepted" ]]; then
       echo "notarization of $(basename "$file") ended as: $status (submission ${id:-unknown})" >&2
       if [[ -n "$id" ]]; then
-        xcrun notarytool log "$id" \
-          --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" >&2 || true
+        xcrun notarytool log "$id" --keychain-profile "$profile" --keychain "$keychain" >&2 || true
       fi
       exit 1
     fi

@@ -31,12 +31,24 @@ func buildInfo(cgo string) *debug.BuildInfo {
 	}
 }
 
+const gussetSHA = "e561435afaf6cbfc0331108a14dda4d9595dae54"
+const pinsText = "# comment\nDevCouncil\thttps://example.com/DevCouncil.git\t947090b7fa8718cd257c9032f2641751ab8bc900\ngusset\thttps://example.com/gusset.git\t" + gussetSHA + "\n"
+
+func pins(t *testing.T) []Pin {
+	t.Helper()
+	p, err := ParsePins(pinsText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func str(s string) *string { return &s }
 
 func cargo() *CargoMetadata {
 	return &CargoMetadata{
 		Packages: []CargoPackage{
-			{ID: "root 0.1.0 (path+file:///x)", Name: "gusset-engine", Version: "0.1.0"},
+			{ID: "root 0.1.0 (path+file:///x)", Name: "gusset-engine", Version: "0.1.0", ManifestPath: "/w/DevCouncil/rust/gusset-engine/Cargo.toml"},
 			{ID: "serde 1.0.0 (registry)", Name: "serde", Version: "1.0.0", Source: str("registry+https://github.com/rust-lang/crates.io-index")},
 		},
 		Resolve: &CargoResolve{Nodes: []CargoNode{
@@ -47,7 +59,7 @@ func cargo() *CargoMetadata {
 }
 
 func TestBuildCgoListsGoAndRust(t *testing.T) {
-	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "manvi-v1.0.0-linux-amd64", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo(), RustTarget: "x86_64-unknown-linux-musl"})
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "manvi-v1.0.0-linux-amd64", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo(), RustTarget: "x86_64-unknown-linux-musl", Pins: pins(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +73,7 @@ func TestBuildCgoListsGoAndRust(t *testing.T) {
 	for _, c := range bom.Components {
 		purls[c.PURL] = true
 	}
-	for _, want := range []string{"pkg:golang/github.com%2Fa%2Fb@v1.2.3", "pkg:cargo/serde@1.0.0"} {
+	for _, want := range []string{"pkg:golang/github.com/a/b@v1.2.3", "pkg:cargo/serde@1.0.0"} {
 		if !purls[want] {
 			t.Errorf("missing purl %s in %v", want, purls)
 		}
@@ -99,7 +111,7 @@ func TestBuildCgoListsGoAndRust(t *testing.T) {
 }
 
 func TestBuildNoCgoHasNoRust(t *testing.T) {
-	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "manvi.exe", BinarySHA256: digest, Build: buildInfo("0")})
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "manvi.exe", BinarySHA256: digest, Build: buildInfo("0"), Pins: pins(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,16 +130,22 @@ func TestBuildNoCgoHasNoRust(t *testing.T) {
 }
 
 func TestBuildFailsClosed(t *testing.T) {
-	ok := Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo()}
+	ok := Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo(), Pins: pins(t)}
 	cases := map[string]func(*Input){
-		"cgo binary without cargo":    func(in *Input) { in.Cargo = nil },
-		"cargo on a non-cgo binary":   func(in *Input) { in.Build = buildInfo("0") },
-		"no build info":               func(in *Input) { in.Build = nil },
-		"short digest":                func(in *Input) { in.BinarySHA256 = "abc" },
-		"no tag":                      func(in *Input) { in.Tag = "" },
-		"cargo without resolve":       func(in *Input) { in.Cargo = &CargoMetadata{} },
-		"resolve names unknown crate": func(in *Input) { in.Cargo = &CargoMetadata{Resolve: &CargoResolve{Nodes: []CargoNode{{ID: "ghost"}}}} },
-		"resolve with no nodes":       func(in *Input) { in.Cargo = &CargoMetadata{Resolve: &CargoResolve{}} },
+		"cgo binary without cargo":     func(in *Input) { in.Cargo = nil },
+		"cargo on a non-cgo binary":    func(in *Input) { in.Build = buildInfo("0") },
+		"no build info":                func(in *Input) { in.Build = nil },
+		"short digest":                 func(in *Input) { in.BinarySHA256 = "abc" },
+		"no tag":                       func(in *Input) { in.Tag = "" },
+		"cargo without resolve":        func(in *Input) { in.Cargo = &CargoMetadata{} },
+		"resolve names unknown crate":  func(in *Input) { in.Cargo = &CargoMetadata{Resolve: &CargoResolve{Nodes: []CargoNode{{ID: "ghost"}}}} },
+		"replaced module with no pins": func(in *Input) { in.Pins = nil },
+		"replaced module under no pin": func(in *Input) { in.Pins = in.Pins[:1] },
+		"path crate under no pin": func(in *Input) {
+			in.Cargo = cargo()
+			in.Cargo.Packages[0].ManifestPath = "/elsewhere/x/Cargo.toml"
+		},
+		"resolve with no nodes": func(in *Input) { in.Cargo = &CargoMetadata{Resolve: &CargoResolve{}} },
 	}
 	if _, err := Build(ok); err != nil {
 		t.Fatalf("baseline: %v", err)
@@ -142,7 +160,7 @@ func TestBuildFailsClosed(t *testing.T) {
 }
 
 func TestBuildIsDeterministic(t *testing.T) {
-	in := Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo()}
+	in := Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo(), Pins: pins(t)}
 	var outs [2][]byte
 	for i := range outs {
 		bom, err := Build(in)
@@ -207,13 +225,8 @@ func TestRunReadsForeignBinary(t *testing.T) {
 	}
 }
 
-// KNOWN BREAK (w12 review): purlGo uses url.PathEscape on the whole module
-// path, so github.com/a/b becomes github.com%2Fa%2Fb. The purl spec keeps the
-// namespace slashes literal (pkg:golang/github.com/a/b@v1.2.3), so scanners
-// will not match these components. Remove the Skip when purlGo is fixed.
-func TestKnownBreakPurlKeepsNamespaceSlashes(t *testing.T) {
-	t.Skip("known break: purl escapes '/' as %2F; see review w12-release")
-	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0")})
+func TestPurlKeepsNamespaceSlashes(t *testing.T) {
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0"), Pins: pins(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,28 +237,73 @@ func TestKnownBreakPurlKeepsNamespaceSlashes(t *testing.T) {
 	}
 }
 
-// KNOWN BREAK (w12 review): DevCouncil and gusset are linked through replace
-// directives to sibling checkouts, so build info records version v0.0.0 or
-// (devel) and no commit. The SBOM then names no revision for the two modules
-// the release pins in scripts/module-pins.txt. Repro: CGO_ENABLED=0 go build
-// ./cmd/manvi, then sbomgen: the DevCouncil component has only
-// go:replace=../../DevCouncil/...@(devel). Fix: accept the pins and add a
-// revision property, or fail when a replaced module carries none.
-func TestKnownBreakReplacedModuleCarriesRevision(t *testing.T) {
-	t.Skip("known break: replaced sibling modules carry no commit; see review w12-release")
-	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0")})
+func TestPurlEscapesPerSegment(t *testing.T) {
+	cases := []struct{ path, version, want string }{
+		{"example.com/a b/c", "v2.0.0+incompatible", "pkg:golang/example.com/a%20b/c@v2.0.0%2Bincompatible"},
+		{"github.com/BurntSushi/toml", "v1.4.0", "pkg:golang/github.com/burntsushi/toml@v1.4.0"},
+		{"example.com/q?x/#y", "v1.0.0", "pkg:golang/example.com/q%3Fx/%23y@v1.0.0"},
+		{"golang.org/x/sys", "v0.0.0-20240101000000-abcdef123456", "pkg:golang/golang.org/x/sys@v0.0.0-20240101000000-abcdef123456"},
+	}
+	for _, c := range cases {
+		if got := purlGo(c.path, c.version); got != c.want {
+			t.Errorf("purlGo(%q, %q) = %q, want %q", c.path, c.version, got, c.want)
+		}
+	}
+}
+
+func TestReplacedModuleCarriesRevision(t *testing.T) {
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0"), Pins: pins(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range bom.Components {
-		if c.Name == "github.com/bharathvbcr/gusset" {
-			for _, p := range c.Properties {
-				if strings.Contains(p.Name, "revision") {
-					return
-				}
-			}
-			t.Fatal("replaced gusset module has no revision property")
+		if c.Name != "github.com/bharath"+"vbcr/gusset" {
+			continue
 		}
+		if c.Version != gussetSHA || c.PURL != "pkg:golang/github.com/bharathvbcr/gusset@"+gussetSHA {
+			t.Fatalf("version %q purl %q", c.Version, c.PURL)
+		}
+		for _, p := range c.Properties {
+			if p.Name == "go:revision" && p.Value == gussetSHA {
+				return
+			}
+		}
+		t.Fatal("replaced gusset module has no go:revision property")
 	}
 	t.Fatal("gusset component missing")
+}
+
+func TestRustPathCrateCarriesRevision(t *testing.T) {
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("1"), Cargo: cargo(), Pins: pins(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range bom.Components {
+		if c.Name != "gusset-engine" {
+			continue
+		}
+		for _, p := range c.Properties {
+			if p.Name == "cargo:revision" && p.Value == "947090b7fa8718cd257c9032f2641751ab8bc900" {
+				return
+			}
+		}
+		t.Fatal("path crate has no cargo:revision")
+	}
+	t.Fatal("gusset-engine component missing")
+}
+
+func TestParsePinsFailsClosed(t *testing.T) {
+	for name, text := range map[string]string{
+		"empty":     "# nothing\n",
+		"short sha": "gusset\thttps://x\tabc\n",
+		"columns":   "gusset https://x e561435afaf6cbfc0331108a14dda4d9595dae54\n",
+		"uppercase": "gusset\thttps://x\tE561435AFAF6CBFC0331108A14DDA4D9595DAE54\n",
+	} {
+		if _, err := ParsePins(text); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	if p, err := ParsePins(strings.ReplaceAll(pinsText, "\n", "\r\n")); err != nil || len(p) != 2 {
+		t.Errorf("CRLF pins: %v %v", p, err)
+	}
 }

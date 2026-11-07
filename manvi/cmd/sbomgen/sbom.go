@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"sort"
+	"strings"
 )
 
 // CycloneDX 1.5 is the format: a JSON document with a dependency graph, a
@@ -75,6 +76,9 @@ type CargoPackage struct {
 	Version string  `json:"version"`
 	Source  *string `json:"source"`
 	License *string `json:"license"`
+	// ManifestPath locates a path crate, which has no registry source, so it
+	// can be tied to the pinned checkout it comes from.
+	ManifestPath string `json:"manifest_path"`
 }
 
 // CargoResolve is the resolved dependency graph for the requested platform.
@@ -89,6 +93,55 @@ type CargoNode struct {
 	Deps []string `json:"dependencies"`
 }
 
+// Pin is one row of scripts/module-pins.txt: a sibling checkout the release
+// builds at an exact commit.
+type Pin struct {
+	Name string
+	URL  string
+	SHA  string
+}
+
+// ParsePins reads scripts/module-pins.txt: tab-separated name, URL, full
+// commit; blank lines and # comments ignored. A CRLF checkout is accepted.
+func ParsePins(text string) ([]Pin, error) {
+	var pins []Pin
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) < 3 {
+			return nil, fmt.Errorf("module pin line has fewer than 3 tab-separated columns: %q", line)
+		}
+		sha := strings.TrimSpace(cols[2])
+		if len(sha) != 40 || strings.Trim(sha, "0123456789abcdef") != "" {
+			return nil, fmt.Errorf("module pin %s: %q is not a full lowercase commit id", cols[0], sha)
+		}
+		pins = append(pins, Pin{Name: cols[0], URL: cols[1], SHA: sha})
+	}
+	if len(pins) == 0 {
+		return nil, errors.New("module pin file lists nothing")
+	}
+	return pins, nil
+}
+
+// pinFor finds the pin whose checkout directory name is a segment of the
+// path, preferring the deepest match so an unrelated parent directory with a
+// pin's name cannot claim the module.
+func pinFor(path string, pins []Pin) (Pin, bool) {
+	segs := strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' })
+	best, bestAt := Pin{}, -1
+	for _, p := range pins {
+		for i, seg := range segs {
+			if seg == p.Name && i > bestAt {
+				best, bestAt = p, i
+			}
+		}
+	}
+	return best, bestAt >= 0
+}
+
 // Input is everything one SBOM is built from.
 type Input struct {
 	Tag          string
@@ -99,6 +152,9 @@ type Input struct {
 	Cargo *CargoMetadata
 	// RustTarget names the triple Cargo was resolved for.
 	RustTarget string
+	// Pins are the module pins. Every replaced Go module and every Rust path
+	// crate must resolve to one, or Build fails.
+	Pins []Pin
 }
 
 func setting(info *debug.BuildInfo, key string) string {
@@ -110,12 +166,25 @@ func setting(info *debug.BuildInfo, key string) string {
 	return ""
 }
 
+// purlEscape percent-encodes one purl segment. url.PathEscape leaves '+'
+// alone; the purl spec wants it encoded.
+func purlEscape(seg string) string {
+	return strings.ReplaceAll(url.PathEscape(seg), "+", "%2B")
+}
+
+// purlGo follows the purl spec for golang: the namespace slashes stay
+// literal, each segment is escaped on its own, and namespace and name are
+// lowercase.
 func purlGo(path, version string) string {
-	return "pkg:golang/" + url.PathEscape(path) + "@" + url.PathEscape(version)
+	segs := strings.Split(strings.ToLower(path), "/")
+	for i, seg := range segs {
+		segs[i] = purlEscape(seg)
+	}
+	return "pkg:golang/" + strings.Join(segs, "/") + "@" + purlEscape(version)
 }
 
 func purlCargo(name, version string) string {
-	return "pkg:cargo/" + url.PathEscape(name) + "@" + url.PathEscape(version)
+	return "pkg:cargo/" + purlEscape(name) + "@" + purlEscape(version)
 }
 
 // Build assembles the BOM. It fails closed on a mismatch between what the
@@ -199,11 +268,21 @@ func Build(in Input) (*BOM, error) {
 		}
 		if m.Replace != nil {
 			c.Properties = append(c.Properties, Property{Name: "go:replace", Value: eff.Path + "@" + eff.Version})
-		}
-		// A module replaced by a local path or an unversioned main module has
-		// no version to put in a purl; leaving the purl out is more honest
-		// than inventing one.
-		if c.Version != "" && c.Version != "(devel)" && m.Replace == nil {
+			// A replace directive points at a sibling checkout, and build
+			// info records no revision for it. The release builds that
+			// checkout at a pinned commit, so the pin is the revision; with
+			// no pin the SBOM would name a module and no version of it.
+			pin, ok := pinFor(eff.Path, in.Pins)
+			if !ok {
+				return nil, fmt.Errorf("replaced module %s => %s has no pin in the module pins; the SBOM would carry no revision for it", m.Path, eff.Path)
+			}
+			c.Version = pin.SHA
+			c.PURL = purlGo(m.Path, pin.SHA)
+			c.Properties = append(c.Properties,
+				Property{Name: "go:revision", Value: pin.SHA},
+				Property{Name: "manvi:pin-source", Value: pin.URL},
+			)
+		} else if c.Version != "" && c.Version != "(devel)" {
 			c.PURL = purlGo(m.Path, m.Version)
 		}
 		if eff.Sum != "" {
@@ -216,7 +295,7 @@ func Build(in Input) (*BOM, error) {
 
 	deps := []Dependency{}
 	if in.Cargo != nil {
-		rust, edges, err := rustComponents(in.Cargo, in.RustTarget)
+		rust, edges, err := rustComponents(in.Cargo, in.RustTarget, in.Pins)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +329,7 @@ func Build(in Input) (*BOM, error) {
 	}, nil
 }
 
-func rustComponents(meta *CargoMetadata, target string) ([]Component, []Dependency, error) {
+func rustComponents(meta *CargoMetadata, target string, pins []Pin) ([]Component, []Dependency, error) {
 	if meta.Resolve == nil {
 		return nil, nil, errors.New("cargo metadata has no resolve graph (was it run with --no-deps?)")
 	}
@@ -278,7 +357,15 @@ func rustComponents(meta *CargoMetadata, target string) ([]Component, []Dependen
 			// Registry and git crates have a purl; path crates do not.
 			c.PURL = purlCargo(p.Name, p.Version)
 		} else {
-			c.Properties = append(c.Properties, Property{Name: "cargo:source", Value: "path"})
+			pin, ok := pinFor(p.ManifestPath, pins)
+			if !ok {
+				return nil, nil, fmt.Errorf("path crate %s (%s) is under no pinned checkout; the SBOM would carry no revision for it", p.Name, p.ManifestPath)
+			}
+			c.Properties = append(c.Properties,
+				Property{Name: "cargo:source", Value: "path"},
+				Property{Name: "cargo:revision", Value: pin.SHA},
+				Property{Name: "manvi:pin-source", Value: pin.URL},
+			)
 		}
 		if target != "" {
 			c.Properties = append(c.Properties, Property{Name: "cargo:target", Value: target})

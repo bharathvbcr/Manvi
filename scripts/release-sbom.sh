@@ -23,7 +23,7 @@ binary="$root/dist/${artifact}"
 test -s "$binary" || { echo "no binary at $binary" >&2; exit 1; }
 sbom="${binary}.sbom.cdx.json"
 
-args=(-binary "$binary" -tag "$RELEASE_TAG" -o "$sbom")
+args=(-binary "$binary" -tag "$RELEASE_TAG" -o "$sbom" -pins "$root/scripts/module-pins.txt")
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [[ -n "${rust_triple:-}" ]]; then

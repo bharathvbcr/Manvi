@@ -220,6 +220,20 @@ describe("release-rollback.sh", () => {
     assert.ok(!m.some((c) => c.startsWith("release delete-asset")));
   });
 
+  it("picks the previous release by semver, not by publish date, and skips odd tags", () => {
+    const list = JSON.stringify([
+      { tagName: "v0.9.0", publishedAt: "2026-11-05T00:00:00Z" },
+      { tagName: "v0.10.0", publishedAt: "2026-10-01T00:00:00Z" },
+      { tagName: "v0.2.0", publishedAt: "2026-11-01T00:00:00Z" },
+      { tagName: "v1.0.0-rc.1", publishedAt: "2026-11-06T00:00:00Z" },
+      { tagName: "nightly", publishedAt: "2026-11-07T00:00:00Z" },
+      { tagName: "v0.99.0", publishedAt: "2026-11-04T00:00:00Z" },
+    ]);
+    const { result, calls } = rollback({ GH_LIST: list });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(mutating(calls).includes("release edit v0.99.0 --latest"), JSON.stringify(mutating(calls)));
+  });
+
   it("uses PREVIOUS_TAG when given, and refuses one that is itself a pre-release", () => {
     const ok = rollback({ PREVIOUS_TAG: "v0.0.9" });
     assert.equal(ok.result.status, 0, ok.result.stderr);
@@ -252,11 +266,9 @@ describe("release-rollback.sh", () => {
   });
 });
 
-// KNOWN BREAK (w12 review): the rollback workflow is destructive and the
-// `dry_run` input defaults to false, so a fat-fingered run acts immediately.
-// Skipped so the suite stays green; remove `skip` when the default is true.
+// The rollback workflow is destructive, so its `dry_run` input defaults to true.
 describe("rollback-release.yml defaults", () => {
-  it("defaults dry_run to true", { skip: "known break: dry_run defaults to false" }, () => {
+  it("defaults dry_run to true", () => {
     const yml = readFileSync(path.join(REPO_ROOT, ".github/workflows/rollback-release.yml"), "utf8");
     const block = /dry_run:\n([\s\S]*?)\n\n/.exec(yml)?.[1] ?? "";
     assert.match(block, /default:\s*true/);

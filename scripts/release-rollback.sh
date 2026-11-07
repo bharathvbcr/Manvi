@@ -7,7 +7,7 @@
 #   MODE            prerelease (default) or draft
 #   DELETE_ASSETS   true to also delete the release's assets (default false)
 #   DELETE_TAG      true to also delete the git tag (default false); never implied
-#   PREVIOUS_TAG    release to restore as latest; default is the newest published
+#   PREVIOUS_TAG    release to restore as latest; default is the highest-semver published
 #                   non-draft, non-pre-release release other than ROLLBACK_TAG
 #   ROLLBACK_DRY_RUN=1 prints the mutating commands instead of running them
 #   GH_TOKEN, GH_REPO as for any gh call
@@ -57,8 +57,14 @@ if [[ -n "$previous" ]]; then
   state="$(gh release view "$previous" --json isDraft,isPrerelease)" || fail "release $previous does not exist"
   [[ "$(jq -r '.isDraft or .isPrerelease' <<<"$state")" == "false" ]] || fail "$previous is a draft or pre-release and cannot be latest"
 else
-  previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName,publishedAt \
-    | jq -r --arg tag "$tag" '[.[] | select(.tagName != $tag)] | sort_by(.publishedAt) | last | .tagName // empty')"
+  # Highest semver among the published, non-pre-release tags, not the most
+  # recently published: a patch release of an old line published today must
+  # not displace a newer line as latest.
+  previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName \
+    | jq -r --arg tag "$tag" '
+        [.[] | select(.tagName != $tag and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+             | {tagName, k: (.tagName | ltrimstr("v") | split(".") | map(tonumber))}]
+        | sort_by(.k) | last | .tagName // empty')"
 fi
 
 echo "Withdrawing $tag (mode: $mode, delete assets: $delete_assets, delete tag: $delete_tag)"

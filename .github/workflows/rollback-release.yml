@@ -36,14 +36,14 @@ on:
         type: boolean
         default: false
       previous_tag:
-        description: "Release to restore as latest (default: newest published release other than the tag)"
+        description: "Release to restore as latest (default: highest-semver published release other than the tag)"
         required: false
         type: string
       dry_run:
-        description: "Print the changes without making them"
+        description: "Print the changes without making them. Defaults on: untick it to withdraw for real."
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read

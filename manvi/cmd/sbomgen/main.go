@@ -6,7 +6,7 @@
 // a `cargo metadata` file resolved for the engine's target triple.
 //
 //	sbomgen -binary dist/manvi-v1.0.0-linux-amd64 -tag v1.0.0 \
-//	    -cargo-metadata cargo.json -rust-target x86_64-unknown-linux-musl \
+//	    -pins scripts/module-pins.txt -cargo-metadata cargo.json -rust-target x86_64-unknown-linux-musl \
 //	    -o dist/manvi-v1.0.0-linux-amd64.sbom.cdx.json
 package main
 
@@ -36,6 +36,7 @@ func run(args []string, stderr io.Writer) error {
 	tag := fs.String("tag", "", "release tag, for example v1.0.0")
 	cargoPath := fs.String("cargo-metadata", "", "cargo metadata JSON for the linked Rust engine (omit for a CGO_ENABLED=0 binary)")
 	rustTarget := fs.String("rust-target", "", "Rust target triple the cargo metadata was resolved for")
+	pinsPath := fs.String("pins", "", "scripts/module-pins.txt: the pinned commit recorded on each replaced Go module and Rust path crate")
 	out := fs.String("o", "", "output file")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
@@ -58,6 +59,15 @@ func run(args []string, stderr io.Writer) error {
 		BinarySHA256: digest,
 		Build:        info,
 		RustTarget:   *rustTarget,
+	}
+	if *pinsPath != "" {
+		raw, err := os.ReadFile(*pinsPath)
+		if err != nil {
+			return fmt.Errorf("read pins: %w", err)
+		}
+		if in.Pins, err = ParsePins(string(raw)); err != nil {
+			return fmt.Errorf("pins %s: %w", *pinsPath, err)
+		}
 	}
 	if *cargoPath != "" {
 		raw, err := os.ReadFile(*cargoPath)
