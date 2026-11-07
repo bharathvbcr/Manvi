@@ -72,8 +72,8 @@ func TestAdvReleaseRelativePathEntriesNeverExecPlantedBinary(t *testing.T) {
 			advChdir(t, root)
 			t.Setenv("PATH", entry)
 			got := toolBinary("MANVI_ADV_UNSET_DOT", name)
-			if filepath.IsAbs(got) || strings.ContainsRune(got, os.PathSeparator) {
-				t.Fatalf("toolBinary returned %q for a relative PATH entry %q", got, entry)
+			if got != unresolvedTool(name) {
+				t.Fatalf("toolBinary returned %q for a relative PATH entry %q, want the unresolvable %q", got, entry, unresolvedTool(name))
 			}
 			cmd := exec.CommandContext(t.Context(), got) //nolint:gosec // runs the resolver's answer, a planted script under t.TempDir, to prove it does not execute
 			cmd.Dir = root

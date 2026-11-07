@@ -94,6 +94,39 @@ func trustedLookPath(name string) (string, bool) {
 	return "", false
 }
 
+// unresolvedTool is what a release build returns when no trusted candidate
+// exists: an absolute path that cannot exist, so os/exec reports "no such file"
+// for it instead of searching PATH, and that still names the program looked
+// for (and the missing "manvi-no-trusted-" directory says why).
+func unresolvedTool(name string) string {
+	return filepath.Join(string(filepath.Separator), "manvi-no-trusted-"+name, name)
+}
+
+// untrustedNote explains an unresolved release-build result for an operator,
+// as doctor prints it: when the program does exist but only in a directory the
+// agent can write (beside the binary or on PATH), it says where. It returns ""
+// for a resolved value and for a program found nowhere.
+func untrustedNote(name, resolved string) string {
+	if resolved != unresolvedTool(name) {
+		return ""
+	}
+	var candidates []string
+	if dir := ownDir(); dir != "" {
+		candidates = append(candidates, filepath.Join(dir, name))
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if filepath.IsAbs(dir) {
+			candidates = append(candidates, filepath.Join(dir, name))
+		}
+	}
+	for _, c := range candidates {
+		if p, err := exec.LookPath(c); err == nil && agentWritable(p) {
+			return "found only in an agent-writable directory: " + p
+		}
+	}
+	return "not found beside this binary or on PATH"
+}
+
 // toolBinary resolves one of the analysis-plane executables this harness execs.
 // These run on the host, outside the gate, so where they come from is a trust
 // decision: a directory the agent can write (its working directory, anything
@@ -131,7 +164,9 @@ func trustedLookPath(name string) (string, bool) {
 // apply the agent-writable filter.
 //
 // An unfound binary is returned by bare name so the resulting error names what
-// was looked for.
+// was looked for, except in a release build, which returns unresolvedTool(name):
+// a bare name is searched through PATH again by os/exec at exec time, and that
+// search would find the agent-writable PATH entry the filter above just skipped.
 func toolBinary(envKey, name string) string {
 	if v := os.Getenv(envKey); v != "" {
 		if abs, err := filepath.Abs(v); err == nil {
@@ -148,7 +183,7 @@ func toolBinary(envKey, name string) string {
 		if p, ok := trustedLookPath(name); ok {
 			return p
 		}
-		return name
+		return unresolvedTool(name)
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p

@@ -132,6 +132,9 @@ func doctor(out io.Writer, reg *flags.Registry) error {
 
 	verifier := toolBinary("MANVI_VERIFY_BINARY", "dcverify")
 	_, _ = fmt.Fprintf(out, "  verifier        %s\n", verifier)
+	if note := untrustedNote("dcverify", verifier); note != "" {
+		_, _ = fmt.Fprintf(out, "                  %s\n", note)
+	}
 	if err := (rigorProbe{verifier}).check(); err != nil {
 		_, _ = fmt.Fprintf(out, "                  UNAVAILABLE: %v\n", err)
 		_, _ = fmt.Fprintln(out, "                  secret_scan, stub_detection, and diff_coverage will report as degraded")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -151,8 +152,8 @@ func TestAReleaseBuildNeverExecsAPlantedWorkspaceBinary(t *testing.T) {
 	if got == planted || strings.HasPrefix(got, root) {
 		t.Fatalf("release build resolved %q, the planted workspace binary", got)
 	}
-	if got != "dcverify-planted" {
-		t.Fatalf("toolBinary = %q, want the bare name when nothing trusted has it", got)
+	if got != unresolvedTool("dcverify-planted") {
+		t.Fatalf("toolBinary = %q, want the unresolvable value when nothing trusted has it", got)
 	}
 }
 
@@ -216,7 +217,7 @@ func TestAReleaseBuildSkipsAPATHEntryInsideTheWorkspace(t *testing.T) {
 		t.Fatalf("toolBinary = %q, want the PATH entry outside the workspace %q", got, good)
 	}
 	t.Setenv("PATH", inRepo)
-	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != "dcverify-pathin" {
+	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != unresolvedTool("dcverify-pathin") {
 		t.Fatalf("toolBinary = %q from a PATH inside the workspace", got)
 	}
 }
@@ -283,5 +284,40 @@ func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // the file must be executable to stand in for a tool; it lives under t.TempDir
 		t.Fatal(err)
+	}
+}
+
+// TestAReleaseBuildNeverFallsBackToExecTimePATHSearch: with nothing trusted,
+// the value returned must not be a bare name, which os/exec would search
+// through PATH again and resolve to the agent-writable entry just filtered out.
+func TestAReleaseBuildNeverFallsBackToExecTimePATHSearch(t *testing.T) {
+	root := t.TempDir()
+	inRepo := filepath.Join(root, "bin")
+	marker := filepath.Join(root, "marker")
+	advWriteScript(t, filepath.Join(inRepo, "dcverify"), marker)
+	advChdir(t, root)
+	t.Setenv("MANVI_PROJECT_ROOT", root)
+	releaseStandIn(t, filepath.Join(t.TempDir(), "install"))
+	t.Setenv("PATH", inRepo)
+
+	got := toolBinary("MANVI_TEST_NOFALLBACK", "dcverify")
+	if !strings.Contains(got, "dcverify") {
+		t.Fatalf("toolBinary = %q, want a value naming dcverify", got)
+	}
+	if err := exec.CommandContext(t.Context(), got).Run(); err == nil { //nolint:gosec // proves the resolver's answer does not execute the planted script
+		t.Fatal("exec of the unresolved value succeeded")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("planted dcverify in an agent-writable PATH entry ran via %q", got)
+	}
+	if note := untrustedNote("dcverify", got); !strings.Contains(note, filepath.Join(inRepo, "dcverify")) || !strings.Contains(note, "agent-writable") {
+		t.Fatalf("untrustedNote = %q, want it to name the untrusted candidate", note)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if note := untrustedNote("dcverify", toolBinary("MANVI_TEST_NOFALLBACK", "dcverify")); !strings.Contains(note, "not found") {
+		t.Fatalf("untrustedNote for an absent program = %q", note)
+	}
+	if note := untrustedNote("dcverify", "/some/path/dcverify"); note != "" {
+		t.Fatalf("untrustedNote for a resolved value = %q, want empty", note)
 	}
 }
