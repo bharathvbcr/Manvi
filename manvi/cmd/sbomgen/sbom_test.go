@@ -206,3 +206,46 @@ func TestRunReadsForeignBinary(t *testing.T) {
 		t.Fatal("a non-JSON cargo file must be refused")
 	}
 }
+
+// KNOWN BREAK (w12 review): purlGo uses url.PathEscape on the whole module
+// path, so github.com/a/b becomes github.com%2Fa%2Fb. The purl spec keeps the
+// namespace slashes literal (pkg:golang/github.com/a/b@v1.2.3), so scanners
+// will not match these components. Remove the Skip when purlGo is fixed.
+func TestKnownBreakPurlKeepsNamespaceSlashes(t *testing.T) {
+	t.Skip("known break: purl escapes '/' as %2F; see review w12-release")
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range bom.Components {
+		if c.Name == "github.com/a/b" && c.PURL != "pkg:golang/github.com/a/b@v1.2.3" {
+			t.Fatalf("purl = %q", c.PURL)
+		}
+	}
+}
+
+// KNOWN BREAK (w12 review): DevCouncil and gusset are linked through replace
+// directives to sibling checkouts, so build info records version v0.0.0 or
+// (devel) and no commit. The SBOM then names no revision for the two modules
+// the release pins in scripts/module-pins.txt. Repro: CGO_ENABLED=0 go build
+// ./cmd/manvi, then sbomgen: the DevCouncil component has only
+// go:replace=../../DevCouncil/...@(devel). Fix: accept the pins and add a
+// revision property, or fail when a replaced module carries none.
+func TestKnownBreakReplacedModuleCarriesRevision(t *testing.T) {
+	t.Skip("known break: replaced sibling modules carry no commit; see review w12-release")
+	bom, err := Build(Input{Tag: "v1.0.0", BinaryName: "b", BinarySHA256: digest, Build: buildInfo("0")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range bom.Components {
+		if c.Name == "github.com/bharathvbcr/gusset" {
+			for _, p := range c.Properties {
+				if strings.Contains(p.Name, "revision") {
+					return
+				}
+			}
+			t.Fatal("replaced gusset module has no revision property")
+		}
+	}
+	t.Fatal("gusset component missing")
+}

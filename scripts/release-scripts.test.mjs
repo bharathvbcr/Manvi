@@ -251,3 +251,14 @@ describe("release-rollback.sh", () => {
     assert.match(result.stdout, /git\/refs\/tags\/v0\.2\.0/);
   });
 });
+
+// KNOWN BREAK (w12 review): the rollback workflow is destructive and the
+// `dry_run` input defaults to false, so a fat-fingered run acts immediately.
+// Skipped so the suite stays green; remove `skip` when the default is true.
+describe("rollback-release.yml defaults", () => {
+  it("defaults dry_run to true", { skip: "known break: dry_run defaults to false" }, () => {
+    const yml = readFileSync(path.join(REPO_ROOT, ".github/workflows/rollback-release.yml"), "utf8");
+    const block = /dry_run:\n([\s\S]*?)\n\n/.exec(yml)?.[1] ?? "";
+    assert.match(block, /default:\s*true/);
+  });
+});
