@@ -47,10 +47,13 @@ func noHolds(m *managedLifecycle) func() bool {
 	}
 }
 
-// A checkout directory deleted and recreated is a new directory to the guard, so
-// a second run is admitted there while the first is held. The held run's reaper
-// must act on the record only if it is the held run's own: the record at the path
-// is the live second run's, and its block and record are left alone.
+// A checkout directory deleted and recreated is a new directory by identity, but
+// the held run's path names it again, and a hold covers what the group can write
+// by that path, so admission now refuses a second run there (it used to admit it).
+// What this test is about does not depend on admission: when a live run's block
+// and record are at the path anyway (a run admitted before a restart, or any other
+// route), the held run's reaper must act on the record only if it is the held
+// run's own, and leave the live run's block and record alone.
 func TestTheReaperLeavesALiveRunsBlockAndRecordAlone(t *testing.T) {
 	root, session, m := heldRun(t, map[string]string{"CLAUDE.md": "project rules\n"})
 	if err := os.Rename(root, root+".old"); err != nil {
@@ -61,8 +64,8 @@ func TestTheReaperLeavesALiveRunsBlockAndRecordAlone(t *testing.T) {
 	}
 	writeRaw(t, root, "CLAUDE.md", "rules2\n")
 	job := m.otherAttempt("second", ManagedHarness{Kind: "named", Name: "x"})
-	if err := m.runner.enterCheckout(job, managedRun{Cwd: root}); err != nil {
-		t.Fatalf("the recreated directory was refused, so the scenario did not arise: %v", err)
+	if err := m.runner.enterCheckout(job, managedRun{Cwd: root}); busyCode(err) != ErrHarnessBusy {
+		t.Fatalf("a run was admitted at the path of a held checkout whose directory was recreated: %v", err)
 	}
 	live, err := materialiseHarness(root, "claude", specWithSections(t, houseRules))
 	if err != nil {
