@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -225,12 +226,62 @@ func PathIsInside(root, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if lexicallyInside(resolvedRoot, resolvedPath) {
+		return true, nil
+	}
+	// The spelling says outside, which is only decisive on a volume whose names
+	// are exact. Where case differences are not distinctions (APFS and NTFS by
+	// default) .../REPO/f and .../repo name one place, so ask the file system:
+	// the path is inside when it or an ancestor of it is the root directory.
+	return ancestorIsRoot(resolvedRoot, resolvedPath)
+}
+
+// lexicallyInside is the spelling-only containment test.
+func lexicallyInside(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		// Different volumes cannot contain one another.
-		return false, nil
+		return false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// ancestorIsRoot walks up from path and reports whether the nearest existing
+// ancestor, or any above it, is the same file as root (os.SameFile: device and
+// inode, volume serial and file index on Windows). It does not fold case, which
+// would be wrong on a case-sensitive volume, and it also sees any other
+// aliasing the spelling hides. A root that does not exist cannot contain
+// anything. An ancestor that exists but cannot be examined is an error, not
+// "outside": a refusal's test must not read a failed check as a clean one.
+func ancestorIsRoot(root, path string) (bool, error) {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		if isAbsent(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for current := path; ; {
+		info, err := os.Stat(current)
+		switch {
+		case err == nil:
+			if os.SameFile(rootInfo, info) {
+				return true, nil
+			}
+		case !isAbsent(err):
+			return false, err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+		current = parent
+	}
+}
+
+// isAbsent says a path is not there, as opposed to being there and unreadable.
+func isAbsent(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // resolveExisting resolves symlinks over the longest existing prefix of path,
