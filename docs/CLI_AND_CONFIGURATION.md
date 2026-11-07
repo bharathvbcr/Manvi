@@ -117,7 +117,7 @@ Safety-critical and `startup` are separate properties. Most safety flags — `ha
 > The model/agent execution plane has **no access** to the flag registry. An agent cannot alter its own gates.
 
 > [!NOTE]
-> `startup` bounds *when* a value may move, not *who* may supply it. Every flag, `startup` ones included, can be set before boot from `MANVI_<KEY>` or from `.devcouncil/config.yaml` — which the managed `.gitignore` rules deliberately keep committable (`.devcouncil/*` followed by `!.devcouncil/config.yaml`), so it arrives with a `git clone`. Settings resolve lowest-first: catalogue default, then `.devcouncil/config.yaml`, then `MANVI_<KEY>`. Run `manvi flags` to see which layer supplied each value in force. The `llm.tier.*` keys are the exception: they are refused in `.devcouncil/config.yaml` and read from the user config instead — see [Tier profile](#tier-profile).
+> `startup` bounds *when* a value may move, not *who* may supply it. Every flag, `startup` ones included, can be set before boot from `MANVI_<KEY>` or from `.devcouncil/config.yaml`, except the operator-scope keys below — which the managed `.gitignore` rules deliberately keep committable (`.devcouncil/*` followed by `!.devcouncil/config.yaml`), so it arrives with a `git clone`. Settings resolve lowest-first: catalogue default, then `.devcouncil/config.yaml`, then `MANVI_<KEY>`. Run `manvi flags` to see which layer supplied each value in force. The `llm.tier.*` keys, `harness.spec`, and the endpoint and provider keys (`llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url`, `llm.provider.default`) are the exception: they are refused in `.devcouncil/config.yaml`. Tier and endpoint keys are read from the user config instead — see [Tier profile](#tier-profile).
 
 ### Full Flag Catalogue
 
@@ -313,14 +313,15 @@ developing the Gemini adapter and is not part of the shipped binary.
 | `llm.local.guidance_router` | `MANVI_LLM_LOCAL_GUIDANCE_ROUTER` | `true` | No | `human` | Route the system prompt at compact density for local models: the same sections, worded tighter. Measured at ~901 estimated tokens down to ~696. Rules are never compressed or dropped — identity, posture, task rules, the policy rule and the tool contract survive any budget. |
 
 > [!WARNING]
-> `llm.xai.base_url` and `llm.gemini.base_url` name the host that receives the
-> provider API key. Both are settable from a committed `.devcouncil/config.yaml`,
-> and neither is marked safety-critical — so neither appears in the **WEAKENED**
-> banner that `manvi doctor` and the run report print. A repository that ships a
-> `config.yaml` pointing one of them at a host you did not choose will send your
-> credential there without any gate saying so. Read a checked-out `config.yaml`
-> before running against it, and confirm both values with `manvi flags --all`,
-> which reports `config` as the origin of anything that file set.
+> `llm.xai.base_url`, `llm.gemini.base_url`, `llm.local.base_url` and
+> `llm.provider.default` decide where a provider credential is sent, or which
+> credential is used, so they are operator scope. `.devcouncil/config.yaml`
+> arrives with a clone and an agent can write it under a relaxed posture, so a
+> line in it that sets any of the four is refused at startup, naming the key,
+> whatever else the file says. Set them with `MANVI_LLM_XAI_BASE_URL` (and the
+> matching `MANVI_LLM_*` variable), in the user config outside the repository,
+> or with `manvi flags set`. A proxy URL that used to be committed in the
+> repository file has to move to one of those.
 
 `MANVI_TUI_THEME` (`dark`, `light`, `plain`) is **not** a catalogue flag. It is read
 directly with `os.Getenv` in `ui/tui/theme.go`, so it does not appear in `manvi flags`,
@@ -360,7 +361,7 @@ places, lowest first:
    `~/Library/Application Support/manvi/config.yaml`, on Linux
    `~/.config/manvi/config.yaml`), or the absolute path in `MANVI_USER_CONFIG`.
    It uses the same format as `.devcouncil/config.yaml`, carries `llm.tier.*`
-   keys only — any other key is refused, naming it — and is refused outright if
+   keys and the four endpoint and provider keys only — any other key is refused, naming it — and is refused outright if
    it resolves, through the variable or a symlink, to a path inside the
    repository. Values from it show as origin `config` in `manvi flags` and as
    `user config <path>` in `manvi tiers`. A process with no user config

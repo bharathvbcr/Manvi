@@ -49,24 +49,6 @@ func harnessFlagDefs() []flags.Def {
 	}}
 }
 
-// refuseRepositoryHarnessSpec refuses a repository config that sets
-// harness.spec, naming the rule. Without it the line would fail as an unknown
-// key, which reads as a typo; this reads as what it is. The key is operator
-// scope, set with MANVI_HARNESS_SPEC or `manvi flags set harness.spec NAME`.
-func refuseRepositoryHarnessSpec(path string) error {
-	layer, err := readConfigFile(path)
-	if err != nil {
-		return err
-	}
-	if _, set := layer.Values[harnessSpecKey]; !set {
-		return nil
-	}
-	return fmt.Errorf("%s sets %s, which is operator scope: it selects text that joins every turn's system "+
-		"prompt, and this file ships with a clone and can be written by an agent under a relaxed posture. "+
-		"Remove that line; select a spec with %s or 'manvi flags set %s NAME'. The spec file itself can live in %s",
-		path, harnessSpecKey, flags.EnvKey(harnessSpecKey), harnessSpecKey, harness.SpecsDir)
-}
-
 // specIdentity is what the log records about the spec a prompt carried. Both
 // fields are empty when none was applied, including when one was named and
 // refused: the log describes the prompt that was sent.
