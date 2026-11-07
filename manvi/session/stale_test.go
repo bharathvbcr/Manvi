@@ -128,6 +128,9 @@ func TestOnlyReasoningBehindTheEditAndBeforeItIsStripped(t *testing.T) {
 		}
 	}
 	// Only reasoning goes: round 2's text and call survive.
+	if len(out) <= 5 {
+		t.Fatalf("only %d messages survive, want round 2 at index 5", len(out))
+	}
 	if len(out[5].Content) != 2 || out[5].Text() != "step 2" || len(out[5].ToolCalls()) != 1 {
 		t.Errorf("stripping touched more than reasoning: %+v", out[5].Content)
 	}
