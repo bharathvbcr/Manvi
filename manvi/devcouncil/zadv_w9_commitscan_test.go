@@ -152,9 +152,12 @@ func TestZAdvIndirection(t *testing.T) {
 		{name: "alias-names-a-builtin-spelling", direct: [][]string{{"config", "alias.commit-all", "commit"}}, cmd: "git commit-all -m x"},
 		{name: "alias-with-options-x", direct: [][]string{{"config", "alias.zz", "commit --no-verify -m via-alias"}}, cmd: "git zz"},
 		{name: "alias-shell-uses-var", direct: [][]string{{"config", "alias.zz", "!sh -c 'git $0 -m x' commit"}}, cmd: "git zz"},
-		{name: "alias-shell-xargs", direct: [][]string{{"config", "alias.zz", "!echo commit | xargs git"}}, cmd: "git zz"},
+		// The message comes from the command line, never an editor: the shell has
+		// no terminal, so a commit that opens one waits out the exec timeout and
+		// commits nothing, which proves nothing about the guard.
+		{name: "alias-shell-xargs", direct: [][]string{{"config", "alias.zz", "!echo commit -m x | xargs git"}}, cmd: "git zz"},
 		{name: "fixup", cmd: "git commit --fixup=HEAD"},
-		{name: "squash", cmd: "git commit --squash=HEAD"},
+		{name: "squash", cmd: "GIT_EDITOR=true git commit --squash=HEAD"},
 		{name: "reuse-message-long", cmd: "git commit --reuse-message=HEAD"},
 		{name: "amend-changed-index", cmd: "git commit --amend --no-edit"},
 		{name: "editor-env-stages", clean: true, files: map[string]string{"ed.sh": editor}, cmd: "GIT_EDITOR=./ed.sh git commit -e -m x"},
