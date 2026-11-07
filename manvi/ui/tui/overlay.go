@@ -536,8 +536,7 @@ func (a *App) acceptOverlay() []Effect {
 		a.overlay = nil
 		for i, v := range a.views {
 			if v.ID == item.Value {
-				a.active = i
-				a.mode = ModeSession
+				a.showSession(i)
 			}
 		}
 		return nil

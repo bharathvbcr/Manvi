@@ -347,6 +347,7 @@ func TestAnOverlayOverACardRestartsTheQuietPeriod(t *testing.T) {
 	if a.overlay != nil {
 		t.Fatal("the palette did not close")
 	}
+	drawAt(a, 100, 30) // the frame that follows every input
 	clk.advance(40 * time.Millisecond)
 	if effects := key(a, "enter"); len(effects) != 0 {
 		t.Fatalf("enter 40 ms after the palette closed answered the card: %#v", effects)

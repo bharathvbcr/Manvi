@@ -138,12 +138,34 @@ func (a *App) Current() *AgentView {
 	return a.views[a.active]
 }
 
+// setActive is the one place the active session changes. Leaving a session
+// closes its approval card's gate: the card is about to be off screen, and the
+// time it spends there is not time the operator spent reading it.
+func (a *App) setActive(idx int) {
+	a.leaveCurrent()
+	a.active = idx
+}
+
+// showSession makes idx the session on screen.
+func (a *App) showSession(idx int) {
+	a.setActive(idx)
+	a.mode = ModeSession
+}
+
+// leaveCurrent takes the current session's card off screen without changing
+// which session is current, as the dashboard does.
+func (a *App) leaveCurrent() {
+	if card := a.Current().Approval(); card != nil {
+		card.leave()
+	}
+}
+
 // AddSession registers a session and makes it active.
 func (a *App) AddSession(id, title string) *AgentView {
 	v := NewAgentView(id, title)
 	v.Status = Status{Sessions: len(a.views) + 1}
 	a.views = append(a.views, v)
-	a.active = len(a.views) - 1
+	a.setActive(len(a.views) - 1)
 	a.dashboard.Invalidate()
 	a.syncCounts()
 	return v
@@ -410,17 +432,18 @@ func approvalAlwaysLive(binding string) bool {
 	return false
 }
 
-// noteOverlayInput counts input an overlay consumes against the card behind
-// it. The card is painted and the clock runs while a palette is open over it,
-// but the operator is reading the palette, not the card: without this, Esc to
-// close the palette followed by Enter would land on a card nobody has looked at.
+// noteOverlayInput treats input an overlay consumes as the operator being away
+// from the card behind it. The card is painted and the clock runs while a
+// palette is open over it, but the operator is reading the palette, not the
+// card: without this, Esc to close the palette followed by Enter would land on
+// a card nobody has looked at, and an already armed card would take it.
 func (a *App) noteOverlayInput() {
 	if a.overlay == nil {
 		return
 	}
 	if v := a.Current(); v != nil {
 		if card := v.Approval(); card != nil {
-			card.refuse()
+			card.leave()
 		}
 	}
 }
@@ -507,8 +530,7 @@ func (a *App) accept() []Effect {
 	}
 	if a.mode == ModeDashboard {
 		if len(a.views) > 0 {
-			a.active = a.dashboard.Selected()
-			a.mode = ModeSession
+			a.showSession(a.dashboard.Selected())
 		}
 		return nil
 	}
@@ -617,9 +639,17 @@ func (a *App) RemoveSession(id string) {
 		if v.ID != id {
 			continue
 		}
+		if i == a.active {
+			a.leaveCurrent()
+		}
 		a.views = append(a.views[:i], a.views[i+1:]...)
-		if a.active >= len(a.views) {
-			a.active = len(a.views) - 1
+		switch {
+		case i < a.active:
+			// The index named the view that was on screen; the splice moved
+			// it down one, and the screen must keep showing the same view.
+			a.setActive(a.active - 1)
+		case a.active >= len(a.views):
+			a.setActive(len(a.views) - 1)
 		}
 		a.dashboard.Clamp(len(a.views))
 		a.dashboard.Invalidate()
