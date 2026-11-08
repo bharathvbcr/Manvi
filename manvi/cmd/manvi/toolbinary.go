@@ -5,7 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // toolExecutable names the running binary. It is a variable so a test can stand
@@ -40,20 +41,17 @@ func ownDir() string {
 	return filepath.Dir(exe)
 }
 
-// agentWritable reports whether path, symlinks resolved, lies inside the
-// project root or the working directory: the two places the agent can write,
-// by `cargo build` or by plain file writes. It decides by relative path between
-// resolved, cleaned paths, never by string prefix, so /work/repo-evil is not
-// "inside" /work/repo and a symlink out of the tree does not hide a file in it.
-// A path it cannot resolve is treated as agent-writable, failing closed.
+// agentWritable reports whether path lies inside the project root or the
+// working directory: the two places the agent can write, by `cargo build` or by
+// plain file writes. Containment is mcp.PathIsInside, the repository's one rule
+// for "could a checked-out tree have written this file": it resolves symlinks,
+// compares by path rather than string prefix, and asks the file system when the
+// spelling differs only in case on a case-insensitive volume. A path or root it
+// cannot examine is treated as agent-writable, failing closed.
 //
 // A containing directory that is the filesystem root is ignored: a daemon
 // started with cwd "/" would otherwise distrust every installed binary.
 func agentWritable(path string) bool {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return true
-	}
 	roots := []string{projectRoot()}
 	if cwd, err := os.Getwd(); err == nil {
 		roots = append(roots, cwd)
@@ -62,15 +60,11 @@ func agentWritable(path string) bool {
 		if root == "" {
 			continue
 		}
-		if r, err := filepath.EvalSymlinks(root); err == nil {
-			root = r
-		}
-		root = filepath.Clean(root)
-		if root == filepath.Dir(root) {
+		if clean := filepath.Clean(root); clean == filepath.Dir(clean) {
 			continue
 		}
-		rel, err := filepath.Rel(root, resolved)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		inside, err := mcp.PathIsInside(root, path)
+		if err != nil || inside {
 			return true
 		}
 	}
