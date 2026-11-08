@@ -36,6 +36,31 @@ func nativeTools(reg *flags.Registry) (*devcouncil.Registry, *tools.Registry, er
 // degraded mode: with nothing attached, a soft block is refused exactly as it
 // was before this parameter existed.
 func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Registry, *tools.Registry, error) {
+	return buildNativeTools(reg, approver, nil)
+}
+
+// agentTools builds the surface a model-driven session holds: nativeToolsWith's,
+// plus the work_* board tools bound to this repository's store.
+//
+// This is the one place a face opts the agent in to the board, and `manvi run`
+// and the TUI are the only callers (TestWorkBindingIsReachedOnlyFromRunAndTUI
+// holds that list). `manvi reflect`, the verify critic, `manvi tool` and
+// `manvi serve` build through nativeToolsWith and so offer no board tool; a
+// sub-agent's registry is cut from its parent's and drops them (see
+// subAgentRunner.prepare).
+//
+// sessionID names the run in every request id and audit line. It is the host's
+// own identifier, never anything the model wrote, and it is used only when it
+// fits the work binding's alphabet and length; otherwise the Registry mints one.
+//
+// SECURITY IMPACT: see docs/WORKBENCH.md, "Owner decisions of 2026-11-07".
+func agentTools(reg *flags.Registry, approver ui.Approver, sessionID string) (*devcouncil.Registry, *tools.Registry, error) {
+	return buildNativeTools(reg, approver, devcouncil.WorkBindingFor(sessionID))
+}
+
+// buildNativeTools is the one constructor behind both. work is nil for every
+// surface that is not a model-driven session.
+func buildNativeTools(reg *flags.Registry, approver ui.Approver, work *devcouncil.WorkBinding) (*devcouncil.Registry, *tools.Registry, error) {
 	g, subsystems, err := buildGate(reg)
 	if err != nil {
 		return nil, nil, err
@@ -87,6 +112,7 @@ func nativeToolsWith(reg *flags.Registry, approver ui.Approver) (*devcouncil.Reg
 		},
 		KnownSecret:       knownSecretIn(toolScrubber, toolResolver),
 		KnownSecretMaxLen: knownSecretMaxLenIn(toolScrubber, toolResolver),
+		Work:              work,
 	})
 	if err != nil {
 		_ = mc.Close()
@@ -255,8 +281,11 @@ func harnessFor(pipeline *tools.Registry) (*subAgentRunner, harnessCapability) {
 	return subRunners[pipeline], harnessCaps[pipeline]
 }
 
+// listTools prints the surface `manvi run` and the TUI offer a model, board
+// tools included: the documented tool counts are this list's length. Listing is
+// all it does; `manvi tool` builds without the board (see agentTools).
 func listTools(out io.Writer, reg *flags.Registry) error {
-	_, pipeline, err := nativeTools(reg)
+	_, pipeline, err := agentTools(reg, nil, "")
 	if err != nil {
 		return err
 	}

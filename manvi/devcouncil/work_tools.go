@@ -66,6 +66,28 @@ func workIdent(s string) bool {
 	return true
 }
 
+// WorkBindingFor is the binding a host builds for one session. runID is the
+// host's own identifier for the session and is used only when it passes
+// validate; otherwise the binding is left without one and the Registry mints a
+// random one, so a resumed session whose stored id is longer than the store's
+// identifier rule still gets the tools rather than a constructor error.
+func WorkBindingFor(runID string) *WorkBinding {
+	binding := &WorkBinding{RunID: runID}
+	if binding.validate() != nil {
+		binding.RunID = ""
+	}
+	return binding
+}
+
+// workToolPrefix names every board tool. MCP tools carry an mcp_ prefix and
+// the native catalogue a devcouncil_ one, so nothing else can take it.
+const workToolPrefix = "work_"
+
+// IsWorkTool reports whether name is one of the agent-facing board tools.
+// A host that cuts a child's registry from its parent's asks this to take them
+// out: a child never holds the board, reads included.
+func IsWorkTool(name string) bool { return strings.HasPrefix(name, workToolPrefix) }
+
 func (b *WorkBinding) validate() error {
 	if b == nil || b.RunID == "" {
 		return nil
@@ -1161,8 +1183,12 @@ func (r *Registry) workAPIFor() *workAPI {
 //
 // Every tool is Extended: none is part of the edit loop, and the core profile
 // drops them. The writes Require devcouncil_checkout_task because a write needs
-// the lease whose liveness gates it; the reads need none and may be used by an
-// inherited sub-agent.
+// the lease whose liveness gates it; the reads need none.
+//
+// A sub-agent holds none of them: the host's sub-agent floor removes every tool
+// IsWorkTool recognises from a child's registry, reads included. The handlers
+// still treat an inherited session as read-only (see the Inherited check in the
+// write path), which is the second line behind that absence, not the first.
 func (r *Registry) workTools() []tools.Tool {
 	api := r.workAPIFor()
 	if api == nil {

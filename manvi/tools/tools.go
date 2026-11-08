@@ -957,7 +957,29 @@ func (r *Registry) dispatch(ctx context.Context, call Call) Result {
 	if !isActive {
 		return Errorf("%s", inactiveMessage(tool))
 	}
-	return tool.Handler(ctx, call)
+	return tool.Handler(withDispatcher(ctx, r), call)
+}
+
+type dispatcherKey struct{}
+
+func withDispatcher(ctx context.Context, r *Registry) context.Context {
+	return context.WithValue(ctx, dispatcherKey{}, r)
+}
+
+// Dispatcher is the registry whose Run is executing this handler, or nil when
+// the context did not come through one.
+//
+// A tool value is copied into every Subset and clone, closure and all, so a
+// handler that captured the registry it was registered on acts on that
+// registry from inside a child's. A handler that reads or changes registry
+// state (search, activation) asks this instead and acts on the registry that
+// actually dispatched it, which for a child is the child's own.
+func Dispatcher(ctx context.Context) *Registry {
+	if ctx == nil {
+		return nil
+	}
+	r, _ := ctx.Value(dispatcherKey{}).(*Registry)
+	return r
 }
 
 // ActivateToolName is the tool a model calls to activate others in dynamic mode.

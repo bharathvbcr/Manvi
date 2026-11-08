@@ -671,6 +671,19 @@ func (r *Registry) authorisingTask(ctx context.Context, verb string) (*dc.Task, 
 	return task, nil
 }
 
+// dispatchingRegistry is the tool registry a search or activation acts on: the
+// one that dispatched this call, so a sub-agent's Subset (which copies this
+// handler with the parent's registry captured) searches and activates only what
+// the child holds, and activating a tool the child's registry lacks fails as
+// unknown rather than loading it onto the parent. Registry attached by Register
+// is the fallback for a call that did not come through a tools.Registry.
+func (r *Registry) dispatchingRegistry(ctx context.Context) *tools.Registry {
+	if d := tools.Dispatcher(ctx); d != nil {
+		return d
+	}
+	return r.toolsReg
+}
+
 func (r *Registry) searchTools(ctx context.Context, call tools.Call) tools.Result {
 	var args struct {
 		Query string `json:"query"`
@@ -678,10 +691,11 @@ func (r *Registry) searchTools(ctx context.Context, call tools.Call) tools.Resul
 	if err := decode(call, &args); err != nil {
 		return tools.Errorf("bad arguments: %v", err)
 	}
-	if r.toolsReg == nil {
+	reg := r.dispatchingRegistry(ctx)
+	if reg == nil {
 		return unavailable("tool search", errors.New("tool registry not attached"))
 	}
-	summaries := r.toolsReg.Search(args.Query)
+	summaries := reg.Search(args.Query)
 	return ok(map[string]any{
 		"results": summaries,
 		"count":   len(summaries),
@@ -698,16 +712,17 @@ func (r *Registry) activateTools(ctx context.Context, call tools.Call) tools.Res
 	if len(args.Tools) == 0 {
 		return tools.Errorf("tools array is required and must not be empty")
 	}
-	if r.toolsReg == nil {
+	reg := r.dispatchingRegistry(ctx)
+	if reg == nil {
 		return unavailable("tool activation", errors.New("tool registry not attached"))
 	}
-	activated, err := r.toolsReg.Activate(args.Tools...)
+	activated, err := reg.Activate(args.Tools...)
 	if err != nil {
 		return tools.Errorf("activation failed: %v", err)
 	}
 	return ok(map[string]any{
 		"activated":    activated,
-		"active_count": len(r.toolsReg.ActiveSchemas()),
+		"active_count": len(reg.ActiveSchemas()),
 		"status":       "tools successfully loaded into active context",
 	})
 }

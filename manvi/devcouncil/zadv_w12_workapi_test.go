@@ -757,9 +757,17 @@ func TestAdvWorkNilBindingRegistersNothingAndChangesNoCount(t *testing.T) {
 	}
 }
 
-// Nothing outside this package may construct the binding: the host must opt in
-// in code a reviewer sees.
+// Nothing outside this package may construct the binding except the one host
+// constructor that opts in, in code a reviewer sees. Before the 2026-11-07
+// wiring decision the allowed set was empty; the decision made cmd/manvi's
+// agentTools (harness.go) the single opt-in, and its guard test
+// (cmd/manvi/workwire_test.go, which names the type in order to forbid it) is
+// the only other file that may mention it. Any third file is still a failure.
 func TestAdvWorkNothingOutsideDevcouncilSetsTheBinding(t *testing.T) {
+	allowed := map[string]bool{
+		"cmd/manvi/harness.go":       true,
+		"cmd/manvi/workwire_test.go": true,
+	}
 	var hits []string
 	fsys := os.DirFS("..")
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
@@ -779,7 +787,7 @@ func TestAdvWorkNothingOutsideDevcouncilSetsTheBinding(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(src), "WorkBinding") {
+		if strings.Contains(string(src), "WorkBinding") && !allowed[path] {
 			hits = append(hits, path)
 		}
 		return nil
@@ -788,6 +796,6 @@ func TestAdvWorkNothingOutsideDevcouncilSetsTheBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(hits) != 0 {
-		t.Errorf("files outside devcouncil construct or name WorkBinding: %v", hits)
+		t.Errorf("files outside devcouncil and the one allowed host constructor construct or name WorkBinding: %v", hits)
 	}
 }

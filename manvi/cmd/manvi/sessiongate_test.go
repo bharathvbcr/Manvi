@@ -30,7 +30,7 @@ func TestSessionAnswersFromTheGateItWritesThrough(t *testing.T) {
 	}
 	defer setProjectRootForTest(root)()
 
-	s, err := newSessionState(newTestRegistry(t), "S1", nil)
+	s, err := newSessionState(newTestRegistry(t), "S1", "", nil)
 	if err != nil {
 		t.Fatalf("session state: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestAllowInASessionReachesTheLedgerTheAgentIsJudgedBy(t *testing.T) {
 
 	s, err := newSessionState(registryWith(t, map[string]string{
 		flags.HarnessPosture: flags.PostureStrict,
-	}), "S1", nil)
+	}), "S1", "", nil)
 	if err != nil {
 		t.Fatalf("session state: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestCheckInASessionConsultsTheNavigationIndex(t *testing.T) {
 	}
 	defer setProjectRootForTest(root)()
 
-	s, err := newSessionState(newTestRegistry(t), "S1", nil)
+	s, err := newSessionState(newTestRegistry(t), "S1", "", nil)
 	if err != nil {
 		t.Fatalf("session state: %v", err)
 	}

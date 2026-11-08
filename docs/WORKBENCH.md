@@ -1023,7 +1023,7 @@ passed separately; task-enhancement semantic quality still requires evaluation.
 ## Owner decisions of 2026-11-07
 
 Recorded from board card ft-10d901e9. Both are decisions, and each is built by
-its own implementation card. **Decision 1 is built, as its in-process release
+its own implementation card. **Decision 1 is built and wired, as its in-process release
 only** (card ft-ad5dfc70; see "What shipped: the in-process release" below).
 Decision 2 is not built: no code for it ships, and its sequencing note stands.
 Evidence labels: **verified** (read in code or schema at this commit),
@@ -1054,12 +1054,46 @@ channel back to Manvi; that exposure needs a per-run host-brokered channel and
 its own security-impact statement, and is **not shipped**. `hello.ops` and the
 host connection's `work.*` set are unchanged (`serve/` gained tests only).
 
-**Off unless the host opts in.** The tools exist only when the host sets
-`devcouncil.Deps.Work` (a `WorkBinding`). With it nil the Registry registers none
-of them, as it registers no fetch tool without a configured host, and the
-documented tool counts do not move. **No shipped command sets it yet**: enabling
-the tools in `manvi run` or the TUI is a separate host decision and a
-one-line wiring change in `cmd/manvi`, deliberately not made here.
+**On for two commands, off everywhere else (wired 2026-11-07, card
+ft-ad5dfc70, owner decision "Wire it now").** The tools exist only when the host
+sets `devcouncil.Deps.Work` (a `WorkBinding`); with it nil the Registry registers
+none of them, as it registers no fetch tool without a configured host. One
+constructor sets it: `agentTools` in `cmd/manvi/harness.go`, called by `manvi run`
+(`run.go`) and by the TUI's per-session state (`tui.go`, `newSessionState`), and
+by the `manvi tools` listing, which prints what those two offer.
+`TestWorkBindingIsReachedOnlyFromRunAndTUI` pins that list by parsing the source.
+
+- *Run id.* `WorkBinding.RunID` is the host's session id: `manvi run`'s stored
+  session id (the resumed one when it continues a stored session, so a continuation
+  keeps one run id) and the TUI session's `storeID` (`session.NewID`, sixteen hex
+  characters). It is used only when it fits the binding's rule (at most 32 letters,
+  digits, hyphen, underscore, `devcouncil.WorkBindingFor`); a stored id that does
+  not fit (the store accepts up to 64) leaves it empty and the Registry mints a
+  random one, so a long resumed id costs an audit-line name and never the tools.
+  The model never supplies it.
+- *Roles.* Only the top-level agent holds the tools. **No sub-agent holds any
+  `work_*` tool, reads included:** the sub-agent floor (`subAgentRunner.prepare`)
+  removes them by name from every child registry (untyped, read-only, and a role
+  whose `allowed_tools` names them, in the parent's registry or an isolated
+  worktree's), so a child cannot reach the board on its parent's lease and the
+  adapter's own `inherited_session` refusal is a second line, not the first. A
+  read-only child therefore sees neither write tool, and neither does a
+  `--chat-only` run, which is offered no tool at all. The parent reads the board
+  and hands a child what it needs in the prompt.
+- *Not wired.* The `manvi tool` command (an operator's direct call), `manvi
+  reflect`, the verify critic and `manvi serve` build through `nativeToolsWith`,
+  which sets no binding. (The TUI's `/tool` command dispatches through the TUI
+  session's own pipeline, which is the agent's, so an operator who types
+  `/tool work_create_item ...` there calls the board tools as themselves, under
+  the same caps and labelling; that is an operator action, not an agent one.) `manvi serve`'s enhancement runs are one provider completion with no
+  tool schemas, and their request-building files do not import the tool package
+  (`TestEnhancementRunHoldsNoWorkTool`). Managed Codex and Claude runs get nothing:
+  the `codingagent` package imports neither the tool surface nor the registry
+  (`TestManagedRunsHaveNoPathToTheBoardTools`).
+- *Counts.* The documented tool counts are the agent surface's and moved by six:
+  51 native tools, 50 with no skills (`docs/TOOLS_REFERENCE.md` section 14 specifies
+  the six; `TestDocumentedToolCountMatchesRegistry` measures them). The six are
+  Extended, so the lean dynamic profile's offered set is unchanged.
 
 **How the two mappings the earlier draft called gaps resolve, and where they do
 not.** Both were checked in code, not assumed.
@@ -1077,7 +1111,7 @@ not.** Both were checked in code, not assumed.
   `this-repo` constant and cannot see tasks linked to a real repository.** Reaching
   that board needs the `identity_key` mapping (a path-to-`repository_id` match
   through `repositories.put`), which does not exist. It is a follow-up and part of
-  the owner's wiring decision; `Deps.Work` is not wired.
+  the owner's wiring decision, which wired the tools without it (below).
 - *Own task.* Since dc-store schema 10 a DevCouncil task is a workbench item in
   the same database (`lease.schema.md`), so the task the session holds the lease
   on (`Session.State().TaskID`, set by `devcouncil_checkout_task`) is a board item.
@@ -1154,6 +1188,34 @@ label and the tagged log block) and does not claim the banner.
 - **What widens.** An agent gains read access to board records of its own
   repository, and write access to a narrow set of fields (below). It gains no new
   file, command or network permission.
+- **What is reachable now (wired).** Since the wiring change, the six `work_*`
+  tools are reachable by **the top-level agent of `manvi run` and of the TUI**, and
+  by no other command, role or process:
+  - *Roles.* The top-level agent only. Every sub-agent (untyped, read-only, or a
+    role naming the tools in `allowed_tools`) has the tools removed from its
+    registry, reads included; a `--chat-only` run is offered no tool. Nothing in
+    `manvi reflect`, the verify critic, `manvi tool`, `manvi serve` (host
+    connection `hello.ops` and `work.*` set unchanged, enhancement runs tool-less)
+    or a managed Codex or Claude run reaches them.
+  - *Which board.* The tools bind to the repo-local `this-repo` repository (the
+    constant every task in the repository's own `.devcouncil/state.sqlite` names)
+    and **refuse with `repository_unmapped`, writing nothing, when that row is
+    absent**.
+  - *Which tasks.* **On a GitPulse or profile board database they cannot see
+    real-repository tasks:** those are linked to a real `repository_id`, not to
+    `this-repo`, so a read of one answers `not_found` and the list omits it (and
+    when the profile database has no `this-repo` row at all, every tool refuses
+    with `repository_unmapped`). Reaching
+    that board needs the `identity_key` mapping, a follow-up that is not built.
+    Until then the wired surface is useful on a repository-local store and inert
+    on a profile board.
+  - *What an agent can do there.* Read live tasks linked to exactly this
+    repository; create inbox tasks (caps: 5 per held task, 10 per hour and 50 open
+    per repository, title and description locked, `agent-proposed` label); and move
+    the one task it holds the lease on to `in_progress` or `review`, tick its
+    checklist, append to its tagged log region or add a `related` link, never
+    `done` and never any other field. Choosing which task to hold remains the
+    agent's, bounded by the repository link check.
 - **Self-escalation is the main risk.** GitPulse builds the `HostScope` that
   bounds an agent's file writes and commands from the board task's `scope`
   (`serve/policy.go`, `HostScope`: planned files, forbidden changes, allowed
@@ -1244,8 +1306,9 @@ parameters:
      against the store on every write exactly as `devcouncil_write_file` does
      (`devcouncil/file_tools.go`, "The lease is checked against the store on every
      write, not once at checkout"). An inherited child session (`inherited` in
-     `devcouncil/session.go`) may read but not write the board, because it does
-     not own the lease.
+     `devcouncil/session.go`) may not write the board, because it does not own the
+     lease; as shipped the host goes further and gives a child no board tool at all
+     (see "On for two commands" below), so this refusal is the second line.
 
    The run or lease is re-read immediately before `items.put`, not trusted from the
    start of the call. A store error on that read, or the process exiting mid-call,
