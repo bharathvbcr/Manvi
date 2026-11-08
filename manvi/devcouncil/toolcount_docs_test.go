@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -147,7 +148,7 @@ func TestToolsReferenceSpecifiesEveryTool(t *testing.T) {
 	// row that names a write tool as read-only is worse than no row at all:
 	// it is a permission claim, and a reader budgeting risk from this table
 	// would be reading a number the registry does not agree with.
-	rowName := regexp.MustCompile("(?m)^\\|\\s*`((?:devcouncil|mcp)_[a-z_0-9]+)`\\s*\\|\\s*([^|]+?)\\s*\\|")
+	rowName := regexp.MustCompile("(?m)^\\|\\s*`((?:devcouncil|mcp|work)_[a-z_0-9]+)`\\s*\\|\\s*([^|]+?)\\s*\\|")
 	specified := map[string]string{}
 	for _, m := range rowName.FindAllStringSubmatch(spec, -1) {
 		specified[m[1]] = m[2]
@@ -157,7 +158,7 @@ func TestToolsReferenceSpecifiesEveryTool(t *testing.T) {
 	}
 
 	// Access, against the registry's own ReadOnly flag.
-	r := &Registry{session: &Session{}}
+	r := agentSurfaceRegistry(&Registry{session: &Session{}})
 	for _, tl := range r.Tools() {
 		documented, ok := specified[tl.Schema.Name]
 		if !ok {
@@ -207,7 +208,7 @@ func TestToolsReferenceSpecifiesEveryTool(t *testing.T) {
 func freshRegistry(t *testing.T) *tools.Registry {
 	t.Helper()
 	reg := tools.NewRegistry(nil)
-	r := &Registry{session: &Session{}}
+	r := agentSurfaceRegistry(&Registry{session: &Session{}})
 	for _, tl := range r.Tools() {
 		if err := reg.Register(tl); err != nil {
 			t.Fatalf("register %s: %v", tl.Schema.Name, err)
@@ -221,6 +222,7 @@ func freshRegistry(t *testing.T) *tools.Registry {
 func coreToolCount(t *testing.T) int {
 	t.Helper()
 	f := newSkillFixture(t)
+	agentSurfaceRegistry(f.reg)
 	return len(f.openSession(t).Schemas())
 }
 
@@ -250,4 +252,15 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return fmt.Sprintf("%s", b)
+}
+
+// agentSurfaceRegistry binds the work_* board tools to r, as the host does for
+// the surface a model-driven session holds (cmd/manvi agentTools). The
+// documented counts are that surface's: it is what `manvi tools` lists and what
+// `manvi run` and the TUI offer. The store is a value with no database behind
+// it, which is enough: building the catalogue reads nothing from it.
+func agentSurfaceRegistry(r *Registry) *Registry {
+	r.deps.Store = &store.Client{}
+	r.deps.Work = &WorkBinding{}
+	return r
 }

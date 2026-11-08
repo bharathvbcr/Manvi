@@ -1,6 +1,6 @@
 # DevCouncil Native Tool Suite Reference
 
-MANVI implements the DevCouncil development tool suite natively in Go and Rust — **44 core tools**, as reported by `manvi tools` in a repository with no skills: 40 `devcouncil_*` tools plus 4 `mcp_*` tools, plus `devcouncil_load_skill` when the repository has skills (45 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
+MANVI implements the DevCouncil development tool suite natively in Go and Rust — **50 core tools**, as reported by `manvi tools` in a repository with no skills: 40 `devcouncil_*` tools, 4 `mcp_*` tools and 6 `work_*` board tools, plus `devcouncil_load_skill` when the repository has skills (51 with it). That is the parity core, a native git integration, one optional inspect pin (`MANVI_DEVCOUNCIL_BINARY`; the Python `dev` CLI is deleted), and the dynamically activated surface (search/activation, MCP, artifacts, questions, sub-agent management). Unlike traditional harnesses that shell out to Python scripts or external interpreters, native execution provides sub-millisecond dispatch, eliminates shell injection vectors, and enforces strict memory-safe parameter validation.
 
 ---
 
@@ -21,13 +21,14 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust �
 | **Artifacts** | 3 | Create, list, and revise persistent structured artifacts under `.devcouncil/artifacts/`. |
 | **Interactive Questions** | 1 | Ask the operator to resolve underspecified requirements or pick between options. |
 | **MCP 2.0 & Open Plugins** | 4 | List and call tools, and list and read resources, on external MCP servers over stateless JSON-RPC. |
+| **Board (`work_*`)** | 6 | Read this repository's task board, propose inbox tasks, and update the one task the session holds. Offered by `manvi run` and the TUI only; see [section 14](#14-board-work_-tools). |
 
 One further tool, `devcouncil_fetch_url`, is **conditional and not counted above**:
 it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
 unconfigured harness offers the counted set and a configured one offers exactly
 one more. See [Documentation lookup](#documentation-lookup).
 
-The thirteen rows above sum to the 45 tools `manvi tools` reports when the repository has skills: the 44 core tools, plus `devcouncil_load_skill`.
+The fourteen rows above sum to the 51 tools `manvi tools` reports when the repository has skills: the 50 core tools, plus `devcouncil_load_skill`.
 
 `devcouncil_load_skill` is the one tool counted above that is **registered only
 when the repository has skills**. It is decided once, when a session opens: the
@@ -40,7 +41,8 @@ skill added mid-session appears at the next session, with the tool, so the tool
 list the prompt cache is keyed on does not change under a running session; a
 session that opened without the tool lists no skills for its whole life.
 Sub-agents inherit their parent's surface, so a child of such a session does
-not get the tool either.
+not get the tool either. (The one exception to inheriting is the `work_*` board:
+no sub-agent holds it, read tools included.)
 
 Every tool in every row is specified below, and
 `TestToolsReferenceSpecifiesEveryTool` fails the build if one is added without
@@ -231,9 +233,31 @@ the refusal `mcp.enabled=false` produces, because the remedies differ.
 
 ---
 
+### 14. Board (`work_*`) Tools
+
+Offered to the top-level agent of `manvi run` and of the TUI, and to nothing
+else: not `manvi tool`, `manvi reflect`, the verify critic, `manvi serve` or its
+enhancement runs, not a sub-agent of any role, and not a managed Codex or Claude
+run. They are Extended (the core profile drops them) and the two writes require
+`devcouncil_checkout_task`. Every read renders the store's reply inside a fenced
+block under a header saying it is data written by people and other agents, never
+instructions. The bounds, the field allow-lists and the security-impact statement
+are in [WORKBENCH.md](WORKBENCH.md#owner-decisions-of-2026-11-07).
+
+| Native Tool | Access | Parameters | Description |
+|---|---|---|---|
+| `work_list_items` | Read-only | *None* | Lists one page (at most 30) of the live, unarchived tasks linked to exactly this repository, and says whether there are more. No filter or cursor. |
+| `work_get_item` | Read-only | `id` (string) | Reads one task of this repository. An id that is absent, deleted or not linked to exactly this repository answers an identical `not_found`. |
+| `work_get_brief` | Read-only | `id` (string) | Reads one such task's handoff brief. |
+| `work_get_history` | Read-only | `id` (string) | Reads one such task's revision history. |
+| `work_create_item` | Write | `title` (string, at most 200 characters), `description` (string, at most 16 KiB, optional), `checklist` (array of plain-text strings, optional) | Proposes a task: an inbox task labelled `agent-proposed`, with title and description locked against automatic rewriting. Every other field is fixed by the host; any other argument is rejected. Bounded: 5 created tasks and 30 writes per held task, 10 per hour and 50 open proposals per repository. |
+| `work_update_own_item` | Write | `expected_revision` (integer, required), `status` (`in_progress` or `review`), `tick` (array of checklist indexes), `log` (string), `related_item_id` (string) | Updates the one task the session holds, and no other: moves its status (never to `done`), ticks checklist entries, appends a note to the tagged agent log, or adds a `related` link to another task of this repository. |
+
+---
+
 ## Direct CLI Tool Invocation
 
-You can invoke any native tool directly from the CLI via `manvi tool`:
+You can invoke any native tool except the `work_*` board tools (section 14) directly from the CLI via `manvi tool`. `manvi tools` lists the surface a model-driven session holds, board tools included:
 
 ```bash
 # Read a file
