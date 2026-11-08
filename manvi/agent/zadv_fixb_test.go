@@ -52,6 +52,9 @@ func advSendableAssistants(t *testing.T, log *session.Log) int {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(msgs) == 0 {
+		t.Fatal("the log projects no messages")
+	}
 	n := 0
 	// The last request went out before the final reply was logged.
 	for _, m := range msgs[:len(msgs)-1] {
@@ -339,6 +342,9 @@ func TestAdvFixBStrippedNoticeIsNotLostForGood(t *testing.T) {
 		}
 	}
 	t.Logf("prompt the model holds per request: %v; delivered per log: %q", seen, c.log.Wire().Delivered)
+	if len(seen) != len(reqs) {
+		t.Fatalf("classified %d of %d requests", len(seen), len(reqs))
+	}
 	for i := 3; i < len(reqs); i++ {
 		if seen[i] != "two" {
 			t.Errorf("request %d: the model holds prompt %s while every Loop asked for prompt two (log says delivered %q); per request: %v",
