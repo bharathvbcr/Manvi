@@ -208,10 +208,20 @@ func wireCarry(dropped []Event, through int) (Event, bool, error) {
 // it, so every event the file held is treated as stale: reasoning is lost, which
 // is the documented recovery, and a block is never sent behind a prefix that is
 // gone. Nothing is appended: Load returns exactly the events the file holds.
+//
+// A trim is detected by either of two durable facts. The header's trimmed_turns
+// counts whole turns, but a trim that drops only the events ahead of the first
+// turn/start (a frame-less log's opening user message, say) counts none, and
+// those events can be model-visible messages. The sequence numbers see it: a log
+// numbers its events from 1 and never renumbers, so a file whose first event is
+// later than 1 lost events from the front, whatever the header says.
 func (l *Log) assumeTrimmedThrough(droppedTurns int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if droppedTurns > 0 && l.wire.through == 0 && len(l.events) > 0 {
+	if l.wire.through != 0 || len(l.events) == 0 {
+		return
+	}
+	if droppedTurns > 0 || l.events[0].Seq > 1 {
 		l.wire.through = l.events[len(l.events)-1].Seq
 	}
 }

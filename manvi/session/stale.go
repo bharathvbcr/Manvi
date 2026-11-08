@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
@@ -128,6 +129,71 @@ func (l *Log) StripStale(msgs []llm.Message) ([]llm.Message, []StaleDrop, error)
 		drops = append(drops, StaleDrop{MessageIndex: i, Blocks: n, Reason: reason})
 	}
 	return out, drops, nil
+}
+
+// RecordStale logs the signed reasoning StripStale removed, one provenance
+// record per reason, so the log and --json say that reasoning was removed and why
+// (a retention trim, or another edit of the history). The same strip repeats on
+// every request, and on every Loop that drives the conversation, until the
+// history changes, so a reason whose latest record already names the same
+// messages is not recorded again. The log is the memory: a Loop built for the
+// next turn finds what the last one wrote.
+func (l *Log) RecordStale(drops []StaleDrop, provider, model string) error {
+	byReason := map[string][]llm.Drop{}
+	var order []string
+	for _, d := range drops {
+		if _, seen := byReason[d.Reason]; !seen {
+			order = append(order, d.Reason)
+		}
+		byReason[d.Reason] = append(byReason[d.Reason], llm.Drop{
+			MessageIndex: d.MessageIndex,
+			FromProvider: provider, FromModel: model, ToProvider: provider, ToModel: model,
+			Blocks: []string{"reasoning"},
+		})
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	events := l.snapshot()
+	for _, reason := range order {
+		recorded, err := latestDropIndexes(events, reason)
+		if err != nil {
+			return err
+		}
+		if slices.Equal(recorded, dropIndexes(byReason[reason])) {
+			continue
+		}
+		if _, err := l.Append(ProvenanceDropped, DropData{Drops: byReason[reason], Reason: reason}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dropIndexes(drops []llm.Drop) []int {
+	out := make([]int, len(drops))
+	for i, d := range drops {
+		out[i] = d.MessageIndex
+	}
+	return out
+}
+
+// latestDropIndexes is the message positions of the newest provenance/dropped
+// record that names reason, nil when there is none.
+func latestDropIndexes(events []Event, reason string) ([]int, error) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != ProvenanceDropped {
+			continue
+		}
+		var data DropData
+		if err := json.Unmarshal(events[i].Data, &data); err != nil {
+			return nil, fmt.Errorf("session: event %d: %w", events[i].Seq, err)
+		}
+		if data.Reason == reason {
+			return dropIndexes(data.Drops), nil
+		}
+	}
+	return nil, nil
 }
 
 // staleMessages reports, for each message of the projection of events, whether
