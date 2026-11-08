@@ -595,13 +595,37 @@ func (p *projection) flushPending(out *[]llm.Message) {
 // binds the messages before it and not the ones after, and a notice no assistant
 // turn followed has no later block to invalidate. wireState.fold counts it as
 // never delivered, so what it said is said again.
+//
+// "Answered" means by an assistant message that survives encoding
+// (llm.Message.HasSendableContent). A reply with nothing the encoder can send
+// (whitespace text, thinking cut off before its signature) is omitted from the
+// wire, so the notice would be followed by the user message anyway.
 func appendMessage(out *[]llm.Message, msg llm.Message) {
 	if msg.Role == llm.RoleUser {
-		for n := len(*out); n > 0 && (*out)[n-1].Role == llm.RoleSystem; n-- {
-			*out = (*out)[:n-1]
-		}
+		*out = withoutUnansweredNotices(*out,
+			func(m llm.Message) bool { return m.Role == llm.RoleSystem },
+			func(m llm.Message) bool { return m.Role == llm.RoleAssistant && !m.HasSendableContent() })
 	}
 	*out = append(*out, msg)
+}
+
+// withoutUnansweredNotices removes the notices from the trailing run of items
+// that holds only notices and hollow assistant messages, which is where a user
+// message about to be appended finds the notices nothing answered. It is the one
+// statement of that rule: the projection applies it to messages and staleSpans
+// to the sequence numbers that mirror them, so their positions agree.
+func withoutUnansweredNotices[T any](items []T, notice, hollow func(T) bool) []T {
+	start := len(items)
+	for start > 0 && (notice(items[start-1]) || hollow(items[start-1])) {
+		start--
+	}
+	out := items[:start]
+	for _, item := range items[start:] {
+		if !notice(item) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // rebuildProjection reproduces DeriveMessages' original full replay exactly;

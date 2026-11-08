@@ -154,3 +154,26 @@ func TestAdvHistoryEditDropRecordsAreBoundedAfterACompaction(t *testing.T) {
 		t.Errorf("%d drop records after %d steps (%d indexes listed in all); want a bounded number", records, steps, listed)
 	}
 }
+
+// Only growth past the recorded end is skipped. A later compaction that moves
+// the first stale position earlier is a different fact and is recorded.
+func TestAdvAMovedHistoryEditBoundaryIsStillRecorded(t *testing.T) {
+	cases := []struct {
+		reason            string
+		recorded, current []int
+		want              bool
+	}{
+		{DropReasonHistoryEdit, []int{3, 5}, []int{3, 5, 7}, true},
+		{DropReasonHistoryEdit, []int{3, 5}, []int{3, 5}, true},
+		{DropReasonHistoryEdit, []int{3, 5}, []int{1, 3, 5}, false},
+		{DropReasonHistoryEdit, []int{3, 5}, []int{3, 6}, false},
+		{DropReasonHistoryEdit, nil, []int{3}, false},
+		{DropReasonRetentionTrim, []int{1}, []int{1, 3}, false},
+		{DropReasonRetentionTrim, []int{1, 3}, []int{1, 3}, true},
+	}
+	for _, c := range cases {
+		if got := alreadyRecorded(c.reason, c.recorded, c.current); got != c.want {
+			t.Errorf("%s recorded %v current %v: got %v, want %v", c.reason, c.recorded, c.current, got, c.want)
+		}
+	}
+}
