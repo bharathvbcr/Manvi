@@ -191,7 +191,8 @@ there and these programs run outside the gate. Otherwise the program is reported
 | `MANVI_STORE_BINARY` | `dcstore` | task and lease store, workbench store |
 | `MANVI_VERIFY_BINARY` | `dcverify` | the end-of-turn check, `manvi serve` verification, `manvi doctor` |
 | `MANVI_GREP_BINARY` | `dcgrep` | repository search |
-| `MANVI_CLAUDE_BINARY` | `claude` | managed Claude coding-agent runs in `manvi serve`; must be the CLI (native, or a node/bun/deno launcher), not a shell wrapper |
+| `MANVI_CLAUDE_BINARY` | `claude` | managed Claude coding-agent runs in `manvi serve`; must be the CLI (native, or a node/bun/deno launcher), not a shell wrapper. Unset, the first launchable `claude` on `PATH` is used, then the highest version under `$XDG_DATA_HOME/claude/versions` or `~/.local/share/claude/versions`; a wrapper is skipped. A release build takes a candidate only from outside the project root and working directory, like every other tool binary |
+| `MANVI_AGY_BINARY` | `agy` | managed Antigravity (`agy acp`, Agent Client Protocol over stdio) coding-agent runs in `manvi serve`; must be the CLI itself (native image or a node/bun/deno launcher), not a shell wrapper. Unset, a launchable `agy` on `PATH` or in a native install directory (`~/.local/bin`, `~/.antigravity/antigravity/bin`) is used; a wrapper is skipped |
 | `MANVI_CODEX_BINARY` | `codex` | managed Codex coding-agent runs in `manvi serve`; should be the native executable, not a wrapper or node launcher (not enforced) |
 | `MANVI_DEVCOUNCIL_BINARY` | DevCouncil inspect CLI | `devcouncil_dev_inspect` only. An explicit pin, never a `PATH` guess: unset, the tool reports itself unavailable. |
 

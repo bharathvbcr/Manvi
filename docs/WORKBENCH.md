@@ -459,7 +459,17 @@ sufficient process evidence remain unresolved; timeout does not prove terminatio
 
 `MANVI_CODEX_BINARY` selects the Codex executable through the existing tool resolver;
 otherwise the host resolves `codex` on PATH. `MANVI_CLAUDE_BINARY` does the same
-for Claude, otherwise `claude` on PATH, and it must not be a shell wrapper. The
+for Claude, otherwise `claude` on PATH, and it must not be a shell wrapper; `MANVI_AGY_BINARY`
+does the same for Antigravity (`agy acp`, Agent Client Protocol v1 over stdio). Unset, both
+resolvers skip a shell wrapper on PATH and fall back to the native install directories,
+and a release build accepts a candidate only through the trust rule every tool binary
+follows (absolute PATH entries and install directories outside the project root and working
+directory, symlinks resolved); with none it refuses rather than searching PATH again.
+Managed Claude honours a `.claude-account` marker against `~/.claude-accounts`, mapping it
+to `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR`; an invalid, unmapped or
+relative seat, or one equal to `~/.claude`, fails the launch before any process starts. With
+neither a marker nor `~/.claude-accounts`, the launch only drops `CLAUDECODE` and
+`CLAUDE_CODE_ENTRYPOINT`. The
 Codex adapter launches `app-server` with argument arrays, never shell
 interpolation. stdio is that process's default; `--listen stdio://` is not
 passed, because current Codex exits without a session when it is. The Claude

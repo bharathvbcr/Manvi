@@ -419,6 +419,9 @@ environment (such as `CLAUDE_CONFIG_DIR`) itself. The check reads 256 bytes and 
 program; the post-start process-identity check is unchanged and stays fail-closed. See
 `docs/WORKBENCH.md`.
 
+Managed Antigravity (`MANVI_AGY_BINARY`, else `agy` on `PATH` or in a native install directory) follows the same
+launch-shape rule as Claude and is refused with the same kind of error, naming `MANVI_AGY_BINARY`.
+
 Managed Codex (`MANVI_CODEX_BINARY`, else `codex` on `PATH`) has no such refusal, because Codex
 reports no process identity for the host to compare. Set `MANVI_CODEX_BINARY` to the native
 `codex` executable so the process id the host activates is the one running the model; a
