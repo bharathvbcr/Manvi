@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -427,6 +428,37 @@ func (s *Agy) ContinueTurn(ctx context.Context, message string) error {
 	return nil
 }
 
+// finishTurn ends the turn with status. A permission still awaiting an answer
+// can never be answered once the turn is over, so each is forgotten here and
+// reported withdrawn ahead of the status, as Claude's control_cancel_request
+// does, and the host can resolve its decision row instead of leaving it live.
+// The first event is returned; the rest are queued behind it in order.
+func (s *Agy) finishTurn(status string) Event {
+	s.finished = true
+	s.ledger.last = status
+	events := append(s.withdrawPending(), Event{Status: status})
+	s.deferred = append(s.deferred, events[1:]...)
+	return events[0]
+}
+
+// withdrawPending forgets every unanswered permission and returns one
+// CancelledID event for each, in a stable order.
+func (s *Agy) withdrawPending() []Event {
+	var ids []string
+	for id, p := range s.pending {
+		if !p.sent {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	events := make([]Event, 0, len(ids)+1)
+	for _, id := range ids {
+		delete(s.pending, id)
+		events = append(events, Event{CancelledID: id})
+	}
+	return events
+}
+
 func (s *Agy) backlogged() bool {
 	if len(s.deferred) > 0 || len(s.queue) > 0 {
 		return true
@@ -468,6 +500,16 @@ func (s *Agy) Next(ctx context.Context) (Event, error) {
 			var err error
 			p, err = s.wire.receive(ctx)
 			if err != nil {
+				// The session ended under a pending permission (closed, or the
+				// process went away): tell the host before the error, once.
+				// A caller's own cancellation leaves the session alive, so nothing
+				// is withdrawn for that.
+				if ctx.Err() == nil {
+					if withdrawn := s.withdrawPending(); len(withdrawn) > 0 {
+						s.deferred = append(s.deferred, withdrawn[1:]...)
+						return withdrawn[0], nil
+					}
+				}
 				return Event{}, err
 			}
 		}
@@ -490,9 +532,7 @@ func (s *Agy) event(p packet) (Event, bool, error) {
 			return Event{}, false, errors.New("managed Antigravity returned an unrecognized response identity")
 		}
 		if len(p.Error) > 0 {
-			s.finished = true
-			s.ledger.last = "failed"
-			return Event{Status: "failed"}, true, nil
+			return s.finishTurn("failed"), true, nil
 		}
 		var done struct {
 			StopReason string `json:"stopReason"`
@@ -511,9 +551,7 @@ func (s *Agy) event(p packet) (Event, bool, error) {
 		default:
 			return Event{}, false, errors.New("invalid Antigravity turn completion")
 		}
-		s.finished = true
-		s.ledger.last = status
-		return Event{Status: status}, true, nil
+		return s.finishTurn(status), true, nil
 	}
 
 	if len(p.ID) > 0 {

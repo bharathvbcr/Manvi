@@ -70,21 +70,26 @@ func readRegular(path string, limit int64, open func(string) (*os.File, error)) 
 // binary directly rather than through an operator's shell seat wrapper.
 //
 // Invariants enforced before any child process starts:
-//  1. `.claude-account` (on the checkout, an ancestor below `$HOME`, or a
-//     linked git worktree's common-dir parent checkout) may only name a valid
-//     seat identifier (`[A-Za-z0-9._-]+`); an empty or invalid marker fails
-//     closed.
+//  1. `.claude-account` (on the checkout, an ancestor strictly below `$HOME`
+//     or, outside `$HOME`, the checkout root only, or the main checkout of a
+//     linked worktree whose link git's back-pointer proves) may only name a
+//     valid seat identifier (`[A-Za-z0-9._-]+`); an empty or invalid marker
+//     fails closed, a symlinked one is refused, and an error never repeats
+//     marker content. A marker with no usable `$HOME` fails closed too.
 //  2. Every launch drops the nested-session markers `CLAUDECODE` and
 //     `CLAUDE_CODE_ENTRYPOINT`. Only when multi-seat routing is active
 //     (`.claude-account` is present or `$HOME/.claude-accounts` exists) are
 //     `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
 //     `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` also stripped,
 //     on both `personal` and named seats, matching `_claude_account_exec`. An
-//     operator with no seats who authenticates managed Claude by a config
-//     directory or token of their own keeps that launch exactly as it was.
+//     operator with no seats keeps their own `CLAUDE_CONFIG_DIR`,
+//     `CLAUDE_SECURESTORAGE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN`. The
+//     API-key variables are withheld from every child by childenv before this
+//     runs, seats or not.
 //  3. A non-`personal` seat must resolve in `$HOME/.claude-accounts` to an
-//     existing directory distinct from `$HOME/.claude` and distinct from all
-//     other registered seats, and sets both `CLAUDE_CONFIG_DIR` and
+//     existing directory that is a different directory (by file identity, not
+//     spelling) from `$HOME/.claude` and from every other registered seat, named
+//     once, and sets both `CLAUDE_CONFIG_DIR` and
 //     `CLAUDE_SECURESTORAGE_CONFIG_DIR` to that directory.
 //  4. When a checkout resolves to `personal` (unpinned or explicit `personal`)
 //     and `$HOME/.claude-accounts` contains at least one named seat whose
