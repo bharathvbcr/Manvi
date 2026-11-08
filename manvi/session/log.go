@@ -372,6 +372,10 @@ type Log struct {
 	// load invalidates it.
 	proj projection
 
+	// wire is what the conversation has told its provider, folded from the
+	// WireFrame and WireNotice events (see wireframe.go).
+	wire wireState
+
 	// enc[i] is events[i] as the session file encodes it, kept so a save
 	// encodes only what was appended since the last one: an event is never
 	// changed once appended, and re-encoding a long session's every event
@@ -468,6 +472,11 @@ func RestoreLog(events []Event) (*Log, error) {
 	}
 	l.events = cloneEvents(events)
 	l.seq = last
+	for _, event := range events {
+		if err := l.wire.fold(event.Type, event.Data); err != nil {
+			return nil, fmt.Errorf("session: restored event %d: %w", event.Seq, err)
+		}
+	}
 
 	// The projection is exercised now rather than at the first request. A log
 	// that cannot be projected is not a session that resumes with a shorter
@@ -526,6 +535,17 @@ func (l *Log) extendProjection(t Type, seq int, payload any) {
 		}
 		l.proj.flushPending(&l.proj.messages)
 		l.proj.messages = append(l.proj.messages, data.Message)
+	case WireNotice:
+		data, ok := payload.(NoticeData)
+		if !ok {
+			l.proj.valid = false
+			return
+		}
+		if !l.proj.valid {
+			return
+		}
+		l.proj.flushPending(&l.proj.messages)
+		l.proj.messages = append(l.proj.messages, NoticeMessage(data))
 	case ToolResult:
 		data, ok := payload.(ToolResultData)
 		if !ok {
@@ -596,6 +616,14 @@ func (l *Log) rebuildProjection() error {
 			}
 			proj.flushPending(&proj.messages)
 			proj.messages = append(proj.messages, data.Message)
+
+		case WireNotice:
+			var data NoticeData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				return fmt.Errorf("session: event %d: %w", event.Seq, err)
+			}
+			proj.flushPending(&proj.messages)
+			proj.messages = append(proj.messages, NoticeMessage(data))
 
 		case ToolResult:
 			var data ToolResultData
@@ -688,6 +716,20 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
 		}
 		projected = data
+	case WireNotice:
+		var data NoticeData
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return Event{}, fmt.Errorf("session: decoding %s: %w", t, err)
+		}
+		if data.Text == "" {
+			return Event{}, fmt.Errorf("session: %s has no text, so it would project an empty message", t)
+		}
+		projected = data
+	case WireFrame:
+		var probe wireState
+		if err := probe.fold(t, raw); err != nil {
+			return Event{}, err
+		}
 	case ToolResult:
 		var data ToolResultData
 		if err := json.Unmarshal(raw, &data); err != nil {
@@ -724,6 +766,8 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		Data: raw,
 	}
 	l.events = append(l.events, event)
+	// Decoded and checked above, so this cannot fail on what was just accepted.
+	_ = l.wire.fold(t, raw)
 	l.extendProjection(t, event.Seq, projected)
 	observers := append([]func(Event){}, l.observers...)
 	l.mu.Unlock()

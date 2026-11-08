@@ -279,6 +279,7 @@ var schemaKeys = collectSchemaKeys(
 	SystemPromptData{}, NullResponseData{}, VerifyReportData{}, PromptAssembledData{}, StepEndData{},
 	MessageData{}, ToolCallData{}, ToolResultData{}, DenialData{}, QualificationData{}, GrantData{},
 	DropData{}, CompactionData{}, MalformedCallData{}, DecodingData{}, OverflowData{},
+	FrameData{}, NoticeData{}, llm.ToolSchema{},
 	llm.TextBlock{}, llm.ReasoningBlock{}, llm.ImageBlock{}, llm.ToolCallBlock{}, llm.ToolResultBlock{},
 	llm.AssistantProvenance{}, llm.Drop{}, llm.Usage{},
 )

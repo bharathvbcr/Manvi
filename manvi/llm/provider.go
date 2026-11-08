@@ -56,6 +56,13 @@ type Request struct {
 	// the OpenAI-compatible wire body emits it. The local adapter fills it
 	// from MANVI_LLM_LOCAL_KEEP_ALIVE when the caller left it empty.
 	KeepAlive string `json:"-"`
+	// NoToolCalls forbids the model from calling a tool in this request while
+	// leaving Tools exactly as they are. It is how a conversation whose tool
+	// set is frozen offers nothing for a turn: removing the tools would edit
+	// the prefix, tool_choice is outside it. An adapter that has no such
+	// control ignores it; the loop refuses a call outside the offered set
+	// either way.
+	NoToolCalls bool `json:"no_tool_calls,omitempty"`
 }
 
 // Capability describes what a model can actually do, so an impossible request
@@ -69,6 +76,11 @@ type Capability struct {
 	SupportsStreaming bool   `json:"supports_streaming"`
 	SupportsImages    bool   `json:"supports_images"`
 	SupportsReasoning bool   `json:"supports_reasoning"`
+	// MidConversationSystem is set when the model accepts a role:"system"
+	// message inside the conversation. It is the append-only way to change
+	// instructions after thinking blocks exist, so the loop freezes the
+	// top-level system prompt only where this is true.
+	MidConversationSystem bool `json:"mid_conversation_system,omitempty"`
 	// RejectsSampling is set when the model refuses a request that pins
 	// temperature. A caller that would otherwise pin one leaves it unset for
 	// such a model: the adapter refuses the request before it is sent rather

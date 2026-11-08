@@ -35,6 +35,12 @@ const (
 	EffortMax    = "max"
 )
 
+// MidConversationSystem below follows the claude-api skill's
+// shared/platform-availability.md row "Mid-conversation system messages" (Opus
+// 5, Opus 5.5, Opus 4.8, Fable 5, Fable 5.1, Sonnet 5.5; not Sonnet 5) and
+// shared/model-migration.md, "Migrating to Claude Haiku 5.5" (supported, no beta
+// header). Claude Haiku 4.5 is in neither, so it is treated as unsupported.
+//
 // catalogue is the verified model set. Context windows and output caps are the
 // documented figures; an unlisted model is unknown rather than assumed, so a
 // typo in a config fails at assembly instead of at the API.
@@ -43,22 +49,22 @@ var catalogue = llm.Catalogue{
 		Provider: Name, Model: "claude-fable-5-1",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-opus-5-5": {
 		Provider: Name, Model: "claude-opus-5-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-sonnet-5-5": {
 		Provider: Name, Model: "claude-sonnet-5-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-haiku-5-5": {
 		Provider: Name, Model: "claude-haiku-5-5",
@@ -66,22 +72,22 @@ var catalogue = llm.Catalogue{
 		// and reasons; its price steps up above a 100K-token prompt (see prices).
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-opus-5": {
 		Provider: Name, Model: "claude-opus-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-opus-4-8": {
 		Provider: Name, Model: "claude-opus-4-8",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-sonnet-5": {
 		Provider: Name, Model: "claude-sonnet-5",
@@ -94,8 +100,8 @@ var catalogue = llm.Catalogue{
 		Provider: Name, Model: "claude-fable-5",
 		ContextWindow: 1_000_000, MaxOutputTokens: 128_000,
 		SupportsTools: true, SupportsStreaming: true, SupportsImages: true,
-		SupportsReasoning: true,
-		EffortLevels:      []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
+		SupportsReasoning: true, MidConversationSystem: true,
+		EffortLevels: []string{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax},
 	},
 	"claude-haiku-4-5": {
 		Provider: Name, Model: "claude-haiku-4-5",
@@ -236,6 +242,9 @@ func ValidateRequest(req llm.Request, mode ThinkingMode) error {
 	if err := ValidateThinking(req.Model, mode, req.Effort); err != nil {
 		return err
 	}
+	if err := validateSystemMessages(req); err != nil {
+		return err
+	}
 	// A last-assistant-turn prefill is rejected by every current model. It is
 	// worth catching here because the replacement is structural (structured
 	// output, or a system-prompt instruction) rather than a parameter tweak.
@@ -279,4 +288,33 @@ func ReplayableOn(fromModel, toModel string) bool {
 	}
 	target, ok := Capability(toModel)
 	return ok && target.SupportsReasoning
+}
+
+// validateSystemMessages checks the placement rules of mid-conversation
+// system messages (shared/prompt-caching.md, "Mid-conversation system
+// messages"): the model must support them, they cannot open the conversation,
+// they must follow a user message, and their content is text only. A message
+// that broke one would be a 400 mid-turn; an initial prompt belongs in
+// Request.System.
+func validateSystemMessages(req llm.Request) error {
+	for i, msg := range req.Messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		if c, ok := Capability(req.Model); !ok || !c.MidConversationSystem {
+			return fmt.Errorf("anthropic: %s does not accept role:system messages; use Request.System", req.Model)
+		}
+		if i == 0 {
+			return fmt.Errorf("anthropic: message 0 is a system message; the initial prompt belongs in Request.System")
+		}
+		if req.Messages[i-1].Role != llm.RoleUser {
+			return fmt.Errorf("anthropic: system message %d must follow a user message, follows %s", i, req.Messages[i-1].Role)
+		}
+		for _, block := range msg.Content {
+			if _, ok := block.(llm.TextBlock); !ok {
+				return fmt.Errorf("anthropic: system message %d holds %T; its content is text only", i, block)
+			}
+		}
+	}
+	return nil
 }

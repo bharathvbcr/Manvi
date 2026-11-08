@@ -379,6 +379,9 @@ type Loop struct {
 	// withheld by a listener and stays refused; a name in neither that the same
 	// filters select later became active during the response.
 	candidates map[string]struct{}
+	// wire is the conversation's wire frame as the turn settled it, empty on a
+	// provider whose thinking is not bound to the history. See wireframe.go.
+	wire session.WireState
 }
 
 // NewLoop builds a driver.
@@ -477,7 +480,7 @@ func (l *Loop) Budget() Budget {
 // the last message is a tool result. The edit is then followed by the strip in
 // assembleRequest.
 func (l *Loop) compact(messages []llm.Message) ([]llm.Message, error) {
-	schemas := l.schemas()
+	schemas := l.wireSchemas()
 	if ServerSideClearing(l.cfg.Provider, schemas) {
 		return messages, l.reportServerSideOverflow(messages, schemas)
 	}
@@ -1118,6 +1121,11 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	if err := bus.Serial(l.bus, ctx, &TurnStarting{Turn: currentTurn}); err != nil {
 		return 0, err
 	}
+	// Before the prompt event below: the frame of a conversation that predates
+	// it is the prompt that event last recorded.
+	if err := l.settleFrame(); err != nil {
+		return 0, err
+	}
 	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.cfg.SystemPrompt {
 		if _, err := l.log.Append(session.SystemPrompt,
 			session.SystemPromptData{Text: l.cfg.SystemPrompt}); err != nil {
@@ -1467,6 +1475,11 @@ func (l *Loop) allows(name string) bool {
 	if _, withheld := l.candidates[name]; withheld {
 		return false
 	}
+	// A tool the conversation never declared cannot be called: the model was
+	// not shown it, so a call to it is not an activate-then-use response.
+	if !l.declares(name) {
+		return false
+	}
 	for _, s := range l.schemas() {
 		if s.Name == name {
 			return true
@@ -1492,7 +1505,7 @@ func (l *Loop) notOfferedText(name string) string {
 	if len(l.offered) == 0 {
 		note = "; this request offered no tools"
 	}
-	return fmt.Sprintf("tool %q was not offered in this step, so it was not run. Call only the tools listed in this request%s.",
+	return fmt.Sprintf("tool %q was not offered in this step, so it was not run. Call only the tools currently available to you%s.",
 		boundField(name), note)
 }
 
@@ -1746,6 +1759,12 @@ func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, 
 // waterfall and checked before anything goes on the wire.
 func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm.Request, error) {
 	schemas := l.schemas()
+	if l.wire.Frame == nil {
+		// A request assembled outside a turn (Run settles the frame first).
+		if err := l.settleFrame(); err != nil {
+			return llm.Request{}, err
+		}
+	}
 
 	// A log written by a build that compacted client-side still holds edits,
 	// and the projection replays them. Where thinking is bound to the history
@@ -1757,6 +1776,14 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 			return llm.Request{}, err
 		}
 		messages = stripped
+	}
+
+	// A conversation that moved to a target without mid-conversation system
+	// messages still holds the notices an earlier target was sent. Those are
+	// addressed to the provider that took them, and a target that cannot carry
+	// one gets the history without it.
+	if !l.freezes() {
+		messages = withoutSystemMessages(messages)
 	}
 
 	// Provider-private state that this target cannot replay is stripped here,
@@ -1780,7 +1807,12 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 	// The offered set is read off the request as finally shaped, not off the
 	// schemas computed above: a listener that narrowed the tools narrowed what
 	// the model may run, and the set enforced must be the set that goes out.
-	l.offered = schemaNames(request.Tools)
+	// Where the conversation's wire frame is sent, the shaped tools only decide
+	// what is offered; the tools on the wire are the declared set.
+	request, l.offered, err = l.freezeRequest(request)
+	if err != nil {
+		return llm.Request{}, err
+	}
 	l.candidates = schemaNames(schemas)
 
 	// Assembly-time capability check, when a registry is available: an

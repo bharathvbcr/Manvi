@@ -48,7 +48,7 @@ import (
 func (l *Log) StripStaleReasoning(msgs []llm.Message) ([]llm.Message, int, error) {
 	edited := false
 	if err := l.withProjection(func(p *projection) {
-		edited = len(p.compacted)+len(p.bySeq) > 0
+		edited = len(p.compacted)+len(p.bySeq) > 0 || l.wire.boundaries > 0
 	}); err != nil {
 		return nil, 0, err
 	}
@@ -94,6 +94,7 @@ func staleMessages(events []Event) ([]bool, error) {
 		edits      []compaction
 		pending    []int // result seqs awaiting the user message that carries them
 		pendingAt  int
+		leading    int // messages before the latest tool-set boundary
 	)
 	flush := func() {
 		if len(pending) == 0 {
@@ -127,6 +128,21 @@ func staleMessages(events []Event) ([]bool, error) {
 			}
 			pending = append(pending, event.Seq)
 			resultsBy[data.ToolCallID] = append(resultsBy[data.ToolCallID], event.Seq)
+		case WireNotice:
+			// A message of its own in the projection, so it holds a position.
+			flush()
+			messageSeq = append(messageSeq, event.Seq)
+		case WireFrame:
+			var data FrameData
+			if err := json.Unmarshal(event.Data, &data); err != nil {
+				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
+			}
+			if data.Why == WhyToolsAdded {
+				// Every message before the frame was signed against a tool set
+				// that no longer exists.
+				flush()
+				leading = len(messageSeq)
+			}
 		case ToolResultCompacted:
 			var data CompactionData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
@@ -138,6 +154,9 @@ func staleMessages(events []Event) ([]bool, error) {
 	flush()
 
 	stale := make([]bool, len(messageSeq))
+	for i := 0; i < leading && i < len(stale); i++ {
+		stale[i] = true
+	}
 	for _, edit := range edits {
 		var edited []int
 		if edit.ref.ResultSeq > 0 {

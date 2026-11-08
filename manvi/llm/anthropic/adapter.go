@@ -385,6 +385,12 @@ type wireRequest struct {
 	OutputConfig *wireOutputConf `json:"output_config,omitempty"`
 	Thinking     *wireThinking   `json:"thinking,omitempty"`
 	CacheControl *wireCache      `json:"cache_control,omitempty"`
+	// ToolChoice is sent only as {"type":"none"}: the documented way to turn
+	// tool use off without touching tools, which the history-editing check
+	// compares (shared/preserved-thinking-migration/causes.md, "A library,
+	// proxy or gateway that rewrites what it forwards"; tool_choice none is
+	// unchanged on the 5.x models, shared/model-migration.md).
+	ToolChoice *wireToolChoice `json:"tool_choice,omitempty"`
 	// ContextManagement asks the API to clear old tool results server-side. It
 	// sits outside system, tools and messages, so the history-editing check
 	// does not compare it and a change to it never invalidates a thinking block.
@@ -400,6 +406,10 @@ type wireContextManagement struct {
 // breakpoint on the last cacheable block, so each turn of an agent loop reads
 // the history the previous turn wrote instead of paying full input price for
 // it again.
+type wireToolChoice struct {
+	Type string `json:"type"`
+}
+
 type wireCache struct {
 	Type string `json:"type"`
 }
@@ -578,6 +588,9 @@ func (a *Adapter) buildRequest(req llm.Request) (*wireRequest, error) {
 	if len(req.Tools) > 0 {
 		out.ContextManagement = &wireContextManagement{Edits: ContextEditsFor(req.Model, maxTokens)}
 	}
+	if req.NoToolCalls && len(req.Tools) > 0 {
+		out.ToolChoice = &wireToolChoice{Type: "none"}
+	}
 	for _, tool := range req.Tools {
 		out.Tools = append(out.Tools, wireTool{
 			Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema,
@@ -612,12 +625,12 @@ const emptyErrorResultText = "(no output)"
 // not model output but the caller's mistake, and dropping it would change who
 // spoke last, so it is refused.
 func toWireMessage(msg llm.Message) (wire wireMessage, keep bool, err error) {
-	// The API takes the system prompt as a top-level field, not as a role. A
-	// system message reaching here means the caller put it in the wrong place,
-	// and silently folding it into the user turn would change the prompt.
-	if msg.Role == llm.RoleSystem {
-		return wireMessage{}, false, errors.New("system content belongs in Request.System, not in Messages")
-	}
+	// A role:"system" message inside the conversation is the documented
+	// append-only way to change instructions after the start (shared/
+	// prompt-caching.md, "Mid-conversation system messages": no beta header,
+	// text-only content). The list form of content is the one shared/
+	// tool-use-concepts.md shows on system messages. Its placement rules are
+	// checked in ValidateRequest, where the model is known.
 	out := wireMessage{Role: string(msg.Role)}
 	for _, block := range msg.Content {
 		converted, ok, err := toWireBlock(block)

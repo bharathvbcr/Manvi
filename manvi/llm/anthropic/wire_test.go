@@ -254,3 +254,59 @@ data: {"type":"message_stop"}
 		})
 	}
 }
+
+func sysMsg(text string) llm.Message {
+	return llm.Message{Role: llm.RoleSystem, Content: []llm.ContentBlock{llm.TextBlock{Text: text}}}
+}
+
+func userMsg(text string) llm.Message {
+	return llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: text}}}
+}
+
+// A mid-conversation system message goes out as role "system" with text
+// content after a user message (shared/prompt-caching.md), and no_tool_calls is
+// tool_choice none over unchanged tools.
+func TestSystemMessageAndToolChoiceNoneReachTheWire(t *testing.T) {
+	adapter, server := adapterFor(t, minimalStream)
+	tool := llm.ToolSchema{Name: "echo", Description: "d", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	stream, err := adapter.Stream(adaptertest.Ctx(), llm.Request{
+		Model: "claude-opus-5-5", MaxTokens: 100, Tools: []llm.ToolSchema{tool}, NoToolCalls: true,
+		Messages: []llm.Message{userMsg("hi"), sysMsg("context")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := adaptertest.Drain(stream); err != nil {
+		t.Fatal(err)
+	}
+	body := server.Requests()[0]
+	for _, want := range []string{`"tool_choice":{"type":"none"}`, `{"role":"system","content":[{"type":"text","text":"context"}]}`, `"name":"echo"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestSystemMessagePlacementIsValidatedBeforeSending(t *testing.T) {
+	asst := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "a"}}}
+	for name, tc := range map[string]struct {
+		model string
+		msgs  []llm.Message
+	}{
+		"first message":        {"claude-opus-5-5", []llm.Message{sysMsg("x"), userMsg("hi")}},
+		"after assistant":      {"claude-opus-5-5", []llm.Message{userMsg("hi"), asst, sysMsg("x"), userMsg("again")}},
+		"unsupported model":    {"claude-sonnet-5", []llm.Message{userMsg("hi"), sysMsg("x")}},
+		"unknown to haiku 4.5": {"claude-haiku-4-5", []llm.Message{userMsg("hi"), sysMsg("x")}},
+		"non-text content":     {"claude-opus-5-5", []llm.Message{userMsg("hi"), {Role: llm.RoleSystem, Content: []llm.ContentBlock{llm.ToolCallBlock{ID: "c", Name: "n"}}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateRequest(llm.Request{Model: tc.model, Messages: tc.msgs}, ThinkingAdaptive); err == nil {
+				t.Fatal("accepted a system message the API would reject")
+			}
+		})
+	}
+	ok := llm.Request{Model: "claude-haiku-5-5", Messages: []llm.Message{userMsg("hi"), sysMsg("x"), asst, userMsg("n")}}
+	if err := ValidateRequest(ok, ThinkingAdaptive); err != nil {
+		t.Errorf("a valid placement was refused: %v", err)
+	}
+}

@@ -447,6 +447,52 @@ new blocks, but retroactive log scrubs (`RestoreSensitiveLog`) drop subsequent s
 (`llm.DropSignedReasoning`) along with their signatures, recording redaction in `reasoning_redacted`
 to prevent invalid signatures from reaching providers.
 
+### Wire frame: `system` and `tools` across Loops
+
+A thinking block's signature also binds the top-level `system` and the full tool
+definitions (`shared/model-migration.md`, Breaking change 3; the cause rows
+`system_rerendered`, `tool_set_changed`, `tool_schema_changed` in
+`shared/preserved-thinking-migration/causes.md`). A Loop is built per turn and
+assembles its own prompt and tool set, so on a provider that binds thinking
+(`llm.BindsThinkingToHistory`) and a model that takes a `role:"system"` message
+(`llm.Capability.MidConversationSystem`) `agent/wireframe.go` is the one owner of
+what a conversation sends, and the log (`wire/frame`, `wire/notice`) remembers it:
+
+- `system` is the first request's prompt for the life of the conversation. A later
+  Loop's different prompt is delivered in full as one mid-conversation
+  `role:"system"` message after that turn's user message (`shared/prompt-caching.md`,
+  "Mid-conversation system messages": no beta header, text-only, must follow a
+  user message). The projection replays it in the same place on every request.
+- `tools` is the declared set sorted by name, byte-identical on every request.
+  Per-step narrowing (a listener, `ReadOnly`, `ChatOnly`) is enforced by
+  `Loop.allows`; the model is told which tools are available in a system message,
+  and an empty offer is `tool_choice: {"type":"none"}` over the same tools
+  (`causes.md`, "A library, proxy or gateway that rewrites what it forwards").
+- A tool the declared set lacks grows the frame at a turn boundary. The
+  by-reference form (`defer_loading` plus `tool_addition`, beta
+  `mid-conversation-tool-changes-2026-07-01`, `shared/tool-use-concepts.md`) needs
+  the tool declared up front, and the by-value form (`inline-tools-2026-09-15`) is
+  not in `shared/platform-availability.md`, so neither is sent. The signed
+  reasoning before the new frame is stripped instead: a leading run, the
+  documented removal (`session.Log.StripStaleReasoning`), recorded by the
+  `tools_added` frame. A tool whose definition changed keeps the declared one.
+
+Where each path stands (every path that can send a changed `system` or `tools` on a
+conversation that holds thinking blocks):
+
+| Path | Status |
+|---|---|
+| Per-Loop `Config.SystemPrompt` (`newTurnLoop`, `newRequest`; harness specs, skills, lessons, budget-dropped sections) | Fixed: frozen, change delivered as a notice. |
+| `LLMRequest` waterfall listeners narrowing `Tools` | Fixed: offered set is host-side. |
+| Loops with different `schemas()` over one log (`ReadOnly`, `ChatOnly`) | Fixed: same frame. `CoreToolsOnly` and dynamic activation are local-provider only, which binds nothing. |
+| Late tool registration (MCP server, skill) | Frame grows at the turn boundary and the earlier signed reasoning is stripped (recorded). Mid tool round it waits for the turn to end. |
+| A tool whose description or schema changed | Declared definition kept. |
+| Resume | Frame is read from the log. A log written before the frame existed adopts its last `system/prompt` and the current tools, with nothing stripped. |
+| Model switch | A target without system-message support is sent history without the notices and its own prompt. Not an edit for the target that never saw them. |
+| Sonnet 5 and Haiku 4.5 (no `MidConversationSystem`) | Not fixed: no append-only form for them in the docs; unchanged behaviour. |
+| Session retention trimming whole turns off the front (`session/store.go`) | Not fixed: it changes the prefix of every retained block, and the frame event goes with the turn that held it. Pre-existing rolling-truncation case. |
+| Sub-agents, the escalation ladder, `manvi probe` | Separate conversations with their own logs and frames; the probe replays no thinking. |
+
 ---
 
 ## Related Documentation
