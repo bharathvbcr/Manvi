@@ -358,6 +358,9 @@ func isExecutableFile(path string) bool {
 	return info.Mode()&0o111 != 0
 }
 
+// maxVersionCandidates bounds how many installed versions are tried, newest first.
+const maxVersionCandidates = 256
+
 type semverCandidate struct {
 	major, minor, patch int
 	prerelease          string
@@ -409,9 +412,6 @@ func claudeInstallCandidates() []string {
 		if err != nil {
 			continue
 		}
-		if len(entries) > 256 {
-			entries = entries[:256]
-		}
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -445,6 +445,11 @@ func claudeInstallCandidates() []string {
 		}
 		return a.prerelease > b.prerelease
 	})
+	// Bound the work after the sort, never before it: capping the directory
+	// listing first would drop the newest version whenever it sorts late.
+	if len(found) > maxVersionCandidates {
+		found = found[:maxVersionCandidates]
+	}
 	out := make([]string, 0, len(found)+3)
 	for _, c := range found {
 		out = append(out, c.path)
