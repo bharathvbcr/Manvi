@@ -51,3 +51,30 @@ func TestAdvPlacementAcceptsAnAnswerThatSurvivesEncoding(t *testing.T) {
 		})
 	}
 }
+
+// The encoder and llm.Message.HasSendableContent are one predicate, not two that
+// drift: the log decides which assistant messages exist with the second, the
+// wire sends the ones the first keeps.
+func TestEncoderKeepsExactlyWhatHasSendableContent(t *testing.T) {
+	for name, blocks := range map[string][]llm.ContentBlock{
+		"text":               {llm.TextBlock{Text: "x"}},
+		"empty text":         {llm.TextBlock{}},
+		"whitespace text":    {llm.TextBlock{Text: " \t\n"}},
+		"signed thinking":    {llm.ReasoningBlock{Text: "t", Signature: "s"}},
+		"unsigned thinking":  {llm.ReasoningBlock{Text: "t"}},
+		"redacted thinking":  {llm.ReasoningBlock{Redacted: true, Signature: "d"}},
+		"unsigned then text": {llm.ReasoningBlock{Text: "t"}, llm.TextBlock{Text: "x"}},
+		"hollow pair":        {llm.ReasoningBlock{Text: "t"}, llm.TextBlock{Text: " "}},
+		"tool call":          {llm.ToolCallBlock{ID: "c", Name: "n"}},
+		"no blocks":          nil,
+	} {
+		msg := llm.Message{Role: llm.RoleAssistant, Content: blocks}
+		_, keep, err := toWireMessage(msg)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if keep != msg.HasSendableContent() {
+			t.Errorf("%s: encoder keeps %v, predicate says %v", name, keep, msg.HasSendableContent())
+		}
+	}
+}
