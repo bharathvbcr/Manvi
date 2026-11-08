@@ -140,7 +140,7 @@ func (w *wireState) fold(seq int, t Type, raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &data); err != nil {
 			return fmt.Errorf("session: decoding %s: %w", t, err)
 		}
-		if data.Message.HasSendableContent() && !(w.stale[seq] && emptiedByStrip(data.Message)) {
+		if data.Message.HasSendableContent() && (!w.stale[seq] || !emptiedByStrip(data.Message)) {
 			w.awaiting = nil
 		}
 	case WireFrame:
