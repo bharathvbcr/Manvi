@@ -35,8 +35,8 @@ func TestWireNoticeProjectsInPlace(t *testing.T) {
 		if !reflect.DeepEqual(roles, want) {
 			t.Fatalf("%s: roles = %v, want %v", name, roles, want)
 		}
-		if got := msgs[5].Content[0].(llm.TextBlock).Text; got != "now in go" {
-			t.Errorf("%s: notice text = %q", name, got)
+		if got, ok := msgs[5].Content[0].(llm.TextBlock); !ok || got.Text != "now in go" {
+			t.Errorf("%s: notice content = %v", name, msgs[5].Content[0])
 		}
 	}
 	check("warm", log)

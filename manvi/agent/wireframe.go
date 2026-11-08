@@ -63,8 +63,7 @@ func (l *Loop) settleFrame() error {
 	}
 	state := l.log.Wire()
 	wanted := l.schemas()
-	switch {
-	case state.Frame == nil:
+	if state.Frame == nil {
 		system := l.log.SystemPrompt()
 		if system == "" {
 			system = l.cfg.SystemPrompt
@@ -74,35 +73,40 @@ func (l *Loop) settleFrame() error {
 		}); err != nil {
 			return err
 		}
-	default:
-		added := undeclared(state.Frame.Tools, wanted)
-		if len(added) == 0 {
-			break
-		}
-		history, err := l.log.DeriveMessages()
-		if err != nil {
-			return err
-		}
-		// Mid tool round the assistant turn awaiting its result keeps its
-		// signed reasoning, so the growth waits for the turn to end.
-		if !AtTurnBoundary(history) {
-			break
-		}
-		names := make([]string, len(added))
-		for i, s := range added {
-			names[i] = s.Name
-		}
-		slices.Sort(names)
-		if _, err := l.log.Append(session.WireFrame, session.FrameData{
-			System: state.Frame.System,
-			Tools:  sortedTools(append(slices.Clone(state.Frame.Tools), added...)),
-			Why:    session.WhyToolsAdded, Added: names,
-		}); err != nil {
-			return err
-		}
+	} else if err := l.growFrame(state.Frame, wanted); err != nil {
+		return err
 	}
 	l.wire = l.log.Wire()
 	return nil
+}
+
+// growFrame re-declares the frame with the wanted tools it lacks, at a turn
+// boundary.
+func (l *Loop) growFrame(frame *session.FrameData, wanted []llm.ToolSchema) error {
+	added := undeclared(frame.Tools, wanted)
+	if len(added) == 0 {
+		return nil
+	}
+	history, err := l.log.DeriveMessages()
+	if err != nil {
+		return err
+	}
+	// Mid tool round the assistant turn awaiting its result keeps its signed
+	// reasoning, so the growth waits for the turn to end.
+	if !AtTurnBoundary(history) {
+		return nil
+	}
+	names := make([]string, len(added))
+	for i, s := range added {
+		names[i] = s.Name
+	}
+	slices.Sort(names)
+	_, err = l.log.Append(session.WireFrame, session.FrameData{
+		System: frame.System,
+		Tools:  sortedTools(append(slices.Clone(frame.Tools), added...)),
+		Why:    session.WhyToolsAdded, Added: names,
+	})
+	return err
 }
 
 // frozenFrame is the conversation's frame when this Loop sends it.
