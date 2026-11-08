@@ -101,7 +101,7 @@ func (c *convo) requests() []wireRequest {
 	c.t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []wireRequest
+	out := make([]wireRequest, 0, len(c.raw))
 	for _, raw := range c.raw {
 		var req wireRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
