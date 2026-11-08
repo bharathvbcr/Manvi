@@ -18,14 +18,32 @@ var (
 	errSeatFileTooLarge   = errors.New("file exceeds its size bound")
 )
 
+var errSeatFileSymlink = errors.New("is a symbolic link")
+
 // readSmallRegularFile reads path only when it is a regular file of at most
-// limit bytes. The checkout is agent-writable, so a name this package reads
-// there may be a FIFO or a device: opening a FIFO for reading blocks until a
-// writer appears, and an unbounded file is unbounded memory. The open does not
+// limit bytes. A name this package reads from the agent-writable checkout may
+// be a FIFO or a device: opening a FIFO for reading blocks until a writer
+// appears, and an unbounded file is unbounded memory. The open does not
 // block, the kind is checked on the open descriptor (a swap between a stat and
 // the open cannot slip through), and the read is capped.
 func readSmallRegularFile(path string, limit int64) ([]byte, error) {
-	f, err := openNonBlocking(path)
+	return readRegular(path, limit, openNonBlocking)
+}
+
+// readCheckoutFile is readSmallRegularFile for a file the checkout controls
+// (a marker, a worktree's .git, the gitdir and commondir it names): it never
+// follows a symlink at the final component, because the checkout could point it
+// at any file the operator can read and have that file's content treated as
+// seat configuration or echoed in an error.
+func readCheckoutFile(path string, limit int64) ([]byte, error) {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, errSeatFileSymlink
+	}
+	return readRegular(path, limit, openNoFollowNonBlocking)
+}
+
+func readRegular(path string, limit int64, open func(string) (*os.File, error)) ([]byte, error) {
+	f, err := open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -78,16 +96,21 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" || !filepath.IsAbs(home) {
-		// No usable home directory means no seats to route: the launch is the
-		// unrouted one, not a failure.
-		return envOverrides{unsetKeys: nestedSessionMarkers}, nil //nolint:nilerr // see above
-	}
-	resolvedHome := home
-	if realHome, symErr := filepath.EvalSymlinks(home); symErr == nil {
-		resolvedHome = realHome
+		// Without a usable home directory there is no ~/.claude-accounts to map
+		// a seat from, so an operator with no seats gets the unrouted launch. A
+		// checkout that pins a seat does not: launching it on the ambient account
+		// is the one thing the marker exists to prevent.
+		_, _, pinned, markerErr := findClaudeAccountMarker(cwd, "")
+		if markerErr != nil {
+			return envOverrides{}, markerErr
+		}
+		if pinned {
+			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but HOME is not a usable absolute path; refusing to launch on the default account")
+		}
+		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
 	}
 
-	markerRoot, account, hasMarker, err := findClaudeAccountMarker(cwd, home, resolvedHome)
+	markerRoot, account, hasMarker, err := findClaudeAccountMarker(cwd, home)
 	if err != nil {
 		return envOverrides{}, err
 	}
@@ -95,10 +118,11 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 		return envOverrides{}, fmt.Errorf("empty .claude-account marker in %s", markerRoot)
 	}
 	if hasMarker && !validClaudeSeatName(account) {
-		return envOverrides{}, fmt.Errorf("invalid .claude-account seat name %q", account)
+		// The marker is checkout content: say what is wrong with it, never what it holds.
+		return envOverrides{}, fmt.Errorf("invalid .claude-account in %s (first token is %d bytes and not a seat name)", markerRoot, len(account))
 	}
 
-	seats, hasAccountsFile, err := loadClaudeAccounts(home, resolvedHome)
+	seats, hasAccountsFile, err := loadClaudeAccounts(home)
 	if err != nil {
 		return envOverrides{}, err
 	}
@@ -224,70 +248,108 @@ func verifyDefaultLoginNotPinnedSeat(home string, seats map[string]string) error
 	return nil
 }
 
-func findClaudeAccountMarker(cwd, home, resolvedHome string) (string, string, bool, error) {
-	if root, acct, ok, err := walkClaudeAccountAncestors(cwd, home, resolvedHome); ok || err != nil {
+// markerSearchDirs lists the directories whose .claude-account may pin cwd,
+// nearest first, compared by identity rather than spelling. Inside $HOME that is
+// the checkout and every ancestor strictly below $HOME: a seat marker is the
+// operator's own, kept in or above a project under their home. Outside $HOME
+// (or with no usable home) it is the checkout root only, which is cwd or its
+// nearest ancestor holding a .git: a marker in some shared parent directory is
+// not something the operator placed for this checkout.
+func markerSearchDirs(cwd, home string) []string {
+	var homeInfo os.FileInfo
+	if home != "" {
+		homeInfo, _ = os.Stat(home)
+	}
+	var chain []string
+	underHome := false
+	for dir := filepath.Clean(cwd); ; {
+		if homeInfo != nil {
+			if info, err := os.Stat(dir); err == nil && os.SameFile(info, homeInfo) {
+				underHome = true
+				break
+			}
+		}
+		chain = append(chain, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if underHome || len(chain) == 0 {
+		return chain
+	}
+	for _, dir := range chain {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			if dir == chain[0] {
+				break
+			}
+			return []string{chain[0], dir}
+		}
+	}
+	return chain[:1]
+}
+
+func findClaudeAccountMarker(cwd, home string) (string, string, bool, error) {
+	if root, acct, ok, err := searchClaudeAccountMarker(markerSearchDirs(cwd, home)); ok || err != nil {
 		return root, acct, ok, err
 	}
-	if mainRoot := linkedWorktreeMainCheckout(cwd, home, resolvedHome); mainRoot != "" {
-		return walkClaudeAccountAncestors(mainRoot, home, resolvedHome)
+	if mainRoot := linkedWorktreeMainCheckout(cwd, home); mainRoot != "" {
+		return searchClaudeAccountMarker(markerSearchDirs(mainRoot, home))
 	}
 	return "", "", false, nil
 }
 
-func walkClaudeAccountAncestors(start, home, resolvedHome string) (string, string, bool, error) {
-	dir := filepath.Clean(start)
-	for dir != "/" && dir != "." && dir != home && dir != resolvedHome {
+func searchClaudeAccountMarker(dirs []string) (string, string, bool, error) {
+	for _, dir := range dirs {
 		candidate := filepath.Join(dir, ".claude-account")
-		info, statErr := os.Stat(candidate)
-		if statErr == nil && !info.IsDir() {
-			raw, readErr := readSmallRegularFile(candidate, 4096)
-			if errors.Is(readErr, errSeatFileTooLarge) {
-				return dir, "", true, errors.New(".claude-account exceeds 4 KiB")
-			}
-			if readErr != nil {
-				return dir, "", true, fmt.Errorf("read %s: %w", candidate, readErr)
-			}
-			trimmed := strings.TrimSpace(string(raw))
-			if trimmed == "" {
-				return dir, "", true, nil
-			}
-			fields := strings.Fields(trimmed)
-			return dir, fields[0], true, nil
+		info, statErr := os.Lstat(candidate)
+		if statErr != nil || info.IsDir() {
+			continue
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
+		raw, readErr := readCheckoutFile(candidate, 4096)
+		switch {
+		case errors.Is(readErr, errSeatFileSymlink):
+			return dir, "", true, fmt.Errorf("%s is a symbolic link; a seat marker must be a regular file in the checkout", candidate)
+		case errors.Is(readErr, errSeatFileTooLarge):
+			return dir, "", true, errors.New(".claude-account exceeds 4 KiB")
+		case readErr != nil:
+			return dir, "", true, fmt.Errorf("read %s: %w", candidate, readErr)
 		}
-		dir = parent
+		fields := strings.Fields(strings.TrimSpace(string(raw)))
+		if len(fields) == 0 {
+			return dir, "", true, nil
+		}
+		return dir, fields[0], true, nil
 	}
 	return "", "", false, nil
 }
 
-func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
-	dir := filepath.Clean(cwd)
-	worktreeRoot := ""
+// linkedWorktreeMainCheckout returns the main checkout of the linked worktree
+// that holds cwd, or "" when cwd is not in one or the link does not prove
+// itself. The worktree's .git file, and the gitdir and commondir it names, are
+// written by the checkout, so none is believed on its own: the gitdir must be
+// <common>/worktrees/<name> of the repository it claims, and git's back-pointer
+// <gitdir>/gitdir must name this worktree's own .git file. A forged pair that
+// points at another repository fails both.
+func linkedWorktreeMainCheckout(cwd, home string) string {
 	dotGit := ""
-	for dir != "/" && dir != "." && dir != home && dir != resolvedHome {
+	for _, dir := range markerSearchDirs(cwd, home) {
 		candidate := filepath.Join(dir, ".git")
-		info, err := os.Stat(candidate)
-		if err == nil {
-			if !info.Mode().IsRegular() || info.Size() > 4096 {
-				return ""
-			}
-			worktreeRoot = dir
-			dotGit = candidate
-			break
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			continue
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
+		if !info.Mode().IsRegular() || info.Size() > 4096 {
+			return ""
 		}
-		dir = parent
+		dotGit = candidate
+		break
 	}
 	if dotGit == "" {
 		return ""
 	}
-	raw, err := readSmallRegularFile(dotGit, 4096)
+	raw, err := readCheckoutFile(dotGit, 4096)
 	if err != nil {
 		return ""
 	}
@@ -301,21 +363,41 @@ func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreeRoot, gitDir)
+		gitDir = filepath.Join(filepath.Dir(dotGit), gitDir)
 	}
 	gitDir = filepath.Clean(gitDir)
 
+	back, err := readCheckoutFile(filepath.Join(gitDir, "gitdir"), 4096)
+	if err != nil {
+		return ""
+	}
+	backPath := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(backPath) {
+		backPath = filepath.Join(gitDir, backPath)
+	}
+	backInfo, backErr := os.Stat(backPath)
+	ownInfo, ownErr := os.Stat(dotGit)
+	if backErr != nil || ownErr != nil || !os.SameFile(backInfo, ownInfo) {
+		return ""
+	}
+
 	commonDir := gitDir
-	commonFile := filepath.Join(gitDir, "commondir")
-	if cRaw, rErr := readSmallRegularFile(commonFile, 4096); rErr == nil {
-		rel := strings.TrimSpace(string(cRaw))
-		if rel != "" {
+	if cRaw, rErr := readCheckoutFile(filepath.Join(gitDir, "commondir"), 4096); rErr == nil {
+		if rel := strings.TrimSpace(string(cRaw)); rel != "" {
 			if filepath.IsAbs(rel) {
 				commonDir = filepath.Clean(rel)
 			} else {
 				commonDir = filepath.Clean(filepath.Join(gitDir, rel))
 			}
 		}
+	}
+	if filepath.Base(filepath.Dir(gitDir)) != "worktrees" {
+		return ""
+	}
+	adminParent, aErr := os.Stat(filepath.Dir(filepath.Dir(gitDir)))
+	common, cErr := os.Stat(commonDir)
+	if aErr != nil || cErr != nil || !os.SameFile(adminParent, common) {
+		return ""
 	}
 	if resolved, rErr := filepath.EvalSymlinks(commonDir); rErr == nil {
 		commonDir = resolved
@@ -326,7 +408,7 @@ func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
 	return ""
 }
 
-func loadClaudeAccounts(home, resolvedHome string) (map[string]string, bool, error) {
+func loadClaudeAccounts(home string) (map[string]string, bool, error) {
 	path := filepath.Join(home, ".claude-accounts")
 	info, err := os.Stat(path)
 	if err != nil {
@@ -346,16 +428,15 @@ func loadClaudeAccounts(home, resolvedHome string) (map[string]string, bool, err
 		return nil, true, fmt.Errorf("read ~/.claude-accounts: %w", err)
 	}
 
-	defaultDir := filepath.Clean(filepath.Join(home, ".claude"))
-	resolvedDefault := defaultDir
-	if r, rErr := filepath.EvalSymlinks(defaultDir); rErr == nil {
-		resolvedDefault = r
-	} else if resolvedHome != home {
-		resolvedDefault = filepath.Clean(filepath.Join(resolvedHome, ".claude"))
+	// Directory identity is the file system's, not a spelling: a case variant or
+	// a symlink of ~/.claude, or two seats naming one directory, is one directory.
+	defaultInfo, _ := os.Stat(filepath.Join(home, ".claude"))
+	type seatIdentity struct {
+		name string
+		info os.FileInfo
 	}
-
+	var seen []seatIdentity
 	seats := make(map[string]string)
-	byDir := make(map[string]string)
 	for _, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -371,6 +452,9 @@ func loadClaudeAccounts(home, resolvedHome string) (map[string]string, bool, err
 		}
 		if !validClaudeSeatName(acct) {
 			return nil, true, fmt.Errorf("invalid seat name %q in ~/.claude-accounts", acct)
+		}
+		if _, dup := seats[acct]; dup {
+			return nil, true, fmt.Errorf("seat %q is defined twice in ~/.claude-accounts", acct)
 		}
 		dirText := strings.TrimSpace(trimmed[idx:])
 		dirText = strings.TrimRight(dirText, "/")
@@ -390,13 +474,15 @@ func loadClaudeAccounts(home, resolvedHome string) (map[string]string, bool, err
 		if rErr != nil {
 			return nil, true, fmt.Errorf("resolve seat %q config directory: %w", acct, rErr)
 		}
-		if resolvedDir == defaultDir || resolvedDir == resolvedDefault {
+		if defaultInfo != nil && os.SameFile(dInfo, defaultInfo) {
 			return nil, true, fmt.Errorf("seat %q points at the default ~/.claude directory", acct)
 		}
-		if prev, exists := byDir[resolvedDir]; exists && prev != acct {
-			return nil, true, fmt.Errorf("seat %q shares config directory with %q", acct, prev)
+		for _, prev := range seen {
+			if os.SameFile(dInfo, prev.info) {
+				return nil, true, fmt.Errorf("seat %q shares config directory with %q", acct, prev.name)
+			}
 		}
-		byDir[resolvedDir] = acct
+		seen = append(seen, seatIdentity{acct, dInfo})
 		seats[acct] = resolvedDir
 	}
 	return seats, true, nil

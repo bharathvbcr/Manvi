@@ -15,3 +15,9 @@ func openNonBlocking(path string) (*os.File, error) {
 // executableWithoutMode is true because Windows file modes carry no execute
 // bit; what makes a file runnable there is its PE image, checked next.
 func executableWithoutMode() bool { return true }
+
+// openNoFollowNonBlocking is a plain open here: the caller has already refused
+// a symlink with Lstat, and Windows has no FIFOs.
+func openNoFollowNonBlocking(path string) (*os.File, error) {
+	return os.Open(path) //nolint:gosec // read-only open of a path the caller inspected
+}

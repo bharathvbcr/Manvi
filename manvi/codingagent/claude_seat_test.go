@@ -97,6 +97,10 @@ func TestClaudeSeatRoutingResolvesPinnedRepoAndWorktreeAndFailsClosed(t *testing
 	if err := os.WriteFile(filepath.Join(externalWorktree, ".git"), []byte("gitdir: "+wtGitAdmin+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// git writes the back-pointer from the admin directory to the worktree's .git file.
+	if err := os.WriteFile(filepath.Join(wtGitAdmin, "gitdir"), []byte(filepath.Join(externalWorktree, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	wtDump := openClaudeSeatFixture(t, externalWorktree)
 	if !strings.Contains(wtDump, "CLAUDE_CONFIG_DIR="+resolvedChandra) || !strings.Contains(wtDump, "CLAUDE_SECURESTORAGE_CONFIG_DIR="+resolvedChandra) {
 		t.Fatalf("linked external worktree did not inherit main repo seat %s:\n%s", resolvedChandra, wtDump)
@@ -401,6 +405,10 @@ func TestClaudeSeatLinkedWorktreeSubdirectoryInheritsMainCheckoutSeat(t *testing
 		[]byte("gitdir: "+worktreeGitDir+"\n"),
 		0o600,
 	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "gitdir"), []byte(filepath.Join(linkedWorktree, ".git")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

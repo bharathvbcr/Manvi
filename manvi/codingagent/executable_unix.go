@@ -18,3 +18,9 @@ func openNonBlocking(path string) (*os.File, error) {
 // executableWithoutMode reports whether a file can be executable although it
 // carries no execute permission bit. On these platforms it cannot.
 func executableWithoutMode() bool { return false }
+
+// openNoFollowNonBlocking is openNonBlocking that also refuses a symlink at the
+// final path component, for files the checkout controls.
+func openNoFollowNonBlocking(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0) //nolint:gosec // read-only, non-blocking, no-follow open of a path the caller inspected
+}
