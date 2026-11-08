@@ -121,7 +121,7 @@ Date:     2026-11-08 (revision 5)
 Category: cs.SE (secondary cs.LG); alphaXiv's category list is unverified
 Code:     https://github.com/bharathvbcr/Manvi (bench/)
 Abstract: the manuscript's abstract, with the TeX math as plain text
-          (Δ = +0.156, [+0.069, +0.244], n=5); 1,886 characters
+          (Δ = +0.156, [+0.069, +0.244], n=5); 1,860 characters (arXiv's 1,920-character limit is unverified)
 
 @misc{vaddaram2026harness,
   title  = {Harness Architecture as an Experimental Object: Measuring
