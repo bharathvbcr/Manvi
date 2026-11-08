@@ -468,8 +468,14 @@ directory, symlinks resolved); with none it refuses rather than searching PATH a
 Managed Claude honours a `.claude-account` marker against `~/.claude-accounts`, mapping it
 to `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR`; an invalid, unmapped or
 relative seat, or one equal to `~/.claude`, fails the launch before any process starts. With
-neither a marker nor `~/.claude-accounts`, the launch only drops `CLAUDECODE` and
-`CLAUDE_CODE_ENTRYPOINT`. The
+neither a marker nor `~/.claude-accounts`, seat routing adds nothing: the launch only drops
+`CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`, so an operator's own `CLAUDE_CONFIG_DIR`,
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN` still reach Claude.
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` do not, with or without seats: every child
+is started without the provider credentials (`childenv.Inherit`). The marker is read only
+from the checkout and its ancestors below `$HOME` (the checkout root alone outside it),
+never through a symlink, and a linked worktree uses its main checkout's marker only when
+git's back-pointer proves the link. The
 Codex adapter launches `app-server` with argument arrays, never shell
 interpolation. stdio is that process's default; `--listen stdio://` is not
 passed, because current Codex exits without a session when it is. The Claude
@@ -519,8 +525,9 @@ separate facts. Model completion never moves or accepts the task.
 
 Limits: 64 active managed sessions per runner (`MaxManagedSessions`, equal to
 the store's ceiling, so it never refuses a run the store admitted under the
-host's limit); a 45-minute turn budget; 256 KiB protocol
-frames; 32 MiB stdout per session (cumulative over the whole session and
+host's limit); a 45-minute turn budget; 1 MiB protocol
+frames (`MaxFrameBytes`, raised from 256 KiB because a real `agy` sends a 107 KB
+`available_commands_update`); 32 MiB stdout per session (cumulative over the whole session and
 counting every frame the provider writes, including frames the retained record
 does not keep in full; a session that reads a great deal can reach it, and its failure
 reason says so) and 64 KiB discarded stderr; 32 pending callbacks and 2,048
