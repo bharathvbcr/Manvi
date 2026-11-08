@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -141,6 +143,18 @@ func (l *Loop) declares(name string) bool {
 // notice is recorded and appended when the model's instructions or available
 // tools differ from what it was last told, as one message so two system
 // messages never sit side by side.
+//
+// What goes out is what the log holds. The frame is read back from the log, and
+// the notice that is sent is the one Append returned, so a scrubber that rewrote
+// the prompt rewrote the message the model sees too; and the prompt is compared
+// with the one the log recorded in its scrubbed form, so a scrubbed conversation
+// does not look changed on every turn.
+//
+// The prompt is the shaped request's, not Config.SystemPrompt: a listener that
+// edited System in the LLMRequest waterfall changed what the model should be
+// told, and top-level system cannot carry it, so it is delivered like any other
+// prompt change. The reason to deliver rather than refuse is that the edit is
+// the listener's intent and the notice is the append-only form of it.
 func (l *Loop) freezeRequest(request llm.Request) (llm.Request, map[string]struct{}, error) {
 	frame := l.frozenFrame()
 	if frame == nil {
@@ -159,19 +173,23 @@ func (l *Loop) freezeRequest(request llm.Request) (llm.Request, map[string]struc
 	slices.Sort(offered)
 	offered = slices.Compact(offered)
 
+	prompt := request.System
 	request.System = frame.System
 	request.Tools = frame.Tools
 	request.NoToolCalls = len(offered) == 0
 
+	// The state is read from the log: a notice that went unanswered since this
+	// Loop last looked is no longer delivered.
+	l.wire = l.log.Wire()
 	told := l.wire.Told
 	if told == nil {
 		told = declared
 	}
 	var data session.NoticeData
 	var parts []string
-	if p := l.cfg.SystemPrompt; p != "" && p != l.wire.Delivered {
-		data.Prompt = p
-		parts = append(parts, systemNoticeText(p))
+	if prompt != "" && l.log.Scrubbed(prompt) != l.wire.Delivered {
+		data.Prompt = prompt
+		parts = append(parts, systemNoticeText(prompt))
 	}
 	if len(offered) > 0 && !slices.Equal(offered, told) {
 		data.Offered = offered
@@ -185,16 +203,16 @@ func (l *Loop) freezeRequest(request llm.Request) (llm.Request, map[string]struc
 		return request, names, nil
 	}
 	data.Text = strings.Join(parts, "\n\n")
-	if _, err := l.log.Append(session.WireNotice, data); err != nil {
+	event, err := l.log.Append(session.WireNotice, data)
+	if err != nil {
 		return llm.Request{}, nil, err
 	}
-	if data.Prompt != "" {
-		l.wire.Delivered = data.Prompt
+	var logged session.NoticeData
+	if err := json.Unmarshal(event.Data, &logged); err != nil {
+		return llm.Request{}, nil, fmt.Errorf("agent: reading back the notice just logged: %w", err)
 	}
-	if data.Offered != nil {
-		l.wire.Told = data.Offered
-	}
-	request.Messages = append(slices.Clone(request.Messages), session.NoticeMessage(data))
+	l.wire = l.log.Wire()
+	request.Messages = append(slices.Clone(request.Messages), session.NoticeMessage(logged))
 	return request, names, nil
 }
 

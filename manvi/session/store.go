@@ -491,10 +491,37 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	}
 
 	from, droppedTurns, oversize := trimEncoded(events, perEvent, s.maxBytes)
-	kept := events[from:]
+	// The wire frame lives in the first turn, which is the first one a trim
+	// drops, so the file states it again at the front of what is kept; the
+	// signed reasoning that survives was produced under it. The restatement
+	// counts against the budget, so the trim is made again with room for it.
+	kept, keptEncoded := events[from:], perEvent[from:]
+	if from > 0 {
+		carry, ok, err := wireCarry(events[:from])
+		if err != nil {
+			return SaveReport{}, err
+		}
+		if ok {
+			carried, err := json.Marshal(carry)
+			if err != nil {
+				return SaveReport{}, fmt.Errorf("session: encoding event %d: %w", carry.Seq, err)
+			}
+			from, droppedTurns, oversize = trimEncoded(events, perEvent, max(s.maxBytes-len(carried)-1, 0))
+			// The frame is in the first dropped events, and a trim that makes
+			// room drops more of them, never fewer: it is found again.
+			if carry, _, err = wireCarry(events[:from]); err != nil {
+				return SaveReport{}, err
+			}
+			if carried, err = json.Marshal(carry); err != nil {
+				return SaveReport{}, fmt.Errorf("session: encoding event %d: %w", carry.Seq, err)
+			}
+			kept = append([]Event{carry}, events[from:]...)
+			keptEncoded = append([]json.RawMessage{carried}, perEvent[from:]...)
+		}
+	}
 	// The events were each encoded to be measured; joined, those encodings
 	// are byte-for-byte what marshalling the kept slice produces.
-	encoded := joinArray(perEvent[from:])
+	encoded := joinArray(keptEncoded)
 	body, err := json.Marshal(header{
 		Version:      FormatVersion,
 		ID:           id,

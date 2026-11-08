@@ -534,7 +534,7 @@ func (l *Log) extendProjection(t Type, seq int, payload any) {
 			return
 		}
 		l.proj.flushPending(&l.proj.messages)
-		l.proj.messages = append(l.proj.messages, data.Message)
+		appendMessage(&l.proj.messages, data.Message)
 	case WireNotice:
 		data, ok := payload.(NoticeData)
 		if !ok {
@@ -578,8 +578,26 @@ func (p *projection) flushPending(out *[]llm.Message) {
 	if len(p.pending) == 0 {
 		return
 	}
-	*out = append(*out, llm.Message{Role: llm.RoleUser, Content: p.pending})
+	appendMessage(out, llm.Message{Role: llm.RoleUser, Content: p.pending})
 	p.pending = nil
+}
+
+// appendMessage adds msg to a projected history. A mid-conversation system
+// message that no assistant message answered before the next user-role message
+// is dropped when that message arrives: its request failed, nothing was acted on
+// it, and the provider refuses a system message followed by a user message
+// (shared/prompt-caching.md, "Mid-conversation system messages": the last entry
+// or followed by an assistant turn). Dropping it edits no signed block, which
+// binds the messages before it and not the ones after, and a notice no assistant
+// turn followed has no later block to invalidate. wireState.fold counts it as
+// never delivered, so what it said is said again.
+func appendMessage(out *[]llm.Message, msg llm.Message) {
+	if msg.Role == llm.RoleUser {
+		for n := len(*out); n > 0 && (*out)[n-1].Role == llm.RoleSystem; n-- {
+			*out = (*out)[:n-1]
+		}
+	}
+	*out = append(*out, msg)
 }
 
 // rebuildProjection reproduces DeriveMessages' original full replay exactly;
@@ -615,7 +633,7 @@ func (l *Log) rebuildProjection() error {
 				continue
 			}
 			proj.flushPending(&proj.messages)
-			proj.messages = append(proj.messages, data.Message)
+			appendMessage(&proj.messages, data.Message)
 
 		case WireNotice:
 			var data NoticeData

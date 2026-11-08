@@ -31,10 +31,14 @@ import (
 //     projection replays it as a role:"system" message at the same place in
 //     every later request, and it is never rewritten.
 
-// WhyOpened and WhyToolsAdded say why a frame was recorded.
+// WhyOpened, WhyToolsAdded and WhyCarried say why a frame was recorded.
+// WhyCarried is the store's restatement of the frame at the front of a file whose
+// older turns retention dropped: it is the state of the dropped frames, not a
+// change, so it is never a boundary.
 const (
 	WhyOpened     = "opened"
 	WhyToolsAdded = "tools_added"
+	WhyCarried    = "carried"
 )
 
 const (
@@ -48,12 +52,16 @@ type (
 	// FrameData is what a conversation declared to its provider: the system
 	// prompt of its first request and the tool definitions, sorted by name so
 	// the bytes sent are the same on every request. Added names the tools a
-	// WhyToolsAdded frame brought in.
+	// WhyToolsAdded frame brought in. Delivered and Told are set only on a
+	// WhyCarried frame: what the notices dropped with the old turns had last
+	// told the model.
 	FrameData struct {
-		System string           `json:"system"`
-		Tools  []llm.ToolSchema `json:"tools,omitempty"`
-		Why    string           `json:"why"`
-		Added  []string         `json:"added,omitempty"`
+		System    string           `json:"system"`
+		Tools     []llm.ToolSchema `json:"tools,omitempty"`
+		Why       string           `json:"why"`
+		Added     []string         `json:"added,omitempty"`
+		Delivered string           `json:"delivered,omitempty"`
+		Told      []string         `json:"told,omitempty"`
 	}
 	// NoticeData is one mid-conversation system message. Text is exactly what
 	// the model was sent, rendered once when the notice was recorded, so a
@@ -84,14 +92,37 @@ type WireState struct {
 // wireState is the log's running WireState, kept as events are appended so a
 // request does not rescan a long log. boundaries counts the frames that grew
 // the tool set, which is what makes StripStaleReasoning look at the log.
+//
+// A notice counts as delivered only once an assistant message answered it. One
+// that a user message (or tool result) follows instead rode a request that
+// failed: the projection drops it (see projection.appendMessage), so the model
+// never held what it said, and the state returns to what it was before it.
+// awaiting is that notice's predecessor state.
 type wireState struct {
 	WireState
 	boundaries int
+	awaiting   *WireState
 }
 
-// fold applies one WireFrame or WireNotice event. Other types are ignored.
+// fold applies one event. Types that do not touch the wire state are ignored,
+// and cost nothing unless a notice is awaiting its answer.
 func (w *wireState) fold(t Type, raw json.RawMessage) error {
 	switch t {
+	case UserMessage, ToolResult:
+		if w.awaiting != nil {
+			w.WireState, w.awaiting = *w.awaiting, nil
+		}
+	case AssistantMessage:
+		if w.awaiting == nil {
+			return nil
+		}
+		var data MessageData
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return fmt.Errorf("session: decoding %s: %w", t, err)
+		}
+		if len(data.Message.Content) > 0 {
+			w.awaiting = nil
+		}
 	case WireFrame:
 		var data FrameData
 		if err := json.Unmarshal(raw, &data); err != nil {
@@ -100,7 +131,10 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		if data.Why == WhyToolsAdded {
 			w.boundaries++
 		}
-		if w.Frame == nil {
+		switch {
+		case data.Why == WhyCarried:
+			w.Delivered, w.Told = data.Delivered, slices.Clone(data.Told)
+		case w.Frame == nil:
 			w.Delivered = data.System
 		}
 		w.Frame = &data
@@ -108,6 +142,11 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		var data NoticeData
 		if err := json.Unmarshal(raw, &data); err != nil {
 			return fmt.Errorf("session: decoding %s: %w", t, err)
+		}
+		if w.awaiting == nil {
+			before := w.WireState
+			before.Told = slices.Clone(before.Told)
+			w.awaiting = &before
 		}
 		if data.Prompt != "" {
 			w.Delivered = data.Prompt
@@ -117,6 +156,48 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// wireCarry is the frame to write at the front of a file whose events before it
+// were dropped by retention: the frame those events declared, with what their
+// notices had told the model. Without it a trimmed and reloaded conversation has
+// no frame and opens a new one from the current prompt and tools, which the
+// signed blocks that survive were not produced under. ok is false when the
+// dropped events held no frame. The event takes the position of the last dropped
+// one, so sequence numbers still only increase.
+func wireCarry(dropped []Event) (Event, bool, error) {
+	var w wireState
+	for _, e := range dropped {
+		if err := w.fold(e.Type, e.Data); err != nil {
+			return Event{}, false, err
+		}
+	}
+	if w.Frame == nil {
+		return Event{}, false, nil
+	}
+	frame := *w.Frame
+	frame.Why, frame.Added = WhyCarried, nil
+	frame.Delivered, frame.Told = w.Delivered, w.Told
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		return Event{}, false, fmt.Errorf("session: encoding carried %s: %w", WireFrame, err)
+	}
+	last := dropped[len(dropped)-1]
+	return Event{Seq: last.Seq, Type: WireFrame, At: last.At, Turn: last.Turn, Data: raw}, true, nil
+}
+
+// Scrubbed is text as the log would hold it: what a payload string becomes on
+// its way in. A value the Loop holds in the clear (the system prompt) is
+// compared with what the log recorded of an earlier one through this, so a log
+// that scrubs does not look changed on every turn.
+func (l *Log) Scrubbed(text string) string {
+	l.mu.RLock()
+	scrub := l.scrub
+	l.mu.RUnlock()
+	if scrub == nil {
+		return text
+	}
+	return scrub(text)
 }
 
 // Wire returns what the conversation has told its provider so far.

@@ -293,7 +293,8 @@ func ReplayableOn(fromModel, toModel string) bool {
 // validateSystemMessages checks the placement rules of mid-conversation
 // system messages (shared/prompt-caching.md, "Mid-conversation system
 // messages"): the model must support them, they cannot open the conversation,
-// they must follow a user message, and their content is text only. A message
+// they must follow a user message and be the last entry or be followed by an
+// assistant turn, and their content is text only. A message
 // that broke one would be a 400 mid-turn; an initial prompt belongs in
 // Request.System.
 func validateSystemMessages(req llm.Request) error {
@@ -309,6 +310,9 @@ func validateSystemMessages(req llm.Request) error {
 		}
 		if req.Messages[i-1].Role != llm.RoleUser {
 			return fmt.Errorf("anthropic: system message %d must follow a user message, follows %s", i, req.Messages[i-1].Role)
+		}
+		if i+1 < len(req.Messages) && req.Messages[i+1].Role != llm.RoleAssistant {
+			return fmt.Errorf("anthropic: system message %d must be the last message or be followed by an assistant turn, is followed by %s", i, req.Messages[i+1].Role)
 		}
 		for _, block := range msg.Content {
 			if _, ok := block.(llm.TextBlock); !ok {

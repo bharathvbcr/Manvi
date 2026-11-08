@@ -500,3 +500,70 @@ func TestWireNoticesAreNotSentToATargetThatCannotCarryThem(t *testing.T) {
 		t.Errorf("sent %q to a model that does not take system messages", got)
 	}
 }
+
+// A listener that edits System in the LLMRequest waterfall changed what the
+// model should be told. Top-level system is frozen, so the edit is delivered as
+// a notice, once, and it is what the log holds.
+func TestListenerSystemEditIsDeliveredAsANotice(t *testing.T) {
+	c := newConvo(t, twoTurnScript(), nil)
+	if err := c.reg.Register(echoTool("echo", "echo", nil)); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(_ *Config, b *bus.Bus) {
+		if _, err := bus.OnWaterfall(b, func(e LLMRequest, next bus.Next[LLMRequest]) LLMRequest {
+			e.Request.System += " Also: answer briefly."
+			return next(e)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, turn := range []struct {
+		prompt string
+		tune   func(*Config, *bus.Bus)
+	}{{"one", nil}, {"two", edit}, {"three", edit}} {
+		if err := c.turn("base prompt", turn.prompt, turn.tune); err != nil {
+			t.Fatalf("%s: %v", turn.prompt, err)
+		}
+	}
+	reqs := c.requests()
+	assertFrameStable(t, reqs)
+	var got []string
+	for _, req := range reqs {
+		got = systemMessages(t, req)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "base prompt Also: answer briefly.") {
+		t.Fatalf("last request system messages = %q, want the one notice carrying the edited prompt", got)
+	}
+	if n := len(advNotices(c.log)); n != 1 {
+		t.Errorf("%d notices, want 1: the same edit on the next turn is already delivered", n)
+	}
+}
+
+// The request that carried a notice fails, so no assistant turn answered it. The
+// next turn must succeed, must not send user, system, user, and must say again
+// what the lost notice said: the model never held it.
+func TestNoticeOfAFailedRequestIsSaidAgain(t *testing.T) {
+	c := newConvo(t, twoTurnScript(), nil)
+	if err := c.reg.Register(echoTool("echo", "echo", nil)); err != nil {
+		t.Fatal(err)
+	}
+	advServe(t, c, twoTurnScript(), map[int]int{2: 400})
+	if err := c.turn("prompt one", "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.turn("prompt two", "second", nil); err == nil {
+		t.Fatal("the fixture refusal did not fail the turn")
+	}
+	if err := c.turn("prompt two", "third", nil); err != nil {
+		t.Fatalf("the turn after a failed request must succeed: %v", err)
+	}
+	reqs := c.requests()
+	last := reqs[len(reqs)-1]
+	if p := advPlacementProblems(t, last); len(p) != 0 {
+		t.Errorf("placement: %v", p)
+	}
+	got := systemMessages(t, last)
+	if len(got) != 1 || !strings.Contains(got[0], "prompt two") {
+		t.Errorf("system messages = %q, want the one notice that says prompt two again", got)
+	}
+}

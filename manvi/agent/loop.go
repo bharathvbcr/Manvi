@@ -1126,7 +1126,7 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 	if err := l.settleFrame(); err != nil {
 		return 0, err
 	}
-	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.cfg.SystemPrompt {
+	if l.cfg.SystemPrompt != "" && l.log.SystemPrompt() != l.log.Scrubbed(l.cfg.SystemPrompt) {
 		if _, err := l.log.Append(session.SystemPrompt,
 			session.SystemPromptData{Text: l.cfg.SystemPrompt}); err != nil {
 			return 0, err

@@ -93,17 +93,26 @@ func staleMessages(events []Event) ([]bool, error) {
 		resultsBy  = map[llm.CallID][]int{}
 		edits      []compaction
 		pending    []int // result seqs awaiting the user message that carries them
-		pendingAt  int
-		leading    int // messages before the latest tool-set boundary
+		leading    int   // messages before the latest tool-set boundary
+		notices    int   // trailing messageSeq entries that are notices
 	)
+	// push records a projected message. A user-role message takes the
+	// unanswered notices before it off, as appendMessage does.
+	push := func(seq int, user bool) {
+		if user {
+			messageSeq = messageSeq[:len(messageSeq)-notices]
+			notices = 0
+		}
+		messageSeq = append(messageSeq, seq)
+	}
 	flush := func() {
 		if len(pending) == 0 {
 			return
 		}
+		push(pending[len(pending)-1], true)
 		for _, seq := range pending {
-			resultAt[seq] = pendingAt
+			resultAt[seq] = len(messageSeq) - 1
 		}
-		messageSeq = append(messageSeq, pending[len(pending)-1])
 		pending = nil
 	}
 	for _, event := range events {
@@ -117,21 +126,22 @@ func staleMessages(events []Event) ([]bool, error) {
 				continue
 			}
 			flush()
-			messageSeq = append(messageSeq, event.Seq)
+			push(event.Seq, event.Type == UserMessage)
+			if event.Type == AssistantMessage {
+				notices = 0
+			}
 		case ToolResult:
 			var data ToolResultData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
 				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
-			}
-			if len(pending) == 0 {
-				pendingAt = len(messageSeq)
 			}
 			pending = append(pending, event.Seq)
 			resultsBy[data.ToolCallID] = append(resultsBy[data.ToolCallID], event.Seq)
 		case WireNotice:
 			// A message of its own in the projection, so it holds a position.
 			flush()
-			messageSeq = append(messageSeq, event.Seq)
+			push(event.Seq, false)
+			notices++
 		case WireFrame:
 			var data FrameData
 			if err := json.Unmarshal(event.Data, &data); err != nil {

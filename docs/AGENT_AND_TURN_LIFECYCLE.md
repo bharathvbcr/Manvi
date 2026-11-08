@@ -490,7 +490,10 @@ conversation that holds thinking blocks):
 | Resume | Frame is read from the log. A log written before the frame existed adopts its last `system/prompt` and the current tools, with nothing stripped. |
 | Model switch | A target without system-message support is sent history without the notices and its own prompt. Not an edit for the target that never saw them. |
 | Sonnet 5 and Haiku 4.5 (no `MidConversationSystem`) | Not fixed: no append-only form for them in the docs; unchanged behaviour. |
-| Session retention trimming whole turns off the front (`session/store.go`) | Not fixed: it changes the prefix of every retained block, and the frame event goes with the turn that held it. Pre-existing rolling-truncation case. |
+| Session retention trimming whole turns off the front (`session/store.go`) | Frame and notice state fixed: the saved file restates the frame, with what the dropped notices had told the model, as a `carried` frame at the front. The trim still changes the prefix of every retained block (pre-existing rolling truncation; stripping what it invalidates is a separate card). |
+| A request that carried a notice fails | The notice is unanswered, so the projection drops it when the next user message arrives (a system message may not be followed by a user message, `shared/prompt-caching.md`) and the log counts it as never delivered; the next turn says it again. No signed block binds a message after it. |
+| A listener editing `System` in the `LLMRequest` waterfall | Delivered as a notice like any prompt change. |
+| A scrubbing log | The frame, the notice that is sent and the change test all use the log's scrubbed form: the model sees what the log holds. |
 | Sub-agents, the escalation ladder, `manvi probe` | Separate conversations with their own logs and frames; the probe replays no thinking. |
 
 ---
