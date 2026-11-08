@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,40 @@ import (
 )
 
 const maxClaudeIdentityFileBytes = 16 * 1024 * 1024
+
+var (
+	errSeatFileNotRegular = errors.New("not a regular file")
+	errSeatFileTooLarge   = errors.New("file exceeds its size bound")
+)
+
+// readSmallRegularFile reads path only when it is a regular file of at most
+// limit bytes. The checkout is agent-writable, so a name this package reads
+// there may be a FIFO or a device: opening a FIFO for reading blocks until a
+// writer appears, and an unbounded file is unbounded memory. The open does not
+// block, the kind is checked on the open descriptor (a swap between a stat and
+// the open cannot slip through), and the read is capped.
+func readSmallRegularFile(path string, limit int64) ([]byte, error) {
+	f, err := openNonBlocking(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errSeatFileNotRegular
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, errSeatFileTooLarge
+	}
+	return raw, nil
+}
 
 // claudeSeatOverrides resolves multi-account `.claude-account` seat markers
 // against `$HOME/.claude-accounts` when Manvi launches a native Claude Code
@@ -119,10 +154,10 @@ func readClaudeConfigEmail(path string) (email string, exists bool, err error) {
 	if info.IsDir() {
 		return "", true, errors.New("path is a directory, expected JSON file")
 	}
-	if info.Size() > maxClaudeIdentityFileBytes {
+	raw, readErr := readSmallRegularFile(path, maxClaudeIdentityFileBytes)
+	if errors.Is(readErr, errSeatFileTooLarge) {
 		return "", true, errors.New("file exceeds 16 MiB bound")
 	}
-	raw, readErr := os.ReadFile(path) // #nosec G304 -- bounded operator/seat .claude.json read
 	if readErr != nil {
 		return "", true, readErr
 	}
@@ -203,10 +238,10 @@ func walkClaudeAccountAncestors(start, home, resolvedHome string) (string, strin
 		candidate := filepath.Join(dir, ".claude-account")
 		info, statErr := os.Stat(candidate)
 		if statErr == nil && !info.IsDir() {
-			if info.Size() > 4096 {
+			raw, readErr := readSmallRegularFile(candidate, 4096)
+			if errors.Is(readErr, errSeatFileTooLarge) {
 				return dir, "", true, errors.New(".claude-account exceeds 4 KiB")
 			}
-			raw, readErr := os.ReadFile(candidate) // #nosec G304 -- bounded ancestor marker lookup
 			if readErr != nil {
 				return dir, "", true, fmt.Errorf("read %s: %w", candidate, readErr)
 			}
@@ -234,7 +269,7 @@ func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
 		candidate := filepath.Join(dir, ".git")
 		info, err := os.Stat(candidate)
 		if err == nil {
-			if info.IsDir() || info.Size() > 4096 {
+			if !info.Mode().IsRegular() || info.Size() > 4096 {
 				return ""
 			}
 			worktreeRoot = dir
@@ -250,7 +285,7 @@ func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
 	if dotGit == "" {
 		return ""
 	}
-	raw, err := os.ReadFile(dotGit) // #nosec G304 -- bounded .git file in resolved checkout
+	raw, err := readSmallRegularFile(dotGit, 4096)
 	if err != nil {
 		return ""
 	}
@@ -270,15 +305,13 @@ func linkedWorktreeMainCheckout(cwd, home, resolvedHome string) string {
 
 	commonDir := gitDir
 	commonFile := filepath.Join(gitDir, "commondir")
-	if cInfo, cErr := os.Stat(commonFile); cErr == nil && !cInfo.IsDir() && cInfo.Size() <= 4096 {
-		if cRaw, rErr := os.ReadFile(commonFile); rErr == nil { // #nosec G304 -- bounded git commondir file
-			rel := strings.TrimSpace(string(cRaw))
-			if rel != "" {
-				if filepath.IsAbs(rel) {
-					commonDir = filepath.Clean(rel)
-				} else {
-					commonDir = filepath.Clean(filepath.Join(gitDir, rel))
-				}
+	if cRaw, rErr := readSmallRegularFile(commonFile, 4096); rErr == nil {
+		rel := strings.TrimSpace(string(cRaw))
+		if rel != "" {
+			if filepath.IsAbs(rel) {
+				commonDir = filepath.Clean(rel)
+			} else {
+				commonDir = filepath.Clean(filepath.Join(gitDir, rel))
 			}
 		}
 	}
@@ -300,10 +333,13 @@ func loadClaudeAccounts(home, resolvedHome string) (map[string]string, bool, err
 		}
 		return nil, false, fmt.Errorf("stat ~/.claude-accounts: %w", err)
 	}
-	if info.IsDir() || info.Size() > 65536 {
+	if info.IsDir() {
 		return nil, true, errors.New("invalid ~/.claude-accounts file")
 	}
-	raw, err := os.ReadFile(path) // #nosec G304 -- operator's ~/.claude-accounts
+	raw, err := readSmallRegularFile(path, 65536)
+	if errors.Is(err, errSeatFileNotRegular) || errors.Is(err, errSeatFileTooLarge) {
+		return nil, true, errors.New("invalid ~/.claude-accounts file")
+	}
 	if err != nil {
 		return nil, true, fmt.Errorf("read ~/.claude-accounts: %w", err)
 	}
