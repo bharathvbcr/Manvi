@@ -249,6 +249,28 @@ func TestAdvW16SymlinkedMarkerDoesNotLeakTheTargetsContent(t *testing.T) {
 	}
 }
 
+// The same leak through the "invalid seat name" path: a target whose first token
+// is not a legal name (JSON, key=value) is echoed verbatim in the error.
+func TestAdvW16SymlinkedMarkerDoesNotLeakNonNameContent(t *testing.T) {
+	for name, content := range map[string]string{
+		"json":      `{"primaryApiKey":"sk-ant-JSONSECRET"}`,
+		"key=value": "ANTHROPIC_API_KEY=sk-ant-ENVSECRET\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := advSeats(t)
+			target := filepath.Join(w.home, ".claude.json")
+			advWrite(t, target, content)
+			if err := os.Symlink(target, filepath.Join(w.repo, ".claude-account")); err != nil {
+				t.Fatal(err)
+			}
+			_, err := claudeSeatOverrides(w.repo)
+			if err != nil && strings.Contains(err.Error(), "SECRET") {
+				t.Fatalf("error leaks the first token of the file a marker symlink points at: %v", err)
+			}
+		})
+	}
+}
+
 // A symlinked marker whose target holds a real seat name: the checkout can point
 // the marker at a file outside itself (here the operator's own accounts file,
 // whose first token is a seat name). It should not be honoured.
