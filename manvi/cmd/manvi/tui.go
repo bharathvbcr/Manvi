@@ -359,16 +359,17 @@ func (h *harnessHost) Commands() []tui.CommandSpec {
 // the gate its tool surface writes through, not a second one built beside it.
 // Two gates are two ledgers and two navigation indexes, and nothing in the
 // running system ever prints which of them answered.
-func newSessionState(reg *flags.Registry, id string, approver ui.Approver) (*tuiSession, error) {
+func newSessionState(reg *flags.Registry, id, storeID string, approver ui.Approver) (*tuiSession, error) {
 	// The session's own approval seam is attached to its tools, so a blocked
 	// write escalates to this session's card rather than to whichever one
-	// happens to be on screen.
-	native, pipeline, err := nativeToolsWith(reg, approver)
+	// happens to be on screen. The surface is the agent's: it carries the
+	// work_* board tools, named in their audit trail by storeID.
+	native, pipeline, err := agentTools(reg, approver, storeID)
 	if err != nil {
 		return nil, err
 	}
 	return &tuiSession{
-		id: id, title: "session " + id,
+		id: id, title: "session " + id, storeID: storeID,
 		log:    newSessionLog(),
 		gate:   native.Gate(),
 		native: native, pipeline: pipeline,
@@ -424,17 +425,17 @@ func (h *harnessHost) NewSession(ctx context.Context) (string, string, error) {
 	id := fmt.Sprintf("S%d", h.seq)
 	h.mu.Unlock()
 
-	s, err := newSessionState(h.reg, id, h.runner.Approver(id)) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
-	if err != nil {
-		return "", "", err
-	}
 	// Minted here rather than derived from the tab label, which is not a valid
-	// identifier and is reused by the next run's first tab.
+	// identifier and is reused by the next run's first tab. It is minted before
+	// the tool surface because the surface names its board audit trail by it.
 	storeID, err := session.NewID()
 	if err != nil {
 		return "", "", fmt.Errorf("this session could not be given a durable identifier: %w", err)
 	}
-	s.storeID = storeID
+	s, err := newSessionState(h.reg, id, storeID, h.runner.Approver(id)) //nolint:contextcheck // buildMCP's only context goes to mcp.Manager.Discover, which never reads it
+	if err != nil {
+		return "", "", err
+	}
 
 	sink := h.sinkFor(id)
 	// The face reads the log rather than a stream emitted beside it, so what

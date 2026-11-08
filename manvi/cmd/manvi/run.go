@@ -192,7 +192,11 @@ func runHeadless(out, notes io.Writer, reg *flags.Registry, args []string) (err 
 	// before the descriptor is read, and the sink is what writes it. Absent
 	// the flag this stays nil, so a soft block is a refusal rather than a
 	// prompt nobody will answer.
-	native, pipeline, err := nativeToolsWith(reg, nil)
+	//
+	// agentTools, not nativeToolsWith: this is a model-driven session, so it
+	// also holds the work_* board tools, named in the audit trail by the
+	// session's own id.
+	native, pipeline, err := agentTools(reg, nil, sessionID)
 	if err != nil {
 		return err
 	}

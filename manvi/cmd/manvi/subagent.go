@@ -477,6 +477,16 @@ func (r *subAgentRunner) prepare(cfg *subAgentConfig, req devcouncil.SubAgentReq
 		if t.Group == tools.GroupSubagent || t.Schema.Name == spawnSubagentsTool {
 			return false
 		}
+		// No child holds the board, reads included. The work_* write tools
+		// refuse an inherited session on their own, but a refusal is a second
+		// line: the child's lease is its parent's, so a child that could call
+		// them would be acting on a board identity it does not own. Absence is
+		// the first line, and it covers a role that names a work_ tool in
+		// allowed_tools, which can only narrow this floor. A child that needs
+		// board content is handed it in its prompt by the parent, which read it.
+		if devcouncil.IsWorkTool(t.Schema.Name) {
+			return false
+		}
 		// ReadOnly is enforced by absence, not by hiding the schema. The
 		// contract on SubAgentRequest says a runner that cannot honour it must
 		// fail rather than hand back a child that can write, and a registry

@@ -138,7 +138,7 @@ func TestApplyFlagChangeUnderConcurrentAttachment(t *testing.T) {
 
 	h := &harnessHost{reg: newTestRegistry(t), sessions: map[string]*tuiSession{}}
 	for _, id := range []string{"S1", "S2", "S3"} {
-		s, err := newSessionState(h.reg, id, nil)
+		s, err := newSessionState(h.reg, id, "", nil)
 		if err != nil {
 			t.Fatalf("session %s: %v", id, err)
 		}
@@ -193,7 +193,7 @@ func TestApplyFlagChangeReloadsTheGrantPolicy(t *testing.T) {
 	defer setProjectRootForTest(root)()
 
 	h := &harnessHost{reg: newTestRegistry(t), sessions: map[string]*tuiSession{}}
-	s, err := newSessionState(h.reg, "S1", nil)
+	s, err := newSessionState(h.reg, "S1", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
