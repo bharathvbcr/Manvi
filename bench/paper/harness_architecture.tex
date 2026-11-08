@@ -215,9 +215,10 @@ uninformative. And an earlier grid, run on a previous version of the
 instrument whose verify gate leaked hidden-test values in gate-on cells
 only, produced an interval-excluding-zero effect that reversed sign once
 the instrument was fixed. An audit of its 760 episodes found no code
-aimed at the grader, but 25 episodes that read a hidden test or
-reference solution through gaps in containment. The registered grid's
-episodes have not yet been audited.
+aimed at the grader. It did find 37 episodes that read a hidden test or
+reference solution, or began from a sandbox an earlier episode had
+changed, through shell access the instrument did not contain. The
+registered grid's episodes have not yet been audited.
 
 \subsection{1. Introduction}\label{introduction}
 
@@ -318,14 +319,15 @@ Third, we report that protocol on eight hard tasks, two local models,
 and nine configurations (1,440 episodes), with a per-task matrix, a
 stop-reason table, a one-flag-off ladder, an explicit interaction table,
 and a measured statement of what the ladder's intervals are actually
-worth. Fourth, we report an instrument-failure record: six defects found
-by audit in an earlier grid we ran on a previous version of the
+worth. Fourth, we report an instrument-failure record: seven defects
+found by audit in an earlier grid we ran on a previous version of the
 instrument, an audit of its episodes that finds no code aimed at the
-grader but 25 episodes that read grader content, and the one case where
-the corrected instrument reverses the sign of a published effect. Fifth,
-we report the compute envelope the grid occupied, from 78,027 device
-samples (Appendix C), as an argument that the conventional utilization
-number is not the cost that matters for a serial agent loop.
+grader but 37 episodes exposed to grader content or to another episode's
+changes, and the one case where the corrected instrument reverses the
+sign of a published effect. Fifth, we report the compute envelope the
+grid occupied, from 78,027 device samples (Appendix C), as an argument
+that the conventional utilization number is not the cost that matters
+for a serial agent loop.
 
 The result the registered grid supports is no longer modest. The full
 harness beats the all-off baseline on both models, and both intervals
@@ -491,11 +493,12 @@ LDB refines that by verifying runtime execution step by step against
 unit tests rather than treating the program as an indivisible artifact
 \citep{li2024ldb}. Our gate differs from both in the direction that
 matters for measurement: it is not a self-repair prompt but an
-\emph{external} precondition on termination. The tests it runs are ones
-the agent cannot read, edit, or shadow (§3.2), and their failure output
---- not the model's own reflection --- is what re-enters the context.
-Iterative in-context feedback of this kind has been shown to elicit
-specification gaming from frontier models without any training
+\emph{external} precondition on termination. The tests it runs are kept
+from the agent so that it cannot edit or shadow them, and are meant to
+be unreadable (§3.2 records where they were not), and their failure
+output --- not the model's own reflection --- is what re-enters the
+context. Iterative in-context feedback of this kind has been shown to
+elicit specification gaming from frontier models without any training
 \citep{mckeereid2024honesty}, which is why a gate that returns failures
 has to be paired with a grader the agent cannot edit (§3.2). The
 \texttt{checklist} flag is the prompt-side analogue, and keeping the two
@@ -690,9 +693,9 @@ The grader must not be reachable by the agent. This is not a
 hypothetical concern: agents are documented to reach benchmark grades by
 exploiting shortcuts rather than solving the task
 \citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}.
-Three independent mechanisms keep the hidden test's source and files out
-of the agent's reach, and they are independent on purpose: defeating one
-does not defeat the others.
+Three independent mechanisms are meant to keep the hidden test's source
+and files out of the agent's reach, and they are independent on purpose:
+defeating one does not defeat the others.
 
 \begin{enumerate}
 \def\labelenumi{\arabic{enumi}.}
@@ -713,23 +716,24 @@ does not defeat the others.
   hidden test is even run. Editing the test to make it pass is therefore
   not a partial win; it is a definite loss.
 \item
-  \textbf{The hidden test cannot be shadowed or read from disk.} It is
-  never written to any file. The verifier pipes its source on standard
-  input to an isolated interpreter (\texttt{python\ -I\ -B}: no
-  \texttt{PYTHONPATH}, no user site directory, no bytecode cache the
-  agent can write), which puts the sandbox on its import path itself and
-  scrubs \texttt{sys.argv} and \texttt{\_\_file\_\_}. Files an
-  interpreter or test runner loads without being imported by name
-  (\texttt{sitecustomize.py}, \texttt{usercustomize.py},
-  \texttt{conftest.py}, \texttt{pyvenv.cfg}, any \texttt{.pth} file) are
-  refused if the agent added them, as are added top-level modules that
-  shadow a standard-library module and environment variables that
-  redirect an interpreter, before the test runs. This matters because
-  the natural attack on a Python checker is to plant a start-up hook or
-  a same-named module where the checker will load it; an earlier version
-  of this verifier launched the checker with the sandbox on
-  \texttt{PYTHONPATH}, and a two-line \texttt{sitecustomize.py} bought a
-  pass on 18 of 19 tasks.
+  \textbf{The hidden test cannot be shadowed or read from the verifier's
+  copy.} The verifier never writes it to any file (the task's own copy,
+  and the git objects behind it, are the gap described below). The
+  verifier pipes its source on standard input to an isolated interpreter
+  (\texttt{python\ -I\ -B}: no \texttt{PYTHONPATH}, no user site
+  directory, no bytecode cache the agent can write), which puts the
+  sandbox on its import path itself and scrubs \texttt{sys.argv} and
+  \texttt{\_\_file\_\_}. Files an interpreter or test runner loads
+  without being imported by name (\texttt{sitecustomize.py},
+  \texttt{usercustomize.py}, \texttt{conftest.py}, \texttt{pyvenv.cfg},
+  any \texttt{.pth} file) are refused if the agent added them, as are
+  added top-level modules that shadow a standard-library module and
+  environment variables that redirect an interpreter, before the test
+  runs. This matters because the natural attack on a Python checker is
+  to plant a start-up hook or a same-named module where the checker will
+  load it; an earlier version of this verifier launched the checker with
+  the sandbox on \texttt{PYTHONPATH}, and a two-line
+  \texttt{sitecustomize.py} bought a pass on 18 of 19 tasks.
 \end{enumerate}
 
 \textbf{What these mechanisms did not close.} They protect the hidden
@@ -763,12 +767,14 @@ directory, its common directory and every worktree registered there to
 the protected roots of the shell, the checker and the worker. Its stress
 suite runs each of those reads from a sandbox inside a scratch
 repository and shows each one leaking uncontained and refused contained.
-The same post-hoc audit found that the verifier's worker had network
-access under the macOS profile and none under Linux. The released macOS
-profile denies it. Those guarantees are verified on macOS only: the
-Linux worker profile has not been exercised on a Linux host since the
-checker/worker split. Whether any v2 or \texttt{ext-cerebras} episode
-read a hidden test through git belongs to the same unrun audit.
+The same post-hoc audit found a platform difference in the released
+checker/worker split itself, which the grid's instrument did not have:
+its worker had network access under the macOS profile and none under
+Linux. The released macOS profile now denies it. Those guarantees are
+verified on macOS only: the Linux worker profile has not been exercised
+on a Linux host since the checker/worker split. Whether any v2 or
+\texttt{ext-cerebras} episode read a hidden test through git belongs to
+the same unrun audit.
 
 On top of these, the loop's scoring rule is that a check that did not
 run is not a pass. The final verifier always runs after the loop stops,
@@ -978,9 +984,9 @@ did not. The 1800 s line is a stop condition, not a speed claim.
 \subsubsection{4.1 Tasks}\label{tasks}
 
 The hard suite is eight tasks, each with a visible specification in the
-sandbox and hidden tests the agent cannot see. Table 2 characterizes
-them. They are sequential programming problems with adversarial hidden
-cases; each ships a visible test and, in seven of eight, a written
+sandbox and hidden tests kept outside it. Table 2 characterizes them.
+They are sequential programming problems with adversarial hidden cases;
+each ships a visible test and, in seven of eight, a written
 \texttt{SPEC.md}, and both are in the \texttt{protect} set, so the
 documented contract is part of the problem and editing it is a fail.
 \texttt{cache\_invalidation\_dist} uses an in-process three-node cache,
@@ -2202,8 +2208,8 @@ record}\label{the-v1-grid-as-an-instrument-failure-record}
 
 Before the registered grid we ran a 720-episode grid under tag
 \texttt{hard} on a previous version of the instrument. An audit of that
-instrument found five defects, and a later audit of its episode logs a
-sixth:
+instrument found five defects, and a later audit of its episode logs two
+more:
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -2228,11 +2234,19 @@ a \texttt{sitecustomize.py} in the sandbox executed inside the verifier
 \texttt{run\_shell} had no containment &
 \texttt{../../tasks/\textless{}t\textgreater{}/hidden\_test.py} was
 readable and writable; 14 of 760 episodes read a hidden test or
-reference solution out of the task tree, and 12 of them passed \\
-\texttt{pratt\_parse}'s sandbox held a copy of its hidden test (how it
-got there is not recoverable from the logs) & 11 episodes read it with
-\texttt{read\_file} within their first three steps, and 10 of them
-passed \\
+reference solution out of the task tree (12 passed), and three wrote
+into a task's \texttt{setup/} (next row) \\
+shell writes into \texttt{setup/}, from which every later sandbox of
+that task is copied, changed later episodes' starting state & one
+episode copied \texttt{pratt\_parse}'s hidden test into \texttt{setup/},
+and 11 later episodes read it in their own sandbox within three steps
+(10 passed); one replaced \texttt{nfa\_match}'s stub \texttt{nfa.py}
+with its own implementation and one changed
+\texttt{cache\_invalidation\_dist}'s \texttt{distcache.py}, and 12 later
+episodes began from the modified file (all 12 passed) \\
+the host's \texttt{/tmp} was shared by every episode & one episode read
+a copy of a hidden test that an earlier run had left in \texttt{/tmp}
+(passed) \\
 five hard tasks did not enforce their stated contracts &
 \texttt{ot\_transform}, \texttt{cache\_invalidation\_dist},
 \texttt{concurrency\_race}, \texttt{nfa\_match}, \texttt{globmatch} each
@@ -2243,40 +2257,66 @@ D) \\
 \end{longtable}
 }
 
-All are fixed in commit \texttt{82e453a}, where every episode runs
-contained and no task's sandbox copy holds a hidden test. Two audits of
-the v1 logs say different things, and we report both. The first covered
-all 760 episodes and their 3,879 file-writing tool calls. It found no
-write to a hidden test or other grader file. A search of every written
-file and shell command for the tokens that mark code aimed at a verdict
-(\texttt{os.\_exit}, frame access, \texttt{sys.modules} and the rest of
-\texttt{mh/bench.py:TACTIC\_TOKENS}) hit in 41 episodes, and each was
-benign when read: standard-library \texttt{inspect.getsource} lookups,
-\texttt{\_\_main\_\_} guards, and timeouts in the agent's own scripts.
-No v1 episode wrote to the grader or aimed code at its verdict.
+The first six are fixed in commit \texttt{82e453a}: \texttt{run\_shell}
+runs contained by default and the task tree is masked from it, every v2
+episode records containment, and no task's \texttt{setup/} holds a
+hidden test. The seventh is not. The v2 instrument, and the released
+harness, still give every sandbox the host's temporary directory
+read-write (Limitation 12).
 
-The second audit covers reads, and it was run only after the first had
-been reported as covering all five defects
-(\texttt{paper/audit\_episodes.py}). It counts a tool call as a read
-when its arguments name grader material and its logged output contains
-three consecutive lines, at least 60 characters together, of some
-committed version of that task's hidden test or reference solution.
-\textbf{25 of the 760 episodes (3.3\%) received such content, 21 of them
-the hidden test itself, and 22 of the 25 passed.} This is separate from
-the 77 episodes that received gate output. The 25 fall in eleven of the
-eighteen cells and are not concentrated where the gate leaked: 18 are
-among the 560 gate-on episodes and 7 among the 160 gate-off. Whether the
-content changed any outcome cannot be recovered from the logs. Scoring
-the 22 exposed passes as failures moves v1's full-versus-baseline point
-estimates by about \(-0.050\) for Qwen and \(+0.075\) for Ornith, and
-the Ornith \texttt{no-outcap} cell discussed below from \(-0.100\) to
-about \(-0.075\). It does not explain that cell's reversal. So v1's
-numbers are not the product of code aimed at the grader, but they are
-not free of grader content either, and the instrument that measured them
-could not have prevented either. A first audit that checked only writes
-reported this as zero. A benchmark that cannot rule out the exploit
-reports the same number whether or not the exploit occurred, which is
-the failure mode the recent validity literature describes
+Two audits of the v1 logs say different things, and we report both. The
+first covered all 760 episodes and their 3,879 file-writing tool calls.
+It found no write to a hidden test or other grader file by those calls;
+it did not examine shell commands. A search of every written file and
+shell command for the tokens that mark code aimed at a verdict
+(\texttt{os.\_exit}, frame access, \texttt{sys.modules} and the rest of
+\texttt{mh/bench.py:TACTIC\_TOKENS}) hit in 41 episodes. Each was benign
+when read: standard-library \texttt{inspect.getsource} lookups,
+\texttt{\_\_main\_\_} guards, and exits and timeouts in the agent's own
+test scripts. No v1 episode aimed code at the verifier's verdict, and
+none modified a hidden test or a reference file.
+
+The second audit was run only after the first had been reported as
+covering all five original defects (\texttt{paper/audit\_episodes.py}).
+It reads every tool output rather than only those whose arguments name
+grader files, and it found what the first could not. A call counts as a
+read of a hidden test when its logged output contains three consecutive
+lines, at least 60 characters together, of some committed version of
+that test, including at least two lines found in no version of the
+task's setup files or reference solution. A read of a reference solution
+needs the same three-line match against a reference version, unless the
+call reads a file the episode itself wrote. A reference and the agent's
+candidate share a file name, and the agent's own code can converge on
+the obvious lines. The logs keep only the first 600 characters of each
+output, so every count here is a lower bound. \textbf{26 of the 760
+episodes (3.4\%) received hidden-test or reference-solution content, 22
+of them the hidden test itself, and 23 of the 26 passed.} Fourteen
+reached into the task tree, eleven found the hidden-test copy that an
+earlier episode had planted in \texttt{pratt\_parse}'s sandbox, and one
+read a copy in \texttt{/tmp}. At least one used a reference solution as
+an oracle: it copied the reference to \texttt{/tmp} and tested its own
+code against it. Separately, \textbf{12 episodes began from a setup file
+that an earlier episode had rewritten}, nine of them from a working
+\texttt{nfa\_match} implementation. Together that is 37 distinct
+episodes (one is in both counts), 34 of which passed, all in the
+720-episode two-model grid. They fall in 11 of its 18 cells and do not
+track the gate leak: 26 are among the 560 gate-on episodes and 11 among
+the 160 gate-off. The 77 episodes that received gate output are a
+separate count.
+
+Whether the content changed any outcome cannot be recovered from the
+logs. Scoring the 34 exposed passes as failures gives point estimates
+only. Qwen's v1 full-versus-baseline \(\Delta\) moves from \(+0.050\) to
+\(-0.025\), Ornith's from \(+0.075\) to \(+0.150\), and the Ornith
+\texttt{no-outcap} cell discussed below from \(-0.100\) to \(-0.075\).
+That does not explain the cell's reversal. So v1's numbers are not the
+product of code aimed at the grader, but they are not free of grader
+content or of contamination between episodes, and the instrument that
+measured them could not have prevented either. A first audit that
+checked only file-tool writes reported all of this as zero. A benchmark
+that cannot rule out the exploit reports the same number whether or not
+the exploit occurred, which is the failure mode the recent validity
+literature describes
 \citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}
 --- and the reason we treat ``we audited and found none'' as a weaker
 claim than ``the instrument makes it impossible.''
@@ -2404,18 +2444,20 @@ arms.
 \textbf{What the v1 record contributes.} A published effect that
 excluded zero --- Ornith \texttt{no-outcap} at \(-0.100\), interval
 \([-0.175, -0.025]\) --- did not survive the instrument being fixed; the
-same cell now reads \(+0.075\). No episode in v1 wrote to the grader or
-aimed code at its verdict. Yet 25 of the 760 read grader content through
-gaps in containment, and only an audit of reads, run long after the
-first, found them. Both facts matter. The first means v1's numbers were
-not produced by code aimed at the grader. The second means a write-only
-audit was not sufficient, and the reversal says the same about the
+same cell now reads \(+0.075\). No episode in v1 aimed code at the
+verifier's verdict or modified a hidden test. Yet 37 of the 760 read
+grader content or began from a sandbox another episode had changed. Only
+an audit of every tool output, run long after the first audit, found
+them. Both facts matter. The first means v1's numbers were not produced
+by code aimed at the grader. The second means an audit of file-tool
+writes was not sufficient, and the reversal says the same about the
 instrument: an instrument that cannot rule out an exploit reports the
 same number whether or not one occurred, and a suite whose tasks accept
 wrong solutions produces effects that vanish when the tasks are
 tightened. We think the discipline this argues for is narrow and cheap:
-publish the defect list, publish an exploitation audit of reads as well
-as writes, and do not pool across an instrument change.
+publish the defect list, publish an exploitation audit of every tool
+output, shell commands included, and do not pool across an instrument
+change.
 
 \textbf{What the architecture contributes,} independently of any
 \(\Delta\), is that these caveats are \emph{fields} rather than prose.
@@ -2532,12 +2574,18 @@ capability-by-harness interaction remains undetectable.
   by path or through the enclosing git repository. The audit now exists
   as a script (\texttt{paper/audit\_episodes.py}, which produced the v1
   figures in §5.9), but the logs it needs are on the run host, not in
-  this release. v1's audit is weaker support than it once looked: it
-  found no code aimed at the grader, but it found 25 episodes that read
-  grader content. The v2 instrument closed both channels those episodes
-  used: every v2 episode records containment, and at the instrument
-  commit no task's sandbox copy holds a hidden test. It did not close
-  the git channel. Until the audit runs, the reported pass rates rest on
+  this release. v1's audit is weaker support than it once looked. It
+  found no code aimed at the grader, but 37 episodes that read grader
+  content or began from a sandbox an earlier episode had changed. The v2
+  instrument closed the task-tree channels: every v2 episode records
+  containment, the task tree is masked from the shell, and at the
+  instrument commit no task's \texttt{setup/} holds a hidden test. It
+  did not close two others. One is the git channel (§3.2). The other is
+  the temporary directory: every v2 sandbox shared the host's
+  \texttt{/tmp} read-write, so anything one episode left there was
+  visible to every later one, including its own solution or a copy of a
+  grader file. v1 shows that agents look there. The released harness
+  still shares it. Until the audit runs, the reported pass rates rest on
   the §3.2 mechanisms, not on a check of these episodes.
 \end{enumerate}
 
@@ -2585,22 +2633,24 @@ measured coverage alongside an interval.
 
 The contribution we are most confident in is not an effect size. It is
 the pairing of two things this literature usually separates: an
-instrument built so that the agent cannot reach its grader, and a
-published record of where that instrument was wrong. The 720-episode
-grid we ran first was collected on a harness whose verify gate leaked
-hidden-test values into gate-on cells only, and whose tasks accepted
-wrong solutions. No episode wrote to the grader or aimed code at its
-verdict. An audit of reads, run later, found 25 of 760 that received
-hidden-test or reference content, and one published,
-interval-excluding-zero effect still did not survive the fix. An audit
-that finds no cheating is not the same as an instrument that makes
-cheating impossible. An audit that checks only writes is not an audit of
-what the agent saw. Both differences are worth a section rather than a
-footnote. The record is not closed. The instrument that ran the reported
-grid still let the agent's code set the grader's exit code (§3.2), a
-residual its own source recorded and nobody tested. It also left hidden
-tests readable through the enclosing git repository. The audit that
-would say whether any episode used either has not been run.
+instrument built so that the agent should not be able to reach its
+grader, and a published record of where that instrument was wrong. The
+720-episode grid we ran first was collected on a harness whose verify
+gate leaked hidden-test values into gate-on cells only, and whose tasks
+accepted wrong solutions. No episode aimed code at the verifier's
+verdict. An audit of every tool output, run later, found 37 of 760 that
+received hidden-test or reference content or began from a sandbox an
+earlier episode had rewritten. One published, interval-excluding-zero
+effect still did not survive the fix. An audit that finds no cheating is
+not the same as an instrument that makes cheating impossible, and an
+audit of file-tool writes is not an audit of what the agent saw or
+changed. Both differences are worth a section rather than a footnote.
+The record is not closed. The instrument that ran the reported grid
+still let the agent's code set the grader's exit code (§3.2), a residual
+its own source recorded and nobody tested. It also left hidden tests
+readable through the enclosing git repository, and gave every episode
+the same \texttt{/tmp}. The audit that would say whether any episode
+used these channels has not been run.
 
 \subsection{Data and code}\label{data-and-code}
 

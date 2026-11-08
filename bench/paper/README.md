@@ -28,14 +28,23 @@ truth; the script works on a copy (see [`prepare_body.py`](prepare_body.py)). Th
 
 ## Revision 5 (alphaXiv preparation, 8 November 2026)
 
-**The v1 "zero exploiting episodes" claim is withdrawn.** The original audit counted
-file-writing calls only. A read audit (`audit_episodes.py`, tests in `../test_audit.py`) finds
-that **25 of 760 v1 episodes received hidden-test or reference-solution content** through a tool
-call, and 22 of them passed. Fourteen reached into the task tree by absolute path. Eleven read a
-copy of `pratt_parse`'s hidden test inside the sandbox, by a mechanism the logs cannot recover.
-No v1 episode wrote to the grader or aimed code at its verdict: 41 tactic-token hits, each read
-by hand and each benign. The abstract, §1, §5.9, §6, Limitation 12 and §8 say this now.
-`DEVIATIONS.md` O7 has the adjudication and the sensitivity of v1's point estimates.
+**The v1 "zero exploiting episodes" claim is withdrawn.** The original audit counted only
+file-tool writes. `audit_episodes.py` (tests in `../test_audit.py`) reads every tool output, and
+its result matches an independent scan episode for episode.
+- **26 of 760 v1 episodes received hidden-test or reference-solution content**, and 23 of them
+  passed. Fourteen reached into the task tree, eleven read a hidden-test copy planted in
+  `pratt_parse`'s sandbox, and one read a copy left in the shared host `/tmp`.
+- **Three episodes wrote into a task's `setup/` with the shell**, and 12 later episodes began
+  from the rewritten file, all of which passed. That includes nine that began from a working
+  `nfa_match` implementation.
+- That makes 37 distinct episodes, 34 of which passed. Scored as failures, they turn Qwen's v1
+  full−baseline from +0.050 to −0.025.
+- No episode modified a hidden test or reference file, or aimed code at the verdict (41 tactic
+  hits, each read by hand).
+
+Every v2 episode was contained, but v2 still shared `/tmp` across episodes, and so does the
+released harness. The abstract, §1, §3.2, §5.9, §6, Limitation 12 and §8 say all this now.
+`DEVIATIONS.md` O7 has the adjudication.
 
 **O7 is in the manuscript.** O7 records that the enclosing git repository was readable from the
 sandbox. §3.2 discloses it, along with the fact that the released worker's guarantees are verified
@@ -54,6 +63,8 @@ solutions. An audit of all 760 v1 episodes and 3,879 file-writing tool calls
 found **zero** exploiting episodes, so v1's numbers were not produced by
 cheating — but they were measured on an instrument that could not have detected
 it. The response is a new registered experiment, not a corrected table.
+*(Superseded by revision 5: that audit counted only file-tool writes, and 37 v1 episodes
+were exposed to grader content or to another episode's changes. See "Revision 5" above.)*
 
 **What the v2 grid shows.** H1 is **supported on both arms** at the Šidák-corrected
 98.7% level: Qwen 79.4% → 95.0% (Δ +0.156, [+0.069, +0.244]) and Ornith

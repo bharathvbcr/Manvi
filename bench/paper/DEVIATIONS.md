@@ -472,13 +472,20 @@ tokens in `mh/bench.py:TACTIC_TOKENS` (`os._exit`, `SystemExit`, `sys.exit`,
 episodes predate it. The manuscript states the audit as Limitation 12.
 
 *Updated 8 November 2026.* The script now exists: `paper/audit_episodes.py`
-(tests: `test_audit.py`) reports grader reads (hidden-test or reference
-content returned by a tool call, by path or inside the sandbox, including git
-object reads, O7), tactic-token hits to read by hand, passes without verifier
-output, and the containment backend per episode. On v1 it overturns the "zero"
-above (see O7). What is still owed is unchanged: run it on the run host,
-`python3 paper/audit_episodes.py --tag v2,ext-cerebras --json-out
-audit-v2.json`, read every tactic hit, and put the result in the manuscript.
+(tests: `test_audit.py`) reports, per episode:
+- grader reads: hidden-test or reference content in any tool output, by path,
+  inside the sandbox or from `/tmp`, git object reads included (O7)
+- shell writes into the task tree, as candidates to read by hand
+- starts from a setup file another episode rewrote
+- tactic-token hits, to read by hand
+- passes without verifier output
+- the containment backend
+
+On v1 it overturns the "zero" above (see O7). What is still owed is unchanged:
+run it on the run host, `python3 paper/audit_episodes.py --tag
+v2,ext-cerebras --json-out audit-v2.json`, read every write candidate and
+tactic hit, and put the result in the manuscript. For v2, also look in `/tmp`
+reads for another episode's solution: the temp directory was shared (O7).
 
 ## O6 — The grid's verifier let candidate code set the verdict
 
@@ -578,39 +585,84 @@ recorded here because it bears on the v1 audit's "zero exploiting episodes"
 claim, and has not been adjudicated.
 
 *Adjudicated 8 November 2026.* `paper/audit_episodes.py` replaces the
-heuristic above. It counts a call only when its logged output contains three
-consecutive lines (60 characters or more together) of some committed version of
-that task's hidden test or reference files, so listings, tracebacks and refusals
-do not count. Over all 760 `hard` episodes and their 3,879 file-writing calls
-(the original audit's population, reproduced exactly):
+heuristic above. It reads every tool output, whatever the call's arguments, so
+it also catches copies outside the task tree. An earlier version filtered on
+arguments and missed one episode. It is then checked independently, against a
+separate scan written by a different reviewer, and the two agree episode for
+episode. Its rules:
+- A hidden-test read needs three consecutive lines (60 characters or more
+  together) of some committed version of the hidden test, at least two of them
+  found in no setup or reference version.
+- A reference read needs the same match against a reference version, unless the
+  call reads a file the episode itself wrote.
+- A non-pristine start is a first read of a setup file, before the episode
+  wrote anything, that differs from what most episodes of that grid and task saw
+  first. The grid ran in an earlier repository, so its exact setup files are not
+  all in this history.
+- Logs keep 600 characters of each output and of each argument, so every count
+  is a lower bound.
 
-- **25 episodes (3.3%) received grader content**, 21 of them the hidden test
-  itself and 4 a reference solution only; **22 of the 25 passed**.
-- 14 reached into the task tree by absolute path (the "no containment" defect);
-  12 of those passed.
-- 11 read `hidden_test.py` *inside the sandbox* with `read_file`, all on
-  `pratt_parse`, within the first three steps (Qwen `baseline` 3, Qwen `full` 5,
-  Ornith `baseline` 3); 10 passed. The heuristic above missed these, because
-  the path names no `bench/tasks`. How a hidden test reached that sandbox is not
-  recoverable: the grid ran in an earlier repository whose history is not here.
-  At `82e453a` no task's `setup/` holds a hidden test, and `materialise` copies
-  `setup/` only after removing the old sandbox.
-- They fall in 11 of 18 cells, 18 among the 560 gate-on episodes and 7 among the
-  160 gate-off, so they do not track the gate leak.
-- Scoring the 22 exposed passes as failures shifts v1's point estimates by about
-  −0.050 (Qwen full−baseline), +0.075 (Ornith full−baseline) and +0.025 (Ornith
-  `no-outcap`, from −0.100 to about −0.075). That does not explain the
-  `no-outcap` reversal.
-- Tactic tokens hit in 41 episodes; every hit was read by hand and is benign
-  (stdlib `inspect.getsource`, `__main__` guards, `os._exit` in the agent's own
-  SIGALRM timeout scripts, the word "inspect" in comments). No pass lacks
-  verifier output.
+Over all 760 `hard` episodes and their 3,879 file-writing calls (the original
+audit's population, reproduced exactly):
 
-The original audit counted writes, so its "zero" was a statement about writes,
-reported as a statement about all five defects. The manuscript now says so
-(abstract, §1, §5.9, §6, Limitation 12, §8). `hard-protocol1` (7 episodes, 5
-passed) and `orep` (1, passed) are superseded collections and reported here
-only.
+- **26 episodes (3.4%) received grader content**, 22 of them the hidden test and
+  4 a reference solution only; **23 of the 26 passed**.
+  - 14 reached into the task tree by path; 12 of those passed.
+  - 11 read `hidden_test.py` *inside their own sandbox*, all on `pratt_parse`,
+    within three steps (Qwen `baseline` 3, Qwen `full` 5, Ornith `baseline` 3);
+    10 passed.
+  - 1 (Qwen `no-envboot` `concurrency_race` rep 3) found `/tmp/ht.py` with
+    `grep` and read it. It is a hidden-test copy an earlier run on the same host
+    had left in the shared `/tmp`. Passed.
+- **Three episodes wrote into a task's `setup/` with the shell.** Every later
+  sandbox of that task is copied from `setup/`. All ten candidate episodes the
+  script lists were read by hand. The other seven only copied grader files *out*
+  (to their own sandbox or `/tmp`). No episode modified a hidden test or a
+  reference file.
+  - Ornith `baseline` `pratt_parse` rep 1, step 17:
+    `cd tasks/pratt_parse/setup && cp ../hidden_test.py ./hidden_test.py`. The
+    traceback path confirms the working directory, and nothing visible removes
+    the copy. That is the source of the 11 sandbox reads above.
+  - Ornith `baseline` `nfa_match` rep 4, steps 13–46: `cat >` and `sed -i` into
+    `setup/nfa.py`, replacing the stub with its own implementation, and
+    `edge_tests.py` copied into `setup/`.
+  - Ornith `no-envboot` `cache_invalidation_dist` rep 0, steps 45–46: copies its
+    `distcache.py` into the task directory and the hidden test into `setup/`,
+    then an `rm` whose argument the log cut off.
+- **12 episodes began from a rewritten setup file, all 12 passed.** Nine Qwen
+  `nfa_match` episodes (`baseline` reps 0, 1, 3, 4; `full` reps 0–4) first read
+  the planted `nfa.py`. Ornith `no-envboot` `cache_invalidation_dist` reps 1–3
+  first read a changed `distcache.py`. Log mtimes order every planting episode
+  before every episode it affected. That is corroboration, not proof.
+- **Union: 37 distinct episodes, 34 passed** (`cache_invalidation_dist` rep 3 is
+  in both counts). All are in the 720-episode two-model grid: none is in the 40
+  Gemini episodes that make up 760. They fall in 11 of its 18 cells, 26 among
+  its 560 gate-on episodes and 11 among its 160 gate-off, so they do not track
+  the gate leak.
+- Scoring the 34 exposed passes as failures gives point estimates only (v1 cells
+  are all 40 usable rows):
+  - Qwen full−baseline: +0.050 → −0.025 (full 38 → 28, baseline 36 → 29)
+  - Ornith full−baseline: +0.075 → +0.150
+  - Ornith `no-outcap`: −0.100 → −0.075, which does not explain its reversal
+- Tactic tokens hit 41 episodes. Every hit was read by hand and is benign:
+  stdlib `inspect.getsource`, `__main__` guards, the word "inspect" in comments,
+  and `os._exit` in the agent's own test scripts (SIGALRM timeouts, and one
+  `os._exit(0)` after its own "ALL STRESS TESTS PASSED"). No pass lacks verifier
+  output.
+
+The original audit counted file-tool writes, so its "zero" was a statement about
+those writes, reported as a statement about all five defects. The manuscript now
+says so (abstract, §1, §3.2, §5.9, §6, Limitation 12, §8).
+
+**Not closed on v2, nor in the released harness.** `--bind $TMPDIR` gives every
+sandbox the host's temporary directory read-write (`mh/tools.py`, both at
+`82e453a` and now), and the macOS profile re-allows temp roots. One episode can
+therefore leave its solution, or a copy of a grader file, for a later episode of
+the same task. Whether any v2 or `ext-cerebras` episode did is part of O5.
+
+Superseded collections, reported here only: `hard-protocol1` has 7 read
+episodes (5 passed) and 7 shell-write candidate episodes; `orep` has 2 reads
+(both passed); `rep2` has 1 read (passed).
 
 ## What has *not* been deviated from
 
