@@ -932,6 +932,8 @@ func managedTurn(provider, mode, brief string) string {
 	}
 	if provider == "claude" {
 		parts = append(parts, "This session loads user settings only, so the repository's project instructions, rules, skills and MCP servers were not loaded for you. Before anything else, read the repository's AGENTS.md and CLAUDE.md, and any rules or skills directories it has, and follow them.")
+	} else if provider == "agy" {
+		parts = append(parts, "This session disables default customizations, so repository-local hooks and custom plugins were not loaded automatically. Before anything else, read the repository's AGENTS.md and GEMINI.md, and any rules or skills directories it has, and follow them.")
 	}
 	if mode == "inspect" {
 		parts = append(parts, "Inspect and propose a plan; do not modify files or change the task's status.")

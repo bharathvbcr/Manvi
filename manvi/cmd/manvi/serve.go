@@ -225,6 +225,13 @@ func serveCommand(out io.Writer, reg *flags.Registry, args []string) error {
 					return nil, err
 				}
 				return session, nil
+			case "agy":
+				options.Program = toolBinary("MANVI_AGY_BINARY", "agy")
+				session, err := codingagent.StartAgy(ctx, options)
+				if err != nil {
+					return nil, err
+				}
+				return session, nil
 			default:
 				return nil, fmt.Errorf("no managed adapter for provider %q", options.Provider)
 			}

@@ -11,6 +11,7 @@ func TestEffectiveIsACopyTheCallerCannotWriteThrough(t *testing.T) {
 	for name, effective := range map[string]func() Effective{
 		"claude": (&Claude{ready: true, effective: negotiated}).Effective,
 		"codex":  (&Codex{ready: true, effective: negotiated}).Effective,
+		"agy":    (&Agy{ready: true, effective: negotiated}).Effective,
 	} {
 		got := effective()
 		got.Sandbox.WritableRoots[0] = "/elsewhere"
@@ -31,5 +32,8 @@ func TestEffectiveIsEmptyBeforeTheSessionIsReady(t *testing.T) {
 	}
 	if e := (&Codex{effective: Effective{Model: "m"}}).Effective(); e.Model != "" {
 		t.Errorf("codex reported %q before it was ready", e.Model)
+	}
+	if e := (&Agy{effective: Effective{Model: "m"}}).Effective(); e.Model != "" {
+		t.Errorf("agy reported %q before it was ready", e.Model)
 	}
 }

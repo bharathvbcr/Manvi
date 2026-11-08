@@ -85,10 +85,54 @@ func (w *limitedDiscard) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// envOverrides describes environment keys to remove from a base environment
+// before appending explicit KEY=VALUE assignments. Appending onto os.Environ()
+// cannot unset an existing key, and case-folded keys on Windows must be removed
+// before replacement.
+type envOverrides struct {
+	unsetKeys []string
+	set       []string
+}
+
+func applyEnvOverrides(environ []string, overrides envOverrides) []string {
+	return applyEnvOverridesKeyed(environ, overrides, childenv.Key)
+}
+
+func applyEnvOverridesKeyed(environ []string, overrides envOverrides, nameKey func(string) string) []string {
+	if len(overrides.unsetKeys) == 0 && len(overrides.set) == 0 {
+		return environ
+	}
+	drop := make(map[string]bool, len(overrides.unsetKeys)+len(overrides.set))
+	for _, k := range overrides.unsetKeys {
+		drop[nameKey(k)] = true
+	}
+	for _, entry := range overrides.set {
+		name, _, _ := strings.Cut(entry, "=")
+		drop[nameKey(name)] = true
+	}
+	out := make([]string, 0, len(environ)+len(overrides.set))
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if drop[nameKey(name)] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, overrides.set...)
+}
+
 // startConnection spawns the provider and frames its stdout. `validate` is the
 // protocol's own frame rule and is never optional: a transport that accepted
 // any well-formed JSON would let one provider's frames be read as another's.
 func startConnection(parent context.Context, program string, args []string, cwd string, validate func([]byte) error) (*connection, error) {
+	return startConnectionOverrides(parent, program, args, cwd, childenv.Inherit(), envOverrides{}, validate)
+}
+
+func startConnectionOverrides(parent context.Context, program string, args []string, cwd string, baseEnv []string, overrides envOverrides, validate func([]byte) error) (*connection, error) {
+	return startConnectionEnv(parent, program, args, cwd, applyEnvOverrides(baseEnv, overrides), validate)
+}
+
+func startConnectionEnv(parent context.Context, program string, args []string, cwd string, baseEnv []string, validate func([]byte) error) (*connection, error) {
 	if err := parent.Err(); err != nil {
 		return nil, beforeStart(err)
 	}
@@ -97,7 +141,7 @@ func startConnection(parent context.Context, program string, args []string, cwd 
 	cmd.Dir = cwd
 	cmd.WaitDelay = 2 * time.Second
 	proc.ConfigureGroup(cmd)
-	cmd.Env = agentEnv(childenv.Inherit(), cwd)
+	cmd.Env = agentEnv(baseEnv, cwd)
 	cmd.Stderr = &limitedDiscard{remaining: 65536, cancel: cancel}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

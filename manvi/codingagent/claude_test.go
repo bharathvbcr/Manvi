@@ -40,6 +40,9 @@ func TestMain(m *testing.M) {
 	if scenario, ok := strings.CutPrefix(filepath.Base(os.Args[0]), "claude-fixture-"); ok {
 		os.Args = append([]string{os.Args[0], "-test.run=^TestClaudeProtocolChild$", "--", "claude-fixture:" + scenario}, os.Args[1:]...)
 	}
+	if scenario, ok := strings.CutPrefix(filepath.Base(os.Args[0]), "agy-fixture-"); ok {
+		os.Args = append([]string{os.Args[0], "-test.run=^TestAgyProtocolChild$", "--", "agy-fixture:" + scenario}, os.Args[1:]...)
+	}
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" {
 			dumpFixtureEnv("version")
@@ -130,6 +133,16 @@ func TestClaudeProtocolChild(t *testing.T) {
 		}
 		switch in.Type {
 		case "control_request":
+			if scenario == "many-hooks" || scenario == "runaway-handshake" {
+				hookPairs := 60 // 120 frames total (>64 old cap, within new handshake queue bound)
+				if scenario == "runaway-handshake" {
+					hookPairs = 300 // 600 frames total (exceeds handshake queue bound)
+				}
+				for i := 0; i < hookPairs; i++ {
+					emit(`{"type":"system","subtype":"hook_started","session_id":%q,"hook_id":"hk-%d","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"u-hs-%d"}`, session, i, i)
+					emit(`{"type":"system","subtype":"hook_response","session_id":%q,"hook_id":"hk-%d","hook_name":"SessionStart:startup","hook_event":"SessionStart","outcome":"success","exit_code":0,"uuid":"u-hr-%d"}`, session, i, i)
+				}
+			}
 			pid := os.Getpid()
 			if scenario == "foreign-pid" {
 				pid = 1
@@ -840,10 +853,10 @@ func TestOnlyKnownPreSpawnClaudeErrorsCertifyNoProcessStarted(t *testing.T) {
 }
 
 func TestManagedProviderListMatchesTheAdaptersThatExist(t *testing.T) {
-	if !IsManagedProvider("codex") || !IsManagedProvider("claude") {
+	if !IsManagedProvider("codex") || !IsManagedProvider("claude") || !IsManagedProvider("agy") {
 		t.Fatal("a provider with an adapter is not listed as managed")
 	}
-	for _, absent := range []string{"grok", "agy", "shell", "", "CLAUDE"} {
+	for _, absent := range []string{"grok", "shell", "", "CLAUDE", "AGY"} {
 		if IsManagedProvider(absent) {
 			t.Fatalf("%q has no managed adapter but is listed as managed", absent)
 		}
@@ -925,3 +938,194 @@ func TestClaudeWithdrawalSeenDuringPreflightIsNamedAndNotLost(t *testing.T) {
 		t.Fatalf("the withdrawal read during preflight was lost: %+v %v", e, err)
 	}
 }
+
+func TestClaudeHandshakeSurvivesManyStartupHookEvents(t *testing.T) {
+	// 120 startup hook frames (>64 old queue cap) before control_response must succeed
+	// and cleanly drain during Turn 1.
+	s := openFixture(t, "many-hooks", "ask")
+	if err := s.StartTurn(t.Context(), "Do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	text, status, _ := collect(t, s)
+	if status != "completed" || !strings.Contains(text, "MANAGED_OK") {
+		t.Fatalf("many-hooks turn did not complete cleanly: text=%q status=%q", text, status)
+	}
+
+	// Runaway non-response frames exceeding the bounded handshake cap still fail closed.
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runaway, err := startClaude(t.Context(), Options{Program: bin, Cwd: root, Mode: "ask"}, fixtureArgs("runaway-handshake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = runaway.Close() })
+	initErr := runaway.Initialize(t.Context())
+	if initErr == nil || !strings.Contains(initErr.Error(), "exceeded the handshake event queue") {
+		t.Fatalf("runaway handshake did not fail with bounded queue error: %v", initErr)
+	}
+}
+
+func findInstalledNativeClaude() string {
+	if candidate := strings.TrimSpace(os.Getenv(ClaudeBinaryVariable)); candidate != "" {
+		if CheckLaunchableClaude(candidate) == nil {
+			return candidate
+		}
+	}
+	realHome, err := os.UserHomeDir()
+	if err != nil || realHome == "" {
+		return ""
+	}
+	versionsDir := filepath.Join(realHome, ".local", "share", "claude", "versions")
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		return ""
+	}
+	bestName := ""
+	var bestParts [3]int
+	parseSemver := func(name string) ([3]int, bool) {
+		var parts [3]int
+		segs := strings.Split(name, ".")
+		if len(segs) != 3 {
+			return parts, false
+		}
+		for i, seg := range segs {
+			if seg == "" {
+				return parts, false
+			}
+			val := 0
+			for j := 0; j < len(seg); j++ {
+				if seg[j] < '0' || seg[j] > '9' {
+					return parts, false
+				}
+				val = val*10 + int(seg[j]-'0')
+			}
+			parts[i] = val
+		}
+		return parts, true
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		full := filepath.Join(versionsDir, entry.Name())
+		if CheckLaunchableClaude(full) != nil {
+			continue
+		}
+		parts, ok := parseSemver(entry.Name())
+		if !ok {
+			continue
+		}
+		if bestName == "" ||
+			parts[0] > bestParts[0] ||
+			(parts[0] == bestParts[0] && parts[1] > bestParts[1]) ||
+			(parts[0] == bestParts[0] && parts[1] == bestParts[1] && parts[2] > bestParts[2]) {
+			bestName = full
+			bestParts = parts
+		}
+	}
+	return bestName
+}
+
+func TestRealClaudeBinaryStreamJSONHandshake(t *testing.T) {
+	realClaude := findInstalledNativeClaude()
+	if realClaude == "" {
+		t.Skip("no native Claude Code binary installed under ~/.local/share/claude/versions")
+	}
+
+	// Build a completely isolated HOME + pinned seat fixture so we never touch ~/
+	// and never rely on ambient logins. Also set CLAUDECODE=1 and CLAUDE_CODE_ENTRYPOINT=cli
+	// in the parent env to prove StartClaude + Initialize scrub nested-Claude markers
+	// before spawning the real Claude Code binary.
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+
+	defaultDir := filepath.Join(tempHome, ".claude")
+	seatDir := filepath.Join(tempHome, ".claude-isolated")
+	repoDir := filepath.Join(tempHome, "repo")
+	for _, dir := range []string{defaultDir, seatDir, repoDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, ".claude-accounts"), []byte("isolated "+seatDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".claude-account"), []byte("isolated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(seatDir, ".claude.json"),
+		[]byte(`{"hasCompletedOnboarding":true,"oauthAccount":{"emailAddress":"isolated@example.com"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(tempHome, ".claude.json"),
+		[]byte(`{"hasCompletedOnboarding":true,"oauthAccount":{"emailAddress":"ISOLATED@example.com"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	unpinnedDir := filepath.Join(tempHome, "unpinned-repo")
+	if err := os.MkdirAll(unpinnedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if refused, refuseErr := StartClaude(t.Context(), Options{
+		Program: realClaude,
+		Cwd:     unpinnedDir,
+		Mode:    "inspect",
+	}); refused != nil || refuseErr == nil || !NoProcessStarted(refuseErr) {
+		if refused != nil {
+			_, _ = refused.Close()
+		}
+		t.Fatalf("expected unpinned real-binary launch with colliding ~/.claude.json to fail closed, got s=%v err=%v", refused, refuseErr)
+	}
+	// Configure a harmless SessionStart hook inside the isolated seat so real Claude Code
+	// exercises hook_started + hook_response stream-json frames ahead of control_response.
+	seatSettings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`
+	if err := os.WriteFile(filepath.Join(seatDir, "settings.json"), []byte(seatSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+	defer cancel()
+
+	s, err := StartClaude(ctx, Options{
+		Program: realClaude,
+		Cwd:     repoDir,
+		Mode:    "inspect",
+	})
+	if err != nil {
+		t.Fatalf("StartClaude against real binary %s failed: %v", realClaude, err)
+	}
+	defer func() {
+		if _, closeErr := s.Close(); closeErr != nil {
+			t.Errorf("Close real Claude session: %v", closeErr)
+		}
+	}()
+
+	if err := s.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize against real binary %s failed: %v", realClaude, err)
+	}
+	eff := s.Effective()
+	if !strings.HasPrefix(eff.ProviderUserAgent, "claude-code/") {
+		t.Fatalf("unexpected ProviderUserAgent from real binary: %+v", eff)
+	}
+	if eff.ApprovalPolicy != "plan" {
+		t.Fatalf("expected negotiated ApprovalPolicy=plan, got %q", eff.ApprovalPolicy)
+	}
+	if eff.Thread.ID == "" || eff.Thread.Ephemeral {
+		t.Fatalf("expected persisted session thread ID, got %+v", eff.Thread)
+	}
+}
+

@@ -109,7 +109,7 @@ func DeliveryUnresolved(err error) bool { return errors.Is(err, ErrDeliveryUnres
 
 // ContinuableProviders are the providers whose adapter implements
 // ContinueTurn. A provider absent from it has one turn per process.
-var ContinuableProviders = []string{"codex", "claude"}
+var ContinuableProviders = []string{"codex", "claude", "agy"}
 
 // SupportsContinue reports whether a stored run's provider can take follow-ups.
 func SupportsContinue(provider string) bool {

@@ -28,7 +28,7 @@ func readFile(t *testing.T, root, rel string) string {
 }
 
 func TestInstructionFileIsTheOneEachCLIReads(t *testing.T) {
-	for provider, want := range map[string]string{"claude": "CLAUDE.md", "codex": "AGENTS.md"} {
+	for provider, want := range map[string]string{"claude": "CLAUDE.md", "codex": "AGENTS.md", "agy": "AGENTS.md"} {
 		if got, ok := harnessInstructionFile(provider); !ok || got != want {
 			t.Errorf("%s: instruction file = %q, %v, want %q", provider, got, ok, want)
 		}

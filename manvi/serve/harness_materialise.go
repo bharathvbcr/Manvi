@@ -150,7 +150,7 @@ func harnessInstructionFile(provider string) (string, bool) {
 	switch provider {
 	case "claude":
 		return "CLAUDE.md", true
-	case "codex":
+	case "codex", "agy":
 		return "AGENTS.md", true
 	}
 	return "", false

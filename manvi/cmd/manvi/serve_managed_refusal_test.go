@@ -67,6 +67,12 @@ func managedProviderFixture(t *testing.T, provider, scenario string) string {
 			t.Fatal(err)
 		}
 		return link
+	case "agy":
+		link := filepath.Join(t.TempDir(), "agy-fixture-"+scenario)
+		if err := os.Symlink(providerFixtureBin, link); err != nil {
+			t.Fatal(err)
+		}
+		return link
 	case "codex":
 		// The Codex child reads its scenario from the last argument.
 		line = fmt.Sprintf(`exec '%s' '-test.run=^TestProtocolChild$' -- "$@" 'codex-fixture:%s'`, providerFixtureBin, scenario)
@@ -97,6 +103,7 @@ func TestServeRecordsARefusedProviderCallbackAsTheRunsVisibleReason(t *testing.T
 	}{
 		{"claude", "dialog", `unsupported Claude callback "request_user_dialog"; no response was granted`},
 		{"codex", "callback:mcpServer/elicitation/request", `unsupported Codex callback "mcpServer/elicitation/request"; no response was granted`},
+		{"agy", "elicitation", `unsupported Antigravity callback "mcpServer/elicitation/request"; no response was granted`},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			fixture := managedProviderFixture(t, tc.provider, tc.scenario)
@@ -114,7 +121,7 @@ func TestServeRecordsARefusedProviderCallbackAsTheRunsVisibleReason(t *testing.T
 			cmd := exec.CommandContext(ctx, binary, "serve", "--posture", "host", "--workbench-db", filepath.Join(t.TempDir(), "profile.sqlite"))
 			cmd.Dir = repo
 			cmd.Env = append(os.Environ(), "MANVI_HARNESS_INIT_ENABLED=false", "DEVCOUNCIL_ROOT="+repo,
-				"MANVI_STORE_BINARY="+storeBinary, "MANVI_CLAUDE_BINARY="+fixture, "MANVI_CODEX_BINARY="+fixture)
+				"MANVI_STORE_BINARY="+storeBinary, "MANVI_CLAUDE_BINARY="+fixture, "MANVI_CODEX_BINARY="+fixture, "MANVI_AGY_BINARY="+fixture)
 			cmd.WaitDelay = 3 * time.Second
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr

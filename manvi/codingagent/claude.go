@@ -47,7 +47,7 @@ const (
 	claudeHandshake   = 30 * time.Second
 	claudeMaxPending  = 32
 	claudeMaxRequests = 2048
-	claudeMaxQueue    = 64
+	claudeMaxQueue    = 512
 
 	// The build probe is bounded by its own deadline and then by how long a
 	// descendant may keep the stdout pipe open after the process is gone.
@@ -141,8 +141,10 @@ func claudeBuild(ctx context.Context, program string) (string, error) {
 	proc.ConfigureGroup(cmd)
 	cmd.WaitDelay = claudeProbeWaitDelay
 	// The probe is the same executable the session will be; it gets the same
-	// withholding.
-	cmd.Env = childenv.Inherit()
+	// withholding and drops nested-Claude markers.
+	cmd.Env = applyEnvOverrides(childenv.Inherit(), envOverrides{
+		unsetKeys: []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"},
+	})
 	out, err := cmd.Output()
 	if errors.Is(err, exec.ErrWaitDelay) && probe.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		// The process exited 0 and a descendant outlived it holding stdout.
@@ -208,6 +210,10 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 	if err != nil {
 		return nil, beforeStart(err)
 	}
+	seatOverrides, err := claudeSeatOverrides(cwd)
+	if err != nil {
+		return nil, beforeStart(err)
+	}
 	session := options.Resume
 	if !opaque(session) {
 		var sessionErr error
@@ -229,7 +235,7 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 			return nil, beforeStart(err)
 		}
 	}
-	wire, err := startConnection(ctx, program, args, cwd, validateClaudeFrame)
+	wire, err := startConnectionOverrides(ctx, program, args, cwd, childenv.Inherit(), seatOverrides, validateClaudeFrame)
 	if err != nil {
 		return nil, err
 	}
