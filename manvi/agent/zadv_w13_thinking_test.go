@@ -300,7 +300,7 @@ func TestAdvEachPromptChangeCostsOneNoticeAndRepeatsCostNone(t *testing.T) {
 // whose prompt never changed.
 func TestAdvScrubbedPromptDoesNotMintANoticeEveryTurn(t *testing.T) {
 	log := session.NewLog()
-	log.SetScrubber(func(s string) string { return strings.ReplaceAll(s, advSecret, "[redacted]") })
+	log.SetScrubber(func(s string) string { return strings.ReplaceAll(s, advNeedle, "[redacted]") })
 	c := newConvo(t, twoTurnScript(), log)
 	advRegister(t, c.reg, "echo")
 	// The invariant check is off here so the count is measured on its own; the
@@ -316,15 +316,15 @@ func TestAdvScrubbedPromptDoesNotMintANoticeEveryTurn(t *testing.T) {
 			"so the whole prompt is appended to the context on every turn", len(got))
 	}
 	for i, req := range c.requests() {
-		if bytes.Contains(req.System, []byte(advSecret)) {
+		if bytes.Contains(req.System, []byte(advNeedle)) {
 			t.Errorf("request %d carries the secret in system", i)
 		}
 	}
 }
 
 const (
-	advSecret           = "sk-LIVE-SECRET-123"
-	advPromptWithSecret = "project instructions mention " + advSecret + " verbatim"
+	advNeedle           = "needle-LIVE-123"
+	advPromptWithSecret = "project instructions mention " + advNeedle + " verbatim"
 )
 
 // Item 3/9, scrubber with the model-visible-means-logged invariant on (the
@@ -334,7 +334,7 @@ const (
 // whatever went out must be that same text.
 func TestAdvScrubbedNoticeSentEqualsNoticeLogged(t *testing.T) {
 	log := session.NewLog()
-	log.SetScrubber(func(s string) string { return strings.ReplaceAll(s, advSecret, "[redacted]") })
+	log.SetScrubber(func(s string) string { return strings.ReplaceAll(s, advNeedle, "[redacted]") })
 	c := newConvo(t, twoTurnScript(), log)
 	advRegister(t, c.reg, "echo")
 	if err := c.turn("prompt one", "first", nil); err != nil {
@@ -345,7 +345,7 @@ func TestAdvScrubbedNoticeSentEqualsNoticeLogged(t *testing.T) {
 	}
 	for i, req := range c.requests() {
 		for _, m := range systemMessages(t, req) {
-			if strings.Contains(m, advSecret) {
+			if strings.Contains(m, advNeedle) {
 				t.Errorf("request %d sends the secret in a system message the log holds scrubbed", i)
 			}
 		}
