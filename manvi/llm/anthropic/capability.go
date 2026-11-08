@@ -15,6 +15,7 @@ package anthropic
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
@@ -242,13 +243,17 @@ func ValidateRequest(req llm.Request, mode ThinkingMode) error {
 	if err := ValidateThinking(req.Model, mode, req.Effort); err != nil {
 		return err
 	}
-	if err := validateSystemMessages(req); err != nil {
+	// Both checks read the messages as they will be sent: an assistant message
+	// with nothing the encoder can send is omitted, which changes what a system
+	// message follows and what the last message is.
+	sent := sentMessages(req.Messages)
+	if err := validateSystemMessages(req.Model, sent); err != nil {
 		return err
 	}
 	// A last-assistant-turn prefill is rejected by every current model. It is
 	// worth catching here because the replacement is structural (structured
 	// output, or a system-prompt instruction) rather than a parameter tweak.
-	if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == llm.RoleAssistant {
+	if n := len(sent); n > 0 && sent[n-1].Role == llm.RoleAssistant {
 		return fmt.Errorf("anthropic: %s rejects a trailing assistant message (prefill); "+
 			"use a structured output format or a system-prompt instruction instead", req.Model)
 	}
@@ -290,29 +295,47 @@ func ReplayableOn(fromModel, toModel string) bool {
 	return ok && target.SupportsReasoning
 }
 
+// sentMessages is msgs as the encoder will send them: an assistant message that
+// does not survive encoding (llm.Message.HasSendableContent: empty or
+// whitespace text, thinking cut off before its signature) is omitted, and the
+// API merges the user turns around it. It is the same predicate toWireMessage
+// applies, so placement is judged on the sequence that goes out, not on the one
+// the caller built: a notice whose answering turn is omitted is followed by a
+// user message on the wire, and that is a 400.
+func sentMessages(msgs []llm.Message) []llm.Message {
+	if !slices.ContainsFunc(msgs, func(m llm.Message) bool {
+		return m.Role == llm.RoleAssistant && !m.HasSendableContent()
+	}) {
+		return msgs
+	}
+	return slices.DeleteFunc(slices.Clone(msgs), func(m llm.Message) bool {
+		return m.Role == llm.RoleAssistant && !m.HasSendableContent()
+	})
+}
+
 // validateSystemMessages checks the placement rules of mid-conversation
 // system messages (shared/prompt-caching.md, "Mid-conversation system
 // messages"): the model must support them, they cannot open the conversation,
 // they must follow a user message and be the last entry or be followed by an
 // assistant turn, and their content is text only. A message
 // that broke one would be a 400 mid-turn; an initial prompt belongs in
-// Request.System.
-func validateSystemMessages(req llm.Request) error {
-	for i, msg := range req.Messages {
+// Request.System. msgs is the sequence that will be sent (sentMessages).
+func validateSystemMessages(model string, msgs []llm.Message) error {
+	for i, msg := range msgs {
 		if msg.Role != llm.RoleSystem {
 			continue
 		}
-		if c, ok := Capability(req.Model); !ok || !c.MidConversationSystem {
-			return fmt.Errorf("anthropic: %s does not accept role:system messages; use Request.System", req.Model)
+		if c, ok := Capability(model); !ok || !c.MidConversationSystem {
+			return fmt.Errorf("anthropic: %s does not accept role:system messages; use Request.System", model)
 		}
 		if i == 0 {
 			return fmt.Errorf("anthropic: message 0 is a system message; the initial prompt belongs in Request.System")
 		}
-		if req.Messages[i-1].Role != llm.RoleUser {
-			return fmt.Errorf("anthropic: system message %d must follow a user message, follows %s", i, req.Messages[i-1].Role)
+		if msgs[i-1].Role != llm.RoleUser {
+			return fmt.Errorf("anthropic: system message %d must follow a user message, follows %s", i, msgs[i-1].Role)
 		}
-		if i+1 < len(req.Messages) && req.Messages[i+1].Role != llm.RoleAssistant {
-			return fmt.Errorf("anthropic: system message %d must be the last message or be followed by an assistant turn, is followed by %s", i, req.Messages[i+1].Role)
+		if i+1 < len(msgs) && msgs[i+1].Role != llm.RoleAssistant {
+			return fmt.Errorf("anthropic: system message %d must be the last message or be followed by an assistant turn, is followed by %s", i, msgs[i+1].Role)
 		}
 		for _, block := range msg.Content {
 			if _, ok := block.(llm.TextBlock); !ok {

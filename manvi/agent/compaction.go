@@ -66,8 +66,9 @@ import (
 // A client-side edit that is still present on such a conversation is made safe
 // by stripping, not by avoiding it: session.Log.StripStaleReasoning removes
 // every thinking and redacted_thinking block from the first edited position
-// onward (a leading run is the only removal that keeps later blocks valid), and
-// keeps the blocks before it. Two cases remain.
+// onward (a trailing run, one of the contiguous removals the docs allow: a
+// block removed from the middle would invalidate the ones after it), and keeps
+// the blocks before it. Two cases remain.
 //
 // A log written before this change replays its ToolResultCompacted records.
 //

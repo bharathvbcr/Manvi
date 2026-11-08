@@ -34,7 +34,13 @@ import (
 // WhyOpened, WhyToolsAdded and WhyCarried say why a frame was recorded.
 // WhyCarried is the store's restatement of the frame at the front of a file whose
 // older turns retention dropped: it is the state of the dropped frames, not a
-// change, so it is never a tools boundary.
+// change, so it is never a tools boundary. It restates the frame only. What the
+// dropped notices had told the model goes with them: a resumed conversation's
+// model never saw them, so the frame's own prompt and every declared tool are
+// what it holds, and the next request says the rest again (a Loop whose prompt
+// or offered tools differ from the frame's appends a notice). Carrying the
+// notices' state instead would leave the model on the frame's prompt while the
+// log said a later one was delivered.
 //
 // It is also the record of the trim itself. Retention removes the oldest turns,
 // so every signed block kept in the file was bound to messages the file no
@@ -60,18 +66,14 @@ type (
 	// FrameData is what a conversation declared to its provider: the system
 	// prompt of its first request and the tool definitions, sorted by name so
 	// the bytes sent are the same on every request. Added names the tools a
-	// WhyToolsAdded frame brought in. Delivered and Told are set only on a
-	// WhyCarried frame: what the notices dropped with the old turns had last
-	// told the model. Through is set only on a WhyCarried frame: the sequence
-	// number of the last event in the file when retention trimmed it.
+	// WhyToolsAdded frame brought in. Through is set only on a WhyCarried frame:
+	// the sequence number of the last event in the file when retention trimmed it.
 	FrameData struct {
-		System    string           `json:"system"`
-		Tools     []llm.ToolSchema `json:"tools,omitempty"`
-		Why       string           `json:"why"`
-		Added     []string         `json:"added,omitempty"`
-		Delivered string           `json:"delivered,omitempty"`
-		Told      []string         `json:"told,omitempty"`
-		Through   int              `json:"through,omitempty"`
+		System  string           `json:"system"`
+		Tools   []llm.ToolSchema `json:"tools,omitempty"`
+		Why     string           `json:"why"`
+		Added   []string         `json:"added,omitempty"`
+		Through int              `json:"through,omitempty"`
 	}
 	// NoticeData is one mid-conversation system message. Text is exactly what
 	// the model was sent, rendered once when the notice was recorded, so a
@@ -115,11 +117,16 @@ type wireState struct {
 	boundaries int
 	through    int
 	awaiting   *WireState
+	// stale is set only when the state is recomputed for a log that has been
+	// edited (Log.Wire): the sequence numbers of the messages whose signed
+	// reasoning StripStale removes. A reply that strip empties does not answer a
+	// notice, because the request no longer carries it.
+	stale map[int]bool
 }
 
 // fold applies one event. Types that do not touch the wire state are ignored,
 // and cost nothing unless a notice is awaiting its answer.
-func (w *wireState) fold(t Type, raw json.RawMessage) error {
+func (w *wireState) fold(seq int, t Type, raw json.RawMessage) error {
 	switch t {
 	case UserMessage, ToolResult:
 		if w.awaiting != nil {
@@ -133,7 +140,7 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &data); err != nil {
 			return fmt.Errorf("session: decoding %s: %w", t, err)
 		}
-		if len(data.Message.Content) > 0 {
+		if data.Message.HasSendableContent() && (!w.stale[seq] || !emptiedByStrip(data.Message)) {
 			w.awaiting = nil
 		}
 	case WireFrame:
@@ -144,11 +151,10 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		if data.Why == WhyToolsAdded {
 			w.boundaries++
 		}
-		switch {
-		case data.Why == WhyCarried:
-			w.Delivered, w.Told = data.Delivered, slices.Clone(data.Told)
+		if data.Why == WhyCarried {
 			w.through = max(w.through, data.Through)
-		case w.Frame == nil:
+		}
+		if w.Frame == nil {
 			w.Delivered = data.System
 		}
 		w.Frame = &data
@@ -173,25 +179,27 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 }
 
 // wireCarry is the frame to write at the front of a file whose events before it
-// were dropped by retention: the frame those events declared, with what their
-// notices had told the model. Without it a trimmed and reloaded conversation has
+// were dropped by retention: the frame those events declared. Without it a trimmed and reloaded conversation has
 // no frame and opens a new one from the current prompt and tools, which the
 // signed blocks that survive were not produced under. ok is false when the
 // dropped events held no frame. The event takes the position of the last dropped
 // one, so sequence numbers still only increase.
 func wireCarry(dropped []Event, through int) (Event, bool, error) {
-	var w wireState
+	var frame *FrameData
 	for _, e := range dropped {
-		if err := w.fold(e.Type, e.Data); err != nil {
-			return Event{}, false, err
+		if e.Type != WireFrame {
+			continue
 		}
+		var data FrameData
+		if err := json.Unmarshal(e.Data, &data); err != nil {
+			return Event{}, false, fmt.Errorf("session: decoding %s: %w", e.Type, err)
+		}
+		frame = &data
 	}
-	if w.Frame == nil {
+	if frame == nil {
 		return Event{}, false, nil
 	}
-	frame := *w.Frame
 	frame.Why, frame.Added = WhyCarried, nil
-	frame.Delivered, frame.Told = w.Delivered, w.Told
 	frame.Through = through
 	raw, err := json.Marshal(frame)
 	if err != nil {
@@ -242,9 +250,63 @@ func (l *Log) Scrubbed(text string) string {
 
 // Wire returns what the conversation has told its provider so far.
 func (l *Log) Wire() WireState {
+	if w, ok := l.strippedWire(); ok {
+		return w
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	out := l.wire.WireState
+	return cloneWire(l.wire.WireState)
+}
+
+// strippedWire is the wire state of a log that has been edited, read the way
+// the request is: a notice whose only answer is a reply StripStale empties is
+// not delivered, because StripStale drops it from the request. The same
+// staleSpans decides which replies those are, so the state and the request
+// cannot disagree. The replay costs a pass over the log, which StripStale
+// already pays on an edited log, and is kept until the next event. ok is false
+// for a log that was never edited, whose incremental state is already right.
+func (l *Log) strippedWire() (WireState, bool) {
+	edited, floor := false, 0
+	if err := l.withProjection(func(p *projection) {
+		floor = l.wire.through
+		edited = len(p.compacted)+len(p.bySeq) > 0 || l.wire.boundaries > 0 || floor > 0
+	}); err != nil || !edited {
+		return WireState{}, false
+	}
+	l.mu.RLock()
+	if l.strippedAt == l.seq && l.stripped != nil {
+		out := cloneWire(*l.stripped)
+		l.mu.RUnlock()
+		return out, true
+	}
+	events, seq := append([]Event(nil), l.events...), l.seq
+	l.mu.RUnlock()
+
+	sp, err := staleSpans(events, floor)
+	if err != nil {
+		return WireState{}, false
+	}
+	w := wireState{stale: make(map[int]bool, len(sp.seqs))}
+	for i, seqNo := range sp.seqs {
+		if sp.stale[i] {
+			w.stale[seqNo] = true
+		}
+	}
+	for _, e := range events {
+		if err := w.fold(e.Seq, e.Type, e.Data); err != nil {
+			return WireState{}, false
+		}
+	}
+	l.mu.Lock()
+	state := w.WireState
+	l.stripped, l.strippedAt = &state, seq
+	l.mu.Unlock()
+	return cloneWire(w.WireState), true
+}
+
+// cloneWire copies the parts of a WireState a caller could otherwise alias.
+func cloneWire(in WireState) WireState {
+	out := in
 	if out.Frame != nil {
 		frame := *out.Frame
 		frame.Tools = slices.Clone(frame.Tools)

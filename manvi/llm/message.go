@@ -19,6 +19,8 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 // BlockKind identifies a content block's type on the wire.
@@ -265,14 +267,43 @@ func DropSignedReasoning(msg Message) (Message, int) {
 	return msg, dropped
 }
 
+// BlockSendable reports whether a block has a wire form that carries anything:
+// text with something other than whitespace, reasoning that is redacted or has
+// the signature that makes it replayable, and every other kind of block. A
+// text block with no text and thinking cut off before its signature arrived
+// are the blocks an adapter has to drop, because journals on disk hold them
+// and no wire accepts them.
+func BlockSendable(block ContentBlock) bool {
+	switch b := block.(type) {
+	case TextBlock:
+		return strings.TrimSpace(b.Text) != ""
+	case ReasoningBlock:
+		return b.Redacted || b.Signature != ""
+	default:
+		return true
+	}
+}
+
+// HasSendableContent reports whether the message survives encoding: at least
+// one of its blocks is BlockSendable. An assistant message that does not is
+// omitted from the wire, so it neither answers a mid-conversation system
+// message nor separates it from the next user message. This is the one
+// predicate the log's projection, its wire state, the stale-reasoning pass and
+// the Anthropic encoder share, so they agree on which messages exist.
+func (m Message) HasSendableContent() bool {
+	return slices.ContainsFunc(m.Content, BlockSendable)
+}
+
 // PrepareHistoryFor adapts a message history for a target adapter and model.
 //
 // An assistant message keeps its ReplayState and its reasoning blocks only when
 // the target adapter owns the provider that produced it, and only when that
-// adapter says the reasoning is replayable. Same provider but a different model
-// still drops reasoning: providers tie thinking state to a specific model, and
-// replaying it onto a sibling is the failure this function exists to prevent.
-// An adapter that implements ReasoningReplayer is asked rather than assumed.
+// adapter says the reasoning is replayable. An adapter that does not implement
+// ReasoningReplayer is treated as replayable on the exact model that produced
+// the reasoning only, so a sibling model on the same provider drops it. An
+// adapter that does implement it is asked, and its answer decides: Anthropic
+// replays to any model that reasons (anthropic.ReplayableOn), because the API
+// itself drops what the target cannot read. A different provider always drops.
 //
 // Returns the adapted history and every drop, so the caller can log what was
 // lost rather than discovering it as a quality regression.
@@ -318,7 +349,8 @@ func prepareHistory(messages []Message, targetProvider, targetModel string, repl
 			ToModel:      targetModel,
 		}
 
-		// Reasoning is only replayable on the exact model that produced it.
+		// Not replayable here: the exact model that produced it (no
+		// ReasoningReplayer), or whatever the adapter's ReplayableOn refused.
 		filtered := make([]ContentBlock, 0, len(msg.Content))
 		for _, block := range msg.Content {
 			if block.Kind() == KindReasoning {

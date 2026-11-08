@@ -666,7 +666,7 @@ func toWireBlock(block llm.ContentBlock) (wire wireBlock, ok bool, err error) {
 		// evidence (microsoft/vscode#307807, anthropics/claude-code#23440), not
 		// in the reference. Text that has any other content is sent as it is,
 		// untrimmed.
-		if strings.TrimSpace(b.Text) == "" {
+		if !llm.BlockSendable(b) {
 			return wireBlock{}, false, nil
 		}
 		return wireBlock{Type: BlockText, Text: b.Text}, true, nil
@@ -674,7 +674,7 @@ func toWireBlock(block llm.ContentBlock) (wire wireBlock, ok bool, err error) {
 		if b.Redacted {
 			return wireBlock{Type: BlockRedactedThinking, Data: b.Signature}, true, nil
 		}
-		if b.Signature == "" {
+		if !llm.BlockSendable(b) {
 			// Thinking cut off before its signature arrived. The signature is
 			// what makes the block replayable, and "" is not one, so there is no
 			// valid wire form for it.

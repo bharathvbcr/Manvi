@@ -191,8 +191,12 @@ func TestRetentionTrimCarriesFrameAndNoticeState(t *testing.T) {
 		if w.Frame == nil || w.Frame.System != "the first prompt" || len(w.Frame.Tools) != 1 {
 			t.Fatalf("frame = %+v", w.Frame)
 		}
-		if w.Delivered != "prompt b" || !reflect.DeepEqual(w.Told, []string{"echo"}) {
-			t.Errorf("delivered/told = %q %v, want the dropped notice's state", w.Delivered, w.Told)
+		// The notice that said "prompt b" went with the trimmed turns, so the
+		// model of the resumed conversation was never sent it. What it holds is the
+		// frame: the next request must say prompt b again, and which tools are
+		// available again.
+		if w.Delivered != "the first prompt" || w.Told != nil {
+			t.Errorf("delivered/told = %q %v, want the frame's prompt and no tools notice", w.Delivered, w.Told)
 		}
 		if msgs, err := l.DeriveMessages(); err != nil || msgs[0].Role != llm.RoleUser {
 			t.Errorf("history begins with %v (err %v), want a user message", msgs[0].Role, err)
