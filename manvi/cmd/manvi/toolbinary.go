@@ -94,6 +94,37 @@ func trustedResolved(candidate string) (string, bool) {
 // agent-writable, and returns the program's fully resolved path (see
 // trustedResolved). A relative or empty entry is skipped outright.
 func trustedLookPath(name string) (string, bool) {
+	return trustedLookPathLaunchable(name, nil)
+}
+
+// trustedLookPathLaunchable is trustedLookPath with one more condition: the
+// resolved image must satisfy launchable (nil accepts any). It is how a managed
+// coding agent passes over a shell wrapper on a trusted PATH entry and takes the
+// real binary behind it, without a second PATH walk or a second trust rule.
+func trustedLookPathLaunchable(name string, launchable func(string) error) (string, bool) {
+	return lookPathWhere(name, func(p string) (string, bool) {
+		return trustedLaunchable(p, launchable)
+	})
+}
+
+// trustedLaunchable is trustedResolved plus the launch-shape check, run on the
+// resolved path so the file that was judged is the file that was inspected.
+func trustedLaunchable(candidate string, launchable func(string) error) (string, bool) {
+	resolved, ok := trustedResolved(candidate)
+	if !ok {
+		return "", false
+	}
+	if launchable != nil && launchable(resolved) != nil {
+		return "", false
+	}
+	return resolved, true
+}
+
+// lookPathWhere walks the PATH entries that are absolute directories, in order,
+// and returns what accept makes of the first executable named name that it
+// accepts. A relative or empty entry is skipped outright: it would be anchored
+// at the working directory, which the agent controls.
+func lookPathWhere(name string, accept func(path string) (string, bool)) (string, bool) {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if !filepath.IsAbs(dir) {
 			continue
@@ -102,8 +133,8 @@ func trustedLookPath(name string) (string, bool) {
 		if err != nil {
 			continue
 		}
-		if resolved, ok := trustedResolved(p); ok {
-			return resolved, true
+		if got, ok := accept(p); ok {
+			return got, true
 		}
 	}
 	return "", false
@@ -178,6 +209,13 @@ func untrustedNote(name, resolved string) string {
 // $PATH`. A developer build is the operator's own checkout, so it does not
 // apply the agent-writable filter.
 //
+// The managed coding agents (claude, agy) follow the same rule with two
+// additions: a candidate must also be a direct launch rather than a shell
+// wrapper (see managedAgentSpec), and the native install directories are tried
+// after PATH, each through the same trustedResolved check. A developer build
+// skips a wrapper on PATH but, finding no launchable image, returns the
+// wrapper so the adapter can refuse with the variable to set.
+//
 // An unfound binary is returned by bare name so the resulting error names what
 // was looked for, except in a release build, which returns unresolvedTool(name):
 // a bare name is searched through PATH again by os/exec at exec time, and that
@@ -189,24 +227,29 @@ func toolBinary(envKey, name string) string {
 		}
 		return v
 	}
-	switch name {
-	case "claude":
-		return resolveManagedAgentBinary(name, codingagent.CheckLaunchableClaude, claudeInstallCandidates)
-	case "agy":
-		return resolveManagedAgentBinary(name, codingagent.CheckLaunchableAgy, agyInstallCandidates)
-	}
+	launchable, installs := managedAgentSpec(name)
 	if releaseBuild() {
 		if dir := ownDir(); dir != "" {
 			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
-				if resolved, ok := trustedResolved(candidate); ok {
+				if resolved, ok := trustedLaunchable(candidate, launchable); ok {
 					return resolved
 				}
 			}
 		}
-		if p, ok := trustedLookPath(name); ok {
+		if p, ok := trustedLookPathLaunchable(name, launchable); ok {
 			return p
 		}
+		for _, candidate := range installs() {
+			if filepath.IsAbs(candidate) && isExecutableFile(candidate) {
+				if resolved, ok := trustedLaunchable(candidate, launchable); ok {
+					return resolved
+				}
+			}
+		}
 		return unresolvedTool(name)
+	}
+	if launchable != nil {
+		return developerManagedAgent(name, launchable, installs)
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p
@@ -220,33 +263,39 @@ func toolBinary(envKey, name string) string {
 	return name
 }
 
-func resolveManagedAgentBinary(name string, check func(string) error, fallbackCandidates func() []string) string {
-	firstFound, lookErr := exec.LookPath(name)
-	if lookErr == nil && check(firstFound) == nil {
-		return firstFound
+// managedAgentSpec says how a managed coding agent differs from the analysis
+// tools: its image must be a direct launch (never a shell wrapper, whose child
+// would fail the host's process-identity check), and a native install directory
+// is a further source when PATH has only a wrapper. Any other tool gets a nil
+// predicate and no install directories, which leaves its resolution exactly as
+// it was.
+func managedAgentSpec(name string) (launchable func(string) error, installs func() []string) {
+	switch name {
+	case "claude":
+		return codingagent.CheckLaunchableClaude, claudeInstallCandidates
+	case "agy":
+		return codingagent.CheckLaunchableAgy, agyInstallCandidates
 	}
-	exeNames := []string{name}
-	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
-		exeNames = []string{name + ".exe", name}
+	return nil, func() []string { return nil }
+}
+
+// developerManagedAgent is the developer-build resolution for a managed agent:
+// the first launchable image on PATH, then a native install directory, as the
+// operator's own checkout has no agent-writable filter. When nothing launchable
+// exists the first thing PATH names is still returned, wrapper and all, so the
+// adapter reports its typed wrapper refusal naming the variable to set instead
+// of a misleading "not found".
+func developerManagedAgent(name string, launchable func(string) error, installs func() []string) string {
+	if p, ok := lookPathWhere(name, func(p string) (string, bool) { return p, launchable(p) == nil }); ok {
+		return p
 	}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
-		for _, exe := range exeNames {
-			candidate := filepath.Join(dir, exe)
-			if filepath.IsAbs(candidate) && check(candidate) == nil {
-				return candidate
-			}
-		}
-	}
-	for _, candidate := range fallbackCandidates() {
-		if filepath.IsAbs(candidate) && check(candidate) == nil {
+	for _, candidate := range installs() {
+		if filepath.IsAbs(candidate) && launchable(candidate) == nil {
 			return candidate
 		}
 	}
-	if lookErr == nil {
-		return firstFound
+	if p, err := exec.LookPath(name); err == nil {
+		return p
 	}
 	return name
 }

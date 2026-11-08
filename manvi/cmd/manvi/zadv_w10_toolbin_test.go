@@ -182,6 +182,7 @@ func TestAdvToolResolverSweepRatchet(t *testing.T) {
 		"cmd/manvi/serve.go":            "",
 		"codingagent/claude.go":         "LookPath of toolBinary output, requires absolute",
 		"codingagent/codex.go":          "LookPath of toolBinary output",
+		"codingagent/agy.go":            "LookPath of toolBinary output, requires absolute",
 		"devcouncil/workspace.go":       "LookPath of the configured DevmapBinary",
 		"devcouncil/devbridge.go":       "operator-pinned env only",
 		"serve/verify_checks.go":        "LookPath of the configured VerifierBinary",
