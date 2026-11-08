@@ -74,6 +74,7 @@ POLICY = (
     ("bench/tasks/**", "include", "the benchmark tasks"),
     ("bench/paper/stats-*.json", "include", "compare summaries behind the reported tables and figures"),
     ("bench/paper/sensitivity.py", "include", "derives the preregistered section 7 sensitivity bounds from the stats summaries"),
+    ("bench/paper/audit_episodes.py", "include", "the exploitation audit over episode logs (grader reads, tactic tokens, unverified passes)"),
     ("bench/paper/preregistration.md", "include", "the registered design"),
     ("bench/paper/DEVIATIONS.md", "include", "every departure from the registration"),
     ("bench/paper/extension-cerebras.md", "include", "registration of the extension arm"),

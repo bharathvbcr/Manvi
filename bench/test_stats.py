@@ -563,6 +563,16 @@ paper_probe("the review body has no acknowledgments (TMLR: add after acceptance)
             and "## Acknowledgments" in _pb.prepare(_MS, "tmlr-preprint"))
 paper_probe("the review body does not point at 'this repository'",
             lambda: "this repository" not in _pb.prepare(_MS, "tmlr-review"))
+# A standalone preprint PDF (arXiv, alphaXiv) has no "this repository".
+for _named in ("article", "tmlr-preprint"):
+    paper_probe(f"the {_named} body names the public repository by URL",
+                lambda m=_named: _pb.REPO_URL in _pb.prepare(_MS, m)
+                and "this repository" not in _pb.prepare(_MS, m))
+paper_probe("the review body does not carry the repository URL",
+            lambda: _pb.REPO_URL not in _pb.prepare(_MS, "tmlr-review"))
+paper_probe("a second 'this repository' fails a standalone build",
+            lambda: _raises(lambda: _pb.resolve_repository(
+                _pb.CODE_PHRASE + ". See this repository."), _pb.BuildError))
 paper_probe("an unanticipated hash occurrence fails the review build",
             lambda: _raises(lambda: _pb.withhold_hash("see 82e453a"), _pb.BuildError))
 

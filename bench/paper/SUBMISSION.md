@@ -1,14 +1,15 @@
 # Submission plan
 
-Written 29 September 2026. Every venue fact below was read from the venue's own page on that
-date unless it is marked **unverified**. Re-check each one before you submit: calls get amended.
+Written 29 September 2026; the alphaXiv section was added on 8 November 2026. Every venue fact
+below was read from the venue's own page on the date its section gives, unless it is marked
+**unverified**. Re-check each one before you submit: calls get amended.
 
 There are two manuscripts. They are not at the same stage.
 
 | | Long paper | Workshop paper |
 |---|---|---|
 | File | `harness_architecture.md` → `.tex`/`.pdf` via `build_pdf.sh` | `workshop/harness_ablation.tex` |
-| Date | Revision 4, 29 Sep 2026 | 23 Aug 2026 |
+| Date | Revision 5, 8 Nov 2026 | 23 Aug 2026 |
 | Data | Registered v2 grid (`stats-v2.json`) + third arm (`stats-ext-cerebras.json`) | **Superseded v1 grid** (`stats-hard.json`) |
 | State | Results are final. The framing is written for the repository, not for a venue. | **Its thesis has been overturned.** It needs a rewrite, not formatting. |
 
@@ -30,7 +31,7 @@ Done in revision 4:
   JmlrOrg/tmlr-style-file, style dated 30 Jun 2023):
   - `build_pdf.sh tmlr-review`: anonymous, "Under review as submission to TMLR", with the
     commit hash withheld (the repository is public, so the hash would identify you) and Acknowledgments dropped, as the TMLR template asks until acceptance. 36 pages.
-  - `build_pdf.sh tmlr-preprint`: named, for arXiv.
+  - `build_pdf.sh tmlr-preprint`: named, for arXiv or alphaXiv.
   - Both outputs go to `tmlr/`, are gitignored and are rebuilt on demand.
 
 Done after that, on the same day:
@@ -49,10 +50,82 @@ Done after that, on the same day:
   passes all 18 Python tasks on the instrument. The manuscript discloses this in §3.2, §4.2,
   Limitation 12 and the conclusion. The released harness closes it with a checker/worker split.
 
+Done in revision 5 (8 November 2026):
+- **The v1 "zero exploiting episodes" claim was wrong, and the manuscript no longer makes it.**
+  That audit counted writes only. `audit_episodes.py` (new, with `test_audit.py`) finds 25 of
+  760 v1 episodes that received hidden-test or reference content through a tool call, and 22 of
+  them passed. Fourteen read the task tree by absolute path, and eleven read a copy of
+  `pratt_parse`'s hidden test inside the sandbox. Tactic tokens hit 41 episodes, and every hit is
+  benign when read by hand. The correction runs through the abstract, §1, §5.9, §6,
+  Limitation 12 and §8, and the detail is in DEVIATIONS O7 ("Adjudicated").
+- **O7, the git side door, is disclosed in §3.2.** So is the macOS-only verification of the
+  released worker.
+- The §4.2 released-suite count is now the measured one (stress_test 239).
+- The Data section names the public repository by URL in the named builds, because a standalone
+  PDF has no "this repository". The review build still redirects to the supplement.
+
 Still open: tracked on the GitPulse board as `gp-paper-route-a-submission`
-(`ft-750964a7`). It covers the v2 and `ext-cerebras` exploitation audit (DEVIATIONS O5,
-Limitation 12), the identifying-path check of the archived run directories, the OpenReview
-profile and arXiv endorsement (§2), and the arXiv and TMLR submissions.
+(`ft-750964a7`). It covers:
+- the v2 and `ext-cerebras` exploitation audit (DEVIATIONS O5, Limitation 12). The script
+  exists now; it needs the run host's logs.
+- the identifying-path check of the archived run directories
+- the OpenReview profile and arXiv endorsement (§2)
+- the alphaXiv, arXiv and TMLR submissions
+
+## alphaXiv (checked 8 November 2026)
+
+**What alphaXiv is now.** Besides its discussion layer over arXiv papers, it accepts papers
+uploaded directly (the site's "Publish" entry).
+- **Verified** from its docs (`/docs/mcp`): the uploader can later edit the title, abstract,
+  authors, publication date, categories and BibTeX of an uploaded paper. An arXiv-sourced paper
+  cannot be edited that way. An upload's publication date defaults to the upload date.
+- **Verified** from its AI policy (`/docs/ai-policy`): "AI assistance is welcome in papers
+  submitted to alphaXiv, including substantial assistance", but "papers that are entirely AI
+  generated are not accepted". The writing should be at least partly the authors' own.
+- **Unverified**: the upload is behind sign-in and no public page documents it. That covers the
+  accepted format (PDF assumed), whether an upload is public on submission (the MCP tool for it
+  is named `edit_private_paper_metadata`), licence options, DOI, moderation and versioning.
+
+**Endorsement.** Nothing on alphaXiv's pages mentions arXiv-style endorsement (unverified, from
+absence). If so, it sidesteps the §2 blocker for an independent author. It does not replace
+arXiv for indexing, and an arXiv posting later remains possible.
+
+**TMLR conflict: none (inferred).** TMLR's editorial policy (read 8 November 2026) allows overlap
+with work shared "on preprint servers such as arXiv and bioRxiv". alphaXiv uploads are
+non-peer-reviewed preprints. alphaXiv is not named, so check that it is not peer-reviewed or
+archival in TMLR's sense before relying on this.
+
+**The artifact.** `build_pdf.sh tmlr-preprint` gives `tmlr/harness_architecture.preprint.pdf`,
+named and in TMLR preprint layout. It needs Pillow (`svg2png.py`), so put a Python that has it
+first on PATH. Then:
+1. Read §5.9, Limitation 12 and DEVIATIONS O7 once more. They now say v1 was not free of grader
+   content, and the paper's integrity rests on that being stated plainly.
+2. **Owner decision:** confirm the manuscript meets the AI policy above. Only the author can.
+3. Upload the PDF and set the metadata below. **Set the publication date to the manuscript's
+   date**, not the upload default.
+4. Link the code: <https://github.com/bharathvbcr/Manvi> (public). Push `main` first, so that
+   `bench/paper/audit_episodes.py`, which the paper cites, exists at the linked URL.
+
+```text
+Title:    Harness Architecture as an Experimental Object: Measuring Switchable
+          Components on Local Coding Agents
+Authors:  Bharath Chandra Vaddaram (Independent Researcher)
+Date:     2026-11-08 (revision 5)
+Category: cs.SE (secondary cs.LG); alphaXiv's category list is unverified
+Code:     https://github.com/bharathvbcr/Manvi (bench/)
+Abstract: the manuscript's abstract, with the TeX math as plain text
+          (Δ = +0.156, [+0.069, +0.244], n=5); 1,886 characters
+
+@misc{vaddaram2026harness,
+  title  = {Harness Architecture as an Experimental Object: Measuring
+            Switchable Components on Local Coding Agents},
+  author = {Vaddaram, Bharath Chandra},
+  year   = {2026},
+  month  = nov,
+  note   = {Preprint, revision 5},
+  url    = {https://github.com/bharathvbcr/Manvi}
+}
+```
 
 ## 1. What's left
 
@@ -206,7 +279,7 @@ You have to pick one route:
    anonymised artifact (e.g. anonymous.4open.science; that host is **unverified** as TMLR-acceptable).
 6. Run `selftest.py`, `stress_test.py` and `test_stats.py` from the anonymised copy. This proves
    the artifact works without repo paths; do it **before** submitting.
-7. Post to arXiv (the de-anonymised version is fine: TMLR allows preprints).
+7. Post the de-anonymised preprint to alphaXiv (see "alphaXiv" above) and/or arXiv. TMLR allows preprint servers.
 8. Submit to TMLR with the supplementary ZIP (≤ 100 MB).
 
 **Route B:**

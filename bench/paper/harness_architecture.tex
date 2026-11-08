@@ -88,9 +88,6 @@
 \makeatletter
 \patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
 \makeatother
-% Allow footnotes in longtable head/foot
-\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
-\makesavenoteenv{longtable}
 \usepackage{graphicx}
 \makeatletter
 \newsavebox\pandoc@box
@@ -160,7 +157,7 @@
 \title{Harness Architecture as an Experimental Object: Measuring
 Switchable Components on Local Coding Agents}
 \author{BHARATH CHANDRA VADDARAM}
-\date{29 September 2026}
+\date{8 November 2026}
 
 \begin{document}
 \maketitle
@@ -172,7 +169,15 @@ Switchable Components on Local Coding Agents}
 }
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 1. Graphical abstract. The object of measurement is the harness around a frozen local model: seven independently switchable components, a sandbox the agent can write, and a verifier the agent cannot. On the eight-task hard suite under the registered v2 protocol, Qwen 3.8 27B goes from 79.4\% (baseline) to 95.0\% (full) and Ornith-1.5 35B-A3B from 40.0\% to 60.6\%. Both deltas exclude zero at the Šidák-corrected 98.7\% level. Generated from stats-v2.json.}]{figures/graphical_abstract.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 1. Graphical
+abstract. The object of measurement is the harness around a frozen local
+model: seven independently switchable components, a sandbox the agent
+can write, and a verifier the agent cannot. On the eight-task hard suite
+under the registered v2 protocol, Qwen 3.8 27B goes from 79.4\%
+(baseline) to 95.0\% (full) and Ornith-1.5 35B-A3B from 40.0\% to
+60.6\%. Both deltas exclude zero at the Šidák-corrected 98.7\% level.
+Generated from
+stats-v2.json.}]{figures/graphical_abstract.generated.png}}
 \caption{\textbf{Figure 1.} Graphical abstract. The object of
 measurement is the harness around a frozen local model: seven
 independently switchable components, a sandbox the agent can write, and
@@ -191,26 +196,28 @@ and decides when the work is done. Prior work shows that harness choice
 moves frontier-model scores by tens of points, but not which components
 pay, or on which models. We build a local, standard-library coding
 harness with seven independently switchable components and a grader
-whose tests the agent cannot read, edit or shadow. We run a
-preregistered grid of nine configurations and eight hidden-test tasks on
-two locally served models (1,440 episodes), plus a separately registered
-API-served arm (1,440 more). The full harness beats an all-off baseline
-on both local models at a Šidák-corrected level: Qwen 3.8 27B rises from
-79.4\% to 95.0\% (\(\Delta = +0.156\), 98.7\% CI \([+0.069, +0.244]\))
-and Ornith-1.5 35B-A3B from 40.0\% to 60.6\% (\(\Delta = +0.206\),
-\([+0.113, +0.300]\)). The third arm reproduces the effect (\(+0.150\)).
-Component-level effects do not transfer across models. Removing native
-file tools costs the third arm 14.4 points, which survives correction
-across its ladder, but costs the local models only 2.5 and 5.0. The
-capability-by-harness interaction is not detected. We also report what
-the measurement is worth. A deviation from the registered design left
-the local one-flag ladder at \(n=5\), where measured bootstrap coverage
-is 82.3\%, so we report that ladder as uninformative. And an earlier
-grid, run on a previous version of the instrument whose verify gate
-leaked hidden-test values in gate-on cells only, produced an
-interval-excluding-zero effect that reversed sign once the instrument
-was fixed, even though an audit of all 760 of its episodes found no
-exploitation.
+whose tests are kept out of the agent's sandbox and cannot be edited or
+shadowed. We run a preregistered grid of nine configurations and eight
+hidden-test tasks on two locally served models (1,440 episodes), plus a
+separately registered API-served arm (1,440 more). The full harness
+beats an all-off baseline on both local models at a Šidák-corrected
+level: Qwen 3.8 27B rises from 79.4\% to 95.0\% (\(\Delta = +0.156\),
+98.7\% CI \([+0.069, +0.244]\)) and Ornith-1.5 35B-A3B from 40.0\% to
+60.6\% (\(\Delta = +0.206\), \([+0.113, +0.300]\)). The third arm
+reproduces the effect (\(+0.150\)). Component-level effects do not
+transfer across models. Removing native file tools costs the third arm
+14.4 points, which survives correction across its ladder, but costs the
+local models only 2.5 and 5.0. The capability-by-harness interaction is
+not detected. We also report what the measurement is worth. A deviation
+from the registered design left the local one-flag ladder at \(n=5\),
+where measured bootstrap coverage is 82.3\%, so we report that ladder as
+uninformative. And an earlier grid, run on a previous version of the
+instrument whose verify gate leaked hidden-test values in gate-on cells
+only, produced an interval-excluding-zero effect that reversed sign once
+the instrument was fixed. An audit of its 760 episodes found no code
+aimed at the grader, but 25 episodes that read a hidden test or
+reference solution through gaps in containment. The registered grid's
+episodes have not yet been audited.
 
 \subsection{1. Introduction}\label{introduction}
 
@@ -311,13 +318,14 @@ Third, we report that protocol on eight hard tasks, two local models,
 and nine configurations (1,440 episodes), with a per-task matrix, a
 stop-reason table, a one-flag-off ladder, an explicit interaction table,
 and a measured statement of what the ladder's intervals are actually
-worth. Fourth, we report an instrument-failure record: five defects
-found by audit in an earlier grid we ran on a previous version of the
-instrument, the evidence that no episode exploited them, and the one
-case where the corrected instrument reverses the sign of a published
-effect. Fifth, we report the compute envelope the grid occupied, from
-78,027 device samples (Appendix C), as an argument that the conventional
-utilization number is not the cost that matters for a serial agent loop.
+worth. Fourth, we report an instrument-failure record: six defects found
+by audit in an earlier grid we ran on a previous version of the
+instrument, an audit of its episodes that finds no code aimed at the
+grader but 25 episodes that read grader content, and the one case where
+the corrected instrument reverses the sign of a published effect. Fifth,
+we report the compute envelope the grid occupied, from 78,027 device
+samples (Appendix C), as an argument that the conventional utilization
+number is not the cost that matters for a serial agent loop.
 
 The result the registered grid supports is no longer modest. The full
 harness beats the all-off baseline on both models, and both intervals
@@ -629,7 +637,12 @@ found.
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 2. Control flow of one episode. Initial context, the model turn, and sandbox tools are flag-gated. The first finish may inject a checklist. A later finish may run the hidden verifier and bounce the model back to work. A final verifier always runs after the loop stops, whatever the model claimed.}]{figures/architecture.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 2. Control
+flow of one episode. Initial context, the model turn, and sandbox tools
+are flag-gated. The first finish may inject a checklist. A later finish
+may run the hidden verifier and bounce the model back to work. A final
+verifier always runs after the loop stops, whatever the model
+claimed.}]{figures/architecture.png}}
 \caption{\textbf{Figure 2.} Control flow of one episode. Initial
 context, the model turn, and sandbox tools are flag-gated. The first
 \protect\texttt{finish} may inject a checklist. A later
@@ -737,6 +750,25 @@ checker's exit code is then out of the candidate's reach, and the same
 payloads, frame-walking and protocol-forging variants included, all fail
 (§4.2). The v2 and \texttt{ext-cerebras} episodes have not been audited
 for code aimed at the grader rather than the task (Limitation 12).
+
+\textbf{Nor did they close the enclosing repository.} Containment denied
+the agent's shell the benchmark tree and the task directory, but on the
+instrument that tree sat inside a git checkout that tracks every hidden
+test and reference solution. Run from the agent's shell,
+\texttt{git\ show\ HEAD:\textless{}path\ to\ a\ hidden\ test\textgreater{}}
+returned the file, and so did \texttt{git\ cat-file} and a read of any
+sibling worktree. The containment probe tried only a direct read and a
+write, so it passed. The released harness adds the enclosing git
+directory, its common directory and every worktree registered there to
+the protected roots of the shell, the checker and the worker. Its stress
+suite runs each of those reads from a sandbox inside a scratch
+repository and shows each one leaking uncontained and refused contained.
+The same post-hoc audit found that the verifier's worker had network
+access under the macOS profile and none under Linux. The released macOS
+profile denies it. Those guarantees are verified on macOS only: the
+Linux worker profile has not been exercised on a Linux host since the
+checker/worker split. Whether any v2 or \texttt{ext-cerebras} episode
+read a hidden test through git belongs to the same unrun audit.
 
 On top of these, the loop's scoring rule is that a check that did not
 run is not a pass. The final verifier always runs after the loop stops,
@@ -1060,9 +1092,10 @@ agent's code could set the verifier's exit code, which is how the gap in
 two columns per task: a candidate that exits 0 (at import, inside a
 called function, from a thread and from an exit hook) is rejected, and
 so is one that walks the interpreter's frames to reach the test's state.
-Its \texttt{stress\_test.py} runs 215 assertions, adding forged protocol
-frames, worker-containment probes and a turn that crosses the wall clock
-before a passing gate.
+Its \texttt{stress\_test.py} runs 239 assertions, adding forged protocol
+frames, worker-containment probes, git-object and sibling-worktree reads
+from a sandbox inside a scratch repository, and a turn that crosses the
+wall clock before a passing gate.
 
 \subsubsection{4.3 Models and serving}\label{models-and-serving}
 
@@ -1418,7 +1451,16 @@ Ornith
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 3. Pass rate by configuration for all three arms, 27 cells, with percentile bootstrap 95\% intervals. Rendered from stats-all3.json by figures.py; a figure cannot disagree with a table. Two things are visible here that no table shows as directly. The local arms' six n=5 cells carry visibly wider intervals than their three n=20 cells --- the D2 deviation made visual --- while every one of the hosted arm's nine cells is at n=20. And the subtitle carries the comparability caveat: the hosted arm's heights may not be read against the local arms', only its within-arm differences (§5.7).}]{figures/pass_rates.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 3. Pass rate
+by configuration for all three arms, 27 cells, with percentile bootstrap
+95\% intervals. Rendered from stats-all3.json by figures.py; a figure
+cannot disagree with a table. Two things are visible here that no table
+shows as directly. The local arms' six n=5 cells carry visibly wider
+intervals than their three n=20 cells --- the D2 deviation made visual
+--- while every one of the hosted arm's nine cells is at n=20. And the
+subtitle carries the comparability caveat: the hosted arm's heights may
+not be read against the local arms', only its within-arm differences
+(§5.7).}]{figures/pass_rates.generated.png}}
 \caption{\textbf{Figure 3.} Pass rate by configuration for \textbf{all
 three arms}, 27 cells, with percentile bootstrap 95\% intervals.
 Rendered from \protect\texttt{stats-all3.json} by
@@ -1657,7 +1699,14 @@ H2 & Qwen & \texttt{full\ −\ no-outcap} & +0.025 & {[}\(-0.031\),
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 4. Paired \textbackslash Delta (full - baseline) at each of the twenty pinned seeds, all three arms. Each arm's deltas are within-arm and seed-paired, so they are comparable even though the third arm's pass rates are not. The widest single seed is gpt-oss-120b at +0.875. Every point is one repeat's difference of eight-task pass rates. The spread is the quantity the bootstrap resamples; it is what an interval on a single run cannot show.}]{figures/repeat_deltas.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 4. Paired
+\textbackslash Delta (full - baseline) at each of the twenty pinned
+seeds, all three arms. Each arm's deltas are within-arm and seed-paired,
+so they are comparable even though the third arm's pass rates are not.
+The widest single seed is gpt-oss-120b at +0.875. Every point is one
+repeat's difference of eight-task pass rates. The spread is the quantity
+the bootstrap resamples; it is what an interval on a single run cannot
+show.}]{figures/repeat_deltas.generated.png}}
 \caption{\textbf{Figure 4.} Paired \(\Delta\) (\protect\texttt{full}
 \(-\) \protect\texttt{baseline}) at each of the twenty pinned seeds, all
 three arms. Each arm's deltas are within-arm and seed-paired, so they
@@ -1869,7 +1918,13 @@ Seed-paired
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 5. Interaction \textbackslash Delta\_\{\textbackslash text\{weaker\}\} - \textbackslash Delta\_\{\textbackslash text\{stronger\}\} per ablation, unpaired resampling, 95\% intervals. The preregistration specifies the seed-paired scheme of Figure 6; showing the unpaired block first is deviation D4, and no conclusion depends on the choice, since every interval includes zero under both.}]{figures/interaction.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 5.
+Interaction \textbackslash Delta\_\{\textbackslash text\{weaker\}\} -
+\textbackslash Delta\_\{\textbackslash text\{stronger\}\} per ablation,
+unpaired resampling, 95\% intervals. The preregistration specifies the
+seed-paired scheme of Figure 6; showing the unpaired block first is
+deviation D4, and no conclusion depends on the choice, since every
+interval includes zero under both.}]{figures/interaction.generated.png}}
 \caption{\textbf{Figure 5.} Interaction
 \(\Delta_{\text{weaker}} - \Delta_{\text{stronger}}\) per ablation,
 unpaired resampling, 95\% intervals. The preregistration specifies the
@@ -1880,7 +1935,11 @@ interval includes zero under both.}
 
 \begin{figure}
 \centering
-\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 6. The same statistic under the seed-paired scheme the protocol describes. Published side by side deliberately: the two procedures give different interval widths on the same data, and choosing one silently is the error this pair is meant to prevent.}]{figures/interaction_paired.generated.png}}
+\pandocbounded{\includegraphics[keepaspectratio,alt={Figure 6. The same
+statistic under the seed-paired scheme the protocol describes. Published
+side by side deliberately: the two procedures give different interval
+widths on the same data, and choosing one silently is the error this
+pair is meant to prevent.}]{figures/interaction_paired.generated.png}}
 \caption{\textbf{Figure 6.} The same statistic under the seed-paired
 scheme the protocol describes. Published side by side deliberately: the
 two procedures give different interval widths on the same data, and
@@ -2143,7 +2202,8 @@ record}\label{the-v1-grid-as-an-instrument-failure-record}
 
 Before the registered grid we ran a 720-episode grid under tag
 \texttt{hard} on a previous version of the instrument. An audit of that
-instrument found five defects:
+instrument found five defects, and a later audit of its episode logs a
+sixth:
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -2167,7 +2227,12 @@ a \texttt{sitecustomize.py} in the sandbox executed inside the verifier
 & passed 18 of 19 tasks with no task file edited \\
 \texttt{run\_shell} had no containment &
 \texttt{../../tasks/\textless{}t\textgreater{}/hidden\_test.py} was
-readable and writable \\
+readable and writable; 14 of 760 episodes read a hidden test or
+reference solution out of the task tree, and 12 of them passed \\
+\texttt{pratt\_parse}'s sandbox held a copy of its hidden test (how it
+got there is not recoverable from the logs) & 11 episodes read it with
+\texttt{read\_file} within their first three steps, and 10 of them
+passed \\
 five hard tasks did not enforce their stated contracts &
 \texttt{ot\_transform}, \texttt{cache\_invalidation\_dist},
 \texttt{concurrency\_race}, \texttt{nfa\_match}, \texttt{globmatch} each
@@ -2178,14 +2243,40 @@ D) \\
 \end{longtable}
 }
 
-All are fixed in commit \texttt{82e453a}. An audit of all 760 v1
-episodes and 3,879 file-writing tool calls found \textbf{zero} episodes
-that exploited any of them. This is the distinction the record turns on:
-v1's numbers are not fabricated, and no model in this study cheated.
-They are measured on an instrument that could not have detected it if
-one had. A benchmark that cannot rule out the exploit reports the same
-number whether or not the exploit occurred, which is the failure mode
-the recent validity literature describes
+All are fixed in commit \texttt{82e453a}, where every episode runs
+contained and no task's sandbox copy holds a hidden test. Two audits of
+the v1 logs say different things, and we report both. The first covered
+all 760 episodes and their 3,879 file-writing tool calls. It found no
+write to a hidden test or other grader file. A search of every written
+file and shell command for the tokens that mark code aimed at a verdict
+(\texttt{os.\_exit}, frame access, \texttt{sys.modules} and the rest of
+\texttt{mh/bench.py:TACTIC\_TOKENS}) hit in 41 episodes, and each was
+benign when read: standard-library \texttt{inspect.getsource} lookups,
+\texttt{\_\_main\_\_} guards, and timeouts in the agent's own scripts.
+No v1 episode wrote to the grader or aimed code at its verdict.
+
+The second audit covers reads, and it was run only after the first had
+been reported as covering all five defects
+(\texttt{paper/audit\_episodes.py}). It counts a tool call as a read
+when its arguments name grader material and its logged output contains
+three consecutive lines, at least 60 characters together, of some
+committed version of that task's hidden test or reference solution.
+\textbf{25 of the 760 episodes (3.3\%) received such content, 21 of them
+the hidden test itself, and 22 of the 25 passed.} This is separate from
+the 77 episodes that received gate output. The 25 fall in eleven of the
+eighteen cells and are not concentrated where the gate leaked: 18 are
+among the 560 gate-on episodes and 7 among the 160 gate-off. Whether the
+content changed any outcome cannot be recovered from the logs. Scoring
+the 22 exposed passes as failures moves v1's full-versus-baseline point
+estimates by about \(-0.050\) for Qwen and \(+0.075\) for Ornith, and
+the Ornith \texttt{no-outcap} cell discussed below from \(-0.100\) to
+about \(-0.075\). It does not explain that cell's reversal. So v1's
+numbers are not the product of code aimed at the grader, but they are
+not free of grader content either, and the instrument that measured them
+could not have prevented either. A first audit that checked only writes
+reported this as zero. A benchmark that cannot rule out the exploit
+reports the same number whether or not the exploit occurred, which is
+the failure mode the recent validity literature describes
 \citep{aleithan2024swebenchplus, lodkaew2026deceive, kouremetis2026cheats}
 --- and the reason we treat ``we audited and found none'' as a weaker
 claim than ``the instrument makes it impossible.''
@@ -2313,16 +2404,18 @@ arms.
 \textbf{What the v1 record contributes.} A published effect that
 excluded zero --- Ornith \texttt{no-outcap} at \(-0.100\), interval
 \([-0.175, -0.025]\) --- did not survive the instrument being fixed; the
-same cell now reads \(+0.075\). No episode in v1 exploited any of the
-five defects, and we audited all 760 to say so. Both facts matter and
-they point in different directions. The audit means v1's numbers were
-not produced by cheating. The reversal means the audit was not
-sufficient: an instrument that cannot rule out an exploit reports the
+same cell now reads \(+0.075\). No episode in v1 wrote to the grader or
+aimed code at its verdict. Yet 25 of the 760 read grader content through
+gaps in containment, and only an audit of reads, run long after the
+first, found them. Both facts matter. The first means v1's numbers were
+not produced by code aimed at the grader. The second means a write-only
+audit was not sufficient, and the reversal says the same about the
+instrument: an instrument that cannot rule out an exploit reports the
 same number whether or not one occurred, and a suite whose tasks accept
 wrong solutions produces effects that vanish when the tasks are
 tightened. We think the discipline this argues for is narrow and cheap:
-publish the defect list, publish the exploitation audit, and do not pool
-across an instrument change.
+publish the defect list, publish an exploitation audit of reads as well
+as writes, and do not pool across an instrument change.
 
 \textbf{What the architecture contributes,} independently of any
 \(\Delta\), is that these caveats are \emph{fields} rather than prose.
@@ -2435,12 +2528,17 @@ capability-by-harness interaction remains undetectable.
   \textbf{The reported episodes have not been audited for exploitation.}
   Neither v2 nor \texttt{ext-cerebras} has been checked for the
   behaviour §3.2 describes --- code that ends the grader's process or
-  reaches into its state --- or for any read or write of a hidden test.
-  The audit is a query over each episode's recorded file writes and
-  verifier output, and those logs are on the run host, not in this
-  release. Until it runs, the reported pass rates rest on the §3.2
-  mechanisms and on v1's audit, which found no attempt of any kind in
-  760 episodes, not on a check of these episodes.
+  reaches into its state --- or for any read or write of a hidden test,
+  by path or through the enclosing git repository. The audit now exists
+  as a script (\texttt{paper/audit\_episodes.py}, which produced the v1
+  figures in §5.9), but the logs it needs are on the run host, not in
+  this release. v1's audit is weaker support than it once looked: it
+  found no code aimed at the grader, but it found 25 episodes that read
+  grader content. The v2 instrument closed both channels those episodes
+  used: every v2 episode records containment, and at the instrument
+  commit no task's sandbox copy holds a hidden test. It did not close
+  the git channel. Until the audit runs, the reported pass rates rest on
+  the §3.2 mechanisms, not on a check of these episodes.
 \end{enumerate}
 
 \subsection{8. Conclusion}\label{conclusion}
@@ -2491,27 +2589,35 @@ instrument built so that the agent cannot reach its grader, and a
 published record of where that instrument was wrong. The 720-episode
 grid we ran first was collected on a harness whose verify gate leaked
 hidden-test values into gate-on cells only, and whose tasks accepted
-wrong solutions. No episode exploited it --- we audited all 760 and
-3,879 file-writing tool calls to say so --- and one published,
+wrong solutions. No episode wrote to the grader or aimed code at its
+verdict. An audit of reads, run later, found 25 of 760 that received
+hidden-test or reference content, and one published,
 interval-excluding-zero effect still did not survive the fix. An audit
 that finds no cheating is not the same as an instrument that makes
-cheating impossible, and the difference is worth a section rather than a
+cheating impossible. An audit that checks only writes is not an audit of
+what the agent saw. Both differences are worth a section rather than a
 footnote. The record is not closed. The instrument that ran the reported
 grid still let the agent's code set the grader's exit code (§3.2), a
-residual its own source recorded and nobody tested, and the audit that
-would say whether any episode used it has not been run.
+residual its own source recorded and nobody tested. It also left hidden
+tests readable through the enclosing git repository. The audit that
+would say whether any episode used either has not been run.
 
 \subsection{Data and code}\label{data-and-code}
 
 The harness, tasks, runner, and statistics live in the \texttt{bench/}
-directory of this repository (\texttt{mh/harness.py},
+directory of the public repository
+\url{https://github.com/bharathvbcr/Manvi} (\texttt{mh/harness.py},
 \texttt{mh/tools.py}, \texttt{mh/bench.py}, \texttt{mh/stats.py},
 \texttt{mh/compute.py}, \texttt{grid.py}, \texttt{compare.py}). The
 instrument for every reported v2 episode is commit \texttt{82e453a},
 verified byte-identical on the run host across all nine harness files
 after the grid completed. The released code is not that instrument: it
 adds \texttt{mh/rpc.py}, the checker/worker split of §3.2, and changes
-five hidden tests with it (\texttt{paper/DEVIATIONS.md}, O6).
+five hidden tests with it (\texttt{paper/DEVIATIONS.md}, O6); it also
+guards the enclosing git repository and denies the macOS worker the
+network (\texttt{mh/tools.py:git\_guard\_roots}, O7). The exploitation
+audit behind §5.9 is \texttt{paper/audit\_episodes.py}; run over the
+reported grids' logs, it is the audit Limitation 12 says is owed.
 
 \textbf{The reported grid is tag \texttt{v2}: 1,440 episodes, two
 models, nine configurations, frozen protocol, sole tenant.} The compare
@@ -2562,7 +2668,8 @@ Hardware for the v2 grid was a single NVIDIA GH200 480 GB (aarch64,
 Ubuntu 22.04.5, ollama 0.33.0, containment backend \texttt{bwrap}
 0.6.1), sole tenant throughout.
 
-Reproduction:
+Reproduction (the suites need Python 3.11 or later; they call
+\texttt{locale.getencoding}):
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -2572,6 +2679,7 @@ Reproduction:
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2 }\AttributeTok{{-}{-}json{-}out}\NormalTok{ paper/stats{-}v2.json         }\CommentTok{\# Tables 3{-}8}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ v2,ext{-}cerebras                            }\CommentTok{\# three{-}arm family (§5.7)}
 \ExtensionTok{python3}\NormalTok{ compare.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard }\AttributeTok{{-}{-}exclude}\NormalTok{ gemini }\AttributeTok{{-}{-}json{-}out}\NormalTok{ results/stats{-}hard.json   }\CommentTok{\# v1 record (§5.9)}
+\ExtensionTok{python3}\NormalTok{ paper/audit\_episodes.py }\AttributeTok{{-}{-}tag}\NormalTok{ hard                          }\CommentTok{\# v1 read and tactic audit (§5.9)}
 \end{Highlighting}
 \end{Shaded}
 
@@ -2593,7 +2701,8 @@ The component list and the 30 kB output cap follow the coding-harness
 setting studied by \citet{lee2026metaharness}, building on Terminus-KIRA
 \citep{krafton2026kira} and Terminal-Bench 2.0
 \citep{merrill2026terminalbench}. The non-cheating invariant is
-inherited from the parent evaluation rules of this repository.
+inherited from the evaluation rules of the repository that hosts the
+harness.
 
 \subsection{References}\label{references}
 

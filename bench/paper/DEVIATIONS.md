@@ -471,6 +471,15 @@ tokens in `mh/bench.py:TACTIC_TOKENS` (`os._exit`, `SystemExit`, `sys.exit`,
 `Task._scan_tactics` records the same flags for new episodes; the grid's
 episodes predate it. The manuscript states the audit as Limitation 12.
 
+*Updated 8 November 2026.* The script now exists: `paper/audit_episodes.py`
+(tests: `test_audit.py`) reports grader reads (hidden-test or reference
+content returned by a tool call, by path or inside the sandbox, including git
+object reads, O7), tactic-token hits to read by hand, passes without verifier
+output, and the containment backend per episode. On v1 it overturns the "zero"
+above (see O7). What is still owed is unchanged: run it on the run host,
+`python3 paper/audit_episodes.py --tag v2,ext-cerebras --json-out
+audit-v2.json`, read every tactic hit, and put the result in the manuscript.
+
 ## O6 — The grid's verifier let candidate code set the verdict
 
 *Recorded 29 September 2026, from a post-hoc audit.*
@@ -547,9 +556,11 @@ task toolchain may need it).
 **Could published episodes have used it?** Yes in principle, for any episode run
 before this change on a host whose benchmark tree lay inside a git checkout.
 Whether any did is answered only for the logs in this checkout.
-`bench/results` (untracked) holds 1,387 episode logs with events, including 22
-`v2` episodes; the full 2,880-episode v2 grid and the `ext-cerebras` logs are
-**not** in this checkout, so no statement is made about them. In those 1,387
+`bench/results` (untracked) holds 1,387 episode logs with events. Twenty-two of
+them carry the tag `v2`, but that is the early `navigate` tag
+(`qwen3.8_27b-mlx__*__v2`), not the registered grid. None of the registered
+1,440-episode v2 grid and none of the 1,440 `ext-cerebras` episodes are in this
+checkout, so no statement is made about them. In those 1,387
 episodes, 38 invoked `git` (36 with exit 0), and none ran a git command that
 names `bench/tasks`, a hidden test, a reference solution, `cat-file`, `ls-tree`
 or `.git/objects`; the git calls were status, diff and log on the sandbox's own
@@ -565,6 +576,41 @@ refusal, not hand-read). Those directories predate `contained_argv` and are the
 frozen v1 material; none of them carries a `containment` event. This is
 recorded here because it bears on the v1 audit's "zero exploiting episodes"
 claim, and has not been adjudicated.
+
+*Adjudicated 8 November 2026.* `paper/audit_episodes.py` replaces the
+heuristic above. It counts a call only when its logged output contains three
+consecutive lines (60 characters or more together) of some committed version of
+that task's hidden test or reference files, so listings, tracebacks and refusals
+do not count. Over all 760 `hard` episodes and their 3,879 file-writing calls
+(the original audit's population, reproduced exactly):
+
+- **25 episodes (3.3%) received grader content**, 21 of them the hidden test
+  itself and 4 a reference solution only; **22 of the 25 passed**.
+- 14 reached into the task tree by absolute path (the "no containment" defect);
+  12 of those passed.
+- 11 read `hidden_test.py` *inside the sandbox* with `read_file`, all on
+  `pratt_parse`, within the first three steps (Qwen `baseline` 3, Qwen `full` 5,
+  Ornith `baseline` 3); 10 passed. The heuristic above missed these, because
+  the path names no `bench/tasks`. How a hidden test reached that sandbox is not
+  recoverable: the grid ran in an earlier repository whose history is not here.
+  At `82e453a` no task's `setup/` holds a hidden test, and `materialise` copies
+  `setup/` only after removing the old sandbox.
+- They fall in 11 of 18 cells, 18 among the 560 gate-on episodes and 7 among the
+  160 gate-off, so they do not track the gate leak.
+- Scoring the 22 exposed passes as failures shifts v1's point estimates by about
+  −0.050 (Qwen full−baseline), +0.075 (Ornith full−baseline) and +0.025 (Ornith
+  `no-outcap`, from −0.100 to about −0.075). That does not explain the
+  `no-outcap` reversal.
+- Tactic tokens hit in 41 episodes; every hit was read by hand and is benign
+  (stdlib `inspect.getsource`, `__main__` guards, `os._exit` in the agent's own
+  SIGALRM timeout scripts, the word "inspect" in comments). No pass lacks
+  verifier output.
+
+The original audit counted writes, so its "zero" was a statement about writes,
+reported as a statement about all five defects. The manuscript now says so
+(abstract, §1, §5.9, §6, Limitation 12, §8). `hard-protocol1` (7 episodes, 5
+passed) and `orep` (1, passed) are superseded collections and reported here
+only.
 
 ## What has *not* been deviated from
 

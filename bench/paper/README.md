@@ -1,6 +1,6 @@
 # Paper draft
 
-Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 4, 29 September 2026**.
+Manuscript: [`harness_architecture.md`](harness_architecture.md) — **revision 5, 8 November 2026**.
 
 Three protocol documents sit beside it and are not part of the manuscript:
 [`preregistration.md`](preregistration.md), the registered v2 grid (two locally
@@ -24,7 +24,25 @@ truth; the script works on a copy (see [`prepare_body.py`](prepare_body.py)). Th
 - `build_pdf.sh`: the repository copy (pandoc article, xelatex, named author).
 - `build_pdf.sh tmlr-review`: the TMLR submission. It uses the unmodified `tmlr/tmlr.sty` and
   pdflatex, is anonymous, and withholds the commit hash.
-- `build_pdf.sh tmlr-preprint`: the same layout, de-anonymised, for arXiv.
+- `build_pdf.sh tmlr-preprint`: the same layout, de-anonymised, for arXiv or alphaXiv (`SUBMISSION.md`, "alphaXiv"). Named builds give the public repository URL.
+
+## Revision 5 (alphaXiv preparation, 8 November 2026)
+
+**The v1 "zero exploiting episodes" claim is withdrawn.** The original audit counted
+file-writing calls only. A read audit (`audit_episodes.py`, tests in `../test_audit.py`) finds
+that **25 of 760 v1 episodes received hidden-test or reference-solution content** through a tool
+call, and 22 of them passed. Fourteen reached into the task tree by absolute path. Eleven read a
+copy of `pratt_parse`'s hidden test inside the sandbox, by a mechanism the logs cannot recover.
+No v1 episode wrote to the grader or aimed code at its verdict: 41 tactic-token hits, each read
+by hand and each benign. The abstract, §1, §5.9, §6, Limitation 12 and §8 say this now.
+`DEVIATIONS.md` O7 has the adjudication and the sensitivity of v1's point estimates.
+
+**O7 is in the manuscript.** O7 records that the enclosing git repository was readable from the
+sandbox. §3.2 discloses it, along with the fact that the released worker's guarantees are verified
+on macOS only. §4.2's released stress-suite count is the measured 239 (was 215). The named builds
+replace "this repository" with the public URL, so the preprint PDF stands alone. `prepare_body.py`
+fails the build if any "this repository" survives. The registered v2 grid is still unaudited
+(O5); the script is ready for the run host.
 
 ## Revision 3
 

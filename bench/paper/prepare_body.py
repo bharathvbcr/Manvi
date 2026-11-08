@@ -26,6 +26,11 @@ tmlr-review also withholds the instrument's commit hash. The repository is
 public, so the hash resolves to it: it identifies the author without adding
 anything a reviewer needs to judge the results. Any occurrence the
 substitution does not cover fails the build rather than shipping.
+
+Named modes (article, tmlr-preprint) point the Data section's "this
+repository" at the public repository by URL, because a standalone PDF (an
+arXiv or alphaXiv preprint) has no "this". The review copy redirects the same
+phrase to the supplementary material instead.
 """
 import os
 import re
@@ -39,6 +44,8 @@ class BuildError(Exception):
     so a caller testing the checks sees a failure rather than an exit."""
 HASH = "82e453a"
 WITHHELD = "a single fixed commit (identifier withheld for review)"
+REPO_URL = "https://github.com/bharathvbcr/Manvi"
+CODE_PHRASE = "live in the `bench/` directory of this repository"
 
 FIGURE = re.compile(r"^!\[[^\]\n]*\]\(([^)\s]+)\)\n\n(\*\*Figure \d+\.\*\*[^\n]*)$", re.M)
 TABLE = re.compile(r"^(\*\*Table \d+\.\*\*[^\n]*)\n\n(?=\|)", re.M)
@@ -80,12 +87,22 @@ def anonymise(text):
     if not m:
         raise BuildError("no '## Acknowledgments' section to withhold")
     text = text[:m.start()] + text[m.end():]
-    old = "live in the `bench/` directory of this repository"
-    if text.count(old) != 1:
-        raise BuildError(f"expected one '{old}' to redirect to the supplementary material")
-    text = text.replace(old, "are in the supplementary material, under `bench/`")
+    if text.count(CODE_PHRASE) != 1:
+        raise BuildError(f"expected one '{CODE_PHRASE}' to redirect to the supplementary material")
+    text = text.replace(CODE_PHRASE, "are in the supplementary material, under `bench/`")
     if "this repository" in text:
         raise BuildError("'this repository' survives in the review copy")
+    return text
+
+
+def resolve_repository(text):
+    """Named copies: "this repository" becomes the public repository's URL."""
+    if text.count(CODE_PHRASE) != 1:
+        raise BuildError(f"expected one '{CODE_PHRASE}' to point at {REPO_URL}")
+    text = text.replace(CODE_PHRASE,
+                        f"live in the `bench/` directory of the public repository <{REPO_URL}>")
+    if "this repository" in text:
+        raise BuildError("'this repository' survives in a standalone copy; name the repository")
     return text
 
 
@@ -143,6 +160,8 @@ def prepare(text, mode):
         text = lift_abstract(text)
     if mode == "tmlr-review":
         text = anonymise(text)
+    else:
+        text = resolve_repository(text)
     return text
 
 

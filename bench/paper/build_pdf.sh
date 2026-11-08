@@ -65,7 +65,7 @@ if [ "$MODE" = article ]; then
     "${READ[@]}"
     --metadata title="$TITLE"
     --metadata author="BHARATH CHANDRA VADDARAM"
-    --metadata date="29 September 2026"
+    --metadata date="8 November 2026"
     --toc --toc-depth=2
     --number-sections=false
     -V documentclass=article
@@ -94,7 +94,7 @@ else
     "${READ[@]}"
     --template=tmlr/template.tex
     -V title="$TITLE"
-    -V month=09 -V year=2026
+    -V month=11 -V year=2026
     "${OPT[@]+"${OPT[@]}"}"
     -H header.tex
   )
