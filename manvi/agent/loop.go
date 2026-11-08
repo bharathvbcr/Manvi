@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
@@ -324,6 +325,8 @@ type Loop struct {
 	log     *session.Log
 	tools   *tools.Registry
 	repeats *repeatTracker
+	// staleLogged is the last set of stale-reasoning drops this Loop recorded.
+	staleLogged []session.StaleDrop
 	// progress decides whether a step got anywhere. It is rebuilt per turn,
 	// after tool registration, because it reads the registry to learn which
 	// tools are allowed to mutate.
@@ -1746,6 +1749,38 @@ func isNullResponse(r llm.Response) bool {
 	return r.Usage.OutputTokens == 0 && r.Usage.ReasoningTokens == 0
 }
 
+// recordStaleDrops logs the signed reasoning the strip removed, one provenance
+// record per reason, so the log and --json say that reasoning was removed and
+// why (a retention trim, or another edit of the history). The same strip happens
+// on every request until the history changes, so a set this Loop already logged
+// is not logged again.
+func (l *Loop) recordStaleDrops(drops []session.StaleDrop) error {
+	if slices.Equal(drops, l.staleLogged) {
+		return nil
+	}
+	l.staleLogged = slices.Clone(drops)
+	from, model := l.cfg.Provider.Name(), l.cfg.Model
+	byReason := map[string][]llm.Drop{}
+	var order []string
+	for _, d := range drops {
+		if _, seen := byReason[d.Reason]; !seen {
+			order = append(order, d.Reason)
+		}
+		byReason[d.Reason] = append(byReason[d.Reason], llm.Drop{
+			MessageIndex: d.MessageIndex,
+			FromProvider: from, FromModel: model, ToProvider: from, ToModel: model,
+			Blocks: []string{"reasoning"},
+		})
+	}
+	for _, reason := range order {
+		if _, err := l.log.Append(session.ProvenanceDropped,
+			session.DropData{Drops: byReason[reason], Reason: reason}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // step runs one model call and records it.
 func (l *Loop) step(ctx context.Context, messages []llm.Message) (llm.Response, error) {
 	request, err := l.assembleRequest(ctx, messages)
@@ -1771,8 +1806,11 @@ func (l *Loop) assembleRequest(ctx context.Context, messages []llm.Message) (llm
 	// that is a 400 on every block signed behind an edit, so those blocks go
 	// before anything else looks at the history (see session.StripStaleReasoning).
 	if ServerSideEditing(l.cfg.Provider) {
-		stripped, _, err := l.log.StripStaleReasoning(messages)
+		stripped, drops, err := l.log.StripStale(messages)
 		if err != nil {
+			return llm.Request{}, err
+		}
+		if err := l.recordStaleDrops(drops); err != nil {
 			return llm.Request{}, err
 		}
 		messages = stripped

@@ -490,11 +490,33 @@ conversation that holds thinking blocks):
 | Resume | Frame is read from the log. A log written before the frame existed adopts its last `system/prompt` and the current tools, with nothing stripped. |
 | Model switch | A target without system-message support is sent history without the notices and its own prompt. Not an edit for the target that never saw them. |
 | Sonnet 5 and Haiku 4.5 (no `MidConversationSystem`) | Not fixed: no append-only form for them in the docs; unchanged behaviour. |
-| Session retention trimming whole turns off the front (`session/store.go`) | Frame and notice state fixed: the saved file restates the frame, with what the dropped notices had told the model, as a `carried` frame at the front. The trim still changes the prefix of every retained block (pre-existing rolling truncation; stripping what it invalidates is a separate card). |
+| Session retention trimming whole turns off the front (`session/store.go`) | Fixed. Frame and notice state: the saved file restates the frame, with what the dropped notices had told the model, as a `carried` frame at the front. Signed reasoning: that same frame is the record of the trim. Its `through` is the last event the file held when it was trimmed, so every signed block at or before it sits behind turns the file no longer holds. `session.StripStaleReasoning` strips them (a leading run); blocks the resumed conversation produces after `through` were signed under the trimmed history and are replayed. A later trim drops the old frame and writes a new one with a later `through`. The header's `trimmed_turns` is unchanged. A trimmed file with no `through` (written before it existed, or with no frame at all) is read conservatively: `Load` treats every event it held as stale, in memory only, so `Load` still returns exactly the file's events. |
 | A request that carried a notice fails | The notice is unanswered, so the projection drops it when the next user message arrives (a system message may not be followed by a user message, `shared/prompt-caching.md`) and the log counts it as never delivered; the next turn says it again. No signed block binds a message after it. |
 | A listener editing `System` in the `LLMRequest` waterfall | Delivered as a notice like any prompt change. |
 | A scrubbing log | The frame, the notice that is sent and the change test all use the log's scrubbed form: the model sees what the log holds. |
 | Sub-agents, the escalation ladder, `manvi probe` | Separate conversations with their own logs and frames; the probe replays no thinking. |
+
+Why the trim's cut is a valid removal, and what Manvi does not use:
+
+- Rule: only a leading run of thinking blocks, oldest first, may be removed without invalidating the rest (`shared/model-migration.md`, Breaking change 3, "What keeps later blocks valid"; `shared/preserved-thinking-migration.md`, "Remove thinking only as a contiguous run, and record every strip"). The blocks a trim makes stale are the oldest blocks of the history, so stripping them is that removal. Nothing signed follows a stripped block that is not itself stripped, because `through` is the end of every block it makes stale.
+- Rule: a sliding window or keep-tail truncation (`causes.md`, rows `rolling_truncation` and `tail_kept`) has no client-side form that keeps the thinking without the `compact-2026-09-04` beta; the listed choices include "strip the retained turns' thinking as a deterministic, recorded strip". That is what this does. The strip is deterministic (the same `through` gives the same strip on every request) and recorded: each request that strips logs `provenance/dropped` with `reason: "retention_trim"` (or `"history_edit"` for a compaction or tools frame), once per Loop per change of the stripped set.
+- Not used: on-demand compaction (`compact-2026-09-04`, `causes.md` "Two newer betas add an append-only form"). It replaces older turns with a summary block; the adapter sends no such beta, Manvi's retention drops turns rather than summarising them, and adopting it would be a change of retention policy and request shape (including the compaction request and its `max_tokens`) rather than a fix for this removal. No beta header was added.
+- A strip is never undone: removed blocks stay out, because putting a removed block back invalidates the blocks produced while it was gone (`causes.md`, the list of allowed edits).
+
+Front-of-log removal paths (inventory; `session/` and `cmd/manvi`):
+
+| Path | Drops or skips | Status |
+|---|---|---|
+| `Store.Save` -> `trimEncoded` (`session/store.go`) | Whole turns off the front, until the events fit `maxBytes`; the newest turn is never dropped | Fixed: the carried frame written at the front records `through`; `StripStale` strips every block at or before it. Where the dropped events held no frame nothing is written (a marker event would change what `Load` returns for a frame-less log), and `Load` falls back to treating the whole file as stale. |
+| `trimEncoded`, leading group | Events before the first `turn/start`, dropped first and not counted in `trimmed_turns` | Recorded, not marked: such events hold no assistant message (a signed block is only produced inside a turn), so there is no block to strip; `wireCarry` restates the frame they held. Inferred from `trimEncoded` and the event order, not enforced by a check. |
+| `Store.Load` / `RestoreLog` | Reads the whole file; skips nothing and appends nothing. When `trimmed_turns > 0` and no frame names `through`, sets the in-memory boundary to the file's last event | Fixed (conservative fallback, in memory). Residual: such a file loses reasoning produced after an earlier resume, on every later load, until a trim writes a `through`. |
+| `Log.persistableEncoded` | Omits `assistant/chunk` events from the file | Not a front removal and not replayed (the projection ignores them); no block is affected. |
+| `Store.prune` / `removeSession` | Superseded generations of a session, and whole sessions past `maxSessions` | Not a front-of-log removal: a session is deleted whole or its newest generation kept intact. |
+| Resume (`cmd/manvi/run.go` `openSession`, `--resume` / `--continue`) | Truncates nothing; prints a note when `trimmed_turns > 0` | Covered by the carried frame's `through` (or the `Load` fallback). The note does not yet say that reasoning before the trim is not replayed; `cmd/manvi` was out of scope for this change. |
+| `cmd/manvi/reflect.go` | Builds a lesson packet from `log.Events()` of a loaded log and says so when turns were trimmed | Read-only; no request replays signed reasoning. |
+| `RestoreSensitiveLog` (`session/privacy.go`) | Rewrites messages; drops signed blocks after a rewritten one | Already stripped and recorded (`reasoning_redacted`). |
+| Client-side tool-result compaction (`ToolResultCompacted`) | Replays a shortened result; not a front removal | Stripped from the edit onward (`staleMessages`). |
+
 
 ---
 

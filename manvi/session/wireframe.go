@@ -34,7 +34,15 @@ import (
 // WhyOpened, WhyToolsAdded and WhyCarried say why a frame was recorded.
 // WhyCarried is the store's restatement of the frame at the front of a file whose
 // older turns retention dropped: it is the state of the dropped frames, not a
-// change, so it is never a boundary.
+// change, so it is never a tools boundary.
+//
+// It is also the record of the trim itself. Retention removes the oldest turns,
+// so every signed block kept in the file was bound to messages the file no
+// longer holds. The carried frame's Through says up to which event that is: the
+// last event the file held when it was trimmed. Blocks in later events were
+// produced by the resumed conversation under the trimmed history and are valid.
+// The frame is written at the front, where a second trim drops it and writes a
+// new one with a later Through, so the latest record is always the one read.
 const (
 	WhyOpened     = "opened"
 	WhyToolsAdded = "tools_added"
@@ -54,7 +62,8 @@ type (
 	// the bytes sent are the same on every request. Added names the tools a
 	// WhyToolsAdded frame brought in. Delivered and Told are set only on a
 	// WhyCarried frame: what the notices dropped with the old turns had last
-	// told the model.
+	// told the model. Through is set only on a WhyCarried frame: the sequence
+	// number of the last event in the file when retention trimmed it.
 	FrameData struct {
 		System    string           `json:"system"`
 		Tools     []llm.ToolSchema `json:"tools,omitempty"`
@@ -62,6 +71,7 @@ type (
 		Added     []string         `json:"added,omitempty"`
 		Delivered string           `json:"delivered,omitempty"`
 		Told      []string         `json:"told,omitempty"`
+		Through   int              `json:"through,omitempty"`
 	}
 	// NoticeData is one mid-conversation system message. Text is exactly what
 	// the model was sent, rendered once when the notice was recorded, so a
@@ -92,6 +102,8 @@ type WireState struct {
 // wireState is the log's running WireState, kept as events are appended so a
 // request does not rescan a long log. boundaries counts the frames that grew
 // the tool set, which is what makes StripStaleReasoning look at the log.
+// through is the latest event whose signed blocks a retention trim made stale
+// (see WhyCarried); zero when the log was never trimmed.
 //
 // A notice counts as delivered only once an assistant message answered it. One
 // that a user message (or tool result) follows instead rode a request that
@@ -101,6 +113,7 @@ type WireState struct {
 type wireState struct {
 	WireState
 	boundaries int
+	through    int
 	awaiting   *WireState
 }
 
@@ -134,6 +147,7 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		switch {
 		case data.Why == WhyCarried:
 			w.Delivered, w.Told = data.Delivered, slices.Clone(data.Told)
+			w.through = max(w.through, data.Through)
 		case w.Frame == nil:
 			w.Delivered = data.System
 		}
@@ -165,7 +179,7 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 // signed blocks that survive were not produced under. ok is false when the
 // dropped events held no frame. The event takes the position of the last dropped
 // one, so sequence numbers still only increase.
-func wireCarry(dropped []Event) (Event, bool, error) {
+func wireCarry(dropped []Event, through int) (Event, bool, error) {
 	var w wireState
 	for _, e := range dropped {
 		if err := w.fold(e.Type, e.Data); err != nil {
@@ -178,12 +192,28 @@ func wireCarry(dropped []Event) (Event, bool, error) {
 	frame := *w.Frame
 	frame.Why, frame.Added = WhyCarried, nil
 	frame.Delivered, frame.Told = w.Delivered, w.Told
+	frame.Through = through
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("session: encoding carried %s: %w", WireFrame, err)
 	}
 	last := dropped[len(dropped)-1]
 	return Event{Seq: last.Seq, Type: WireFrame, At: last.At, Turn: last.Turn, Data: raw}, true, nil
+}
+
+// assumeTrimmedThrough covers a file whose trim left no record of its own: one
+// written before the carried frame had a Through, or one with no frame at all (a
+// log of a provider that binds nothing, later replayed to Anthropic). The
+// header's trimmed_turns says retention ran, but not which events came before
+// it, so every event the file held is treated as stale: reasoning is lost, which
+// is the documented recovery, and a block is never sent behind a prefix that is
+// gone. Nothing is appended: Load returns exactly the events the file holds.
+func (l *Log) assumeTrimmedThrough(droppedTurns int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if droppedTurns > 0 && l.wire.through == 0 && len(l.events) > 0 {
+		l.wire.through = l.events[len(l.events)-1].Seq
+	}
 }
 
 // Scrubbed is text as the log would hold it: what a payload string becomes on

@@ -287,6 +287,10 @@ type (
 	// DropData records non-portable provider state removed from history.
 	DropData struct {
 		Drops []llm.Drop `json:"drops"`
+		// Reason says why the blocks went when it is not a provider crossing:
+		// DropReasonRetentionTrim or DropReasonHistoryEdit. Empty on a record
+		// written by PrepareHistoryFor.
+		Reason string `json:"reason,omitempty"`
 	}
 	// CompactionData records one tool result shortened to fit the budget.
 	//

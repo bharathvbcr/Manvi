@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -52,14 +53,11 @@ func strippedFor(t *testing.T, l *Log) (kept []string, dropped int, before int) 
 	return signatures(out), n, len(signatures(msgs))
 }
 
-func trimmedMarkers(l *Log) int {
-	n := 0
-	for _, e := range l.Events() {
-		if e.Type == WireFrame && strings.Contains(string(e.Data), `"why":"trimmed"`) {
-			n++
-		}
-	}
-	return n
+// trimTurnWithFrame is trimTurn for a turn that opens the wire frame first.
+func frameOpened(t *testing.T, l *Log) {
+	t.Helper()
+	mustAppend(t, l, WireFrame, FrameData{System: "the prompt", Why: WhyOpened,
+		Tools: []llm.ToolSchema{{Name: "echo", Description: "d", InputSchema: []byte(`{"type":"object"}`)}}})
 }
 
 // A trimmed file with no wire frame at all (a log written before wave 13, or on
@@ -121,9 +119,6 @@ func TestAdvRepeatedTrimsMarkEachResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := trimmedMarkers(log); got != 1 {
-		t.Fatalf("a freshly trimmed file loads with %d markers, want 1", got)
-	}
 	for _, label := range []string{"six", "seven", "eight", "nine"} {
 		trimTurn(t, log, label)
 	}
@@ -150,9 +145,60 @@ func TestAdvRepeatedTrimsMarkEachResume(t *testing.T) {
 	}
 }
 
-// Loading adds nothing the file already answers for, and an untrimmed log gets
-// no marker.
-func TestAdvTrimMarkerIsWrittenOncePerTrim(t *testing.T) {
+// With a frame, the trim's record is the carried frame the file already starts
+// with: its Through names the last event the file held. It is durable across a
+// save and a load that trims nothing (blocks the resumed run produced stay
+// valid, which a conservative fallback could not tell), and Load returns exactly
+// the events the file holds.
+func TestAdvCarriedFrameRecordsWhereTheTrimFell(t *testing.T) {
+	store := NewStore(t.TempDir())
+	store.setLimits(6000, 0)
+	id := newID(t)
+	l := NewLog()
+	frameOpened(t, l)
+	for _, label := range []string{"one", "two", "three", "four", "five"} {
+		trimTurn(t, l, label)
+	}
+	last := l.Events()[l.Len()-1].Seq
+	report, err := store.Save(id, l)
+	if err != nil || report.TrimmedTurns == 0 {
+		t.Fatalf("save: %v, trimmed %d", err, report.TrimmedTurns)
+	}
+	loaded, lr, err := store.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Events()) != lr.Events {
+		t.Errorf("Load returned %d events, the file holds %d", len(loaded.Events()), lr.Events)
+	}
+	first := loaded.Events()[0]
+	var carried FrameData
+	if err := json.Unmarshal(first.Data, &carried); err != nil || first.Type != WireFrame || carried.Why != WhyCarried || carried.Through != last {
+		t.Fatalf("first event = %s %s (err %v), want a carried frame with Through %d", first.Type, first.Data, err, last)
+	}
+	if kept, dropped, before := strippedFor(t, loaded); before == 0 || dropped != before || len(kept) != 0 {
+		t.Fatalf("kept %v, dropped %d of %d", kept, dropped, before)
+	}
+
+	trimTurn(t, loaded, "after")
+	roomy := NewStore(store.Dir())
+	if _, _, err := roomy.Load(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := roomy.Save(id, loaded); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := NewStore(store.Dir()).Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept, _, _ := strippedFor(t, again); len(kept) != 1 || kept[0] != "sig-after" {
+		t.Errorf("after a save and a load that trimmed nothing, kept %v, want only sig-after", kept)
+	}
+}
+
+// An untrimmed log is untouched.
+func TestAdvUntrimmedLogKeepsItsReasoning(t *testing.T) {
 	store := NewStore(t.TempDir())
 	id := newID(t)
 	plain := NewLog()
@@ -160,44 +206,14 @@ func TestAdvTrimMarkerIsWrittenOncePerTrim(t *testing.T) {
 	if _, err := store.Save(id, plain); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := NewStore(store.Dir()).Load(id)
+	got, lr, err := NewStore(store.Dir()).Load(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := trimmedMarkers(got); n != 0 {
-		t.Errorf("an untrimmed session loaded with %d trim markers", n)
+	if len(got.Events()) != lr.Events {
+		t.Errorf("Load returned %d events, the file holds %d", len(got.Events()), lr.Events)
 	}
 	if kept, dropped, _ := strippedFor(t, got); dropped != 0 || len(kept) != 1 {
 		t.Errorf("an untrimmed session lost reasoning: kept %v, dropped %d", kept, dropped)
-	}
-
-	trimming := NewStore(t.TempDir())
-	trimming.setLimits(6000, 0)
-	id = newID(t)
-	l := NewLog()
-	for _, label := range []string{"one", "two", "three", "four", "five"} {
-		trimTurn(t, l, label)
-	}
-	if _, err := trimming.Save(id, l); err != nil {
-		t.Fatal(err)
-	}
-	first, _, err := NewStore(trimming.Dir()).Load(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roomy := NewStore(trimming.Dir())
-	loaded, _, err := roomy.Load(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := roomy.Save(id, loaded); err != nil {
-		t.Fatal(err)
-	}
-	again, _, err := NewStore(trimming.Dir()).Load(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a, b := trimmedMarkers(first), trimmedMarkers(again); a != 1 || b != 1 {
-		t.Errorf("markers = %d then %d after a save and a load with no new trim, want 1 and 1", a, b)
 	}
 }

@@ -27,6 +27,27 @@ import (
 // keeping later ones would be a removal from the middle, which invalidates what
 // is kept. So the cut is a suffix: nothing signed follows a block that was
 // removed.
+//
+// A retention trim is the other kind of edit, and its cut is a prefix. Store.Save
+// drops whole turns off the front of a log, so every block kept in the file was
+// signed behind messages the file no longer holds. The carried frame it writes
+// at the front names the last event of the file (FrameData.Through), and every
+// signed block recorded at or before it goes. They are the oldest blocks of the history, a leading run, which is
+// the one removal the docs name as keeping later blocks valid
+// (shared/model-migration.md, Breaking change 3, "What keeps later blocks
+// valid"; shared/preserved-thinking-migration/causes.md, rows rolling_truncation
+// and tail_kept, which offer exactly this as "a deterministic, recorded strip").
+// Blocks after Through were produced by the resumed conversation under the
+// trimmed history, and Through is the end of everything it makes stale, so
+// nothing signed follows a removed block there either. A tools_added frame is cut
+// the same way and for the same reason.
+
+// The reasons a DropData record gives for signed reasoning removed by
+// StripStale.
+const (
+	DropReasonRetentionTrim = "retention_trim"
+	DropReasonHistoryEdit   = "history_edit"
+)
 
 // StripStaleReasoning removes the signed reasoning that the log's compactions
 // invalidated from the assistant messages of msgs, and returns the history with
@@ -46,23 +67,50 @@ import (
 // A log with no compaction in it returns msgs untouched and costs one read of
 // the warm projection.
 func (l *Log) StripStaleReasoning(msgs []llm.Message) ([]llm.Message, int, error) {
-	edited := false
-	if err := l.withProjection(func(p *projection) {
-		edited = len(p.compacted)+len(p.bySeq) > 0 || l.wire.boundaries > 0
-	}); err != nil {
-		return nil, 0, err
-	}
-	if !edited {
-		return msgs, 0, nil
-	}
-	stale, err := staleMessages(l.snapshot())
+	out, drops, err := l.StripStale(msgs)
 	if err != nil {
 		return nil, 0, err
+	}
+	total := 0
+	for _, d := range drops {
+		total += d.Blocks
+	}
+	return out, total, nil
+}
+
+// StaleDrop is the signed reasoning one message lost: its position in the
+// history StripStale was given, how many blocks went, and why.
+type StaleDrop struct {
+	MessageIndex int
+	Blocks       int
+	// Reason is DropReasonRetentionTrim when retention removed the turns the
+	// block was signed behind, and DropReasonHistoryEdit for any other edit
+	// (a compaction, a tool set that grew, a history that no longer lines up).
+	Reason string
+}
+
+// StripStale is StripStaleReasoning with the drops itemised, so a caller can
+// record what was removed and why in the same shape the log keeps for other
+// reasoning drops (DropData).
+func (l *Log) StripStale(msgs []llm.Message) ([]llm.Message, []StaleDrop, error) {
+	edited, floor := false, 0
+	if err := l.withProjection(func(p *projection) {
+		floor = l.wire.through
+		edited = len(p.compacted)+len(p.bySeq) > 0 || l.wire.boundaries > 0 || floor > 0
+	}); err != nil {
+		return nil, nil, err
+	}
+	if !edited {
+		return msgs, nil, nil
+	}
+	stale, trimmed, err := staleSpans(l.snapshot(), floor)
+	if err != nil {
+		return nil, nil, err
 	}
 	aligned := len(stale) == len(msgs)
 
 	out := make([]llm.Message, len(msgs))
-	total := 0
+	var drops []StaleDrop
 	for i, msg := range msgs {
 		out[i] = msg
 		if msg.Role != llm.RoleAssistant || (aligned && !stale[i]) {
@@ -70,9 +118,16 @@ func (l *Log) StripStaleReasoning(msgs []llm.Message) ([]llm.Message, int, error
 		}
 		stripped, n := llm.DropSignedReasoning(msg)
 		out[i] = stripped
-		total += n
+		if n == 0 {
+			continue
+		}
+		reason := DropReasonHistoryEdit
+		if aligned && i < trimmed {
+			reason = DropReasonRetentionTrim
+		}
+		drops = append(drops, StaleDrop{MessageIndex: i, Blocks: n, Reason: reason})
 	}
-	return out, total, nil
+	return out, drops, nil
 }
 
 // staleMessages reports, for each message of the projection of events, whether
@@ -83,6 +138,14 @@ func (l *Log) StripStaleReasoning(msgs []llm.Message) ([]llm.Message, int, error
 // a record that names its result applies to that result, and one that names
 // only a call id applies to every result with the id.
 func staleMessages(events []Event) ([]bool, error) {
+	stale, _, err := staleSpans(events, 0)
+	return stale, err
+}
+
+// staleSpans is staleMessages plus how many leading messages sit before the
+// latest retention trim, which is the part of the stale prefix that is
+// stale because of the trim rather than any other edit.
+func staleSpans(events []Event, floor int) ([]bool, int, error) {
 	type compaction struct {
 		seq int
 		ref CompactionData
@@ -92,9 +155,10 @@ func staleMessages(events []Event) ([]bool, error) {
 		resultAt   = map[int]int{} // result event seq -> index of the message holding it
 		resultsBy  = map[llm.CallID][]int{}
 		edits      []compaction
-		pending    []int // result seqs awaiting the user message that carries them
-		leading    int   // messages before the latest tool-set boundary
-		notices    int   // trailing messageSeq entries that are notices
+		pending    []int   // result seqs awaiting the user message that carries them
+		leading    int     // messages before the latest tool-set or trim boundary
+		through    = floor // latest event a retention trim made stale
+		notices    int     // trailing messageSeq entries that are notices
 	)
 	// push records a projected message. A user-role message takes the
 	// unanswered notices before it off, as appendMessage does.
@@ -120,7 +184,7 @@ func staleMessages(events []Event) ([]bool, error) {
 		case UserMessage, AssistantMessage:
 			var data MessageData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
+				return nil, 0, fmt.Errorf("session: event %d: %w", event.Seq, err)
 			}
 			if event.Type == AssistantMessage && len(data.Message.Content) == 0 {
 				continue
@@ -133,7 +197,7 @@ func staleMessages(events []Event) ([]bool, error) {
 		case ToolResult:
 			var data ToolResultData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
+				return nil, 0, fmt.Errorf("session: event %d: %w", event.Seq, err)
 			}
 			pending = append(pending, event.Seq)
 			resultsBy[data.ToolCallID] = append(resultsBy[data.ToolCallID], event.Seq)
@@ -145,7 +209,7 @@ func staleMessages(events []Event) ([]bool, error) {
 		case WireFrame:
 			var data FrameData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
+				return nil, 0, fmt.Errorf("session: event %d: %w", event.Seq, err)
 			}
 			if data.Why == WhyToolsAdded {
 				// Every message before the frame was signed against a tool set
@@ -153,16 +217,25 @@ func staleMessages(events []Event) ([]bool, error) {
 				flush()
 				leading = len(messageSeq)
 			}
+			through = max(through, data.Through)
 		case ToolResultCompacted:
 			var data CompactionData
 			if err := json.Unmarshal(event.Data, &data); err != nil {
-				return nil, fmt.Errorf("session: event %d: %w", event.Seq, err)
+				return nil, 0, fmt.Errorf("session: event %d: %w", event.Seq, err)
 			}
 			edits = append(edits, compaction{seq: event.Seq, ref: data})
 		}
 	}
 	flush()
 
+	// Messages recorded at or before the trim's Through were signed behind turns
+	// retention removed. The recording sequence only increases, so they are a
+	// leading run of the projection.
+	trimmed := 0
+	for trimmed < len(messageSeq) && messageSeq[trimmed] <= through {
+		trimmed++
+	}
+	leading = max(leading, trimmed)
 	stale := make([]bool, len(messageSeq))
 	for i := 0; i < leading && i < len(stale); i++ {
 		stale[i] = true
@@ -194,5 +267,5 @@ func staleMessages(events []Event) ([]bool, error) {
 			stale[i] = true
 		}
 	}
-	return stale, nil
+	return stale, trimmed, nil
 }

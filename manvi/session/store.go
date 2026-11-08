@@ -419,6 +419,9 @@ func (s *Store) Load(id string) (*Log, LoadReport, error) {
 	if err != nil {
 		return nil, LoadReport{}, &CorruptError{Path: path, Detail: err.Error()}
 	}
+	// A trim that left no record of where it fell (a file written before the
+	// carried frame said so, or one with no frame) still stales what it kept.
+	log.assumeTrimmedThrough(doc.TrimmedTurns)
 
 	s.mu.Lock()
 	s.seen[id] = digest(raw)
@@ -496,8 +499,12 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	// signed reasoning that survives was produced under it. The restatement
 	// counts against the budget, so the trim is made again with room for it.
 	kept, keptEncoded := events[from:], perEvent[from:]
+	// The restatement is also the record of the trim: every signed block in the
+	// events written here is stale once the older turns are gone, and anything the
+	// resumed conversation appends later is not (see WhyCarried).
+	through := events[len(events)-1].Seq
 	if from > 0 {
-		carry, ok, err := wireCarry(events[:from])
+		carry, ok, err := wireCarry(events[:from], through)
 		if err != nil {
 			return SaveReport{}, err
 		}
@@ -509,7 +516,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 			from, droppedTurns, oversize = trimEncoded(events, perEvent, max(s.maxBytes-len(carried)-1, 0))
 			// The frame is in the first dropped events, and a trim that makes
 			// room drops more of them, never fewer: it is found again.
-			if carry, _, err = wireCarry(events[:from]); err != nil {
+			if carry, _, err = wireCarry(events[:from], through); err != nil {
 				return SaveReport{}, err
 			}
 			if carried, err = json.Marshal(carry); err != nil {
