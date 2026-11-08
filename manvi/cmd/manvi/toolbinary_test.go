@@ -180,7 +180,7 @@ func TestAReleaseBuildFindsACompanionNextToItself(t *testing.T) {
 	companion := filepath.Join(install, "dcstore-sibling")
 	writeExecutable(t, companion, "#!/bin/sh\nexit 0\n")
 	releaseStandIn(t, install)
-	if got := toolBinary("MANVI_TEST_UNSET_SIB", "dcstore-sibling"); got != companion {
+	if got := toolBinary("MANVI_TEST_UNSET_SIB", "dcstore-sibling"); got != resolvedPath(t, companion) {
 		t.Fatalf("toolBinary = %q, want the companion at %q", got, companion)
 	}
 }
@@ -195,7 +195,7 @@ func TestAReleaseBuildStillHonoursExplicitConfigurationAndPATH(t *testing.T) {
 	onPath := filepath.Join(pathDir, "dcstore-onpath")
 	writeExecutable(t, onPath, "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", pathDir)
-	if got := toolBinary("MANVI_TEST_UNSET_PATH", "dcstore-onpath"); got != onPath {
+	if got := toolBinary("MANVI_TEST_UNSET_PATH", "dcstore-onpath"); got != resolvedPath(t, onPath) {
 		t.Fatalf("PATH lookup = %q, want %q", got, onPath)
 	}
 }
@@ -213,7 +213,7 @@ func TestAReleaseBuildSkipsAPATHEntryInsideTheWorkspace(t *testing.T) {
 	advChdir(t, root)
 	releaseStandIn(t, filepath.Join(t.TempDir(), "install"))
 	t.Setenv("PATH", inRepo+string(os.PathListSeparator)+trusted)
-	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != good {
+	if got := toolBinary("MANVI_TEST_PATHIN", "dcverify-pathin"); got != resolvedPath(t, good) {
 		t.Fatalf("toolBinary = %q, want the PATH entry outside the workspace %q", got, good)
 	}
 	t.Setenv("PATH", inRepo)
@@ -280,6 +280,18 @@ func TestAGoInstalledBuildIsARelease(t *testing.T) {
 }
 
 // writeExecutable writes an executable stand-in for a tool binary.
+// resolvedPath is p with symlinks resolved: toolBinary returns the path whose
+// containment it judged, so on a platform whose temp directory is itself a
+// symlink (macOS /var -> /private/var) the same file has a different spelling.
+func resolvedPath(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // the file must be executable to stand in for a tool; it lives under t.TempDir

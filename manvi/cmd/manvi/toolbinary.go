@@ -71,19 +71,35 @@ func agentWritable(path string) bool {
 	return false
 }
 
+// trustedResolved returns candidate with every symlink resolved, and whether
+// that resolved path is outside the agent's reach. The path returned is the one
+// whose containment was judged, so what is executed is what was checked: a
+// symlink the agent can retarget between the check and the exec is not left in
+// the path. A candidate that cannot be resolved is not trusted.
+func trustedResolved(candidate string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil || agentWritable(resolved) {
+		return "", false
+	}
+	return resolved, true
+}
+
 // trustedLookPath is exec.LookPath for a release build: it takes the first
 // PATH entry that is an absolute directory holding the program and not
-// agent-writable. A relative or empty entry is skipped outright.
+// agent-writable, and returns the program's fully resolved path (see
+// trustedResolved). A relative or empty entry is skipped outright.
 func trustedLookPath(name string) (string, bool) {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if !filepath.IsAbs(dir) {
 			continue
 		}
 		p, err := exec.LookPath(filepath.Join(dir, name))
-		if err != nil || agentWritable(p) {
+		if err != nil {
 			continue
 		}
-		return p, true
+		if resolved, ok := trustedResolved(p); ok {
+			return resolved, true
+		}
 	}
 	return "", false
 }
@@ -170,8 +186,10 @@ func toolBinary(envKey, name string) string {
 	}
 	if releaseBuild() {
 		if dir := ownDir(); dir != "" {
-			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) && !agentWritable(candidate) {
-				return candidate
+			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
+				if resolved, ok := trustedResolved(candidate); ok {
+					return resolved
+				}
 			}
 		}
 		if p, ok := trustedLookPath(name); ok {
