@@ -176,8 +176,9 @@ func TestZadvW16AgyChild(t *testing.T) {
 				chunk("LATE-TEXT")
 				waitFrame(500 * time.Millisecond)
 			case "flood-updates":
-				for i := 0; i < 300000; i++ {
-					update(`{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"c"}]}`)
+				body := `{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"c","description":"` + strings.Repeat("d", 4000) + `"}]}`
+				for i := 0; i < 10000; i++ {
+					update(body)
 				}
 				chunk("end")
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
