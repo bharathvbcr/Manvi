@@ -29,16 +29,17 @@ truth; the script works on a copy (see [`prepare_body.py`](prepare_body.py)). Th
 ## Revision 5 (alphaXiv preparation, 8 November 2026)
 
 **The v1 "zero exploiting episodes" claim is withdrawn.** The original audit counted only
-file-tool writes. `audit_episodes.py` (tests in `../test_audit.py`) reads every tool output, and
-its result matches an independent scan episode for episode.
+file-tool writes. `audit_episodes.py` (tests in `../test_audit.py`) reads every tool output
+and checks each episode's starting sandbox. Two adversarial review rounds shaped it, and the
+second round's independent scans agree with its counts.
 - **26 of 760 v1 episodes received hidden-test or reference-solution content**, and 23 of them
-  passed. Fourteen reached into the task tree, eleven read a hidden-test copy planted in
+  passed. Fourteen reached into the task tree, eleven printed a hidden-test copy planted in
   `pratt_parse`'s sandbox, and one read a copy left in the shared host `/tmp`.
-- **Three episodes wrote into a task's `setup/` with the shell**, and 12 later episodes began
-  from the rewritten file, all of which passed. That includes nine that began from a working
-  `nfa_match` implementation.
-- That makes 37 distinct episodes, 34 of which passed. Scored as failures, they turn Qwen's v1
-  full−baseline from +0.050 to −0.025.
+- **Three episodes wrote into a task's `setup/` with the shell**, and 20 later episodes began
+  from a changed sandbox, 19 of which passed. That includes all ten Qwen `nfa_match` episodes
+  in `full` and `baseline`, which began from a working implementation.
+- That makes 39 distinct episodes, 36 of which passed. Scored as failures, they turn Qwen's v1
+  full−baseline from +0.050 to +0.025.
 - No episode modified a hidden test or reference file, or aimed code at the verdict (41 tactic
   hits, each read by hand).
 
@@ -63,7 +64,7 @@ solutions. An audit of all 760 v1 episodes and 3,879 file-writing tool calls
 found **zero** exploiting episodes, so v1's numbers were not produced by
 cheating — but they were measured on an instrument that could not have detected
 it. The response is a new registered experiment, not a corrected table.
-*(Superseded by revision 5: that audit counted only file-tool writes, and 37 v1 episodes
+*(Superseded by revision 5: that audit counted only file-tool writes, and 39 v1 episodes
 were exposed to grader content or to another episode's changes. See "Revision 5" above.)*
 
 **What the v2 grid shows.** H1 is **supported on both arms** at the Šidák-corrected

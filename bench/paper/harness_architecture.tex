@@ -215,7 +215,7 @@ uninformative. And an earlier grid, run on a previous version of the
 instrument whose verify gate leaked hidden-test values in gate-on cells
 only, produced an interval-excluding-zero effect that reversed sign once
 the instrument was fixed. An audit of its 760 episodes found no code
-aimed at the grader. It did find 37 episodes that read a hidden test or
+aimed at the grader. It did find 39 episodes that read a hidden test or
 reference solution, or began from a sandbox an earlier episode had
 changed, through shell access the instrument did not contain. The
 registered grid's episodes have not yet been audited.
@@ -322,7 +322,7 @@ and a measured statement of what the ladder's intervals are actually
 worth. Fourth, we report an instrument-failure record: seven defects
 found by audit in an earlier grid we ran on a previous version of the
 instrument, an audit of its episodes that finds no code aimed at the
-grader but 37 episodes exposed to grader content or to another episode's
+grader but 39 episodes exposed to grader content or to another episode's
 changes, and the one case where the corrected instrument reverses the
 sign of a published effect. Fifth, we report the compute envelope the
 grid occupied, from 78,027 device samples (Appendix C), as an argument
@@ -704,7 +704,10 @@ defeating one does not defeat the others.
   \textbf{The hidden test is never in the sandbox.} Each task declares a
   hidden checker in \texttt{task.json}. It lives in the task directory,
   which is not what the agent is given; the agent gets a fresh copy of
-  \texttt{setup/} only.
+  \texttt{setup/} only. That holds by design, and on the instrument that
+  ran the grid. On the earlier one behind §5.9 an uncontained shell
+  could write into \texttt{setup/}, and one episode put a hidden test
+  there.
 \item
   \textbf{Protected files are content-hashed.} Each task declares a
   \texttt{protect} list --- typically the visible test file and the
@@ -717,23 +720,25 @@ defeating one does not defeat the others.
   not a partial win; it is a definite loss.
 \item
   \textbf{The hidden test cannot be shadowed or read from the verifier's
-  copy.} The verifier never writes it to any file (the task's own copy,
-  and the git objects behind it, are the gap described below). The
-  verifier pipes its source on standard input to an isolated interpreter
-  (\texttt{python\ -I\ -B}: no \texttt{PYTHONPATH}, no user site
-  directory, no bytecode cache the agent can write), which puts the
-  sandbox on its import path itself and scrubs \texttt{sys.argv} and
-  \texttt{\_\_file\_\_}. Files an interpreter or test runner loads
-  without being imported by name (\texttt{sitecustomize.py},
-  \texttt{usercustomize.py}, \texttt{conftest.py}, \texttt{pyvenv.cfg},
-  any \texttt{.pth} file) are refused if the agent added them, as are
-  added top-level modules that shadow a standard-library module and
-  environment variables that redirect an interpreter, before the test
-  runs. This matters because the natural attack on a Python checker is
-  to plant a start-up hook or a same-named module where the checker will
-  load it; an earlier version of this verifier launched the checker with
-  the sandbox on \texttt{PYTHONPATH}, and a two-line
-  \texttt{sitecustomize.py} bought a pass on 18 of 19 tasks.
+  copy.} On the instrument that ran the grid the verifier never writes
+  it to any file; the earlier instrument behind §5.9 did, under
+  \texttt{/tmp}. The task's own copy, and the git objects behind it, are
+  the gap described below. The verifier pipes its source on standard
+  input to an isolated interpreter (\texttt{python\ -I\ -B}: no
+  \texttt{PYTHONPATH}, no user site directory, no bytecode cache the
+  agent can write), which puts the sandbox on its import path itself and
+  scrubs \texttt{sys.argv} and \texttt{\_\_file\_\_}. Files an
+  interpreter or test runner loads without being imported by name
+  (\texttt{sitecustomize.py}, \texttt{usercustomize.py},
+  \texttt{conftest.py}, \texttt{pyvenv.cfg}, any \texttt{.pth} file) are
+  refused if the agent added them, as are added top-level modules that
+  shadow a standard-library module and environment variables that
+  redirect an interpreter, before the test runs. This matters because
+  the natural attack on a Python checker is to plant a start-up hook or
+  a same-named module where the checker will load it; an earlier version
+  of this verifier launched the checker with the sandbox on
+  \texttt{PYTHONPATH}, and a two-line \texttt{sitecustomize.py} bought a
+  pass on 18 of 19 tasks.
 \end{enumerate}
 
 \textbf{What these mechanisms did not close.} They protect the hidden
@@ -2206,10 +2211,11 @@ around a single \texttt{full} configuration cannot see (§7, item 9).
 \subsubsection{5.9 The v1 grid as an instrument-failure
 record}\label{the-v1-grid-as-an-instrument-failure-record}
 
-Before the registered grid we ran a 720-episode grid under tag
-\texttt{hard} on a previous version of the instrument. An audit of that
-instrument found five defects, and a later audit of its episode logs two
-more:
+Before the registered grid we ran a 720-episode two-model grid under tag
+\texttt{hard} on a previous version of the instrument. The tag also
+holds a 40-episode Gemini cell excluded by declaration (§4.3), and the
+audits below cover all 760 episodes. An audit of that instrument found
+five defects, and a later audit of its episode logs two more:
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -2239,11 +2245,13 @@ into a task's \texttt{setup/} (next row) \\
 shell writes into \texttt{setup/}, from which every later sandbox of
 that task is copied, changed later episodes' starting state & one
 episode copied \texttt{pratt\_parse}'s hidden test into \texttt{setup/},
-and 11 later episodes read it in their own sandbox within three steps
-(10 passed); one replaced \texttt{nfa\_match}'s stub \texttt{nfa.py}
-with its own implementation and one changed
-\texttt{cache\_invalidation\_dist}'s \texttt{distcache.py}, and 12 later
-episodes began from the modified file (all 12 passed) \\
+and it was in the sandbox of 12 later episodes, 11 of which printed it
+and one of which ran it (11 passed; one more ran after the copy but
+never listed its sandbox); one replaced \texttt{nfa\_match}'s stub
+\texttt{nfa.py} with its own implementation and added a test file, and
+all 10 later Qwen episodes of that task began from it (10 passed); one
+changed \texttt{cache\_invalidation\_dist}'s \texttt{distcache.py}, and
+3 later episodes began from it (3 passed) \\
 the host's \texttt{/tmp} was shared by every episode & one episode read
 a copy of a hidden test that an earlier run had left in \texttt{/tmp}
 (passed) \\
@@ -2257,12 +2265,13 @@ D) \\
 \end{longtable}
 }
 
-The first six are fixed in commit \texttt{82e453a}: \texttt{run\_shell}
-runs contained by default and the task tree is masked from it, every v2
-episode records containment, and no task's \texttt{setup/} holds a
-hidden test. The seventh is not. The v2 instrument, and the released
-harness, still give every sandbox the host's temporary directory
-read-write (Limitation 12).
+All but the shared temporary directory are fixed in commit
+\texttt{82e453a}: \texttt{run\_shell} runs contained by default and the
+task tree is masked from it, every v2 episode records containment, and
+no task's \texttt{setup/} holds a hidden test. The shared temporary
+directory is not fixed. The v2 instrument, and the released harness,
+still give every sandbox the host's temporary directory read-write
+(Limitation 12).
 
 Two audits of the v1 logs say different things, and we report both. The
 first covered all 760 episodes and their 3,879 file-writing tool calls.
@@ -2288,26 +2297,33 @@ needs the same three-line match against a reference version, unless the
 call reads a file the episode itself wrote. A reference and the agent's
 candidate share a file name, and the agent's own code can converge on
 the obvious lines. The logs keep only the first 600 characters of each
-output, so every count here is a lower bound. \textbf{26 of the 760
-episodes (3.4\%) received hidden-test or reference-solution content, 22
-of them the hidden test itself, and 23 of the 26 passed.} Fourteen
-reached into the task tree, eleven found the hidden-test copy that an
-earlier episode had planted in \texttt{pratt\_parse}'s sandbox, and one
-read a copy in \texttt{/tmp}. At least one used a reference solution as
-an oracle: it copied the reference to \texttt{/tmp} and tested its own
-code against it. Separately, \textbf{12 episodes began from a setup file
-that an earlier episode had rewritten}, nine of them from a working
-\texttt{nfa\_match} implementation. Together that is 37 distinct
-episodes (one is in both counts), 34 of which passed, all in the
-720-episode two-model grid. They fall in 11 of its 18 cells and do not
-track the gate leak: 26 are among the 560 gate-on episodes and 11 among
-the 160 gate-off. The 77 episodes that received gate output are a
-separate count.
+output and 200 of each argument, so every count here is a lower bound.
+\textbf{26 of the 760 episodes (3.4\%) received hidden-test or
+reference-solution content, 22 of them the hidden test itself, and 23 of
+the 26 passed.} Fourteen reached into the task tree, eleven printed the
+hidden-test copy that an earlier episode had planted in
+\texttt{pratt\_parse}'s sandbox, and one read a copy in \texttt{/tmp}.
+At least one used a reference solution as an oracle: it copied the
+reference to \texttt{/tmp} and tested its own code against it.
+
+The audit also compares what each episode saw of its sandbox before
+changing it with every committed version of the task's setup: the first
+read of each setup file, and the first directory listing. \textbf{20
+episodes began from a sandbox an earlier episode had changed, and 19 of
+them passed.} All ten Qwen \texttt{nfa\_match} episodes in \texttt{full}
+and \texttt{baseline} began from a working implementation. Seven
+\texttt{pratt\_parse} sandboxes listed the planted hidden test. Three
+\texttt{cache\_invalidation\_dist} episodes began from a changed
+\texttt{distcache.py}. Together that is 39 distinct episodes, 36 of
+which passed, all in the two-model grid. They fall in 11 of its 18 cells
+and do not track the gate leak: 26 are among its 560 gate-on episodes
+and 13 among its 160 gate-off. The 77 episodes that received gate output
+are a separate count.
 
 Whether the content changed any outcome cannot be recovered from the
-logs. Scoring the 34 exposed passes as failures gives point estimates
+logs. Scoring the 36 exposed passes as failures gives point estimates
 only. Qwen's v1 full-versus-baseline \(\Delta\) moves from \(+0.050\) to
-\(-0.025\), Ornith's from \(+0.075\) to \(+0.150\), and the Ornith
+\(+0.025\), Ornith's from \(+0.075\) to \(+0.150\), and the Ornith
 \texttt{no-outcap} cell discussed below from \(-0.100\) to \(-0.075\).
 That does not explain the cell's reversal. So v1's numbers are not the
 product of code aimed at the grader, but they are not free of grader
@@ -2445,7 +2461,7 @@ arms.
 excluded zero --- Ornith \texttt{no-outcap} at \(-0.100\), interval
 \([-0.175, -0.025]\) --- did not survive the instrument being fixed; the
 same cell now reads \(+0.075\). No episode in v1 aimed code at the
-verifier's verdict or modified a hidden test. Yet 37 of the 760 read
+verifier's verdict or modified a hidden test. Yet 39 of the 760 read
 grader content or began from a sandbox another episode had changed. Only
 an audit of every tool output, run long after the first audit, found
 them. Both facts matter. The first means v1's numbers were not produced
@@ -2575,7 +2591,7 @@ capability-by-harness interaction remains undetectable.
   as a script (\texttt{paper/audit\_episodes.py}, which produced the v1
   figures in §5.9), but the logs it needs are on the run host, not in
   this release. v1's audit is weaker support than it once looked. It
-  found no code aimed at the grader, but 37 episodes that read grader
+  found no code aimed at the grader, but 39 episodes that read grader
   content or began from a sandbox an earlier episode had changed. The v2
   instrument closed the task-tree channels: every v2 episode records
   containment, the task tree is masked from the shell, and at the
@@ -2638,7 +2654,7 @@ grader, and a published record of where that instrument was wrong. The
 720-episode grid we ran first was collected on a harness whose verify
 gate leaked hidden-test values into gate-on cells only, and whose tasks
 accepted wrong solutions. No episode aimed code at the verifier's
-verdict. An audit of every tool output, run later, found 37 of 760 that
+verdict. An audit of every tool output, run later, found 39 of 760 that
 received hidden-test or reference content or began from a sandbox an
 earlier episode had rewritten. One published, interval-excluding-zero
 effect still did not survive the fix. An audit that finds no cheating is

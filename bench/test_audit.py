@@ -293,6 +293,92 @@ try:
           "wrotefirst.rep4.json" not in np5)
     check("a truncated output's partial last line does not make a pristine read look modified",
           "cut.rep5.json" not in np5)
+    check("a baseline taken from what most episodes saw is named in the report",
+          [u["file"] for u in r5["observed_baselines_used"]] == ["widget.py"],
+          r5["observed_baselines_used"])
+
+    print("non-pristine starting state: listings")
+    lsl = "-rw-r--r--   1 u u  {n} Aug 22 09:32 {f}"
+    long_ls = lambda files: "exit=0\ntotal 8\n" + "\n".join(lsl.format(n=n, f=f) for f, n in files)  # noqa: E731
+    vis = len(VISIBLE.encode())
+    root8 = os.path.join(TMP, "t8")
+    tasks8 = make_tasks(root8)
+    res8 = write_results(root8, {"m__full__hard": {
+        "clean.rep0.json": episode([tool(1, "run_shell", {"cmd": "ls -la && cat SPEC.md"},
+                                         long_ls([("test_widget.py", vis)]))]),
+        "planted.rep1.json": episode([tool(1, "run_shell", {"cmd": "pwd; ls"},
+                                           "exit=0\n/srv/run/bench/.work/x\nhidden_test.py\ntest_widget.py")],
+                                     rep=1),
+        "resized.rep2.json": episode([tool(1, "run_shell", {"cmd": "ls -la && cat SPEC.md && cat w.py"},
+                                           long_ls([("test_widget.py", 5588)]))], rep=2),
+        "ownfile.rep3.json": episode([
+            tool(1, "write_file", {"path": "notes.py", "content": "x = 1\n"}),
+            tool(2, "run_shell", {"cmd": "ls -la"}, long_ls([("notes.py", 6), ("test_widget.py", vis)]))],
+            rep=3),
+        "afterfiletool.rep4.json": episode([
+            tool(1, "write_file", {"path": "widget.py", "content": "x = 1\n"}),
+            tool(2, "run_shell", {"cmd": "pwd; ls"}, "exit=0\n/srv/x\nhidden_test.py\nwidget.py")], rep=4),
+        "aftershell.rep5.json": episode([
+            tool(1, "run_shell", {"cmd": "echo hi > made.txt"}, "exit=0\n"),
+            tool(2, "run_shell", {"cmd": "pwd; ls"}, "exit=0\n/srv/x\nmade.txt")], rep=5),
+    }})
+    os.makedirs(os.path.join(tasks8, "widget", "setup", "pkg"))
+    with open(os.path.join(tasks8, "widget", "setup", "pkg", "__init__.py"), "w") as f:
+        f.write("")
+    eps8 = {
+        "subdir.rep6.json": episode([tool(1, "run_shell", {"cmd": "ls"},
+                                          "exit=0\n.:\npkg\ntest_widget.py")], rep=6),
+        "cut.rep7.json": episode([dict(tool(1, "run_shell", {"cmd": "ls -la"},
+                                            long_ls([("test_widget.py", vis)]) + "\n-rw-r--r-- 1 u u 9 Aug 22 09:32 test_wid"),
+                                       out_len=900)], rep=7),
+    }
+    for fn, body in eps8.items():
+        with open(os.path.join(res8, "m__full__hard", fn), "w") as f:
+            json.dump(body, f)
+    r8 = A.audit(res8, tasks_dir=tasks8)
+    np8 = {x["file"]: x["hits"] for x in r8["nonpristine_start"]}
+    check("a listing that matches the committed setup is pristine", "clean.rep0.json" not in np8, np8)
+    check("a file no setup version has held, in the first listing, was planted",
+          [(h["file"], h["kind"]) for h in np8.get("planted.rep1.json", [])] == [("hidden_test.py", "extra file")],
+          np8.get("planted.rep1.json"))
+    check("a setup file whose listed size matches no version was rewritten, even when its content was cut off",
+          [(h["file"], h["kind"]) for h in np8.get("resized.rep2.json", [])] == [("test_widget.py", "size")],
+          np8.get("resized.rep2.json"))
+    check("a file the episode wrote itself is not a planted file", "ownfile.rep3.json" not in np8, np8)
+    check("a file-tool write does not hide a planted file listed afterwards",
+          "afterfiletool.rep4.json" in np8, np8)
+    check("after a shell write, listings are no longer starting-state evidence",
+          "aftershell.rep5.json" not in np8, np8)
+    check("a setup subdirectory and an `ls -R` header are not planted files",
+          "subdir.rep6.json" not in np8, np8.get("subdir.rep6.json"))
+    check("a listing line cut by the log cap is not read as a file",
+          "cut.rep7.json" not in np8, np8.get("cut.rep7.json"))
+
+    print("the hidden checker's name comes from task.json")
+    root10 = os.path.join(TMP, "t10")
+    tasks10 = make_tasks(root10)
+    os.rename(os.path.join(tasks10, "widget", "hidden_test.py"), os.path.join(tasks10, "widget", "hidden_test.sh"))
+    with open(os.path.join(tasks10, "widget", "task.json"), "w") as f:
+        json.dump({"name": "widget", "kind": "shell", "hidden": "hidden_test.sh"}, f)
+    r10 = A.audit(write_results(root10, {"m__full__hard": {"sh.rep0.json": episode([
+        tool(3, "run_shell", {"cmd": "cat /tmp/c.sh"}, "exit=0\n" + HIDDEN_V2)])}}), tasks_dir=tasks10)
+    check("a shell task's hidden_test.sh is audited, not reported missing or skipped",
+          r10["incomplete"] == [] and [g["file"] for g in r10["grader_reads"]] == ["sh.rep0.json"],
+          (r10["incomplete"], r10["grader_reads"]))
+
+    print("a contaminated majority is still contamination")
+    root9 = os.path.join(TMP, "t9")
+    tasks9 = make_tasks(root9)
+    with open(os.path.join(tasks9, "widget", "setup", "widget.py"), "w") as f:
+        f.write(stub)
+    eps9 = {f"bad{i}.rep{i}.json": episode([tool(1, "read_file", {"path": "widget.py"}, numbered(planted))], rep=i)
+            for i in range(3)}
+    eps9["good.rep3.json"] = episode([tool(1, "read_file", {"path": "widget.py"}, numbered(stub))], rep=3)
+    r9 = A.audit(write_results(root9, {"m__full__hard": eps9}), tasks_dir=tasks9)
+    np9 = sorted(x["file"] for x in r9["nonpristine_start"])
+    check("where the committed setup is what an episode saw, a planted majority is flagged, not adopted",
+          np9 == ["bad0.rep0.json", "bad1.rep1.json", "bad2.rep2.json"] and r9["observed_baselines_used"] == [],
+          (np9, r9["observed_baselines_used"]))
 
     print("malformed episodes and unreadable history")
     res6 = write_results(os.path.join(TMP, "t6"), {"m__full__hard": {
@@ -343,6 +429,22 @@ try:
     except SystemExit as exc:
         missing = exc.code == 2
     check("a missing results directory is a usage error, not an empty clean scan", missing)
+    try:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            A.main(["--results", res, "--tasks", os.path.join(TMP, "no-such-tasks")])
+        bad_tasks = False
+    except SystemExit as exc:
+        bad_tasks = exc.code == 2
+    check("a missing tasks directory is a usage error, not 'no reads found'", bad_tasks)
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as e0:
+        rc0 = A.main(["--results", res, "--tasks", tasks, "--tag", "nosuchtag"])
+    check("a scan that matched no episode exits 2, not 0", rc0 == 2 and "no episode" in e0.getvalue(),
+          (rc0, e0.getvalue()))
+    empty_tasks = os.path.join(TMP, "empty-tasks")
+    os.makedirs(empty_tasks)
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        rc_e = A.main(["--results", res, "--tasks", empty_tasks])
+    check("a task with no files under --tasks is incomplete (exit 2), not a clean scan", rc_e == 2, rc_e)
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 

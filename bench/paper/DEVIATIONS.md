@@ -586,21 +586,32 @@ claim, and has not been adjudicated.
 
 *Adjudicated 8 November 2026.* `paper/audit_episodes.py` replaces the
 heuristic above. It reads every tool output, whatever the call's arguments, so
-it also catches copies outside the task tree. An earlier version filtered on
-arguments and missed one episode. It is then checked independently, against a
-separate scan written by a different reviewer, and the two agree episode for
-episode. Its rules:
+it also catches copies outside the task tree. Two adversarial review rounds,
+each with its own scans (kept in the session scratchpad, not in the
+repository), shaped it:
+- The first found that an argument filter missed the `/tmp` read, and that the
+  `pratt_parse` copy had a recoverable cause.
+- The second found two contaminated starts that a content-only check could not
+  see. A listing check now catches them.
+
+The script and the second review's scans agree on every count below. Its rules:
 - A hidden-test read needs three consecutive lines (60 characters or more
   together) of some committed version of the hidden test, at least two of them
   found in no setup or reference version.
 - A reference read needs the same match against a reference version, unless the
   call reads a file the episode itself wrote.
-- A non-pristine start is a first read of a setup file, before the episode
-  wrote anything, that differs from what most episodes of that grid and task saw
-  first. The grid ran in an earlier repository, so its exact setup files are not
-  all in this history.
-- Logs keep 600 characters of each output and of each argument, so every count
-  is a lower bound.
+- A non-pristine start is judged on what the episode saw of its sandbox before
+  changing it. That is the first read of each setup file, and the first listing
+  of the sandbox. It counts as non-pristine when it shows content no committed
+  setup version has, a file no version has held, or a setup file at a size no
+  version has. A file-tool write removes only that file from the evidence; a
+  shell write ends the evidence. The committed versions sufficed for every v1
+  file; no observed stand-in was needed.
+- Logs keep 600 characters of each output and 200 of each argument, so every
+  count is a lower bound. The shell-write candidates are the least reliable,
+  because a long `cd` prefix can push the target past the cap. The effect-side
+  checks (outputs and listings) are the more reliable detector.
+- The hidden checker's name comes from each task's `task.json`.
 
 Over all 760 `hard` episodes and their 3,879 file-writing calls (the original
 audit's population, reproduced exactly):
@@ -608,12 +619,19 @@ audit's population, reproduced exactly):
 - **26 episodes (3.4%) received grader content**, 22 of them the hidden test and
   4 a reference solution only; **23 of the 26 passed**.
   - 14 reached into the task tree by path; 12 of those passed.
-  - 11 read `hidden_test.py` *inside their own sandbox*, all on `pratt_parse`,
-    within three steps (Qwen `baseline` 3, Qwen `full` 5, Ornith `baseline` 3);
-    10 passed.
+  - 11 printed `hidden_test.py` *inside their own sandbox*, all on
+    `pratt_parse`, within three steps (Qwen `baseline` 3, Qwen `full` 5, Ornith
+    `baseline` 3); 10 passed.
   - 1 (Qwen `no-envboot` `concurrency_race` rep 3) found `/tmp/ht.py` with
-    `grep` and read it. It is a hidden-test copy an earlier run on the same host
-    had left in the shared `/tmp`. Passed.
+    `grep` and read it. Passed. The copy was left in the shared `/tmp` by the
+    superseded `qwen3.8_27b__full__hard-protocol1` `concurrency_race` rep 3,
+    step 31 (`cp …/hidden_test.py /tmp/ht.py`). Ornith `no-outcap`
+    `concurrency_race` rep 2 also read it, and is already counted through the
+    task tree.
+  - The v1 verifier itself wrote the hidden test under `/tmp/mhverify-<id>/`:
+    107 `hard` logs name such a path, mostly in tracebacks. Two episodes tried
+    to read one and were refused or found it gone. Neither is counted, because
+    neither got content.
 - **Three episodes wrote into a task's `setup/` with the shell.** Every later
   sandbox of that task is copied from `setup/`. All ten candidate episodes the
   script lists were read by hand. The other seven only copied grader files *out*
@@ -622,26 +640,35 @@ audit's population, reproduced exactly):
   - Ornith `baseline` `pratt_parse` rep 1, step 17:
     `cd tasks/pratt_parse/setup && cp ../hidden_test.py ./hidden_test.py`. The
     traceback path confirms the working directory, and nothing visible removes
-    the copy. That is the source of the 11 sandbox reads above.
+    the copy. It was in the sandbox of 12 later episodes, the 11 sandbox reads
+    above and one (Qwen `baseline` rep 2) that listed it at step 7 and ran it at
+    step 9. Qwen `baseline` rep 0 also ran after it but never listed its
+    sandbox, so its state is unknown.
   - Ornith `baseline` `nfa_match` rep 4, steps 13–46: `cat >` and `sed -i` into
     `setup/nfa.py`, replacing the stub with its own implementation, and
     `edge_tests.py` copied into `setup/`.
   - Ornith `no-envboot` `cache_invalidation_dist` rep 0, steps 45–46: copies its
     `distcache.py` into the task directory and the hidden test into `setup/`,
     then an `rm` whose argument the log cut off.
-- **12 episodes began from a rewritten setup file, all 12 passed.** Nine Qwen
-  `nfa_match` episodes (`baseline` reps 0, 1, 3, 4; `full` reps 0–4) first read
-  the planted `nfa.py`. Ornith `no-envboot` `cache_invalidation_dist` reps 1–3
-  first read a changed `distcache.py`. Log mtimes order every planting episode
-  before every episode it affected. That is corroboration, not proof.
-- **Union: 37 distinct episodes, 34 passed** (`cache_invalidation_dist` rep 3 is
-  in both counts). All are in the 720-episode two-model grid: none is in the 40
-  Gemini episodes that make up 760. They fall in 11 of its 18 cells, 26 among
-  its 560 gate-on episodes and 11 among its 160 gate-off, so they do not track
-  the gate leak.
-- Scoring the 34 exposed passes as failures gives point estimates only (v1 cells
+- **20 episodes began from a sandbox an earlier episode had changed, and 19
+  passed.**
+  - All ten Qwen `nfa_match` episodes in `baseline` and `full` began from the
+    planted state: the `nfa.py` content, or a listing showing `edge_tests.py`
+    and a 5,588-byte `nfa.py` against a 124-byte stub.
+  - Seven `pratt_parse` episodes listed the planted `hidden_test.py`: Ornith
+    `baseline` reps 2–4 and Qwen `baseline` reps 1–4.
+  - Ornith `no-envboot` `cache_invalidation_dist` reps 1–3 first read a changed
+    `distcache.py`.
+  - Log mtimes order every planting episode before every episode it affected.
+    That is corroboration, not proof.
+- **Union: 39 distinct episodes, 36 passed.** Seven are in both counts. All are
+  in the 720-episode two-model grid; none is in the 40 Gemini episodes that make
+  up 760, which ran on a different host. They fall in 11 of its 18 cells, 26
+  among its 560 gate-on episodes and 13 among its 160 gate-off, so they do not
+  track the gate leak.
+- Scoring the 36 exposed passes as failures gives point estimates only (v1 cells
   are all 40 usable rows):
-  - Qwen full−baseline: +0.050 → −0.025 (full 38 → 28, baseline 36 → 29)
+  - Qwen full−baseline: +0.050 → +0.025 (full 38 → 28, baseline 36 → 27)
   - Ornith full−baseline: +0.075 → +0.150
   - Ornith `no-outcap`: −0.100 → −0.075, which does not explain its reversal
 - Tactic tokens hit 41 episodes. Every hit was read by hand and is benign:

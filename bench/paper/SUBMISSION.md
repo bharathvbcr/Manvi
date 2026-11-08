@@ -53,13 +53,13 @@ Done after that, on the same day:
 Done in revision 5 (8 November 2026):
 - **The v1 "zero exploiting episodes" claim was wrong, and the manuscript no longer makes it.**
   That audit counted file-tool writes only. `audit_episodes.py` (new, with `test_audit.py`)
-  reads every tool output. It finds:
+  reads every tool output and checks each episode's starting sandbox. It finds:
   - 26 of 760 v1 episodes that received hidden-test or reference content (23 passed)
   - 3 that wrote into a task's `setup/` with the shell
-  - 12 later episodes that began from the rewritten file (all passed), nine of them from a
+  - 20 later episodes that began from a changed sandbox (19 passed), ten of them from a
     working `nfa_match` implementation
 
-  That is 37 distinct episodes, 34 of which passed. No episode modified a hidden test or aimed
+  That is 39 distinct episodes, 36 of which passed. No episode modified a hidden test or aimed
   code at the verdict. The correction runs through the abstract, §1, §3.2, §5.9, §6,
   Limitation 12 and §8, and the detail is in DEVIATIONS O7 ("Adjudicated").
 - **Still open in the harness:** every sandbox shares the host's `/tmp`, on v2 and in the
