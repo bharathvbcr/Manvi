@@ -29,7 +29,7 @@ func TestClaudeSeatFilesThatAreNotRegularFilesDoNotBlockTheLaunch(t *testing.T) 
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			repo := filepath.Join(home, "Code", "Hostile")
-			if err := os.MkdirAll(repo, 0o755); err != nil {
+			if err := os.MkdirAll(repo, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := syscall.Mkfifo(tc.plant(home, repo), 0o600); err != nil {

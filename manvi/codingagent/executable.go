@@ -120,7 +120,7 @@ func requireLaunchableExecutable(label, program string, makeRefusal func(resolve
 	refuse := func(reason string) error {
 		return makeRefusal(resolved, reason)
 	}
-	info, err := os.Stat(resolved)
+	info, err := os.Stat(resolved) //nolint:gosec // inspect only: the path is the operator-configured provider executable, resolved above
 	if err != nil {
 		return fmt.Errorf("inspect managed %s executable: %w", label, err)
 	}

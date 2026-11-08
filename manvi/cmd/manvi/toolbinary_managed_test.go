@@ -9,10 +9,10 @@ import (
 
 func writeExecFile(t *testing.T, path string, data []byte) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, data, 0o755); err != nil {
+	if err := os.WriteFile(path, data, 0o755); err != nil { //nolint:gosec // the file must be executable to stand in for a tool; it lives under t.TempDir
 		t.Fatal(err)
 	}
 }
@@ -70,7 +70,7 @@ func TestToolBinaryFallsBackToHighestSemverNativeClaudeInstallPastWrapper(t *tes
 	// Adversarial entries: a higher semver that is itself a shell wrapper, a directory, and a non-semver file.
 	writeExecFile(t, filepath.Join(versionsDir, "9.9.9"), []byte("#!/bin/sh\necho fake\n"))
 	writeExecFile(t, filepath.Join(versionsDir, "latest"), fakeMachO())
-	if err := os.MkdirAll(filepath.Join(versionsDir, "99.0.0"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(versionsDir, "99.0.0"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 

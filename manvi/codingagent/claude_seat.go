@@ -78,7 +78,9 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" || !filepath.IsAbs(home) {
-		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
+		// No usable home directory means no seats to route: the launch is the
+		// unrouted one, not a failure.
+		return envOverrides{unsetKeys: nestedSessionMarkers}, nil //nolint:nilerr // see above
 	}
 	resolvedHome := home
 	if realHome, symErr := filepath.EvalSymlinks(home); symErr == nil {

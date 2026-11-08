@@ -57,7 +57,7 @@ func TestClaudeSeatRoutingResolvesPinnedRepoAndWorktreeAndFailsClosed(t *testing
 	// and sets BOTH CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR.
 	repoPinned := filepath.Join(home, "Code", "GitPulse")
 	subDir := filepath.Join(repoPinned, "src-tauri")
-	if err := os.MkdirAll(subDir, 0o755); err != nil {
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repoPinned, ".claude-account"), []byte("chandra\n"), 0o600); err != nil {
@@ -84,14 +84,14 @@ func TestClaudeSeatRoutingResolvesPinnedRepoAndWorktreeAndFailsClosed(t *testing
 
 	// 2. Linked git worktree outside the main checkout inherits the main checkout's .claude-account.
 	wtGitAdmin := filepath.Join(repoPinned, ".git", "worktrees", "lane-1")
-	if err := os.MkdirAll(wtGitAdmin, 0o755); err != nil {
+	if err := os.MkdirAll(wtGitAdmin, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(wtGitAdmin, "commondir"), []byte("../..\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	externalWorktree := filepath.Join(home, "Worktrees", "lane-1")
-	if err := os.MkdirAll(externalWorktree, 0o755); err != nil {
+	if err := os.MkdirAll(externalWorktree, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(externalWorktree, ".git"), []byte("gitdir: "+wtGitAdmin+"\n"), 0o600); err != nil {
@@ -104,7 +104,7 @@ func TestClaudeSeatRoutingResolvesPinnedRepoAndWorktreeAndFailsClosed(t *testing
 
 	// 3. Unpinned repo does not inherit a leaked pinned-seat CLAUDE_CONFIG_DIR from the parent shell.
 	unpinnedRepo := filepath.Join(home, "Code", "Graft")
-	if err := os.MkdirAll(unpinnedRepo, 0o755); err != nil {
+	if err := os.MkdirAll(unpinnedRepo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	unpinnedDump := openClaudeSeatFixture(t, unpinnedRepo)
@@ -124,7 +124,7 @@ func TestClaudeSeatRoutingResolvesPinnedRepoAndWorktreeAndFailsClosed(t *testing
 	} {
 		t.Run(name, func(t *testing.T) {
 			badRepo := filepath.Join(home, "Code", name)
-			if err := os.MkdirAll(badRepo, 0o755); err != nil {
+			if err := os.MkdirAll(badRepo, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(badRepo, ".claude-account"), []byte(marker), 0o600); err != nil {
@@ -195,7 +195,7 @@ func TestClaudeSeatSanitizesAmbientEnvForPersonalAndNamedSeats(t *testing.T) {
 	// 1. Unpinned repo on multi-seat host resolves to personal and strips ALL
 	// overrides including arbitrary CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, and CLAUDECODE.
 	unpinnedRepo := filepath.Join(home, "Code", "Unpinned")
-	if err := os.MkdirAll(unpinnedRepo, 0o755); err != nil {
+	if err := os.MkdirAll(unpinnedRepo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	unpinnedDump := openClaudeSeatFixture(t, unpinnedRepo)
@@ -203,7 +203,7 @@ func TestClaudeSeatSanitizesAmbientEnvForPersonalAndNamedSeats(t *testing.T) {
 
 	// 2. Explicit .claude-account = personal strips all keys too.
 	personalRepo := filepath.Join(home, "Code", "ExplicitPersonal")
-	if err := os.MkdirAll(personalRepo, 0o755); err != nil {
+	if err := os.MkdirAll(personalRepo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(personalRepo, ".claude-account"), []byte("personal\n"), 0o600); err != nil {
@@ -215,7 +215,7 @@ func TestClaudeSeatSanitizesAmbientEnvForPersonalAndNamedSeats(t *testing.T) {
 	// 3. Named seat strips ambient keys cleanly (leaving zero duplicate CLAUDE_CONFIG_DIR)
 	// before setting the pinned seat's directory.
 	pinnedRepo := filepath.Join(home, "Code", "Pinned")
-	if err := os.MkdirAll(pinnedRepo, 0o755); err != nil {
+	if err := os.MkdirAll(pinnedRepo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pinnedRepo, ".claude-account"), []byte("chandra\n"), 0o600); err != nil {
@@ -381,7 +381,7 @@ func TestClaudeSeatLinkedWorktreeSubdirectoryInheritsMainCheckoutSeat(t *testing
 
 	mainRepo := filepath.Join(home, "Code", "MainRepo")
 	worktreeGitDir := filepath.Join(mainRepo, ".git", "worktrees", "wt-sub")
-	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
+	if err := os.MkdirAll(worktreeGitDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../..\n"), 0o600); err != nil {
@@ -393,7 +393,7 @@ func TestClaudeSeatLinkedWorktreeSubdirectoryInheritsMainCheckoutSeat(t *testing
 
 	linkedWorktree := filepath.Join(home, "Worktrees", "wt-sub")
 	subDir := filepath.Join(linkedWorktree, "services", "api")
-	if err := os.MkdirAll(subDir, 0o755); err != nil {
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(

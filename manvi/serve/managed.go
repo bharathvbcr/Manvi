@@ -930,9 +930,10 @@ func managedTurn(provider, mode, brief string) string {
 	parts := []string{
 		"You are a managed coding agent that Manvi started for a saved GitPulse task, in the checkout that is your working directory. This is one unattended turn: permission requests go to the host's approval queue, but nobody can answer a question you ask in text before the turn ends, so when you need a person's decision, stop and say what is needed.",
 	}
-	if provider == "claude" {
+	switch provider {
+	case "claude":
 		parts = append(parts, "This session loads user settings only, so the repository's project instructions, rules, skills and MCP servers were not loaded for you. Before anything else, read the repository's AGENTS.md and CLAUDE.md, and any rules or skills directories it has, and follow them.")
-	} else if provider == "agy" {
+	case "agy":
 		parts = append(parts, "This session disables default customizations, so repository-local hooks and custom plugins were not loaded automatically. Before anything else, read the repository's AGENTS.md and GEMINI.md, and any rules or skills directories it has, and follow them.")
 	}
 	if mode == "inspect" {

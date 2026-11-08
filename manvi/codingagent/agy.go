@@ -154,19 +154,19 @@ func validateAgyFrame(raw []byte) error {
 		return err
 	}
 	if !seen["jsonrpc"] {
-		return errors.New("Antigravity frame omits jsonrpc version")
+		return errors.New("managed Antigravity frame omits jsonrpc version")
 	}
 	if !seen["method"] && (!seen["id"] || seen["result"] == seen["error"]) {
-		return errors.New("Antigravity frame is neither an event nor a response")
+		return errors.New("managed Antigravity frame is neither an event nor a response")
 	}
 	if seen["method"] && (seen["result"] || seen["error"]) {
-		return errors.New("Antigravity frame mixes a request and response")
+		return errors.New("managed Antigravity frame mixes a request and response")
 	}
 	var header struct {
 		JSONRPC string `json:"jsonrpc"`
 	}
 	if json.Unmarshal(raw, &header) != nil || header.JSONRPC != "2.0" {
-		return errors.New("Antigravity frame must carry jsonrpc 2.0")
+		return errors.New("managed Antigravity frame must carry jsonrpc 2.0")
 	}
 	return nil
 }
@@ -192,18 +192,18 @@ func (s *Agy) call(ctx context.Context, method string, params any) (json.RawMess
 		}
 		if p.Method == "" {
 			if string(p.ID) != string(id) {
-				return nil, errors.New("Antigravity returned an unrecognized response identity")
+				return nil, errors.New("managed Antigravity returned an unrecognized response identity")
 			}
 			if len(p.Error) > 0 {
 				return nil, &agyProviderRejection{method: method}
 			}
 			if len(p.Result) == 0 {
-				return nil, errors.New("Antigravity response has no result")
+				return nil, errors.New("managed Antigravity response has no result")
 			}
 			return p.Result, nil
 		}
 		if len(s.queue) >= 64 {
-			return nil, errors.New("Antigravity exceeded the handshake event queue")
+			return nil, errors.New("managed Antigravity exceeded the handshake event queue")
 		}
 		s.queue = append(s.queue, p)
 	}
@@ -247,7 +247,7 @@ func (s *Agy) Initialize(ctx context.Context) error {
 	if json.Unmarshal(initReply, &identity) != nil || identity.ProtocolVersion != 1 ||
 		!opaque(identity.AgentInfo.Name) || !opaque(identity.AgentInfo.Version) ||
 		!strings.Contains(strings.ToLower(identity.AgentInfo.Name), "antigravity") {
-		return errors.New("Antigravity omitted or failed its ACP server identity check")
+		return errors.New("managed Antigravity omitted or failed its ACP server identity check")
 	}
 
 	var sessionReply json.RawMessage
@@ -288,7 +288,7 @@ func (s *Agy) Initialize(ctx context.Context) error {
 		return errors.New("invalid Antigravity ACP session configuration")
 	}
 	if resumed && session.SessionID != s.options.Resume {
-		return errors.New("Antigravity resumed a different session than requested")
+		return errors.New("managed Antigravity resumed a different session than requested")
 	}
 	model := session.Models.CurrentModelID
 	if !opaque(model) {
@@ -300,7 +300,7 @@ func (s *Agy) Initialize(ctx context.Context) error {
 		}
 	}
 	if !opaque(model) {
-		return errors.New("Antigravity omitted its active model identity")
+		return errors.New("managed Antigravity omitted its active model identity")
 	}
 
 	if len(session.Modes.AvailableModes) > 0 {
@@ -312,7 +312,7 @@ func (s *Agy) Initialize(ctx context.Context) error {
 			}
 		}
 		if !supported {
-			return fmt.Errorf("Antigravity ACP server does not advertise requested mode %q", acpMode)
+			return fmt.Errorf("managed Antigravity ACP server does not advertise requested mode %q", acpMode)
 		}
 	}
 	if session.Modes.CurrentModeID != acpMode {
@@ -327,7 +327,7 @@ func (s *Agy) Initialize(ctx context.Context) error {
 	s.sessionID = session.SessionID
 	for _, queued := range s.queue {
 		if len(queued.ID) > 0 {
-			return errors.New("Antigravity issued a callback before any turn started")
+			return errors.New("managed Antigravity issued a callback before any turn started")
 		}
 		if _, _, err := s.event(queued); err != nil {
 			return err
@@ -487,7 +487,7 @@ func (s *Agy) Next(ctx context.Context) (Event, error) {
 func (s *Agy) event(p packet) (Event, bool, error) {
 	if p.Method == "" {
 		if !s.started || s.finished || len(s.promptID) == 0 || string(p.ID) != string(s.promptID) {
-			return Event{}, false, errors.New("Antigravity returned an unrecognized response identity")
+			return Event{}, false, errors.New("managed Antigravity returned an unrecognized response identity")
 		}
 		if len(p.Error) > 0 {
 			s.finished = true
@@ -531,7 +531,7 @@ func (s *Agy) event(p packet) (Event, bool, error) {
 		return Event{}, false, errors.New("invalid Antigravity session update")
 	}
 	if env.SessionID == "" || env.SessionID != s.sessionID {
-		return Event{}, false, errors.New("Antigravity event belongs to another session")
+		return Event{}, false, errors.New("managed Antigravity event belongs to another session")
 	}
 	var update struct {
 		Kind       string          `json:"sessionUpdate"`
@@ -636,10 +636,10 @@ func (s *Agy) capture(p packet) (Event, bool, error) {
 		return Event{}, false, errors.New("invalid Antigravity permission request")
 	}
 	if !s.started || s.finished || pms.SessionID != s.sessionID || !opaque(s.turnID) {
-		return Event{}, false, errors.New("Antigravity callback has no matching active turn")
+		return Event{}, false, errors.New("managed Antigravity callback has no matching active turn")
 	}
 	if !opaque(pms.ToolCall.ToolCallID) || (!opaque(pms.ToolCall.Name) && !opaque(pms.ToolCall.Title)) {
-		return Event{}, false, errors.New("Antigravity approval omits its reviewable action")
+		return Event{}, false, errors.New("managed Antigravity approval omits its reviewable action")
 	}
 	allowOpt := ""
 	denyOpt := ""
@@ -659,14 +659,14 @@ func (s *Agy) capture(p packet) (Event, bool, error) {
 		}
 	}
 	if allowOpt == "" {
-		return Event{}, false, errors.New("Antigravity approval offers no one-time allow option")
+		return Event{}, false, errors.New("managed Antigravity approval offers no one-time allow option")
 	}
 	id, err := wireIdentity(p.ID)
 	if err != nil {
 		return Event{}, false, err
 	}
 	if s.seen[id] || len(s.pending) >= 32 || s.requestCount >= 2048 {
-		return Event{}, false, errors.New("Antigravity callback is duplicated or exceeds the run budget")
+		return Event{}, false, errors.New("managed Antigravity callback is duplicated or exceeds the run budget")
 	}
 	if s.options.Mode == "preapproved" {
 		s.seen[id] = true
@@ -734,7 +734,7 @@ func (s *Agy) ValidateResponse(request Request, response Response) error {
 func (s *Agy) response(request Request, response Response) (any, error) {
 	p := s.pending[request.ID]
 	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
-		return nil, errors.New("Antigravity callback is stale, changed or already consumed")
+		return nil, errors.New("managed Antigravity callback is stale, changed or already consumed")
 	}
 	if len(response.Answers) > 0 || (response.Decision != "allow_once" && response.Decision != "deny") {
 		return nil, errors.New("choose a one-time approval or denial")
@@ -774,7 +774,7 @@ func (s *Agy) Respond(ctx context.Context, request Request, response Response) e
 	}
 	p := s.pending[request.ID]
 	if p == nil {
-		return errors.New("Antigravity callback is stale, changed or already consumed")
+		return errors.New("managed Antigravity callback is stale, changed or already consumed")
 	}
 	p.sent = true
 	return s.send(ctx, agyOutbound{ID: p.wireID, Result: result})

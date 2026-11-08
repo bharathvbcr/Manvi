@@ -12,7 +12,7 @@ import (
 func openNonBlocking(path string) (*os.File, error) {
 	// #nosec G304 -- the path is the operator-configured provider executable,
 	// already resolved and inspected by the caller; only its header is read.
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // read-only, non-blocking open of a path the caller resolved and inspected
 }
 
 // executableWithoutMode reports whether a file can be executable although it

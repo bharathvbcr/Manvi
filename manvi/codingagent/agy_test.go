@@ -99,9 +99,10 @@ func TestAgyProtocolChild(t *testing.T) {
 				emit(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"clear"}]}}}`, sessionID)
 			}
 			modelField := `"models":{"currentModelId":"gemini-4-argon-medium"}`
-			if scenario == "missing-model" {
+			switch scenario {
+			case "missing-model":
 				modelField = `"models":{}`
-			} else if scenario == "config-option-model" {
+			case "config-option-model":
 				modelField = `"models":{},"configOptions":[{"category":"model","currentValue":"gemini-4-config"}]`
 			}
 			modes := `[{"id":"default"},{"id":"accept-edits"},{"id":"plan"}]`
@@ -253,7 +254,7 @@ func TestAgyPreSpawnRefusalsGuaranteeNoProcessStarted(t *testing.T) {
 	}
 	root := t.TempDir()
 	wrapper := filepath.Join(t.TempDir(), "agy")
-	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec true\n"), 0o700); err != nil {
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec true\n"), 0o700); err != nil { //nolint:gosec // an executable stand-in under t.TempDir
 		t.Fatal(err)
 	}
 
@@ -352,7 +353,7 @@ func TestAgyResumeVerifiesReturnedSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _, _ = s.Close() }()
 	if s.Effective().Thread.ID != "resumed-uuid-42" {
 		t.Fatalf("resumed thread ID = %q", s.Effective().Thread.ID)
 	}
@@ -363,7 +364,7 @@ func TestAgyResumeVerifiesReturnedSessionID(t *testing.T) {
 		Mode:    "ask",
 		Resume:  "resumed-uuid-42",
 	}, agyFixtureArgs("resume-mismatch")); err == nil {
-		bad.Close()
+		_, _ = bad.Close()
 		t.Fatal("mismatched resumed session ID was accepted")
 	}
 }
@@ -390,7 +391,7 @@ func TestAgyHandshakeAndFrameValidationRejectProtocolViolations(t *testing.T) {
 			}
 			s, err := openAgy(t.Context(), Options{Program: bin, Cwd: root, Mode: mode}, agyFixtureArgs(scenario))
 			if err == nil {
-				s.Close()
+				_, _ = s.Close()
 				t.Fatalf("scenario %q succeeded unexpectedly", scenario)
 			}
 		})
@@ -644,7 +645,7 @@ func TestAgyRealBinaryACPHandshakeAndCrossProcessResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartAgy resume real binary: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _, _ = s2.Close() }()
 	if err := s2.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize resumed real binary: %v", err)
 	}

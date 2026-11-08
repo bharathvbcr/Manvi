@@ -27,7 +27,7 @@ func TestClaudeLaunchWithoutSeatsKeepsAnOperatorsConfigDirAndOnlyDropsNestedSess
 		t.Fatal(err)
 	}
 	repo := filepath.Join(home, "Code", "Plain")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", custom)
@@ -57,7 +57,7 @@ func TestClaudeSeatOverridesWithoutSeatsUnsetOnlyTheNestedSessionMarkers(t *test
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	repo := filepath.Join(home, "Code", "Plain")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(repo, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	got, err := claudeSeatOverrides(repo)
@@ -89,7 +89,7 @@ func TestClaudeSeatOverridesStripCredentialsOnceSeatRoutingIsActive(t *testing.T
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			repo := filepath.Join(home, "Code", "Seated")
-			if err := os.MkdirAll(repo, 0o755); err != nil {
+			if err := os.MkdirAll(repo, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			setup(t, home, repo)

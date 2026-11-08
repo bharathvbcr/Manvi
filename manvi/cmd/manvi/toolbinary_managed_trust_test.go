@@ -122,7 +122,7 @@ func TestAReleaseBuildNeverFollowsAManagedAgentSymlinkIntoTheWorkspace(t *testin
 			if err := os.Symlink(planted, filepath.Join(trusted, a.name)); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(a.installDir(home), 0o755); err != nil {
+			if err := os.MkdirAll(a.installDir(home), 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(planted, installFile(a, home)); err != nil {
