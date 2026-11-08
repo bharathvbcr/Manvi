@@ -17,7 +17,7 @@ import (
 	"unicode/utf8"
 )
 
-const MaxFrameBytes = 256 * 1024
+const MaxFrameBytes = 1024 * 1024
 
 // Options contains host-selected settings. Program is an absolute executable
 // path or a name resolved through the host PATH. Bypass is explicit for this connection and is never inferred from defaults.
@@ -38,7 +38,7 @@ type Options struct {
 // ManagedProviders are the providers with a managed adapter in this package.
 // The workbench gates on this list; a provider absent from it has a terminal
 // lane and no managed one.
-var ManagedProviders = []string{"codex", "claude"}
+var ManagedProviders = []string{"codex", "claude", "agy"}
 
 // IsManagedProvider reports whether a stored run's provider has an adapter.
 func IsManagedProvider(provider string) bool {

@@ -4,30 +4,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 )
 
-// toolBinary resolves one of the analysis-plane executables this harness execs.
+// toolBinary resolves one of the executables this harness execs.
 //
 // The order is explicit-beats-PATH-beats-sibling:
 //
 //  1. the environment variable, because an operator who named a path meant it;
-//  2. PATH, which is the installed case;
-//  3. a build sitting in this repository's own crates/target.
+//  2. PATH, preferring a direct launchable image over a shell wrapper for
+//     managed coding agents whose PID identity is verified by the host;
+//  3. known native installation directories (for example
+//     ~/.local/share/claude/versions/<highest-semver>) or workspace crates/target.
 //
-// Step three exists because of a failure that wasted a working setup. The Rust
-// binaries were built — they were sitting in crates/target/release — and every
-// store-backed tool still failed with `exec: "dcstore": executable file not
-// found in $PATH`. Nothing was broken except that a compiled artifact twenty
-// directories away from the process had not been copied onto PATH, and the
-// error named the symptom rather than that. The harness knows where its own
-// workspace is; it can look there before declaring the binary missing.
-//
-// It is a fallback, not a search: an explicitly named path is never
-// second-guessed, and an unfound binary is still returned by bare name so the
-// resulting error names what was actually looked for.
+// An explicitly named path is never second-guessed, and when only a shell
+// wrapper exists on PATH it is still returned so the adapter produces its typed
+// wrapper refusal naming the environment variable to set.
 func toolBinary(envKey, name string) string {
 	if v := os.Getenv(envKey); v != "" {
 		return v
+	}
+	switch name {
+	case "claude":
+		return resolveManagedAgentBinary(name, codingagent.CheckLaunchableClaude, claudeInstallCandidates)
+	case "agy":
+		return resolveManagedAgentBinary(name, codingagent.CheckLaunchableAgy, agyInstallCandidates)
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p
@@ -39,6 +45,160 @@ func toolBinary(envKey, name string) string {
 		}
 	}
 	return name
+}
+
+func resolveManagedAgentBinary(name string, check func(string) error, fallbackCandidates func() []string) string {
+	firstFound, lookErr := exec.LookPath(name)
+	if lookErr == nil && check(firstFound) == nil {
+		return firstFound
+	}
+	exeNames := []string{name}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		exeNames = []string{name + ".exe", name}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		for _, exe := range exeNames {
+			candidate := filepath.Join(dir, exe)
+			if filepath.IsAbs(candidate) && check(candidate) == nil {
+				return candidate
+			}
+		}
+	}
+	for _, candidate := range fallbackCandidates() {
+		if filepath.IsAbs(candidate) && check(candidate) == nil {
+			return candidate
+		}
+	}
+	if lookErr == nil {
+		return firstFound
+	}
+	return name
+}
+
+type semverCandidate struct {
+	major, minor, patch int
+	prerelease          string
+	path                string
+}
+
+func parseSemverName(name string) (major, minor, patch int, prerelease string, ok bool) {
+	core := name
+	if idx := strings.IndexByte(name, '-'); idx >= 0 {
+		core = name[:idx]
+		prerelease = name[idx+1:]
+		if prerelease == "" {
+			return 0, 0, 0, "", false
+		}
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, "", false
+	}
+	var err error
+	if major, err = strconv.Atoi(parts[0]); err != nil || major < 0 {
+		return 0, 0, 0, "", false
+	}
+	if minor, err = strconv.Atoi(parts[1]); err != nil || minor < 0 {
+		return 0, 0, 0, "", false
+	}
+	if patch, err = strconv.Atoi(parts[2]); err != nil || patch < 0 {
+		return 0, 0, 0, "", false
+	}
+	return major, minor, patch, prerelease, true
+}
+
+func claudeInstallCandidates() []string {
+	var dirs []string
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" && filepath.IsAbs(xdg) {
+		dirs = append(dirs, filepath.Join(xdg, "claude", "versions"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && filepath.IsAbs(home) {
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "claude", "versions"))
+	}
+	var found []semverCandidate
+	seenDirs := map[string]bool{}
+	for _, dir := range dirs {
+		if seenDirs[dir] {
+			continue
+		}
+		seenDirs[dir] = true
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		if len(entries) > 256 {
+			entries = entries[:256]
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			maj, min, pat, pre, ok := parseSemverName(entry.Name())
+			if !ok {
+				continue
+			}
+			found = append(found, semverCandidate{
+				major:      maj,
+				minor:      min,
+				patch:      pat,
+				prerelease: pre,
+				path:       filepath.Join(dir, entry.Name()),
+			})
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		a, b := found[i], found[j]
+		if a.major != b.major {
+			return a.major > b.major
+		}
+		if a.minor != b.minor {
+			return a.minor > b.minor
+		}
+		if a.patch != b.patch {
+			return a.patch > b.patch
+		}
+		if (a.prerelease == "") != (b.prerelease == "") {
+			return a.prerelease == ""
+		}
+		return a.prerelease > b.prerelease
+	})
+	out := make([]string, 0, len(found)+3)
+	for _, c := range found {
+		out = append(out, c.path)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && filepath.IsAbs(home) {
+		out = append(out, filepath.Join(home, ".local", "bin", "claude.real"))
+	}
+	if runtime.GOOS != "windows" {
+		out = append(out, "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+	}
+	return out
+}
+
+func agyInstallCandidates() []string {
+	exe := "agy"
+	if runtime.GOOS == "windows" {
+		exe = "agy.exe"
+	}
+	var out []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" && filepath.IsAbs(home) {
+		out = append(out,
+			filepath.Join(home, ".local", "bin", exe),
+			filepath.Join(home, ".antigravity", "antigravity", "bin", exe),
+			filepath.Join(home, "Applications", "Antigravity.app", "Contents", "Resources", "app", "bin", exe),
+		)
+	}
+	if runtime.GOOS != "windows" {
+		out = append(out,
+			"/opt/homebrew/bin/agy",
+			"/usr/local/bin/agy",
+			"/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
+		)
+	}
+	return out
 }
 
 // workspaceBuildDirs lists the cargo output directories that could hold a

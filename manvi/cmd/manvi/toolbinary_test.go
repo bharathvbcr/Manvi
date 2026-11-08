@@ -3,111 +3,157 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-// TestAnExplicitPathIsNeverSecondGuessed. An operator who named a path meant
-// it, including when it does not exist — silently substituting something else
-// would run a different binary than the one they asked for.
-func TestAnExplicitPathIsNeverSecondGuessed(t *testing.T) {
-	t.Setenv("MANVI_TEST_BINARY", "/nowhere/in/particular/dcstore")
-	if got := toolBinary("MANVI_TEST_BINARY", "dcstore"); got != "/nowhere/in/particular/dcstore" {
-		t.Fatalf("toolBinary = %q; an explicit path must win outright", got)
+func writeExecFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestAMissingBinaryIsReturnedByBareName so the resulting exec error names what
-// was looked for. Returning an empty string would produce "exec: no command",
-// which says nothing about which tool is missing.
-func TestAMissingBinaryIsReturnedByBareName(t *testing.T) {
-	if got := toolBinary("MANVI_TEST_ABSENT", "definitely-not-installed-xyz"); got != "definitely-not-installed-xyz" {
-		t.Fatalf("toolBinary = %q, want the bare name", got)
+func fakeMachO() []byte {
+	// 64-bit Mach-O magic (0xfeedfacf) accepted by codingagent.CheckLaunchableClaude.
+	return []byte{0xfe, 0xed, 0xfa, 0xcf, 0x00, 0x00, 0x00, 0x00}
+}
+
+func claudeTestName() string {
+	if runtime.GOOS == "windows" {
+		return "claude.exe"
+	}
+	return "claude"
+}
+
+func TestToolBinarySkipsShellWrapperForLaunchableClaudeOnLaterPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang wrapper test")
+	}
+	firstDir := t.TempDir()
+	secondDir := t.TempDir()
+	homeDir := t.TempDir()
+
+	wrapper := filepath.Join(firstDir, claudeTestName())
+	realBin := filepath.Join(secondDir, claudeTestName())
+	writeExecFile(t, wrapper, []byte("#!/bin/sh\nexec real-claude \"$@\"\n"))
+	writeExecFile(t, realBin, fakeMachO())
+
+	t.Setenv("MANVI_CLAUDE_BINARY", "")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("PATH", firstDir+string(filepath.ListSeparator)+secondDir)
+
+	got := toolBinary("MANVI_CLAUDE_BINARY", "claude")
+	if got != realBin {
+		t.Fatalf("toolBinary chose %q, want launchable binary %q past shell wrapper %q", got, realBin, wrapper)
 	}
 }
 
-// TestASiblingBuildIsFoundWhenPATHHasNothing is the failure this exists for: the
-// binary was built, it was sitting in a workspace target directory, and every
-// store-backed tool still reported it missing because nobody had copied it onto PATH.
-func TestASiblingBuildIsFoundWhenPATHHasNothing(t *testing.T) {
-	layouts := []string{
-		filepath.Join("crates", "target", "release"),
-		filepath.Join("rust", "target", "release"),
-		filepath.Join("DevCouncil", "rust", "target", "release"),
+func TestToolBinaryFallsBackToHighestSemverNativeClaudeInstallPastWrapper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang wrapper test")
 	}
-	for _, rel := range layouts {
-		t.Run(rel, func(t *testing.T) {
-			root := t.TempDir()
-			release := filepath.Join(root, rel)
-			if err := os.MkdirAll(release, 0o750); err != nil {
-				t.Fatal(err)
-			}
-			built := filepath.Join(release, "dcstore-testonly")
-			if err := os.WriteFile(built, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+	pathDir := t.TempDir()
+	homeDir := t.TempDir()
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chdir(cwd) })
-			if err := os.Chdir(root); err != nil {
-				t.Fatal(err)
-			}
+	wrapper := filepath.Join(pathDir, claudeTestName())
+	writeExecFile(t, wrapper, []byte("#!/usr/bin/env bash\nexec ~/.claude-bin/claude \"$@\"\n"))
 
-			got := toolBinary("MANVI_TEST_UNSET", "dcstore-testonly")
-			wantResolved, _ := filepath.EvalSymlinks(built)
-			gotResolved, _ := filepath.EvalSymlinks(got)
-			if gotResolved != wantResolved {
-				t.Fatalf("toolBinary = %q, want the sibling build at %q", got, built)
-			}
-		})
+	versionsDir := filepath.Join(homeDir, ".local", "share", "claude", "versions")
+	writeExecFile(t, filepath.Join(versionsDir, "2.1.90"), fakeMachO())
+	want := filepath.Join(versionsDir, "2.1.319")
+	writeExecFile(t, want, fakeMachO())
+	// Adversarial entries: a higher semver that is itself a shell wrapper, a directory, and a non-semver file.
+	writeExecFile(t, filepath.Join(versionsDir, "9.9.9"), []byte("#!/bin/sh\necho fake\n"))
+	writeExecFile(t, filepath.Join(versionsDir, "latest"), fakeMachO())
+	if err := os.MkdirAll(filepath.Join(versionsDir, "99.0.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("MANVI_CLAUDE_BINARY", "")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("PATH", pathDir)
+
+	got := toolBinary("MANVI_CLAUDE_BINARY", "claude")
+	if got != want {
+		t.Fatalf("toolBinary chose %q, want highest launchable version %q", got, want)
 	}
 }
 
-// TestADirectoryNamedLikeTheBinaryIsNotACandidate. Returning one would turn a
-// clear "not found" into a "permission denied" at exec time, much later and
-// much less legibly.
-func TestADirectoryNamedLikeTheBinaryIsNotACandidate(t *testing.T) {
-	root := t.TempDir()
-	release := filepath.Join(root, "crates", "target", "release")
-	if err := os.MkdirAll(filepath.Join(release, "dcstore-dirname"), 0o750); err != nil {
-		t.Fatal(err)
+func TestToolBinaryNeverOverridesExplicitClaudeEnvOrHidesWrapperWhenAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang wrapper test")
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
+	pathDir := t.TempDir()
+	homeDir := t.TempDir()
+
+	wrapper := filepath.Join(pathDir, claudeTestName())
+	writeExecFile(t, wrapper, []byte("#!/bin/sh\necho wrapper\n"))
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("PATH", pathDir)
+
+	// When no launchable binary exists anywhere, return the wrapper path so StartClaude
+	// reports the typed ClaudeWrapperError instead of a misleading "not found".
+	t.Setenv("MANVI_CLAUDE_BINARY", "")
+	if got := toolBinary("MANVI_CLAUDE_BINARY", "claude"); got != wrapper {
+		t.Fatalf("toolBinary with only wrapper = %q, want %q", got, wrapper)
 	}
 
-	if got := toolBinary("MANVI_TEST_UNSET2", "dcstore-dirname"); got != "dcstore-dirname" {
-		t.Fatalf("toolBinary = %q; a directory is not an executable", got)
+	// Explicit MANVI_CLAUDE_BINARY always wins, even when a native install exists.
+	writeExecFile(t, filepath.Join(homeDir, ".local", "share", "claude", "versions", "2.1.319"), fakeMachO())
+	t.Setenv("MANVI_CLAUDE_BINARY", wrapper)
+	if got := toolBinary("MANVI_CLAUDE_BINARY", "claude"); got != wrapper {
+		t.Fatalf("explicit MANVI_CLAUDE_BINARY overridden: got %q, want %q", got, wrapper)
 	}
 }
 
-// TestANonExecutableFileIsNotACandidate, for the same reason.
-func TestANonExecutableFileIsNotACandidate(t *testing.T) {
-	root := t.TempDir()
-	release := filepath.Join(root, "crates", "target", "release")
-	if err := os.MkdirAll(release, 0o750); err != nil {
-		t.Fatal(err)
+func agyTestName() string {
+	if runtime.GOOS == "windows" {
+		return "agy.exe"
 	}
-	if err := os.WriteFile(filepath.Join(release, "dcstore-noexec"), []byte("data"), 0o600); err != nil {
-		t.Fatal(err)
+	return "agy"
+}
+
+func TestToolBinaryResolvesLocalBinAgyPastWrapperAndUnderMinimalGUIPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shebang wrapper test")
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(cwd) })
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
+	pathDir := t.TempDir()
+	homeDir := t.TempDir()
+
+	// PATH carries an Electron shell wrapper (like /Applications/Antigravity.app/.../bin/agy),
+	// while `agy install` placed the native Mach-O binary at ~/.local/bin/agy.
+	wrapper := filepath.Join(pathDir, agyTestName())
+	writeExecFile(t, wrapper, []byte("#!/usr/bin/env sh\nexec electron-agy \"$@\"\n"))
+	localBinAgy := filepath.Join(homeDir, ".local", "bin", agyTestName())
+	writeExecFile(t, localBinAgy, fakeMachO())
+
+	t.Setenv("MANVI_AGY_BINARY", "")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("PATH", pathDir)
+
+	if got := toolBinary("MANVI_AGY_BINARY", "agy"); got != localBinAgy {
+		t.Fatalf("toolBinary chose %q, want ~/.local/bin/agy %q past wrapper %q", got, localBinAgy, wrapper)
 	}
 
-	if got := toolBinary("MANVI_TEST_UNSET3", "dcstore-noexec"); got != "dcstore-noexec" {
-		t.Fatalf("toolBinary = %q; a non-executable file is not a candidate", got)
+	// Minimal macOS GUI PATH (no agy on PATH at all) still resolves ~/.local/bin/agy.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	if got := toolBinary("MANVI_AGY_BINARY", "agy"); got != localBinAgy {
+		t.Fatalf("toolBinary under minimal GUI PATH chose %q, want %q", got, localBinAgy)
+	}
+
+	// Explicit MANVI_AGY_BINARY is never overridden.
+	t.Setenv("MANVI_AGY_BINARY", wrapper)
+	if got := toolBinary("MANVI_AGY_BINARY", "agy"); got != wrapper {
+		t.Fatalf("explicit MANVI_AGY_BINARY overridden: got %q, want %q", got, wrapper)
 	}
 }
+

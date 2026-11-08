@@ -426,7 +426,7 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 // along byte for byte at the end.
 func TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim(t *testing.T) {
 	brief := "# Task brief v1\n\n## Agent guidance\nRead before you write.\n\n## Title\nKeep E42 `$(touch nope)` 🧪\n"
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "agy"} {
 		for _, mode := range []string{"inspect", "ask", "edit", "auto_review", "preapproved", "bypass"} {
 			turn := managedTurn(provider, mode, brief)
 			preface, found := strings.CutSuffix(turn, "\n\n"+brief)
@@ -443,7 +443,10 @@ func TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim(t *testing.T) {
 				t.Fatalf("%s/%s: publishing rule missing:\n%s", provider, mode, preface)
 			}
 			if strings.Contains(preface, "read the repository's AGENTS.md and CLAUDE.md") != (provider == "claude") {
-				t.Fatalf("%s/%s: project-instructions notice is wrong for the provider:\n%s", provider, mode, preface)
+				t.Fatalf("%s/%s: claude project-instructions notice is wrong for the provider:\n%s", provider, mode, preface)
+			}
+			if strings.Contains(preface, "read the repository's AGENTS.md and GEMINI.md") != (provider == "agy") {
+				t.Fatalf("%s/%s: agy project-instructions notice is wrong for the provider:\n%s", provider, mode, preface)
 			}
 			if !strings.Contains(preface, "It opens with the agent guidance") {
 				t.Fatalf("%s/%s: a brief with guidance was not described as having it:\n%s", provider, mode, preface)

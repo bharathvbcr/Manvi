@@ -16,6 +16,10 @@ import (
 // who hits the refusal is told what to change.
 const ClaudeBinaryVariable = "MANVI_CLAUDE_BINARY"
 
+// AgyBinaryVariable names the environment variable that selects the Antigravity
+// CLI executable (`agy`).
+const AgyBinaryVariable = "MANVI_AGY_BINARY"
+
 // ClaudeWrapperError is the typed refusal for a configured Claude program that
 // is not the CLI itself, or a launcher the kernel runs in place of it.
 //
@@ -46,6 +50,23 @@ func (e *ClaudeWrapperError) Error() string {
 		where, e.Reason, ClaudeBinaryVariable)
 }
 
+// AgyWrapperError is the typed refusal for a configured Antigravity (`agy`)
+// program that is a shell wrapper rather than a native binary or runtime script.
+type AgyWrapperError struct {
+	Path, Resolved string
+	Reason         string
+}
+
+func (e *AgyWrapperError) Error() string {
+	where := e.Path
+	if e.Resolved != "" && e.Resolved != e.Path {
+		where = e.Path + " (resolved to " + e.Resolved + ")"
+	}
+	return fmt.Sprintf("the configured agy at %s is %s; a wrapper that starts the CLI as a child process "+
+		"fails Manvi's process-identity check. Set %s to the Antigravity CLI executable itself",
+		where, e.Reason, AgyBinaryVariable)
+}
+
 // headBytes is how much of the file is read: a universal Mach-O header needs
 // eight, a `#!` line has to fit in all of it, and a hostile file can inflate
 // neither.
@@ -58,7 +79,31 @@ var (
 	shells      = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "csh": true, "tcsh": true}
 )
 
-// requireLaunchableClaude reads at most headBytes from the program and accepts
+// CheckLaunchableClaude reports whether program is a direct Claude Code image
+// or runtime script rather than a shell wrapper.
+func CheckLaunchableClaude(program string) error {
+	return requireLaunchableClaude(program)
+}
+
+// CheckLaunchableAgy reports whether program is a direct Antigravity CLI image
+// or runtime script rather than a shell wrapper.
+func CheckLaunchableAgy(program string) error {
+	return requireLaunchableAgy(program)
+}
+
+func requireLaunchableClaude(program string) error {
+	return requireLaunchableExecutable("Claude", program, func(resolved, reason string) error {
+		return &ClaudeWrapperError{Path: program, Resolved: resolved, Reason: reason}
+	})
+}
+
+func requireLaunchableAgy(program string) error {
+	return requireLaunchableExecutable("Antigravity", program, func(resolved, reason string) error {
+		return &AgyWrapperError{Path: program, Resolved: resolved, Reason: reason}
+	})
+}
+
+// requireLaunchableExecutable reads at most headBytes from the program and accepts
 // a Mach-O, ELF or PE image, or a `#!` script whose interpreter is one of the
 // CLI's runtimes. A shell or any other interpreter is refused. The program is
 // never run and the script body is never parsed: a script's interpreter line is
@@ -67,17 +112,17 @@ var (
 // It is a launch-time check, not a guarantee: the file can be replaced between
 // this read and the spawn, and a runtime launcher can still start a child. The
 // post-start process-identity check is the backstop for both.
-func requireLaunchableClaude(program string) error {
+func requireLaunchableExecutable(label, program string, makeRefusal func(resolved, reason string) error) error {
 	resolved, err := filepath.EvalSymlinks(program)
 	if err != nil {
-		return fmt.Errorf("resolve managed Claude executable: %w", err)
+		return fmt.Errorf("resolve managed %s executable: %w", label, err)
 	}
 	refuse := func(reason string) error {
-		return &ClaudeWrapperError{Path: program, Resolved: resolved, Reason: reason}
+		return makeRefusal(resolved, reason)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return fmt.Errorf("inspect managed Claude executable: %w", err)
+		return fmt.Errorf("inspect managed %s executable: %w", label, err)
 	}
 	if !info.Mode().IsRegular() {
 		return refuse("not a regular file")
@@ -87,7 +132,7 @@ func requireLaunchableClaude(program string) error {
 	}
 	file, err := openNonBlocking(resolved)
 	if err != nil {
-		return fmt.Errorf("open managed Claude executable: %w", err)
+		return fmt.Errorf("open managed %s executable: %w", label, err)
 	}
 	defer func() { _ = file.Close() }()
 	// A path swapped for a FIFO or device between the stat and the open is
@@ -98,7 +143,7 @@ func requireLaunchableClaude(program string) error {
 	head := make([]byte, headBytes)
 	n, err := io.ReadFull(file, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("read managed Claude executable: %w", err)
+		return fmt.Errorf("read managed %s executable: %w", label, err)
 	}
 	head = head[:n]
 	if nativeImage(head) {
