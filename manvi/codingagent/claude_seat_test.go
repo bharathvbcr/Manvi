@@ -236,15 +236,22 @@ func TestClaudeSeatSanitizesAmbientEnvForPersonalAndNamedSeats(t *testing.T) {
 		t.Fatalf("named seat CLAUDE_SECURESTORAGE_CONFIG_DIR not cleanly replaced:\n%s", pinnedDump)
 	}
 
-	// 4. Even without ~/.claude-accounts, an unpinned repo strips inherited
-	// CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR, CLAUDECODE, and CLAUDE_CODE_ENTRYPOINT.
+	// 4. Without ~/.claude-accounts and without a marker there are no seats to
+	// route, so the operator's own CLAUDE_CONFIG_DIR and
+	// CLAUDE_SECURESTORAGE_CONFIG_DIR are left alone (see claude_seat_noseat_test.go);
+	// only the nested-session markers are dropped.
 	if err := os.Remove(accountsFile); err != nil {
 		t.Fatal(err)
 	}
 	singleAccountDump := openClaudeSeatFixture(t, unpinnedRepo)
-	for _, key := range []string{"CLAUDE_CONFIG_DIR=", "CLAUDE_SECURESTORAGE_CONFIG_DIR=", "CLAUDECODE=", "CLAUDE_CODE_ENTRYPOINT="} {
+	for _, key := range []string{"CLAUDECODE=", "CLAUDE_CODE_ENTRYPOINT="} {
 		if strings.Contains("\n"+singleAccountDump, "\n"+key) {
 			t.Fatalf("single-account unpinned repo leaked %s:\n%s", key, singleAccountDump)
+		}
+	}
+	for _, key := range []string{"CLAUDE_CONFIG_DIR=", "CLAUDE_SECURESTORAGE_CONFIG_DIR="} {
+		if !strings.Contains("\n"+singleAccountDump, "\n"+key+customAmbientDir+"\n") {
+			t.Fatalf("single-account unpinned repo lost the operator's %s%s:\n%s", key, customAmbientDir, singleAccountDump)
 		}
 	}
 }
@@ -406,6 +413,3 @@ func TestClaudeSeatLinkedWorktreeSubdirectoryInheritsMainCheckoutSeat(t *testing
 		t.Fatalf("subdirectory inside linked worktree missing CLAUDE_SECURESTORAGE_CONFIG_DIR:\n%s", dump)
 	}
 }
-
-
-

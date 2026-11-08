@@ -1128,4 +1128,3 @@ func TestRealClaudeBinaryStreamJSONHandshake(t *testing.T) {
 		t.Fatalf("expected persisted session thread ID, got %+v", eff.Thread)
 	}
 }
-

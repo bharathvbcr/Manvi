@@ -21,12 +21,14 @@ const maxClaudeIdentityFileBytes = 16 * 1024 * 1024
 //     linked git worktree's common-dir parent checkout) may only name a valid
 //     seat identifier (`[A-Za-z0-9._-]+`); an empty or invalid marker fails
 //     closed.
-//  2. Every launch strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-//     `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CONFIG_DIR`, and
-//     `CLAUDE_SECURESTORAGE_CONFIG_DIR` from the inherited environment. When
-//     multi-seat routing is active (`.claude-account` is present or
-//     `$HOME/.claude-accounts` exists), `CLAUDE_CODE_OAUTH_TOKEN` is also
-//     stripped on both `personal` and named seats, matching `_claude_account_exec`.
+//  2. Every launch drops the nested-session markers `CLAUDECODE` and
+//     `CLAUDE_CODE_ENTRYPOINT`. Only when multi-seat routing is active
+//     (`.claude-account` is present or `$HOME/.claude-accounts` exists) are
+//     `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+//     `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` also stripped,
+//     on both `personal` and named seats, matching `_claude_account_exec`. An
+//     operator with no seats who authenticates managed Claude by a config
+//     directory or token of their own keeps that launch exactly as it was.
 //  3. A non-`personal` seat must resolve in `$HOME/.claude-accounts` to an
 //     existing directory distinct from `$HOME/.claude` and distinct from all
 //     other registered seats, and sets both `CLAUDE_CONFIG_DIR` and
@@ -37,18 +39,11 @@ const maxClaudeIdentityFileBytes = 16 * 1024 * 1024
 //     `<home>/.claude.json` is checked: malformed JSON or a case-insensitive
 //     email match against any named seat fails closed.
 func claudeSeatOverrides(cwd string) (envOverrides, error) {
-	alwaysUnset := []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"CLAUDECODE",
-		"CLAUDE_CODE_ENTRYPOINT",
-		"CLAUDE_CONFIG_DIR",
-		"CLAUDE_SECURESTORAGE_CONFIG_DIR",
-	}
+	nestedSessionMarkers := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" || !filepath.IsAbs(home) {
-		return envOverrides{unsetKeys: alwaysUnset}, nil
+		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
 	}
 	resolvedHome := home
 	if realHome, symErr := filepath.EvalSymlinks(home); symErr == nil {
@@ -71,10 +66,16 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 		return envOverrides{}, err
 	}
 
-	unset := alwaysUnset
-	if hasMarker || hasAccountsFile {
-		unset = append(append([]string(nil), alwaysUnset...), "CLAUDE_CODE_OAUTH_TOKEN")
+	if !hasMarker && !hasAccountsFile {
+		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
 	}
+	unset := append(append([]string(nil), nestedSessionMarkers...),
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+		"CLAUDE_CONFIG_DIR",
+		"CLAUDE_SECURESTORAGE_CONFIG_DIR",
+	)
 
 	if hasMarker && account != "personal" {
 		if !hasAccountsFile {
@@ -376,4 +377,3 @@ func validClaudeSeatName(name string) bool {
 	}
 	return true
 }
-

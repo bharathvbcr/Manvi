@@ -268,12 +268,12 @@ func TestAgyPreSpawnRefusalsGuaranteeNoProcessStarted(t *testing.T) {
 	}
 
 	for name, opts := range map[string]Options{
-		"missing-binary":      {Program: filepath.Join(root, "does-not-exist"), Cwd: root, Mode: "ask"},
-		"relative-cwd":        {Program: bin, Cwd: "relative/path", Mode: "ask"},
-		"newline-in-cwd":      {Program: bin, Cwd: root + "\nbad", Mode: "ask"},
-		"unacked-bypass":      {Program: bin, Cwd: root, Mode: "bypass", AcknowledgeBypass: false},
-		"acked-non-bypass":    {Program: bin, Cwd: root, Mode: "ask", AcknowledgeBypass: true},
-		"unsupported-mode":    {Program: bin, Cwd: root, Mode: "yolo"},
+		"missing-binary":   {Program: filepath.Join(root, "does-not-exist"), Cwd: root, Mode: "ask"},
+		"relative-cwd":     {Program: bin, Cwd: "relative/path", Mode: "ask"},
+		"newline-in-cwd":   {Program: bin, Cwd: root + "\nbad", Mode: "ask"},
+		"unacked-bypass":   {Program: bin, Cwd: root, Mode: "bypass", AcknowledgeBypass: false},
+		"acked-non-bypass": {Program: bin, Cwd: root, Mode: "ask", AcknowledgeBypass: true},
+		"unsupported-mode": {Program: bin, Cwd: root, Mode: "yolo"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, err := StartAgy(t.Context(), opts)
@@ -653,4 +653,3 @@ func TestAgyRealBinaryACPHandshakeAndCrossProcessResume(t *testing.T) {
 		t.Fatalf("resumed effective = %+v, want thread %q and approval never", eff2, eff1.Thread.ID)
 	}
 }
-
