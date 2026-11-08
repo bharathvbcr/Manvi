@@ -15,7 +15,7 @@ import (
 // the arguments are parsed, before any --timeout context exists.
 func openRunImage(path string) (*os.File, error) {
 	// #nosec G304 -- the operator named this --image path; it is read and sniffed, never executed
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G703: the operator named this path; opened read-only and non-blocking
 }
 
 // refuseImagePath has nothing to refuse by name here: what a path is, is read
