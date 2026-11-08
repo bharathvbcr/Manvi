@@ -117,11 +117,16 @@ type wireState struct {
 	boundaries int
 	through    int
 	awaiting   *WireState
+	// stale is set only when the state is recomputed for a log that has been
+	// edited (Log.Wire): the sequence numbers of the messages whose signed
+	// reasoning StripStale removes. A reply that strip empties does not answer a
+	// notice, because the request no longer carries it.
+	stale map[int]bool
 }
 
 // fold applies one event. Types that do not touch the wire state are ignored,
 // and cost nothing unless a notice is awaiting its answer.
-func (w *wireState) fold(t Type, raw json.RawMessage) error {
+func (w *wireState) fold(seq int, t Type, raw json.RawMessage) error {
 	switch t {
 	case UserMessage, ToolResult:
 		if w.awaiting != nil {
@@ -135,7 +140,7 @@ func (w *wireState) fold(t Type, raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &data); err != nil {
 			return fmt.Errorf("session: decoding %s: %w", t, err)
 		}
-		if data.Message.HasSendableContent() {
+		if data.Message.HasSendableContent() && !(w.stale[seq] && emptiedByStrip(data.Message)) {
 			w.awaiting = nil
 		}
 	case WireFrame:
@@ -245,9 +250,63 @@ func (l *Log) Scrubbed(text string) string {
 
 // Wire returns what the conversation has told its provider so far.
 func (l *Log) Wire() WireState {
+	if w, ok := l.strippedWire(); ok {
+		return w
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	out := l.wire.WireState
+	return cloneWire(l.wire.WireState)
+}
+
+// strippedWire is the wire state of a log that has been edited, read the way
+// the request is: a notice whose only answer is a reply StripStale empties is
+// not delivered, because StripStale drops it from the request. The same
+// staleSpans decides which replies those are, so the state and the request
+// cannot disagree. The replay costs a pass over the log, which StripStale
+// already pays on an edited log, and is kept until the next event. ok is false
+// for a log that was never edited, whose incremental state is already right.
+func (l *Log) strippedWire() (WireState, bool) {
+	edited, floor := false, 0
+	if err := l.withProjection(func(p *projection) {
+		floor = l.wire.through
+		edited = len(p.compacted)+len(p.bySeq) > 0 || l.wire.boundaries > 0 || floor > 0
+	}); err != nil || !edited {
+		return WireState{}, false
+	}
+	l.mu.RLock()
+	if l.strippedAt == l.seq && l.stripped != nil {
+		out := cloneWire(*l.stripped)
+		l.mu.RUnlock()
+		return out, true
+	}
+	events, seq := append([]Event(nil), l.events...), l.seq
+	l.mu.RUnlock()
+
+	sp, err := staleSpans(events, floor)
+	if err != nil {
+		return WireState{}, false
+	}
+	w := wireState{stale: make(map[int]bool, len(sp.seqs))}
+	for i, seqNo := range sp.seqs {
+		if sp.stale[i] {
+			w.stale[seqNo] = true
+		}
+	}
+	for _, e := range events {
+		if err := w.fold(e.Seq, e.Type, e.Data); err != nil {
+			return WireState{}, false
+		}
+	}
+	l.mu.Lock()
+	state := w.WireState
+	l.stripped, l.strippedAt = &state, seq
+	l.mu.Unlock()
+	return cloneWire(w.WireState), true
+}
+
+// cloneWire copies the parts of a WireState a caller could otherwise alias.
+func cloneWire(in WireState) WireState {
+	out := in
 	if out.Frame != nil {
 		frame := *out.Frame
 		frame.Tools = slices.Clone(frame.Tools)

@@ -347,6 +347,10 @@ type Log struct {
 	// sequence number that restarted at 1 would make two different events in
 	// one session's history carry the same id.
 	seq int
+	// stripped is the wire state recomputed for an edited log (Log.Wire), as of
+	// the event strippedAt.
+	stripped   *WireState
+	strippedAt int
 	// observers are notified after each append. They exist so a live face — a
 	// terminal, an editor plugin — can render a turn as it happens without
 	// keeping its own copy of the conversation.
@@ -477,7 +481,7 @@ func RestoreLog(events []Event) (*Log, error) {
 	l.events = cloneEvents(events)
 	l.seq = last
 	for _, event := range events {
-		if err := l.wire.fold(event.Type, event.Data); err != nil {
+		if err := l.wire.fold(event.Seq, event.Type, event.Data); err != nil {
 			return nil, fmt.Errorf("session: restored event %d: %w", event.Seq, err)
 		}
 	}
@@ -773,7 +777,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 		projected = data
 	case WireFrame:
 		var probe wireState
-		if err := probe.fold(t, raw); err != nil {
+		if err := probe.fold(0, t, raw); err != nil {
 			return Event{}, err
 		}
 	case ToolResult:
@@ -813,7 +817,7 @@ func (l *Log) Append(t Type, payload any) (Event, error) {
 	}
 	l.events = append(l.events, event)
 	// Decoded and checked above, so this cannot fail on what was just accepted.
-	_ = l.wire.fold(t, raw)
+	_ = l.wire.fold(event.Seq, t, raw)
 	l.extendProjection(t, event.Seq, projected)
 	observers := append([]func(Event){}, l.observers...)
 	l.mu.Unlock()
