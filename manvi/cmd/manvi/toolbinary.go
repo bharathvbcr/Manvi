@@ -5,7 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/mcp"
 )
 
 // toolExecutable names the running binary. It is a variable so a test can stand
@@ -40,20 +41,17 @@ func ownDir() string {
 	return filepath.Dir(exe)
 }
 
-// agentWritable reports whether path, symlinks resolved, lies inside the
-// project root or the working directory: the two places the agent can write,
-// by `cargo build` or by plain file writes. It decides by relative path between
-// resolved, cleaned paths, never by string prefix, so /work/repo-evil is not
-// "inside" /work/repo and a symlink out of the tree does not hide a file in it.
-// A path it cannot resolve is treated as agent-writable, failing closed.
+// agentWritable reports whether path lies inside the project root or the
+// working directory: the two places the agent can write, by `cargo build` or by
+// plain file writes. Containment is mcp.PathIsInside, the repository's one rule
+// for "could a checked-out tree have written this file": it resolves symlinks,
+// compares by path rather than string prefix, and asks the file system when the
+// spelling differs only in case on a case-insensitive volume. A path or root it
+// cannot examine is treated as agent-writable, failing closed.
 //
 // A containing directory that is the filesystem root is ignored: a daemon
 // started with cwd "/" would otherwise distrust every installed binary.
 func agentWritable(path string) bool {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return true
-	}
 	roots := []string{projectRoot()}
 	if cwd, err := os.Getwd(); err == nil {
 		roots = append(roots, cwd)
@@ -62,34 +60,46 @@ func agentWritable(path string) bool {
 		if root == "" {
 			continue
 		}
-		if r, err := filepath.EvalSymlinks(root); err == nil {
-			root = r
-		}
-		root = filepath.Clean(root)
-		if root == filepath.Dir(root) {
+		if clean := filepath.Clean(root); clean == filepath.Dir(clean) {
 			continue
 		}
-		rel, err := filepath.Rel(root, resolved)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		inside, err := mcp.PathIsInside(root, path)
+		if err != nil || inside {
 			return true
 		}
 	}
 	return false
 }
 
+// trustedResolved returns candidate with every symlink resolved, and whether
+// that resolved path is outside the agent's reach. The path returned is the one
+// whose containment was judged, so what is executed is what was checked: a
+// symlink the agent can retarget between the check and the exec is not left in
+// the path. A candidate that cannot be resolved is not trusted.
+func trustedResolved(candidate string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil || agentWritable(resolved) {
+		return "", false
+	}
+	return resolved, true
+}
+
 // trustedLookPath is exec.LookPath for a release build: it takes the first
 // PATH entry that is an absolute directory holding the program and not
-// agent-writable. A relative or empty entry is skipped outright.
+// agent-writable, and returns the program's fully resolved path (see
+// trustedResolved). A relative or empty entry is skipped outright.
 func trustedLookPath(name string) (string, bool) {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if !filepath.IsAbs(dir) {
 			continue
 		}
 		p, err := exec.LookPath(filepath.Join(dir, name))
-		if err != nil || agentWritable(p) {
+		if err != nil {
 			continue
 		}
-		return p, true
+		if resolved, ok := trustedResolved(p); ok {
+			return resolved, true
+		}
 	}
 	return "", false
 }
@@ -176,8 +186,10 @@ func toolBinary(envKey, name string) string {
 	}
 	if releaseBuild() {
 		if dir := ownDir(); dir != "" {
-			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) && !agentWritable(candidate) {
-				return candidate
+			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
+				if resolved, ok := trustedResolved(candidate); ok {
+					return resolved
+				}
 			}
 		}
 		if p, ok := trustedLookPath(name); ok {

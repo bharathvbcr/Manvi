@@ -117,10 +117,26 @@ func setFlag(out io.Writer, reg *flags.Registry, args []string, from surface) (s
 	// dies with it, so from a shell this command changes nothing that outlives
 	// the exit — a trap worth spending three lines on, because the operator who
 	// falls into it believes the setting is applied.
-	_, _ = fmt.Fprintf(out, "\nthis override lasts as long as this process. To make it durable, "+
-		"export %s=%s, or write %s: %s into %s\n",
-		flags.EnvKey(key), after.Raw, key, after.Raw, configPath())
+	_, _ = fmt.Fprintf(out, "\nthis override lasts as long as this process. To make it durable, %s\n",
+		durableAdvice(key, after.Raw))
 	return key, nil
+}
+
+// durableAdvice says where a value that outlives this process may be written.
+// An operator-scope key is refused in the repository config at start, so
+// advising that file would send the operator to a setting manvi then rejects:
+// tier and endpoint keys go in the user config, and harness.spec has no config
+// home at all, only the environment.
+func durableAdvice(key, raw string) string {
+	env := fmt.Sprintf("export %s=%s", flags.EnvKey(key), raw)
+	switch {
+	case isTierKey(key) || isEndpointKey(key):
+		return fmt.Sprintf("%s, or write %s: %s into %s (the user config; %s refuses it in the repository config)",
+			env, key, raw, userConfigHint(), key)
+	case key == harnessSpecKey:
+		return fmt.Sprintf("%s (%s is refused in config files, so the environment is the only durable place)", env, key)
+	}
+	return fmt.Sprintf("%s, or write %s: %s into %s", env, key, raw, configPath())
 }
 
 // safestValue is the value of a safety flag that represents the strictest

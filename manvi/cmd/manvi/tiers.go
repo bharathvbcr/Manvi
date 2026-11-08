@@ -213,10 +213,12 @@ func refuseEndpointKeys(path string, keys []string) error {
 }
 
 // refuseLoadedRepositoryEndpoints refuses an endpoint key whose value the
-// registry took from the repository config. It runs after the repository file
-// is loaded and before the user config and the environment are, so the config
-// origin can only mean that file. It asks the registry rather than the file,
-// so it judges the bytes that were actually loaded.
+// registry took from the repository config. The registry has already read the
+// environment by then (flags.NewHarnessRegistry calls LoadEnv), but the user
+// config is not loaded until after this check, and an environment value has
+// the origin env, not config, so the config origin can only mean the repository
+// file. It asks the registry rather than the file, so it judges the bytes that
+// were actually loaded.
 func refuseLoadedRepositoryEndpoints(reg *flags.Registry, repoConfig string) error {
 	var set []string
 	for _, key := range endpointKeys {
@@ -286,12 +288,37 @@ func userConfigPath() (string, error) {
 	return filepath.Join(dir, "manvi", flags.DefaultConfigFile), nil
 }
 
-// userConfigHint names the user config for a refusal, without failing it.
+// userConfigHint names the user config for a refusal, without failing it. It
+// names a location only when loadUserConfig would read it; one inside the
+// repository is not named, and the advice points at the environment variable
+// that moves it instead.
 func userConfigHint() string {
-	if path, err := userConfigPath(); err == nil {
-		return path
+	path, err := userConfigPath()
+	if err != nil {
+		return "the user config (" + envUserConfig + ")"
 	}
-	return "the user config (" + envUserConfig + ")"
+	if refuseUserConfigInside(path, projectRoot()) != nil {
+		return "a user config outside the repository (the current location is inside it, or cannot be checked, " +
+			"and manvi refuses it; set " + envUserConfig + " to an absolute path outside the repository)"
+	}
+	return path
+}
+
+// refuseUserConfigInside is the one test of whether a user config location may
+// be read: not when it lies inside the repository, and not when that cannot be
+// told. loadUserConfig applies it before reading, and userConfigHint applies it
+// before naming a location, so advice never names a file manvi would refuse.
+func refuseUserConfigInside(path, root string) error {
+	inside, err := mcp.PathIsInside(root, path)
+	if err != nil {
+		return fmt.Errorf("could not tell whether the user config %s lies inside %s: %w", path, root, err)
+	}
+	if inside {
+		return fmt.Errorf("the user config %s lies inside the repository %s; a setting a checked-out tree "+
+			"can write is not operator scope, so it was not read — move it, or point %s elsewhere",
+			path, root, envUserConfig)
+	}
+	return nil
 }
 
 // loadUserConfig applies the user config to the config layer.
@@ -310,12 +337,8 @@ func loadUserConfig(reg *flags.Registry, path, root string) error {
 	if path == "" {
 		return nil
 	}
-	if inside, err := mcp.PathIsInside(root, path); err != nil {
-		return fmt.Errorf("could not tell whether the user config %s lies inside %s: %w", path, root, err)
-	} else if inside {
-		return fmt.Errorf("the user config %s lies inside the repository %s; a setting a checked-out tree "+
-			"can write is not operator scope, so it was not read — move it, or point %s elsewhere",
-			path, root, envUserConfig)
+	if err := refuseUserConfigInside(path, root); err != nil {
+		return err
 	}
 	layer, err := readConfigFile(path, os.Open)
 	if err != nil {
