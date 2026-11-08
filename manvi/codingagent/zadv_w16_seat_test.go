@@ -234,7 +234,7 @@ func TestAdvW16MarkerCannotSelectAnUnmappedSeatOrDirectory(t *testing.T) {
 // content would be read, and the first token echoed in the error.
 func TestAdvW16SymlinkedMarkerDoesNotLeakTheTargetsContent(t *testing.T) {
 	w := advSeats(t)
-	secret := "sk-ant-api03-SUPERSECRETTOKENVALUE"
+	secret := "sk-ant-api03-SUPERSECRETTOKENVALUE" //nolint:gosec // a fake token planted to prove it is never echoed
 	target := filepath.Join(w.home, ".some-token-file")
 	advWrite(t, target, secret+"\n")
 	if err := os.Symlink(target, filepath.Join(w.repo, ".claude-account")); err != nil {
@@ -448,7 +448,7 @@ func TestAdvW16HugeSeatFilesAreBoundedAndFast(t *testing.T) {
 			w := advSeats(t)
 			advWrite(t, filepath.Join(w.seatWork, ".claude.json"), `{"oauthAccount":{"emailAddress":"w@example.com"}}`)
 			p := path(w)
-			f, err := os.Create(p)
+			f, err := os.Create(p) //nolint:gosec // a sparse file under t.TempDir
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -465,7 +465,7 @@ func TestAdvW16HugeSeatFilesAreBoundedAndFast(t *testing.T) {
 
 // No token or .claude.json content appears in any error string.
 func TestAdvW16ErrorsNeverCarryConfigContent(t *testing.T) {
-	secret := "sk-ant-oat01-TOPSECRETCONTENT"
+	secret := "sk-ant-oat01-TOPSECRETCONTENT" //nolint:gosec // a fake token planted to prove it is never echoed
 	payloads := []string{
 		secret,
 		`{"oauthAccount":{"emailAddress":"a@b"},"token":"` + secret,

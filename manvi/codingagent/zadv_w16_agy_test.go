@@ -32,7 +32,7 @@ func TestZadvW16AgyChild(t *testing.T) {
 	}
 	out := bufio.NewWriterSize(os.Stdout, 1<<20)
 	emit := func(format string, a ...any) {
-		fmt.Fprintf(out, format+"\n", a...)
+		fmt.Fprintf(out, format+"\n", a...) //nolint:errcheck // a fixture child writing to its own stdout
 		_ = out.Flush()
 	}
 	update := func(body string) {
@@ -44,7 +44,7 @@ func TestZadvW16AgyChild(t *testing.T) {
 	}
 	record := func(line []byte) {
 		if path := os.Getenv("ZADV_FRAMES"); path != "" {
-			if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil { //nolint:gosec // a fixture child appending to a test-supplied path
 				_, _ = f.Write(append(line, '\n'))
 				_ = f.Close()
 			}
@@ -187,7 +187,7 @@ func TestZadvW16AgyChild(t *testing.T) {
 				prefix := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + zadvSession + `","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"`
 				suffix := `"}}}}`
 				pad := MaxFrameBytes - len(prefix) - len(suffix)
-				fmt.Fprintf(out, "%s%s%s\n", prefix, strings.Repeat("a", pad), suffix)
+				fmt.Fprintf(out, "%s%s%s\n", prefix, strings.Repeat("a", pad), suffix) //nolint:errcheck // a fixture child writing to its own stdout
 				_ = out.Flush()
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
 				waitFrame(500 * time.Millisecond)
@@ -196,12 +196,12 @@ func TestZadvW16AgyChild(t *testing.T) {
 				suffix := `"}}}}`
 				pad := MaxFrameBytes - len(prefix) - len(suffix)
 				for i := 0; i < 45; i++ {
-					fmt.Fprintf(out, "%s%s%s\n", prefix, strings.Repeat("b", pad), suffix)
+					fmt.Fprintf(out, "%s%s%s\n", prefix, strings.Repeat("b", pad), suffix) //nolint:errcheck // a fixture child writing to its own stdout
 					_ = out.Flush()
 				}
 				waitFrame(2 * time.Second)
 			case "ansi-text":
-				chunk("ok \x1b]0;pwned\x07\x1b[2J‮evil⁦")
+				chunk("ok \x1b]0;pwned\x07\x1b[2J\u202eevil\u2066")
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
 				waitFrame(500 * time.Millisecond)
 			case "silent":
@@ -214,7 +214,7 @@ func TestZadvW16AgyChild(t *testing.T) {
 				waitFrame(500 * time.Millisecond)
 			default:
 				if raw, ok := strings.CutPrefix(scenario, "raw:"); ok {
-					fmt.Fprintln(out, strings.ReplaceAll(raw, "SESS", zadvSession))
+					fmt.Fprintln(out, strings.ReplaceAll(raw, "SESS", zadvSession)) //nolint:errcheck // a fixture child writing to its own stdout
 					_ = out.Flush()
 					waitFrame(500 * time.Millisecond)
 				}
@@ -482,7 +482,7 @@ func TestZadvW16RespondAfterChildDiedDoesNotHang(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Respond(ctx, *req, Response{Decision: "allow_once"}) }()
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // only completion is observed; the Respond error is not what the test asserts
 	case <-time.After(8 * time.Second):
 		t.Fatal("Respond hung after the child exited")
 	}
@@ -749,7 +749,7 @@ func TestZadvW16MalformedMidTurnFramesFailTheTurnNeverHangOrSucceed(t *testing.T
 					t.Fatalf("a malformed frame produced a meaningful event: %+v", e)
 				}
 			}
-			if err == nil && !(name == "chunk content string") {
+			if err == nil && name != "chunk content string" {
 				t.Fatalf("a malformed frame was accepted without error: events %+v", events)
 			}
 		})
@@ -835,7 +835,7 @@ func TestZadvW16StalledReaderWithMaxSizeFramesKeepsMemoryBounded(t *testing.T) {
 	runtime.GC()
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
-	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > 160<<20 {
+	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > 160<<20 { //nolint:gosec // heap sizes far below int64 range
 		t.Fatalf("heap grew by %d MiB with a stalled reader and 1 MiB frames; the per-session bound is not holding", grew>>20)
 	}
 	_, err := zadvDrain(t, s, 30*time.Second)
