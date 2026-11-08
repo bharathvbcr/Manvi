@@ -1080,9 +1080,12 @@ by the `manvi tools` listing, which prints what those two offer.
   read-only child therefore sees neither write tool, and neither does a
   `--chat-only` run, which is offered no tool at all. The parent reads the board
   and hands a child what it needs in the prompt.
-- *Not wired.* `manvi tool` (an operator's direct call), `manvi reflect`, the
-  verify critic and `manvi serve` build through `nativeToolsWith`, which sets no
-  binding. `manvi serve`'s enhancement runs are one provider completion with no
+- *Not wired.* The `manvi tool` command (an operator's direct call), `manvi
+  reflect`, the verify critic and `manvi serve` build through `nativeToolsWith`,
+  which sets no binding. (The TUI's `/tool` command dispatches through the TUI
+  session's own pipeline, which is the agent's, so an operator who types
+  `/tool work_create_item ...` there calls the board tools as themselves, under
+  the same caps and labelling; that is an operator action, not an agent one.) `manvi serve`'s enhancement runs are one provider completion with no
   tool schemas, and their request-building files do not import the tool package
   (`TestEnhancementRunHoldsNoWorkTool`). Managed Codex and Claude runs get nothing:
   the `codingagent` package imports neither the tool surface nor the registry
@@ -1303,8 +1306,9 @@ parameters:
      against the store on every write exactly as `devcouncil_write_file` does
      (`devcouncil/file_tools.go`, "The lease is checked against the store on every
      write, not once at checkout"). An inherited child session (`inherited` in
-     `devcouncil/session.go`) may read but not write the board, because it does
-     not own the lease.
+     `devcouncil/session.go`) may not write the board, because it does not own the
+     lease; as shipped the host goes further and gives a child no board tool at all
+     (see "On for two commands" below), so this refusal is the second line.
 
    The run or lease is re-read immediately before `items.put`, not trusted from the
    start of the call. A store error on that read, or the process exiting mid-call,

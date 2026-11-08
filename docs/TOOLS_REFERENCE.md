@@ -236,7 +236,7 @@ the refusal `mcp.enabled=false` produces, because the remedies differ.
 ### 14. Board (`work_*`) Tools
 
 Offered to the top-level agent of `manvi run` and of the TUI, and to nothing
-else: not `manvi tool`, `manvi reflect`, the verify critic, `manvi serve` or its
+else: not the `manvi tool` command (the TUI's `/tool` reaches its session's own pipeline, which holds them), `manvi reflect`, the verify critic, `manvi serve` or its
 enhancement runs, not a sub-agent of any role, and not a managed Codex or Claude
 run. They are Extended (the core profile drops them) and the two writes require
 `devcouncil_checkout_task`. Every read renders the store's reply inside a fenced

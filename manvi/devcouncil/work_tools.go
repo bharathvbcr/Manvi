@@ -1183,8 +1183,12 @@ func (r *Registry) workAPIFor() *workAPI {
 //
 // Every tool is Extended: none is part of the edit loop, and the core profile
 // drops them. The writes Require devcouncil_checkout_task because a write needs
-// the lease whose liveness gates it; the reads need none and may be used by an
-// inherited sub-agent.
+// the lease whose liveness gates it; the reads need none.
+//
+// A sub-agent holds none of them: the host's sub-agent floor removes every tool
+// IsWorkTool recognises from a child's registry, reads included. The handlers
+// still treat an inherited session as read-only (see the Inherited check in the
+// write path), which is the second line behind that absence, not the first.
 func (r *Registry) workTools() []tools.Tool {
 	api := r.workAPIFor()
 	if api == nil {

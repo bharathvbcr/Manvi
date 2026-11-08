@@ -86,30 +86,37 @@ func TestAgentSurfacesHoldTheWorkTools(t *testing.T) {
 	requireWorkSurface(t, "a TUI session", s.pipeline)
 }
 
-// manvi run, as the shipped binary: a real process against a scripted model
-// server. The first request's tool schemas are what the model was offered.
-func TestHeadlessRunOffersTheWorkToolsAndChatOnlyOffersNone(t *testing.T) {
-	model := &e2eModel{reply: func(int) (map[string]any, string) {
-		return map[string]any{"content": "ok"}, "stop"
-	}}
-	base := model.start(t)
-	repo := e2eRepo(t)
-
-	if out, status := e2eRun(t, repo, base, "say ok"); status != 0 {
-		t.Fatalf("a turn that completed exited %d\n%s", status, out)
-	}
-	seen := model.seen()
-	if len(seen) == 0 {
-		t.Fatal("the model server saw no request")
-	}
+func e2eOffered(req e2eRequest) map[string]bool {
 	offered := map[string]bool{}
-	for _, tool := range seen[0].Tools {
+	for _, tool := range req.Tools {
 		if fn, ok := tool["function"].(map[string]any); ok {
 			if name, ok := fn["name"].(string); ok {
 				offered[name] = true
 			}
 		}
 	}
+	return offered
+}
+
+// manvi run, as the shipped binary: a real process against a scripted model
+// server. The tool schemas on a request are what the model was offered.
+//
+// Three runs, because the local provider's default profile is dynamic: it opens
+// with the core tools and the board tools are Extended, so they are discoverable
+// (devcouncil_search_tools) but not on the first request. With dynamic loading
+// off the whole surface is offered, and that is the run that proves the binary's
+// Registry was built with the board bound. --chat-only offers nothing.
+func TestHeadlessRunOffersTheWorkToolsAndChatOnlyOffersNone(t *testing.T) {
+	stop := func(int) (map[string]any, string) { return map[string]any{"content": "ok"}, "stop" }
+
+	full := &e2eModel{reply: stop}
+	if out, status := e2eRun(t, e2eRepo(t), full.start(t), "say ok", "MANVI_LLM_LOCAL_DYNAMIC_TOOLS=false"); status != 0 {
+		t.Fatalf("a turn that completed exited %d\n%s", status, out)
+	}
+	if len(full.seen()) == 0 {
+		t.Fatal("the model server saw no request")
+	}
+	offered := e2eOffered(full.seen()[0])
 	if len(offered) == 0 {
 		t.Fatal("the first request offered no tools; the test proves nothing")
 	}
@@ -119,12 +126,38 @@ func TestHeadlessRunOffersTheWorkToolsAndChatOnlyOffersNone(t *testing.T) {
 		}
 	}
 
-	// --chat-only offers the model no tools at all, board tools included.
-	chat := &e2eModel{reply: func(int) (map[string]any, string) {
+	// The default dynamic profile: not on the first request, found by search.
+	dynamic := &e2eModel{reply: func(turn int) (map[string]any, string) {
+		if turn == 1 {
+			return toolCall("devcouncil_search_tools", map[string]any{"query": "work_create_item"})
+		}
 		return map[string]any{"content": "ok"}, "stop"
 	}}
+	if out, status := e2eRun(t, e2eRepo(t), dynamic.start(t), "find the board tool"); status != 0 {
+		t.Fatalf("a dynamic turn exited %d\n%s", status, out)
+	}
+	seen := dynamic.seen()
+	if len(seen) < 2 {
+		t.Fatalf("the dynamic run made %d request(s), want the search and its follow-up", len(seen))
+	}
+	first := e2eOffered(seen[0])
+	if !first["devcouncil_search_tools"] {
+		t.Fatal("the dynamic profile did not offer devcouncil_search_tools; the board tools would be undiscoverable")
+	}
+	if held := workToolsIn(first); len(held) != 0 {
+		t.Errorf("the dynamic profile offered %v up front; the board tools are Extended", held)
+	}
+	if !strings.Contains(marshal(t, seen[1].Messages), "work_create_item") {
+		t.Errorf("searching for work_create_item found nothing, so a dynamic session cannot reach the board:\n%s", marshal(t, seen[1].Messages))
+	}
+
+	// --chat-only offers the model no tools at all, board tools included.
+	chat := &e2eModel{reply: stop}
 	if out, status := e2eRunWith(t, false, e2eRepo(t), chat.start(t), []string{"run", "--chat-only", "-p", "say ok"}); status != 0 {
 		t.Fatalf("a chat-only turn exited %d\n%s", status, out)
+	}
+	if len(chat.seen()) == 0 {
+		t.Fatal("the chat-only run made no request")
 	}
 	for _, req := range chat.seen() {
 		if len(req.Tools) != 0 {
@@ -212,50 +245,67 @@ func TestEveryBoardToolIsRecognisedAsOne(t *testing.T) {
 
 // Where the board is bound is a short, closed list: agentTools is called only
 // by `manvi run` (run.go), the TUI (tui.go) and the listing of what those two
-// offer (harness.go), and nothing but harness.go names Deps.Work. A call from
-// serve.go would put the board behind the host connection's enhancement path,
-// one from reflect.go or verifycritic.go would give a read-only analysis agent
-// the write tools.
+// offer (harness.go), and nothing in the whole module but harness.go builds a
+// WorkBinding or sets Deps.Work. A call from serve.go would put the board behind
+// the host connection's enhancement path, one from reflect.go or verifycritic.go
+// would give a read-only analysis agent the write tools, and a Work key in
+// serve/ (which also imports devcouncil, for the managed-run harness) would
+// reach a managed run's tool surface.
 func TestWorkBindingIsReachedOnlyFromRunAndTUI(t *testing.T) {
-	entries, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	callers := map[string][]string{}
-	for _, file := range entries {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
+		rel, err := filepath.Rel(filepath.Join("..", ".."), path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		ast.Inspect(parsed, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.CallExpr:
 				switch fn := x.Fun.(type) {
 				case *ast.Ident:
 					if fn.Name == "agentTools" || fn.Name == "buildNativeTools" {
-						callers[fn.Name] = append(callers[fn.Name], file)
+						callers[fn.Name] = append(callers[fn.Name], rel)
 					}
 				case *ast.SelectorExpr:
 					if fn.Sel.Name == "WorkBindingFor" {
-						callers["WorkBindingFor"] = append(callers["WorkBindingFor"], file)
+						callers["WorkBindingFor"] = append(callers["WorkBindingFor"], rel)
 					}
 				}
 			case *ast.KeyValueExpr:
 				if key, ok := x.Key.(*ast.Ident); ok && key.Name == "Work" {
-					callers["Deps.Work"] = append(callers["Deps.Work"], file)
+					callers["Deps.Work"] = append(callers["Deps.Work"], rel)
+				}
+			case *ast.UnaryExpr:
+				if lit, ok := x.X.(*ast.CompositeLit); ok && x.Op == token.AND {
+					if sel, ok := lit.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "WorkBinding" {
+						callers["WorkBinding literal"] = append(callers["WorkBinding literal"], rel)
+					}
 				}
 			}
 			return true
 		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"agentTools":       {"harness.go", "run.go", "tui.go"},
-		"buildNativeTools": {"harness.go", "harness.go"},
-		"WorkBindingFor":   {"harness.go"},
-		"Deps.Work":        {"harness.go"},
+		"agentTools":          {"cmd/manvi/harness.go", "cmd/manvi/run.go", "cmd/manvi/tui.go"},
+		"buildNativeTools":    {"cmd/manvi/harness.go", "cmd/manvi/harness.go"},
+		"WorkBindingFor":      {"cmd/manvi/harness.go"},
+		"Deps.Work":           {"cmd/manvi/harness.go"},
+		"WorkBinding literal": nil,
 	}
 	for name, files := range want {
 		got := callers[name]
