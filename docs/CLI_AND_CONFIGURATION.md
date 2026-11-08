@@ -44,8 +44,10 @@ This document provides a complete reference for MANVI's command-line interface, 
 ## Headless Exit Codes (`manvi run`)
 
 Scripts and CI systems should inspect exit codes from `manvi run`. Six statuses
-are distinguished, because a caller that cannot tell them apart commits half-done
-work as if it were finished. `manvi run --help` prints the same list.
+(`0` through `5`) are distinguished, because a caller that cannot tell them apart commits half-done
+work as if it were finished. `manvi run --help` prints the same six. The table also lists `8` and `9`,
+which come from `manvi --version --check` and not from `manvi run`, so it has eight rows; `6` and `7`
+belong to `manvi check` and are in the next section.
 
 | Exit Code | Meaning | Interpretation |
 |---|---|---|

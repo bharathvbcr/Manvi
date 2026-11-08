@@ -213,10 +213,12 @@ func refuseEndpointKeys(path string, keys []string) error {
 }
 
 // refuseLoadedRepositoryEndpoints refuses an endpoint key whose value the
-// registry took from the repository config. It runs after the repository file
-// is loaded and before the user config and the environment are, so the config
-// origin can only mean that file. It asks the registry rather than the file,
-// so it judges the bytes that were actually loaded.
+// registry took from the repository config. The registry has already read the
+// environment by then (flags.NewHarnessRegistry calls LoadEnv), but the user
+// config is not loaded until after this check, and an environment value has
+// the origin env, not config, so the config origin can only mean the repository
+// file. It asks the registry rather than the file, so it judges the bytes that
+// were actually loaded.
 func refuseLoadedRepositoryEndpoints(reg *flags.Registry, repoConfig string) error {
 	var set []string
 	for _, key := range endpointKeys {
