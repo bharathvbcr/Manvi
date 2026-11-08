@@ -636,7 +636,7 @@ _PAPER_SKIP = re.compile(r"^SKIP (\d+) paper probes: \S")
 # neither of which ships, so in the unpacked copy it must skip exactly this many
 # probes on exactly one line. A different count means the probe set changed
 # under the supplement, and is a failure until this number is updated.
-PAPER_SKIPS_EXPECTED = 30
+PAPER_SKIPS_EXPECTED = 34
 
 
 def judge(name, rc, output, err="", paper_skips=PAPER_SKIPS_EXPECTED):
