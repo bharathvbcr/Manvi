@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,8 +64,10 @@ func trustedPS() (string, bool) {
 // replaced by one found on PATH. Each child is checked to still be this
 // process's own immediately before it is killed, because one listed a moment
 // ago may have exited and been reaped, and its pid handed to a stranger. What
-// is left is the gap between that check and the kill itself: two system calls,
-// microseconds, against a pid that would have to be reused in that time.
+// is left is the gap between that check and the kill itself: milliseconds
+// under load (the ps exiting and a goroutine waking), against a pid that would
+// have to be reused in that time. A child that could not be checked is left
+// alone and named in the result: unverified means not killed, never unreported.
 func endLeftoverChildren() string {
 	ps, ok := trustedPS()
 	if !ok {
@@ -78,13 +81,30 @@ func endLeftoverChildren() string {
 	}
 	self := os.Getpid()
 	var live []childRow
-	for _, r := range rows {
+	var unchecked []int
+	for i, r := range rows {
 		if r.zombie {
 			continue // dead already; only its parent's Wait is missing
 		}
+		if ctx.Err() != nil {
+			// The shared bound ran out before this child's turn.
+			for _, rest := range rows[i:] {
+				if !rest.zombie {
+					unchecked = append(unchecked, rest.pid)
+				}
+			}
+			break
+		}
 		// Re-read now: the listing is stale, and a pid is only ours while its
 		// parent is.
-		if ppid, err := parentOf(ctx, ps, r.pid); err != nil || ppid != self {
+		ppid, exists, err := parentOf(ctx, ps, r.pid)
+		switch {
+		case err != nil:
+			// Could not verify. Not killed, which is right, and not silent
+			// either: a check that did not run is not one that passed.
+			unchecked = append(unchecked, r.pid)
+			continue
+		case !exists || ppid != self:
 			continue
 		}
 		if r.pgid == r.pid {
@@ -96,34 +116,75 @@ func endLeftoverChildren() string {
 	}
 	var left []int
 	for _, r := range live {
-		if !gone(ctx, r) {
+		if !gone(ctx, ps, r) {
 			left = append(left, r.pid)
 		}
 	}
-	if len(left) > 0 {
-		return fmt.Sprintf("child processes %v were still running at exit and could not be ended", left)
+	var problems []string
+	if len(unchecked) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d child process(es) could not be checked and were left running: %v", len(unchecked), unchecked))
 	}
-	return ""
+	if len(left) > 0 {
+		problems = append(problems, fmt.Sprintf("child processes %v were still running at exit and could not be ended", left))
+	}
+	return strings.Join(problems, "; ")
 }
 
-// gone waits, until ctx ends, for the child to be reaped. Its parent's Wait is
-// what removes it and that runs in the goroutine that abandoned it, so a short
-// poll is what there is to wait on.
-func gone(ctx context.Context, r childRow) bool {
+// gonePoll is how often a killed child is looked for, which costs a ps each time.
+const gonePoll = 50 * time.Millisecond
+
+// gone waits, until ctx ends, for the child to be gone. A child that has died
+// but not been waited for is a zombie, which kill(2) still finds, so it counts
+// as gone too: a group is gone when no member of it is anything but a zombie.
+// Its parent's Wait is what removes it, in the goroutine that abandoned it.
+func gone(ctx context.Context, ps string, r childRow) bool {
 	target := r.pid
 	if r.pgid == r.pid {
-		target = -r.pid // a group is gone when its last member is
+		target = -r.pid
 	}
 	for {
 		if err := syscall.Kill(target, 0); err == syscall.ESRCH {
 			return true
 		}
+		if allZombies(ctx, ps, r) {
+			return true
+		}
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(5 * time.Millisecond):
+		case <-time.After(gonePoll):
 		}
 	}
+}
+
+// allZombies reports whether every member of r's group (or r alone, when it
+// does not lead one) is a zombie or gone, from one read of the table. A table
+// that cannot be read answers false: not shown to be gone.
+func allZombies(ctx context.Context, ps string, r childRow) bool {
+	out, _, err := runPS(ctx, ps, "-A", "-o", "pid=,pgid=,stat=")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		pgid, e2 := strconv.Atoi(f[1])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		member := pid == r.pid
+		if r.pgid == r.pid {
+			member = pgid == r.pid
+		}
+		if member && !strings.HasPrefix(f[2], "Z") {
+			return false
+		}
+	}
+	return true
 }
 
 type childRow struct {
@@ -176,12 +237,23 @@ func childRows(ctx context.Context, ps string) ([]childRow, error) {
 	return rows, nil
 }
 
-// parentOf reads one process's parent. A process that is gone has none, and is
-// an error.
-func parentOf(ctx context.Context, ps string, pid int) (int, error) {
+// parentOf reads one process's parent. ps exits 1 when the pid does not exist,
+// which is an answer (exists is false) once kill(2) agrees; any other failure, or a timeout, is an
+// error and the process is unverified.
+func parentOf(ctx context.Context, ps string, pid int) (ppid int, exists bool, err error) {
 	out, _, err := runPS(ctx, ps, "-o", "ppid=", "-p", strconv.Itoa(pid))
-	if err != nil {
-		return 0, err
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		// Believed only when the pid really is gone: a ps that exits 1 for a
+		// process that still answers kill(2) has not said anything about it.
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return 0, false, nil
+		}
+		return 0, false, err
 	}
-	return strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, false, err
+	}
+	ppid, err = strconv.Atoi(strings.TrimSpace(out))
+	return ppid, err == nil, err
 }
