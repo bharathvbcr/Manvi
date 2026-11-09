@@ -3,6 +3,7 @@
 package codingagent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -23,7 +24,7 @@ import (
 func waitPidFile(t *testing.T, path string) int {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) // #nosec G304 -- a path this test made under t.TempDir
 		if err != nil {
 			continue
 		}
@@ -71,14 +72,14 @@ func TestAdvW18ProcgroupMemberForkedBetweenListingsKeepsTheGroupLive(t *testing.
 	oldSignal := signalGroup
 	signalGroup = func(int) {
 		defer close(swept)
-		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0) // #nosec G304 -- a path this test made under t.TempDir
 		if err != nil {
 			return
 		}
 		_, _ = f.WriteString("go\n")
 		_ = f.Close()
 		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-			if raw, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(raw)) != "" {
+			if raw, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(raw)) != "" { // #nosec G304 -- a path this test made under t.TempDir
 				return
 			}
 		}
@@ -123,7 +124,7 @@ func TestAdvW18ProcgroupExecKeepsTheMemberStartTime(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", "read x < "+fifo+"; exec /bin/sleep 30")
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/sh", "-c", "read x < "+fifo+"; exec /bin/sleep 30") // #nosec G204 -- fixed programs, arguments from this test
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -135,14 +136,14 @@ func TestAdvW18ProcgroupExecKeepsTheMemberStartTime(t *testing.T) {
 	if err != nil || len(before) != 1 {
 		t.Fatalf("before exec: %+v, %v", before, err)
 	}
-	f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+	f, err := os.OpenFile(fifo, os.O_WRONLY, 0) // #nosec G304 -- a path this test made under t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _ = f.WriteString("go\n")
 	_ = f.Close()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		out, _ := exec.Command("/bin/ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+		out, _ := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output() // #nosec G204 -- fixed programs, arguments from this test
 		if strings.Contains(string(out), "sleep") {
 			break
 		}
@@ -158,7 +159,7 @@ func TestAdvW18ProcgroupExecKeepsTheMemberStartTime(t *testing.T) {
 func TestAdvW18ProcgroupZombieMemberIsListed(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	// The parent forks a child that exits at once and never waits for it.
-	cmd := exec.Command("/usr/bin/perl", "-e", `my $p = fork(); if ($p == 0) { exit 0 } open(F, ">$ARGV[0]"); print F $p; close F; sleep 60`, pidFile)
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), "/usr/bin/perl", "-e", `my $p = fork(); if ($p == 0) { exit 0 } open(F, ">$ARGV[0]"); print F $p; close F; sleep 60`, pidFile) // #nosec G204 -- fixed programs, arguments from this test
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -257,7 +258,7 @@ func TestAdvW18ProcgroupSweepListsOnlyWhenTheProbeSeesAMember(t *testing.T) {
 // "number free" is the design; pin that a real zombie-only group is NOT empty
 // in the listing, which is what makes the design safe on Darwin.
 func TestAdvW18ProcgroupZombieOnlyGroupListsNonEmpty(t *testing.T) {
-	zombie := exec.Command("/bin/sleep", "30")
+	zombie := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/sleep", "30")
 	zombie.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := zombie.Start(); err != nil {
 		t.Fatal(err)
@@ -324,7 +325,7 @@ func TestAdvW18ProcgroupRealGrandchildIsKilledAndReportedGone(t *testing.T) {
 // Cost: groupLive lists the group every groupPoll while it answers. With ~50
 // members, log the per-listing time and bound it well under the poll.
 func TestAdvW18ProcgroupListingCostWithAFiftyMemberGroup(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", `i=0; while [ $i -lt 50 ]; do sleep 60 & i=$((i+1)); done; wait`)
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/sh", "-c", `i=0; while [ $i -lt 50 ]; do sleep 60 & i=$((i+1)); done; wait`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
