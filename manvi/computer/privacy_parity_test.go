@@ -12,6 +12,8 @@ import (
 	"image/png"
 	"reflect"
 	"testing"
+
+	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
 // The functions below are the screenshot path exactly as it stood before each
@@ -278,6 +280,24 @@ func TestCaptureRefusesWhatTheOracleRefuses(t *testing.T) {
 				t.Fatalf("oracle %v, capture %v, observation kept %v", wantErr, gotErr, r.observation != nil)
 			}
 		})
+	}
+}
+
+func TestApprovalReusesTheCaptureDigestWithoutChangingIt(t *testing.T) {
+	policy := PrivacyPolicy{PID: 1, WindowID: 2}
+	raw := parityObservation(t, 64, 48, "alpha", []Node{{ID: "p", Role: "button", Name: "Go", Enabled: true}})
+	var r workResult
+	if err := r.capture(raw, policy); err != nil {
+		t.Fatal(err)
+	}
+	for name, sel := range map[string]workflow.Selector{"semantic": {Role: "button", Name: "Go"}, "visual": {Visual: &workflow.VisualAnchor{}}} {
+		want, err := approvalFingerprint(raw, sel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.approval(raw, sel); got != want {
+			t.Fatalf("%s: approval digest differs from approvalFingerprint", name)
+		}
 	}
 }
 

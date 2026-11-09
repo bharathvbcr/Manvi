@@ -1142,11 +1142,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = err
 				return r
 			}
-			r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
-			if err != nil {
-				r.err = err
-				return r
-			}
+			r.fingerprint = r.approval(raw, command.Selector.Primary())
 			if r.fingerprint != reviewed {
 				r.err = &approvalChanged{}
 				return r
@@ -1207,11 +1203,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		return r
 	}
 	safe := *r.observation
-	r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
-	if err != nil {
-		r.err = err
-		return r
-	}
+	r.fingerprint = r.approval(raw, command.Selector.Primary())
 	o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason, Target: command.Step.Target}
 	if command.Kind != "observe_after" {
 		if err := validateVisualPrivacy(raw, opts.Privacy, command.Selector.Primary().Visual); err != nil {
