@@ -188,8 +188,8 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 // Reasons a HOME cannot anchor seat routing. Each names the variable and the
 // property that failed, never the path, because the path is operator content.
 const (
-	homeUnusable     = "HOME is not a usable absolute path"
-	homeNotOwned     = "HOME not owned by this user"
+	homeUnusable      = "HOME is not a usable absolute path"
+	homeNotOwned      = "HOME not owned by this user"
 	homeWorldWritable = "HOME is group- or world-writable"
 )
 
