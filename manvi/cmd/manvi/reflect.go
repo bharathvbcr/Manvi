@@ -150,22 +150,9 @@ func reflectCommand(out, notes io.Writer, reg *flags.Registry, args []string) er
 		}
 		return err
 	}
-	log, report, err := sessions.Load(id)
+	packet, err := reflectionPacket(notes, sessions, id)
 	if err != nil {
 		return err
-	}
-	packet, err := lessons.BuildPacket(id, log.Events())
-	if err != nil {
-		return err
-	}
-	if report.TrimmedTurns > 0 {
-		// Said to the reflector as well as to the operator: a packet built from
-		// what retention left is not the whole session, and a lesson that does
-		// not know that will claim more than it saw.
-		note := fmt.Sprintf("The session store dropped this session's %d oldest turn(s) to stay within its size bound "+
-			"before it was loaded, so everything above describes only what remained.", report.TrimmedTurns)
-		packet += "\nNOTE: " + note + "\n"
-		_, _ = fmt.Fprintf(notes, "manvi: %s\n", note)
 	}
 
 	store, err := artifacts.NewStore(artifactsDir())
@@ -263,6 +250,27 @@ func truncateForNotes(s string) string {
 		return string(r[:limit]) + "… (truncated)"
 	}
 	return s
+}
+
+// reflectionPacket loads session id and builds the packet the reflector reads.
+// A session retention trimmed is said to the reflector as well as to the
+// operator: a packet built from what retention left is not the whole session, and
+// a lesson that does not know that will claim more than it saw.
+func reflectionPacket(notes io.Writer, sessions *session.Store, id string) (string, error) {
+	log, report, err := sessions.Load(id)
+	if err != nil {
+		return "", err
+	}
+	packet, err := lessons.BuildPacket(id, log.Events())
+	if err != nil {
+		return "", err
+	}
+	if report.TrimmedTurns > 0 {
+		note := trimNote(report.TrimmedTurns) + "; everything above describes only what remained"
+		packet += "\nNOTE: " + note + ".\n"
+		_, _ = fmt.Fprintf(notes, "manvi: %s\n", note)
+	}
+	return packet, nil
 }
 
 // runReflector asks the reflector role one question and returns its answer.

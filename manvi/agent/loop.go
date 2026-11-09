@@ -408,7 +408,7 @@ func NewLoop(cfg Config, b *bus.Bus, log *session.Log, registry *tools.Registry)
 		cfg: cfg, bus: b, log: log, tools: registry,
 		repeats:    newRepeatTracker(),
 		effortPlan: plan,
-		effort:     cfg.Effort,
+		effort:     cfg.Effort, // openingEffort, before the Loop exists
 	}
 
 	// Compaction runs in the pre-step waterfall, but it does not rewrite the
@@ -1137,7 +1137,7 @@ func (l *Loop) openTurn(ctx context.Context, prompt llm.Message) (int, error) {
 		return 0, err
 	}
 
-	l.effort = l.cfg.Effort
+	l.effort = l.openingEffort()
 	return currentTurn, nil
 }
 
@@ -1847,6 +1847,13 @@ func (l *Loop) newRequest(messages []llm.Message, schemas []llm.ToolSchema, effo
 	}
 }
 
+// openingEffort is the tier a turn's first request carries: the configured one.
+// l.effort starts there when a turn opens and only rises inside the turn, when it
+// is shown to be circling (see agent/effort.go), so a request sized before the
+// turn starts takes it from here and not from l.effort, which still holds the
+// last turn's escalation until the next turn resets it.
+func (l *Loop) openingEffort() string { return l.cfg.Effort }
+
 // Draft is the request a turn opened with user would send first, before the
 // waterfalls that reshape it: the same model, system prompt, tool schemas and
 // output bound. It runs nothing and records nothing.
@@ -1862,7 +1869,7 @@ func (l *Loop) newRequest(messages []llm.Message, schemas []llm.ToolSchema, effo
 // prompt and tool set would size a request nobody sends. It does not predict the
 // mid-conversation notice a differing prompt appends.
 func (l *Loop) Draft(user llm.Message) llm.Request {
-	request := l.newRequest([]llm.Message{user}, l.schemas(), l.cfg.Effort)
+	request := l.newRequest([]llm.Message{user}, l.schemas(), l.openingEffort())
 	if system, tools, ok := l.draftFrame(); ok {
 		request.System, request.Tools = system, tools
 	}
