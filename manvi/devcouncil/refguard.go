@@ -311,18 +311,18 @@ func worktreeKey(path, ref string) string { return "worktree:" + path + ":" + re
 
 // adminKey names a ref of a linked worktree, addressed by its administrative
 // directory so that it can be read and restored with no working tree.
-func adminKey(admin, ref string) string { return "admin:" + admin + ":" + ref }
+// The "@" after the prefix marks it: a worktree path never starts with one.
+func adminKey(admin, ref string) string { return "worktree:@" + admin + ":" + ref }
 
 // refLocation is where a snapshot key lives: the directory to run git in, the
 // global arguments that point it at the right git directory, and the ref's name
 // there.
 func (r *Registry) refLocation(key string) (dir string, global []string, name string) {
-	if rest, ok := strings.CutPrefix(key, "admin:"); ok {
-		i := strings.LastIndex(rest, ":")
-		return r.deps.Root, []string{"--git-dir=" + rest[:i]}, rest[i+1:]
-	}
 	if rest, ok := strings.CutPrefix(key, "worktree:"); ok {
 		i := strings.LastIndex(rest, ":")
+		if admin, isAdmin := strings.CutPrefix(rest[:i], "@"); isAdmin {
+			return r.deps.Root, []string{"--git-dir=" + admin}, rest[i+1:]
+		}
 		return rest[:i], nil, rest[i+1:]
 	}
 	return r.deps.Root, nil, key
@@ -506,7 +506,7 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 		}
 	}
 	for _, path := range lost {
-		v.refs = append(v.refs, guardedRef{Ref: "admin:" + path, Problem: fmt.Sprintf(
+		v.refs = append(v.refs, guardedRef{Ref: "worktree:@" + path, Problem: fmt.Sprintf(
 			"the linked worktree's refs could be read before and cannot now (%s): its own refs were not scanned and may have moved",
 			after.skipped[path])})
 		v.manual = v.manual || rollback
