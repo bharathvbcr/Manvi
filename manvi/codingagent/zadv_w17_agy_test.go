@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"slices"
 	"strings"
 	"sync"
@@ -71,7 +70,7 @@ func TestAdvW17NeutraliseGapInvisibleCharsPassThrough(t *testing.T) {
 func TestAdvW17NeutraliseGapLiteralEscapesSpoofNeutralisedOnes(t *testing.T) {
 	pairs := [][2]string{
 		{"\x1b[2J", `\x1b[2J`},
-		{"‮evil", `<U+202E>evil`},
+		{"\u202eevil", `<U+202E>evil`},
 		{"\xff", `\xff`},
 	}
 	for _, p := range pairs {
@@ -87,15 +86,21 @@ func TestAdvW17NeutraliseGapLiteralEscapesSpoofNeutralisedOnes(t *testing.T) {
 // function is meant to remove, is a fixed point (double neutralisation is a
 // no-op), never grows past 4x, and keeps every newline and tab.
 func TestAdvW17NeutraliseProperties(t *testing.T) {
-	rng := rand.New(rand.NewSource(17))
-	alphabet := []string{"a", " ", "\n", "\t", "\x00", "\x1b", "\x7f", "\x9b", "\xc2\x9b", "\xff", "\xc0\x80", "\xed\xa0\x80", "‮", "⁦", "‏", "؜", "€", "😀", "\xf0\x9f", "\xef\xbf\xbd", "\\", "x1b", "<U+202E>"}
+	state := uint64(17)
+	next := func(n int) int { // a fixed xorshift stream: reproducible, not a source of secrets
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		return int(state % uint64(n)) //nolint:gosec // n is a small positive constant and the result is below n
+	}
+	alphabet := []string{"a", " ", "\n", "\t", "\x00", "\x1b", "\x7f", "\x9b", "\xc2\x9b", "\xff", "\xc0\x80", "\xed\xa0\x80", "\u202e", "\u2066", "\u200f", "\u061c", "€", "😀", "\xf0\x9f", "\xef\xbf\xbd", "\\", "x1b", "<U+202E>"}
 	for i := 0; i < 20000; i++ {
 		var b strings.Builder
-		for n := rng.Intn(24); n > 0; n-- {
-			if rng.Intn(5) == 0 {
-				b.WriteByte(byte(rng.Intn(256)))
+		for n := next(24); n > 0; n-- {
+			if next(5) == 0 {
+				b.WriteByte(byte(next(256))) //nolint:gosec // value is below 256
 			} else {
-				b.WriteString(alphabet[rng.Intn(len(alphabet))])
+				b.WriteString(alphabet[next(len(alphabet))])
 			}
 		}
 		in := b.String()
@@ -128,7 +133,7 @@ func TestAdvW17NeutraliseProperties(t *testing.T) {
 // Worst-case 1 MiB inputs stay linear in allocations: one builder grown a few
 // times, never per rune.
 func TestAdvW17NeutraliseWorstCaseAllocatesBoundedly(t *testing.T) {
-	for name, unit := range map[string]string{"all ESC": "\x1b", "all invalid": "\xff", "all bidi": "‮", "late first hit": "clean text "} {
+	for name, unit := range map[string]string{"all ESC": "\x1b", "all invalid": "\xff", "all bidi": "\u202e", "late first hit": "clean text "} {
 		s := strings.Repeat(unit, (1<<20)/len(unit))
 		if name == "late first hit" {
 			s += "\x1b"
@@ -165,7 +170,7 @@ func TestAdvW17NeutraliseGapNonTextFieldsCarryRawAgentBytes(t *testing.T) {
 	if raw(ev.Tools[0].Input) {
 		t.Log("GAP: Claude Tool.Input keeps raw control bytes (JSON-escaped input is decoded by claudeRaw only for string inputs)")
 	}
-	ev, ok, err = cl.userResults(claudeFrame{Message: json.RawMessage(`{"content":[{"type":"tool_result","tool_use_id":"t1","content":"\u001b[31mboom‮"}]}`)})
+	ev, ok, err = cl.userResults(claudeFrame{Message: json.RawMessage(`{"content":[{"type":"tool_result","tool_use_id":"t1","content":"\u001b[31mboom\u202e"}]}`)})
 	if err != nil || !ok {
 		t.Fatalf("user frame: ok=%v err=%v", ok, err)
 	}
@@ -176,7 +181,7 @@ func TestAdvW17NeutraliseGapNonTextFieldsCarryRawAgentBytes(t *testing.T) {
 	// A permission request's payload is the provider's JSON, passed through.
 	cl.turnID = "T"
 	cl.pending, cl.seen = map[string]*claudePending{}, map[string]bool{}
-	ev, ok, err = cl.capture(claudeFrame{RequestID: "r1", Request: json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls ‮ gnp.exe"}}`)})
+	ev, ok, err = cl.capture(claudeFrame{RequestID: "r1", Request: json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls \u202e gnp.exe"}}`)})
 	if err != nil || !ok || ev.Request == nil {
 		t.Fatalf("capture: ok=%v err=%v", ok, err)
 	}
