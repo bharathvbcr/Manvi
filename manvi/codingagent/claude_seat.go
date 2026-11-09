@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -108,6 +109,7 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 
 	home, err := os.UserHomeDir()
 	homeProblem := homeUnusable
+	rawHome := home // the spelling HOME had, kept as a path string only when HOME turns out unusable
 	if err == nil {
 		// Resolve HOME exactly once; everything below reads through the resolved path.
 		var problem string
@@ -115,20 +117,11 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 			err = errors.New(problem)
 			homeProblem = problem
 		}
+	} else {
+		rawHome = ""
 	}
 	if err != nil {
-		// Without a usable home directory there is no ~/.claude-accounts to map
-		// a seat from, so an operator with no seats gets the unrouted launch. A
-		// checkout that pins a seat does not: launching it on the ambient account
-		// is the one thing the marker exists to prevent.
-		_, _, pinned, markerErr := findClaudeAccountMarker(cwd, "")
-		if markerErr != nil {
-			return envOverrides{}, markerErr
-		}
-		if pinned {
-			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but " + homeProblem + "; refusing to launch on the default account")
-		}
-		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
+		return unusableHomeOverrides(cwd, rawHome, homeProblem, nestedSessionMarkers)
 	}
 
 	markerRoot, account, hasMarker, err := findClaudeAccountMarker(cwd, home)
@@ -185,6 +178,91 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 	return envOverrides{unsetKeys: unset}, nil
 }
 
+// unusableHomeOverrides decides the launch when HOME cannot anchor seat routing
+// (rawHome is the path string HOME had, or "" when none is known). Nothing under
+// HOME is trusted, but a pin is the operator's word that this checkout must not
+// run on the ambient account, so the marker search covers every directory it
+// would cover with a usable HOME (see unusableHomeMarkerDirs) and any pin refuses.
+//
+// Env hygiene, compared with main: main had no unusable-HOME branch for a known
+// absolute HOME (a group-writable or foreign-owned one was believed), so it
+// ran the ordinary path: no marker and no ~/.claude-accounts meant only the
+// nested-session markers were dropped; either one meant the full seat set was
+// stripped and the default login was checked against the named seats. The first
+// case is kept as is. The second cannot be reproduced, because the seat list and
+// ~/.claude.json live under a directory this process refuses to read, and
+// launching without the check would be weaker than main, so a HOME that holds a
+// ~/.claude-accounts entry is refused instead.
+func unusableHomeOverrides(cwd, rawHome, homeProblem string, nestedSessionMarkers []string) (envOverrides, error) {
+	_, _, pinned, markerErr := findClaudeAccountMarkerIn(cwd, func(dir string) []string {
+		return unusableHomeMarkerDirs(dir, rawHome)
+	})
+	if markerErr != nil {
+		return envOverrides{}, markerErr
+	}
+	if pinned {
+		return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but " + homeProblem + "; refusing to launch on the default account")
+	}
+	if knownHomePath(rawHome) {
+		if _, statErr := os.Lstat(filepath.Join(rawHome, ".claude-accounts")); !errors.Is(statErr, os.ErrNotExist) {
+			return envOverrides{}, errors.New("~/.claude-accounts is present, but " + homeProblem + "; cannot check the default login against its seats, refusing to launch")
+		}
+	}
+	return envOverrides{unsetKeys: nestedSessionMarkers}, nil
+}
+
+// knownHomePath reports whether home names a directory that can bound a search:
+// an absolute path that is not a filesystem root.
+func knownHomePath(home string) bool {
+	return home != "" && filepath.IsAbs(home) && !filesystemRoot(home)
+}
+
+// unusableHomeMarkerDirs lists the directories whose .claude-account must be
+// honoured for dir when HOME is unusable: everything markerSearchDirs would
+// list for a usable HOME, and more. Under the HOME path (by spelling, by its
+// resolved spelling, or by file identity) that is the checkout and every
+// ancestor strictly below it. Anywhere else, or with no usable-looking HOME path
+// at all (unset, relative), it is the whole chain up to the filesystem root. A
+// HOME that is itself a filesystem root keeps the checkout-root-only search. The HOME directory is used only as
+// a path bound and a stat identity, never read, and over-searching only refuses
+// more launches.
+func unusableHomeMarkerDirs(dir, rawHome string) []string {
+	var bounds []string
+	var homeInfo os.FileInfo
+	if rawHome != "" && filepath.IsAbs(rawHome) {
+		resolved, err := filepath.EvalSymlinks(rawHome)
+		if filesystemRoot(rawHome) || (err == nil && filesystemRoot(resolved)) {
+			// HOME is a filesystem root, which the usable-HOME rules already
+			// call "no home" (a marker in /tmp or /Users is nobody's pin): keep
+			// the checkout-root-only search rather than walking shared ancestors.
+			return markerSearchDirs(dir, "")
+		}
+		bounds = append(bounds, filepath.Clean(rawHome))
+		if err == nil {
+			bounds = append(bounds, filepath.Clean(resolved))
+		}
+		homeInfo, _ = os.Stat(rawHome)
+	}
+	var chain []string
+	for d := filepath.Clean(dir); ; {
+		if slices.Contains(bounds, d) {
+			return chain
+		}
+		if homeInfo != nil {
+			if info, err := os.Stat(d); err == nil && os.SameFile(info, homeInfo) {
+				return chain
+			}
+		}
+		chain = append(chain, d)
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return chain
+}
+
 // Reasons a HOME cannot anchor seat routing. Each names the variable and the
 // property that failed, never the path, because the path is operator content.
 const (
@@ -205,8 +283,13 @@ const (
 //
 // Residual: under `sudo -E`, or where an NFS-mapped uid makes the user's own
 // home appear owned by another uid, HOME fails the ownership test and a
-// checkout that pins a seat is refused. That refusal is deliberate and
-// documented: an unpinned checkout still runs unrouted.
+// checkout that pins a seat is refused, as is one whose HOME holds a
+// ~/.claude-accounts entry (the seats cannot be read to check the default
+// login). Pins are found by searching the same directories a usable HOME
+// would (see unusableHomeMarkerDirs), so a marker between the checkout and
+// HOME still refuses. Only a checkout with no pin anywhere, under a HOME with
+// no ~/.claude-accounts, runs unrouted, with just the nested-session markers
+// dropped, as on main.
 func resolveClaudeHome(home string) (resolved, problem string) {
 	if home == "" || !filepath.IsAbs(home) || filesystemRoot(home) {
 		return "", homeUnusable
@@ -376,11 +459,17 @@ func markerSearchDirs(cwd, home string) []string {
 }
 
 func findClaudeAccountMarker(cwd, home string) (string, string, bool, error) {
-	if root, acct, ok, err := searchClaudeAccountMarker(markerSearchDirs(cwd, home)); ok || err != nil {
+	return findClaudeAccountMarkerIn(cwd, func(dir string) []string { return markerSearchDirs(dir, home) })
+}
+
+// findClaudeAccountMarkerIn searches cwd, then the main checkout of the linked
+// worktree holding it, using dirsFor to decide which directories to look in.
+func findClaudeAccountMarkerIn(cwd string, dirsFor func(string) []string) (string, string, bool, error) {
+	if root, acct, ok, err := searchClaudeAccountMarker(dirsFor(cwd)); ok || err != nil {
 		return root, acct, ok, err
 	}
-	if mainRoot := linkedWorktreeMainCheckout(cwd, home); mainRoot != "" {
-		return searchClaudeAccountMarker(markerSearchDirs(mainRoot, home))
+	if mainRoot := linkedWorktreeMainCheckout(cwd, dirsFor); mainRoot != "" {
+		return searchClaudeAccountMarker(dirsFor(mainRoot))
 	}
 	return "", "", false, nil
 }
@@ -417,9 +506,9 @@ func searchClaudeAccountMarker(dirs []string) (string, string, bool, error) {
 // <common>/worktrees/<name> of the repository it claims, and git's back-pointer
 // <gitdir>/gitdir must name this worktree's own .git file. A forged pair that
 // points at another repository fails both.
-func linkedWorktreeMainCheckout(cwd, home string) string {
+func linkedWorktreeMainCheckout(cwd string, dirsFor func(string) []string) string {
 	dotGit := ""
-	for _, dir := range markerSearchDirs(cwd, home) {
+	for _, dir := range dirsFor(cwd) {
 		candidate := filepath.Join(dir, ".git")
 		info, err := os.Lstat(candidate)
 		if err != nil {
