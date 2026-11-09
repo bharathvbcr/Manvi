@@ -472,32 +472,46 @@ const indexTrackingTimeout = 3 * time.Second
 // gitlinkMode is the index mode of a submodule's entry.
 const gitlinkMode = "160000"
 
+// gitlinkEntryMax is the size of one `ls-files -z --stage` entry for a path of
+// length 0 in the longest object format (sha256): mode, space, 64 hex digits,
+// space, stage, tab, and the terminating NUL.
+const gitlinkEntryMax = len(gitlinkMode) + 1 + 64 + 1 + 1 + 1 + 1
+
 // indexTracksUnder says whether the index of the git checkout holding outer lists
-// anything at or under rel (slash-separated, relative to outer) that is not a
-// submodule, or whether that cannot be told. True means "tracked or unknown", the
-// fail-closed answer: git failing or timing out is true. False is a successful run
-// listing nothing, a gitlink (the submodule's own entry), or an outer that lies in
-// no repository, where there is no index. It runs git through runGit, the host's
-// one git runner, which pins core.hooksPath and core.fsmonitor and builds the
-// child's environment (so a GIT_DIR a parent exported cannot change the answer,
-// and GIT_OPTIONAL_LOCKS=0 keeps it from taking the index lock). It reads only the
-// first entry's mode, so the work is bounded however many files are tracked, and it
-// judges output and exit status, never git's messages. --literal-pathspecs makes
-// rel a path and not a pattern.
+// anything at or under rel (slash-separated, relative to outer) other than rel
+// itself being a submodule, or whether that cannot be told. True means "tracked or
+// unknown", the fail-closed answer: git failing or timing out is true. False is a
+// successful run listing nothing, or listing exactly one entry, a gitlink whose
+// path is rel (D itself is a submodule), or an outer that lies in no repository,
+// where there is no index. Any other entry, a gitlink deeper down included, is a
+// file the outer tree owns: a forged marker at D with a submodule planted beside
+// tracked files must not read as a boundary. It runs git through runGit, the
+// host's one git runner, which pins core.hooksPath and core.fsmonitor and builds
+// the child's environment (so a GIT_DIR a parent exported cannot change the
+// answer, and GIT_OPTIONAL_LOCKS=0 keeps it from taking the index lock). The read
+// is capped at the size of the one exempt entry, so a second entry of any kind
+// is output past the cap, which runGit reports as truncated, and that is tracked:
+// the work is bounded however many files are tracked. It judges output and exit
+// status, never git's messages. --literal-pathspecs makes rel a path and not a
+// pattern.
 func indexTracksUnder(outer, rel string) bool {
 	if !insideGitRepository(outer) {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), indexTrackingTimeout)
 	defer cancel()
-	out, _, err := runGit(ctx, outer, len(gitlinkMode)+1, "--literal-pathspecs", "ls-files", "-z", "--stage", "--", rel)
-	if err != nil {
+	out, truncated, err := runGit(ctx, outer, gitlinkEntryMax+len(rel), "--literal-pathspecs", "ls-files", "-z", "--stage", "--", rel)
+	if err != nil || truncated {
 		return true
 	}
 	if len(out) == 0 {
 		return false
 	}
-	return len(out) < len(gitlinkMode) || string(out[:len(gitlinkMode)]) != gitlinkMode
+	meta, path, ok := strings.Cut(strings.TrimSuffix(string(out), "\x00"), "\t")
+	if !ok || strings.ContainsRune(path, 0) || path != rel {
+		return true
+	}
+	return !strings.HasPrefix(meta, gitlinkMode+" ")
 }
 
 // insideGitRepository says whether outer, or a directory above it, holds a .git

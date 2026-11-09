@@ -105,3 +105,30 @@ func BenchmarkHarnessBusyBoundary(b *testing.B) {
 		})
 	}
 }
+
+// A forged marker at D does not separate D when the outer index tracks files under
+// it, even when a gitlink sorts before them: only a gitlink at D itself is exempt.
+func TestPlantedMarkerWithAGitlinkBesideTrackedFilesIsStillOverlap(t *testing.T) {
+	root := resolvedDir(t)
+	gitFixture(t, root, "init", "-b", "main")
+	d := filepath.Join(root, "D")
+	if err := os.MkdirAll(d, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "file.txt"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitFixture(t, root, "add", "D/file.txt")
+	// A gitlink under D that sorts before file.txt.
+	gitFixture(t, root, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,D/0sub")
+	gitFixture(t, root, "commit", "-m", "tracked files and a gitlink under D")
+	if err := os.MkdirAll(filepath.Join(d, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !overlap(t, root, d) {
+		t.Error("a planted marker at a directory whose files the outer index tracks separated it, through a gitlink beside them")
+	}
+}
