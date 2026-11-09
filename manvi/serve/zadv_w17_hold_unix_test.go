@@ -108,6 +108,10 @@ func TestZadvW17UnsearchableDirectoryOnTheWalkIsOverlap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(inner, ".git"), []byte("gitdir: x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A nested repository's gitdir exists; "gitdir: x" is a marker only if x does.
+	if err := os.Mkdir(filepath.Join(inner, "x"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	rootPath, rootInfo := checkoutOf(t, root)
 	innerPath, innerInfo := checkoutOf(t, inner)
 	if checkoutsOverlap(rootInfo, rootPath, innerInfo, innerPath) {

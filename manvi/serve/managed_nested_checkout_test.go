@@ -13,7 +13,7 @@ import (
 // lane, nor the lane the root: they are two working trees. A subdirectory of a
 // tree, or a plain directory nested in another, is still the same files.
 
-func gitFixture(t *testing.T, dir string, args ...string) {
+func gitFixture(t testing.TB, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...) // #nosec G204 -- the binary is the literal "git"; the arguments are this test's own.
 	cmd.Dir = dir
@@ -143,7 +143,11 @@ func TestSubmoduleStyleGitFileSeparatesCheckouts(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../../.git/modules/lib\n"), 0o600); err != nil {
+	// A submodule's gitdir exists under its superproject.
+	if err := os.MkdirAll(filepath.Join(root, "modules", "lib"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../../modules/lib\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if overlap(t, root, sub) {

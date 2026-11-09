@@ -365,23 +365,146 @@ func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath 
 	return false
 }
 
-// hasGitBoundary says whether a git working tree starts between outer and inner,
-// where inner is inside outer: some directory from inner itself up to, and not
-// including, outer holds a .git entry. A linked worktree and a submodule keep a
-// .git file and a repository a .git directory, so any entry counts. It is read from
-// the file system with Lstat, not from git's output, so it does not depend on git
-// being installed, on PATH or on the locale. An Lstat error other than not-exist
-// is no boundary, which is overlap: the check fails closed. outer's own .git is not
-// a boundary, since outer is the tree being asked about.
+// hasGitBoundary says whether a separate git working tree starts between outer and
+// inner, where inner is inside outer. Walking from inner up to, and not including,
+// outer, a directory D holds a boundary only if it holds a marker the outer tree's
+// own records confirm:
+//
+//   - the walk reads .git with Lstat; a directory with no .git entry is no
+//     boundary, and no git process runs for it. An Lstat error other than
+//     not-exist ends the walk with no boundary, which is overlap: the check fails
+//     closed.
+//   - (a) the marker is well formed (wellFormedGitMarker): a real .git directory
+//     holding HEAD, or a regular file reading "gitdir: <path>" where the path is a
+//     directory. A symlink named .git is never well formed. This is read from the
+//     file system, not from git's output, so it does not depend on locale or PATH.
+//   - (b) the outer checkout's index tracks no file under D (indexTracksUnder).
+//
+// (b) is the part an agent cannot forge. (a) is a file anyone running in the tree
+// can write, and the hold exists for exactly that agent or its straggler. But a
+// forged repository in a directory the outer tree tracks is still a directory
+// whose files the outer tree owns, and its index says so; a genuine linked
+// worktree or embedded repository sits in a directory the outer tree does not
+// track (git status in the outer does not descend into an embedded repository, and
+// the diff captured for the outer names none of its files; see
+// TestGitDiffOfARootDoesNotCaptureANestedLanesFiles), and a submodule is a gitlink
+// entry, which is not a tracked file under it. Git failing, timing out or the
+// outer being unreadable is not a boundary: overlap holds. When the outer is not
+// inside a git repository at all there is no index to consult and (a) alone
+// decides, so a forged repository in a plain, non-git outer is believed; that outer
+// has no records of what it owns.
 //
 // outer is found by sameCheckout as well as by spelling, because inner may reach it
 // through a case variant on a case-insensitive volume, and a walk that stepped past
-// it would read the repository's own .git as a boundary.
+// it would read the repository's own .git as a boundary. The path of D below outer
+// is built from the names walked, never from a string comparison of the two paths.
 func hasGitBoundary(outerInfo os.FileInfo, outer, inner string) bool {
+	var below []string // names from outer down to dir, built as the walk climbs
 	for dir := inner; dir != outer; {
 		if info, err := os.Stat(dir); err == nil && sameCheckout(outerInfo, info) {
 			return false
 		}
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case err == nil:
+			rel := filepath.Join(append([]string{filepath.Base(dir)}, below...)...)
+			if wellFormedGitMarker(dir) && !indexTracksUnder(outer, filepath.ToSlash(rel)) {
+				return true
+			}
+		case !errors.Is(err, os.ErrNotExist):
+			return false
+		}
+		below = append([]string{filepath.Base(dir)}, below...)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	return false
+}
+
+// gitMarkerMax bounds how much of a .git file wellFormedGitMarker reads.
+const gitMarkerMax = 4096
+
+// wellFormedGitMarker says whether dir/.git is something git would take as the
+// start of a repository: a directory (not a link to one) holding HEAD, or a
+// regular file (not a link) whose first line is "gitdir: <path>" naming a
+// directory that exists, a relative path being read from dir.
+func wellFormedGitMarker(dir string) bool {
+	marker := filepath.Join(dir, ".git")
+	info, err := os.Lstat(marker)
+	if err != nil {
+		return false
+	}
+	switch {
+	case info.Mode().IsDir():
+		_, err := os.Stat(filepath.Join(marker, "HEAD"))
+		return err == nil
+	case info.Mode().IsRegular():
+		f, err := os.Open(marker) // #nosec G304 -- the path is a .git entry under a checkout being asked about.
+		if err != nil {
+			return false
+		}
+		defer func() { _ = f.Close() }()
+		buf := make([]byte, gitMarkerMax)
+		n, _ := io.ReadFull(f, buf)
+		line, _, _ := strings.Cut(string(buf[:n]), "\n")
+		target, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "gitdir: ")
+		if !ok || target == "" {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, target)
+		}
+		st, err := os.Stat(target)
+		if err != nil {
+			return false
+		}
+		return st.IsDir()
+	}
+	return false
+}
+
+// indexTrackingTimeout bounds the one git process indexTracksUnder starts.
+const indexTrackingTimeout = 3 * time.Second
+
+// gitlinkMode is the index mode of a submodule's entry.
+const gitlinkMode = "160000"
+
+// indexTracksUnder says whether the index of the git checkout holding outer lists
+// anything at or under rel (slash-separated, relative to outer) that is not a
+// submodule, or whether that cannot be told. True means "tracked or unknown", the
+// fail-closed answer: git failing or timing out is true. False is a successful run
+// listing nothing, a gitlink (the submodule's own entry), or an outer that lies in
+// no repository, where there is no index. It runs git through runGit, the host's
+// one git runner, which pins core.hooksPath and core.fsmonitor and builds the
+// child's environment (so a GIT_DIR a parent exported cannot change the answer,
+// and GIT_OPTIONAL_LOCKS=0 keeps it from taking the index lock). It reads only the
+// first entry's mode, so the work is bounded however many files are tracked, and it
+// judges output and exit status, never git's messages. --literal-pathspecs makes
+// rel a path and not a pattern.
+func indexTracksUnder(outer, rel string) bool {
+	if !insideGitRepository(outer) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), indexTrackingTimeout)
+	defer cancel()
+	out, _, err := runGit(ctx, outer, len(gitlinkMode)+1, "--literal-pathspecs", "ls-files", "-z", "--stage", "--", rel)
+	if err != nil {
+		return true
+	}
+	if len(out) == 0 {
+		return false
+	}
+	return len(out) < len(gitlinkMode) || string(out[:len(gitlinkMode)]) != gitlinkMode
+}
+
+// insideGitRepository says whether outer, or a directory above it, holds a .git
+// entry: whether there is a repository whose index could know what outer owns. It
+// reads the file system with Lstat, as hasGitBoundary does.
+func insideGitRepository(outer string) bool {
+	for dir := outer; ; {
 		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 			return true
 		}
@@ -391,7 +514,6 @@ func hasGitBoundary(outerInfo os.FileInfo, outer, inner string) bool {
 		}
 		dir = parent
 	}
-	return false
 }
 
 // HarnessBusy reports, for a worktree, whether a harness block may be in it: a
