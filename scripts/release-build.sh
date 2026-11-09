@@ -75,8 +75,8 @@ else
     # One floor for the Rust archive and the clang link. Unset, each picks
     # its own default and clang's is the runner's SDK (macOS 15), so the
     # binary could refuse to start on an older macOS the Go toolchain still
-    # supports. 12.0 is Go 1.26's own minimum.
-    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+    # supports. 13.0 is Go 1.27's own minimum.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
   fi
   cgo_env="$root/../DevCouncil/rust/gusset-engine/cgo-env.sh"
   if [[ ! -x "$cgo_env" ]]; then

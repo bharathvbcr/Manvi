@@ -1,12 +1,6 @@
 module github.com/bharathvbcr/Manvi/manvi
 
-go 1.26.6
-
-// The toolchain CI and releases build with. `go` above is the language floor;
-// govulncheck under go1.26.6 reports ten standard-library advisories reachable
-// from this module (net/http, net/textproto, crypto/tls, os), all fixed in
-// 1.26.9, and none under it.
-toolchain go1.26.10
+go 1.27.3
 
 require (
 	github.com/awnumar/memguard v0.23.0
