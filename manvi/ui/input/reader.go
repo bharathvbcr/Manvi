@@ -35,6 +35,13 @@ const DefaultEscapeDelay = 50 * time.Millisecond
 // arrives next is keys. A genuine paste that was merely slow loses nothing but
 // its tail's paste framing, which is the cost of never letting a lost end
 // marker hold the keyboard. Ctrl+C ends a paste at once, at any point.
+//
+// Decision (ft-d01ecfde, 2026-11-09): keep this as it is. Two consequences are
+// accepted knowingly. A paste that takes longer than the deadline has its tail
+// decoded as keystrokes, so each carriage return in that tail is an Enter. And
+// a literal 0x03 inside a paste ends it, as Ctrl+C does. Extending the deadline
+// while bytes arrive would trade these for a keyboard that a never-ending
+// stream could hold, which is the worse failure; no behaviour change.
 const DefaultPasteDeadline = 5 * time.Second
 
 // DefaultPasteIdle is how long input must stay silent before a paste that was

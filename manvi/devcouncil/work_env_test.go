@@ -3,6 +3,8 @@ package devcouncil
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -277,20 +279,41 @@ func (e *workEnv) success(res tools.Result) map[string]any {
 // standing header and a fence are present.
 func unfence(t *testing.T, text string) string {
 	t.Helper()
-	if !strings.HasPrefix(text, untrustedHeader+"\n") {
-		t.Fatalf("a read does not open with the standing untrusted-data header: %q", text[:min(len(text), 120)])
+	body, err := unframeBoard(text)
+	if err != nil {
+		t.Fatalf("%v: %q", err, text[:min(len(text), 160)])
 	}
-	rest := strings.TrimPrefix(text, untrustedHeader+"\n")
-	first, body, found := strings.Cut(rest, "\n")
-	if !found || !strings.HasSuffix(first, "json") || strings.Trim(first, "`") != "json" {
-		t.Fatalf("no fence after the header: %q", first)
+	return body
+}
+
+// unframeBoard splits a board read into its body, failing unless the text is
+// exactly one frame: a BEGIN line carrying a nonce, the standing note, the
+// body, and an END line carrying the same nonce as the last line.
+func unframeBoard(text string) (string, error) {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 4 {
+		return "", fmt.Errorf("a board read has %d lines, want a frame", len(lines))
 	}
-	fence := strings.TrimSuffix(first, "json")
-	body = strings.TrimSuffix(body, "\n")
-	if !strings.HasSuffix(body, "\n"+fence) {
-		t.Fatalf("fence %q is not closed at the end", fence)
+	begin := untrustedBeginPrefix + boardFrameLabel + " "
+	if !strings.HasPrefix(lines[0], begin) || !strings.HasSuffix(lines[0], " ---") {
+		return "", fmt.Errorf("a read does not open with the board's BEGIN marker: %q", lines[0])
 	}
-	return strings.TrimSuffix(body, "\n"+fence)
+	nonce := strings.TrimSuffix(strings.TrimPrefix(lines[0], begin), " ---")
+	if nonce == "" {
+		return "", errors.New("the BEGIN marker carries no nonce")
+	}
+	if lines[1] != boardFrameNote || lines[2] != "" {
+		return "", fmt.Errorf("the standing note is missing or altered: %q", lines[1])
+	}
+	end := untrustedEndPrefix + boardFrameLabel + " " + nonce + " ---"
+	if lines[len(lines)-1] != end {
+		return "", fmt.Errorf("the last line is not the END marker for this nonce: %q", lines[len(lines)-1])
+	}
+	body := strings.Join(lines[3:len(lines)-1], "\n")
+	if strings.Contains(body, nonce) {
+		return "", errors.New("the nonce occurs inside the body, so the frame could be closed from within")
+	}
+	return body, nil
 }
 
 func (e *workEnv) putCalls() int { return len(e.board.called("items.put")) }

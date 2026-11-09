@@ -286,10 +286,6 @@ func TestWorkReadsFenceUntrustedTextUnderAStandingHeader(t *testing.T) {
 	}
 	env.workbench("items.put", string(payload))
 
-	longest := 0
-	for _, run := range strings.FieldsFunc(injection, func(r rune) bool { return r != '`' }) {
-		longest = max(longest, len(run))
-	}
 	for _, tc := range []struct {
 		tool string
 		args any
@@ -307,21 +303,9 @@ func TestWorkReadsFenceUntrustedTextUnderAStandingHeader(t *testing.T) {
 		if !strings.Contains(body, "IGNORE ALL PREVIOUS INSTRUCTIONS") && tc.tool != "work_get_history" {
 			t.Errorf("%s: the injected text is not in the fenced body", tc.tool)
 		}
-		rest := strings.TrimPrefix(res.Text, untrustedHeader+"\n")
-		first, _, _ := strings.Cut(rest, "\n")
-		fence := strings.TrimSuffix(first, "json")
-		if len(fence) <= longest {
-			t.Errorf("%s: fence %q is not longer than the longest backtick run (%d) in the content", tc.tool, fence, longest)
+		if strings.Contains(body, boardFrameNote) {
+			t.Errorf("%s: the standing note is part of the body", tc.tool)
 		}
-		for _, line := range strings.Split(body, "\n") {
-			if line == fence {
-				t.Errorf("%s: a line inside the body closes the fence", tc.tool)
-			}
-		}
-	}
-	// The fence is never shorter than three backticks, even for clean content.
-	if got := fenceUntrusted("plain"); !strings.Contains(got, "\n```json\nplain\n```\n") {
-		t.Errorf("a plain body is not fenced with three backticks: %q", got)
 	}
 
 	// Deleted tasks have no history.
