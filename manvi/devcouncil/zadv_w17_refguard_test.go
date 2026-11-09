@@ -347,3 +347,20 @@ func TestZadvW17SymlinkedGitInALinkedWorktreeNeverAllowsALeak(t *testing.T) {
 		t.Fatalf("a leaking commit stayed: %s -> %s", head, got)
 	}
 }
+
+// The regression shape against the base: a linked worktree OUTSIDE the root
+// that lost its .git. The base refused every exec while it was in that state
+// (git failed in that directory); the narrowed guard skips it, so a leak parked
+// in its per-worktree namespace through its admin dir must be caught or
+// reported, not allowed.
+func TestZadvW17NoGitWorktreeOutsideRootThenParkedLeak(t *testing.T) {
+	f := shellCommitFixture(t, true)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-adv-outside")
+	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+	admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", "wt-adv-outside")
+	if err := os.Remove(filepath.Join(wt, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+admin+" update-ref refs/worktree/leak $c"))
+	advParked(t, admin, "refs/worktree/leak", res)
+}
