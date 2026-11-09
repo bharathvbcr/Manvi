@@ -267,3 +267,40 @@ func removeFile(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+// An admin directory broken before the command is refused (no ref snapshot, so
+// the command does not run). If the operator repairs it out of band and a leak
+// is parked there, the next call finds it as a new ref and reports it.
+func TestBrokenAdminDirRefusesThenARepairedOneIsScannedAsNew(t *testing.T) {
+	f := shellCommitFixture(t, true)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-broken-admin")
+	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+	admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", filepath.Base(wt))
+	if res := shell(f, "echo one"); res.IsError {
+		t.Fatalf("a plain call failed: %+v", res)
+	}
+	headFile := filepath.Join(admin, "HEAD")
+	saved, err := os.ReadFile(headFile) // #nosec G304 -- the admin dir this test created.
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeFile(t, headFile)
+	res := shell(f, "echo should-not-run > ran.txt")
+	if !res.IsError || !strings.Contains(res.Text, "ref snapshot") {
+		t.Fatalf("a command ran beside an unreadable admin directory: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "ran.txt")); err == nil {
+		t.Fatal("the command ran")
+	}
+	// The operator repairs it and a leaking commit is parked there outside any call.
+	if err := os.WriteFile(headFile, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	leak := gitOut(t, f.root, "commit-tree", gitOut(t, f.root, "write-tree"), "-m", "leak")
+	gitOut(t, f.root, "--git-dir="+admin, "update-ref", "refs/worktree/leak", leak)
+	again := shell(f, "echo two")
+	if !again.IsError || !again.Blocked || again.Rule != string(policy.RuleSecretPath) ||
+		!strings.Contains(again.Text, "ref_changed_between_calls") || !strings.Contains(again.Text, "refs/worktree/leak") {
+		t.Fatalf("the repaired admin directory's new leaking ref was not reported: %+v", again)
+	}
+}

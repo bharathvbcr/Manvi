@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,19 +46,44 @@ func advScript(t *testing.T, f *fixture, body string) string {
 	return "sh adv.sh"
 }
 
-// advParked asserts the leak was actually parked in the worktree's ref (so the
-// attack ran) and, if it was, that the guard stopped the call. A parked leak
-// beside an allowed call is a FAIL-OPEN.
+// advParked asserts the parked leak was stopped: the call is blocked as
+// path.secret (a missing block is the FAIL-OPEN), the result never carries the
+// value, and the attack is proven to have run either by the ref surviving with
+// MANUAL INTERVENTION NEEDED or, when the ref is gone, by the result's refs
+// payload naming that ref with at least one leaking commit (rolled back).
 func advParked(t *testing.T, admin, ref string, res shellResult) {
 	t.Helper()
-	out := gitOut(t, admin, "for-each-ref", ref)
-	if !strings.Contains(out, ref) {
-		t.Fatalf("bad test: the attack did not run, %s is absent (call: %+v)", ref, res)
+	if !res.IsError || !res.Blocked {
+		t.Fatalf("FAIL-OPEN: a leaking commit was parked in %s of an unreadable linked worktree and the guard allowed the call: %+v", ref, res)
 	}
-	if !res.IsError {
-		t.Fatalf("FAIL-OPEN: a leaking commit sits in %s of an unreadable linked worktree and the guard allowed the call: %+v", ref, res)
+	if res.Rule != advRuleSecret {
+		t.Fatalf("parked leak: want %s, got rule %q: %s", advRuleSecret, res.Rule, res.Text)
 	}
-	advBlocked(t, res, "parked leak")
+	if strings.Contains(res.Text, "AUDITsecretVALUE") {
+		t.Errorf("parked leak: the result carries the secret value: %s", res.Text)
+	}
+	if strings.Contains(gitOut(t, admin, "for-each-ref", ref), ref) {
+		if !strings.Contains(res.Text, "MANUAL INTERVENTION NEEDED") {
+			t.Fatalf("the parked ref survived without MANUAL INTERVENTION NEEDED: %s", res.Text)
+		}
+		return
+	}
+	payload, _, _ := strings.Cut(res.Text, "\n")
+	var body struct {
+		Refs []struct {
+			Ref     string   `json:"ref"`
+			Commits []string `json:"commits"`
+		} `json:"refs"`
+	}
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatalf("bad test: the result has no readable refs payload: %v\n%s", err, res.Text)
+	}
+	for _, g := range body.Refs {
+		if strings.HasPrefix(g.Ref, "worktree:@") && strings.HasSuffix(g.Ref, ":"+ref) && len(g.Commits) > 0 {
+			return
+		}
+	}
+	t.Fatalf("bad test: attack did not run: %s is absent and the result does not name it with a commit: %s", ref, res.Text)
 }
 
 func advAddWorktree(t *testing.T, f *fixture, name string) (wt, admin string) {
@@ -155,7 +181,11 @@ func TestZadvW17TwoStepHideThenParkLeak(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	wt, admin := advAddWorktree(t, f, "wt-adv-twostep")
 	first := shell(f, advScript(t, f, "rm -f "+filepath.Join(wt, ".git")))
-	advBlocked(t, first, "step 1 (worktree hidden by the command)")
+	// Step 1 is harmless: the worktree's refs are read through its admin dir, so
+	// removing its .git hides nothing, and blocking it would be wrong.
+	if first.IsError || first.Blocked {
+		t.Fatalf("step 1 (worktree hidden by the command) was refused or blocked: %+v", first)
+	}
 	res := shell(f, advScript(t, f, leakObject+" && git --git-dir="+admin+" update-ref refs/worktree/leak $c"))
 	advParked(t, admin, "refs/worktree/leak", res)
 }
