@@ -312,8 +312,14 @@ func TestAdvW18ProcgroupRealGrandchildIsKilledAndReportedGone(t *testing.T) {
 		select(undef, undef, undef, 0.01) until -s $ARGV[0];
 		exit 0`)
 	exit, err := c.close()
-	if err != nil || exit.GroupLive {
-		t.Fatalf("close = %+v, %v", exit, err)
+	// The grandchild holds the agent's stdout, so os/exec may report that its
+	// WaitDelay expired before the pipe closed. That is the pipe behaviour, not
+	// what is under test (the group verdict); any other error is a failure.
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("close: unexpected error %v (exit = %+v)", err, exit)
+	}
+	if !exit.Reaped || exit.GroupLive {
+		t.Fatalf("close = %+v, %v; want the agent reaped and its group gone", exit, err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); pidAlive(gc) && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 	}
