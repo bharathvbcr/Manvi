@@ -3,8 +3,11 @@ package devcouncil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,8 +32,8 @@ import (
 //     recorded (refs, refs/stash, and a detached HEAD).
 //  2. After it returns, whatever the way it ended, every ref that changed or
 //     appeared is read, and the commits newly reachable from it, and not from
-//     any recorded oid, are listed (at most maxGuardCommits; more is a violation
-//     that is reported, not scanned in part).
+//     any recorded oid, are listed (at most maxGuardCommits; more is an
+//     unscanned set, reported as such and never scanned in part).
 //  3. Each such commit is judged by treeContentLeaks, the commit tool's own
 //     content scanner, against its parent(s), and by the secret-path names.
 //  4. Only a ref whose new commits leak is rolled back, to its recorded oid
@@ -43,6 +46,11 @@ import (
 // ref and oid state and "manual intervention needed". It is never a pass. A
 // snapshot that cannot be taken in a repository means the command is not run.
 // A directory that is not a git repository is not guarded and does not fail.
+//
+// Two different results block. A commit that leaks is path.secret. A set the
+// guard could not scan (over the cap, a timeout, an unreadable ref or worktree)
+// is ruleRefUnscanned: the same hard block, because an unexamined commit is not
+// a clean one, but never labelled or worded as a credential found.
 //
 // The index and working tree are not touched by a rollback: what a leaking
 // commit recorded stays staged, like a commit the tool refused.
@@ -63,25 +71,58 @@ import (
 //     the operator) is reported on the next call, not rolled back: refGuard
 //     keeps the last call's refs as a baseline and the harness never rewrites
 //     what may be the operator's refs;
-//   - the secret set is read after the command, from the files as they are then.
+//   - the secret set is read after the command, from the files as they are then;
+//   - a two-step disable: `mv .git .gitx`, a command run in what is then a
+//     non-repository (not guarded), `mv .gitx .git`, then the commit. Same class
+//     as commit-and-push: the guard looks at refs around one command, not at what
+//     happens between two;
+//   - a linked worktree that was never readable is skipped (with a note), so a
+//     per-worktree ref it holds is unseen until it is readable again (see
+//     snapshotRefs for why that loses nothing reachable through a shared ref);
+//   - rollback is per Registry, not per author. Overlap with another writer is
+//     detected only between exec_command calls of one Registry, so a leaking
+//     commit that an operator or a sub-agent of another Registry made during
+//     this command's window is rolled back with the command's own. The guard
+//     cannot tell whose commit it is, because attribution needs an identity
+//     (committer, session) that a ref snapshot does not carry. Scoping rollback
+//     to attributable commits is an owner decision, not made here.
 const maxGuardCommits = 200
+
+// ruleRefUnscanned is the rule id of a guard result that is not a finding: the
+// guard could not read or scan what a command (or the interval between two
+// commands) made reachable, so it cannot say whether a credential is in it. It
+// blocks like a leak does (hard, no grant), because an unexamined commit is not
+// a clean one, but it is a different rule on purpose: path.secret says a
+// credential was found, and a fetch of 300 foreign commits found none.
+const ruleRefUnscanned = "ref.unscanned"
 
 var pushWord = regexp.MustCompile(`\b(push|send-pack)\b`)
 
 // refSnapshot is every ref's oid at one moment; a detached HEAD is "HEAD".
 type refSnapshot struct {
 	refs map[string]string
+	// scanned is the linked worktrees whose own refs were read; skipped is the
+	// ones that were not, with why. See snapshotRefs.
+	scanned map[string]bool
+	skipped map[string]string
 }
 
 func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 	out, err := runGit(ctx, r.deps.Root, "for-each-ref", "--format=%(objectname) %(refname)")
 	if err != nil {
-		if strings.Contains(err.Error(), "not a git repository") {
+		// Whether this is a repository is not read from git's message, which is
+		// translated by locale (and by the fake or wrapper a PATH may supply). It
+		// is read from the tree: git finds a repository through a .git entry in
+		// the directory or an ancestor, or because the directory is itself a bare
+		// one, and a directory with neither has nothing to guard. Any other
+		// failure, including one inside a repository, is an error: the command
+		// is not run.
+		if !insideRepository(r.deps.Root) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("listing refs: %w", err)
 	}
-	snap := &refSnapshot{refs: map[string]string{}}
+	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{}}
 	if err := addRefRecords(snap, "", out); err != nil {
 		return nil, err
 	}
@@ -100,8 +141,22 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		if i == 0 || wt.bare {
 			continue
 		}
-		if _, statErr := os.Stat(wt.path); statErr != nil {
-			continue // pruned or on an unmounted volume: nothing there to commit in
+		// A linked worktree that is gone, that git reports as prunable, or whose
+		// directory is no longer a working tree (a plain directory, a deleted .git
+		// file) cannot be asked for its own refs, and one such directory must not
+		// refuse every command until `git worktree prune`. Skipping it loses only
+		// what lives in its per-worktree namespaces (HEAD, refs/bisect,
+		// refs/worktree, refs/rewritten): every other ref lives in the common
+		// directory and is listed through the main worktree above, and a detached
+		// HEAD is read from `worktree list` above, none of which needs the
+		// directory. A per-worktree ref cannot be moved by git without a working
+		// tree. The loss that matters is a worktree readable before a command and
+		// not after it, where the command could have moved such a ref and hidden
+		// it; judgeMoves reports that as unscanned. A locked worktree is no
+		// different from an unlocked one here and is read if it can be.
+		if why := unreadableWorktree(wt); why != "" {
+			snap.skipped[wt.path] = why
+			continue
 		}
 		own, err := runGit(ctx, wt.path, "for-each-ref", "--format=%(objectname) %(refname)",
 			"refs/worktree", "refs/bisect", "refs/rewritten")
@@ -111,8 +166,56 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		if err := addRefRecords(snap, wt.path, own); err != nil {
 			return nil, err
 		}
+		snap.scanned[wt.path] = true
 	}
 	return snap, nil
+}
+
+// unreadableWorktree says why a linked worktree cannot be asked for its own
+// refs, or "" when it can.
+func unreadableWorktree(wt worktreeEntry) string {
+	if wt.prunable {
+		return "git reports it prunable"
+	}
+	if _, err := os.Stat(wt.path); err != nil {
+		return "its directory is missing" // pruned or on an unmounted volume
+	}
+	if _, err := os.Lstat(filepath.Join(wt.path, ".git")); err != nil {
+		return "its directory is not a working tree (no .git)"
+	}
+	return ""
+}
+
+// insideRepository reports whether git could find a repository from dir: a .git
+// entry (directory, or the file of a linked worktree or submodule) in dir or an
+// ancestor, or dir being a bare repository. It errs toward "yes": an entry it
+// cannot examine counts, because the answer decides whether a failing git is
+// ignored.
+func insideRepository(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return true
+	}
+	if isBareRepoShape(abs) {
+		return true
+	}
+	for d := abs; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+	}
+}
+
+func isBareRepoShape(dir string) bool {
+	for _, name := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func addRefRecords(snap *refSnapshot, worktree, out string) error {
@@ -150,10 +253,12 @@ func (r *Registry) refLocation(key string) (dir, name string) {
 type worktreeEntry struct {
 	path, head     string
 	detached, bare bool
+	prunable       bool
 }
 
 // parseWorktrees reads `git worktree list --porcelain`: blank-line separated
-// records of "worktree <path>", "HEAD <oid>", "branch <ref>" or "detached".
+// records of "worktree <path>", "HEAD <oid>", "branch <ref>", "detached",
+// "bare", "locked [reason]" and "prunable [reason]".
 func parseWorktrees(out string) []worktreeEntry {
 	var entries []worktreeEntry
 	var cur *worktreeEntry
@@ -169,6 +274,8 @@ func parseWorktrees(out string) []worktreeEntry {
 			cur.detached = true
 		case line == "bare":
 			cur.bare = true
+		case line == "prunable" || strings.HasPrefix(line, "prunable "):
+			cur.prunable = true
 		}
 	}
 	return entries
@@ -245,7 +352,8 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 			moved = append(moved, name)
 		}
 	}
-	if len(moved) == 0 {
+	lost := before.unreadableNow(after)
+	if len(moved) == 0 && len(lost) == 0 {
 		return nil
 	}
 	sort.Strings(moved)
@@ -319,10 +427,29 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 			v.refs = append(v.refs, g)
 		}
 	}
+	for _, path := range lost {
+		v.refs = append(v.refs, guardedRef{Ref: "worktree:" + path, Problem: fmt.Sprintf(
+			"the linked worktree could be read before and cannot now (%s): its own refs were not scanned and may have moved",
+			after.skipped[path])})
+		v.manual = v.manual || rollback
+	}
 	if len(v.refs) == 0 {
 		return nil
 	}
 	return v
+}
+
+// unreadableNow lists the linked worktrees whose own refs were read in s and
+// that after still lists but cannot read, sorted.
+func (s *refSnapshot) unreadableNow(after *refSnapshot) []string {
+	var lost []string
+	for path := range s.scanned {
+		if _, skipped := after.skipped[path]; skipped {
+			lost = append(lost, path)
+		}
+	}
+	sort.Strings(lost)
+	return lost
 }
 
 // newCommits lists the commits reachable from oid and from none of the
@@ -466,6 +593,15 @@ func (r *Registry) pushNotes(refs []guardedRef, command string) []string {
 	return notes
 }
 
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func describeRefs(refs map[string]string) string {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
@@ -498,8 +634,53 @@ func describeMoved(before, after *refSnapshot, moved []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// withViolation makes the command's result the violation it caused.
+// leaked reports whether the guard found a credential: some ref's new commits
+// carry one. A violation with none is the guard failing to look, not finding.
+func (v *refViolation) leaked() bool {
+	for _, g := range v.refs {
+		if len(g.Commits) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// withViolation makes the command's result the violation it caused. A finding
+// is path.secret. A set the guard could not scan is ruleRefUnscanned: the same
+// block (hard, is_error, no grant) with its own label and words, because "could
+// not scan" is not "carries a credential".
 func (v *refViolation) withViolation(res tools.Result) tools.Result {
+	rule, operation, reason := string(policy.RuleSecretPath), "shell_commit", v.leakReason()
+	if v.between {
+		operation = "ref_changed_between_calls"
+	}
+	if !v.leaked() {
+		rule, reason = ruleRefUnscanned, v.unscannedReason()
+		operation = "shell_ref_unscanned"
+		if v.between {
+			operation = "ref_unscanned_between_calls"
+		}
+	}
+	payload := map[string]any{
+		"operation":            operation,
+		"rule":                 rule,
+		"severity":             string(policy.Hard),
+		"reason":               reason,
+		"refs":                 v.refs,
+		"manual_intervention":  v.manual,
+		"notes":                v.notes,
+		"command_output_below": true,
+	}
+	data, _ := json.Marshal(payload)
+	res.Text = string(data) + "\n" + res.Text
+	res.IsError = true
+	res.Blocked = true
+	res.Rule = rule
+	res.Severity = string(policy.Hard)
+	return res
+}
+
+func (v *refViolation) leakReason() string {
 	reason := "the command left commits that carry a credential reachable from a ref. A shell command is not a boundary the harness can read, so the refs are checked after it ran. "
 	if v.between {
 		reason = "a ref changed between agent calls, and the commits it gained carry a credential (see refs). " +
@@ -512,28 +693,28 @@ func (v *refViolation) withViolation(res tools.Result) tools.Result {
 	default:
 		reason += "The refs named were restored to where they stood before the command; the files stay staged or in the working tree. "
 	}
-	reason += "Use the devcouncil git commit tool, which refuses before committing."
-	operation := "shell_commit"
+	return reason + "Use the devcouncil git commit tool, which refuses before committing."
+}
+
+func (v *refViolation) unscannedReason() string {
+	names := make([]string, 0, len(v.refs))
+	for _, g := range v.refs {
+		names = append(names, g.Ref)
+	}
+	where := "the refs it could not read"
+	if len(names) > 0 {
+		where = "ref(s) " + strings.Join(names, ", ")
+	}
+	reason := "the ref guard could not scan what " + where + " made reachable, so it cannot say whether it holds a credential; none was found and nothing was rolled back. " +
+		"Each ref's \"problem\" says why (a cap of " + fmt.Sprint(maxGuardCommits) + " commits, a timeout, or an unreadable repository). "
 	if v.between {
-		operation = "ref_changed_between_calls"
+		reason = "between agent calls, " + reason +
+			"This was not done by the command that just ran: the writer may be the operator, whose refs the harness never rewrites. "
 	}
-	payload := map[string]any{
-		"operation":            operation,
-		"rule":                 string(policy.RuleSecretPath),
-		"severity":             string(policy.Hard),
-		"reason":               reason,
-		"refs":                 v.refs,
-		"manual_intervention":  v.manual,
-		"notes":                v.notes,
-		"command_output_below": true,
+	if v.manual {
+		reason += "MANUAL INTERVENTION NEEDED: inspect the refs named before relying on them. "
 	}
-	data, _ := json.Marshal(payload)
-	res.Text = string(data) + "\n" + res.Text
-	res.IsError = true
-	res.Blocked = true
-	res.Rule = string(policy.RuleSecretPath)
-	res.Severity = string(policy.Hard)
-	return res
+	return reason + "Until it is scanned this stays blocked (an unexamined commit is not a clean one); scan it with the devcouncil git tools or have the operator review it."
 }
 
 // guardTimeout bounds the snapshot taken before the command.
@@ -581,6 +762,9 @@ func (r *Registry) guardBegin(ctx context.Context) (*guardRun, error) {
 		return &guardRun{}, nil
 	}
 	run := &guardRun{before: snap}
+	for _, path := range sortedKeys(snap.skipped) {
+		run.notes = append(run.notes, fmt.Sprintf("linked worktree %s was not scanned for its own refs: %s", path, snap.skipped[path]))
+	}
 	if g.active == nil {
 		g.active = map[*guardRun]bool{}
 	}
