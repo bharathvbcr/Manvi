@@ -373,11 +373,12 @@ func TestAdvW17AnswerAfterConnectionClosedErrors(t *testing.T) {
 // A peer that fills the preflight with events and then ends the turn with the
 // pending cap's worth of callbacks open. The turn end queues its follow-ups
 // inside event, before the budget check, so the backlog can pass the documented
-// 128 by up to the pending cap (32) plus the returned event. It cannot grow past
-// that: the turn end happens once, and a continuation needs an empty backlog.
-// HOLDS as bounded; the excess over maxDeferredEvents is logged as a finding.
+// 128 by up to the pending cap (32) plus the returned event. The bound is
+// maxDeferredBacklog, which counts those withdrawals and the status (ft-5d29c46d),
+// so the sweep asserts it: the backlog stays within it and reaches exactly the
+// largest legitimate turn end (127 items ahead of it, 32 withdrawals, the status).
 func TestAdvW17AgyDrainBacklogBudgetStaysBounded(t *testing.T) {
-	hard := maxDeferredEvents + 32 + 1
+	hard := maxDeferredBacklog
 	worst := 0
 	for chunks := 0; chunks <= 200; chunks++ {
 		s := advAgyIdle(t)
@@ -394,6 +395,9 @@ func TestAdvW17AgyDrainBacklogBudgetStaysBounded(t *testing.T) {
 		if len(s.deferred) > hard {
 			t.Fatalf("BREAK: chunks=%d deferred %d exceeds %d", chunks, len(s.deferred), hard)
 		}
+		if chunks >= maxDrainItems {
+			continue // the first drain stopped at its item budget, before the end
+		}
 		// A second drain on the finished session adds nothing more from a replayed end.
 		s.wire.frames <- wireRead{value: advAgyEnd}
 		before := len(s.deferred)
@@ -401,8 +405,8 @@ func TestAdvW17AgyDrainBacklogBudgetStaysBounded(t *testing.T) {
 			t.Fatalf("BREAK: a replayed turn end grew the backlog %d -> %d", before, len(s.deferred))
 		}
 	}
-	if worst > maxDeferredEvents {
-		t.Logf("FINDING: backlog reached %d, past the documented bound %d (maxDeferredEvents comment says it bounds the backlog left deferred)", worst, maxDeferredEvents)
+	if want := maxDrainItems - 1 + maxPendingCallbacks + 1; worst != want {
+		t.Fatalf("largest backlog = %d, want %d (the bound is %d)", worst, want, maxDeferredBacklog)
 	}
 }
 

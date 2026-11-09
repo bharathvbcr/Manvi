@@ -532,10 +532,31 @@ func (c *connection) awaitGroup(deadline <-chan time.Time) error {
 	return nil
 }
 
-// maxDeferredEvents bounds both the events one response preflight may drain
-// and the backlog it may leave deferred, for every managed adapter: the same
-// run is being protected, so one number.
-const maxDeferredEvents = 128
+// The per-run callback budgets every managed adapter enforces: the same run is
+// being protected, so one number each. A callback is admitted only while fewer
+// than maxPendingCallbacks are awaiting an answer and fewer than
+// maxRunCallbacks have been admitted in the run, and `seen` (the ids admitted,
+// kept so a replayed id is refused) gains an id only where the run's count does,
+// after those checks, so it never holds more than maxRunCallbacks.
+const (
+	maxPendingCallbacks = 32
+	maxRunCallbacks     = 2048
+)
+
+// maxDrainItems bounds how many already-buffered items one response preflight
+// reads. maxDeferredBacklog bounds the events it may leave parked in deferred,
+// and it is the one number that does: it counts the events those items decode
+// to plus what a turn end queues behind itself, which is one withdrawal per
+// callback still pending (at most maxPendingCallbacks) and the status. Every
+// item decodes to at most one event except the turn end, which happens once per
+// turn, so a preflight cannot pass it by construction (the check after each
+// insertion is the enforcement). A turn end is what releases the run, so a
+// preflight that reaches it behind a full read is allowed through to the bound
+// and is never failed for the withdrawals it carries.
+const (
+	maxDrainItems      = 128
+	maxDeferredBacklog = maxDrainItems + maxPendingCallbacks + 1
+)
 
 // drainBacklog is the one bounded preflight drain shared by the managed
 // adapters. It consumes already-buffered handshake-queue items and wire frames
@@ -543,7 +564,15 @@ const maxDeferredEvents = 128
 // in deferred so Next still delivers them in order.
 func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[]Event,
 	item func(wireRead) T, event func(T) (Event, bool, error)) error {
-	for i := 0; i < maxDeferredEvents; i++ {
+	for i := 0; i <= maxDrainItems; i++ {
+		if i == maxDrainItems && (len(*queue) > 0 || len(wire.frames) > 0) {
+			// Something is still buffered past the budget. It is detected by
+			// length, not by reading a frame: a frame read only to find out
+			// would be lost with the failed preflight, and it may be the turn
+			// end. The one reader holds the session lock, so a non-zero length
+			// is not racing a consumer.
+			return errors.New(agent + " response preflight could not drain its bounded event backlog")
+		}
 		var next T
 		if len(*queue) > 0 {
 			next = (*queue)[0]
@@ -568,13 +597,13 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 			return err
 		}
 		if meaningful {
-			if len(*deferred) >= maxDeferredEvents {
-				return errors.New(agent + " response preflight exceeded its event budget")
-			}
 			// event may itself have queued follow-ups behind the one it returns
-			// (a turn end queues its status after the withdrawals it returns first).
+			// (a turn end queues its withdrawals and status behind the first).
 			// The returned event goes ahead of them, the order Next delivers.
 			*deferred = slices.Insert(*deferred, before, e)
+			if len(*deferred) > maxDeferredBacklog {
+				return errors.New(agent + " response preflight exceeded its event budget")
+			}
 		}
 	}
 	return errors.New(agent + " response preflight could not drain its bounded event backlog")
@@ -583,7 +612,7 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 // maxWithdrawnIDs bounds withdrawnIDs. It matches the per-run callback budget
 // (2048 requests), so a run cannot withdraw more ids than the set holds and
 // nothing is evicted in practice; the bound is what keeps it finite.
-const maxWithdrawnIDs = 2048
+const maxWithdrawnIDs = maxRunCallbacks
 
 // withdrawnIDs remembers the callbacks a provider (or the end of its turn)
 // withdrew, so an answer that races the withdrawal is told it was withdrawn

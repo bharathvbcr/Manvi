@@ -194,6 +194,7 @@ type Codex struct {
 	items        map[string]json.RawMessage
 	pending      map[string]*pendingRequest
 	seen         map[string]bool
+	withdrawn    withdrawnIDs
 	requestCount int
 	// ledger counts turns and gates ContinueTurn; see continue.go.
 	ledger turnLedger
@@ -625,6 +626,11 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		if err != nil {
 			return Event{}, false, err
 		}
+		if s.withdrawn.has(id) {
+			// The turn end already withdrew it and the host was told; the
+			// provider's receipt for it is late, not a fault.
+			return Event{}, false, nil
+		}
 		if s.pending[id] == nil {
 			return Event{}, false, errors.New("Codex resolved an unknown callback")
 		}
@@ -646,7 +652,10 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		}
 		s.finished = true
 		s.ledger.last = v.Turn.Status
-		return Event{Status: v.Turn.Status}, true, nil
+		// A callback still awaiting an answer can never be answered once the
+		// turn is over: each is withdrawn ahead of the status, as agy and Claude
+		// do, so the host resolves its decision row.
+		return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: v.Turn.Status})), true, nil
 	case "item/started", "item/completed":
 		var item struct {
 			ID   string `json:"id"`
@@ -758,7 +767,7 @@ func (s *Codex) capture(p packet, thread, turn, item string) (Event, bool, error
 	if err != nil {
 		return Event{}, false, err
 	}
-	if s.seen[id] || len(s.pending) >= 32 || s.requestCount >= 2048 {
+	if s.seen[id] || len(s.pending) >= maxPendingCallbacks || s.requestCount >= maxRunCallbacks {
 		return Event{}, false, errors.New("Codex callback is duplicated or exceeds the run budget")
 	}
 	r.ID = id
@@ -796,7 +805,23 @@ func (s *Codex) drain() error {
 	return drainBacklog("Codex", s.wire, &s.queue, &s.deferred,
 		func(next wireRead) packet { return next.value }, s.event)
 }
+
+// withdrawPending forgets every unanswered callback and returns one CancelledID
+// event for each, in a stable order.
+func (s *Codex) withdrawPending() []Event {
+	var ids []string
+	for id, p := range s.pending {
+		if !p.sent {
+			ids = append(ids, id)
+			delete(s.pending, id)
+		}
+	}
+	return s.withdrawn.withdrawalEvents(ids)
+}
 func (s *Codex) response(request Request, response Response) (json.RawMessage, error) {
+	if s.withdrawn.has(request.ID) {
+		return nil, ErrCallbackWithdrawn
+	}
 	p := s.pending[request.ID]
 	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
 		return nil, errors.New("Codex callback is stale, changed or already consumed")
