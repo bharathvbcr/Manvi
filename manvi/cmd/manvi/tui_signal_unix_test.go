@@ -379,3 +379,86 @@ func TestTUIStopSignalLeavesNoIndexerRunning(t *testing.T) {
 		})
 	}
 }
+
+// sacrificialProcess starts a process that is not a child of the test: a shell
+// starts it and exits, so it is reparented away. Returns its pid; it is killed
+// when the test ends.
+func sacrificialProcess(t *testing.T) int {
+	t.Helper()
+	// #nosec G204 -- a literal shell command.
+	out, err := exec.CommandContext(t.Context(), "sh", "-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
+// The sweep finds the process table through the system ps, never through PATH.
+// A ps placed first on PATH -- as a directory the agent can write to may be --
+// that names a process which is not this one's child must not get it killed,
+// and must not be run at all.
+func TestTUIExitIgnoresAPsOnPath(t *testing.T) {
+	victim := sacrificialProcess(t)
+	dir := t.TempDir()
+	ran := dir + "/ran"
+	// Answers every question with "the victim is your child".
+	script := "#!/bin/sh\ntouch " + ran + "\necho " + strconv.Itoa(victim) + " $PPID " + strconv.Itoa(victim) + " S\n"
+	if err := os.WriteFile(dir+"/ps", []byte(script), 0o700); err != nil { // #nosec G306 -- an executable test stand-in.
+		t.Fatal(err)
+	}
+	cmd, _, _, _ := tuiOnAPtyIn(t, t.TempDir(), "PATH="+dir+":"+os.Getenv("PATH"))
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	_ = waitExit(t, cmd, 30*time.Second)
+	if err := syscall.Kill(victim, 0); err != nil {
+		t.Fatalf("a process that was not the TUI's child was killed at its exit: %v", err)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("the ps on PATH was run")
+	}
+}
+
+// The sweep ends a child of this process, with its group, and leaves a process
+// that is not its child alone even when it is in the table.
+func TestEndLeftoverChildrenKillsOnlyOwnChildren(t *testing.T) {
+	stranger := sacrificialProcess(t)
+	// #nosec G204 -- a literal sleep.
+	own := exec.CommandContext(t.Context(), "sleep", "300")
+	own.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := own.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := make(chan struct{})
+	go func() { _ = own.Wait(); close(reaped) }()
+	t.Cleanup(func() { _ = syscall.Kill(-own.Process.Pid, syscall.SIGKILL) })
+
+	// Other tests in this binary may have left children of their own that
+	// nobody waits for, so what the sweep reports about those is not asserted;
+	// only what it does to these two.
+	_ = endLeftoverChildren()
+	select {
+	case <-reaped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a child of this process was left running")
+	}
+	if err := syscall.Kill(stranger, 0); err != nil {
+		t.Fatalf("a process that is not this one's child was killed: %v", err)
+	}
+}
+
+// Without a trusted ps the sweep does nothing and says so; it does not look
+// elsewhere.
+func TestEndLeftoverChildrenSaysWhenThereIsNoTrustedPS(t *testing.T) {
+	saved := psCandidates
+	psCandidates = []string{t.TempDir() + "/ps"}
+	t.Cleanup(func() { psCandidates = saved })
+	if got := endLeftoverChildren(); !strings.Contains(got, "no trusted ps") {
+		t.Fatalf("got %q, want a report that no trusted ps was found", got)
+	}
+}
