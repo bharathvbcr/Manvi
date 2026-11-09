@@ -121,7 +121,9 @@ func (l *Loop) planFrame() (*session.FrameData, error) {
 	}
 	system := l.log.SystemPrompt()
 	if system == "" {
-		system = l.cfg.SystemPrompt
+		// The log records the scrubbed form, and the request carries what it
+		// recorded, so the frame is planned in that form too.
+		system = l.log.Scrubbed(l.cfg.SystemPrompt)
 	}
 	if !slices.ContainsFunc(history, func(m llm.Message) bool { return m.Role == llm.RoleAssistant }) {
 		return &session.FrameData{System: system, Tools: sortedTools(wanted), Why: session.WhyOpened}, nil
@@ -169,15 +171,30 @@ func toolNames(schemas []llm.ToolSchema) []string {
 
 // draftFrame is the system prompt and tools the next request of this
 // conversation will carry where the frame is sent: the log's frame, as the turn's
-// settleFrame would leave it. ok is false where no frame is sent (or none can be
-// planned), and the caller sizes from the Loop's own prompt and tools.
+// settleFrame would leave it. ok is false where no frame is sent, and the caller
+// sizes from the Loop's own prompt and tools.
+//
+// Where the frame cannot be planned (the history cannot be read) Draft has no
+// error to return, and sizing from the Loop's own prompt and tools would size a
+// request nobody sends. It sizes from the larger of the two instead: the longer
+// system prompt, and the frame's tools together with the Loop's own. That
+// over-estimates, which a spend cap answers by admitting fewer children, never
+// more.
 func (l *Loop) draftFrame() (system string, tools []llm.ToolSchema, ok bool) {
 	if !l.freezes() {
 		return "", nil, false
 	}
 	next, err := l.planFrame()
 	if err != nil {
-		return "", nil, false
+		known := l.log.Wire().Frame
+		if known == nil {
+			return "", nil, false
+		}
+		system = known.System
+		if own := l.log.Scrubbed(l.cfg.SystemPrompt); len(own) > len(system) {
+			system = own
+		}
+		return system, append(slices.Clone(known.Tools), undeclared(known.Tools, l.schemas())...), true
 	}
 	if next == nil {
 		next = l.log.Wire().Frame

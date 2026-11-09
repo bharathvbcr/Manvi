@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -534,7 +535,10 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	// The events were each encoded to be measured; joined, those encodings
 	// are byte-for-byte what marshalling the kept slice produces.
 	encoded := joinArray(keptEncoded)
-	cumulative := droppedBefore + droppedTurns
+	cumulative := saturatingAdd(droppedBefore, droppedTurns)
+	// What this save dropped, for the report: against the previous file when there
+	// is one, and against the log's own events when there is not.
+	reported := reportedDrops(generation > 0, cumulative, trimmedBefore, droppedTurns)
 	body, err := json.Marshal(header{
 		Version:      FormatVersion,
 		ID:           id,
@@ -574,8 +578,17 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 
 	return SaveReport{
 		ID: id, Path: target, Generation: generation + 1,
-		Events: len(kept), TrimmedTurns: max(cumulative-trimmedBefore, 0), Oversize: oversize,
+		Events: len(kept), TrimmedTurns: reported, Oversize: oversize,
 	}, nil
+}
+
+// saturatingAdd is a+b for non-negative counts, held at the largest int rather
+// than wrapping negative when a header already sits at the limit.
+func saturatingAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // rememberMeta records what the file just read or written says about itself.
@@ -1003,4 +1016,14 @@ func joinArray(elements []json.RawMessage) json.RawMessage {
 		out = append(out, e...)
 	}
 	return append(out, ']')
+}
+
+// reportedDrops is what a save reports as dropped. A negative delta means the
+// previous header claimed more turns than the cumulative count holds, so the header
+// lied; it only affects what is reported, so it reads as nothing dropped.
+func reportedDrops(hadFile bool, cumulative, before, dropped int) int {
+	if !hadFile {
+		return dropped
+	}
+	return max(cumulative-before, 0)
 }
