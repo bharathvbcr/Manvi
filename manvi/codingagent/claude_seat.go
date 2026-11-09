@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,7 +76,13 @@ func readRegular(path string, limit int64, open func(string) (*os.File, error)) 
 //     linked worktree whose link git's back-pointer proves) may only name a
 //     valid seat identifier (`[A-Za-z0-9._-]+`); an empty or invalid marker
 //     fails closed, a symlinked one is refused, and an error never repeats
-//     marker content. A marker with no usable `$HOME` fails closed too.
+//     marker content: a name that passed validation may appear in an error,
+//     raw bytes from the marker (or from `~/.claude.json` or
+//     `~/.claude-accounts`) never do; those are named by file and byte length.
+//     A marker with no usable `$HOME` fails closed too; the filesystem root
+//     (and a Windows volume or share root) is not a usable `$HOME`, nor on
+//     Unix is one that cannot be resolved, is not owned by this user, or is
+//     group- or world-writable; HOME is resolved once and used resolved.
 //  2. Every launch drops the nested-session markers `CLAUDECODE` and
 //     `CLAUDE_CODE_ENTRYPOINT`. Only when multi-seat routing is active
 //     (`.claude-account` is present or `$HOME/.claude-accounts` exists) are
@@ -100,7 +107,16 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 	nestedSessionMarkers := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" || !filepath.IsAbs(home) {
+	homeProblem := homeUnusable
+	if err == nil {
+		// Resolve HOME exactly once; everything below reads through the resolved path.
+		var problem string
+		if home, problem = resolveClaudeHome(home); problem != "" {
+			err = errors.New(problem)
+			homeProblem = problem
+		}
+	}
+	if err != nil {
 		// Without a usable home directory there is no ~/.claude-accounts to map
 		// a seat from, so an operator with no seats gets the unrouted launch. A
 		// checkout that pins a seat does not: launching it on the ambient account
@@ -110,7 +126,7 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 			return envOverrides{}, markerErr
 		}
 		if pinned {
-			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but HOME is not a usable absolute path; refusing to launch on the default account")
+			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but " + homeProblem + "; refusing to launch on the default account")
 		}
 		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
 	}
@@ -169,6 +185,70 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 	return envOverrides{unsetKeys: unset}, nil
 }
 
+// Reasons a HOME cannot anchor seat routing. Each names the variable and the
+// property that failed, never the path, because the path is operator content.
+const (
+	homeUnusable     = "HOME is not a usable absolute path"
+	homeNotOwned     = "HOME not owned by this user"
+	homeWorldWritable = "HOME is group- or world-writable"
+)
+
+// resolveClaudeHome resolves home once and returns the resolved path, or a
+// non-empty problem when it cannot anchor seat routing: it must be absolute,
+// exist, resolve to something other than a filesystem root, and (on Unix) be
+// owned by this user and not writable by group or others. A shared parent of
+// many users' trees (/Users, /home, /tmp) fails the last two, so a marker in
+// another user's tree cannot steer a daemon started with that HOME. Callers use
+// the returned path, not the spelling they passed, so a symlink swapped after
+// this call cannot change where anything reads. A HOME that cannot be resolved
+// is unusable, never "unresolved but usable".
+//
+// Residual: under `sudo -E`, or where an NFS-mapped uid makes the user's own
+// home appear owned by another uid, HOME fails the ownership test and a
+// checkout that pins a seat is refused. That refusal is deliberate and
+// documented: an unpinned checkout still runs unrouted.
+func resolveClaudeHome(home string) (resolved, problem string) {
+	if home == "" || !filepath.IsAbs(home) || filesystemRoot(home) {
+		return "", homeUnusable
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil || !filepath.IsAbs(resolved) || filesystemRoot(resolved) {
+		return "", homeUnusable
+	}
+	if problem := homeDirProblem(resolved); problem != "" {
+		return "", problem
+	}
+	return resolved, ""
+}
+
+// usableClaudeHome reports whether home can anchor seat routing.
+func usableClaudeHome(home string) bool {
+	_, problem := resolveClaudeHome(home)
+	return problem == ""
+}
+
+// filesystemRoot reports whether p is the root of its volume: "/", a drive
+// root such as C:\, or a UNC share root. The test uses only filepath, so it
+// answers for the host's own spellings on every GOOS.
+func filesystemRoot(p string) bool {
+	c := filepath.Clean(p)
+	if filepath.Dir(c) == c {
+		return true
+	}
+	rest := c[len(filepath.VolumeName(c)):]
+	return rest == "" || (len(rest) == 1 && os.IsPathSeparator(rest[0]))
+}
+
+// seatIOError drops the path from a file error so only the cause remains
+// (a seat directory is spelled by ~/.claude-accounts, which is operator content).
+func seatIOError(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
+}
+
 type seatLoginEmail struct {
 	seat  string
 	email string
@@ -180,7 +260,7 @@ func readClaudeConfigEmail(path string) (email string, exists bool, err error) {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return "", false, nil
 		}
-		return "", false, statErr
+		return "", false, seatIOError(statErr)
 	}
 	if info.IsDir() {
 		return "", true, errors.New("path is a directory, expected JSON file")
@@ -190,7 +270,7 @@ func readClaudeConfigEmail(path string) (email string, exists bool, err error) {
 		return "", true, errors.New("file exceeds 16 MiB bound")
 	}
 	if readErr != nil {
-		return "", true, readErr
+		return "", true, seatIOError(readErr)
 	}
 	var payload struct {
 		OAuthAccount struct {
@@ -198,7 +278,8 @@ func readClaudeConfigEmail(path string) (email string, exists bool, err error) {
 		} `json:"oauthAccount"`
 	}
 	if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
-		return "", true, jsonErr
+		// The parser's message quotes the offending byte of the file; keep only its size.
+		return "", true, fmt.Errorf("not valid JSON for the expected shape (%d bytes)", len(raw))
 	}
 	return strings.TrimSpace(payload.OAuthAccount.EmailAddress), true, nil
 }
@@ -216,9 +297,8 @@ func verifyDefaultLoginNotPinnedSeat(home string, seats map[string]string) error
 		email, exists, err := readClaudeConfigEmail(seatJSON)
 		if err != nil {
 			return fmt.Errorf(
-				"cannot read login identity for Claude seat %q (%s): %w; fix the seat config or pin this repository via .claude-account",
+				"cannot read login identity for Claude seat %q (.claude.json in its config directory): %w; fix the seat config or pin this repository via .claude-account",
 				acct,
-				seatJSON,
 				err,
 			)
 		}
@@ -244,8 +324,7 @@ func verifyDefaultLoginNotPinnedSeat(home string, seats map[string]string) error
 	for _, entry := range namedEmails {
 		if strings.EqualFold(defaultEmail, entry.email) {
 			return fmt.Errorf(
-				"default ~/.claude.json is signed into %s, which matches pinned seat %q; create .claude-account to pin this repo or re-login default claude to a separate account",
-				defaultEmail,
+				"default ~/.claude.json is signed into the same account as pinned seat %q; create .claude-account to pin this repo or re-login default claude to a separate account",
 				entry.seat,
 			)
 		}
@@ -261,9 +340,10 @@ func verifyDefaultLoginNotPinnedSeat(home string, seats map[string]string) error
 // nearest ancestor holding a .git: a marker in some shared parent directory is
 // not something the operator placed for this checkout.
 func markerSearchDirs(cwd, home string) []string {
+	// A root or unresolvable home is no home: never walk up to shared ancestors.
 	var homeInfo os.FileInfo
-	if home != "" {
-		homeInfo, _ = os.Stat(home)
+	if resolved, problem := resolveClaudeHome(home); problem == "" {
+		homeInfo, _ = os.Stat(resolved)
 	}
 	var chain []string
 	underHome := false
@@ -442,7 +522,7 @@ func loadClaudeAccounts(home string) (map[string]string, bool, error) {
 	}
 	var seen []seatIdentity
 	seats := make(map[string]string)
-	for _, line := range strings.Split(string(raw), "\n") {
+	for lineNo, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -456,7 +536,7 @@ func loadClaudeAccounts(home string) (map[string]string, bool, error) {
 			continue
 		}
 		if !validClaudeSeatName(acct) {
-			return nil, true, fmt.Errorf("invalid seat name %q in ~/.claude-accounts", acct)
+			return nil, true, fmt.Errorf("invalid seat name on line %d of ~/.claude-accounts (%d bytes)", lineNo+1, len(acct))
 		}
 		if _, dup := seats[acct]; dup {
 			return nil, true, fmt.Errorf("seat %q is defined twice in ~/.claude-accounts", acct)
@@ -473,11 +553,11 @@ func loadClaudeAccounts(home string) (map[string]string, bool, error) {
 		}
 		dInfo, dErr := os.Stat(dirText)
 		if dErr != nil || !dInfo.IsDir() {
-			return nil, true, fmt.Errorf("seat %q config directory %s does not exist", acct, dirText)
+			return nil, true, fmt.Errorf("seat %q config directory in ~/.claude-accounts does not exist or is not a directory", acct)
 		}
 		resolvedDir, rErr := filepath.EvalSymlinks(dirText)
 		if rErr != nil {
-			return nil, true, fmt.Errorf("resolve seat %q config directory: %w", acct, rErr)
+			return nil, true, fmt.Errorf("resolve seat %q config directory: %w", acct, seatIOError(rErr))
 		}
 		if defaultInfo != nil && os.SameFile(dInfo, defaultInfo) {
 			return nil, true, fmt.Errorf("seat %q points at the default ~/.claude directory", acct)

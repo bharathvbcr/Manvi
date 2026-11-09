@@ -421,3 +421,243 @@ func TestClaudeSeatLinkedWorktreeSubdirectoryInheritsMainCheckoutSeat(t *testing
 		t.Fatalf("subdirectory inside linked worktree missing CLAUDE_SECURESTORAGE_CONFIG_DIR:\n%s", dump)
 	}
 }
+
+func writeSeatTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeSeatUsableHomeRefusesFilesystemRoots(t *testing.T) {
+	real := t.TempDir()
+	rootLink := filepath.Join(t.TempDir(), "rootlink")
+	rootLinkOK := os.Symlink(string(filepath.Separator), rootLink) == nil
+	dirLink := filepath.Join(t.TempDir(), "homelink")
+	if err := os.Symlink(real, dirLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cases := []struct {
+		name string
+		home string
+		want bool
+	}{
+		{"unix root", "/", false},
+		{"double slash", "//", false},
+		{"dot after root", "/.", false},
+		{"root dotdot", "/..", false},
+		{"windows drive root", `C:\`, false},
+		{"windows drive bare", `C:`, false},
+		{"windows UNC share root", `\\server\share\`, false},
+		{"empty", "", false},
+		{"relative", "home/x", false},
+		{"dot", ".", false},
+		{"nonexistent user home", "/Users/x", false},
+		{"nonexistent user home trailing slash", "/Users/x/", false},
+		{"real temp dir", real, true},
+		{"symlink to a real home", dirLink, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := usableClaudeHome(tc.home); got != tc.want {
+				t.Fatalf("usableClaudeHome(%q) = %v, want %v", tc.home, got, tc.want)
+			}
+		})
+	}
+	if rootLinkOK {
+		if usableClaudeHome(rootLink) {
+			t.Fatalf("a HOME that is a symlink to the filesystem root must be unusable")
+		}
+	}
+}
+
+func TestClaudeSeatFilesystemRootDetectionIsGOOSNeutral(t *testing.T) {
+	// Windows spellings are not absolute on other systems, so usableClaudeHome
+	// refuses them there for a different reason; the root test itself must
+	// still agree on the spellings the host's path package understands.
+	for _, p := range []string{"/", "//", "/.", "/.."} {
+		if !filesystemRoot(p) {
+			t.Fatalf("filesystemRoot(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/Users", "/Users/x", "/Users/x/"} {
+		if filesystemRoot(p) {
+			t.Fatalf("filesystemRoot(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestClaudeSeatHomeRootDoesNotWalkToSharedAncestors(t *testing.T) {
+	// A marker in a shared parent of the checkout (the /tmp or /Users case) must
+	// not pin a seat for a daemon started with HOME=/.
+	shared := t.TempDir()
+	writeSeatTestFile(t, filepath.Join(shared, ".claude-account"), "chandra\n")
+	checkout := filepath.Join(shared, "proj", "sub")
+	if err := os.MkdirAll(checkout, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", "/")
+	t.Setenv("USERPROFILE", "/")
+	ov, err := claudeSeatOverrides(checkout)
+	if err != nil {
+		t.Fatalf("shared-ancestor marker must not deny a HOME=/ launch: %v", err)
+	}
+	if len(ov.set) != 0 {
+		t.Fatalf("shared-ancestor marker pinned a seat under HOME=/: %v", ov.set)
+	}
+}
+
+func TestClaudeSeatHomeRootRefusesACheckoutThatPinsASeat(t *testing.T) {
+	checkout := t.TempDir()
+	writeSeatTestFile(t, filepath.Join(checkout, ".claude-account"), "chandra\n")
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, home := range []string{"/", "//", "/."} {
+		t.Run(home, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			_, ovErr := claudeSeatOverrides(checkout)
+			if ovErr == nil || !strings.Contains(ovErr.Error(), "HOME is not a usable") {
+				t.Fatalf("HOME=%q with a pinned checkout: want unusable-HOME refusal, got %v", home, ovErr)
+			}
+			s, startErr := StartClaude(t.Context(), Options{Program: bin, Cwd: checkout, Mode: "ask"})
+			if s != nil || startErr == nil || !NoProcessStarted(startErr) {
+				if s != nil {
+					_, _ = s.Close()
+				}
+				t.Fatalf("HOME=%q: expected proven pre-spawn refusal, got s=%v err=%v", home, s, startErr)
+			}
+		})
+	}
+}
+
+func TestClaudeSeatHomeSymlinkToRootIsRefusedWhenPinned(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "rootlink")
+	if err := os.Symlink(string(filepath.Separator), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	checkout := t.TempDir()
+	writeSeatTestFile(t, filepath.Join(checkout, ".claude-account"), "chandra\n")
+	t.Setenv("HOME", link)
+	t.Setenv("USERPROFILE", link)
+	if _, err := claudeSeatOverrides(checkout); err == nil || !strings.Contains(err.Error(), "HOME is not a usable") {
+		t.Fatalf("symlink-to-root HOME with a pinned checkout: want unusable-HOME refusal, got %v", err)
+	}
+}
+
+func TestClaudeSeatHomeRootWithoutMarkerStaysUnrouted(t *testing.T) {
+	checkout := t.TempDir()
+	t.Setenv("HOME", "/")
+	t.Setenv("USERPROFILE", "/")
+	ov, err := claudeSeatOverrides(checkout)
+	if err != nil {
+		t.Fatalf("no marker: want the unrouted launch, got %v", err)
+	}
+	if len(ov.set) != 0 || len(ov.unsetKeys) != 2 {
+		t.Fatalf("no marker under HOME=/: want only the nested-session markers dropped, got %+v", ov)
+	}
+}
+
+const (
+	seatLeakEmail  = "leak-canary-7f3a@example.invalid"
+	seatLeakCanary = "leak-canary-9c1d"
+)
+
+func assertNoSeatLeak(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected an error")
+	}
+	msg := err.Error()
+	for _, canary := range []string{seatLeakEmail, "leak-canary", seatLeakCanary, "7f3a", "9c1d"} {
+		if strings.Contains(msg, canary) {
+			t.Fatalf("error repeats operator-file content %q: %q", canary, msg)
+		}
+	}
+	for i := 0; i < len(msg); i++ {
+		if msg[i] < 0x20 || msg[i] == 0x7f {
+			t.Fatalf("error carries control byte %#x: %q", msg[i], msg)
+		}
+	}
+	if strings.Contains(msg, "invalid character") {
+		t.Fatalf("error carries a JSON parser excerpt of operator content: %q", msg)
+	}
+}
+
+func TestClaudeSeatErrorsNeverRepeatOperatorFileContent(t *testing.T) {
+	const badToken = "evil\x01\x1b[31m" + seatLeakCanary
+	emailJSON := `{"oauthAccount":{"emailAddress":"` + seatLeakEmail + `"}}`
+	cases := []struct {
+		name     string
+		accounts string // ~/.claude-accounts, %SEAT% is the alpha seat dir
+		seatJSON string
+		homeJSON string
+		marker   string
+	}{
+		{name: "default login matches seat email", accounts: "alpha %SEAT%\n", seatJSON: emailJSON, homeJSON: emailJSON},
+		{name: "default login json malformed", accounts: "alpha %SEAT%\n", seatJSON: emailJSON, homeJSON: "{" + seatLeakCanary + "\x01"},
+		{name: "default login json wrong type", accounts: "alpha %SEAT%\n", seatJSON: emailJSON, homeJSON: `{"oauthAccount":"` + seatLeakCanary + `"}`},
+		{name: "seat json malformed", accounts: "alpha %SEAT%\n", seatJSON: "{" + seatLeakCanary + "\x01"},
+		{name: "invalid seat token in accounts", accounts: badToken + " %SEAT%\n"},
+		{name: "relative seat dir in accounts", accounts: "alpha relative-" + seatLeakCanary + "\n"},
+		{name: "missing seat dir in accounts", accounts: "alpha /nonexistent/" + seatLeakCanary + "\x01\n"},
+		{name: "duplicate seat in accounts", accounts: "alpha %SEAT%\nalpha %SEAT%\n"},
+		{name: "invalid marker token", accounts: "alpha %SEAT%\n", marker: badToken + "\n"},
+		{name: "invalid marker token no accounts file", marker: "../" + seatLeakCanary + "\x01\n"},
+		{name: "unknown marker seat", accounts: "alpha %SEAT%\n", marker: "beta\n"},
+		{name: "oversized marker", accounts: "alpha %SEAT%\n", marker: seatLeakCanary + strings.Repeat("x", 5000)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			seat := filepath.Join(home, ".claude-alpha")
+			if err := os.MkdirAll(seat, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := filepath.EvalSymlinks(seat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.accounts != "" {
+				writeSeatTestFile(t, filepath.Join(home, ".claude-accounts"), strings.ReplaceAll(tc.accounts, "%SEAT%", resolved))
+			}
+			if tc.seatJSON != "" {
+				writeSeatTestFile(t, filepath.Join(seat, ".claude.json"), tc.seatJSON)
+			}
+			if tc.homeJSON != "" {
+				writeSeatTestFile(t, filepath.Join(home, ".claude.json"), tc.homeJSON)
+			}
+			checkout := filepath.Join(home, "proj")
+			if err := os.MkdirAll(checkout, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if tc.marker != "" {
+				writeSeatTestFile(t, filepath.Join(checkout, ".claude-account"), tc.marker)
+			}
+			_, ovErr := claudeSeatOverrides(checkout)
+			assertNoSeatLeak(t, ovErr)
+		})
+	}
+}
+
+func TestClaudeSeatEmailCollisionNamesTheSeatNotTheEmail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	seat := filepath.Join(home, ".claude-alpha")
+	writeSeatTestFile(t, filepath.Join(seat, ".claude.json"), `{"oauthAccount":{"emailAddress":"`+seatLeakEmail+`"}}`)
+	writeSeatTestFile(t, filepath.Join(home, ".claude.json"), `{"oauthAccount":{"emailAddress":"`+strings.ToUpper(seatLeakEmail)+`"}}`)
+	writeSeatTestFile(t, filepath.Join(home, ".claude-accounts"), "alpha "+seat+"\n")
+	_, err := claudeSeatOverrides(home)
+	assertNoSeatLeak(t, err)
+	if !strings.Contains(err.Error(), `"alpha"`) {
+		t.Fatalf("collision error should name the validated seat: %v", err)
+	}
+}
