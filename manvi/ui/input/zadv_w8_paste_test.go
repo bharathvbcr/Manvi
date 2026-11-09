@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"io"
 	"math/rand"
-	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -497,13 +496,9 @@ func TestAdvEOFWithOpenPasteDeliversWhatArrived(t *testing.T) {
 	}
 }
 
-// SetPasteDeadline after Run has started is documented as unsupported; the race
-// detector reports it. Gated so the suite stays green under -race:
-// ADV_RACE_PROBE=1 go test -race -run SetPasteDeadlineMidPaste.
+// SetPasteDeadline while Run is running is synchronised: under -race this must
+// report nothing. The armed timer keeps the value it was created with.
 func TestAdvSetPasteDeadlineMidPaste(t *testing.T) {
-	if os.Getenv("ADV_RACE_PROBE") == "" {
-		t.Skip("set ADV_RACE_PROBE=1 under -race to show the unsynchronised write")
-	}
 	h := newPasteHarness(t, func(r *Reader) { r.SetPasteDeadline(time.Hour) })
 	h.write(pasteStart + "x")
 	time.Sleep(20 * time.Millisecond)
