@@ -52,6 +52,7 @@ type Agy struct {
 	deferred         []Event
 	pending          map[string]*agyPending
 	seen             map[string]bool
+	withdrawn        withdrawnIDs
 	requestCount     int
 	ledger           turnLedger
 }
@@ -454,6 +455,7 @@ func (s *Agy) withdrawPending() []Event {
 	events := make([]Event, 0, len(ids)+1)
 	for _, id := range ids {
 		delete(s.pending, id)
+		s.withdrawn.add(id)
 		events = append(events, Event{CancelledID: id})
 	}
 	return events
@@ -770,6 +772,9 @@ func (s *Agy) ValidateResponse(request Request, response Response) error {
 }
 
 func (s *Agy) response(request Request, response Response) (any, error) {
+	if s.withdrawn.has(request.ID) {
+		return nil, ErrCallbackWithdrawn
+	}
 	p := s.pending[request.ID]
 	if p == nil || callbackStale(request, p.source, p.sent, s.finished) {
 		return nil, errors.New("managed Antigravity callback is stale, changed or already consumed")

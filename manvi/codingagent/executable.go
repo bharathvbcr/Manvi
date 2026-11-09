@@ -63,7 +63,8 @@ func (e *AgyWrapperError) Error() string {
 		where = e.Path + " (resolved to " + e.Resolved + ")"
 	}
 	return fmt.Sprintf("the configured agy at %s is %s; a wrapper that starts the CLI as a child process "+
-		"fails Manvi's process-identity check. Set %s to the Antigravity CLI executable itself",
+		"leaves the process id Manvi records describing the wrapper, not the CLI (agy reports no pid to compare). "+
+		"Set %s to the Antigravity CLI executable itself",
 		where, e.Reason, AgyBinaryVariable)
 }
 
@@ -110,8 +111,12 @@ func requireLaunchableAgy(program string) error {
 // the only part the kernel acts on.
 //
 // It is a launch-time check, not a guarantee: the file can be replaced between
-// this read and the spawn, and a runtime launcher can still start a child. The
-// post-start process-identity check is the backstop for both.
+// this read and the spawn, and a runtime launcher can still start a child. Claude's
+// post-start process-identity check (a reported pid compared with the one the
+// host started) is the backstop for both. Antigravity has none, because ACP's
+// initialize response reports no pid: for agy this check is the only one, and an
+// accepted launcher or a swapped file leaves the recorded pid describing the
+// launcher, as it does for Codex.
 func requireLaunchableExecutable(label, program string, makeRefusal func(resolved, reason string) error) error {
 	resolved, err := filepath.EvalSymlinks(program)
 	if err != nil {

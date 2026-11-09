@@ -421,6 +421,10 @@ program; the post-start process-identity check is unchanged and stays fail-close
 
 Managed Antigravity (`MANVI_AGY_BINARY`, else `agy` on `PATH` or in a native install directory) follows the same
 launch-shape rule as Claude and is refused with the same kind of error, naming `MANVI_AGY_BINARY`.
+Unlike Claude it has no post-start process-identity check: ACP's `initialize` reply carries an agent
+name and version but no process id, so the host has nothing to compare. The launch-shape refusal is
+the only check, and, as with Codex, a launcher it accepts (a `node` or `bun` script) or a file
+swapped after the head read leaves the process id the host activates describing the launcher.
 
 Managed Codex (`MANVI_CODEX_BINARY`, else `codex` on `PATH`) has no such refusal, because Codex
 reports no process identity for the host to compare. Set `MANVI_CODEX_BINARY` to the native

@@ -163,6 +163,11 @@ func TestZadvW16AgyChild(t *testing.T) {
 				time.Sleep(100 * time.Millisecond)
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
 				waitFrame(500 * time.Millisecond)
+			case "perm-end-buffered":
+				perm(`"p1"`, zadvSession, writeTool)
+				perm(`"p2"`, zadvSession, writeTool)
+				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
+				waitFrame(500 * time.Millisecond)
 			case "dup-end":
 				chunk("hello")
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
@@ -862,5 +867,114 @@ func TestZadvW16AgentTextCarriesNoTerminalEscapesOrBidiControls(t *testing.T) {
 				t.Fatalf("agent text reaches the host with control rune %U: %q", r, e.Text)
 			}
 		}
+	}
+}
+
+// --- turn-end withdrawal (ft-f37eab2c) -------------------------------------
+
+// agyBufferedEnd opens the perm-end-buffered scenario, reads the first
+// permission, and waits until the prompt response is sitting unread in the
+// wire's queue, so the next drain is the one that reads it.
+func agyBufferedEnd(t *testing.T) (*Agy, Request) {
+	t.Helper()
+	s := zadvMust(t, "perm-end-buffered", "ask")
+	zadvStart(t, s)
+	var req Request
+	for req.ID == "" {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		e, err := s.Next(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Request != nil {
+			req = *e.Request
+		}
+	}
+	// The second permission and the prompt response are still on the wire.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(s.wire.frames) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the buffered prompt response never arrived")
+		}
+		runtime.Gosched()
+	}
+	return s, req
+}
+
+// An answer that races the turn end is a callback gone, not a stale or tampered
+// one: ErrCallbackWithdrawn is the only error the host treats as benign.
+func TestZadvW16AnswerRacingTurnEndIsWithdrawnNotStale(t *testing.T) {
+	s, req := agyBufferedEnd(t)
+	err := s.ValidateResponse(req, Response{Decision: "allow_once"})
+	if !errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("answer after the buffered turn end = %v, want ErrCallbackWithdrawn", err)
+	}
+	// A second answer for the same id, and one through Respond, say the same.
+	if err := s.Respond(t.Context(), req, Response{Decision: "deny"}); !errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("Respond for a withdrawn id = %v, want ErrCallbackWithdrawn", err)
+	}
+	if err := s.ValidateResponse(Request{ID: "never-seen"}, Response{Decision: "allow_once"}); err == nil || errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("an id that was never offered must stay a plain refusal, got %v", err)
+	}
+}
+
+// drain() reads the turn end ahead of a Next call. The host must still see each
+// withdrawal before the status, and nothing may be left behind a completed turn.
+func TestZadvW16DrainDeliversWithdrawalsBeforeTheStatusAndLeavesNothingBehind(t *testing.T) {
+	s, req := agyBufferedEnd(t)
+	_ = s.ValidateResponse(req, Response{Decision: "allow_once"}) // the drain is what is under test; the verdict is checked above
+	var got []string
+	for {
+		e, err := s.Next(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.CancelledID != "" {
+			got = append(got, "cancel:"+e.CancelledID)
+		}
+		if e.Status != "" {
+			got = append(got, "status:"+e.Status)
+			break
+		}
+	}
+	if want := "cancel:s:p1,cancel:s:p2,status:completed"; strings.Join(got, ",") != want {
+		t.Fatalf("events = %v, want withdrawals then the status (%s)", got, want)
+	}
+	if err := s.ContinueTurn(t.Context(), "next"); err != nil {
+		t.Fatalf("a follow-up after the completed status was refused: %v", err)
+	}
+}
+
+// A terminal session still refuses a follow-up.
+func TestZadvW16ContinueTurnAfterTerminalStatusIsStillRefused(t *testing.T) {
+	s := zadvMust(t, "failed-turn", "ask")
+	zadvStart(t, s)
+	if _, err := zadvDrain(t, s, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ContinueTurn(t.Context(), "again"); !ContinueRefused(err) {
+		t.Fatalf("ContinueTurn on a failed session = %v, want a refusal", err)
+	}
+}
+
+func TestWithdrawnIDsIsIdempotentAndBounded(t *testing.T) {
+	var w withdrawnIDs
+	if w.has("a") {
+		t.Fatal("zero value reports an id")
+	}
+	w.add("a")
+	w.add("a")
+	if !w.has("a") || len(w.order) != 1 {
+		t.Fatalf("double withdrawal recorded %d entries", len(w.order))
+	}
+	for i := 0; i < maxWithdrawnIDs+10; i++ {
+		w.add(fmt.Sprintf("id-%d", i))
+	}
+	if len(w.set) != maxWithdrawnIDs || len(w.order) != maxWithdrawnIDs {
+		t.Fatalf("set holds %d/%d, want %d", len(w.set), len(w.order), maxWithdrawnIDs)
+	}
+	if w.has("a") || !w.has(fmt.Sprintf("id-%d", maxWithdrawnIDs+9)) {
+		t.Fatal("eviction dropped the newest or kept the oldest")
 	}
 }

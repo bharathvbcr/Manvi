@@ -83,7 +83,7 @@ type Claude struct {
 	queue        [][]byte
 	deferred     []Event
 	pending      map[string]*claudePending
-	withdrawn    map[string]bool
+	withdrawn    withdrawnIDs
 	seen         map[string]bool
 	requestCount int
 	// ledger counts turns and gates ContinueTurn; see continue.go.
@@ -246,7 +246,6 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 		build:     build,
 		reported:  reported,
 		pending:   make(map[string]*claudePending),
-		withdrawn: make(map[string]bool),
 		seen:      make(map[string]bool),
 	}, nil
 }
@@ -641,7 +640,7 @@ func (s *Claude) withdraw(id string) (Event, bool, error) {
 		return Event{}, false, nil
 	}
 	delete(s.pending, id)
-	s.withdrawn[id] = true
+	s.withdrawn.add(id)
 	return Event{CancelledID: id}, true, nil
 }
 
@@ -919,7 +918,7 @@ func (s *Claude) drain() error {
 }
 
 func (s *Claude) response(request Request, response Response) (any, error) {
-	if s.withdrawn[request.ID] {
+	if s.withdrawn.has(request.ID) {
 		return nil, ErrCallbackWithdrawn
 	}
 	p := s.pending[request.ID]

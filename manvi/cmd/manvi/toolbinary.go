@@ -265,7 +265,8 @@ func toolBinary(envKey, name string) string {
 
 // managedAgentSpec says how a managed coding agent differs from the analysis
 // tools: its image must be a direct launch (never a shell wrapper, whose child
-// would fail the host's process-identity check), and a native install directory
+// would fail Claude's process-identity check and, for agy, which has no such
+// check, would leave the recorded pid describing the wrapper), and a native install directory
 // is a further source when PATH has only a wrapper. Any other tool gets a nil
 // predicate and no install directories, which leaves its resolution exactly as
 // it was.

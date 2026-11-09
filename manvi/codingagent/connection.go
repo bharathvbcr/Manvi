@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -502,6 +503,7 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 				return wire.ctx.Err()
 			}
 		}
+		before := len(*deferred)
 		e, meaningful, err := event(next)
 		if err != nil {
 			return err
@@ -510,10 +512,49 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 			if len(*deferred) >= maxDeferredEvents {
 				return errors.New(agent + " response preflight exceeded its event budget")
 			}
-			*deferred = append(*deferred, e)
+			// event may itself have queued follow-ups behind the one it returns
+			// (a turn end queues its status after the withdrawals it returns first).
+			// The returned event goes ahead of them, the order Next delivers.
+			*deferred = slices.Insert(*deferred, before, e)
 		}
 	}
 	return errors.New(agent + " response preflight could not drain its bounded event backlog")
+}
+
+// maxWithdrawnIDs bounds withdrawnIDs. It matches the per-run callback budget
+// (2048 requests), so a run cannot withdraw more ids than the set holds and
+// nothing is evicted in practice; the bound is what keeps it finite.
+const maxWithdrawnIDs = 2048
+
+// withdrawnIDs remembers the callbacks a provider (or the end of its turn)
+// withdrew, so an answer that races the withdrawal is told it was withdrawn
+// (ErrCallbackWithdrawn, which the host treats as benign) and not that it was
+// stale. It is the one owner of that bookkeeping for every adapter. The zero
+// value is ready; the oldest id is dropped first past maxWithdrawnIDs.
+type withdrawnIDs struct {
+	set   map[string]struct{}
+	order []string
+}
+
+// add records id. Recording an id twice is harmless.
+func (w *withdrawnIDs) add(id string) {
+	if _, ok := w.set[id]; ok {
+		return
+	}
+	if w.set == nil {
+		w.set = make(map[string]struct{})
+	}
+	if len(w.order) >= maxWithdrawnIDs {
+		delete(w.set, w.order[0])
+		w.order = w.order[1:]
+	}
+	w.set[id] = struct{}{}
+	w.order = append(w.order, id)
+}
+
+func (w *withdrawnIDs) has(id string) bool {
+	_, ok := w.set[id]
+	return ok
 }
 
 // callbackStale reports whether a host's copy of a callback no longer matches
