@@ -397,29 +397,43 @@ func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath 
 // outer is found by sameCheckout as well as by spelling, because inner may reach it
 // through a case variant on a case-insensitive volume, and a walk that stepped past
 // it would read the repository's own .git as a boundary. The path of D below outer
-// is built from the names walked, never from a string comparison of the two paths.
+// is built from the names of the chain between them, outer's child first and D
+// last, never from a string comparison of the two paths; the chain is complete
+// before any D is judged, and the candidates are then judged from inner outward.
 func hasGitBoundary(outerInfo os.FileInfo, outer, inner string) bool {
-	var below []string // names from outer down to dir, built as the walk climbs
-	for dir := inner; dir != outer; {
+	// First climb from inner to outer, so that the names of the whole chain are
+	// known: the path of D below outer is its ancestors' names down to D, which a
+	// climb from inner cannot know until it arrives.
+	var chain []string // directories from inner up to, not including, outer
+	for dir := inner; ; {
 		if info, err := os.Stat(dir); err == nil && sameCheckout(outerInfo, info) {
-			return false
+			break
 		}
-		_, err := os.Lstat(filepath.Join(dir, ".git"))
-		switch {
-		case err == nil:
-			rel := filepath.Join(append([]string{filepath.Base(dir)}, below...)...)
-			if wellFormedGitMarker(dir) && !indexTracksUnder(outer, filepath.ToSlash(rel)) {
-				return true
-			}
-		case !errors.Is(err, os.ErrNotExist):
-			return false
+		if dir == outer {
+			break
 		}
-		below = append([]string{filepath.Base(dir)}, below...)
+		chain = append(chain, dir)
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return false
 		}
 		dir = parent
+	}
+	for i, dir := range chain {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case err == nil:
+			names := make([]string, 0, len(chain)-i)
+			for j := len(chain) - 1; j >= i; j-- {
+				names = append(names, filepath.Base(chain[j]))
+			}
+			rel := filepath.ToSlash(filepath.Join(names...))
+			if wellFormedGitMarker(dir) && !indexTracksUnder(outer, rel) {
+				return true
+			}
+		case !errors.Is(err, os.ErrNotExist):
+			return false
+		}
 	}
 	return false
 }
