@@ -65,7 +65,7 @@ func TestW18AgyTurnEndBehindAFullBufferWithMaxPendingIsNotRefused(t *testing.T) 
 		for i := 0; i < 32; i++ {
 			advAgyOffer(t, s, fmt.Sprint(100+i))
 		}
-		s.deferred = nil
+		s.deferred = []Event{}
 		for i := 0; i < chunks; i++ {
 			s.wire.frames <- w18Chunk()
 		}
@@ -79,9 +79,8 @@ func TestW18AgyTurnEndBehindAFullBufferWithMaxPendingIsNotRefused(t *testing.T) 
 		if len(s.deferred) > w18Backlog {
 			t.Fatalf("chunks=%d: backlog %d passes the bound %d", chunks, len(s.deferred), w18Backlog)
 		}
-		last := s.deferred[len(s.deferred)-1]
-		if last.Status == "" {
-			t.Fatalf("chunks=%d: status is not last: %+v", chunks, last)
+		if n := len(s.deferred); n == 0 || s.deferred[n-1].Status == "" {
+			t.Fatalf("chunks=%d: status is not last: %+v", chunks, s.deferred)
 		}
 	}
 }
@@ -96,7 +95,7 @@ func TestW18ClaudeTurnEndBehindAFullBufferWithMaxPendingIsNotRefused(t *testing.
 				t.Fatalf("capture %d: ok=%v err=%v", i, ok, err)
 			}
 		}
-		s.deferred = nil
+		s.deferred = []Event{}
 		for i := 0; i < chunks; i++ {
 			s.wire.frames <- wireRead{raw: []byte(`{"type":"user","session_id":"S","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}`)}
 		}
@@ -115,7 +114,7 @@ func TestW18ClaudeTurnEndBehindAFullBufferWithMaxPendingIsNotRefused(t *testing.
 // buffered output is what the bound protects against.
 func TestW18AgyPreflightReadingMoreThanItsItemBudgetFailsClosed(t *testing.T) {
 	s := advAgyIdle(t)
-	s.deferred = nil
+	s.deferred = []Event{}
 	for i := 0; i < w18DrainItems+1; i++ {
 		s.wire.frames <- w18Chunk()
 	}
@@ -244,7 +243,7 @@ func TestW18CodexTurnEndBehindAFullBufferWithMaxPendingIsNotRefused(t *testing.T
 			t.Fatalf("capture %d: ok=%v err=%v", i, ok, err)
 		}
 	}
-	s.deferred = nil
+	s.deferred = []Event{}
 	for i := 0; i < w18DrainItems-1; i++ {
 		s.wire.frames <- wireRead{value: w18Frame("item/commandExecution/outputDelta", `{"threadId":"thread","turnId":"turn","delta":"x"}`)}
 	}
