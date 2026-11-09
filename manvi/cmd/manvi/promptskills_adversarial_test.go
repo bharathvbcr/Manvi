@@ -125,21 +125,28 @@ func TestAdvListingNeverExceedsItsShare(t *testing.T) {
 }
 
 // Attack 3b. The listing is rendered every turn; with the loader's maximum of 200
-// skills it must stay cheap.
+// skills it must stay cheap. The bound is structural, not a wall-clock one: a
+// fixed time limit failed under machine load (ft-d80c1de6) and proved nothing
+// about growth. Allocations per call are deterministic, so the test compares
+// them across sizes. Linear growth quadruples them from 50 to 200 skills or
+// less; a per-skill loop over every other skill multiplies them by sixteen.
 func TestAdvListingCostWith200Skills(t *testing.T) {
-	skills := someSkills(harness.MaxSkills)
-	for i := range skills {
-		skills[i].Description = strings.Repeat("a fairly long description with words ", 12)
+	allocs := func(n int) float64 {
+		skills := someSkills(n)
+		for i := range skills {
+			skills[i].Description = strings.Repeat("a fairly long description with words ", 12)
+		}
+		return testing.AllocsPerRun(20, func() { harness.SkillsSection(skills, 1024) })
 	}
-	const turns = 20
-	start := time.Now()
-	for i := 0; i < turns; i++ {
-		harness.SkillsSection(skills, 1024)
+	small, large := allocs(harness.MaxSkills/4), allocs(harness.MaxSkills)
+	t.Logf("SkillsSection, 1024-token share: %.0f allocs at %d skills, %.0f at %d",
+		small, harness.MaxSkills/4, large, harness.MaxSkills)
+	if large > 6*small {
+		t.Fatalf("allocations grew %.1fx for a 4x larger skill set (%.0f -> %.0f): the per-turn path is superlinear",
+			large/small, small, large)
 	}
-	per := time.Since(start) / turns
-	t.Logf("SkillsSection, 200 skills, 1024-token share: %v per turn", per)
-	if per > 5*time.Millisecond {
-		t.Fatalf("%v per turn is too slow for a per-turn path", per)
+	if perSkill := large / harness.MaxSkills; perSkill > 4 {
+		t.Fatalf("%.1f allocations per skill at %d skills; the per-turn path should need about one", perSkill, harness.MaxSkills)
 	}
 }
 

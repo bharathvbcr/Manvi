@@ -763,7 +763,7 @@ Fifteen admits CI results: `signals.record` (a GitPulse write through the Rust
 store, not a Go or `manvi serve` op) stores `run_ci_passed`, `run_ci_failed` and
 `run_ci_cancelled` attention rows that a schema fourteen host cannot read. It
 changes no table, and is a hard fence for that reason. The release pin
-(`scripts/module-pins.txt`, DevCouncil `1f6d5452`) carries workbench 15 with
+(`scripts/module-pins.txt`, DevCouncil) carries workbench 15 with
 `dc-store` 11, as recorded in `CHANGELOG.md`; a Manvi built before that move
 refuses an upgraded profile.
 
