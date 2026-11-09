@@ -17,7 +17,7 @@ func TestNeutraliseText(t *testing.T) {
 		{"esc", "a\x1b[31mred", `a\x1b[31mred`},
 		{"osc and bell", "\x1b]0;t\x07", `\x1b]0;t\x07`},
 		{"all controls", "\x00\x01\x08\x0d\x1b\x7f\u0080\u009f", `\x00\x01\x08\x0d\x1b\x7f\x80\x9f`},
-		{"bidi", "a‪b‮c⁦d⁩e‎f‏g؜h", "a<U+202A>b<U+202E>c<U+2066>d<U+2069>e<U+200E>f<U+200F>g<U+061C>h"},
+		{"bidi", "a\u202ab\u202ec\u2066d\u2069e\u200ef\u200fg\u061ch", "a<U+202A>b<U+202E>c<U+2066>d<U+2069>e<U+200E>f<U+200F>g<U+061C>h"},
 		{"keeps newline tab and a real replacement char", "a\n\tb�c", "a\n\tb�c"},
 		{"invalid utf8", "a\xffb\xc3", `a\xffb\xc3`},
 		{"truncated multibyte then control", "\xe2\x82\x1b", `\xe2\x82\x1b`},
