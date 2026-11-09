@@ -595,7 +595,8 @@ func openSession(notes io.Writer, store *session.Store, opts runOptions) (string
 	if report.TrimmedTurns > 0 {
 		_, _ = fmt.Fprintf(notes,
 			"manvi: this session's %d oldest turn(s) were dropped to keep it within its size bound — "+
-				"the history below that point is gone\n", report.TrimmedTurns)
+				"the history below that point is gone, and reasoning from before it is no longer replayed\n",
+			report.TrimmedTurns)
 	}
 	if report.Oversize {
 		_, _ = fmt.Fprintf(notes,
@@ -612,7 +613,8 @@ func saveSession(notes io.Writer, store *session.Store, id string, log *session.
 	}
 	if report.TrimmedTurns > 0 {
 		_, _ = fmt.Fprintf(notes,
-			"manvi: %d oldest turn(s) were dropped from session %s to keep it within its size bound\n",
+			"manvi: %d oldest turn(s) were dropped from session %s to keep it within its size bound; "+
+				"reasoning from before the trim is no longer replayed\n",
 			report.TrimmedTurns, id)
 	}
 	if report.Oversize {
