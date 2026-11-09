@@ -14,9 +14,9 @@ import (
 // says so.
 func TestSessionOutputCapIsCumulativeAndSaysSo(t *testing.T) {
 	r, w := io.Pipe()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	c := &connection{ctx: ctx, cancel: cancel, stdout: r, frames: make(chan wireRead, 4),
+	ctx, fail := context.WithCancelCause(t.Context())
+	defer fail(nil)
+	c := &connection{ctx: ctx, fail: fail, stdout: r, frames: make(chan wireRead, 4),
 		validate: func([]byte) error { return nil }}
 	go c.read()
 	go func() {

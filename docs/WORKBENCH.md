@@ -722,7 +722,8 @@ help, not the security property: the process-identity check after start is
 unchanged and fail-closed, a reported pid other than the one the host started
 still ends the run (now with a message that names the likely wrapper cause), and
 it is the backstop for a file swapped after the prepare-time read and for a
-launcher the interpreter line does not reveal.
+launcher the interpreter line does not reveal. That is Claude. Antigravity reports
+no pid, so it has no such backstop (see `docs/SERVE_HOST_PLANE.md`).
 
 ## Enhancement lifecycle
 

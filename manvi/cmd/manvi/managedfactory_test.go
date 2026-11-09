@@ -63,9 +63,11 @@ func TestManagedFactoryStartsExactlyTheAdvertisedAdapterSet(t *testing.T) {
 
 	// Each case must also name the binary it starts through toolBinary, so an
 	// operator can override it; a case that hardcodes a program name is one
-	// nobody can point at a different install.
+	// nobody can point at a different install. The managed agents with a
+	// launch-shape check (claude, agy) go through managedAgentBinary, which is
+	// toolBinary plus the typed wrapper refusal in a release build.
 	for _, provider := range routed {
-		pattern := regexp.MustCompile(`case "` + regexp.QuoteMeta(provider) + `":\s*\n\s*options\.Program = toolBinary\(`)
+		pattern := regexp.MustCompile(`case "` + regexp.QuoteMeta(provider) + `":\s*\n\s*options\.Program = (toolBinary|managedAgentBinary)\(`)
 		if !pattern.Match(factory[1]) {
 			t.Errorf("the %q case does not resolve its program through toolBinary", provider)
 		}

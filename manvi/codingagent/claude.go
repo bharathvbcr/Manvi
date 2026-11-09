@@ -83,7 +83,7 @@ type Claude struct {
 	queue        [][]byte
 	deferred     []Event
 	pending      map[string]*claudePending
-	withdrawn    map[string]bool
+	withdrawn    withdrawnIDs
 	seen         map[string]bool
 	requestCount int
 	// ledger counts turns and gates ContinueTurn; see continue.go.
@@ -246,7 +246,6 @@ func startClaude(ctx context.Context, options Options, argv func(mode, session s
 		build:     build,
 		reported:  reported,
 		pending:   make(map[string]*claudePending),
-		withdrawn: make(map[string]bool),
 		seen:      make(map[string]bool),
 	}, nil
 }
@@ -641,7 +640,7 @@ func (s *Claude) withdraw(id string) (Event, bool, error) {
 		return Event{}, false, nil
 	}
 	delete(s.pending, id)
-	s.withdrawn[id] = true
+	s.withdrawn.add(id)
 	return Event{CancelledID: id}, true, nil
 }
 
@@ -698,7 +697,7 @@ func (s *Claude) system(f claudeFrame) (Event, bool, error) {
 		if json.Unmarshal(f.Message, &reason) != nil || !opaque(reason) {
 			reason = "no reason given"
 		}
-		return Event{Text: fmt.Sprintf("\n[permission denied: %s — %s]\n", tool, reason)}, true, nil
+		return Event{Text: neutraliseText(fmt.Sprintf("\n[permission denied: %s — %s]\n", tool, reason))}, true, nil
 	}
 	return Event{}, false, nil
 }
@@ -769,7 +768,7 @@ func (s *Claude) assistant(f claudeFrame) (Event, bool, error) {
 	if turn == "" && text.Len() == 0 && len(tools) == 0 {
 		return Event{}, false, nil
 	}
-	return Event{TurnID: turn, Text: text.String(), Tools: tools}, true, nil
+	return Event{TurnID: turn, Text: neutraliseText(text.String()), Tools: tools}, true, nil
 }
 
 // userResults keeps tool_result blocks that name the call they finish. A user
@@ -831,13 +830,29 @@ func (s *Claude) result(f claudeFrame) (Event, bool, error) {
 		status = "completed"
 	}
 	s.ledger.last = status
+	// A permission still awaiting an answer can never be answered once the turn
+	// is over, and left pending it would refuse the next turn (see backlogged):
+	// each is withdrawn here, ahead of the status, as agy does.
 	// The result text repeats the last assistant message, so it is carried
 	// only when it would otherwise be the run's only explanation.
 	text := ""
 	if status != "completed" || !s.sawText {
 		text = f.Result
 	}
-	return Event{Status: status, Text: text}, true, nil
+	return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: status, Text: neutraliseText(text)})), true, nil
+}
+
+// withdrawPending forgets every unanswered permission and returns one
+// CancelledID event for each.
+func (s *Claude) withdrawPending() []Event {
+	var ids []string
+	for id, p := range s.pending {
+		if !p.sent {
+			ids = append(ids, id)
+			delete(s.pending, id)
+		}
+	}
+	return s.withdrawn.withdrawalEvents(ids)
 }
 
 // capture turns an approval request into a durable, one-use callback.
@@ -919,7 +934,7 @@ func (s *Claude) drain() error {
 }
 
 func (s *Claude) response(request Request, response Response) (any, error) {
-	if s.withdrawn[request.ID] {
+	if s.withdrawn.has(request.ID) {
 		return nil, ErrCallbackWithdrawn
 	}
 	p := s.pending[request.ID]

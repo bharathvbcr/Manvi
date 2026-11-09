@@ -667,7 +667,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 			// A completed agent message is the turn's text. It is not also a
 			// tool row, and neither is each outputDelta below.
 			if item.Type == "agentMessage" {
-				return Event{Text: item.Text}, true, nil
+				return Event{Text: neutraliseText(item.Text)}, true, nil
 			}
 		}
 		var described struct {
@@ -688,7 +688,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		}
 		return Event{Tools: []Tool{tool}}, true, nil
 	case "item/commandExecution/outputDelta":
-		return Event{Text: v.Delta}, true, nil
+		return Event{Text: neutraliseText(v.Delta)}, true, nil
 	}
 	return Event{}, false, nil
 }

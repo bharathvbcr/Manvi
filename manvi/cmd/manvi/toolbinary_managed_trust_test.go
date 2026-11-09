@@ -1,10 +1,15 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 )
 
 // The managed coding agents (claude, agy) run on the host, outside the gate,
@@ -21,7 +26,7 @@ func managedTrustWorkspace(t *testing.T) (root, home string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shebang and symlink fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root = t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
@@ -34,15 +39,15 @@ func managedTrustWorkspace(t *testing.T) (root, home string) {
 	return root, home
 }
 
-// skipIfSystemAgentInstalled keeps the "nothing trusted" assertions honest on a
-// machine that really has an agent in one of the fixed system locations.
-func skipIfSystemAgentInstalled(t *testing.T) {
+// withoutSystemAgentInstalls keeps the "nothing trusted" assertions honest on a
+// machine that really has an agent in one of the fixed system locations: it
+// stands those locations in as empty for the test, so the outcome does not
+// depend on the host and nothing is skipped.
+func withoutSystemAgentInstalls(t *testing.T) {
 	t.Helper()
-	for _, p := range []string{"/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/opt/homebrew/bin/agy", "/usr/local/bin/agy"} {
-		if _, err := os.Stat(p); err == nil {
-			t.Skipf("%s exists on this machine and is a legitimate trusted candidate", p)
-		}
-	}
+	claude, agy := systemClaudeInstalls, systemAgyInstalls
+	systemClaudeInstalls, systemAgyInstalls = nil, nil
+	t.Cleanup(func() { systemClaudeInstalls, systemAgyInstalls = claude, agy })
 }
 
 type managedAgent struct {
@@ -191,7 +196,7 @@ func TestADeveloperBuildStillSkipsAWrapperAndIgnoresTheAgentWritableFilter(t *te
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shebang fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root := t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
@@ -205,5 +210,115 @@ func TestADeveloperBuildStillSkipsAWrapperAndIgnoresTheAgentWritableFilter(t *te
 	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+inRepo)
 	if got := toolBinary("MANVI_CLAUDE_BINARY", "claude"); got != filepath.Join(inRepo, "claude") {
 		t.Fatalf("developer build chose %q, want the launchable in-repo claude past the wrapper", got)
+	}
+}
+
+// A fixed system install is a candidate only through the injectable list: a test
+// that points it at a trusted launchable finds it, and with the list empty the
+// same machine finds nothing.
+func TestAReleaseBuildFindsAManagedAgentInAnInjectedSystemInstall(t *testing.T) {
+	for _, a := range managedAgents() {
+		t.Run(a.name, func(t *testing.T) {
+			managedTrustWorkspace(t)
+			system := filepath.Join(t.TempDir(), a.name)
+			writeExecFile(t, system, fakeMachO())
+			t.Setenv("PATH", t.TempDir())
+			if got := toolBinary(a.env, a.name); got != unresolvedTool(a.name) {
+				t.Fatalf("toolBinary(%s) = %q with no system install, want %q", a.name, got, unresolvedTool(a.name))
+			}
+			if a.name == "claude" {
+				systemClaudeInstalls = []string{system}
+			} else {
+				systemAgyInstalls = []string{system}
+			}
+			if got := toolBinary(a.env, a.name); got != resolvedPath(t, system) {
+				t.Fatalf("toolBinary(%s) = %q, want the injected system install %q", a.name, got, resolvedPath(t, system))
+			}
+		})
+	}
+}
+
+// In a release build whose PATH holds only a wrapper, the managed agent's error
+// is the typed wrapper refusal that names the variable to set, not "not found".
+func TestAReleaseBuildWithOnlyAWrapperOnPATHNamesTheVariableToSet(t *testing.T) {
+	for _, a := range managedAgents() {
+		t.Run(a.name, func(t *testing.T) {
+			managedTrustWorkspace(t)
+			trusted := t.TempDir()
+			wrapper := filepath.Join(trusted, a.name)
+			writeExecFile(t, wrapper, []byte("#!/bin/sh\nexec real \"$@\"\n"))
+			t.Setenv("PATH", trusted)
+			if got := toolBinary(a.env, a.name); got != unresolvedTool(a.name) {
+				t.Fatalf("toolBinary(%s) = %q, want %q (the resolver itself still trusts no wrapper)", a.name, got, unresolvedTool(a.name))
+			}
+			program := managedAgentBinary(a.env, a.name)
+			if program != resolvedPath(t, wrapper) {
+				t.Fatalf("managedAgentBinary(%s) = %q, want the wrapper %q so the adapter can refuse it by name", a.name, program, resolvedPath(t, wrapper))
+			}
+			var err error
+			var typedClaude *codingagent.ClaudeWrapperError
+			var typedAgy *codingagent.AgyWrapperError
+			if a.name == "claude" {
+				err = codingagent.CheckLaunchableClaude(program)
+				if !errors.As(err, &typedClaude) {
+					t.Fatalf("want a ClaudeWrapperError, got %v", err)
+				}
+			} else {
+				err = codingagent.CheckLaunchableAgy(program)
+				if !errors.As(err, &typedAgy) {
+					t.Fatalf("want an AgyWrapperError, got %v", err)
+				}
+			}
+			if !strings.Contains(err.Error(), a.env) {
+				t.Fatalf("the refusal does not name %s: %v", a.env, err)
+			}
+		})
+	}
+}
+
+// A wrapper inside the agent's reach is still never returned, by name or not.
+func TestAReleaseBuildNeverReturnsAnAgentWritableWrapperForTheTypedRefusal(t *testing.T) {
+	for _, a := range managedAgents() {
+		t.Run(a.name, func(t *testing.T) {
+			root, _ := managedTrustWorkspace(t)
+			inRepo := filepath.Join(root, "bin")
+			writeExecFile(t, filepath.Join(inRepo, a.name), []byte("#!/bin/sh\nexec real \"$@\"\n"))
+			t.Setenv("PATH", inRepo)
+			if got := managedAgentBinary(a.env, a.name); got != unresolvedTool(a.name) {
+				t.Fatalf("managedAgentBinary(%s) = %q from an agent-writable directory, want %q", a.name, got, unresolvedTool(a.name))
+			}
+		})
+	}
+}
+
+// SemVer 2.0.0 section 11: installed versions sort newest first by precedence,
+// so a release outranks its prereleases and prerelease identifiers compare
+// numerically when numeric and below alphanumeric ones.
+func TestInstalledClaudeVersionsOrderBySemverPrecedence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths")
+	}
+	withoutSystemAgentInstalls(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	ascending := []string{
+		"1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta",
+		"1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0", "1.0.1-rc.1", "1.2.0", "2.0.0-9", "2.0.0-10", "2.0.0-x",
+	}
+	dir := filepath.Join(home, ".local", "share", "claude", "versions")
+	for i := len(ascending) - 1; i >= 0; i-- { // written in the wrong order on purpose
+		writeExecFile(t, filepath.Join(dir, ascending[i]), fakeMachO())
+	}
+	writeExecFile(t, filepath.Join(dir, "not-a-version"), fakeMachO())
+	var got []string
+	for _, p := range claudeInstallCandidates() {
+		if filepath.Dir(p) == dir {
+			got = append(got, filepath.Base(p))
+		}
+	}
+	slices.Reverse(got)
+	if strings.Join(got, " ") != strings.Join(ascending, " ") {
+		t.Fatalf("newest-first order reversed =\n%v\nwant\n%v", got, ascending)
 	}
 }

@@ -196,6 +196,20 @@ func TestClaudeProtocolChild(t *testing.T) {
 					emit(`{"type":"control_request","request_id":"req-2","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo hi"},"tool_use_id":"toolu_2","decision_reason_type":"rule"}}`)
 				}
 				continue
+			case "perm-then-result":
+				// A permission request that is never answered, then a successful
+				// result: the turn ends with the callback still pending.
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"about to run"}]},"uuid":"u1"}`, session)
+				emit(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo hi"},"tool_use_id":"toolu_1","decision_reason_type":"rule"}}`)
+				emit(`{"type":"control_request","request_id":"req-2","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"echo ho"},"tool_use_id":"toolu_2","decision_reason_type":"rule"}}`)
+				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"about to run","terminal_reason":"completed","uuid":"u-result"}`, session)
+				continue
+			case "ansi-text":
+				initFrame("default")
+				emit(`{"type":"assistant","session_id":%q,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"ok \u001b]0;pwned\u0007\u001b[2J\u202eevil\u2066"}]},"uuid":"u1"}`, session)
+				emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"ok","terminal_reason":"completed","uuid":"u-result"}`, session)
+				continue
 			case "silent":
 				// Reads user frames and never answers: a turn that stays in flight.
 				continue
