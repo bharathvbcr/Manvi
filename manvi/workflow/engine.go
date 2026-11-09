@@ -277,6 +277,17 @@ func (s State) Clone() State {
 // Reduce is pure. A rejected envelope leaves the caller's state untouched.
 // Clock advances, observations and human decisions must arrive as events.
 func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (State, []Command, error) {
+	next, commands, err := reduce(p, previous, event, inputs)
+	if err == nil && next.Phase != Observing {
+		// Reuse names a resolve that is pending, which only an observing run has.
+		// Whatever ended or paused the run, the state it leaves behind carries no
+		// trace of one, so a reader of the encoded state never meets the field.
+		next.Reuse = ""
+	}
+	return next, commands, err
+}
+
+func reduce(p *Program, previous State, event Event, inputs map[string]Value) (State, []Command, error) {
 	event.Observation = event.Observation.Clone()
 	if p == nil || previous.CapabilitySHA256 != p.Digest() {
 		return previous, nil, errors.New("program identity mismatch")
@@ -395,9 +406,6 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if (s.Phase != Observing && s.Phase != PostAction) || event.ActionID != s.ActionID(p) {
 			return previous, nil, errors.New("capture failure does not match an observation command")
 		}
-		if s.Reuse != "" {
-			return declineReuse(s, command("observe"))
-		}
 		return retryObservation(p, s, command("observe"), FailureIncompleteObserve, event.Reason)
 	case "observed":
 		if s.Phase != Observing && s.Phase != PostAction {
@@ -422,7 +430,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return retryObservation(p, s, command("observe"), FailureIncompleteObserve, "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
-			return advance(p, s, step.Next, event.Observation.ID)
+			return advance(p, s, step.Next, "")
 		}
 		if event.Observation.Matches != 1 || event.Observation.TargetID == "" {
 			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -717,11 +725,25 @@ func declineReuse(s State, fresh Command) (State, []Command, error) {
 	return s, []Command{fresh}, nil
 }
 
-// reusable reports whether step may resolve against an observation taken for
-// an earlier step: a read-effect step whose every locator is semantic. A step
-// that needs approval is shown the freshest screen, and visual anchors are
+// The reuse rule. A step may resolve against an earlier capture only when that
+// capture was itself a fresh observation taken for a read step, and the step
+// reading it is another read step with no dispatch in between: one consistent
+// snapshot read more than once. A capture taken after a dispatch (observe_after)
+// is never reused, by any step: it is taken with no settle delay, so it can
+// still show the screen as it was before the application repainted, and a
+// value, a wait or a branch decided on it can be wrong. The first step after
+// any dispatch therefore always observes afresh.
+//
+// reusable reports whether step is one that may read such a snapshot: a read
+// step (extract, assert, branch, wait) with read effect and only semantic
+// locators. Approval steps are shown the freshest screen, and visual anchors are
 // validated against the frame they were captured with.
 func reusable(p *Program, step Step) bool {
+	switch step.Kind {
+	case "extract", "assert", "branch", "wait":
+	default:
+		return false
+	}
 	if step.Effect != "read" || step.Target == "" {
 		return false
 	}
@@ -736,8 +758,7 @@ func reusable(p *Program, step Step) bool {
 // reuseAccepted is true when a resolve against a reused observation answered
 // cleanly enough to decide the step. Anything else (ambiguity, a missing or
 // disabled target, a predicate that did not hold) is re-decided on a fresh
-// observation, so a reused frame can only ever confirm a step, never fail,
-// branch away from or pause one.
+// observation, at no cost in attempts.
 func reuseAccepted(p *Program, step Step, o Observation, inputs, outputs map[string]Value) bool {
 	if !o.Complete || o.Matches != 1 || o.TargetID == "" {
 		return false
@@ -758,10 +779,11 @@ func reuseAccepted(p *Program, step Step, o Observation, inputs, outputs map[str
 	return o.Actionable
 }
 
-// advance moves to the step after next. observed is the id of the observation
-// that was just accepted: it was taken after the last dispatch (an observe_after,
-// or a read step's observation, which dispatches nothing), so the next step may
-// resolve against it instead of photographing the same screen again.
+// advance moves to the step after next. observed is the id of the fresh
+// observation a read step was just decided on, or "" when the step was decided
+// on a post-action capture, which is never reused (see reusable). A following
+// read step resolves against observed instead of photographing the same screen
+// again.
 func advance(p *Program, s State, next, observed string) (State, []Command, error) {
 	i := s.StepIndex + 1
 	if next != "" {

@@ -97,23 +97,6 @@ func drive(t *testing.T, p *Program, inputs map[string]Value) (State, map[string
 	return s, counts, events
 }
 
-func TestBankBalanceCapturesOnlyAfterDispatches(t *testing.T) {
-	p, inputs := compileBank(t)
-	s, counts, _ := drive(t, p, inputs)
-	if s.Phase != Completed || s.Outputs["balance"].Integer != 125000 {
-		t.Fatalf("run did not complete: %+v", s)
-	}
-	t.Logf("commands per run: %v", counts)
-	// Before reuse every step boundary re-observed: 7 captures for 2 dispatches.
-	// Now only the first step and the two post-action captures are fresh.
-	if fresh := counts["observe"] + counts["observe_after"]; fresh != 3 {
-		t.Fatalf("fresh captures = %d, want 3 (commands %v)", fresh, counts)
-	}
-	if counts["observe_after"] != 2 {
-		t.Fatalf("every dispatch must still be followed by its own capture: %v", counts)
-	}
-}
-
 func TestReplayAcceptsAnEventThatReusesAnObservationID(t *testing.T) {
 	p, inputs := compileBank(t)
 	final, _, events := drive(t, p, inputs)
@@ -142,8 +125,8 @@ func TestReplayAcceptsAnEventThatReusesAnObservationID(t *testing.T) {
 	}
 }
 
-// afterFirstPress drives the two-step fixture to the step boundary and returns
-// the state and the observe_after id.
+// atBoundary drives the two-step fixture past its first dispatch and returns the
+// state and commands after the post-action capture is accepted.
 func atBoundary(t *testing.T, p *Program) (State, []Command) {
 	t.Helper()
 	s := start(t, p)
@@ -168,23 +151,58 @@ func atBoundary(t *testing.T, p *Program) (State, []Command) {
 	return s, cmds
 }
 
-func TestBoundaryResolvesAgainstThePostActionObservation(t *testing.T) {
+// A step right after a dispatch always observes afresh, even a read step.
+func TestFirstStepAfterADispatchObservesFresh(t *testing.T) {
 	p := fixture(t, false)
 	s, cmds := atBoundary(t, p)
-	if len(cmds) != 1 || cmds[0].Kind != "resolve" || cmds[0].ObservationID != "after1" || s.Reuse != "after1" || s.Phase != Observing {
-		t.Fatalf("boundary did not reuse the post-action observation: %+v %+v", s, cmds)
+	if len(cmds) != 1 || cmds[0].Kind != "observe" || cmds[0].ObservationID != "" || s.Reuse != "" {
+		t.Fatalf("the post-action capture must not be reused: %+v %+v", s, cmds)
 	}
 }
 
-func boundaryAnswer(t *testing.T, p *Program, s State, e Event) (State, []Command) {
+// twoReads: press, then two read steps. The second reads the first one's
+// snapshot.
+func twoReads(t *testing.T) *Program {
+	t.Helper()
+	c := Capability{SchemaVersion: 1, ID: "tworeads", Revision: "1", Application: "bank",
+		Targets: map[string]Selector{"search": {Role: "button", Name: "Search"}, "balance": {Role: "text_field", Name: "Balance"}},
+		Limits:  DefaultLimits(),
+		Steps: []Step{{ID: "search", Kind: "press", Target: "search", Effect: "read"},
+			{ID: "first", Kind: "extract", Target: "balance", Effect: "read", Output: "balance", OutputType: "money", Currency: "USD"},
+			{ID: "second", Kind: "extract", Target: "balance", Effect: "read", Output: "again", OutputType: "money", Currency: "USD"}}}
+	raw, _ := json.Marshal(c)
+	p, err := Compile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func answerWith(t *testing.T, p *Program, s State, e Event) (State, []Command) {
 	t.Helper()
 	e.Sequence, e.RunID, e.SessionID, e.Epoch = s.Sequence+1, s.RunID, s.SessionID, s.Epoch
-	e.ActionID = s.ActionID(p)
+	if e.ActionID == "" {
+		e.ActionID = s.ActionID(p)
+	}
 	n, cmds, err := Reduce(p, s, e, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n, cmds
+}
+
+// atSnapshot returns a run with a resolve pending against the fresh capture
+// "snap1" that the first read step was just decided on.
+func atSnapshot(t *testing.T) (*Program, State) {
+	t.Helper()
+	p := twoReads(t)
+	s, cmds := atBoundary(t, p)
+	money := Value{Type: "money", Integer: 5, Currency: "USD"}
+	s, cmds = answerWith(t, p, s, Event{Kind: "observed", Observation: Observation{ID: "snap1", Complete: true, Matches: 1, TargetID: "n", Actionable: true, Value: money}})
+	if len(cmds) != 1 || cmds[0].Kind != "resolve" || cmds[0].ObservationID != "snap1" || s.Reuse != "snap1" {
+		t.Fatalf("the second read step must resolve against the first one's fresh capture: %+v %+v", s, cmds)
+	}
+	return p, s
 }
 
 func requireFresh(t *testing.T, what string, s State, cmds []Command) {
@@ -195,30 +213,29 @@ func requireFresh(t *testing.T, what string, s State, cmds []Command) {
 }
 
 func TestReuseFallsBackToAFreshObserve(t *testing.T) {
-	p := fixture(t, false)
-	good := Observation{ID: "after1", Complete: true, Matches: 1, TargetID: "n", Actionable: true, Value: Value{Type: "money", Integer: 5, Currency: "USD"}}
+	good := Observation{ID: "snap1", Complete: true, Matches: 1, TargetID: "n", Actionable: true, Value: Value{Type: "money", Integer: 5, Currency: "USD"}}
 	cases := map[string]Event{
-		"stale observation": {Kind: "reuse_declined", Reason: "stale_observation"},
-		"failed resolve":    {Kind: "observe_failed", FailureCode: "window_changed", Reason: "gone"},
-		"ambiguous resolve": {Kind: "observed", Observation: func() Observation { o := good; o.Matches = 2; return o }()},
-		"missing target":    {Kind: "observed", Observation: func() Observation { o := good; o.Matches = 0; o.TargetID = ""; return o }()},
-		"incomplete":        {Kind: "observed", Observation: func() Observation { o := good; o.Complete = false; return o }()},
+		"stale or foreign capture": {Kind: "reuse_declined", Reason: "stale_observation"},
+		"ambiguous resolve":        {Kind: "observed", Observation: func() Observation { o := good; o.Matches = 2; return o }()},
+		"missing target":           {Kind: "observed", Observation: func() Observation { o := good; o.Matches = 0; o.TargetID = ""; return o }()},
+		"incomplete":               {Kind: "observed", Observation: func() Observation { o := good; o.Complete = false; return o }()},
 	}
 	for name, e := range cases {
 		t.Run(name, func(t *testing.T) {
-			s, _ := atBoundary(t, p)
-			n, cmds := boundaryAnswer(t, p, s, e)
+			p, s := atSnapshot(t)
+			n, cmds := answerWith(t, p, s, e)
 			requireFresh(t, name, n, cmds)
 		})
 	}
 	t.Run("clean answer is accepted", func(t *testing.T) {
-		s, _ := atBoundary(t, p)
-		n, cmds := boundaryAnswer(t, p, s, Event{Kind: "observed", Observation: good})
-		if n.Phase != Completed || len(cmds) != 0 || n.Reuse != "" || n.Outputs["balance"].Integer != 5 {
+		p, s := atSnapshot(t)
+		n, cmds := answerWith(t, p, s, Event{Kind: "observed", Observation: good})
+		if n.Phase != Completed || len(cmds) != 0 || n.Reuse != "" || n.Outputs["again"].Integer != 5 {
 			t.Fatalf("%+v %+v", n, cmds)
 		}
 	})
 	t.Run("decline without a pending resolve is refused", func(t *testing.T) {
+		p := fixture(t, false)
 		s := start(t, p)
 		e := inputEvent(s, "reuse_declined")
 		e.ActionID = s.ActionID(p)
@@ -227,18 +244,16 @@ func TestReuseFallsBackToAFreshObserve(t *testing.T) {
 		}
 	})
 	t.Run("pause clears the pending reuse", func(t *testing.T) {
-		s, _ := atBoundary(t, p)
-		e := inputEvent(s, "pause")
-		e.NextEpoch = s.Epoch + 1
-		n, _, err := Reduce(p, s, e, nil)
-		if err != nil || n.Reuse != "" || n.Phase != Paused {
-			t.Fatalf("%+v %v", n, err)
+		p, s := atSnapshot(t)
+		n, _ := answerWith(t, p, s, Event{Kind: "pause", NextEpoch: s.Epoch + 1})
+		if n.Reuse != "" || n.Phase != Paused {
+			t.Fatalf("%+v", n)
 		}
 	})
 }
 
-// A reused frame may confirm a checkpoint but never fail or reroute one: an
-// unsatisfied predicate is decided again on a fresh observation.
+// A reused frame is only accepted when it confirms a checkpoint: an unsatisfied
+// predicate is decided again on a fresh observation.
 func TestReusedFrameNeverFailsOrReroutesACheckpoint(t *testing.T) {
 	p, inputs := compileBank(t)
 	for _, step := range []string{"settle", "route"} {

@@ -50,11 +50,15 @@ type brokerDesktop struct {
 	// which is exactly what a second step resolving against it looks like.
 	rejectReuse bool
 	ambiguous   bool
+	// staleAfterAct makes the capture taken right after a dispatch show the
+	// previous member's balance; every later capture shows the settled one.
+	staleAfterAct bool
 }
 
 func (d *brokerDesktop) Act(ctx context.Context, s Session, a Action) (Receipt, error) {
 	d.mu2.Lock()
 	d.acted = true
+	d.current = "" // a dispatch outdates the broker's current observation
 	d.mu2.Unlock()
 	return d.testDesktop.Act(ctx, s, a)
 }
@@ -69,6 +73,15 @@ func (d *brokerDesktop) Observe(ctx context.Context, s Session) (Observation, er
 		d.afterAct = map[string]bool{}
 	}
 	d.afterAct[o.ID], d.acted = d.acted, false
+	if d.staleAfterAct && d.afterAct[o.ID] {
+		// The app has not repainted yet: the previous member's balance.
+		for i := range o.Nodes {
+			if o.Nodes[i].Name == "Balance" {
+				v := "$999.00"
+				o.Nodes[i].Value = &v
+			}
+		}
+	}
 	return o, err
 }
 
@@ -79,7 +92,7 @@ func (d *brokerDesktop) Resolve(ctx context.Context, s Session, id string, sel S
 	}
 	d.resolvesByID[id]++
 	n := d.resolvesByID[id]
-	current, reused := d.current, n > 1 || d.afterAct[id]
+	current, reused := d.current, n > 1
 	reject, ambiguous := d.rejectReuse, d.ambiguous
 	d.mu2.Unlock()
 	if id != current || (reject && reused) {
@@ -143,14 +156,16 @@ func observedIDs(events []workflow.Event) (all, distinct int) {
 }
 
 func TestBankBalanceObservesOncePerDispatchNotOncePerStep(t *testing.T) {
-	result, d, records := bankRun(t, nil)
+	// The frame taken right after each press is stale; only a settled one may be read.
+	result, d, records := bankRun(t, func(d *brokerDesktop) { d.staleAfterAct = true })
 	if result.State.Phase != workflow.Completed || result.State.Outputs["balance"].Integer != 125000 {
 		t.Fatalf("%+v", result.State)
 	}
-	// Before reuse this run captured 7 times (3 more than its two dispatches
-	// need). The first step's capture and the two post-action captures remain.
-	if d.observes != 3 {
-		t.Fatalf("native captures = %d, want 3", d.observes)
+	// Before reuse this run captured 7 times. Two post-action captures, the first
+	// two steps and the wait are fresh; the branch and
+	// the extract read the wait's snapshot.
+	if d.observes != 5 {
+		t.Fatalf("native captures = %d, want 5", d.observes)
 	}
 	if all, distinct := observedIDs(result.Events); all <= distinct {
 		t.Fatalf("expected a reused observation id in the event stream, got %d events over %d ids", all, distinct)
@@ -258,4 +273,28 @@ func TestPerformResolveDeclinesWhatItCannotVouchFor(t *testing.T) {
 			t.Fatalf("%+v", r)
 		}
 	})
+	t.Run("a timeout of the step's own context falls back to a fresh observe", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		r := performResolve(ctx, opts, session, nil, cmd, fresh())
+		if r.err != nil || r.event.Kind != "reuse_declined" {
+			t.Fatalf("want a decline, got %+v", r)
+		}
+	})
+}
+
+func TestFrameAgeStartsWhenTheFrameWasTaken(t *testing.T) {
+	requested := time.Now()
+	if got := frameTime(Observation{}, requested); !got.Equal(requested) {
+		t.Fatal("an observation without stamps is dated from the request")
+	}
+	earlier := requested.Add(-3 * time.Second)
+	raw := Observation{TreeAtMillis: uint64(earlier.UnixMilli()), CapturedAtMillis: uint64(requested.UnixMilli())}
+	if got := frameTime(raw, requested); got.UnixMilli() != earlier.UnixMilli() {
+		t.Fatalf("frame dated %v, want the earlier broker stamp %v", got, earlier)
+	}
+	future := Observation{CapturedAtMillis: uint64(requested.Add(time.Hour).UnixMilli())}
+	if got := frameTime(future, requested); !got.Equal(requested) {
+		t.Fatal("a stamp in the future must not make a frame look fresher")
+	}
 }

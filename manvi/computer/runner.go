@@ -318,6 +318,22 @@ type workResult struct {
 // step's decision close to the screen the previous step left behind.
 const reuseMaxAge = 5 * time.Second
 
+// frameTime is when the frame was taken: the earlier of the broker's own tree
+// and screenshot stamps when it reports them and they are not in the future,
+// otherwise the moment the capture was requested.
+func frameTime(raw Observation, requested time.Time) time.Time {
+	at := requested
+	for _, ms := range []uint64{raw.TreeAtMillis, raw.CapturedAtMillis} {
+		if ms == 0 {
+			continue
+		}
+		if t := time.UnixMilli(int64(ms)); t.Before(at) {
+			at = t
+		}
+	}
+	return at
+}
+
 // retainedObservation is the sanitized result of the latest capture plus the
 // executor-private digests computed from the raw frame. Raw pixels are not kept:
 // reuse is limited to semantic locators, which need only the sanitized tree and
@@ -527,7 +543,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			}
 			pending = false
 			switch result.command.Kind {
-			case "observe", "observe_after":
+			case "observe":
 				lastCapture = result.retain
 			case "resolve":
 				// Keeps the capture it resolved against, and its age.
@@ -956,11 +972,14 @@ func resolveLadder(ctx context.Context, d Desktop, s Session, observationID stri
 // stale or foreign capture, a failed resolve, or anything the reducer would
 // have to guess about answers reuse_declined, and the run observes afresh
 // exactly as it did before captures were reused. Only context errors are
-// returned as errors, because those must stop the run, not retry it.
+// returned as errors, because those must stop the run, not retry it; a timeout of
+// the step's own context is a decline.
 func performResolve(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, kept *retainedObservation) workResult {
 	r := workResult{epoch: session.Epoch, command: command}
 	decline := func(code, reason string) workResult {
-		if err := ctx.Err(); err != nil {
+		// A timeout of this step's own context is only a reason not to trust the
+		// reused capture; a caller cancellation still stops the run.
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return workResult{epoch: session.Epoch, command: command, err: err}
 		}
 		return workResult{epoch: session.Epoch, command: command, event: workflow.Event{Kind: "reuse_declined", ActionID: command.ActionID, FailureCode: code, Reason: reason}}
@@ -1184,8 +1203,8 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			return r
 		}
 	}
+	capturedAt := time.Now() // before the call: the frame cannot be older than this
 	raw, err := opts.Desktop.Observe(ctx, session)
-	capturedAt := time.Now()
 	if err != nil {
 		r.err = err
 		return r
@@ -1239,8 +1258,14 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		}
 	}
 	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
-	if raw.Complete {
-		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: capturedAt}
+	// Only a fresh observation taken for a read step is kept for the read steps
+	// that follow it. A post-action capture (observe_after) is never kept: it is
+	// taken with no settle delay and can still show the screen as it was.
+	switch command.Step.Kind {
+	case "extract", "assert", "branch", "wait":
+		if command.Kind == "observe" && raw.Complete {
+			r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: frameTime(raw, capturedAt)}
+		}
 	}
 	return r
 }
