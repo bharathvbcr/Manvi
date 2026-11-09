@@ -33,13 +33,13 @@ func zadvW17Chain(err error) []error {
 			return
 		}
 		out = append(out, e)
-		switch u := e.(type) {
-		case interface{ Unwrap() []error }:
-			for _, c := range u.Unwrap() {
+		// A node may repeat when a wrapper sits above a joined error; the callers only scan every node.
+		walk(errors.Unwrap(e))
+		var joined interface{ Unwrap() []error }
+		if errors.As(e, &joined) {
+			for _, c := range joined.Unwrap() {
 				walk(c)
 			}
-		case interface{ Unwrap() error }:
-			walk(u.Unwrap())
 		}
 	}
 	walk(err)
@@ -265,6 +265,12 @@ func TestZadvW17MarkerInSiblingUserTreeDoesNotSteerSharedParentHome(t *testing.T
 		t.Fatal(err)
 	}
 	zadvW17Write(t, filepath.Join(users, "alice", ".claude-account"), []byte(zadvW17SharedMarker+"\n"))
+	// The fixture is a SHARED parent (like /tmp), the attack the card names. An
+	// owned 0o700 parent is indistinguishable from a user's own home, so it is
+	// usable by design under ruling (c); only a shared one must be refused.
+	if err := os.Chmod(users, 0o1777); err != nil { //nolint:gosec // G302: test fixture needs a shared-permission dir
+		t.Fatal(err)
+	}
 	zadvW17SetHome(t, users)
 	if !usableClaudeHome(users) {
 		return // refused outright: attack closed
@@ -489,10 +495,10 @@ func TestZadvW17ErrorsNeverCarryOperatorBytes(t *testing.T) {
 				if os.Geteuid() == 0 {
 					t.Skip("root reads everything")
 				}
-				if err := os.Chmod(w.seat, 0); err != nil {
+				if err := os.Chmod(w.seat, 0); err != nil { //nolint:gosec // G302: test fixture needs a shared-permission dir
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = os.Chmod(w.seat, 0o700) })
+				t.Cleanup(func() { _ = os.Chmod(w.seat, 0o700) }) //nolint:gosec // G302: test fixture needs a shared-permission dir
 			}},
 		{name: "seat dir path carries canary, home json malformed", seatDir: ".seat-" + zadvW17Canary, accounts: "alpha %SEAT%\n", seatJSON: both,
 			homeJSON: []byte("{{{")},
