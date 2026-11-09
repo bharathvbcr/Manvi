@@ -131,14 +131,10 @@ func TestLinkedWorktreeThatIsNoLongerAWorkingTreeDoesNotRefuseExec(t *testing.T)
 	if err != nil || snap == nil {
 		t.Fatalf("snapshot with a broken linked worktree: %v", err)
 	}
-	// git prints the worktree's real path (/private/var on macOS), not the
-	// spelling the test built, so the record is found by its directory name.
-	recorded := false
-	for path, why := range snap.skipped {
-		recorded = recorded || (filepath.Base(path) == filepath.Base(wt) && why != "")
-	}
-	if !recorded {
-		t.Errorf("the skipped worktree is not recorded: %+v", snap.skipped)
+	// Its own refs are read through its admin directory, which needs no working
+	// tree, so the worktree is scanned rather than skipped.
+	if len(snap.scanned) != 1 || len(snap.skipped) != 0 {
+		t.Errorf("the worktree's admin directory was not scanned: scanned=%v skipped=%v", snap.scanned, snap.skipped)
 	}
 
 	headBefore := headOf(t, f.root)
@@ -167,13 +163,107 @@ func TestLinkedWorktreeWithoutItsGitFileDoesNotRefuseExec(t *testing.T) {
 	}
 }
 
-// A worktree the guard read before the command and cannot read after it is
-// reported as unscanned: its own refs could have moved where nothing sees them.
-func TestWorktreeMadeUnreadableByTheCommandIsReportedUnscanned(t *testing.T) {
+// A command that breaks a linked worktree's admin directory (so git can no
+// longer read the refs in it) is blocked as unscanned, not allowed: the refs the
+// guard read before it cannot be read after it.
+func TestWorktreeAdminDirBrokenByTheCommandIsBlockedUnscanned(t *testing.T) {
 	f := shellCommitFixture(t, false)
 	wt := filepath.Join(filepath.Dir(f.root), "wt-hidden")
 	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
-	write(t, f.root, "hide.sh", "#!/bin/sh\nrm -f "+filepath.Join(wt, ".git")+"\n")
+	admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", "wt-hidden")
+	write(t, f.root, "hide.sh", "#!/bin/sh\nrm -f "+filepath.Join(admin, "HEAD")+"\n")
 	res := shell(f, "sh hide.sh")
-	requireUnscanned(t, res, wt)
+	if !res.IsError || (res.Rule != ruleRefUnscanned && !strings.Contains(res.Text, "snapshot")) {
+		t.Fatalf("a broken admin directory was allowed: %+v", res)
+	}
+	if res.Rule == string(policy.RuleSecretPath) {
+		t.Errorf("an unreadable worktree is labelled path.secret: %s", res.Text)
+	}
+}
+
+// A worktree git reports as prunable with its directory gone is read through
+// its admin directory like any other, and the decision to skip one whose refs
+// git cannot read is made only for that state.
+func TestPrunableAndGoneIsTheOnlySkip(t *testing.T) {
+	admin := t.TempDir()
+	write(t, admin, "gitdir", "/gone/wt/.git\n")
+	list := "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /gone/wt\nHEAD 2\ndetached\nprunable gitdir file points to non-existent location\n"
+	if why := prunableAndGone(parseWorktrees(list), admin); why == "" {
+		t.Fatal("a prunable worktree whose directory is gone was not skippable")
+	}
+	live := "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /gone/wt\nHEAD 2\ndetached\n"
+	if why := prunableAndGone(parseWorktrees(live), admin); why != "" {
+		t.Fatalf("an unreadable admin directory of a worktree git does not call prunable was skippable: %s", why)
+	}
+	here := t.TempDir()
+	write(t, admin, "gitdir", filepath.Join(here, ".git")+"\n")
+	existing := "worktree " + here + "\nHEAD 2\ndetached\nprunable x\n"
+	if why := prunableAndGone(parseWorktrees(existing), admin); why != "" {
+		t.Fatalf("a prunable worktree whose directory exists was skippable: %s", why)
+	}
+}
+
+// A linked worktree whose .git is garbage no longer refuses exec: its refs are
+// read through the admin directory.
+func TestLinkedWorktreeWithAGarbageGitFileDoesNotRefuseExec(t *testing.T) {
+	f := shellCommitFixture(t, false)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-garbage")
+	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+	write(t, wt, ".git", "not a gitdir line\n")
+	if res := shell(f, "echo fine"); res.IsError || !strings.Contains(res.Text, "fine") {
+		t.Fatalf("exec was refused: %+v", res)
+	}
+}
+
+// The fail-open the adversary found, asserted for what the guard does: a leaking
+// commit parked in a per-worktree namespace of a linked worktree that has no
+// usable working tree, through its admin directory (`git --git-dir` needs no
+// working tree), is found, rolled back through the same --git-dir, and blocked
+// as path.secret.
+func TestPerWorktreeRefParkedThroughTheAdminDirOfAnUnusableWorktreeIsRolledBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, ref string
+		outside   bool
+		hide      func(t *testing.T, wt string)
+	}{
+		{"nogit_worktree", "refs/worktree/leak", false, func(t *testing.T, wt string) { removeFile(t, filepath.Join(wt, ".git")) }},
+		{"nogit_bisect", "refs/bisect/bad", false, func(t *testing.T, wt string) { removeFile(t, filepath.Join(wt, ".git")) }},
+		{"dir_missing", "refs/worktree/leak", false, func(t *testing.T, wt string) {
+			if err := os.Rename(wt, wt+".away"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"outside_root_nogit", "refs/worktree/leak", true, func(t *testing.T, wt string) { removeFile(t, filepath.Join(wt, ".git")) }},
+		{"garbage_gitfile", "refs/worktree/leak", false, func(t *testing.T, wt string) { write(t, wt, ".git", "not a gitdir line\n") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shellCommitFixture(t, true)
+			base := f.root
+			if tc.outside {
+				base = filepath.Dir(f.root)
+			}
+			wt := filepath.Join(base, "wt-park-"+tc.name)
+			run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+			admin := filepath.Join(gitOut(t, f.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), "worktrees", filepath.Base(wt))
+			tc.hide(t, wt)
+			write(t, f.root, "park.sh", "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\ngit --git-dir="+admin+" update-ref "+tc.ref+" $c\n")
+			res := shell(f, "sh park.sh")
+			if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) {
+				t.Fatalf("the parked leak was allowed or mislabelled: %+v", res)
+			}
+			if strings.Contains(res.Text, "AUDITsecretVALUE") {
+				t.Errorf("the result carries the value: %s", res.Text)
+			}
+			if out := gitOut(t, admin, "for-each-ref", tc.ref); out != "" {
+				t.Fatalf("the parked ref was not rolled back: %s", out)
+			}
+		})
+	}
+}
+
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 }

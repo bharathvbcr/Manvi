@@ -82,9 +82,10 @@ func TestFailingGitInARepositoryStillRefusesTheCommand(t *testing.T) {
 }
 
 // The guard's cost in git processes per exec_command (nothing moves), for one
-// worktree and for 20 linked ones. Each snapshot is for-each-ref, worktree list
-// and one for-each-ref per linked worktree (the per-worktree refs cannot be
-// listed from elsewhere); the guard takes two snapshots. A regression fails.
+// worktree and for 20 linked ones. Each snapshot is for-each-ref, worktree list,
+// the common dir and one for-each-ref per linked worktree (through its admin
+// directory, which needs no working tree); the guard takes two snapshots. A
+// regression fails.
 func TestGuardGitProcessCostIsBounded(t *testing.T) {
 	for _, linked := range []int{0, 20} {
 		t.Run(fmt.Sprintf("%d_linked", linked), func(t *testing.T) {
@@ -97,7 +98,7 @@ func TestGuardGitProcessCostIsBounded(t *testing.T) {
 				t.Fatalf("the command failed: %+v", res)
 			}
 			got := invocations(t, counter)
-			bound := 2 * (2 + linked)
+			bound := 2 * (3 + linked)
 			t.Logf("%d linked worktrees: %d git processes per exec_command (bound %d)", linked, got, bound)
 			if got > bound {
 				t.Errorf("the guard ran %d git processes with %d linked worktrees, bound %d", got, linked, bound)
