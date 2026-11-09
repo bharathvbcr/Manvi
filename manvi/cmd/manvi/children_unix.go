@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/proc"
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // childrenReapBound is how long ending the process's leftover children may
@@ -199,6 +200,7 @@ type childRow struct {
 func runPS(ctx context.Context, ps string, args ...string) (string, int, error) {
 	// #nosec G204 -- the system ps by absolute path, with literal arguments.
 	cmd := exec.CommandContext(ctx, ps, args...)
+	cmd.Env = childenv.Inherit() // ps needs no provider credential
 	proc.ConfigureGroup(cmd)
 	cmd.WaitDelay = time.Second
 	var out strings.Builder
