@@ -265,16 +265,8 @@ func (r *Run) Wait(ctx context.Context) (RunResult, error) {
 		return out, r.err
 	}
 }
-func (r *Run) Done() <-chan struct{} { return r.done }
-func ownedState(s workflow.State) workflow.State {
-	s.Observation = s.Observation.Clone()
-	m := make(map[string]workflow.Value, len(s.Outputs))
-	for k, v := range s.Outputs {
-		m[k] = v
-	}
-	s.Outputs = m
-	return s
-}
+func (r *Run) Done() <-chan struct{}             { return r.done }
+func ownedState(s workflow.State) workflow.State { return s.Clone() }
 func ownedObservation(o Observation) Observation {
 	nodes := make([]Node, len(o.Nodes))
 	for i, n := range o.Nodes {

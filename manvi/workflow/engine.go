@@ -253,7 +253,11 @@ func (s State) ActionID(p *Program) string {
 	}
 	return id
 }
-func copyState(s State) State {
+
+// Clone returns a State that shares no map or pointer with s. It is the one
+// complete copy: Reduce works on a clone, and callers that hand a State to
+// others clone it so their writes cannot reach the run.
+func (s State) Clone() State {
 	s.Observation = s.Observation.Clone()
 	m := make(map[string]Value, len(s.Outputs))
 	for k, v := range s.Outputs {
@@ -290,7 +294,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if event.NextEpoch <= previous.Epoch {
 			return previous, nil, errors.New("fence requires a newer broker epoch")
 		}
-		next := copyState(previous)
+		next := previous.Clone()
 		next.Epoch = event.NextEpoch
 		next.Sequence = event.Sequence
 		next.ElapsedMillis = event.ElapsedMillis
@@ -302,7 +306,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 	if previous.StepIndex < 0 || previous.StepIndex >= len(p.spec.Steps) {
 		return previous, nil, errors.New("invalid step state")
 	}
-	s := copyState(previous)
+	s := previous.Clone()
 	s.Sequence = event.Sequence
 	s.ElapsedMillis = event.ElapsedMillis
 	if s.ElapsedMillis > int64(p.spec.Limits.ActiveSeconds)*1000 {
