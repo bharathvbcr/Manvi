@@ -308,6 +308,13 @@ func resolvedCheckout(dir string) (string, os.FileInfo, bool) {
 	return resolved, info, true
 }
 
+// closeMargin is what ManagedRunner.Close allows a run beyond codingagent's close
+// budget: the receipt and the release that follow the connection's close.
+const closeMargin = 2 * time.Second
+
+// managedCloseWait is how long ManagedRunner.Close waits for its runs.
+func managedCloseWait() time.Duration { return codingagent.CloseBudget() + closeMargin }
+
 // sameCheckout says whether two checkouts are one directory. A checkout is keyed
 // by the directory, not by how its path is spelled: on a case-insensitive volume
 // .../MyRepo and .../myrepo are two spellings of one directory and so one
@@ -320,13 +327,17 @@ func sameCheckout(a, b os.FileInfo) bool {
 	return a != nil && b != nil && os.SameFile(a, b)
 }
 
-// checkoutsOverlap says whether two checkouts can touch each other's files: they
-// are one directory (sameCheckout), or one lies inside the other. A run started in
-// a subdirectory of a worktree (a monorepo package is where agents are most often
+// checkoutsOverlap says whether two checkouts share files that one working tree
+// owns: they are one directory (sameCheckout), or one lies inside the other with no
+// git working-tree boundary between them (hasGitBoundary). A run started in a
+// subdirectory of a worktree (a monorepo package is where agents are most often
 // pointed) writes files the worktree's other runs and verifications read, and a
 // run at the root writes the subdirectory's, so a hold or a live harness on either
-// holds the other. The paths are the resolved ones (resolvedCheckout), compared by
-// mcp.PathIsInside, the repository's one containment rule; two sibling
+// holds the other. A linked worktree nested in a repository (GitPulse puts them
+// under <repo>/.claude/worktrees and .gitpulse/worktrees) is another working tree
+// with its own files, and a submodule is a repository of its own: neither is
+// overlapped by its container. The paths are the resolved ones (resolvedCheckout),
+// compared by mcp.PathIsInside, the repository's one containment rule; two sibling
 // directories do not overlap. A path that cannot be compared is taken to overlap,
 // since this is a refusal's test and the failure it must not have is admitting.
 // A checkout with no directory (nil) overlaps nothing.
@@ -338,9 +349,47 @@ func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath 
 		return false
 	}
 	for _, pair := range [2][2]string{{aPath, bPath}, {bPath, aPath}} {
-		if inside, err := mcp.PathIsInside(pair[0], pair[1]); err != nil || inside {
+		outer, inner := pair[0], pair[1]
+		outerInfo := aInfo
+		if outer == bPath {
+			outerInfo = bInfo
+		}
+		inside, err := mcp.PathIsInside(outer, inner)
+		if err != nil {
 			return true
 		}
+		if inside && !hasGitBoundary(outerInfo, outer, inner) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGitBoundary says whether a git working tree starts between outer and inner,
+// where inner is inside outer: some directory from inner itself up to, and not
+// including, outer holds a .git entry. A linked worktree and a submodule keep a
+// .git file and a repository a .git directory, so any entry counts. It is read from
+// the file system with Lstat, not from git's output, so it does not depend on git
+// being installed, on PATH or on the locale. An Lstat error other than not-exist
+// is no boundary, which is overlap: the check fails closed. outer's own .git is not
+// a boundary, since outer is the tree being asked about.
+//
+// outer is found by sameCheckout as well as by spelling, because inner may reach it
+// through a case variant on a case-insensitive volume, and a walk that stepped past
+// it would read the repository's own .git as a boundary.
+func hasGitBoundary(outerInfo os.FileInfo, outer, inner string) bool {
+	for dir := inner; dir != outer; {
+		if info, err := os.Stat(dir); err == nil && sameCheckout(outerInfo, info) {
+			return false
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
 	}
 	return false
 }
@@ -1860,6 +1909,13 @@ func (r *ManagedRunner) Stop(raw json.RawMessage) error {
 	job.cancel()
 	return nil
 }
+
+// Close cancels every run and waits for them to finish. One deadline covers all
+// the jobs together, not one per job: the runs are cancelled at once and reap in
+// parallel, so the slowest of them is what the wait is for. The deadline is
+// codingagent.CloseBudget (the longest a connection's own close can take) plus
+// closeMargin for the run's bookkeeping after it, so a run that is still within its
+// reap budget is not reported unresolved.
 func (r *ManagedRunner) Close() error {
 	r.mu.Lock()
 	r.closed = true
@@ -1872,7 +1928,7 @@ func (r *ManagedRunner) Close() error {
 		j.cancel()
 	}
 	r.mu.Unlock()
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(managedCloseWait())
 	defer deadline.Stop()
 	for _, j := range jobs {
 		select {
