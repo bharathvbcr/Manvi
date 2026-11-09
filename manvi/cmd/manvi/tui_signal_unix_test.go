@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -310,5 +311,71 @@ func TestStoppedByNamesASignalThatArrivedAtAnyPoint(t *testing.T) {
 		case tc.want != "" && (got == nil || got.Error() != tc.want):
 			t.Errorf("%s: got %v, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// slowIndexer writes a stand-in `devmap` that answers the capability probe at
+// once and then, for any other command, records its pid and keeps writing into
+// the state directory until it is killed -- an index build that is in flight
+// when the TUI is told to stop. It returns the binary's path and the file the
+// pid lands in.
+func slowIndexer(t *testing.T) (binary, pidFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	binary, pidFile = dir+"/devmap", dir+"/pid"
+	script := `#!/bin/sh
+case "$*" in *"manifest --help"*) echo "--graph-output"; exit 0;; esac
+echo $$ > "` + pidFile + `.tmp" && mv "` + pidFile + `.tmp" "` + pidFile + `"
+mkdir -p .devcouncil/codeintel
+while :; do echo x >> .devcouncil/codeintel/writer; sleep 0.05; done
+`
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil { // #nosec G306 -- an executable test stand-in.
+		t.Fatal(err)
+	}
+	return binary, pidFile
+}
+
+// A stop signal ends the index refresh the TUI started. The refresh's devmap
+// child leads its own process group, so it is not reached by anything aimed at
+// the TUI, and the client abandons the call the moment the run is cancelled --
+// the kill is delivered by a goroutine that the exiting process does not wait
+// for. A build that outlived the TUI kept writing .devcouncil/codeintel after
+// it had gone (ft-90ef3b78). Nothing the TUI started may be running when it has
+// exited.
+func TestTUIStopSignalLeavesNoIndexerRunning(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			binary, pidFile := slowIndexer(t)
+			cmd, _, _, _ := tuiOnAPtyIn(t, t.TempDir(), "MANVI_MAP_BINARY="+binary)
+
+			var pid int
+			deadline := time.Now().Add(60 * time.Second)
+			for pid == 0 {
+				if b, err := os.ReadFile(pidFile); err == nil { // #nosec G304 -- a path this test made.
+					pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+				}
+				if pid == 0 && time.Now().After(deadline) {
+					t.Fatal("the TUI never started the index refresh")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			// Whatever happens to the TUI below, this one is not left running.
+			t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+
+			if err := cmd.Process.Signal(sig); err != nil {
+				t.Fatalf("signalling the TUI: %v", err)
+			}
+			_ = waitExit(t, cmd, 30*time.Second)
+			// The group may take a moment to be reaped once it is dead (init
+			// reaps what the exited TUI left), so wait for that, bounded. A
+			// group still being written to is not going to stop in that time.
+			reaped := time.Now().Add(5 * time.Second)
+			for syscall.Kill(-pid, 0) == nil {
+				if time.Now().After(reaped) {
+					t.Fatalf("the index refresh's process group %d was still running after the TUI exited", pid)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }

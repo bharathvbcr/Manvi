@@ -91,6 +91,13 @@ func runTUI(reg *flags.Registry, args []string) error {
 	if err := host.releaseAll(releaseCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "manvi: some sessions did not release cleanly: %v\n", err)
 	}
+	// Whatever the run started and abandoned on the way out -- the index build
+	// above, whose kill is a goroutine this process would otherwise outrun --
+	// is ended before the process is. An index writer that outlives the session
+	// that owns it writes into a repository nobody is watching.
+	if left := endLeftoverChildren(); len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "manvi: child processes %v were still running at exit and could not be ended\n", left)
+	}
 	// Read last, so a signal that arrived at any point up to here is reported,
 	// including the first one taken while the leases were being released: the
 	// handler is still installed then, so it did not kill the process and it
