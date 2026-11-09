@@ -222,24 +222,45 @@ type groupMember struct {
 // stranger's. If the listing fails, groupLive falls back to the bare probe,
 // which fails closed.
 //
-// The listing is taken before the signal, not after. After it, every member may
-// already have died and a stranger taken the number, and the listing would then
-// record the stranger as ours. Before it, a process forked between the listing
-// and the kill is killed with the group but is not listed, so if it outlives the
-// kill and is the only thing left, groupLive reads the group as free; that needs
-// a fork inside one syscall window and a survivor of SIGKILL, and it fails
-// toward releasing the checkout, not toward holding a stranger's. A listed
-// zombie keeps counting until its parent reaps it, as kill(2) counts it.
-// The residue between the probe and the listing is the same as before: the last
-// member would have to exit and a stranger's group take the number in between.
+// The group is listed twice, before and after the signal, and the two listings
+// are unioned (pid and start time). Before the signal, because that is the last
+// moment nothing can have killed the members and let a stranger take the number.
+// That listing alone misses a process forked after it by a listed member that
+// then exits: the group would read free while that process lives, which the bare
+// probe never did. After the signal, because a number cannot be handed on while
+// a member exists, so whatever is in the group right after the signal is still
+// ours, and it catches such a fork. What each order misses: the first listing
+// misses forks after it; the second misses members that died in the signal and
+// anything forked after it, and may record a stranger only if every member died
+// and a stranger took the same pid with the same start time inside the
+// list-kill-list window, which needs both numbers reused. The remaining
+// residue is a fork after the second listing by a process that survives the
+// SIGKILL. It is not reachable: SIGKILL cannot be blocked and a dying process
+// cannot fork. If either listing fails, groupLive falls
+// back to the bare probe, which fails closed. A listed zombie keeps counting
+// until its parent reaps it, as kill(2) counts it. The residue between the probe
+// and the first listing is the same as before: the last member would have to
+// exit and a stranger's group take the number in between.
 func (c *connection) sweepGroup() {
 	if !probeGroup(c.pid) {
 		c.groupGone.Store(true)
 		return
 	}
-	members, err := snapshotGroup(c.pid)
-	c.members, c.membersKnown = members, err == nil
+	before, errBefore := snapshotGroup(c.pid)
 	signalGroup(c.pid)
+	after, errAfter := snapshotGroup(c.pid)
+	c.members, c.membersKnown = unionMembers(before, after), errBefore == nil && errAfter == nil
+}
+
+// unionMembers is a and b without duplicates, by pid and start time.
+func unionMembers(a, b []groupMember) []groupMember {
+	out := slices.Clone(a)
+	for _, m := range b {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // groupLive says whether the agent's process group, as sweepGroup left it, still

@@ -51,14 +51,16 @@ func shortBudget(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { reapBudget = old })
 }
 
-// A member forked AFTER the snapshot, by a snapshotted member that then dies,
-// leaves a live process in the agent's group that no snapshot entry vouches
-// for. Before the snapshot (w17-int2) the bare kill(-pid,0) probe reported the
-// group live; groupLive now reads it free. The product's SIGKILL at the sweep
-// kills such a process too, so this needs a signal that does not land (D-state)
-// or a fork after the kill; the signal is stubbed to be that. Asserts the
-// fail-closed answer.
-func TestAdvW18ProcgroupGapMemberForkedAfterSnapshotOutlivesSnapshottedMembers(t *testing.T) {
+// A member forked BETWEEN the sweep's two listings, by a listed member that then
+// exits, is in the group but not in the first listing. The second listing names
+// it, so the group reads live once the listed member is gone; a single
+// pre-signal listing read it free, where w17-int2's bare probe read it live. The
+// signal stub stands for the kill window: it releases the listed member M, which
+// forks the sleeper B, and returns only once B's pid file exists (bounded), so B
+// exists before the second listing and not before the first. It kills nothing,
+// so B outlives the sweep, which a real SIGKILL would not allow for a process
+// already in the group; what is pinned is the listing, not the kill.
+func TestAdvW18ProcgroupMemberForkedBetweenListingsKeepsTheGroupLive(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "go")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
@@ -67,7 +69,20 @@ func TestAdvW18ProcgroupGapMemberForkedAfterSnapshotOutlivesSnapshottedMembers(t
 	pidFile := filepath.Join(dir, "late.pid")
 	swept := make(chan struct{})
 	oldSignal := signalGroup
-	signalGroup = func(int) { close(swept) }
+	signalGroup = func(int) {
+		defer close(swept)
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = f.WriteString("go\n")
+		_ = f.Close()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if raw, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(raw)) != "" {
+				return
+			}
+		}
+	}
 	t.Cleanup(func() { signalGroup = oldSignal })
 	shortBudget(t, 300*time.Millisecond)
 	// The agent leaves one member M behind (an inner sh waiting on the fifo) and
@@ -82,12 +97,6 @@ func TestAdvW18ProcgroupGapMemberForkedAfterSnapshotOutlivesSnapshottedMembers(t
 	case <-time.After(10 * time.Second):
 		t.Fatal("sweep never signalled")
 	}
-	f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = f.WriteString("go\n")
-	_ = f.Close()
 	late := waitPidFile(t, pidFile)
 	killOnCleanup(t, late)
 	// Wait for M to be gone: the late sleeper is then the group's only member.
@@ -101,7 +110,7 @@ func TestAdvW18ProcgroupGapMemberForkedAfterSnapshotOutlivesSnapshottedMembers(t
 	}
 	exit, _ := c.close()
 	if !exit.GroupLive {
-		t.Fatalf("close() = %+v: a live process (pid %d) is in the agent's group but the snapshot does not name it; w17-int2 reported this live", exit, late)
+		t.Fatalf("close() = %+v: a live process (pid %d) was forked into the agent's group between the sweep's listings but is not named; w17-int2 reported this live", exit, late)
 	}
 }
 
@@ -221,7 +230,7 @@ func TestAdvW18ProcgroupCloseWithoutAListingFailsClosed(t *testing.T) {
 }
 
 // The sweep that finds the probe empty must not list (the number was free), and
-// a sweep that finds a member lists exactly once.
+// a sweep that finds a member lists exactly twice, around the one signal.
 func TestAdvW18ProcgroupSweepListsOnlyWhenTheProbeSeesAMember(t *testing.T) {
 	var lists atomic.Int32
 	stubSnapshot(t, func(int) ([]groupMember, error) { lists.Add(1); return nil, nil })
@@ -238,7 +247,7 @@ func TestAdvW18ProcgroupSweepListsOnlyWhenTheProbeSeesAMember(t *testing.T) {
 	probeGroup = func(int) bool { return true }
 	c = &connection{pid: 4242}
 	c.sweepGroup()
-	if lists.Load() != 1 || signals.Load() != 1 || !c.membersKnown {
+	if lists.Load() != 2 || signals.Load() != 1 || !c.membersKnown {
 		t.Fatalf("member probe: lists=%d signals=%d known=%v", lists.Load(), signals.Load(), c.membersKnown)
 	}
 }

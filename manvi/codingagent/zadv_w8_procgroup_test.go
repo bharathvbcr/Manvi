@@ -149,3 +149,40 @@ func TestCloseReportsTheGroupLiveWhenTheSweepCouldNotListItsMembers(t *testing.T
 		t.Fatalf("close() = %+v, want GroupLive when the sweep's member listing failed", exit)
 	}
 }
+
+// The second of the sweep's two listings failing alone is as unknowable as the
+// first failing: close() reports the group live.
+func TestCloseReportsTheGroupLiveWhenOnlyTheSecondListingFails(t *testing.T) {
+	realProbe, realSnapshot := probeGroup, snapshotGroup
+	var swept atomic.Bool
+	probeGroup = func(pid int) bool {
+		if swept.CompareAndSwap(false, true) {
+			return true
+		}
+		return realProbe(pid)
+	}
+	var lists atomic.Int32
+	snapshotGroup = func(int) ([]groupMember, error) {
+		if lists.Add(1) == 2 {
+			return nil, errors.New("sysctl refused")
+		}
+		return nil, nil
+	}
+	oldBudget := reapBudget
+	reapBudget = 150 * time.Millisecond
+	t.Cleanup(func() { probeGroup, snapshotGroup, reapBudget = realProbe, realSnapshot, oldBudget })
+	c, err := startConnection(t.Context(), "/bin/sh", []string{"-c", "exit 0"}, t.TempDir(), func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done
+	stranger := startStranger(t)
+	c.pid = stranger.Process.Pid
+	exit, _ := c.close()
+	if !exit.GroupLive {
+		t.Fatalf("close() = %+v, want GroupLive when the second listing failed", exit)
+	}
+	if lists.Load() != 2 {
+		t.Fatalf("listings = %d, want 2", lists.Load())
+	}
+}
