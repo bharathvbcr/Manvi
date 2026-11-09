@@ -24,7 +24,7 @@ func homeDirProblem(resolved string) string {
 		return homeNotOwned
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return homeWorldWrtable
+		return homeWorldWritable
 	}
 	return ""
 }

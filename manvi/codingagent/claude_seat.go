@@ -190,7 +190,7 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 const (
 	homeUnusable     = "HOME is not a usable absolute path"
 	homeNotOwned     = "HOME not owned by this user"
-	homeWorldWrtable = "HOME is group- or world-writable"
+	homeWorldWritable = "HOME is group- or world-writable"
 )
 
 // resolveClaudeHome resolves home once and returns the resolved path, or a

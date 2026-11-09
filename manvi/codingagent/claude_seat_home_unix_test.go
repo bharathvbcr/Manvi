@@ -17,11 +17,11 @@ func TestClaudeSeatHomeOwnershipAndWritability(t *testing.T) {
 	}{
 		{"owned and private", 0o700, ""},
 		{"owned and group-readable", 0o755, ""},
-		{"world-writable", 0o777, homeWorldWrtable},
-		{"world-writable sticky (/tmp style)", 0o1777, homeWorldWrtable},
-		{"group-writable", 0o775, homeWorldWrtable},
-		{"group-writable only", 0o770, homeWorldWrtable},
-		{"other-writable only", 0o702, homeWorldWrtable},
+		{"world-writable", 0o777, homeWorldWritable},
+		{"world-writable sticky (/tmp style)", 0o1777, homeWorldWritable},
+		{"group-writable", 0o775, homeWorldWritable},
+		{"group-writable only", 0o770, homeWorldWritable},
+		{"other-writable only", 0o702, homeWorldWritable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "home")
@@ -84,8 +84,8 @@ func TestClaudeSeatUnsafeHomeRefusesPinnedAndLeavesUnpinnedUnrouted(t *testing.T
 	pinned := t.TempDir()
 	writeSeatTestFile(t, filepath.Join(pinned, ".claude-account"), "chandra\n")
 	_, err = claudeSeatOverrides(pinned)
-	if err == nil || !strings.Contains(err.Error(), homeWorldWrtable) {
-		t.Fatalf("pinned checkout under a world-writable HOME: want %q, got %v", homeWorldWrtable, err)
+	if err == nil || !strings.Contains(err.Error(), homeWorldWritable) {
+		t.Fatalf("pinned checkout under a world-writable HOME: want %q, got %v", homeWorldWritable, err)
 	}
 	if strings.Contains(err.Error(), home) {
 		t.Fatalf("the refusal names the HOME path: %v", err)
