@@ -493,6 +493,11 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		}
 	}
 
+	// Turns dropped before the log's first event, which the log never held. The
+	// in-memory log keeps every event it was given, so a second save of it trims the
+	// same turns again; counting them on top of the file's count made a cached
+	// store disagree with a fresh one that loaded the trimmed file.
+	droppedBefore := log.droppedBefore()
 	from, droppedTurns, oversize := trimEncoded(events, perEvent, s.maxBytes)
 	// The wire frame lives in the first turn, which is the first one a trim
 	// drops, so the file states it again at the front of what is kept; the
@@ -529,13 +534,14 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	// The events were each encoded to be measured; joined, those encodings
 	// are byte-for-byte what marshalling the kept slice produces.
 	encoded := joinArray(keptEncoded)
+	cumulative := droppedBefore + droppedTurns
 	body, err := json.Marshal(header{
 		Version:      FormatVersion,
 		ID:           id,
 		CreatedAt:    createdAt,
 		UpdatedAt:    time.Now().UTC(),
 		Turns:        countTurns(kept),
-		TrimmedTurns: trimmedBefore + droppedTurns,
+		TrimmedTurns: cumulative,
 		Oversize:     oversize,
 		Checksum:     digest(encoded),
 		Events:       encoded,
@@ -556,7 +562,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, err
 	}
 	s.seen[id] = digest(body)
-	s.rememberMeta(id, headerMeta{CreatedAt: createdAt, TrimmedTurns: trimmedBefore + droppedTurns})
+	s.rememberMeta(id, headerMeta{CreatedAt: createdAt, TrimmedTurns: cumulative})
 
 	// Pruning is best-effort on purpose: the session is already durable, and
 	// failing the run because an old generation could not be unlinked would
@@ -568,7 +574,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 
 	return SaveReport{
 		ID: id, Path: target, Generation: generation + 1,
-		Events: len(kept), TrimmedTurns: droppedTurns, Oversize: oversize,
+		Events: len(kept), TrimmedTurns: max(cumulative-trimmedBefore, 0), Oversize: oversize,
 	}, nil
 }
 
