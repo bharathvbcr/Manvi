@@ -262,7 +262,7 @@ func TestZadvW17ReplayedNonceDoesNotCloseTheNextRead(t *testing.T) {
 // carry the standing rule on every read, empty bodies included, and refuse to
 // hand back an unframed empty string.
 func TestZadvW17EmptyAndUnicodeBodiesStillCarryTheStandingRule(t *testing.T) {
-	for _, body := range []string{"", "\n", "‮", "{}", strings.Repeat("`", 5000)} {
+	for _, body := range []string{"", "\n", "\u202e", "{}", strings.Repeat("`", 5000)} {
 		out, err := frameBoardRead(body)
 		if err != nil {
 			t.Fatal(err)
