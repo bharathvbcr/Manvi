@@ -109,6 +109,30 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **Record format change: neutralised agent text is now unambiguous**
+  (ft-bf52b840). Every agent-authored string a managed run records is
+  neutralised once, at the adapters' `Next`, and rendered so that no input
+  can be mistaken for another. This changes how some text looks in run
+  output and the `[tools]` snapshot:
+  - a literal backslash in agent text renders as `\\`;
+  - a bidi, invisible or tag character renders as `\u{XXXX}`, where it
+    used to render as `<U+XXXX>`;
+  - a C1 control renders as `\u{0080}`…`\u{009F}`;
+  - only a byte that is not UTF-8 renders as `\xNN`.
+
+  Tool input stays valid JSON, and approval payloads are unchanged byte for
+  byte. Nothing in Manvi parses the old form.
+- **Behaviour change: Claude seat routing refuses an unusable HOME that holds
+  `~/.claude-accounts`** (ft-30c6322b, 2ac50b8). When HOME is group- or
+  world-writable or owned by another user, a pinned checkout was already
+  refused. Two cases change:
+  - A launch is now also refused when that HOME holds `~/.claude-accounts`,
+    because the seats cannot be read to check the default login.
+  - The `.claude-account` search now covers every directory up to HOME, so a
+    pin placed between the checkout and HOME is no longer missed.
+
+  Under `sudo -E` or an NFS uid mismatch, fix HOME's ownership; there is no
+  bypass.
 - **Behaviour change: plain managed runs now hold their checkout while the
   agent's process group lives** (owner decision 2026-11-06, ft-43e7cb92
   criterion 3). A managed run with no harness block whose Close finds a member of

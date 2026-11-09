@@ -57,8 +57,12 @@ test("the macos verdict CI produced is fully expected", () => {
   // verify.sh (macos-latest) at d6c956f, attempt 2: APFS runs the three
   // spelling tests, so four skips rather than seven; plus the approve-fd re-exec
   // helper, which skips on both runners since it was added, as do the TUI pty
-  // and killed-save re-exec helpers.
+  // and killed-save re-exec helpers. Since 2026-11-09 (ft-7a1354a5) it also
+  // skips the ESC-[ boundary test (every platform) and the XDG-in-repo test
+  // (darwin's user config dir ignores XDG), both measured on macOS.
   const skips = [
+    "github.com/bharathvbcr/Manvi/manvi/ui/input.TestAdvReadBoundaryInsideStartMarkerWithGapPastEscapeDelay",
+    "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestZAdvUserConfigViaXDGInsideRepo",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexHandshakeWithoutModelTurn",
     "github.com/bharathvbcr/Manvi/manvi/codingagent.TestInstalledCodexReadOnlyTurn",
     "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestApproveFDBareApproverHelper",

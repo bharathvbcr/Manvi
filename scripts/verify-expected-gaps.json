@@ -59,6 +59,16 @@
       "why": "Normalising volumes only; Linux ext4 distinguishes NFC from NFD."
     },
     {
+      "test": "github.com/bharathvbcr/Manvi/manvi/ui/input.TestAdvReadBoundaryInsideStartMarkerWithGapPastEscapeDelay",
+      "os": ["ubuntu-latest", "macos-latest"],
+      "why": "Inherent ESC-[ vs Alt+[ ambiguity: a bare ESC [ held past the escape delay cannot be told from Alt+[ or the start of a CSI, so it resolves as Escape plus keys on every platform (ft-7a1354a5; Fable ruling 2026-11-09)."
+    },
+    {
+      "test": "github.com/bharathvbcr/Manvi/manvi/cmd/manvi.TestZAdvUserConfigViaXDGInsideRepo",
+      "os": ["macos-latest"],
+      "why": "os.UserConfigDir ignores XDG_CONFIG_HOME on darwin (it is ~/Library/Application Support), so there is no XDG path to point inside the repository; the test runs on Linux (ft-7a1354a5; confirmed on macOS 2026-11-09)."
+    },
+    {
       "test": "github.com/bharathvbcr/Manvi/manvi/devcouncil.TestSpellingVariantOfACreatedDirectoryCannotEscape",
       "os": ["ubuntu-latest"],
       "why": "Case-insensitive volumes only."
