@@ -122,3 +122,34 @@ func TestGenuineLaneIsABoundaryWhenTheOuterTracksItsBasenameAtTheTop(t *testing.
 		t.Error("a genuine lane was read as overlap because the outer tracks a top-level path with its basename")
 	}
 }
+
+// inner may reach outer's directories through another case on a case-insensitive
+// volume, and the outer index is asked case-sensitively, so the path asked about
+// has to be the stored spelling. The volume decides which half of this runs: on a
+// case-insensitive one the variant PKG/sub is the tracked pkg/sub, and on a
+// case-sensitive one it is a different directory that must not change the answer.
+func TestForgedMarkerReachedThroughACaseVariantIsOverlap(t *testing.T) {
+	root := trackedRoot(t, "pkg/sub/file.go")
+	sub := filepath.Join(root, "pkg", "sub")
+	plantMarker(t, sub)
+	variant := filepath.Join(root, "PKG", "sub")
+	if _, err := os.Stat(variant); err == nil {
+		if !overlap(t, root, variant) {
+			t.Error("a forged marker reached through a case variant of a tracked directory separated the trees")
+		}
+		if !overlap(t, root, filepath.Join(root, "pkg", "SUB")) {
+			t.Error("a forged marker reached through a case variant of its own name separated the trees")
+		}
+		return
+	}
+	// Case-sensitive volume: PKG/sub is a different directory. With its own forged
+	// marker and nothing tracked under it, it is a boundary, and pkg/sub stays overlap.
+	other := filepath.Join(root, "PKG", "sub")
+	plantMarker(t, other)
+	if overlap(t, root, other) {
+		t.Error("an untracked marked directory PKG/sub was read as overlap because pkg/sub is tracked")
+	}
+	if !overlap(t, root, sub) {
+		t.Error("a forged marker over tracked files separated the trees")
+	}
+}
