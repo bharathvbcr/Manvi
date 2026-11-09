@@ -73,7 +73,13 @@ type connection struct {
 	// groupGone is set once the agent's process group is known to have no member:
 	// empty when sweepGroup first looked, or confirmed so by close().
 	groupGone atomic.Bool
-	validate  func([]byte) error
+	// members is the agent's process group as sweepGroup found it, and
+	// membersKnown says whether that listing succeeded. Both are written before
+	// done is closed and read only after it. Without a known listing the group is
+	// counted live whenever it answers a probe.
+	members      []groupMember
+	membersKnown bool
+	validate     func([]byte) error
 }
 
 // errStderrCap is the cause a stderr flood ends the connection with.
@@ -187,9 +193,17 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 // to stand in for a member that outlives SIGKILL, which a real process cannot be
 // made to do, and to count the signals sent.
 var (
-	probeGroup  = groupAlive
-	signalGroup = proc.KillGroup
+	probeGroup    = groupAlive
+	signalGroup   = proc.KillGroup
+	snapshotGroup = groupMembers
 )
+
+// groupMember is one process of the agent's group: its pid and the time it
+// started, which tells it from a later process handed the same pid.
+type groupMember struct {
+	pid   int
+	start int64
+}
 
 // sweepGroup is the one place the agent's process group is signalled after the
 // agent was reaped, and it runs as soon as Wait returns. cmd.Cancel reaches the
@@ -199,15 +213,75 @@ var (
 // so a group found empty is latched (groupGone) and never signalled or probed
 // again, however late close() comes. A group found with members is still ours
 // (its number cannot be reused while a member exists) and is killed now rather
-// than at close(), by which time it may have emptied and been reused. The only
-// residue is the interval between this probe and this signal, in which the last
-// member would have to exit and a stranger's group take the number.
+// than at close(), by which time it may have emptied and been reused.
+//
+// A member existing is also the only moment membership is provably ours, so the
+// members (pid and start time) are listed here, and groupLive counts the group
+// as the agent's only while one of them is still in it. A number found to have
+// no member when listed was free, and any group that holds it later is a
+// stranger's. If the listing fails, groupLive falls back to the bare probe,
+// which fails closed.
+//
+// The group is listed twice, before and after the signal, and the two listings
+// are unioned (pid and start time). Before the signal, because that is the last
+// moment nothing can have killed the members and let a stranger take the number.
+// That listing alone misses a process forked after it by a listed member that
+// then exits: the group would read free while that process lives, which the bare
+// probe never did. After the signal, because a number cannot be handed on while
+// a member exists, so whatever is in the group right after the signal is still
+// ours, and it catches such a fork. What each order misses: the first listing
+// misses forks after it; the second misses members that died in the signal and
+// anything forked after it, and may record a stranger only if every member died
+// and a stranger took the same pid with the same start time inside the
+// list-kill-list window, which needs both numbers reused. The remaining
+// residue is a fork after the second listing by a process that survives the
+// SIGKILL. It is not reachable: SIGKILL cannot be blocked and a dying process
+// cannot fork. If either listing fails, groupLive falls
+// back to the bare probe, which fails closed. A listed zombie keeps counting
+// until its parent reaps it, as kill(2) counts it. The residue between the probe
+// and the first listing is the same as before: the last member would have to
+// exit and a stranger's group take the number in between.
 func (c *connection) sweepGroup() {
 	if !probeGroup(c.pid) {
 		c.groupGone.Store(true)
 		return
 	}
+	before, errBefore := snapshotGroup(c.pid)
 	signalGroup(c.pid)
+	after, errAfter := snapshotGroup(c.pid)
+	c.members, c.membersKnown = unionMembers(before, after), errBefore == nil && errAfter == nil
+}
+
+// unionMembers is a and b without duplicates, by pid and start time.
+func unionMembers(a, b []groupMember) []groupMember {
+	out := slices.Clone(a)
+	for _, m := range b {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// groupLive says whether the agent's process group, as sweepGroup left it, still
+// has a member that is the agent's own.
+func (c *connection) groupLive() bool {
+	if !probeGroup(c.pid) {
+		return false
+	}
+	if !c.membersKnown {
+		return true
+	}
+	now, err := snapshotGroup(c.pid)
+	if err != nil {
+		return true
+	}
+	for _, was := range c.members {
+		if slices.Contains(now, was) {
+			return true
+		}
+	}
+	return false
 }
 
 // reapBudget bounds how long close() waits for the agent to be reaped, and,
@@ -519,7 +593,7 @@ func (c *connection) close() (Exit, error) {
 // the agent was reaped except by sweepGroup.
 func (c *connection) awaitGroup(deadline <-chan time.Time) error {
 	for !c.groupGone.Load() {
-		if !probeGroup(c.pid) {
+		if !c.groupLive() {
 			c.groupGone.Store(true)
 			break
 		}
