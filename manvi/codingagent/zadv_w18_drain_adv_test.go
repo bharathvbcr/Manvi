@@ -68,6 +68,15 @@ type w18aAdapter struct {
 	deferd func(s any) int
 }
 
+// w18aAs is the checked assertion of an adapter handed around as any.
+func w18aAs[T any](s any) T {
+	v, ok := s.(T)
+	if !ok {
+		panic(fmt.Sprintf("adapter is %T", s))
+	}
+	return v
+}
+
 func w18aAdapters() []w18aAdapter {
 	return []w18aAdapter{
 		{
@@ -82,10 +91,10 @@ func w18aAdapters() []w18aAdapter {
 				s.deferred = []Event{}
 				return s
 			},
-			drain:  func(s any) error { return s.(*Agy).drain() },
-			next:   func(s any) (Event, error) { return s.(*Agy).Next(context.Background()) },
-			frames: func(s any) int { return len(s.(*Agy).wire.frames) },
-			deferd: func(s any) int { return len(s.(*Agy).deferred) },
+			drain:  func(s any) error { return w18aAs[*Agy](s).drain() },
+			next:   func(s any) (Event, error) { return w18aAs[*Agy](s).Next(context.Background()) },
+			frames: func(s any) int { return len(w18aAs[*Agy](s).wire.frames) },
+			deferd: func(s any) int { return len(w18aAs[*Agy](s).deferred) },
 		},
 		{
 			name:  "claude",
@@ -99,10 +108,10 @@ func w18aAdapters() []w18aAdapter {
 				s.deferred = []Event{}
 				return s
 			},
-			drain:  func(s any) error { return s.(*Claude).drain() },
-			next:   func(s any) (Event, error) { return s.(*Claude).Next(context.Background()) },
-			frames: func(s any) int { return len(s.(*Claude).wire.frames) },
-			deferd: func(s any) int { return len(s.(*Claude).deferred) },
+			drain:  func(s any) error { return w18aAs[*Claude](s).drain() },
+			next:   func(s any) (Event, error) { return w18aAs[*Claude](s).Next(context.Background()) },
+			frames: func(s any) int { return len(w18aAs[*Claude](s).wire.frames) },
+			deferd: func(s any) int { return len(w18aAs[*Claude](s).deferred) },
 		},
 		{
 			name:  "codex",
@@ -118,10 +127,10 @@ func w18aAdapters() []w18aAdapter {
 				s.deferred = []Event{}
 				return s
 			},
-			drain:  func(s any) error { return s.(*Codex).drain() },
-			next:   func(s any) (Event, error) { return s.(*Codex).Next(context.Background()) },
-			frames: func(s any) int { return len(s.(*Codex).wire.frames) },
-			deferd: func(s any) int { return len(s.(*Codex).deferred) },
+			drain:  func(s any) error { return w18aAs[*Codex](s).drain() },
+			next:   func(s any) (Event, error) { return w18aAs[*Codex](s).Next(context.Background()) },
+			frames: func(s any) int { return len(w18aAs[*Codex](s).wire.frames) },
+			deferd: func(s any) int { return len(w18aAs[*Codex](s).deferred) },
 		},
 	}
 }
@@ -132,8 +141,10 @@ func (a w18aAdapter) frameChan(s any) chan wireRead {
 		return v.wire.frames
 	case *Claude:
 		return v.wire.frames
+	case *Codex:
+		return v.wire.frames
 	default:
-		return v.(*Codex).wire.frames
+		return nil
 	}
 }
 
@@ -342,6 +353,9 @@ func TestAdvW18OrderingAcrossADrainThatHitsTheBound(t *testing.T) {
 		}
 		got = append(got, e)
 	}
+	if len(got) < 100 {
+		t.Fatalf("got %d events, want at least 100", len(got))
+	}
 	for i := 0; i < 100; i++ {
 		if got[i].Text != fmt.Sprintf("c%03d", i) {
 			t.Fatalf("event %d = %+v", i, got[i])
@@ -490,7 +504,7 @@ func TestAdvW18CodexAnswerAfterTurnEndIsWithdrawnAndNeverWritten(t *testing.T) {
 		}
 		got = append(got, e)
 	}
-	if got[0].CancelledID != after.ID || got[1].Status != "completed" {
+	if len(got) != 2 || got[0].CancelledID != after.ID || got[1].Status != "completed" {
 		t.Fatalf("events = %+v", got)
 	}
 	if err := s.Respond(t.Context(), after, Response{Decision: "allow_once"}); !errors.Is(err, ErrCallbackWithdrawn) {
