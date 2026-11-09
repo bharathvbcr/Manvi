@@ -309,7 +309,7 @@ func TestAdvW16DeveloperBuildResolvesNativeInstallPastAWrapperOnlyPATH(t *testin
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root := t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
@@ -335,7 +335,7 @@ func TestAdvW16DeveloperBuildWithOnlyAWrapperReturnsTheWrapperNotABareName(t *te
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root := t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)

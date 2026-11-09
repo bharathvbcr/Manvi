@@ -26,7 +26,7 @@ func managedTrustWorkspace(t *testing.T) (root, home string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shebang and symlink fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root = t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
@@ -39,11 +39,11 @@ func managedTrustWorkspace(t *testing.T) (root, home string) {
 	return root, home
 }
 
-// skipIfSystemAgentInstalled keeps the "nothing trusted" assertions honest on a
+// withoutSystemAgentInstalls keeps the "nothing trusted" assertions honest on a
 // machine that really has an agent in one of the fixed system locations: it
 // stands those locations in as empty for the test, so the outcome does not
-// depend on the host. (The name is kept for its callers; nothing is skipped.)
-func skipIfSystemAgentInstalled(t *testing.T) {
+// depend on the host and nothing is skipped.
+func withoutSystemAgentInstalls(t *testing.T) {
 	t.Helper()
 	claude, agy := systemClaudeInstalls, systemAgyInstalls
 	systemClaudeInstalls, systemAgyInstalls = nil, nil
@@ -196,7 +196,7 @@ func TestADeveloperBuildStillSkipsAWrapperAndIgnoresTheAgentWritableFilter(t *te
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shebang fixtures")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	root := t.TempDir()
 	advChdir(t, root)
 	t.Setenv("MANVI_PROJECT_ROOT", root)
@@ -298,7 +298,7 @@ func TestInstalledClaudeVersionsOrderBySemverPrecedence(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX paths")
 	}
-	skipIfSystemAgentInstalled(t)
+	withoutSystemAgentInstalls(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
