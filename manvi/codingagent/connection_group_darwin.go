@@ -22,7 +22,7 @@ func groupMembers(pgid int) ([]groupMember, error) {
 		if int(p.Eproc.Pgid) != pgid {
 			continue
 		}
-		members = append(members, groupMember{pid: int(p.Proc.P_pid), start: int64(p.Proc.P_starttime.Sec)*1_000_000 + int64(p.Proc.P_starttime.Usec)})
+		members = append(members, groupMember{pid: int(p.Proc.P_pid), start: p.Proc.P_starttime.Sec*1_000_000 + int64(p.Proc.P_starttime.Usec)})
 	}
 	return members, nil
 }

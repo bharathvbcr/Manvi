@@ -86,12 +86,7 @@ func TestAStrangersGroupHoldingTheNumberIsNotReportedAsTheAgentsLiveGroup(t *tes
 		t.Fatal(err)
 	}
 	<-c.done
-	stranger := exec.Command("/bin/sleep", "30")
-	stranger.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := stranger.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = syscall.Kill(-stranger.Process.Pid, syscall.SIGKILL); _ = stranger.Wait() })
+	stranger := startStranger(t)
 	c.pid = stranger.Process.Pid
 	exit, _ := c.close()
 	if exit.GroupLive {
