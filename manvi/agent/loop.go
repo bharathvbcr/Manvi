@@ -1855,8 +1855,18 @@ func (l *Loop) newRequest(messages []llm.Message, schemas []llm.ToolSchema, effo
 // admitted against a spend cap on what its children's first requests will
 // reserve, and that has to be known while the answer can still be "start
 // none".
+//
+// Where the conversation's wire frame is sent, the system prompt and tools are
+// the frame's, as the turn's settleFrame will leave it (planFrame is the one
+// rule), because that is what the request carries: sizing from this Loop's own
+// prompt and tool set would size a request nobody sends. It does not predict the
+// mid-conversation notice a differing prompt appends.
 func (l *Loop) Draft(user llm.Message) llm.Request {
-	return l.newRequest([]llm.Message{user}, l.schemas(), l.cfg.Effort)
+	request := l.newRequest([]llm.Message{user}, l.schemas(), l.cfg.Effort)
+	if system, tools, ok := l.draftFrame(); ok {
+		request.System, request.Tools = system, tools
+	}
+	return request
 }
 
 // streamResponse sends the request, records every chunk as it arrives and

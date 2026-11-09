@@ -276,8 +276,11 @@ func TestWireFrameAdoptsTheLastPromptOfALegacyLog(t *testing.T) {
 	if got := systemMessages(t, req); len(got) != 1 || !strings.Contains(got[0], "brand new") {
 		t.Errorf("system messages = %q, want one delivering the new prompt", got)
 	}
-	if got := signedBlocks(t, req); len(got) != 1 {
-		t.Errorf("the legacy reasoning block was not replayed: %v", got)
+	// What the log never recorded is the tools its blocks were signed under, so the
+	// adopted frame is a boundary and the old reasoning is not replayed (ft-9a5710b6
+	// item 3).
+	if got := signedBlocks(t, req); len(got) != 0 {
+		t.Errorf("the legacy reasoning block was replayed behind a frame nobody recorded: %v", got)
 	}
 }
 
