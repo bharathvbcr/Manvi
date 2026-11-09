@@ -70,7 +70,6 @@ func TestAZombieOnlyGroupAnswersKillWithEPERMOnDarwin(t *testing.T) {
 // the agent's pid and was free once the agent was reaped, so this needs a pid
 // cycle or a deliberate setpgid(0, victimPid) by an unrelated process.
 func TestAStrangersGroupHoldingTheNumberIsNotReportedAsTheAgentsLiveGroup(t *testing.T) {
-	t.Skip("ft-43e7cb92 residue: group-number reuse after the sweep; needs member pid+start-time snapshots")
 	realProbe := probeGroup
 	var swept atomic.Bool
 	probeGroup = func(pid int) bool {
@@ -124,5 +123,34 @@ func TestCloseOfAnAgentWhoseWaitNeverReturnsCostsOneBudgetEachCall(t *testing.T)
 		if took < 90*time.Millisecond || took > 400*time.Millisecond {
 			t.Fatalf("call %d took %v, want one budget (100ms)", i, took)
 		}
+	}
+}
+
+// When the members cannot be listed at the sweep, nothing proves the group
+// that later holds the number is not the agent's, so close() fails closed and
+// reports it live, exactly as the bare probe did before the listing existed.
+func TestCloseReportsTheGroupLiveWhenTheSweepCouldNotListItsMembers(t *testing.T) {
+	realProbe, realSnapshot := probeGroup, snapshotGroup
+	var swept atomic.Bool
+	probeGroup = func(pid int) bool {
+		if swept.CompareAndSwap(false, true) {
+			return true
+		}
+		return realProbe(pid)
+	}
+	snapshotGroup = func(int) ([]groupMember, error) { return nil, errors.New("sysctl refused") }
+	oldBudget := reapBudget
+	reapBudget = 150 * time.Millisecond
+	t.Cleanup(func() { probeGroup, snapshotGroup, reapBudget = realProbe, realSnapshot, oldBudget })
+	c, err := startConnection(t.Context(), "/bin/sh", []string{"-c", "exit 0"}, t.TempDir(), func([]byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.done
+	stranger := startStranger(t)
+	c.pid = stranger.Process.Pid
+	exit, _ := c.close()
+	if !exit.GroupLive {
+		t.Fatalf("close() = %+v, want GroupLive when the sweep's member listing failed", exit)
 	}
 }

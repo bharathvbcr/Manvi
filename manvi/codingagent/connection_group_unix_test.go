@@ -266,11 +266,23 @@ func TestAZombieOrphanedInTheGroupByAParentOutsideItIsReportedLive(t *testing.T)
 	}
 }
 
+// listStubMember makes the group listing report one member that never changes,
+// the member a stubbed probe stands in for: a probe that says "alive" for an
+// agent that left no real member would otherwise meet an empty listing, which
+// the product reads as a free number.
+func listStubMember(t *testing.T) {
+	t.Helper()
+	old := snapshotGroup
+	snapshotGroup = func(int) ([]groupMember, error) { return []groupMember{{pid: 1, start: 1}}, nil }
+	t.Cleanup(func() { snapshotGroup = old })
+}
+
 // A member that outlives SIGKILL cannot be produced with a real process, so the
 // probe is replaced. close() must then say the group is not gone, within the
 // budget, and stay able to confirm it on a later call (the reaper in serve
 // calls it again) once the member is.
 func TestCloseReportsAProcessGroupThatOutlivesSIGKILL(t *testing.T) {
+	listStubMember(t)
 	var alive atomic.Bool
 	alive.Store(true)
 	oldProbe, oldBudget := probeGroup, reapBudget
@@ -303,6 +315,7 @@ func TestCloseReportsAProcessGroupThatOutlivesSIGKILL(t *testing.T) {
 // later still: the shape a single timer shared by Wait and the group got wrong.
 func slowWaitConnection(t *testing.T, budget, waitTakes, groupGoneAfter time.Duration) (*connection, *atomic.Bool) {
 	t.Helper()
+	listStubMember(t)
 	var alive atomic.Bool
 	alive.Store(true)
 	oldProbe, oldBudget := probeGroup, reapBudget
