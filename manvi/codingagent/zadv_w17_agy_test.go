@@ -441,7 +441,7 @@ func TestAdvW17ReceiveFrameCapAndCallerCancelBothReadyIsDeterministic(t *testing
 func TestAdvW17StderrCapRecordsItsCause(t *testing.T) {
 	ctx, fail := context.WithCancelCause(t.Context())
 	c := &connection{ctx: ctx, fail: fail, cancel: func() { fail(nil) }}
-	w := &limitedDiscard{remaining: 4, cancel: c.cancel}
+	w := &limitedDiscard{remaining: 4, fail: c.fail}
 	if _, err := w.Write(make([]byte, 10)); err == nil {
 		t.Fatal("over-cap stderr write succeeded")
 	}

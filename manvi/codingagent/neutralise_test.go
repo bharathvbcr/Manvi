@@ -161,7 +161,7 @@ func TestConnectionFailRecordsTheCauseBeforeTheCancel(t *testing.T) {
 func TestLimitedDiscardRecordsTheStderrCapAsTheCause(t *testing.T) {
 	ctx, fail := context.WithCancelCause(t.Context())
 	c := &connection{ctx: ctx, fail: fail}
-	w := &limitedDiscard{remaining: 4, cancel: func() { fail(nil) }, fail: c.fail}
+	w := &limitedDiscard{remaining: 4, fail: c.fail}
 	if _, err := w.Write(make([]byte, 10)); !errors.Is(err, errStderrCap) {
 		t.Fatalf("over-cap stderr write = %v, want errStderrCap", err)
 	}

@@ -80,22 +80,17 @@ type connection struct {
 var errStderrCap = errors.New("managed provider stderr exceeded 64 KiB")
 
 // limitedDiscard drops the provider's stderr and ends the connection when it
-// writes more than remaining bytes. A breach is recorded through fail, so every
-// reader reports the cap and serve classes the run failed, not interrupted;
-// cancel is the fallback for a holder that has no cause-recording cancel.
+// writes more than remaining bytes. A breach is recorded through fail, the only
+// way it ends the connection, so every reader reports the cap and serve classes
+// the run failed, not interrupted.
 type limitedDiscard struct {
 	remaining int
-	cancel    context.CancelFunc
 	fail      context.CancelCauseFunc
 }
 
 func (w *limitedDiscard) Write(p []byte) (int, error) {
 	if len(p) > w.remaining {
-		if w.fail != nil {
-			w.fail(errStderrCap)
-		} else {
-			w.cancel()
-		}
+		w.fail(errStderrCap)
 		return 0, errStderrCap
 	}
 	w.remaining -= len(p)
@@ -160,7 +155,7 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 	cmd.WaitDelay = 2 * time.Second
 	proc.ConfigureGroup(cmd)
 	cmd.Env = agentEnv(baseEnv, cwd)
-	cmd.Stderr = &limitedDiscard{remaining: 65536, cancel: cancel, fail: fail}
+	cmd.Stderr = &limitedDiscard{remaining: 65536, fail: fail}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
