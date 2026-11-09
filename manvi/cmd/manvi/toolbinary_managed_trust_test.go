@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -316,9 +317,7 @@ func TestInstalledClaudeVersionsOrderBySemverPrecedence(t *testing.T) {
 			got = append(got, filepath.Base(p))
 		}
 	}
-	for i, j := 0, len(got)-1; i < j; i, j = i+1, j-1 {
-		got[i], got[j] = got[j], got[i]
-	}
+	slices.Reverse(got)
 	if strings.Join(got, " ") != strings.Join(ascending, " ") {
 		t.Fatalf("newest-first order reversed =\n%v\nwant\n%v", got, ascending)
 	}

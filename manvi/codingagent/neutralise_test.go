@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -91,8 +92,12 @@ func TestClaudeUnansweredPermissionDoesNotBlockContinuationAfterCompletion(t *te
 			seen = append(seen, "status:"+e.Status)
 		}
 	}
-	if len(reqs) != 2 || seen[len(seen)-1] != "status:completed" || seen[len(seen)-2] != "cancel:"+reqs[1].ID || seen[len(seen)-3] != "cancel:"+reqs[0].ID {
-		t.Fatalf("events = %v, want both withdrawals ahead of the completed status", seen)
+	if len(reqs) != 2 {
+		t.Fatalf("captured %d permission requests, want 2: %v", len(reqs), seen)
+	}
+	want := []string{"request:" + reqs[0].ID, "request:" + reqs[1].ID, "cancel:" + reqs[0].ID, "cancel:" + reqs[1].ID, "status:completed"}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("events = %v, want both withdrawals ahead of the completed status: %v", seen, want)
 	}
 	// A late answer to a withdrawn request is a callback gone, not a stale one.
 	if err := s.Respond(t.Context(), reqs[0], Response{Decision: "allow_once"}); !errors.Is(err, ErrCallbackWithdrawn) {
