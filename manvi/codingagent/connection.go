@@ -662,7 +662,7 @@ func neutraliseText(s string) string {
 	first := -1
 	for i := 0; i < len(s); {
 		r, n := utf8.DecodeRuneInString(s[i:])
-		if mustNeutralise(r, n) && !(r == '\r' && crlfAt(s, i)) {
+		if mustNeutralise(r, n) && (r != '\r' || !crlfAt(s, i)) {
 			first = i
 			break
 		}
