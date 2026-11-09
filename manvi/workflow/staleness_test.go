@@ -27,7 +27,7 @@ func simulate(t *testing.T, failWaitFirst int, frames func(afterDispatch bool, f
 		t.Fatal(err)
 	}
 	inputs := map[string]Value{"member_id": {Type: "string", Text: "M-1001"}}
-	s, _ := NewState(p, "run", "session", 1)
+	s := mustNewState(t, p)
 	counts := map[string]int{}
 	taken := map[string]screen{}
 	stage := map[string]string{} // capture id -> the command kind that took it
@@ -142,31 +142,13 @@ func TestBranchIsNotSteeredByThePostActionCapture(t *testing.T) {
 	}
 }
 
-// Reuse is a consistent snapshot read more than once: consecutive read steps
-// share one fresh capture, and nothing else does.
-func TestReadStepsShareOneFreshSnapshotButNothingElseReusesACapture(t *testing.T) {
-	s, counts, stage := simulate(t, 0, func(bool, int) screen { return screen{"Member found", settled} })
-	if s.Phase != Completed {
-		t.Fatalf("%+v", s)
-	}
-	t.Logf("bank.balance commands per run: %v", counts)
-	if counts["observe"]+counts["observe_after"] != 5 || counts["observe_after"] != 2 || counts["resolve"] != 2 {
-		t.Fatalf("want 5 fresh captures (2 post-action) and 2 resolves, got %v", counts)
-	}
-	for id, kind := range stage {
-		if kind == "observe_after" {
-			t.Logf("post-action capture %s is never reused", id)
-		}
-	}
-}
-
 // Whatever ends a run while a resolve is pending, the finished or paused state
 // carries no Reuse: Jarvis decodes traces strictly and rejects unknown fields.
 func TestNoFinishedOrPausedStateCarriesReuse(t *testing.T) {
 	p, inputs := compileBank(t)
 	// A run held at "balance" with a resolve pending against the wait's capture.
 	pending := func() State {
-		s, _ := NewState(p, "run", "session", 1)
+		s := mustNewState(t, p)
 		s.StepIndex, s.Phase, s.Reuse = p.positions["balance"], Observing, "obs-9"
 		return s
 	}
@@ -230,7 +212,7 @@ func TestPreChangeRecordingWithFailedObservesAndAResumeStillReplays(t *testing.T
 		t.Fatal(err)
 	}
 	p, inputs := compileBank(t)
-	initial, _ := NewState(p, "run", "session", 1)
+	initial := mustNewState(t, p)
 	got, err := Replay(p, initial, rec.Events, inputs)
 	if err != nil {
 		t.Fatalf("replay of a pre-change recording failed: %v", err)

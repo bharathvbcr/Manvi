@@ -3,6 +3,7 @@ package computer
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,11 +54,18 @@ type brokerDesktop struct {
 	// staleAfterAct makes the capture taken right after a dispatch show the
 	// previous member's balance; every later capture shows the settled one.
 	staleAfterAct bool
+	// script, when set, decides what the window shows at each capture: the nodes,
+	// how many dispatches came before it, and whether it is the first capture
+	// after one.
+	script    func(nodes []Node, acts int, first bool) []Node
+	acts      int
+	lastNodes []Node
 }
 
 func (d *brokerDesktop) Act(ctx context.Context, s Session, a Action) (Receipt, error) {
 	d.mu2.Lock()
 	d.acted = true
+	d.acts++
 	d.current = "" // a dispatch outdates the broker's current observation
 	d.mu2.Unlock()
 	return d.testDesktop.Act(ctx, s, a)
@@ -73,6 +81,10 @@ func (d *brokerDesktop) Observe(ctx context.Context, s Session) (Observation, er
 		d.afterAct = map[string]bool{}
 	}
 	d.afterAct[o.ID], d.acted = d.acted, false
+	if d.script != nil {
+		o.Nodes = d.script(o.Nodes, d.acts, d.afterAct[o.ID])
+	}
+	d.lastNodes = append([]Node(nil), o.Nodes...)
 	if d.staleAfterAct && d.afterAct[o.ID] {
 		// The app has not repainted yet: the previous member's balance.
 		for i := range o.Nodes {
@@ -101,7 +113,15 @@ func (d *brokerDesktop) Resolve(ctx context.Context, s Session, id string, sel S
 	if ambiguous && reused {
 		return Node{}, &BrokerError{Code: "target_ambiguous", Delivery: "not_sent", Message: "many"}
 	}
-	return d.testDesktop.Resolve(ctx, s, id, sel)
+	d.mu2.Lock()
+	nodes := d.lastNodes
+	d.mu2.Unlock()
+	for _, n := range nodes {
+		if n.Name == sel.Name {
+			return n, nil
+		}
+	}
+	return Node{}, &BrokerError{Code: "target_missing", Delivery: "not_sent"}
 }
 
 func bankRun(t *testing.T, mutate func(*brokerDesktop)) (RunResult, *brokerDesktop, []Record) {
@@ -283,18 +303,94 @@ func TestPerformResolveDeclinesWhatItCannotVouchFor(t *testing.T) {
 	})
 }
 
-func TestFrameAgeStartsWhenTheFrameWasTaken(t *testing.T) {
-	requested := time.Now()
-	if got := frameTime(Observation{}, requested); !got.Equal(requested) {
-		t.Fatal("an observation without stamps is dated from the request")
+// A kept capture is dated with a monotonic reading, so a wall-clock step cannot
+// stretch or shrink its age.
+func TestKeptCaptureAgeIsMonotonic(t *testing.T) {
+	o := observationFixture(t)
+	d := &brokerDesktop{testDesktop: &testDesktop{observation: o}}
+	opts := RunOptions{Desktop: d, Privacy: PrivacyPolicy{PID: o.Window.PID, WindowID: o.Window.ID}}
+	cmd := workflow.Command{Kind: "observe", ActionID: "run:read", Step: workflow.Step{ID: "read", Kind: "extract", Target: "t", Effect: "read", OutputType: "string"}, Selector: workflow.Selector{Name: "Member ID"}}
+	r := perform(context.Background(), opts, Session{ID: "s", RunID: "run", Epoch: 1, Window: o.Window}, nil, cmd, [32]byte{}, nil)
+	if r.err != nil || r.retain == nil {
+		t.Fatalf("%+v", r)
 	}
-	earlier := requested.Add(-3 * time.Second)
-	raw := Observation{TreeAtMillis: uint64(earlier.UnixMilli()), CapturedAtMillis: uint64(requested.UnixMilli())}
-	if got := frameTime(raw, requested); got.UnixMilli() != earlier.UnixMilli() {
-		t.Fatalf("frame dated %v, want the earlier broker stamp %v", got, earlier)
+	if !strings.Contains(r.retain.at.String(), "m=") {
+		t.Fatalf("capture time %q carries no monotonic reading", r.retain.at)
 	}
-	future := Observation{CapturedAtMillis: uint64(requested.Add(time.Hour).UnixMilli())}
-	if got := frameTime(future, requested); !got.Equal(requested) {
-		t.Fatal("a stamp in the future must not make a frame look fresher")
+}
+
+const recoveryBankJSON = `{
+  "schema_version":1,"id":"bank.recover","revision":"1","application":"jarvis-bank",
+  "targets":{
+    "search":{"strategies":[{"role":"button","name":"Search"}],"rationale":"search","stability":"semantic"},
+    "status":{"strategies":[{"role":"text_field","name":"Status"}],"rationale":"status","stability":"semantic"},
+    "balance":{"strategies":[{"role":"text_field","name":"Balance"}],"rationale":"balance","stability":"semantic"},
+    "dismiss":{"strategies":[{"role":"button","name":"Dismiss"}],"rationale":"dismiss","stability":"semantic"}
+  },
+  "outputs":[{"name":"balance","type":"money","currency":"USD","description":"USD balance"}],
+  "outcomes":[{"id":"success","kind":"success","description":"found","outputs":["balance"]}],
+  "recoveries":[{"id":"dismiss_overlay","when":{"target":"status","predicate":{"op":"exists","expected":{"source":"","key":"","literal":{"type":""}}}},"action":{"kind":"press","target":"dismiss"},"max":1}],
+  "steps":[
+    {"id":"search","kind":"press","target":"search","effect":"read"},
+    {"id":"settle","kind":"wait","target":"status","effect":"read","predicate":{"op":"contains","expected":{"source":"literal","literal":{"type":"string","text":"Member"}}}},
+    {"id":"balance","kind":"extract","target":"balance","effect":"read","output":"balance","output_type":"money","currency":"USD","next":"ok"},
+    {"id":"ok","kind":"conclude","outcome":"success"}
+  ],
+  "limits":{"max_actions":40,"active_seconds":300,"observation_attempts":3,"intervention_seconds":600}
+}`
+
+// press -> wait (an overlay hides the status, so a recovery clicks dismiss) ->
+// extract. The first frame after the click still shows the previous member's
+// balance; the extract must be answered from a later one.
+func TestRunnerNeverReadsTheFrameTakenRightAfterARecoveryClick(t *testing.T) {
+	o := observationFixture(t)
+	status, balance := "Member found", "$1,250.00"
+	o.Nodes = []Node{
+		{ID: "search", Role: "button", Name: "Search", Enabled: true, Actions: []string{"press"}},
+		{ID: "status", Role: "text_field", Name: "Status", Value: &status, Enabled: true},
+		{ID: "balance", Role: "text_field", Name: "Balance", Value: &balance, Enabled: true},
+		{ID: "dismiss", Role: "button", Name: "Dismiss", Enabled: true, Actions: []string{"press"}},
+	}
+	p, err := workflow.Compile([]byte(recoveryBankJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &brokerDesktop{testDesktop: &testDesktop{observation: o}}
+	d.script = func(nodes []Node, acts int, first bool) []Node {
+		var out []Node
+		for _, n := range nodes {
+			switch {
+			case acts == 1 && !first && n.Name == "Status":
+				continue // the overlay still hides the status field
+			case acts == 2 && first && n.Name == "Balance":
+				v := "$999.00" // not repainted since the click
+				n.Value = &v
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	opts := RunOptions{Program: p, Desktop: d, Session: Session{ID: "session", RunID: "run", Epoch: 1, Window: o.Window}}
+	ctx := safetyContext(t)
+	run, err := StartRun(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := run.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.Phase != workflow.Completed || result.State.Outputs["balance"].Integer != 125000 {
+		t.Fatalf("balance %d phase %s, the settled screen shows 125000", result.State.Outputs["balance"].Integer, result.State.Phase)
+	}
+	d.mu2.Lock()
+	acts, observes, resolves := d.acts, d.observes, 0
+	for _, n := range d.resolvesByID {
+		resolves += n
+	}
+	d.mu2.Unlock()
+	t.Logf("recovery capability through the runner: %d dispatches, %d native observes, %d resolve calls", acts, observes, resolves)
+	if acts != 2 {
+		t.Fatalf("want the press and the recovery click, got %d dispatches", acts)
 	}
 }

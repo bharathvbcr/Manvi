@@ -158,7 +158,10 @@ type State struct {
 	// Reuse is the id of an observation the pending "resolve" command was told
 	// to resolve against. It is set only between that command and its answer;
 	// empty in every terminal state and in every trace written before it existed.
-	Reuse          string           `json:"reuse,omitempty"`
+	Reuse string `json:"reuse,omitempty"`
+	// Captures counts the frames taken since the last dispatch. It exists only
+	// while the run is observing; see Reduce.
+	Captures       int              `json:"captures,omitempty"`
 	Outputs        map[string]Value `json:"outputs"`
 	Outcome        string           `json:"outcome,omitempty"`
 	RecoveryCounts map[string]int   `json:"recovery_counts,omitempty"`
@@ -278,11 +281,23 @@ func (s State) Clone() State {
 // Clock advances, observations and human decisions must arrive as events.
 func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (State, []Command, error) {
 	next, commands, err := reduce(p, previous, event, inputs)
-	if err == nil && next.Phase != Observing {
-		// Reuse names a resolve that is pending, which only an observing run has.
-		// Whatever ended or paused the run, the state it leaves behind carries no
-		// trace of one, so a reader of the encoded state never meets the field.
-		next.Reuse = ""
+	if err == nil {
+		if next.Phase != Observing {
+			// Reuse names a resolve that is pending, which only an observing run has.
+			// Whatever ended or paused the run, the state it leaves behind carries no
+			// trace of one, so a reader of the encoded state never meets the field.
+			next.Reuse = ""
+		}
+		if next.Phase != Observing && next.Phase != PostAction {
+			// Captures counts frames since the last dispatch, and a run only
+			// observes between dispatches. An act command is emitted only with the
+			// phase Acting (the three sites that assign it: a step's action, an
+			// approved action, a recovery), and a human or assisted action is taken
+			// while paused; every one of those phases is outside Observing and
+			// PostAction, so every dispatch starts the count again. Nothing re-enters
+			// Observing from Acting or Paused with a count in hand.
+			next.Captures = 0
+		}
 	}
 	return next, commands, err
 }
@@ -414,8 +429,11 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if event.ActionID != s.ActionID(p) || event.Observation.ID == "" {
 			return previous, nil, errors.New("observation action binding missing")
 		}
+		reused := s.Reuse
+		if reused == "" || event.Observation.ID != reused {
+			s.Captures++ // a frame was taken; a reused answer is not one
+		}
 		if s.Reuse != "" {
-			reused := s.Reuse
 			s.Reuse = ""
 			if event.Observation.ID == reused && !reuseAccepted(p, step, event.Observation, inputs, s.Outputs) {
 				return declineReuse(s, command("observe"))
@@ -430,7 +448,7 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return retryObservation(p, s, command("observe"), FailureIncompleteObserve, "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
-			return advance(p, s, step.Next, "")
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		}
 		if event.Observation.Matches != 1 || event.Observation.TargetID == "" {
 			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -464,7 +482,7 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				return fail(s, FailureCheckpoint, "observed currency differs")
 			}
 			s.Outputs[step.Output] = event.Observation.Value
-			return advance(p, s, step.Next, event.Observation.ID)
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		case "assert", "branch", "wait":
 			var expected Value
 			if step.Predicate.Op != "exists" {
@@ -477,9 +495,9 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			passed := Compare(event.Observation.Value, step.Predicate.Op, expected)
 			if step.Kind == "branch" {
 				if passed {
-					return advance(p, s, step.Next, event.Observation.ID)
+					return advance(p, s, step.Next, s.settled(event.Observation.ID))
 				}
-				return advance(p, s, step.Otherwise, event.Observation.ID)
+				return advance(p, s, step.Otherwise, s.settled(event.Observation.ID))
 			}
 			if !passed {
 				if step.Kind == "wait" {
@@ -487,7 +505,7 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				}
 				return fail(s, FailureCheckpoint, "checkpoint predicate failed")
 			}
-			return advance(p, s, step.Next, event.Observation.ID)
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		default:
 			if !event.Observation.Actionable {
 				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -725,14 +743,19 @@ func declineReuse(s State, fresh Command) (State, []Command, error) {
 	return s, []Command{fresh}, nil
 }
 
-// The reuse rule. A step may resolve against an earlier capture only when that
-// capture was itself a fresh observation taken for a read step, and the step
-// reading it is another read step with no dispatch in between: one consistent
-// snapshot read more than once. A capture taken after a dispatch (observe_after)
-// is never reused, by any step: it is taken with no settle delay, so it can
-// still show the screen as it was before the application repainted, and a
-// value, a wait or a branch decided on it can be wrong. The first step after
-// any dispatch therefore always observes afresh.
+// The reuse invariant. The first capture taken after any dispatch is never
+// reusable, whatever kind of capture it is and whatever caused the dispatch (a
+// step's action, a recovery, an approved action, a human action): it is taken
+// with no settle delay, so it can still show the screen as it was before the
+// application repainted, and a value, a wait or a branch decided on it can be
+// wrong. A capture is reusable only if at least one other capture was taken
+// after the last dispatch and before it, which is exactly the settle every read
+// got when each step observed afresh. A step may then resolve against such a
+// capture only if it is itself a read step with no dispatch in between: one
+// consistent snapshot read more than once. State.Captures counts the frames
+// since the last dispatch; observe_after, the observe after a recovery click and
+// the first observe after a resume are all "the first capture" by that count,
+// with no case of their own.
 //
 // reusable reports whether step is one that may read such a snapshot: a read
 // step (extract, assert, branch, wait) with read effect and only semantic
@@ -753,6 +776,16 @@ func reusable(p *Program, step Step) bool {
 		}
 	}
 	return true
+}
+
+// settled is id when the capture just taken is not the first since the last
+// dispatch, and "" when it is: only a settled capture may be offered to a
+// following read step.
+func (s State) settled(id string) string {
+	if s.Captures >= 2 {
+		return id
+	}
+	return ""
 }
 
 // reuseAccepted is true when a resolve against a reused observation answered

@@ -318,20 +318,33 @@ type workResult struct {
 // step's decision close to the screen the previous step left behind.
 const reuseMaxAge = 5 * time.Second
 
-// frameTime is when the frame was taken: the earlier of the broker's own tree
-// and screenshot stamps when it reports them and they are not in the future,
-// otherwise the moment the capture was requested.
-func frameTime(raw Observation, requested time.Time) time.Time {
-	at := requested
-	for _, ms := range []uint64{raw.TreeAtMillis, raw.CapturedAtMillis} {
-		if ms == 0 {
-			continue
-		}
-		if t := time.UnixMilli(int64(ms)); t.Before(at) {
-			at = t
-		}
+// captureKeeper holds the one capture a later read step may resolve against, and
+// enforces the reuse invariant from the acts this loop actually launched,
+// independently of the reducer: the first frame taken after any dispatch is never
+// kept, whatever kind of capture it is (a step's post-action capture, the one
+// after a recovery click, the first one after a resume), so that a reducer fault
+// cannot make the runner keep one. Only a frame that follows another frame since
+// the last dispatch is kept.
+type captureKeeper struct {
+	since int
+	kept  *retainedObservation
+}
+
+// dispatched is called for every act launched and every control that can act or
+// change the epoch.
+func (k *captureKeeper) dispatched() { k.since, k.kept = 0, nil }
+
+// captured is called for every capture the loop took; got is nil when the
+// capture produced no usable frame.
+func (k *captureKeeper) captured(got *retainedObservation) {
+	k.kept = nil
+	if got == nil {
+		return
 	}
-	return at
+	k.since++
+	if k.since >= 2 {
+		k.kept = got
+	}
 }
 
 // retainedObservation is the sanitized result of the latest capture plus the
@@ -357,7 +370,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	var assistedUsed bool
 	var reviewed [32]byte
 	var reviewedTakeover [32]byte
-	var lastCapture *retainedObservation
+	var keeper captureKeeper
 	var apply func(workflow.Event) ([]workflow.Command, error)
 	lastClock := time.Now()
 	interventionStart := time.Time{}
@@ -492,9 +505,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		pending = true
 		inputPending = command.Kind == "act"
 		if inputPending {
-			lastCapture = nil // a dispatch outdates every earlier capture
+			// A dispatch outdates every earlier capture, and the next frame is the
+			// first one taken after it.
+			keeper.dispatched()
 		}
-		retained := lastCapture
+		retained := keeper.kept
 		workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		cancelWork = cancel
 		capturedSession := session
@@ -542,13 +557,19 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				continue
 			}
 			pending = false
+			// The reuse invariant, derived here from the acts this loop actually
+			// launched, independently of the reducer: the first frame taken after a
+			// dispatch is never kept, whatever kind of capture it is (a step's
+			// post-action capture, the capture after a recovery click, the first one
+			// after a resume). Only a frame that follows another frame since the
+			// last dispatch is.
 			switch result.command.Kind {
-			case "observe":
-				lastCapture = result.retain
+			case "observe", "observe_after":
+				keeper.captured(result.retain)
 			case "resolve":
 				// Keeps the capture it resolved against, and its age.
 			default:
-				lastCapture = nil
+				keeper.dispatched()
 			}
 			inputPending = result.human && result.receipt != nil && result.receipt.Delivery != "not_sent"
 			if cancelWork != nil {
@@ -707,6 +728,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			if control.reply != nil {
 				control.reply <- nil
 			}
+			// Any control (a pause, a takeover, a human or assisted action, a
+			// resume) can change the screen or the epoch under a kept capture and
+			// can itself be a dispatch, so none survives one.
+			keeper.dispatched()
 			switch control.Kind {
 			case "approve", "deny":
 				event := workflow.Event{Kind: control.Kind, ActionID: control.ActionID, Observation: workflow.Observation{ID: control.ObservationID}}
@@ -739,7 +764,6 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					cancelWork = nil
 				}
 				pending = false
-				lastCapture = nil
 				session = updated
 				e := interruption("pause", "human takeover")
 				e.FailureCode = string(workflow.FailureHumanTakeover)
@@ -1203,7 +1227,10 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			return r
 		}
 	}
-	capturedAt := time.Now() // before the call: the frame cannot be older than this
+	// A monotonic reading taken before the call, so the frame is never dated later
+	// than it was taken and a wall-clock step cannot stretch or shrink its age.
+	// The broker's own frame stamps are wall-clock and are not used.
+	capturedAt := time.Now()
 	raw, err := opts.Desktop.Observe(ctx, session)
 	if err != nil {
 		r.err = err
@@ -1258,14 +1285,10 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		}
 	}
 	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
-	// Only a fresh observation taken for a read step is kept for the read steps
-	// that follow it. A post-action capture (observe_after) is never kept: it is
-	// taken with no settle delay and can still show the screen as it was.
-	switch command.Step.Kind {
-	case "extract", "assert", "branch", "wait":
-		if command.Kind == "observe" && raw.Complete {
-			r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: frameTime(raw, capturedAt)}
-		}
+	// Offered to the run loop, which keeps it only if it is not the first frame
+	// taken since the last dispatch (see the result handler).
+	if raw.Complete {
+		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: capturedAt}
 	}
 	return r
 }

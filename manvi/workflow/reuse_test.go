@@ -113,7 +113,7 @@ func TestReplayAcceptsAnEventThatReusesAnObservationID(t *testing.T) {
 	if !reused {
 		t.Fatal("fixture run reused no observation id")
 	}
-	initial, _ := NewState(p, "run", "session", 1)
+	initial := mustNewState(t, p)
 	got, err := Replay(p, initial, events, inputs)
 	if err != nil {
 		t.Fatal(err)
@@ -130,15 +130,15 @@ func TestReplayAcceptsAnEventThatReusesAnObservationID(t *testing.T) {
 func atBoundary(t *testing.T, p *Program) (State, []Command) {
 	t.Helper()
 	s := start(t, p)
-	s, _, _ = Reduce(p, s, observed(s), nil)
+	s = mustReduce(t, p, s, observed(s))
 	if s.Phase == AwaitingApproval {
 		e := inputEvent(s, "approve")
 		e.Observation = s.Observation
-		s, _, _ = Reduce(p, s, e, nil)
+		s = mustReduce(t, p, s, e)
 	}
 	r := inputEvent(s, "receipt")
 	r.Delivery = "sent"
-	s, _, _ = Reduce(p, s, r, nil)
+	s = mustReduce(t, p, s, r)
 	if s.Phase != PostAction {
 		t.Fatalf("phase %s", s.Phase)
 	}
@@ -257,7 +257,7 @@ func TestReuseFallsBackToAFreshObserve(t *testing.T) {
 func TestReusedFrameNeverFailsOrReroutesACheckpoint(t *testing.T) {
 	p, inputs := compileBank(t)
 	for _, step := range []string{"settle", "route"} {
-		s, _ := NewState(p, "run", "session", 1)
+		s := mustNewState(t, p)
 		s.StepIndex = p.positions[step]
 		s.Phase = Observing
 		s.Reuse = "after1"
@@ -291,10 +291,10 @@ func TestApprovalStepsAreNeverResolvedAgainstAReusedFrame(t *testing.T) {
 func TestApprovalRevalidationStillReobserves(t *testing.T) {
 	p := fixture(t, true)
 	s := start(t, p)
-	s, _, _ = Reduce(p, s, observed(s), nil)
+	s = mustReduce(t, p, s, observed(s))
 	e := inputEvent(s, "approve")
 	e.Observation = s.Observation
-	s, _, _ = Reduce(p, s, e, nil)
+	s = mustReduce(t, p, s, e)
 	changed := inputEvent(s, "approval_changed")
 	n, cmds, err := Reduce(p, s, changed, nil)
 	if err != nil || len(cmds) != 1 || cmds[0].Kind != "observe" || n.Phase != Observing || n.Observation.ID != "" {
