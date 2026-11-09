@@ -116,6 +116,11 @@ func TestProtocolChild(t *testing.T) {
 			}
 			fmt.Println(`{"method":"turn/started","params":{"threadId":"thread","turn":{"id":"turn","status":"inProgress","items":[]}}}`)
 			fmt.Printf("{\"id\":%s,\"result\":{\"turn\":{\"id\":\"turn\",\"status\":\"inProgress\",\"items\":[]}}}\n", in.ID)
+			if scenario == "ansi-text" {
+				fmt.Println(`{"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"ok \u001b]0;pwned\u0007\u001b[2J\u202eevil\u2066"}}}`)
+				fmt.Println(`{"method":"turn/completed","params":{"threadId":"thread","turn":{"id":"turn","status":"completed","items":[]}}}`)
+				continue
+			}
 			if scenario == "burst" {
 				for i := 0; i < 160; i++ {
 					fmt.Println(`{"method":"item/commandExecution/outputDelta","params":{"threadId":"thread","turnId":"turn","itemId":"item","delta":"bounded output\n"}}`)

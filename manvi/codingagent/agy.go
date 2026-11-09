@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -437,9 +436,7 @@ func (s *Agy) ContinueTurn(ctx context.Context, message string) error {
 func (s *Agy) finishTurn(status string) Event {
 	s.finished = true
 	s.ledger.last = status
-	events := append(s.withdrawPending(), Event{Status: status})
-	s.deferred = append(s.deferred, events[1:]...)
-	return events[0]
+	return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: status}))
 }
 
 // withdrawPending forgets every unanswered permission and returns one
@@ -449,16 +446,10 @@ func (s *Agy) withdrawPending() []Event {
 	for id, p := range s.pending {
 		if !p.sent {
 			ids = append(ids, id)
+			delete(s.pending, id)
 		}
 	}
-	sort.Strings(ids)
-	events := make([]Event, 0, len(ids)+1)
-	for _, id := range ids {
-		delete(s.pending, id)
-		s.withdrawn.add(id)
-		events = append(events, Event{CancelledID: id})
-	}
-	return events
+	return s.withdrawn.withdrawalEvents(ids)
 }
 
 func (s *Agy) backlogged() bool {
@@ -508,8 +499,7 @@ func (s *Agy) Next(ctx context.Context) (Event, error) {
 				// is withdrawn for that.
 				if ctx.Err() == nil {
 					if withdrawn := s.withdrawPending(); len(withdrawn) > 0 {
-						s.deferred = append(s.deferred, withdrawn[1:]...)
-						return withdrawn[0], nil
+						return leadWith(&s.deferred, withdrawn), nil
 					}
 				}
 				return Event{}, err
@@ -601,7 +591,7 @@ func (s *Agy) event(p packet) (Event, bool, error) {
 		if chunk.Type != "text" || chunk.Text == "" {
 			return Event{}, false, nil
 		}
-		return Event{Text: chunk.Text}, true, nil
+		return Event{Text: neutraliseText(chunk.Text)}, true, nil
 	case "tool_call", "tool_call_update":
 		name := update.Name
 		if !opaque(name) {

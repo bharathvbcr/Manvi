@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/mcp"
@@ -263,6 +261,33 @@ func toolBinary(envKey, name string) string {
 	return name
 }
 
+// managedAgentBinary is toolBinary for a managed coding agent, with one
+// addition for a release build that found nothing launchable. When PATH or an
+// install directory holds a trusted (outside the agent's reach) program that is
+// only a wrapper, it is returned instead of unresolvedTool, so the adapter's
+// pre-spawn check refuses it with the typed wrapper error that names the
+// variable to set (MANVI_CLAUDE_BINARY, MANVI_AGY_BINARY) and not a bare "no
+// such file". Nothing is run: the adapter reads the file's head and refuses
+// before any spawn, exactly as a developer build's wrapper fallback does.
+func managedAgentBinary(envKey, name string) string {
+	got := toolBinary(envKey, name)
+	if got != unresolvedTool(name) || !releaseBuild() {
+		return got
+	}
+	_, installs := managedAgentSpec(name)
+	if p, ok := lookPathWhere(name, trustedResolved); ok {
+		return p
+	}
+	for _, candidate := range installs() {
+		if filepath.IsAbs(candidate) && isExecutableFile(candidate) {
+			if resolved, ok := trustedResolved(candidate); ok {
+				return resolved
+			}
+		}
+	}
+	return got
+}
+
 // managedAgentSpec says how a managed coding agent differs from the analysis
 // tools: its image must be a direct launch (never a shell wrapper, whose child
 // would fail Claude's process-identity check and, for agy, which has no such
@@ -362,37 +387,24 @@ func isExecutableFile(path string) bool {
 // maxVersionCandidates bounds how many installed versions are tried, newest first.
 const maxVersionCandidates = 256
 
+// semverCandidate is an installed version file; versions order by semverCompare
+// (SemVer 2.0.0 section 11 precedence, prereleases included).
 type semverCandidate struct {
-	major, minor, patch int
-	prerelease          string
-	path                string
+	ver  semver
+	path string
 }
 
-func parseSemverName(name string) (major, minor, patch int, prerelease string, ok bool) {
-	core := name
-	if idx := strings.IndexByte(name, '-'); idx >= 0 {
-		core = name[:idx]
-		prerelease = name[idx+1:]
-		if prerelease == "" {
-			return 0, 0, 0, "", false
-		}
+// systemClaudeInstalls and systemAgyInstalls are the fixed system locations a
+// package manager puts the agents in. Variables so a test can stand a host that
+// has them, or has none, without depending on the machine it runs on.
+var (
+	systemClaudeInstalls = []string{"/opt/homebrew/bin/claude", "/usr/local/bin/claude"}
+	systemAgyInstalls    = []string{
+		"/opt/homebrew/bin/agy",
+		"/usr/local/bin/agy",
+		"/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
 	}
-	parts := strings.Split(core, ".")
-	if len(parts) != 3 {
-		return 0, 0, 0, "", false
-	}
-	var err error
-	if major, err = strconv.Atoi(parts[0]); err != nil || major < 0 {
-		return 0, 0, 0, "", false
-	}
-	if minor, err = strconv.Atoi(parts[1]); err != nil || minor < 0 {
-		return 0, 0, 0, "", false
-	}
-	if patch, err = strconv.Atoi(parts[2]); err != nil || patch < 0 {
-		return 0, 0, 0, "", false
-	}
-	return major, minor, patch, prerelease, true
-}
+)
 
 func claudeInstallCandidates() []string {
 	var dirs []string
@@ -417,35 +429,14 @@ func claudeInstallCandidates() []string {
 			if entry.IsDir() {
 				continue
 			}
-			maj, min, pat, pre, ok := parseSemverName(entry.Name())
+			ver, ok := parseSemver(entry.Name())
 			if !ok {
 				continue
 			}
-			found = append(found, semverCandidate{
-				major:      maj,
-				minor:      min,
-				patch:      pat,
-				prerelease: pre,
-				path:       filepath.Join(dir, entry.Name()),
-			})
+			found = append(found, semverCandidate{ver: ver, path: filepath.Join(dir, entry.Name())})
 		}
 	}
-	sort.Slice(found, func(i, j int) bool {
-		a, b := found[i], found[j]
-		if a.major != b.major {
-			return a.major > b.major
-		}
-		if a.minor != b.minor {
-			return a.minor > b.minor
-		}
-		if a.patch != b.patch {
-			return a.patch > b.patch
-		}
-		if (a.prerelease == "") != (b.prerelease == "") {
-			return a.prerelease == ""
-		}
-		return a.prerelease > b.prerelease
-	})
+	sort.Slice(found, func(i, j int) bool { return semverCompare(found[i].ver, found[j].ver) > 0 })
 	// Bound the work after the sort, never before it: capping the directory
 	// listing first would drop the newest version whenever it sorts late.
 	if len(found) > maxVersionCandidates {
@@ -459,7 +450,7 @@ func claudeInstallCandidates() []string {
 		out = append(out, filepath.Join(home, ".local", "bin", "claude.real"))
 	}
 	if runtime.GOOS != "windows" {
-		out = append(out, "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+		out = append(out, systemClaudeInstalls...)
 	}
 	return out
 }
@@ -478,11 +469,7 @@ func agyInstallCandidates() []string {
 		)
 	}
 	if runtime.GOOS != "windows" {
-		out = append(out,
-			"/opt/homebrew/bin/agy",
-			"/usr/local/bin/agy",
-			"/Applications/Antigravity.app/Contents/Resources/app/bin/agy",
-		)
+		out = append(out, systemAgyInstalls...)
 	}
 	return out
 }

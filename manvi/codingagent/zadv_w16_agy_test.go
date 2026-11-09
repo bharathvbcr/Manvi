@@ -816,10 +816,10 @@ func TestZadvW16NotificationFloodHitsTheSessionCapWithBoundedMemory(t *testing.T
 	if err == nil {
 		t.Fatal("a notification flood past the session cap ended without an error")
 	}
-	if !strings.Contains(err.Error(), "32 MiB") {
-		// The cap and the connection's cancel race in connection.go, which every
-		// adapter shares: which of the two the host sees first is not stable.
-		t.Skipf("board card: connection.go cap-vs-cancel race (shared by all managed adapters); flood ended with %v instead of the 32 MiB cap", err)
+	// The cap error is recorded before the connection is cancelled and readers
+	// prefer it, so it is what every reader sees, never context.Canceled.
+	if !strings.Contains(err.Error(), "32 MiB") || errors.Is(err, context.Canceled) {
+		t.Fatalf("flood ended with %v instead of the 32 MiB cap", err)
 	}
 }
 
@@ -854,18 +854,67 @@ func TestZadvW16StalledReaderWithMaxSizeFramesKeepsMemoryBounded(t *testing.T) {
 // Agent text reaches the host verbatim. This is the same for Claude and Codex (no
 // adapter sanitises Event.Text), so it is a shared gap, not an agy divergence.
 func TestZadvW16AgentTextCarriesNoTerminalEscapesOrBidiControls(t *testing.T) {
-	t.Skip("board card: no managed adapter sanitises Event.Text (terminal escapes, bidi controls); shared by the Claude, Codex and agy adapters")
-	s := zadvMust(t, "ansi-text", "ask")
-	zadvStart(t, s)
-	events, err := zadvDrain(t, s, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
+	t.Run("agy", func(t *testing.T) {
+		s := zadvMust(t, "ansi-text", "ask")
+		zadvStart(t, s)
+		events, err := zadvDrain(t, s, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNeutralised(t, events)
+	})
+	t.Run("claude", func(t *testing.T) {
+		s := openFixture(t, "ansi-text", "ask")
+		if err := s.StartTurn(t.Context(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		requireNeutralised(t, drainUntilStatus(t, s.Next))
+	})
+	t.Run("codex", func(t *testing.T) {
+		s := fixture(t, "ansi-text")
+		if err := s.StartTurn(t.Context(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		requireNeutralised(t, drainUntilStatus(t, s.Next))
+	})
+}
+
+// drainUntilStatus reads events from next until a status, failing on an error.
+func drainUntilStatus(t *testing.T, next func(context.Context) (Event, error)) []Event {
+	t.Helper()
+	var events []Event
+	for {
+		ctx, stop := context.WithTimeout(t.Context(), 10*time.Second)
+		e, err := next(ctx)
+		stop()
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, e)
+		if e.Status != "" {
+			return events
+		}
 	}
+}
+
+// requireNeutralised checks that no raw control byte or bidi rune is left in any
+// event's text, and that the controls are shown, not dropped.
+func requireNeutralised(t *testing.T, events []Event) {
+	t.Helper()
+	var all strings.Builder
 	for _, e := range events {
 		for _, r := range e.Text {
-			if r == 0x1b || r == 0x07 || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+			if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
+				r == 0x061c || r == 0x200e || r == 0x200f ||
+				(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
 				t.Fatalf("agent text reaches the host with control rune %U: %q", r, e.Text)
 			}
+		}
+		all.WriteString(e.Text)
+	}
+	for _, want := range []string{`\x1b]0;pwned\x07\x1b[2J`, "<U+202E>evil<U+2066>"} {
+		if !strings.Contains(all.String(), want) {
+			t.Fatalf("the record does not show %q: %q", want, all.String())
 		}
 	}
 }

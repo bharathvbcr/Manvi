@@ -56,8 +56,11 @@ type Exit struct {
 	GroupLive bool
 }
 type connection struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
+	ctx    context.Context
+	cancel context.CancelFunc
+	// fail cancels the connection and records why, so a reader that wakes on the
+	// cancellation reports the cause (see err) and not a bare context.Canceled.
+	fail      context.CancelCauseFunc
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
@@ -137,7 +140,8 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 	if err := parent.Err(); err != nil {
 		return nil, beforeStart(err)
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, fail := context.WithCancelCause(parent)
+	cancel := context.CancelFunc(func() { fail(nil) })
 	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Dir = cwd
 	cmd.WaitDelay = 2 * time.Second
@@ -160,7 +164,7 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 		output.Close()
 		return nil, beforeStart(fmt.Errorf("start managed provider: %w", err))
 	}
-	c := &connection{ctx: ctx, cancel: cancel, cmd: cmd, stdin: stdin, stdout: stdout, pid: cmd.Process.Pid, frames: make(chan wireRead, 64), done: make(chan struct{}), validate: validate}
+	c := &connection{ctx: ctx, cancel: cancel, fail: fail, cmd: cmd, stdin: stdin, stdout: stdout, pid: cmd.Process.Pid, frames: make(chan wireRead, 64), done: make(chan struct{}), validate: validate}
 	go c.read()
 	go func() {
 		c.waitErr = cmd.Wait()
@@ -265,7 +269,10 @@ func (c *connection) read() {
 			return
 		}
 		if err != nil {
-			c.cancel()
+			// The cause is recorded before the cancellation is visible, and
+			// err() prefers it, so a reader that sees the cancel first still
+			// reports the cap (or protocol) error that caused it.
+			c.fail(err)
 			return
 		}
 	}
@@ -384,8 +391,14 @@ func (c *connection) sendRaw(ctx context.Context, data []byte) error {
 		c.cancel()
 		return ctx.Err()
 	case <-c.ctx.Done():
-		return c.ctx.Err()
+		return c.err()
 	}
+}
+
+// err is why the connection ended: the error recorded by fail when a frame was
+// refused, else the context's own (Canceled for a close or an interrupt).
+func (c *connection) err() error {
+	return context.Cause(c.ctx)
 }
 func (c *connection) receive(ctx context.Context) (packet, error) {
 	p, _, err := c.receiveFrame(ctx)
@@ -405,7 +418,16 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 	case <-ctx.Done():
 		return packet{}, nil, ctx.Err()
 	case <-c.ctx.Done():
-		return packet{}, nil, c.ctx.Err()
+		// The refused frame is queued ahead of the cancellation; take it first so
+		// the reader sees the same error whichever case select picked.
+		select {
+		case next, ok := <-c.frames:
+			if ok {
+				return next.value, next.raw, next.err
+			}
+		default:
+		}
+		return packet{}, nil, c.err()
 	}
 }
 
@@ -500,7 +522,7 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 				}
 				next = item(frame)
 			default:
-				return wire.ctx.Err()
+				return wire.err()
 			}
 		}
 		before := len(*deferred)
@@ -557,6 +579,26 @@ func (w *withdrawnIDs) has(id string) bool {
 	return ok
 }
 
+// withdrawalEvents records ids as withdrawn and returns one CancelledID event
+// for each, in a stable order. The caller has already forgotten the callbacks.
+func (w *withdrawnIDs) withdrawalEvents(ids []string) []Event {
+	slices.Sort(ids)
+	events := make([]Event, 0, len(ids)+1)
+	for _, id := range ids {
+		w.add(id)
+		events = append(events, Event{CancelledID: id})
+	}
+	return events
+}
+
+// leadWith returns events[0] and queues the rest behind whatever is already
+// deferred, so Next delivers them in order. It is how a turn end reports every
+// withdrawal ahead of its status for every adapter. events must not be empty.
+func leadWith(deferred *[]Event, events []Event) Event {
+	*deferred = append(*deferred, events[1:]...)
+	return events[0]
+}
+
 // callbackStale reports whether a host's copy of a callback no longer matches
 // the one the adapter retained when the provider asked: already sent, run
 // finished, expired, or any of payload, digest (stored and recomputed),
@@ -569,4 +611,77 @@ func callbackStale(request, source Request, sent, finished bool) bool {
 		payloadDigest(request.Payload) != source.Digest ||
 		request.ThreadID != source.ThreadID || request.TurnID != source.TurnID ||
 		request.Kind != source.Kind
+}
+
+// neutraliseText is the one place agent-authored text is made safe to record and
+// to show: a terminal or a bidi control in it would otherwise reach the host's
+// record, its terminal and its UI as an instruction rather than as what the agent
+// said. Nothing is dropped, so the record still shows what the agent sent: ESC
+// becomes the literal `\x1b`, every other C0 or C1 control and DEL becomes
+// `\xNN`, a bidi override, isolate or mark becomes `<U+202E>`, and a byte that is
+// not UTF-8 becomes `\xNN`. Newline and tab are kept. A valid multi-byte rune is
+// copied whole. Text with nothing to neutralise is returned as it came, without
+// allocating; otherwise one linear pass writes one buffer.
+func neutraliseText(s string) string {
+	first := -1
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if mustNeutralise(r, n) {
+			first = i
+			break
+		}
+		i += n
+	}
+	if first < 0 {
+		return s
+	}
+	const hexDigits, lowerHex = "0123456789ABCDEF", "0123456789abcdef"
+	var b strings.Builder
+	b.Grow(len(s) + 3*(len(s)-first)/4 + 16)
+	b.WriteString(s[:first])
+	for i := first; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case !mustNeutralise(r, n):
+			b.WriteString(s[i : i+n])
+		case r == utf8.RuneError || r < 0x100:
+			// Invalid input is the byte itself (n == 1); a C0, DEL or C1 rune is
+			// below U+0100 and is shown by its code point.
+			v := r
+			if r == utf8.RuneError {
+				v = rune(s[i])
+			}
+			b.WriteString(`\x`)
+			b.WriteByte(lowerHex[v>>4])
+			b.WriteByte(lowerHex[v&0xf])
+		default:
+			b.WriteString("<U+")
+			for shift := 12; shift >= 0; shift -= 4 {
+				b.WriteByte(hexDigits[(r>>shift)&0xf])
+			}
+			b.WriteByte('>')
+		}
+		i += n
+	}
+	return b.String()
+}
+
+// mustNeutralise reports whether r (decoded with width n) is invalid UTF-8, a
+// C0 control other than newline and tab, DEL, a C1 control, or a bidi control.
+func mustNeutralise(r rune, n int) bool {
+	switch {
+	case r == utf8.RuneError:
+		return n == 1 // a real U+FFFD is three bytes and stays
+	case r < 0x20:
+		return r != '\n' && r != '\t'
+	case r < 0x7f:
+		return false
+	case r <= 0x9f:
+		return true
+	case r == 0x061c, r == 0x200e, r == 0x200f:
+		return true
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
 }

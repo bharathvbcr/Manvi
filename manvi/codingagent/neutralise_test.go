@@ -1,0 +1,139 @@
+package codingagent
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+func TestNeutraliseText(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"plain", "hello, wörld ☃ 日本\n\tok", "hello, wörld ☃ 日本\n\tok"},
+		{"esc", "a\x1b[31mred", `a\x1b[31mred`},
+		{"osc and bell", "\x1b]0;t\x07", `\x1b]0;t\x07`},
+		{"all controls", "\x00\x01\x08\x0d\x1b\x7f\u0080\u009f", `\x00\x01\x08\x0d\x1b\x7f\x80\x9f`},
+		{"bidi", "a‪b‮c⁦d⁩e‎f‏g؜h", "a<U+202A>b<U+202E>c<U+2066>d<U+2069>e<U+200E>f<U+200F>g<U+061C>h"},
+		{"keeps newline tab and a real replacement char", "a\n\tb�c", "a\n\tb�c"},
+		{"invalid utf8", "a\xffb\xc3", `a\xffb\xc3`},
+		{"truncated multibyte then control", "\xe2\x82\x1b", `\xe2\x82\x1b`},
+		{"valid multibyte beside controls", "€\x1b€", `€\x1b€`},
+		{"lone surrogate bytes", "\xed\xa0\x80", `\xed\xa0\x80`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := neutraliseText(tc.in)
+			if got != tc.want {
+				t.Fatalf("neutraliseText(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("output is not valid UTF-8: %q", got)
+			}
+			if neutraliseText(got) != got {
+				t.Fatalf("not idempotent on %q", got)
+			}
+		})
+	}
+}
+
+// Text with nothing to neutralise is returned as it came, without a copy.
+func TestNeutraliseTextCleanInputAllocatesNothing(t *testing.T) {
+	s := strings.Repeat("clean text ", 1000)
+	if n := testing.AllocsPerRun(20, func() { _ = neutraliseText(s) }); n != 0 {
+		t.Fatalf("clean text allocated %v times", n)
+	}
+}
+
+// benchText is about 1 MiB of unit repeated, cut at a rune boundary.
+func benchText(unit string) string {
+	text := strings.Repeat(unit, (1<<20)/len(unit)+1)[:1<<20]
+	for !utf8.ValidString(text) {
+		text = text[:len(text)-1]
+	}
+	return text
+}
+
+func BenchmarkNeutraliseText1MiB(b *testing.B) {
+	for _, tc := range []struct{ name, text string }{
+		{"clean", benchText("The quick brown fox, jumps over the lazy dog \u2603.\n")},
+		{"controls", benchText("ab\x1b[31mcd\u202eef gh ij kl mn op qr st uv\n")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(len(tc.text)))
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = neutraliseText(tc.text)
+			}
+		})
+	}
+}
+
+// A completed Claude turn accepts a follow-up whatever permission requests went
+// unanswered: each is withdrawn at turn end, ahead of the status.
+func TestClaudeUnansweredPermissionDoesNotBlockContinuationAfterCompletion(t *testing.T) {
+	s := openFixture(t, "perm-then-result", "ask")
+	if err := s.StartTurn(t.Context(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	var reqs []Request
+	for _, e := range drainUntilStatus(t, s.Next) {
+		switch {
+		case e.Request != nil:
+			reqs = append(reqs, *e.Request)
+			seen = append(seen, "request:"+e.Request.ID)
+		case e.CancelledID != "":
+			seen = append(seen, "cancel:"+e.CancelledID)
+		case e.Status != "":
+			seen = append(seen, "status:"+e.Status)
+		}
+	}
+	if len(reqs) != 2 || seen[len(seen)-1] != "status:completed" || seen[len(seen)-2] != "cancel:"+reqs[1].ID || seen[len(seen)-3] != "cancel:"+reqs[0].ID {
+		t.Fatalf("events = %v, want both withdrawals ahead of the completed status", seen)
+	}
+	// A late answer to a withdrawn request is a callback gone, not a stale one.
+	if err := s.Respond(t.Context(), reqs[0], Response{Decision: "allow_once"}); !errors.Is(err, ErrCallbackWithdrawn) {
+		t.Fatalf("answer after turn end = %v, want ErrCallbackWithdrawn", err)
+	}
+	if err := s.ContinueTurn(t.Context(), "next"); err != nil {
+		t.Fatalf("ContinueTurn after a completed turn with unanswered permissions = %v", err)
+	}
+}
+
+// A turn that ended in failure is terminal: a follow-up is still refused.
+func TestClaudeContinueTurnAfterTerminalStatusIsStillRefused(t *testing.T) {
+	s := openFixture(t, "denied", "ask")
+	if err := s.StartTurn(t.Context(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	drainUntilStatus(t, s.Next)
+	if err := s.ContinueTurn(t.Context(), "again"); !ContinueRefused(err) {
+		t.Fatalf("ContinueTurn on a failed session = %v, want a refusal", err)
+	}
+}
+
+// A session-cap breach is the cap error for every reader, including one that
+// wakes on the cancellation first, and after the frame was already consumed.
+func TestConnectionFailRecordsTheCauseBeforeTheCancel(t *testing.T) {
+	ctx, fail := context.WithCancelCause(t.Context())
+	pr, pw := io.Pipe() // nothing reads it, so a send can only end through the connection's context
+	t.Cleanup(func() { _ = pr.Close() })
+	c := &connection{ctx: ctx, fail: fail, stdin: pw, frames: make(chan wireRead, 1)}
+	cause := errors.New("managed provider output exceeded 32 MiB")
+	c.frames <- wireRead{err: cause}
+	c.fail(cause)
+	for i := 0; i < 50; i++ {
+		rctx, stop := context.WithTimeout(t.Context(), time.Second)
+		_, _, err := c.receiveFrame(rctx)
+		stop()
+		if !errors.Is(err, cause) || errors.Is(err, context.Canceled) {
+			t.Fatalf("read %d = %v, want the recorded cause", i, err)
+		}
+	}
+	if err := c.sendRaw(t.Context(), []byte("{}")); !errors.Is(err, cause) {
+		t.Fatalf("send after the failure = %v, want the recorded cause", err)
+	}
+}
