@@ -793,3 +793,54 @@ func TestManagedToolSnapshotIsCheckpointedWhileTheTurnRuns(t *testing.T) {
 		t.Fatalf("final output lost the snapshot: %s", raw)
 	}
 }
+
+// The output is capped in unescaped bytes but written inside one JSON request the
+// store caps at 256 KiB, and JSON writes a backslash, quote or newline as two bytes
+// and `<` as six. Output that would push the request over is cut, at a whole
+// escape and with the tool snapshot dropped first, and marked truncated; the run
+// is never failed with its whole output lost.
+func TestProtocolWriteFitsTheStoreCapForEveryJSONExpandingByte(t *testing.T) {
+	for _, tc := range []struct{ name, unit string }{
+		{"backslash pairs", `\\`},
+		{"newline", "\n"},
+		{"quote", `"`},
+		{"angle bracket", "<"},
+		{"escape", `\x1b`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var session *managedTestSession
+			m := newManagedLifecycle(t, func(ctx context.Context, options codingagent.Options) *managedTestSession {
+				config := codingagent.Effective{Cwd: options.Cwd, ApprovalPolicy: "on-request", ApprovalsReviewer: "user", Sandbox: codingagent.Sandbox{Type: "readOnly"}, Model: "fixture", ModelProvider: "fixture"}
+				config.Thread.ID = "thread"
+				config.Thread.Cwd = options.Cwd
+				session = &managedTestSession{ctx: ctx, config: config, events: make(chan codingagent.Event, 8), leaveOpen: true}
+				return session
+			})
+			m.start("launch")
+			if session == nil {
+				t.Fatal("the managed runner never started a provider session")
+			}
+			session.events <- codingagent.Event{TurnID: "turn", Text: strings.Repeat(tc.unit, maxManagedOutput/len(tc.unit)), Tools: []codingagent.Tool{{ID: "t1", Name: "Bash", Status: "completed", Output: "ok"}}, Status: "completed"}
+			run, raw := m.finished()
+			var row struct {
+				Item struct {
+					Output    string `json:"output"`
+					Truncated bool   `json:"output_truncated"`
+					Reason    string `json:"reason"`
+				} `json:"item"`
+			}
+			if json.Unmarshal(raw, &row) != nil {
+				t.Fatalf("bad run: %s", raw)
+			}
+			if run.ProviderState != "completed" || row.Item.Output == "" {
+				t.Fatalf("provider state %q, output %d bytes, reason %q", run.ProviderState, len(row.Item.Output), row.Item.Reason)
+			}
+			if encodedLen(row.Item.Output) > maxProtocolRequest {
+				t.Fatalf("output encodes to %d bytes", encodedLen(row.Item.Output))
+			}
+			if tc.unit == `\x1b` && !wellFormedNeutralised(row.Item.Output) {
+				t.Fatalf("cut output ends mid-escape: %q", row.Item.Output[len(row.Item.Output)-8:])
+			}
+		})
+	}
+}

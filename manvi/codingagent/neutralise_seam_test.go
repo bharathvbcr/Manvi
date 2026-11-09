@@ -58,6 +58,7 @@ func requireEventClean(t *testing.T, where string, e Event) {
 // exported function or method hands an Event to a caller. A new adapter whose
 // Next skips the seam, or a new exported event source, fails here. This is the
 // structural check; the behavioural one below drives real frames through Next.
+// It scans only package codingagent: an adapter in another package is not covered.
 func TestNeutraliseSeamEveryEventExitIsNeutraliseEvent(t *testing.T) {
 	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")
@@ -111,6 +112,10 @@ func TestNeutraliseSeamEveryEventExitIsNeutraliseEvent(t *testing.T) {
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				ret, ok := n.(*ast.ReturnStmt)
 				if !ok {
+					return true
+				}
+				if len(ret.Results) == 0 {
+					t.Errorf("%s: bare return at %s skips neutraliseEvent", fn.Name.Name, fset.Position(ret.Pos()))
 					return true
 				}
 				if !callsNeutraliseEvent(ret.Results[0]) {
@@ -312,5 +317,61 @@ func TestNeutraliseToolInputKeepsJSONValid(t *testing.T) {
 	// A cut document or a string input is neutralised as text.
 	if got := NeutraliseToolInput("ls \x1b[2J \\x1b"); got != `ls \x1b[2J \\x1b` {
 		t.Fatalf("text input = %q", got)
+	}
+}
+
+// CutNeutralised never ends inside an escape or a rune, for every cut point, and
+// keeps the longest whole prefix.
+func TestCutNeutralisedEndsOnWholeEscapes(t *testing.T) {
+	in := neutraliseText("a\x1b\\b\u202e\u0085\xffc\U000E0041€\n\"q\"")
+	for n := 0; n <= len(in)+2; n++ {
+		cut := CutNeutralised(in, n)
+		if len(cut) > n && n < len(in) || !strings.HasPrefix(in, cut) || !utf8.ValidString(cut) || !wellFormedEscapes(cut) {
+			t.Fatalf("n=%d: cut %q of %q is not a whole-escape prefix", n, cut, in)
+		}
+		if n < len(in) {
+			if next := CutNeutralised(in, n+1); len(next) > len(cut) && len(next) <= n {
+				t.Fatalf("n=%d: cut %q is not maximal", n, cut)
+			}
+		}
+	}
+	if got := CutNeutralised(`ab\x1b`, 5); got != "ab" {
+		t.Fatalf(`CutNeutralised(ab\x1b, 5) = %q`, got)
+	}
+	if got := CutNeutralised(`ab\u{202E}`, 9); got != "ab" {
+		t.Fatalf("a cut inside \\u{...} = %q", got)
+	}
+	if got := CutNeutralised(`a\\b`, 2); got != "a" {
+		t.Fatalf("a cut between a doubled backslash = %q", got)
+	}
+}
+
+func TestMaxEscapeGrowthIsTheWorstEscape(t *testing.T) {
+	if MaxEscapeGrowth != 4 {
+		t.Fatalf("MaxEscapeGrowth = %d", MaxEscapeGrowth)
+	}
+	for _, in := range []string{"\xff", "\u0085"} {
+		if got := neutraliseText(in); len(got) != MaxEscapeGrowth*len(in) {
+			t.Fatalf("%q renders %q", in, got)
+		}
+	}
+}
+
+// BoundRenderedTool keeps a legitimately escaped tool and bounds a hostile one.
+func TestBoundRenderedTool(t *testing.T) {
+	esc := strings.Repeat(`\x1b`, 200)
+	tool, ok := BoundRenderedTool(Tool{ID: esc, Name: esc, Output: strings.Repeat(`\x1b`, 3000)})
+	if !ok || tool.ID != esc || tool.Name != esc || len(tool.Output) != 12000 {
+		t.Fatalf("escaped tool changed: ok=%v id=%d name=%d output=%d", ok, len(tool.ID), len(tool.Name), len(tool.Output))
+	}
+	huge := strings.Repeat("x", 1<<20)
+	tool, ok = BoundRenderedTool(Tool{ID: "t", Name: huge, Status: huge, ParentID: huge, Input: huge, Output: huge + `\x1b`})
+	if !ok || tool.Name != "" || tool.Status != "" || tool.ParentID != "" || len(tool.Input) != maxToolInput || len(tool.Output) != maxToolOutput*MaxEscapeGrowth {
+		t.Fatalf("hostile tool not bounded: %d %d %d", len(tool.Input), len(tool.Output), len(tool.Name))
+	}
+	for _, id := range []string{"", "  ", huge, "a\x00b"} {
+		if _, ok := BoundRenderedTool(Tool{ID: id}); ok {
+			t.Fatalf("ID %q accepted", id[:min(len(id), 8)])
+		}
 	}
 }

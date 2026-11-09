@@ -1167,7 +1167,55 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 		return err
 	}
 	output, truncated := savedOutput(job)
-	input, err := json.Marshal(struct {
+	input, err := marshalProtocol(job, run.Revision, id, thread, turn, state, output, truncated)
+	if err != nil {
+		return err
+	}
+	if over := len(input) - maxProtocolRequest; over > 0 {
+		// The store refuses a request over 256 KiB, and the output is counted in
+		// unescaped bytes while JSON writes a backslash, a quote or a newline as two
+		// and `<`, `>` or `&` as six. Fit the encoded output into what is left, cutting
+		// at a whole escape and dropping the tool snapshot first, rather than losing
+		// the run's output to a refused write.
+		budget := encodedLen(output) - over
+		output, truncated = fitOutput(job.output.String(), budget)
+		if input, err = marshalProtocol(job, run.Revision, id, thread, turn, state, output, truncated); err != nil {
+			return err
+		}
+	}
+	_, err = r.client.Workbench(ctx, "runs.protocol", input)
+	return err
+}
+
+// maxProtocolRequest is the store's cap on one workbench request.
+const maxProtocolRequest = 256 << 10
+
+// encodedLen is the size of s as a JSON string, quotes included.
+func encodedLen(s string) int {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return len(s) * 6
+	}
+	return len(b)
+}
+
+// fitOutput returns the longest prefix of text, cut at a whole escape, whose JSON
+// encoding is at most budget bytes, and marks the record truncated.
+func fitOutput(text string, budget int) (string, bool) {
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if encodedLen(codingagent.CutNeutralised(text, mid)) <= budget {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return codingagent.CutNeutralised(text, lo), true
+}
+
+func marshalProtocol(job *managedJob, revision int64, id, thread string, turn *string, state, output string, truncated bool) ([]byte, error) {
+	return json.Marshal(struct {
 		ID            string  `json:"id"`
 		Request       string  `json:"request_id"`
 		Revision      int64   `json:"expected_revision"`
@@ -1179,12 +1227,7 @@ func (r *ManagedRunner) protocol(ctx context.Context, job *managedJob, state, th
 		Configuration string  `json:"effective_configuration"`
 		Output        string  `json:"output"`
 		Truncated     bool    `json:"output_truncated"`
-	}{job.id, id, run.Revision, job.owner, job.session, thread, turn, state, job.configuration, output, truncated})
-	if err != nil {
-		return err
-	}
-	_, err = r.client.Workbench(ctx, "runs.protocol", input)
-	return err
+	}{job.id, id, revision, job.owner, job.session, thread, turn, state, job.configuration, output, truncated})
 }
 func (r *ManagedRunner) drive(job *managedJob, brief string) {
 	defer close(job.done)
@@ -1255,10 +1298,8 @@ func (r *ManagedRunner) drive(job *managedJob, brief string) {
 			remaining := maxManagedOutput - job.output.Len()
 			text := e.Text
 			if len(text) > remaining {
-				text = text[:remaining]
-				for !utf8.ValidString(text) && len(text) > 0 {
-					text = text[:len(text)-1]
-				}
+				// Cut at a whole escape: the seam has already escaped this text.
+				text = codingagent.CutNeutralised(text, remaining)
 				job.truncated = true
 			}
 			if text != "" {
@@ -1505,12 +1546,13 @@ func savedOutput(job *managedJob) (string, bool) {
 func noteTools(job *managedJob, incoming []codingagent.Tool) bool {
 	changed := false
 	for _, tool := range incoming {
-		// The adapters bound each tool (codingagent.BoundTool) before the neutralising
-		// seam grows its strings by up to 4x, so it is not bounded again here: a
-		// second pass at the raw limits would drop or cut a tool whose escaped ID,
-		// name or output is longer than its raw bytes. The snapshot as a whole stays
-		// under maxManagedOutput (savedOutput) and maxManagedTools.
-		if tool.ID == "" {
+		// Defence in depth for a provider that is not one of the adapters: the
+		// adapters bound a tool before the seam escapes it, so the bound here is the
+		// raw limit times codingagent.MaxEscapeGrowth, never the raw limit (which
+		// would drop or cut a legitimately escaped tool). A tool with no valid ID is
+		// dropped and the record marked truncated.
+		tool, ok := codingagent.BoundRenderedTool(tool)
+		if !ok {
 			job.truncated = true
 			continue
 		}

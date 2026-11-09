@@ -18,12 +18,13 @@ import (
 	"unicode/utf8"
 )
 
-// Adversary tests for ft-bf52b840 (wave 18, lane N). A test named ...Gap... asserts
-// the correct behaviour and fails on the implementer's head until the gap is fixed.
+// Adversary tests for ft-bf52b840 (wave 18, lane N). The former ...Gap... tests
+// asserted the correct behaviour and failed until the gap was fixed.
 
 // decodeNeutralised inverts neutraliseText for input without a raw backslash and
 // reports the original, or false if out is not a sequence of whole escapes. A
-// `\xNN` below 0xa0 is read as the rune NN; one at or above 0xa0 as the raw byte.
+// `\xNN` below 0x80 is read as the rune NN; one at or above 0x80 as the raw byte
+// (a C1 rune renders as `\u{0085}`, never `\x85`).
 func decodeNeutralised(out string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(out); {
@@ -41,7 +42,7 @@ func decodeNeutralised(out string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
-			if v < 0xa0 {
+			if v < 0x80 {
 				b.WriteRune(rune(v))
 			} else {
 				b.WriteByte(byte(v))
@@ -68,10 +69,9 @@ func decodeNeutralised(out string) (string, bool) {
 // ---- 7. Injectivity ----------------------------------------------------------
 
 // Two different inputs must not render the same: the invalid byte 0x85 and the C1
-// control U+0085 both come out as `\x85`, so a reader cannot tell what the agent
-// sent. (Pre-existing in the wave-17 format; the card's point 4 is that the
-// rendering is unambiguous.)
-func TestAdvW18NeutraliseGapInvalidByteAndC1RuneRenderIdentically(t *testing.T) {
+// control U+0085 once both came out as `\x85`, so a reader could not tell what the
+// agent sent. The byte keeps `\xNN`; the rune is `\u{0085}`.
+func TestAdvW18NeutraliseInvalidByteAndC1RuneRenderDifferently(t *testing.T) {
 	for c := byte(0x80); c <= 0x9f; c++ {
 		invalid := string([]byte{c})
 		c1 := string(rune(c))
@@ -82,15 +82,15 @@ func TestAdvW18NeutraliseGapInvalidByteAndC1RuneRenderIdentically(t *testing.T) 
 }
 
 // Random strings drawn from the characters that matter decode back to themselves,
-// so the rendering loses nothing (apart from the one collision above, whose
-// inputs are left out of the alphabet so this keeps guarding everything else).
+// so the rendering loses nothing, including the invalid bytes 0x80..0x9f beside
+// the C1 runes U+0080..U+009F.
 func TestAdvW18NeutraliseRenderingIsInjectiveOnRandomInput(t *testing.T) {
 	alphabet := []string{
 		"a", "Z", " ", "\n", "\t", "\r", "\r\n", "\x00", "\x1b", "\x7f", "\\", "\\\\", "x", "1", "b", "u", "{", "}", "<", ">", "+",
 		"\u0085", "\u009f", "\u00a0", "\u00ad", "\u061c", "\u180e", "\u200e", "\u200f", "\u2028", "\u2029", "\u202e", "\u2060", "\u2064", "\u2065",
 		"\u2066", "\u206f", "\ufeff", "\ufff9", "\ufffa", "\ufffb", "\ufffc", "\ufffd", "\U000e0000", "\U000e0041", "\U000e007f", "\U000e0080",
 		"€", "日", "\U0001f600",
-		"\xa0", "\xc3", "\xe2", "\xff", "\xed\xa0", // invalid UTF-8, none in 0x80-0x9f
+		"\u0080", "\xa0", "\xc3", "\xe2", "\xff", "\xed\xa0", "\x80", "\x85", "\x9f", // invalid UTF-8, including 0x80-0x9f
 		`\x1b`, `\u{202E}`, `<U+202E>`,
 	}
 	rng := rand.New(rand.NewPCG(18, 4242))

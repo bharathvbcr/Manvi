@@ -11,7 +11,8 @@ import (
 )
 
 // Adversary tests for ft-bf52b840 (wave 18, lane N), serve side. A test named
-// ...Gap... asserts the correct behaviour and fails on the implementer's head.
+// The former ...Gap... tests asserted the correct behaviour and failed on the
+// implementer's first head; they are renamed now that they pass.
 
 // wellFormedNeutralised reports whether every backslash in out starts one whole
 // escape of the neutralised form: `\\`, `\xNN` or `\u{HEX}`.
@@ -47,7 +48,7 @@ func wellFormedNeutralised(out string) bool {
 // plus 32767 whole `\x1b` escapes is 131069 bytes; the next escape is cut after
 // `\x1`. The saved record then ends in a fragment that is not a neutralised form,
 // and a `\` at the end is exactly what the doubled-backslash rule says cannot occur.
-func TestAdvW18NeutraliseGapTextCutAtTheOutputCapEndsMidEscape(t *testing.T) {
+func TestAdvW18NeutraliseTextCutAtTheOutputCapEndsOnAWholeEscape(t *testing.T) {
 	for _, tc := range []struct{ name, unit string }{
 		{"control", `\x1b`},
 		{"invisible", `\u{202E}`},
@@ -87,8 +88,9 @@ func TestAdvW18NeutraliseGapTextCutAtTheOutputCapEndsMidEscape(t *testing.T) {
 				delete(item, "brief")
 				t.Fatalf("run has no output: %v", item)
 			}
-			if len(out) != maxManagedOutput {
-				t.Fatalf("saved output is %d bytes, expected it cut at %d", len(out), maxManagedOutput)
+			// Cut at the last whole escape at or below the cap: at most one escape short.
+			if len(out) > maxManagedOutput || len(out) < maxManagedOutput-len(tc.unit)+1 {
+				t.Fatalf("saved output is %d bytes, expected it cut at the cap %d or one whole escape under", len(out), maxManagedOutput)
 			}
 			if !utf8.ValidString(out) {
 				t.Fatalf("saved output is not UTF-8")
@@ -108,7 +110,7 @@ func TestAdvW18NeutraliseGapTextCutAtTheOutputCapEndsMidEscape(t *testing.T) {
 // run is failed with its whole output lost. The same shape exists for any byte JSON
 // doubles (newline, quote) at twice the volume, so it is older than the card; the
 // neutraliser halves the volume needed for backslashes.
-func TestAdvW18NeutraliseGapBackslashFloodFailsTheProtocolWriteAndLosesTheOutput(t *testing.T) {
+func TestAdvW18NeutraliseBackslashFloodDoesNotLoseTheOutput(t *testing.T) {
 	var session *managedTestSession
 	m := newManagedLifecycle(t, func(ctx context.Context, options codingagent.Options) *managedTestSession {
 		config := codingagent.Effective{Cwd: options.Cwd, ApprovalPolicy: "on-request", ApprovalsReviewer: "user", Sandbox: codingagent.Sandbox{Type: "readOnly"}, Model: "fixture", ModelProvider: "fixture"}
@@ -231,7 +233,7 @@ func TestAdvW18NeutraliseOneWorstCaseToolFitsAndRoundTrips(t *testing.T) {
 // in the job. It now trusts the caller. A provider session is an interface
 // (ManagedSession), and the host holds up to maxManagedTools of these in memory for
 // the life of the run, so a tool with a 1 MiB output and a 1 MiB id is now kept whole.
-func TestAdvW18NeutraliseGapNoteToolsNoLongerBoundsAToolFromAnyProvider(t *testing.T) {
+func TestAdvW18NeutraliseNoteToolsBoundsAToolFromAnyProvider(t *testing.T) {
 	job := &managedJob{}
 	huge := strings.Repeat("x", 1<<20)
 	noteTools(job, []codingagent.Tool{{ID: "t1", Name: "n", Output: huge, Input: huge}})

@@ -112,6 +112,7 @@ const (
 	maxTools      = 64
 	maxToolInput  = 4096
 	maxToolOutput = 8192
+	maxOpaque     = 256
 )
 
 // BoundTool drops a tool whose id is not an opaque provider identity and caps
@@ -126,6 +127,31 @@ func BoundTool(t Tool) (Tool, bool) {
 	t.ParentID = boundOpaque(t.ParentID)
 	t.Input = boundText(t.Input, maxToolInput)
 	t.Output = boundText(t.Output, maxToolOutput)
+	return t, true
+}
+
+// BoundRenderedTool is BoundTool for a tool the adapter's seam has already
+// neutralised, which a host applies as defence in depth to a tool from any
+// provider. Each string may be MaxEscapeGrowth times its raw limit; Input is
+// raw at the seam, so it keeps its own. A text field is cut at an escape
+// boundary, an identity that is not opaque is omitted, and a tool with no valid
+// ID is dropped.
+func BoundRenderedTool(t Tool) (Tool, bool) {
+	limit := maxOpaque * MaxEscapeGrowth
+	rendered := func(s string) string {
+		if s == "" || (strings.TrimSpace(s) != "" && len(s) <= limit && !strings.ContainsRune(s, '\x00')) {
+			return s
+		}
+		return ""
+	}
+	if rendered(t.ID) == "" {
+		return Tool{}, false
+	}
+	t.Name = rendered(t.Name)
+	t.Status = rendered(t.Status)
+	t.ParentID = rendered(t.ParentID)
+	t.Input = boundText(t.Input, maxToolInput)
+	t.Output = CutNeutralised(t.Output, maxToolOutput*MaxEscapeGrowth)
 	return t, true
 }
 
@@ -574,7 +600,7 @@ func (s *Codex) next(ctx context.Context) (Event, error) {
 	}
 }
 func opaque(s string) bool {
-	return strings.TrimSpace(s) != "" && len(s) <= 256 && !strings.ContainsRune(s, '\x00')
+	return strings.TrimSpace(s) != "" && len(s) <= maxOpaque && !strings.ContainsRune(s, '\x00')
 }
 func wireIdentity(id json.RawMessage) (string, error) {
 	if len(id) == 0 || len(id) > 256 {

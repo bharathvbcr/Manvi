@@ -761,9 +761,10 @@ func callbackStale(request, source Request, sent, finished bool) bool {
 // reader can always tell a neutralised byte from text the agent wrote:
 //
 //   - a doubled backslash is one literal backslash;
-//   - `\xNN` is ESC, another C0 or C1 control, DEL, or a byte that is not UTF-8
+//   - `\xNN` is ESC, another C0 control, DEL, or a byte that is not UTF-8
 //     (so a literal `\x1b` in agent text reads `\\x1b`);
-//   - `\u{XXXX}` is an invisible, line-separator or bidi rune (U+00AD, U+061C,
+//   - `\u{XXXX}` is a C1 control rune (U+0080..U+009F) or an invisible,
+//     line-separator or bidi rune (U+00AD, U+061C,
 //     U+180E, U+200E/F, U+2028/2029, U+202A-202E, U+2060-2064, U+2066-2069,
 //     U+206A-206F, U+FEFF, U+FFF9-FFFB and the Unicode tag block U+E0000-E007F).
 //
@@ -847,9 +848,10 @@ func writeEscape(b *strings.Builder, raw string, r rune, asJSON bool) {
 		b.WriteString(`\\`)
 	case asJSON:
 		writeJSONEscape(b, r, len(raw))
-	case r == utf8.RuneError || r < 0xa0:
-		// Invalid input is the byte itself (one byte); a C0, DEL or C1 rune is
-		// below U+00A0 and is shown by its code point.
+	case r == utf8.RuneError || r < 0x80:
+		// Invalid input is the byte itself (one byte); a C0 control or DEL is one
+		// valid byte and is shown by it. A C1 rune (U+0080..U+009F) is two bytes and
+		// takes the rune form below, so it cannot read like an invalid byte.
 		v := r
 		if r == utf8.RuneError {
 			v = rune(raw[0])
@@ -967,4 +969,67 @@ func mustNeutralise(r rune, n int) bool {
 		return true
 	}
 	return false
+}
+
+// MaxEscapeGrowth is the most a neutralised string can grow: one invalid byte
+// becomes `\xNN` and a two-byte C1 rune becomes `\u{0085}`, both 4x. A host that
+// bounds an already-neutralised tool uses it to scale the adapter limits.
+const MaxEscapeGrowth = 4
+
+// CutNeutralised returns the longest prefix of s, at most n bytes, that ends
+// between whole units of neutralised text: a valid rune, a `\\`, a `\xNN` or a
+// `\u{...}`. A byte cut would otherwise leave a fragment such as `\x1`, `\u{202E`
+// or a lone backslash, which the doubled-backslash rule says never occurs in the
+// record. Text that fits is returned unchanged.
+func CutNeutralised(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	i := 0
+	for i < len(s) {
+		w := neutralisedUnit(s[i:])
+		if i+w > n {
+			break
+		}
+		i += w
+	}
+	return s[:i]
+}
+
+// neutralisedUnit is the width of the first unit of s: a whole escape, or one
+// rune (one byte when it is invalid UTF-8). A backslash that starts no
+// well-formed escape, which only host-written text can hold, takes the next rune
+// with it so a cut never separates the pair.
+func neutralisedUnit(s string) int {
+	if s[0] != '\\' {
+		_, w := utf8.DecodeRuneInString(s)
+		return w
+	}
+	switch {
+	case len(s) >= 2 && s[1] == '\\':
+		return 2
+	case len(s) >= 4 && s[1] == 'x' && isHexDigit(s[2]) && isHexDigit(s[3]):
+		return 4
+	case len(s) >= 3 && s[1] == 'u' && s[2] == '{':
+		for j := 3; j < len(s); j++ {
+			if s[j] == '}' {
+				return j + 1
+			}
+			if !isHexDigit(s[j]) {
+				break
+			}
+		}
+	}
+	if len(s) == 1 {
+		return 1
+	}
+	_, w := utf8.DecodeRuneInString(s[1:])
+	return 1 + w
+}
+
+func isHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
