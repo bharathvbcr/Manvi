@@ -23,6 +23,11 @@ func TestNeutraliseText(t *testing.T) {
 		{"invalid utf8", "a\xffb\xc3", `a\xffb\xc3`},
 		{"truncated multibyte then control", "\xe2\x82\x1b", `\xe2\x82\x1b`},
 		{"valid multibyte beside controls", "€\x1b€", `€\x1b€`},
+		{"crlf kept", "a\r\nb\r\n", "a\r\nb\r\n"},
+		{"lone cr escaped", "x\ry", `x\x0dy`},
+		{"cr cr lf", "\r\r\n", `\x0d` + "\r\n"},
+		{"trailing cr escaped", "ab\r", `ab\x0d`},
+		{"cr then control then lf", "\r\x1b\n", `\x0d\x1b` + "\n"},
 		{"lone surrogate bytes", "\xed\xa0\x80", `\xed\xa0\x80`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +60,14 @@ func benchText(unit string) string {
 		text = text[:len(text)-1]
 	}
 	return text
+}
+
+// Clean CRLF text (Windows tools, Codex output) is returned without a copy.
+func TestNeutraliseTextCleanCRLFAllocatesNothing(t *testing.T) {
+	s := strings.Repeat("a line of output\r\n", 1000)
+	if n := testing.AllocsPerRun(20, func() { _ = neutraliseText(s) }); n != 0 {
+		t.Fatalf("clean CRLF text allocated %v times", n)
+	}
 }
 
 func BenchmarkNeutraliseText1MiB(b *testing.B) {
@@ -140,5 +153,40 @@ func TestConnectionFailRecordsTheCauseBeforeTheCancel(t *testing.T) {
 	}
 	if err := c.sendRaw(t.Context(), []byte("{}")); !errors.Is(err, cause) {
 		t.Fatalf("send after the failure = %v, want the recorded cause", err)
+	}
+}
+
+// A stderr flood ends the connection with its own cap error, which serve reads as
+// a failure; a bare cancel would read as an interruption.
+func TestLimitedDiscardRecordsTheStderrCapAsTheCause(t *testing.T) {
+	ctx, fail := context.WithCancelCause(t.Context())
+	c := &connection{ctx: ctx, fail: fail}
+	w := &limitedDiscard{remaining: 4, cancel: func() { fail(nil) }, fail: c.fail}
+	if _, err := w.Write(make([]byte, 10)); !errors.Is(err, errStderrCap) {
+		t.Fatalf("over-cap stderr write = %v, want errStderrCap", err)
+	}
+	if err := c.err(); !errors.Is(err, errStderrCap) || errors.Is(err, context.Canceled) {
+		t.Fatalf("connection ended with %v, want the stderr cap", err)
+	}
+	rctx, stop := context.WithCancel(t.Context())
+	stop()
+	if _, err := c.receive(rctx); !errors.Is(err, errStderrCap) {
+		t.Fatalf("a reader with its own ctx also cancelled got %v, want the stderr cap", err)
+	}
+}
+
+// A caller cancel with no recorded failure is still the caller's cancel.
+func TestCallerCancelWithoutAFailureIsReportedAsTheCallersCancel(t *testing.T) {
+	ctx, fail := context.WithCancelCause(t.Context())
+	defer fail(nil)
+	c := &connection{ctx: ctx, fail: fail, frames: make(chan wireRead)}
+	rctx, stop := context.WithCancel(t.Context())
+	stop()
+	if _, _, err := c.receiveFrame(rctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("receiveFrame = %v, want the caller's context.Canceled", err)
+	}
+	fail(nil) // a plain Close is also not a failure
+	if c.failure() != nil {
+		t.Fatalf("failure() = %v after a plain cancel, want nil", c.failure())
 	}
 }

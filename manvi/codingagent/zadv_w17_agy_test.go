@@ -110,7 +110,7 @@ func TestAdvW17NeutraliseProperties(t *testing.T) {
 		}
 		for j := 0; j < len(out); {
 			r, n := utf8.DecodeRuneInString(out[j:])
-			if mustNeutralise(r, n) {
+			if mustNeutralise(r, n) && !crlfAt(out, j) { // a CR that starts a CRLF is kept on purpose (A-R1)
 				t.Fatalf("output %q for %q still holds %U", out, in, r)
 			}
 			j += n

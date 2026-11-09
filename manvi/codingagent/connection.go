@@ -75,15 +75,28 @@ type connection struct {
 	groupGone atomic.Bool
 	validate  func([]byte) error
 }
+
+// errStderrCap is the cause a stderr flood ends the connection with.
+var errStderrCap = errors.New("managed provider stderr exceeded 64 KiB")
+
+// limitedDiscard drops the provider's stderr and ends the connection when it
+// writes more than remaining bytes. A breach is recorded through fail, so every
+// reader reports the cap and serve classes the run failed, not interrupted;
+// cancel is the fallback for a holder that has no cause-recording cancel.
 type limitedDiscard struct {
 	remaining int
 	cancel    context.CancelFunc
+	fail      context.CancelCauseFunc
 }
 
 func (w *limitedDiscard) Write(p []byte) (int, error) {
 	if len(p) > w.remaining {
-		w.cancel()
-		return 0, errors.New("managed provider stderr exceeded 64 KiB")
+		if w.fail != nil {
+			w.fail(errStderrCap)
+		} else {
+			w.cancel()
+		}
+		return 0, errStderrCap
 	}
 	w.remaining -= len(p)
 	return len(p), nil
@@ -147,7 +160,7 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 	cmd.WaitDelay = 2 * time.Second
 	proc.ConfigureGroup(cmd)
 	cmd.Env = agentEnv(baseEnv, cwd)
-	cmd.Stderr = &limitedDiscard{remaining: 65536, cancel: cancel}
+	cmd.Stderr = &limitedDiscard{remaining: 65536, cancel: cancel, fail: fail}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -373,6 +386,9 @@ func (c *connection) send(ctx context.Context, p packet) error {
 // sendRaw writes one already-encoded frame, for a protocol whose outbound
 // bodies are not the JSON-RPC envelope.
 func (c *connection) sendRaw(ctx context.Context, data []byte) error {
+	if err := c.failure(); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -388,6 +404,9 @@ func (c *connection) sendRaw(ctx context.Context, data []byte) error {
 		}
 		return err
 	case <-ctx.Done():
+		if err := c.failure(); err != nil {
+			return err
+		}
 		c.cancel()
 		return ctx.Err()
 	case <-c.ctx.Done():
@@ -399,6 +418,20 @@ func (c *connection) sendRaw(ctx context.Context, data []byte) error {
 // refused, else the context's own (Canceled for a close or an interrupt).
 func (c *connection) err() error {
 	return context.Cause(c.ctx)
+}
+
+// failure is the recorded reason the connection failed, or nil when it is
+// running or ended only by a plain cancel (Close, an interrupt). A failure that
+// already happened outranks a caller's cancel that is ready at the same moment,
+// so the outcome does not depend on which select case the runtime picks.
+func (c *connection) failure() error {
+	if c.ctx.Err() == nil {
+		return nil
+	}
+	if cause := context.Cause(c.ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	return nil
 }
 func (c *connection) receive(ctx context.Context) (packet, error) {
 	p, _, err := c.receiveFrame(ctx)
@@ -416,6 +449,9 @@ func (c *connection) receiveFrame(ctx context.Context) (packet, []byte, error) {
 		}
 		return next.value, next.raw, next.err
 	case <-ctx.Done():
+		if err := c.failure(); err != nil {
+			return packet{}, nil, err
+		}
 		return packet{}, nil, ctx.Err()
 	case <-c.ctx.Done():
 		// The refused frame is queued ahead of the cancellation; take it first so
@@ -619,14 +655,14 @@ func callbackStale(request, source Request, sent, finished bool) bool {
 // said. Nothing is dropped, so the record still shows what the agent sent: ESC
 // becomes the literal `\x1b`, every other C0 or C1 control and DEL becomes
 // `\xNN`, a bidi override, isolate or mark becomes `<U+202E>`, and a byte that is
-// not UTF-8 becomes `\xNN`. Newline and tab are kept. A valid multi-byte rune is
+// not UTF-8 becomes `\xNN`. Newline, tab and a carriage return that starts a CRLF are kept. A valid multi-byte rune is
 // copied whole. Text with nothing to neutralise is returned as it came, without
 // allocating; otherwise one linear pass writes one buffer.
 func neutraliseText(s string) string {
 	first := -1
 	for i := 0; i < len(s); {
 		r, n := utf8.DecodeRuneInString(s[i:])
-		if mustNeutralise(r, n) {
+		if mustNeutralise(r, n) && !(r == '\r' && crlfAt(s, i)) {
 			first = i
 			break
 		}
@@ -642,7 +678,7 @@ func neutraliseText(s string) string {
 	for i := first; i < len(s); {
 		r, n := utf8.DecodeRuneInString(s[i:])
 		switch {
-		case !mustNeutralise(r, n):
+		case !mustNeutralise(r, n) || (r == '\r' && crlfAt(s, i)):
 			b.WriteString(s[i : i+n])
 		case r == utf8.RuneError || r < 0x100:
 			// Invalid input is the byte itself (n == 1); a C0, DEL or C1 rune is
@@ -666,8 +702,16 @@ func neutraliseText(s string) string {
 	return b.String()
 }
 
+// crlfAt reports whether s[i] is a carriage return immediately followed by a
+// line feed, the line ending Windows tools and some providers write.
+func crlfAt(s string, i int) bool {
+	return s[i] == '\r' && i+1 < len(s) && s[i+1] == '\n'
+}
+
 // mustNeutralise reports whether r (decoded with width n) is invalid UTF-8, a
 // C0 control other than newline and tab, DEL, a C1 control, or a bidi control.
+// A carriage return is reported here; neutraliseText keeps the one that starts a
+// CRLF (crlfAt) before it asks.
 func mustNeutralise(r rune, n int) bool {
 	switch {
 	case r == utf8.RuneError:

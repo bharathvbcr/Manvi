@@ -227,22 +227,8 @@ func toolBinary(envKey, name string) string {
 	}
 	launchable, installs := managedAgentSpec(name)
 	if releaseBuild() {
-		if dir := ownDir(); dir != "" {
-			if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
-				if resolved, ok := trustedLaunchable(candidate, launchable); ok {
-					return resolved
-				}
-			}
-		}
-		if p, ok := trustedLookPathLaunchable(name, launchable); ok {
+		if p, ok := releaseSearch(name, installs, func(p string) (string, bool) { return trustedLaunchable(p, launchable) }); ok {
 			return p
-		}
-		for _, candidate := range installs() {
-			if filepath.IsAbs(candidate) && isExecutableFile(candidate) {
-				if resolved, ok := trustedLaunchable(candidate, launchable); ok {
-					return resolved
-				}
-			}
 		}
 		return unresolvedTool(name)
 	}
@@ -261,6 +247,32 @@ func toolBinary(envKey, name string) string {
 	return name
 }
 
+// releaseSearch is the one list of places a release build looks for a program,
+// in order: the directory holding this binary, each absolute PATH entry, then
+// the native install directories. accept judges each executable candidate and
+// returns what to use. toolBinary and managedAgentBinary both search through it,
+// with different accept rules, so their sources and order cannot drift.
+func releaseSearch(name string, installs func() []string, accept func(path string) (string, bool)) (string, bool) {
+	if dir := ownDir(); dir != "" {
+		if candidate := filepath.Join(dir, name); isExecutableFile(candidate) {
+			if got, ok := accept(candidate); ok {
+				return got, true
+			}
+		}
+	}
+	if got, ok := lookPathWhere(name, accept); ok {
+		return got, true
+	}
+	for _, candidate := range installs() {
+		if filepath.IsAbs(candidate) && isExecutableFile(candidate) {
+			if got, ok := accept(candidate); ok {
+				return got, true
+			}
+		}
+	}
+	return "", false
+}
+
 // managedAgentBinary is toolBinary for a managed coding agent, with one
 // addition for a release build that found nothing launchable. When PATH or an
 // install directory holds a trusted (outside the agent's reach) program that is
@@ -275,15 +287,8 @@ func managedAgentBinary(envKey, name string) string {
 		return got
 	}
 	_, installs := managedAgentSpec(name)
-	if p, ok := lookPathWhere(name, trustedResolved); ok {
+	if p, ok := releaseSearch(name, installs, trustedResolved); ok {
 		return p
-	}
-	for _, candidate := range installs() {
-		if filepath.IsAbs(candidate) && isExecutableFile(candidate) {
-			if resolved, ok := trustedResolved(candidate); ok {
-				return resolved
-			}
-		}
 	}
 	return got
 }
