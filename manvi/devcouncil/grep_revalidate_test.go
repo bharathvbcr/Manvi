@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
 )
@@ -92,9 +93,10 @@ func BenchmarkGrepRevalidate(b *testing.B) {
 	})
 }
 
-// BenchmarkGrepTreeCheck is the cost of the post-search decision (every listed
-// file judged again with candidateRefusals) against the listing it repeats the
-// judgement of, at 5,000 and 50,000 listed files.
+// BenchmarkGrepTreeCheck prices the pieces of the post-search decision at 5,000
+// and 50,000 listed files: the first listing, recording the stamps, reading them
+// back (the fast path), and the full relist-and-judge path. The clock is moved
+// an hour on so the files, which were just written, do not read as fresh.
 func BenchmarkGrepTreeCheck(b *testing.B) {
 	for _, n := range []int{5000, 50000} {
 		f := newFixture(b)
@@ -107,26 +109,45 @@ func BenchmarkGrepTreeCheck(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		list, err := f.reg.deps.Grep.List(b.Context(), dcgrep.ListRequest{MaxResults: grepListCeiling, IncludeIgnored: true})
+		req := dcgrep.Request{IncludeIgnored: true}
+		lreq := dcgrep.ListRequest{MaxResults: grepListCeiling, IncludeIgnored: true}
+		list, err := f.reg.deps.Grep.List(b.Context(), lreq)
 		if err != nil {
 			b.Fatal(err)
 		}
-		refused := f.reg.candidateRefusals(list.Paths)
-		b.Run(fmt.Sprintf("n=%d/list", n), func(b *testing.B) {
+		refused, stamps := f.reg.judgeListing(list.Paths)
+		prev := grepNow
+		grepNow = func() time.Time { return time.Now().Add(time.Hour) }
+		b.Cleanup(func() { grepNow = prev })
+		snap := f.reg.snapshotTree(list.Paths, stamps, grepNow())
+		if snap == nil || snap.fresh {
+			b.Fatalf("no usable snapshot: %+v", snap == nil)
+		}
+		b.Run(fmt.Sprintf("n=%d/first-listing", n), func(b *testing.B) {
 			for range b.N {
-				if _, err := f.reg.deps.Grep.List(b.Context(), dcgrep.ListRequest{MaxResults: grepListCeiling, IncludeIgnored: true}); err != nil {
+				if _, err := f.reg.deps.Grep.List(b.Context(), lreq); err != nil {
 					b.Fatal(err)
 				}
 			}
 		})
-		b.Run(fmt.Sprintf("n=%d/judge-listing", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("n=%d/record-stamps", n), func(b *testing.B) {
 			for range b.N {
-				_ = f.reg.candidateRefusals(list.Paths)
+				_ = f.reg.snapshotTree(list.Paths, stamps, grepNow())
 			}
 		})
-		b.Run(fmt.Sprintf("n=%d/treeUnchanged", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("n=%d/stat-pass", n), func(b *testing.B) {
+			tree := &listedTree{paths: list.Paths, snap: snap}
 			for range b.N {
-				ok, err := f.reg.treeUnchanged(b.Context(), dcgrep.Request{IncludeIgnored: true}, list.Paths, refused, nil)
+				ok, err := f.reg.treeUnchanged(b.Context(), req, tree, refused, nil)
+				if err != nil || !ok {
+					b.Fatalf("changed or failed: %v", err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("n=%d/full-path", n), func(b *testing.B) {
+			tree := &listedTree{paths: list.Paths}
+			for range b.N {
+				ok, err := f.reg.treeUnchanged(b.Context(), req, tree, refused, nil)
 				if err != nil || !ok {
 					b.Fatalf("changed or failed: %v", err)
 				}

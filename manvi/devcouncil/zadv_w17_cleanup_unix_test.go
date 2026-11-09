@@ -3,6 +3,7 @@
 package devcouncil
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,39 +71,52 @@ func TestZadvW17GrepRaceErrorLeaksPerPatternBit(t *testing.T) {
 }
 
 // Attack 1, candidate fix (a) alone: re-run listing plus search after a detected
-// refusal. The retry partitions the alias out, so the matching pattern's reply
-// is the one a file refused at listing gives. The non-matching pattern raised
-// no refusal and so would not retry, and its reply was built from the first
-// listing, which did not know the alias. This test pins the difference the
-// withheld report would carry between those two paths: it must hold for fix (a)
-// to be insufficient, and it does.
+// refusal. That leaves the withheld report as the distinguisher, because only a
+// pattern that matched the linked file would retry and so only its reply would
+// name the new link. Fix (b) retries on ANY change, so the decision no longer
+// depends on content and the two replies are identical. This test asserts that
+// invariant (it used to skip once (b) made both paths name the files): a link
+// made mid-search gives the same reply, withheld list, files_searched and count
+// included, for a pattern that matches the linked secret and one that does not,
+// and that reply is the one a link made before the call gives.
 func TestZadvW17CandidateAAloneStillLeaksThroughTheWithheldReport(t *testing.T) {
-	// What the retry returns for the matching pattern: the secret linked BEFORE
-	// the call, so the listing partitions it out.
-	retried := newFixture(t)
-	writeRepoFile(t, retried.root, ".env", "decoy=1\n")
-	linkSecret(t, retried.root, "token.txt", "alias.txt", "API=needle LATE\n")
-	writeRepoFile(t, retried.root, "src/a.go", "needle visible\n")
-	afterRetry := retried.call("devcouncil_grep", map[string]any{"pattern": "needle", "include_ignored": true}).Text
+	// The matching pattern, with the link made mid-search.
+	hit := raceFixture(t).call("devcouncil_grep", map[string]any{"pattern": "LATE", "include_ignored": true})
+	// The non-matching pattern, same race.
+	miss := raceFixture(t).call("devcouncil_grep", map[string]any{"pattern": "zzz-no-such-text", "include_ignored": true})
+	// The reference: the secret linked BEFORE the call, so the listing
+	// partitions it out from the start.
+	before := newFixture(t)
+	writeRepoFile(t, before.root, ".env", "decoy=1\n")
+	linkSecret(t, before.root, "token.txt", "alias.txt", "API=needle LATE\n")
+	writeRepoFile(t, before.root, "src/a.go", "needle visible\n")
+	ref := before.call("devcouncil_grep", map[string]any{"pattern": "zzz-no-such-text", "include_ignored": true})
 
-	// What the non-matching pattern returns when the link lands mid-search and
-	// nothing matched in it: no error, no retry, the first listing's report.
-	noRetry := raceFixture(t)
-	noRetryReply := noRetry.call("devcouncil_grep", map[string]any{"pattern": "needle visible", "include_ignored": true})
-	if noRetryReply.IsError {
-		t.Fatalf("setup: the non-matching race should answer normally: %s", noRetryReply.Text)
+	if hit.IsError || miss.IsError || ref.IsError {
+		t.Fatalf("a reply is an error: hit=%v miss=%v ref=%v\n%s\n%s", hit.IsError, miss.IsError, ref.IsError, hit.Text, miss.Text)
 	}
-	t.Logf("retry reply (link seen at listing):\n%s", afterRetry)
-	t.Logf("no-retry reply (link made mid-search, no match in it):\n%s", noRetryReply.Text)
-	nameInRetry := strings.Contains(afterRetry, "alias.txt") || strings.Contains(afterRetry, "token.txt")
-	nameInPlain := strings.Contains(noRetryReply.Text, "alias.txt") || strings.Contains(noRetryReply.Text, "token.txt")
-	if nameInRetry == nameInPlain {
-		t.Skipf("the withheld report does not name the aliased files on either path (retry=%v plain=%v); fix (a) alone would suffice here",
-			nameInRetry, nameInPlain)
+	shape := func(text string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(text), &m); err != nil {
+			t.Fatalf("reply is not JSON: %v: %s", err, text)
+		}
+		delete(m, "pattern")
+		return m
 	}
-	t.Logf("fix (a) alone leaves a distinguisher: withheld report names the files after a retry (%v) and not otherwise (%v); "+
-		"fix (b) (judge every listed file after the search, retry on ANY new refusal) removes it because the decision no longer depends on content",
-		nameInRetry, nameInPlain)
+	h, m, r := shape(hit.Text), shape(miss.Text), shape(ref.Text)
+	for _, key := range []string{"withheld", "files_searched", "count"} {
+		if fmt.Sprint(h[key]) != fmt.Sprint(m[key]) {
+			t.Errorf("%s differs between a pattern that matches the linked secret and one that does not:\n%v\n%v", key, h[key], m[key])
+		}
+		if fmt.Sprint(m[key]) != fmt.Sprint(r[key]) {
+			t.Errorf("%s after a mid-search link is not what a link made before the call gives:\n%v\n%v", key, m[key], r[key])
+		}
+	}
+	for _, name := range []string{".env", "alias.txt", "token.txt"} {
+		if !strings.Contains(hit.Text, name) || !strings.Contains(miss.Text, name) {
+			t.Errorf("the withheld report is missing %q on one of the two replies", name)
+		}
+	}
 }
 
 // Cost of fix (b): judging every searched file after the search with the cheap

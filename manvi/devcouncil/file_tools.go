@@ -747,11 +747,11 @@ const grepRaceAttempts = 3
 // per pattern about a file the partition withholds.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
-		out, refused, listed, err := r.searchAttempt(ctx, req)
+		out, refused, tree, err := r.searchAttempt(ctx, req)
 		if err != nil {
 			return nil, nil, err
 		}
-		unchanged, checkErr := r.treeUnchanged(ctx, req, listed, refused, out.matches)
+		unchanged, checkErr := r.treeUnchanged(ctx, req, tree, refused, out.matches)
 		if checkErr != nil {
 			return nil, nil, checkErr
 		}
@@ -762,31 +762,81 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 	return nil, nil, errors.New("the tree changed under the search repeatedly; retry")
 }
 
+// listedTree is what one attempt's listing recorded: the names, and the stamps
+// treeUnchanged compares after the search (nil if none could be taken).
+type listedTree struct {
+	paths []string
+	snap  *listingStamps
+}
+
 // treeUnchanged reports whether the listing's verdicts still hold after a
-// search. The tree is listed again, through the same walk, and every name in
-// that second listing is judged with candidateRefusals, the first listing's own
-// judgement. The outcome therefore depends on names and inodes and never on the
-// pattern or on what the files hold. It is false if the set of names differs (a
-// new name for an inode, even one for a file that was already withheld, is a new
-// file the search may have read), if any verdict differs (a file refused now, or
-// no longer refused), or if a match lies in a name the first listing did not
-// hold. Judging only the first listing's names would miss a new link to a file
-// that was refused already: no listed verdict moves, yet the search read it, and
-// the retry's withheld report names it where the reply of a pattern that did not
-// match it would not. The second listing and its judgement cost about as much
-// as the first, 4 ms per 1,000 files and 9 microseconds a file on top.
+// search, without looking at the pattern or at what any file holds.
 //
-// revalidateMatches stays as a further gate on the matched files only, and a
-// disagreement there takes the same route (another attempt, then the same
-// error), so it cannot make the outcome depend on content. For a listed name it
-// can add nothing: the listing guarantees a regular file reached without a
-// symlink inside the root, which is everything candidateRefusal shortcuts, and
+// Fast path. The listing recorded, for every listed file, its (device, inode,
+// link count, mode, ctime) and, for every directory above those files up to the
+// root, its (device, inode, mode, mtime, ctime). After the search those same
+// entries are read again, and if every one reads back identical and no recorded
+// time lay within grepStampSlack of the start of the search, the relist and the
+// rejudging are skipped. That is sound only because what the judgement
+// (candidateRefusals, and readRefusal for the names it cannot shortcut) reads is
+// all inside those stamps, case by case:
+//
+//   - A new name in a listed directory (a file, a hard link, a symlink, a
+//     directory) changes that directory's mtime, so the directory differs.
+//   - A rename removes a name from one directory and adds it to another, so both
+//     directories' mtimes change; the moved file's own ctime changes too. A
+//     renamed directory changes its parent's mtime and, unless renamed within the
+//     same parent, the new parent's.
+//   - A hard link to a listed file, including one made from outside the root,
+//     changes that inode's link count and its ctime, so the file's stamp differs
+//     and the file is judged aliased on the full path. No directory in the root
+//     moves in that case, which is why files carry nlink and ctime.
+//   - A symlink swapped in for a listed file or for a directory on the way
+//     (plainDirs and readRefusal both look for exactly this) changes the parent's
+//     mtime, and the swapped entry reads back with another inode and mode.
+//   - A chmod, chown, or any inode metadata change moves that inode's ctime; a
+//     file replaced under the same name has another inode.
+//   - A listed entry that is gone fails its lstat and counts as changed.
+//
+// What the judgement reads that the stamps do not cover: nothing about a listed
+// file (the credential-name rule reads the name, which is the key of the stamp;
+// the alias rule reads the link count, which is in it; the on-disk spelling is
+// directory membership, covered by the parents). What the stamps cannot see is a
+// name that appears in a directory the listing holds no file in, such as an empty
+// directory or one whose files were all ignored: nothing in it was recorded, so
+// a new name there is invisible to this path (the full path would see it, since
+// the engine's second listing walks it). A stamp is also only as exact as the
+// filesystem's clock, so a time within grepStampSlack of the search start, or
+// ahead of it, marks the snapshot fresh and sends the call down the full path,
+// which handles a change in the same tick as the recording. Without stamps on
+// this platform the full path always runs.
+//
+// Full path. The tree is listed again, through the same walk, and every name in
+// that second listing is judged with candidateRefusals, the first listing's own
+// judgement. It is false if the set of names differs (a new name for an inode,
+// even one for a file that was already withheld, is a new file the search may
+// have read), if any verdict differs, or if a match lies in a name the first
+// listing did not hold. Judging only the first listing's names would miss a new
+// link to a file that was refused already: no listed verdict moves, yet the
+// search read it, and a retry's withheld report names it where the reply of a
+// pattern that did not match it would not.
+//
+// revalidateMatches stays as a further gate on the matched files only on both
+// paths, and a disagreement there takes the same route (another attempt, then
+// the same error), so it cannot make the outcome depend on content. For a listed
+// name it can add nothing: the listing guarantees a regular file reached without
+// a symlink inside the root, which is everything candidateRefusal shortcuts, and
 // every name it cannot show that for it judges with readRefusal itself.
 //
-// A name created during the search and removed again before this listing is
-// not seen by any check that runs after the search; no check outside the
-// engine can see it.
-func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, listed []string, refused map[string]string, matches []dcgrep.Match) (bool, error) {
+// A name created during the search and removed again before either check is not
+// seen by either; no check outside the engine can see it.
+func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, tree *listedTree, refused map[string]string, matches []dcgrep.Match) (bool, error) {
+	if tree.snap.holds(r, tree.paths) {
+		return r.matchesStandAfterListing(tree.paths, matches), nil
+	}
+	if grepFullRecheck != nil {
+		grepFullRecheck()
+	}
 	again, err := r.deps.Grep.List(ctx, dcgrep.ListRequest{
 		Path:           req.Path,
 		MaxResults:     grepListCeiling,
@@ -795,11 +845,11 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, listed
 	if err != nil {
 		return false, err
 	}
-	if again.Truncated || len(again.Paths) != len(listed) {
+	if again.Truncated || len(again.Paths) != len(tree.paths) {
 		return false, nil
 	}
-	known := make(map[string]struct{}, len(listed))
-	for _, name := range listed {
+	known := make(map[string]struct{}, len(tree.paths))
+	for _, name := range tree.paths {
 		known[name] = struct{}{}
 	}
 	for _, name := range again.Paths {
@@ -816,12 +866,26 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, listed
 			return false, nil
 		}
 	}
-	for _, m := range matches {
-		if _, ok := known[m.Path]; !ok {
-			return false, nil
-		}
+	return r.matchesStandAfterListing(tree.paths, matches), nil
+}
+
+// matchesStandAfterListing is the part of the post-search decision that is
+// about the matches: each lies in a listed name, and none is refused now.
+func (r *Registry) matchesStandAfterListing(listed []string, matches []dcgrep.Match) bool {
+	if len(matches) == 0 {
+		return true
 	}
-	return r.revalidateMatches(matches) == nil, nil
+	wanted := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		wanted[m.Path] = struct{}{}
+	}
+	for _, name := range listed {
+		delete(wanted, name)
+	}
+	if len(wanted) > 0 {
+		return false
+	}
+	return r.revalidateMatches(matches) == nil
 }
 
 // searchAttempt is one pass of searchUnrefused: a search that never reads a file the read gate refuses,
@@ -844,7 +908,7 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, listed
 // refused, that speculative search is discarded without being read: it did open
 // the refused files, but nothing of its result, not a count, not an error,
 // reaches the reply, and the partitioned path below runs instead.
-func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, []string, error) {
+func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, *listedTree, error) {
 	if req.MaxResults < 0 {
 		return nil, nil, nil, fmt.Errorf("max_results must not be negative, got %d", req.MaxResults)
 	}
@@ -852,6 +916,7 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 		res *dcgrep.Result
 		err error
 	}
+	started := grepNow()
 	specCtx, cancelSpec := context.WithCancel(ctx)
 	defer cancelSpec()
 	spec := make(chan speculative, 1)
@@ -882,7 +947,8 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 		return nil, nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
 			"withholds cannot all be identified; search a narrower path", grepListCeiling)
 	}
-	refused := r.candidateRefusals(listing.Paths)
+	refused, stamps := r.judgeListing(listing.Paths)
+	tree := &listedTree{paths: listing.Paths, snap: r.snapshotTree(listing.Paths, stamps, started)}
 	if len(refused) > 0 {
 		discard()
 	}
@@ -943,7 +1009,7 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 		out.limit = limit
 	}
 
-	return out, refused, listing.Paths, nil
+	return out, refused, tree, nil
 }
 
 // revalidateMatches judges the files a finished search matched in with the full
@@ -977,10 +1043,21 @@ func (r *Registry) revalidateMatches(matches []dcgrep.Match) error {
 // was 15x the cost of the search it gated. A test holds the two equal on a
 // mixed tree.
 func (r *Registry) candidateRefusals(names []string) map[string]string {
+	refused, _ := r.judgeListing(names)
+	return refused
+}
+
+// judgeListing is candidateRefusals that also hands back, for each name, the
+// stamp read from the very lstat the verdict was made on, so recording a
+// snapshot of the listing costs no further syscall for the names the shortcut
+// handles. A name judged the long way, or whose lstat failed, has no stamp
+// here (ok false) and snapshotTree reads it itself.
+func (r *Registry) judgeListing(names []string) (map[string]string, []stampedName) {
 	// Each verdict is a few filesystem calls and they are independent, so they
 	// run on a bounded pool: profiled at 3,000 files, the time was all in those
 	// calls.
 	rules := make([]string, len(names))
+	stamps := make([]stampedName, len(names))
 	dirs := &plainDirs{root: r.deps.Root, known: map[string]bool{}}
 	workers := min(grepRefusalWorkers, len(names))
 	var next atomic.Int64
@@ -994,7 +1071,7 @@ func (r *Registry) candidateRefusals(names []string) map[string]string {
 				if i >= len(names) {
 					return
 				}
-				rules[i] = r.candidateRefusal(names[i], dirs)
+				rules[i], stamps[i] = r.candidateRefusal(names[i], dirs)
 			}
 		}()
 	}
@@ -1005,7 +1082,7 @@ func (r *Registry) candidateRefusals(names []string) map[string]string {
 			refused[name] = rules[i]
 		}
 	}
-	return refused
+	return refused, stamps
 }
 
 // candidateRefusal is the verdict for one listed name. The shortcut is used
@@ -1025,22 +1102,23 @@ func (r *Registry) candidateRefusals(names []string) map[string]string {
 // Every other name, and any name whose file is not what the walk reported,
 // gets the full readRefusal. Conservative by construction: the fallback is the
 // definition, so the shortcut may only ever agree with it.
-func (r *Registry) candidateRefusal(name string, dirs *plainDirs) string {
+func (r *Registry) candidateRefusal(name string, dirs *plainDirs) (string, stampedName) {
 	if !cleanName(name) || !dirs.plain(path.Dir(name)) {
-		return r.readRefusal(name)
+		return r.readRefusal(name), stampedName{}
 	}
 	if policy.SecretPathSpelling(name) {
-		return string(policy.RuleSecretRead)
+		return string(policy.RuleSecretRead), stampedName{}
 	}
 	full := filepath.Join(r.deps.Root, filepath.FromSlash(name))
 	fi, err := safefile.Lstat(full)
 	if err != nil || !fi.Mode().IsRegular() {
-		return r.readRefusal(name)
+		return r.readRefusal(name), stampedName{}
 	}
+	st, ok := stampOfInfo(fi)
 	if !singleNameFile(full, fi) {
-		return ruleAliasedRead
+		return ruleAliasedRead, stampedName{st, ok}
 	}
-	return ""
+	return "", stampedName{st, ok}
 }
 
 // cleanName reports whether a slash-separated name is made only of plain ASCII
