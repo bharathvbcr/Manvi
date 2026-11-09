@@ -564,12 +564,17 @@ const (
 // in deferred so Next still delivers them in order.
 func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[]Event,
 	item func(wireRead) T, event func(T) (Event, bool, error)) error {
-	for i := 0; ; i++ {
+	for i := 0; i <= maxDrainItems; i++ {
+		if i == maxDrainItems && (len(*queue) > 0 || len(wire.frames) > 0) {
+			// Something is still buffered past the budget. It is detected by
+			// length, not by reading a frame: a frame read only to find out
+			// would be lost with the failed preflight, and it may be the turn
+			// end. The one reader holds the session lock, so a non-zero length
+			// is not racing a consumer.
+			return errors.New(agent + " response preflight could not drain its bounded event backlog")
+		}
 		var next T
 		if len(*queue) > 0 {
-			if i == maxDrainItems {
-				break
-			}
 			next = (*queue)[0]
 			*queue = (*queue)[1:]
 		} else {
@@ -580,11 +585,6 @@ func drainBacklog[T any](agent string, wire *connection, queue *[]T, deferred *[
 				}
 				if frame.err != nil {
 					return frame.err
-				}
-				if i == maxDrainItems {
-					// Something is still buffered past the budget; the frame
-					// read to find out is dropped with the failed preflight.
-					return errors.New(agent + " response preflight could not drain its bounded event backlog")
 				}
 				next = item(frame)
 			default:

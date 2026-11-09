@@ -626,6 +626,11 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		if err != nil {
 			return Event{}, false, err
 		}
+		if s.withdrawn.has(id) {
+			// The turn end already withdrew it and the host was told; the
+			// provider's receipt for it is late, not a fault.
+			return Event{}, false, nil
+		}
 		if s.pending[id] == nil {
 			return Event{}, false, errors.New("Codex resolved an unknown callback")
 		}
