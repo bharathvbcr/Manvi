@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -81,7 +82,7 @@ type Reader struct {
 	done          chan struct{}
 	closeOnce     sync.Once
 	escapeDelay   time.Duration
-	pasteDeadline time.Duration
+	pasteDeadline atomic.Int64 // time.Duration; atomic so SetPasteDeadline is safe while Run reads it
 	pasteIdle     time.Duration
 	pasteLimit    int
 
@@ -93,25 +94,26 @@ type Reader struct {
 
 // NewReader builds a reader over the terminal's input.
 func NewReader(src io.Reader) *Reader {
-	return &Reader{
+	r := &Reader{
 		src:         src,
 		events:      make(chan Event, 64),
 		done:        make(chan struct{}),
 		escapeDelay: DefaultEscapeDelay,
 
-		pasteDeadline: DefaultPasteDeadline,
-		pasteIdle:     DefaultPasteIdle,
-		pasteLimit:    DefaultMaxPasteBytes,
+		pasteIdle:  DefaultPasteIdle,
+		pasteLimit: DefaultMaxPasteBytes,
 	}
+	r.pasteDeadline.Store(int64(DefaultPasteDeadline))
+	return r
 }
 
 // SetEscapeDelay overrides the escape disambiguation window.
 func (r *Reader) SetEscapeDelay(d time.Duration) { r.escapeDelay = d }
 
 // SetPasteDeadline overrides how long an open paste waits for its end marker.
-// Like SetEscapeDelay it must be called before Run: Run reads the value without
-// synchronisation, so changing it while the reader runs is a data race.
-func (r *Reader) SetPasteDeadline(d time.Duration) { r.pasteDeadline = d }
+// It is safe to call while Run is running; a change applies the next time a
+// paste deadline is armed, and does not shorten or extend one already armed.
+func (r *Reader) SetPasteDeadline(d time.Duration) { r.pasteDeadline.Store(int64(d)) }
 
 // SetPasteIdle overrides how long input may stay silent before a paste
 // delivered at the byte limit stops being continued. Call it before Run.
@@ -244,7 +246,7 @@ func (r *Reader) Run() {
 			paste.stop()
 		case pasteHeld:
 			escape.stop()
-			paste.armIfIdle(r.pasteDeadline)
+			paste.armIfIdle(time.Duration(r.pasteDeadline.Load()))
 		case scan.continued:
 			escape.stop()
 			paste.stop()
