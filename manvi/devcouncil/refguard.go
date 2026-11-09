@@ -196,14 +196,15 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 // adminDirs lists <common git dir>/worktrees/*: the administrative directory of
 // every linked worktree, whether or not git still lists it.
 func (r *Registry) adminDirs(ctx context.Context) ([]string, error) {
-	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
 	if err != nil {
 		return nil, fmt.Errorf("finding the common git directory: %w", err)
 	}
-	common := strings.TrimSpace(out)
-	if common == "" {
-		return nil, fmt.Errorf("git named no common directory")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
+		return nil, fmt.Errorf("git named no common directory: %q", out)
 	}
+	common, own := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
 	dir := filepath.Join(common, "worktrees")
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -212,14 +213,31 @@ func (r *Registry) adminDirs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing %s: %w", dir, err)
 	}
+	// When the root is itself a linked worktree, the root listing already shows
+	// that worktree's own refs under their plain names, so its admin directory
+	// (its own git dir) is left out: read twice, one leak would be two entries
+	// and the second rollback would fail its compare-and-swap.
+	ownReal := realPath(own)
 	var admins []string
 	for _, e := range ents {
-		if e.IsDir() {
-			admins = append(admins, filepath.Join(dir, e.Name()))
+		if !e.IsDir() {
+			continue
 		}
+		a := filepath.Join(dir, e.Name())
+		if realPath(a) == ownReal {
+			continue
+		}
+		admins = append(admins, a)
 	}
 	sort.Strings(admins)
 	return admins, nil
+}
+
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // adminWorktreePath is the working-tree path an admin directory's gitdir file

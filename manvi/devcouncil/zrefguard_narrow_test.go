@@ -293,7 +293,7 @@ func TestBrokenAdminDirRefusesThenARepairedOneIsScannedAsNew(t *testing.T) {
 		t.Fatal("the command ran")
 	}
 	// The operator repairs it and a leaking commit is parked there outside any call.
-	if err := os.WriteFile(headFile, saved, 0o600); err != nil {
+	if err := os.WriteFile(headFile, saved, 0o600); err != nil { // #nosec G703 -- the admin dir this test created.
 		t.Fatal(err)
 	}
 	leak := gitOut(t, f.root, "commit-tree", gitOut(t, f.root, "write-tree"), "-m", "leak")
@@ -302,5 +302,33 @@ func TestBrokenAdminDirRefusesThenARepairedOneIsScannedAsNew(t *testing.T) {
 	if !again.IsError || !again.Blocked || again.Rule != string(policy.RuleSecretPath) ||
 		!strings.Contains(again.Text, "ref_changed_between_calls") || !strings.Contains(again.Text, "refs/worktree/leak") {
 		t.Fatalf("the repaired admin directory's new leaking ref was not reported: %+v", again)
+	}
+}
+
+// When the Registry root is itself a linked worktree, a leak parked on that
+// worktree's own refs/worktree/x is one entry, rolled back, path.secret, and no
+// manual intervention (its admin directory is not read a second time).
+func TestLeakOnTheOwnPerWorktreeRefOfALinkedRootIsOneEntry(t *testing.T) {
+	f := shellCommitFixture(t, true)
+	wt := filepath.Join(filepath.Dir(f.root), "wt-root-linked")
+	run(t, f.root, "worktree", "add", "-q", "--detach", wt)
+	// The staged leak lives in the main worktree's index; give the linked root its own.
+	write(t, wt, ".env", secretBody)
+	write(t, wt, "notes.txt", secretBody)
+	run(t, wt, "add", "notes.txt")
+	f.reg.deps.Root = wt
+	write(t, wt, "park.sh", "set -e\nc=$(git commit-tree $(git write-tree) -m leak)\ngit update-ref refs/worktree/x $c\n")
+	res := shell(f, "sh park.sh")
+	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) {
+		t.Fatalf("the leak on the root's own per-worktree ref was not blocked as path.secret: %+v", res)
+	}
+	if strings.Contains(res.Text, "MANUAL INTERVENTION") {
+		t.Errorf("a false manual intervention: %s", res.Text)
+	}
+	if n := strings.Count(res.Text, "refs/worktree/x\""); n != 1 {
+		t.Errorf("the ref is reported %d times, want once: %s", n, res.Text)
+	}
+	if out := gitOut(t, wt, "for-each-ref", "refs/worktree"); out != "" {
+		t.Fatalf("the ref was not rolled back: %s", out)
 	}
 }
