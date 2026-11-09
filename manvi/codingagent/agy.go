@@ -695,7 +695,7 @@ func (s *Agy) capture(p packet) (Event, bool, error) {
 	if err != nil {
 		return Event{}, false, err
 	}
-	if s.seen[id] || len(s.pending) >= 32 || s.requestCount >= 2048 {
+	if s.seen[id] || len(s.pending) >= maxPendingCallbacks || s.requestCount >= maxRunCallbacks {
 		return Event{}, false, errors.New("managed Antigravity callback is duplicated or exceeds the run budget")
 	}
 	if s.options.Mode == "preapproved" {

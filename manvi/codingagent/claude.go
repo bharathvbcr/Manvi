@@ -45,8 +45,8 @@ import (
 // second set of numbers for the same risk would only drift.
 const (
 	claudeHandshake   = 30 * time.Second
-	claudeMaxPending  = 32
-	claudeMaxRequests = 2048
+	claudeMaxPending  = maxPendingCallbacks
+	claudeMaxRequests = maxRunCallbacks
 	claudeMaxQueue    = 512
 
 	// The build probe is bounded by its own deadline and then by how long a
