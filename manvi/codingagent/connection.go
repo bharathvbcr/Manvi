@@ -215,6 +215,12 @@ func (c *connection) sweepGroup() {
 // gone. Tests shorten it.
 var reapBudget = 5 * time.Second
 
+// CloseBudget is the longest close() can take: the agent gets reapBudget to be
+// reaped and its process group a reapBudget of its own from the moment it is.
+// A caller that waits for close() to finish (serve's ManagedRunner.Close) takes
+// its deadline from here, so it never gives up before the reap does.
+func CloseBudget() time.Duration { return 2 * reapBudget }
+
 // groupPoll is how often close() re-probes a group it has killed.
 const groupPoll = 10 * time.Millisecond
 

@@ -196,9 +196,10 @@ func TestARevisionRacingTheNextAttemptOnTheReleasedCheckout(t *testing.T) {
 	waitFor(t, "the old run to be revised", func() bool { run, _ := storedRun(t, m); return run.State == "exited" })
 }
 
-// ManagedRunner.Close waits five seconds in all for jobs to finish; a provider
-// Close can now take ten. The operator must see a bounded, typed refusal, the run
-// must still reach a terminal record when Close finally returns, and the reaper a
+// ManagedRunner.Close waits codingagent's close budget (a provider Close can take
+// ten seconds) and a margin in all for jobs to finish. A provider Close that
+// outlasts that must give the operator a bounded, typed refusal, the run must
+// still reach a terminal record when Close finally returns, and the reaper a
 // finish starts must not keep asking the provider once the runner is closed.
 func TestShutdownWithASlowProviderCloseIsBoundedAndTheRunStillSettles(t *testing.T) {
 	root := scanRepo(t, map[string]string{"CLAUDE.md": "project rules\n"})
@@ -207,7 +208,7 @@ func TestShutdownWithASlowProviderCloseIsBoundedAndTheRunStillSettles(t *testing
 		s.unreaped = false
 		s.groupLive = true
 		s.liveGroupErr = errors.New("managed provider process group 123 still has a live member after SIGKILL")
-		s.closeDelay = 6500 * time.Millisecond
+		s.closeDelay = managedCloseWait() + 1500*time.Millisecond
 	})
 	prepared, err := m.runner.Prepare(t.Context(), preparing("launch", ""))
 	if err != nil {
@@ -227,8 +228,8 @@ func TestShutdownWithASlowProviderCloseIsBoundedAndTheRunStillSettles(t *testing
 	if err == nil || !strings.Contains(err.Error(), "run run") {
 		t.Fatalf("Close = %v after %v, want the typed refusal naming the run that is still closing", err, took)
 	}
-	if took > 5800*time.Millisecond {
-		t.Fatalf("Close took %v, want it bounded by its own 5s", took)
+	if took > managedCloseWait()+800*time.Millisecond {
+		t.Fatalf("Close took %v, want it bounded by its own %v", took, managedCloseWait())
 	}
 	select {
 	case <-job.done:
