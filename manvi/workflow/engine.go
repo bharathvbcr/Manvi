@@ -153,8 +153,12 @@ type State struct {
 	Attempts    int   `json:"attempts"`
 	// ActionAttempt advances only after explicit recoverable not_sent input.
 	// It stays monotonic across pauses so a native deduplication ID is never reused.
-	ActionAttempt  int              `json:"action_attempt,omitempty"`
-	Observation    Observation      `json:"observation"`
+	ActionAttempt int         `json:"action_attempt,omitempty"`
+	Observation   Observation `json:"observation"`
+	// Reuse is the id of an observation the pending "resolve" command was told
+	// to resolve against. It is set only between that command and its answer;
+	// empty in every terminal state and in every trace written before it existed.
+	Reuse          string           `json:"reuse,omitempty"`
 	Outputs        map[string]Value `json:"outputs"`
 	Outcome        string           `json:"outcome,omitempty"`
 	RecoveryCounts map[string]int   `json:"recovery_counts,omitempty"`
@@ -326,6 +330,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		s.Epoch = event.NextEpoch
 		s.Observation = Observation{}
+		s.Reuse = ""
 		if s.Phase == PostAction {
 			s.ResumePhase = PostAction
 		} else if s.Phase != Paused {
@@ -386,6 +391,9 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if (s.Phase != Observing && s.Phase != PostAction) || event.ActionID != s.ActionID(p) {
 			return previous, nil, errors.New("capture failure does not match an observation command")
 		}
+		if s.Reuse != "" {
+			return declineReuse(s, command("observe"))
+		}
 		return retryObservation(p, s, command("observe"), FailureIncompleteObserve, event.Reason)
 	case "observed":
 		if s.Phase != Observing && s.Phase != PostAction {
@@ -393,6 +401,13 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		if event.ActionID != s.ActionID(p) || event.Observation.ID == "" {
 			return previous, nil, errors.New("observation action binding missing")
+		}
+		if s.Reuse != "" {
+			reused := s.Reuse
+			s.Reuse = ""
+			if event.Observation.ID == reused && !reuseAccepted(p, step, event.Observation, inputs, s.Outputs) {
+				return declineReuse(s, command("observe"))
+			}
 		}
 		if !event.Observation.Complete {
 			if s.Phase != PostAction {
@@ -403,7 +418,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return retryObservation(p, s, command("observe"), FailureIncompleteObserve, "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, event.Observation.ID)
 		}
 		if event.Observation.Matches != 1 || event.Observation.TargetID == "" {
 			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -437,7 +452,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				return fail(s, FailureCheckpoint, "observed currency differs")
 			}
 			s.Outputs[step.Output] = event.Observation.Value
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, event.Observation.ID)
 		case "assert", "branch", "wait":
 			var expected Value
 			if step.Predicate.Op != "exists" {
@@ -450,9 +465,9 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			passed := Compare(event.Observation.Value, step.Predicate.Op, expected)
 			if step.Kind == "branch" {
 				if passed {
-					return advance(p, s, step.Next)
+					return advance(p, s, step.Next, event.Observation.ID)
 				}
-				return advance(p, s, step.Otherwise)
+				return advance(p, s, step.Otherwise, event.Observation.ID)
 			}
 			if !passed {
 				if step.Kind == "wait" {
@@ -460,7 +475,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				}
 				return fail(s, FailureCheckpoint, "checkpoint predicate failed")
 			}
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, event.Observation.ID)
 		default:
 			if !event.Observation.Actionable {
 				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -477,6 +492,11 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			s.Phase = Acting
 			return s, []Command{command("act")}, nil
 		}
+	case "reuse_declined":
+		if s.Phase != Observing || s.Reuse == "" || event.ActionID != s.ActionID(p) {
+			return previous, nil, errors.New("reuse decline does not match a pending resolve")
+		}
+		return declineReuse(s, command("observe"))
 	case "approve":
 		if s.Phase != AwaitingApproval || event.ActionID != s.ActionID(p) || event.Observation.ID != s.Observation.ID {
 			return previous, nil, errors.New("approval does not match pending action and observation")
@@ -565,6 +585,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		s.ResumePhase = s.Phase
 		s.Phase = Paused
 		s.Observation = Observation{}
+		s.Reuse = ""
 		s.settle(FailureExternalInteraction, "external interaction requires human reconciliation: "+event.Reason)
 		return s, nil, nil
 	case "human_unknown":
@@ -680,13 +701,71 @@ func retryObservation(p *Program, s State, cmd Command, cause FailureCode, reaso
 	cmd.DelayMillis = 200
 	return s, []Command{cmd}, nil
 }
-func advance(p *Program, s State, next string) (State, []Command, error) {
+
+// declineReuse abandons a pending resolve and asks for a fresh observation, the
+// same command the step boundary emitted before observations were reused. It
+// consumes no attempt and adds no delay: nothing was wrong with the screen, the
+// reused observation just could not be trusted to decide this step.
+func declineReuse(s State, fresh Command) (State, []Command, error) {
+	s.Reuse = ""
+	s.Observation = Observation{}
+	fresh.ObservationID, fresh.TargetID = "", ""
+	return s, []Command{fresh}, nil
+}
+
+// reusable reports whether step may resolve against an observation taken for
+// an earlier step: a read-effect step whose every locator is semantic. A step
+// that needs approval is shown the freshest screen, and visual anchors are
+// validated against the frame they were captured with.
+func reusable(p *Program, step Step) bool {
+	if step.Effect != "read" || step.Target == "" {
+		return false
+	}
+	for _, rung := range p.spec.Targets[step.Target].Ladder() {
+		if rung.Visual != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// reuseAccepted is true when a resolve against a reused observation answered
+// cleanly enough to decide the step. Anything else (ambiguity, a missing or
+// disabled target, a predicate that did not hold) is re-decided on a fresh
+// observation, so a reused frame can only ever confirm a step, never fail,
+// branch away from or pause one.
+func reuseAccepted(p *Program, step Step, o Observation, inputs, outputs map[string]Value) bool {
+	if !o.Complete || o.Matches != 1 || o.TargetID == "" {
+		return false
+	}
+	switch step.Kind {
+	case "extract":
+		return true
+	case "assert", "branch", "wait":
+		var expected Value
+		if step.Predicate.Op != "exists" {
+			var err error
+			if expected, err = Resolve(step.Predicate.Expected, inputs, outputs); err != nil {
+				return false
+			}
+		}
+		return Compare(o.Value, step.Predicate.Op, expected)
+	}
+	return o.Actionable
+}
+
+// advance moves to the step after next. observed is the id of the observation
+// that was just accepted: it was taken after the last dispatch (an observe_after,
+// or a read step's observation, which dispatches nothing), so the next step may
+// resolve against it instead of photographing the same screen again.
+func advance(p *Program, s State, next, observed string) (State, []Command, error) {
 	i := s.StepIndex + 1
 	if next != "" {
 		i = p.positions[next]
 	}
 	s.StepIndex = i
 	s.Observation = Observation{}
+	s.Reuse = ""
 	s.Attempts = 0
 	s.ActionAttempt = 0
 	s.settle("", "")
@@ -703,7 +782,12 @@ func advance(p *Program, s State, next string) (State, []Command, error) {
 		return finishConclude(p, s, step)
 	}
 	s.Phase = Observing
-	return s, []Command{{Kind: "observe", ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), Epoch: s.Epoch}}, nil
+	cmd := Command{Kind: "observe", ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), Epoch: s.Epoch}
+	if observed != "" && reusable(p, step) {
+		cmd.Kind, cmd.ObservationID = "resolve", observed
+		s.Reuse = observed
+	}
+	return s, []Command{cmd}, nil
 }
 
 // Replay reconstructs recorded transitions. It has no executor to dispatch the

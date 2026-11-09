@@ -315,6 +315,26 @@ type workResult struct {
 	receipt             *Receipt
 	fingerprint         [32]byte
 	takeoverFingerprint [32]byte
+	// retain is set by a successful observe or observe_after so the next step may
+	// resolve against it instead of capturing the same screen again.
+	retain *retainedObservation
+}
+
+// reuseMaxAge bounds how old a retained observation may be when a later step
+// resolves against it. It is far below the broker's own 120 s observation TTL:
+// the broker only refuses an observation that is long dead, while this keeps a
+// step's decision close to the screen the previous step left behind.
+const reuseMaxAge = 5 * time.Second
+
+// retainedObservation is the sanitized result of the latest capture plus the
+// executor-private digests computed from the raw frame. Raw pixels are not kept:
+// reuse is limited to semantic locators, which need only the sanitized tree and
+// the semantic digest. It lives in the run goroutine and is never recorded.
+type retainedObservation struct {
+	safe     Observation
+	semantic [32]byte
+	takeover [32]byte
+	at       time.Time
 }
 
 func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.State) {
@@ -329,6 +349,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	var assistedUsed bool
 	var reviewed [32]byte
 	var reviewedTakeover [32]byte
+	var lastCapture *retainedObservation
 	var apply func(workflow.Event) ([]workflow.Command, error)
 	lastClock := time.Now()
 	interventionStart := time.Time{}
@@ -450,7 +471,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			executionErr = errors.New("execution attempted overlapping native requests")
 			return
 		}
-		if command.Kind == "act" || (command.Kind == "observe" && (command.Step.Kind == "extract" || command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait")) {
+		if command.Kind == "act" || ((command.Kind == "observe" || command.Kind == "resolve") && (command.Step.Kind == "extract" || command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait")) {
 			actor := "automation"
 			if command.RecoveryID != "" {
 				actor = "recovery"
@@ -462,13 +483,17 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		}
 		pending = true
 		inputPending = command.Kind == "act"
+		if inputPending {
+			lastCapture = nil // a dispatch outdates every earlier capture
+		}
+		retained := lastCapture
 		workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		cancelWork = cancel
 		capturedSession := session
 		outputs := ownedState(s).Outputs
 		review := reviewed
 		go func() {
-			result := perform(workCtx, opts, capturedSession, outputs, command, review)
+			result := perform(workCtx, opts, capturedSession, outputs, command, review, retained)
 			select {
 			case results <- result:
 			case <-ctx.Done():
@@ -509,6 +534,14 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				continue
 			}
 			pending = false
+			switch result.command.Kind {
+			case "observe", "observe_after":
+				lastCapture = result.retain
+			case "resolve":
+				// Keeps the capture it resolved against, and its age.
+			default:
+				lastCapture = nil
+			}
 			inputPending = result.human && result.receipt != nil && result.receipt.Delivery != "not_sent"
 			if cancelWork != nil {
 				cancelWork()
@@ -698,6 +731,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 					cancelWork = nil
 				}
 				pending = false
+				lastCapture = nil
 				session = updated
 				e := interruption("pause", "human takeover")
 				e.FailureCode = string(workflow.FailureHumanTakeover)
@@ -925,7 +959,94 @@ func resolveLadder(ctx context.Context, d Desktop, s Session, observationID stri
 	return ResolvedTarget{}, 0, lastErr
 }
 
-func perform(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, reviewed [32]byte) workResult {
+// performResolve decides a step against the capture the previous step left
+// behind, in place of a new one. It is an optimisation that may only confirm: a
+// stale or foreign capture, a failed resolve, or anything the reducer would
+// have to guess about answers reuse_declined, and the run observes afresh
+// exactly as it did before captures were reused. Only context errors are
+// returned as errors, because those must stop the run, not retry it.
+func performResolve(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, kept *retainedObservation) workResult {
+	r := workResult{epoch: session.Epoch, command: command}
+	decline := func(code, reason string) workResult {
+		if err := ctx.Err(); err != nil {
+			return workResult{epoch: session.Epoch, command: command, err: err}
+		}
+		return workResult{epoch: session.Epoch, command: command, event: workflow.Event{Kind: "reuse_declined", ActionID: command.ActionID, FailureCode: code, Reason: reason}}
+	}
+	switch {
+	case kept == nil || kept.safe.ID == "" || kept.safe.ID != command.ObservationID:
+		return decline("stale_observation", "no retained capture matches the observation to resolve against")
+	case kept.safe.Epoch != session.Epoch || !kept.safe.Complete:
+		return decline("stale_observation", "retained capture belongs to another epoch or is incomplete")
+	case time.Since(kept.at) > reuseMaxAge:
+		return decline("stale_observation", "retained capture is too old to decide this step")
+	}
+	for _, rung := range command.Selector.Ladder() {
+		if rung.Visual != nil {
+			return decline("unsupported", "visual locators are resolved against a fresh capture")
+		}
+	}
+	safe := ownedObservation(kept.safe)
+	r.observation = &safe
+	r.fingerprint, r.takeoverFingerprint = kept.semantic, kept.takeover
+	o := workflow.Observation{ID: safe.ID, Complete: true, Target: command.Step.Target}
+	target, index, err := resolveLadder(ctx, opts.Desktop, session, safe.ID, command.Selector)
+	if err != nil {
+		return decline("unresolved", err.Error())
+	}
+	if target.Node == nil {
+		return decline("unresolved", "resolve returned no node")
+	}
+	node := *target.Node
+	o.Matches, o.StrategyIndex, o.TargetID, o.Actionable = 1, index, node.ID, node.Enabled
+	o.Value, err = observedValue(opts, outputs, command, safe, node)
+	if err != nil {
+		return decline("unresolved", err.Error())
+	}
+	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
+	return r
+}
+
+// observedValue derives the typed value an observation exports for node from the
+// sanitized tree. Merely scrubbing the serialized string event misses numeric
+// projections.
+func observedValue(opts RunOptions, outputs map[string]workflow.Value, command workflow.Command, safe Observation, node Node) (workflow.Value, error) {
+	var visible *Node
+	for i := range safe.Nodes {
+		if safe.Nodes[i].ID == node.ID {
+			visible = &safe.Nodes[i]
+			break
+		}
+	}
+	if visible == nil {
+		return workflow.Value{}, errors.New("resolved target missing from sanitized observation")
+	}
+	text := visible.Name
+	if visible.Value != nil {
+		text = *visible.Value
+	}
+	typ := "string"
+	currency := ""
+	if command.Step.Kind == "extract" {
+		typ = command.Step.OutputType
+		currency = command.Step.Currency
+	} else if command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait" {
+		if command.Step.Predicate.Op != "exists" {
+			expected, err := workflow.Resolve(command.Step.Predicate.Expected, opts.Inputs, outputs)
+			if err != nil {
+				return workflow.Value{}, err
+			}
+			typ = expected.Type
+			currency = expected.Currency
+		}
+	}
+	return ParseValue(text, typ, currency)
+}
+
+func perform(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, reviewed [32]byte, kept *retainedObservation) workResult {
+	if command.Kind == "resolve" {
+		return performResolve(ctx, opts, session, outputs, command, kept)
+	}
 	r := workResult{epoch: session.Epoch, command: command}
 	if command.DelayMillis > 0 {
 		timer := time.NewTimer(time.Duration(command.DelayMillis) * time.Millisecond)
@@ -1076,6 +1197,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		}
 	}
 	raw, err := opts.Desktop.Observe(ctx, session)
+	capturedAt := time.Now()
 	if err != nil {
 		r.err = err
 		return r
@@ -1125,40 +1247,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			node := *target.Node
 			o.TargetID = node.ID
 			o.Actionable = node.Enabled
-			// Derive every exported typed value from the sanitized tree. Merely
-			// scrubbing the serialized string event misses numeric projections.
-			var visible *Node
-			for i := range safe.Nodes {
-				if safe.Nodes[i].ID == node.ID {
-					visible = &safe.Nodes[i]
-					break
-				}
-			}
-			if visible == nil {
-				r.err = errors.New("resolved target missing from sanitized observation")
-				return r
-			}
-			text := visible.Name
-			if visible.Value != nil {
-				text = *visible.Value
-			}
-			typ := "string"
-			currency := ""
-			if command.Step.Kind == "extract" {
-				typ = command.Step.OutputType
-				currency = command.Step.Currency
-			} else if command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait" {
-				if command.Step.Predicate.Op != "exists" {
-					expected, e := workflow.Resolve(command.Step.Predicate.Expected, opts.Inputs, outputs)
-					if e != nil {
-						r.err = e
-						return r
-					}
-					typ = expected.Type
-					currency = expected.Currency
-				}
-			}
-			o.Value, err = ParseValue(text, typ, currency)
+			o.Value, err = observedValue(opts, outputs, command, safe, node)
 			if err != nil {
 				r.err = err
 				return r
@@ -1166,6 +1255,9 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		}
 	}
 	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
+	if raw.Complete {
+		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: capturedAt}
+	}
 	return r
 }
 
