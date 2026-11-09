@@ -3,8 +3,11 @@ package devcouncil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,8 +32,8 @@ import (
 //     recorded (refs, refs/stash, and a detached HEAD).
 //  2. After it returns, whatever the way it ended, every ref that changed or
 //     appeared is read, and the commits newly reachable from it, and not from
-//     any recorded oid, are listed (at most maxGuardCommits; more is a violation
-//     that is reported, not scanned in part).
+//     any recorded oid, are listed (at most maxGuardCommits; more is an
+//     unscanned set, reported as such and never scanned in part).
 //  3. Each such commit is judged by treeContentLeaks, the commit tool's own
 //     content scanner, against its parent(s), and by the secret-path names.
 //  4. Only a ref whose new commits leak is rolled back, to its recorded oid
@@ -43,6 +46,11 @@ import (
 // ref and oid state and "manual intervention needed". It is never a pass. A
 // snapshot that cannot be taken in a repository means the command is not run.
 // A directory that is not a git repository is not guarded and does not fail.
+//
+// Two different results block. A commit that leaks is path.secret. A set the
+// guard could not scan (over the cap, a timeout, an unreadable ref or worktree)
+// is ruleRefUnscanned: the same hard block, because an unexamined commit is not
+// a clean one, but never labelled or worded as a credential found.
 //
 // The index and working tree are not touched by a rollback: what a leaking
 // commit recorded stays staged, like a commit the tool refused.
@@ -63,56 +71,238 @@ import (
 //     the operator) is reported on the next call, not rolled back: refGuard
 //     keeps the last call's refs as a baseline and the harness never rewrites
 //     what may be the operator's refs;
-//   - the secret set is read after the command, from the files as they are then.
+//   - the secret set is read after the command, from the files as they are then;
+//   - a two-step disable: `mv .git .gitx`, a command run in what is then a
+//     non-repository (not guarded), `mv .gitx .git`, then the commit. Same class
+//     as commit-and-push: the guard looks at refs around one command, not at what
+//     happens between two;
+//   - an admin directory of a linked worktree that git cannot read and itself
+//     lists as prunable with its directory gone is skipped with a note; every
+//     other unreadable one refuses the command (see snapshotRefs);
+//   - rollback is per Registry, not per author. Overlap with another writer is
+//     detected only between exec_command calls of one Registry, so a leaking
+//     commit that an operator or a sub-agent of another Registry made during
+//     this command's window is rolled back with the command's own. The guard
+//     cannot tell whose commit it is, because attribution needs an identity
+//     (committer, session) that a ref snapshot does not carry. Scoping rollback
+//     to attributable commits is an owner decision, not made here.
 const maxGuardCommits = 200
+
+// ruleRefUnscanned is the rule id of a guard result that is not a finding: the
+// guard could not read or scan what a command (or the interval between two
+// commands) made reachable, so it cannot say whether a credential is in it. It
+// blocks like a leak does (hard, no grant), because an unexamined commit is not
+// a clean one, but it is a different rule on purpose: path.secret says a
+// credential was found, and a fetch of 300 foreign commits found none.
+const ruleRefUnscanned = "ref.unscanned"
 
 var pushWord = regexp.MustCompile(`\b(push|send-pack)\b`)
 
 // refSnapshot is every ref's oid at one moment; a detached HEAD is "HEAD".
 type refSnapshot struct {
 	refs map[string]string
+	// scanned is the linked worktrees whose own refs were read; skipped is the
+	// ones that were not, with why. See snapshotRefs.
+	scanned map[string]bool
+	skipped map[string]string
 }
 
 func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 	out, err := runGit(ctx, r.deps.Root, "for-each-ref", "--format=%(objectname) %(refname)")
 	if err != nil {
-		if strings.Contains(err.Error(), "not a git repository") {
+		// Whether this is a repository is not read from git's message, which is
+		// translated by locale (and by the fake or wrapper a PATH may supply). It
+		// is read from the tree: git finds a repository through a .git entry in
+		// the directory or an ancestor, or because the directory is itself a bare
+		// one, and a directory with neither has nothing to guard. Any other
+		// failure, including one inside a repository, is an error: the command
+		// is not run.
+		if !insideRepository(r.deps.Root) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("listing refs: %w", err)
 	}
-	snap := &refSnapshot{refs: map[string]string{}}
+	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{}}
 	if err := addRefRecords(snap, "", out); err != nil {
 		return nil, err
 	}
 	// Every worktree has a HEAD of its own, and a detached one is a ref that
 	// for-each-ref does not list. A symbolic HEAD is its branch, already listed.
 	// The per-worktree namespaces of the other worktrees are not listed from
-	// here either, so each is read from its own directory.
+	// here either, so each is read through its administrative directory.
 	list, err := runGit(ctx, r.deps.Root, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("listing worktrees: %w", err)
 	}
-	for i, wt := range parseWorktrees(list) {
-		if wt.detached && wt.head != "" {
-			snap.refs[worktreeKey(wt.path, "HEAD")] = wt.head
-		}
-		if i == 0 || wt.bare {
-			continue
-		}
-		if _, statErr := os.Stat(wt.path); statErr != nil {
-			continue // pruned or on an unmounted volume: nothing there to commit in
-		}
-		own, err := runGit(ctx, wt.path, "for-each-ref", "--format=%(objectname) %(refname)",
-			"refs/worktree", "refs/bisect", "refs/rewritten")
-		if err != nil {
-			return nil, fmt.Errorf("listing the refs of worktree %s: %w", wt.path, err)
-		}
-		if err := addRefRecords(snap, wt.path, own); err != nil {
-			return nil, err
+	entries := parseWorktrees(list)
+	admins, err := r.adminDirs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	adminOf := map[string]string{} // working-tree path -> admin dir, from the gitdir files
+	for _, a := range admins {
+		if p := adminWorktreePath(a); p != "" {
+			adminOf[p] = a
 		}
 	}
+	for i, wt := range entries {
+		if wt.detached && wt.head != "" {
+			if admin, ok := adminOf[wt.path]; ok && i != 0 {
+				snap.refs[adminKey(admin, "HEAD")] = wt.head
+			} else {
+				snap.refs[worktreeKey(wt.path, "HEAD")] = wt.head
+			}
+		}
+	}
+	// A linked worktree's own refs (HEAD, refs/bisect, refs/worktree,
+	// refs/rewritten) live in its admin directory <common>/worktrees/<id>, and
+	// `git --git-dir=<that>` reads and writes them with no working tree at all.
+	// So that is how they are read, for EVERY admin directory that exists, listed
+	// or not: whether the working tree still exists, was moved, lost its .git or
+	// has a garbage one changes nothing about where those refs are or who can
+	// move them. (An earlier version read them from inside the working tree and
+	// skipped one that was unreadable; a command could then move such a ref
+	// through the admin directory and the guard never looked.)
+	//
+	// Why a skip cannot hide a leak. An admin directory is skipped only when git
+	// cannot read its refs AND git itself lists that worktree as prunable with
+	// its directory gone: git has then abandoned it, no git command resolves
+	// refs through it for a checkout, push or commit, and `git worktree prune`
+	// removes it. Anything else unreadable is an error and the command is not
+	// run, before it and after it. A skipped one that was readable before the
+	// command is reported unscanned (unreadableNow), so a command that breaks an
+	// admin directory after parking a leak in it is blocked. One that becomes
+	// readable again is read as new refs against a snapshot that lacked them and
+	// scanned. A leak therefore needs a ref git can read to be reachable at all,
+	// and any ref git can read is in a snapshot.
+	for _, admin := range admins {
+		own, err := runGit(ctx, r.deps.Root, "--git-dir="+admin, "for-each-ref", "--format=%(objectname) %(refname)",
+			"refs/worktree", "refs/bisect", "refs/rewritten")
+		if err != nil {
+			if why := prunableAndGone(entries, admin); why != "" {
+				snap.skipped[admin] = why
+				continue
+			}
+			return nil, fmt.Errorf("listing the refs of the linked worktree administered in %s: %w", admin, err)
+		}
+		if err := addRefRecords(snap, admin, own); err != nil {
+			return nil, err
+		}
+		snap.scanned[admin] = true
+	}
 	return snap, nil
+}
+
+// adminDirs lists <common git dir>/worktrees/*: the administrative directory of
+// every linked worktree, whether or not git still lists it.
+func (r *Registry) adminDirs(ctx context.Context) ([]string, error) {
+	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
+	if err != nil {
+		return nil, fmt.Errorf("finding the common git directory: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
+		return nil, fmt.Errorf("git named no common directory: %q", out)
+	}
+	common, own := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	dir := filepath.Join(common, "worktrees")
+	ents, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing %s: %w", dir, err)
+	}
+	// When the root is itself a linked worktree, the root listing already shows
+	// that worktree's own refs under their plain names, so its admin directory
+	// (its own git dir) is left out: read twice, one leak would be two entries
+	// and the second rollback would fail its compare-and-swap.
+	ownReal := realPath(own)
+	var admins []string
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		a := filepath.Join(dir, e.Name())
+		if realPath(a) == ownReal {
+			continue
+		}
+		admins = append(admins, a)
+	}
+	sort.Strings(admins)
+	return admins, nil
+}
+
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// adminWorktreePath is the working-tree path an admin directory's gitdir file
+// names (it holds "<worktree>/.git"), or "" when it cannot be read.
+func adminWorktreePath(admin string) string {
+	b, err := os.ReadFile(filepath.Join(admin, "gitdir")) // #nosec G304 -- the gitdir file of an admin directory git itself listed under the common dir.
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(b))
+	if line == "" {
+		return ""
+	}
+	return filepath.Dir(line)
+}
+
+// prunableAndGone says why an admin directory whose refs git cannot read may be
+// skipped: git lists its worktree as prunable and the directory is gone. "" means
+// it may not.
+func prunableAndGone(entries []worktreeEntry, admin string) string {
+	path := adminWorktreePath(admin)
+	if path == "" {
+		return ""
+	}
+	for _, wt := range entries {
+		if wt.path != path || !wt.prunable {
+			continue
+		}
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return "git lists its worktree as prunable and the directory is gone"
+		}
+	}
+	return ""
+}
+
+// insideRepository reports whether git could find a repository from dir: a .git
+// entry (directory, or the file of a linked worktree or submodule) in dir or an
+// ancestor, or dir being a bare repository. It errs toward "yes": an entry it
+// cannot examine counts, because the answer decides whether a failing git is
+// ignored.
+func insideRepository(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return true
+	}
+	if isBareRepoShape(abs) {
+		return true
+	}
+	for d := abs; ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+	}
+}
+
+func isBareRepoShape(dir string) bool {
+	for _, name := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func addRefRecords(snap *refSnapshot, worktree, out string) error {
@@ -125,35 +315,46 @@ func addRefRecords(snap *refSnapshot, worktree, out string) error {
 			return fmt.Errorf("git answered an unreadable ref record: %q", line)
 		}
 		if worktree != "" {
-			name = worktreeKey(worktree, name)
+			name = adminKey(worktree, name)
 		}
 		snap.refs[name] = oid
 	}
 	return nil
 }
 
-// worktreeKey names a ref that belongs to one worktree: its HEAD, or a ref in a
-// per-worktree namespace. Ref names hold no colon, so the last one splits it.
+// worktreeKey names a ref of a worktree that is addressed by its directory (the
+// main worktree's detached HEAD). Ref names hold no colon, so the last one
+// splits it.
 func worktreeKey(path, ref string) string { return "worktree:" + path + ":" + ref }
 
-// refLocation is where a snapshot key lives: the directory to run git in and the
-// ref's name there.
-func (r *Registry) refLocation(key string) (dir, name string) {
-	rest, ok := strings.CutPrefix(key, "worktree:")
-	if !ok {
-		return r.deps.Root, key
+// adminKey names a ref of a linked worktree, addressed by its administrative
+// directory so that it can be read and restored with no working tree.
+// The "@" after the prefix marks it: a worktree path never starts with one.
+func adminKey(admin, ref string) string { return "worktree:@" + admin + ":" + ref }
+
+// refLocation is where a snapshot key lives: the directory to run git in, the
+// global arguments that point it at the right git directory, and the ref's name
+// there.
+func (r *Registry) refLocation(key string) (dir string, global []string, name string) {
+	if rest, ok := strings.CutPrefix(key, "worktree:"); ok {
+		i := strings.LastIndex(rest, ":")
+		if admin, isAdmin := strings.CutPrefix(rest[:i], "@"); isAdmin {
+			return r.deps.Root, []string{"--git-dir=" + admin}, rest[i+1:]
+		}
+		return rest[:i], nil, rest[i+1:]
 	}
-	i := strings.LastIndex(rest, ":")
-	return rest[:i], rest[i+1:]
+	return r.deps.Root, nil, key
 }
 
 type worktreeEntry struct {
 	path, head     string
 	detached, bare bool
+	prunable       bool
 }
 
 // parseWorktrees reads `git worktree list --porcelain`: blank-line separated
-// records of "worktree <path>", "HEAD <oid>", "branch <ref>" or "detached".
+// records of "worktree <path>", "HEAD <oid>", "branch <ref>", "detached",
+// "bare", "locked [reason]" and "prunable [reason]".
 func parseWorktrees(out string) []worktreeEntry {
 	var entries []worktreeEntry
 	var cur *worktreeEntry
@@ -169,6 +370,8 @@ func parseWorktrees(out string) []worktreeEntry {
 			cur.detached = true
 		case line == "bare":
 			cur.bare = true
+		case line == "prunable" || strings.HasPrefix(line, "prunable "):
+			cur.prunable = true
 		}
 	}
 	return entries
@@ -245,7 +448,8 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 			moved = append(moved, name)
 		}
 	}
-	if len(moved) == 0 {
+	lost := before.unreadableNow(after)
+	if len(moved) == 0 && len(lost) == 0 {
 		return nil
 	}
 	sort.Strings(moved)
@@ -296,7 +500,7 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 			}
 			sort.Strings(g.Files)
 			if len(g.Commits) > 0 && g.Problem == "" && rollback {
-				if _, refName := r.refLocation(name); g.Was == "" && refName == "HEAD" && len(commits) > 0 {
+				if _, _, refName := r.refLocation(name); g.Was == "" && refName == "HEAD" && len(commits) > 0 {
 					// A worktree created by the command: its HEAD cannot be deleted,
 					// so it goes back to the commit the new ones were built on.
 					if parent, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", commits[len(commits)-1]+"^"); err == nil {
@@ -319,10 +523,29 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 			v.refs = append(v.refs, g)
 		}
 	}
+	for _, path := range lost {
+		v.refs = append(v.refs, guardedRef{Ref: "worktree:@" + path, Problem: fmt.Sprintf(
+			"the linked worktree's refs could be read before and cannot now (%s): its own refs were not scanned and may have moved",
+			after.skipped[path])})
+		v.manual = v.manual || rollback
+	}
 	if len(v.refs) == 0 {
 		return nil
 	}
 	return v
+}
+
+// unreadableNow lists the linked worktrees whose own refs were read in s and
+// that after still lists but cannot read, sorted.
+func (s *refSnapshot) unreadableNow(after *refSnapshot) []string {
+	var lost []string
+	for path := range s.scanned {
+		if _, skipped := after.skipped[path]; skipped {
+			lost = append(lost, path)
+		}
+	}
+	sort.Strings(lost)
+	return lost
 }
 
 // newCommits lists the commits reachable from oid and from none of the
@@ -420,8 +643,8 @@ func (r *Registry) commitLeaks(ctx context.Context, set secretFileSet, commit st
 
 // restoreRef puts a leaking ref back, compare-and-swap on the current value.
 func (r *Registry) restoreRef(ctx context.Context, g *guardedRef, v *refViolation) {
-	dir, name := r.refLocation(g.Ref)
-	args := []string{"update-ref"}
+	dir, global, name := r.refLocation(g.Ref)
+	args := append(global, "update-ref")
 	if name == "HEAD" {
 		args = append(args, "--no-deref")
 	}
@@ -466,6 +689,15 @@ func (r *Registry) pushNotes(refs []guardedRef, command string) []string {
 	return notes
 }
 
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func describeRefs(refs map[string]string) string {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
@@ -498,8 +730,53 @@ func describeMoved(before, after *refSnapshot, moved []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// withViolation makes the command's result the violation it caused.
+// leaked reports whether the guard found a credential: some ref's new commits
+// carry one. A violation with none is the guard failing to look, not finding.
+func (v *refViolation) leaked() bool {
+	for _, g := range v.refs {
+		if len(g.Commits) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// withViolation makes the command's result the violation it caused. A finding
+// is path.secret. A set the guard could not scan is ruleRefUnscanned: the same
+// block (hard, is_error, no grant) with its own label and words, because "could
+// not scan" is not "carries a credential".
 func (v *refViolation) withViolation(res tools.Result) tools.Result {
+	rule, operation, reason := string(policy.RuleSecretPath), "shell_commit", v.leakReason()
+	if v.between {
+		operation = "ref_changed_between_calls"
+	}
+	if !v.leaked() {
+		rule, reason = ruleRefUnscanned, v.unscannedReason()
+		operation = "shell_ref_unscanned"
+		if v.between {
+			operation = "ref_unscanned_between_calls"
+		}
+	}
+	payload := map[string]any{
+		"operation":            operation,
+		"rule":                 rule,
+		"severity":             string(policy.Hard),
+		"reason":               reason,
+		"refs":                 v.refs,
+		"manual_intervention":  v.manual,
+		"notes":                v.notes,
+		"command_output_below": true,
+	}
+	data, _ := json.Marshal(payload)
+	res.Text = string(data) + "\n" + res.Text
+	res.IsError = true
+	res.Blocked = true
+	res.Rule = rule
+	res.Severity = string(policy.Hard)
+	return res
+}
+
+func (v *refViolation) leakReason() string {
 	reason := "the command left commits that carry a credential reachable from a ref. A shell command is not a boundary the harness can read, so the refs are checked after it ran. "
 	if v.between {
 		reason = "a ref changed between agent calls, and the commits it gained carry a credential (see refs). " +
@@ -512,28 +789,28 @@ func (v *refViolation) withViolation(res tools.Result) tools.Result {
 	default:
 		reason += "The refs named were restored to where they stood before the command; the files stay staged or in the working tree. "
 	}
-	reason += "Use the devcouncil git commit tool, which refuses before committing."
-	operation := "shell_commit"
+	return reason + "Use the devcouncil git commit tool, which refuses before committing."
+}
+
+func (v *refViolation) unscannedReason() string {
+	names := make([]string, 0, len(v.refs))
+	for _, g := range v.refs {
+		names = append(names, g.Ref)
+	}
+	where := "the refs it could not read"
+	if len(names) > 0 {
+		where = "ref(s) " + strings.Join(names, ", ")
+	}
+	reason := "the ref guard could not scan what " + where + " made reachable, so it cannot say whether it holds a credential; none was found and nothing was rolled back. " +
+		"Each ref's \"problem\" says why (a cap of " + fmt.Sprint(maxGuardCommits) + " commits, a timeout, or an unreadable repository). "
 	if v.between {
-		operation = "ref_changed_between_calls"
+		reason = "between agent calls, " + reason +
+			"This was not done by the command that just ran: the writer may be the operator, whose refs the harness never rewrites. "
 	}
-	payload := map[string]any{
-		"operation":            operation,
-		"rule":                 string(policy.RuleSecretPath),
-		"severity":             string(policy.Hard),
-		"reason":               reason,
-		"refs":                 v.refs,
-		"manual_intervention":  v.manual,
-		"notes":                v.notes,
-		"command_output_below": true,
+	if v.manual {
+		reason += "MANUAL INTERVENTION NEEDED: inspect the refs named before relying on them. "
 	}
-	data, _ := json.Marshal(payload)
-	res.Text = string(data) + "\n" + res.Text
-	res.IsError = true
-	res.Blocked = true
-	res.Rule = string(policy.RuleSecretPath)
-	res.Severity = string(policy.Hard)
-	return res
+	return reason + "Until it is scanned this stays blocked (an unexamined commit is not a clean one); scan it with the devcouncil git tools or have the operator review it."
 }
 
 // guardTimeout bounds the snapshot taken before the command.
@@ -581,6 +858,9 @@ func (r *Registry) guardBegin(ctx context.Context) (*guardRun, error) {
 		return &guardRun{}, nil
 	}
 	run := &guardRun{before: snap}
+	for _, path := range sortedKeys(snap.skipped) {
+		run.notes = append(run.notes, fmt.Sprintf("the linked worktree administered in %s was not scanned for its own refs: %s", path, snap.skipped[path]))
+	}
 	if g.active == nil {
 		g.active = map[*guardRun]bool{}
 	}
