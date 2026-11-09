@@ -55,19 +55,28 @@ func zadvChild(t *testing.T, reap bool) *exec.Cmd {
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL); _ = c.Wait() })
+	waited := make(chan struct{})
 	if reap {
-		go func() { _ = c.Wait() }()
+		go func() { _ = c.Wait(); close(waited) }()
 	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
+		if reap {
+			<-waited
+		} else {
+			_ = c.Wait()
+		}
+	})
 	return c
 }
 
-func zadvAlive(pid int) bool {
+func zadvAlive(t *testing.T, pid int) bool {
+	t.Helper()
 	// A zombie answers kill 0, so ask ps for the state as well.
 	if syscall.Kill(pid, 0) != nil {
 		return false
 	}
-	out, err := exec.Command("/bin/ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output() // #nosec G204 -- literal.
+	out, err := exec.CommandContext(t.Context(), "/bin/ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output() // #nosec G204 -- literal.
 	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 }
 
@@ -90,7 +99,7 @@ echo`)
 	if got := endLeftoverChildren(); strings.Contains(got, sp) {
 		t.Logf("report: %q", got)
 	}
-	if !zadvAlive(stranger) {
+	if !zadvAlive(t, stranger) {
 		t.Fatal("a process that was not this one's child was killed because the listing named it")
 	}
 }
@@ -118,7 +127,7 @@ func TestZadvW17RecheckFailureIsNotAQuietSkip(t *testing.T) {
 exec REAL "$@"`)
 	c := zadvChild(t, true)
 	got := endLeftoverChildren()
-	if zadvAlive(c.Process.Pid) && got == "" {
+	if zadvAlive(t, c.Process.Pid) && got == "" {
 		t.Fatal("a child of this process was left running and the sweep reported nothing")
 	}
 }
@@ -135,7 +144,7 @@ exec REAL "$@"`)
 	if d := time.Since(start); d > childrenReapBound+3*time.Second {
 		t.Fatalf("the sweep took %v", d)
 	}
-	if zadvAlive(c.Process.Pid) && got == "" {
+	if zadvAlive(t, c.Process.Pid) && got == "" {
 		t.Fatal("a child of this process was left running and the sweep reported nothing")
 	}
 }
@@ -149,7 +158,7 @@ func TestZadvW17KilledUnreapedChildIsNotReportedRunning(t *testing.T) {
 	start := time.Now()
 	got := endLeftoverChildren()
 	d := time.Since(start)
-	if zadvAlive(c.Process.Pid) {
+	if zadvAlive(t, c.Process.Pid) {
 		t.Fatal("the child was not killed")
 	}
 	if strings.Contains(got, strconv.Itoa(c.Process.Pid)) {
