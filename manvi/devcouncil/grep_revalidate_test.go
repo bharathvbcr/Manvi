@@ -91,3 +91,46 @@ func BenchmarkGrepRevalidate(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkGrepTreeCheck is the cost of the post-search decision (every listed
+// file judged again with candidateRefusals) against the listing it repeats the
+// judgement of, at 5,000 and 50,000 listed files.
+func BenchmarkGrepTreeCheck(b *testing.B) {
+	for _, n := range []int{5000, 50000} {
+		f := newFixture(b)
+		for i := range n {
+			full := filepath.Join(f.root, fmt.Sprintf("d%d/f%d.go", i%100, i))
+			if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+				b.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte("x\n"), 0o600); err != nil {
+				b.Fatal(err)
+			}
+		}
+		list, err := f.reg.deps.Grep.List(b.Context(), dcgrep.ListRequest{MaxResults: grepListCeiling, IncludeIgnored: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		refused := f.reg.candidateRefusals(list.Paths)
+		b.Run(fmt.Sprintf("n=%d/list", n), func(b *testing.B) {
+			for range b.N {
+				if _, err := f.reg.deps.Grep.List(b.Context(), dcgrep.ListRequest{MaxResults: grepListCeiling, IncludeIgnored: true}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("n=%d/judge-listing", n), func(b *testing.B) {
+			for range b.N {
+				_ = f.reg.candidateRefusals(list.Paths)
+			}
+		})
+		b.Run(fmt.Sprintf("n=%d/treeUnchanged", n), func(b *testing.B) {
+			for range b.N {
+				ok, err := f.reg.treeUnchanged(b.Context(), dcgrep.Request{IncludeIgnored: true}, list.Paths, refused, nil)
+				if err != nil || !ok {
+					b.Fatalf("changed or failed: %v", err)
+				}
+			}
+		})
+	}
+}

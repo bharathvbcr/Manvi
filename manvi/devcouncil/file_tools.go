@@ -724,7 +724,107 @@ type grepOutcome struct {
 	ignoreRules bool
 }
 
+// grepRaceAttempts bounds how often a search is run again from scratch because
+// the tree changed under it.
+const grepRaceAttempts = 3
+
 // searchUnrefused runs a search that never reads a file the read gate refuses,
+// and returns those files alongside it.
+//
+// The listing and the search are two walks, so a file can become refused
+// between them (a hard link made in the gap). Whether the reply may still stand
+// is therefore decided after every search, and decided without looking at what
+// the search found: the tree is listed again and every name in it judged again,
+// with the same judgement the listing used (candidateRefusals: name and inode,
+// no content), and the pass is accepted only if that gives the same names and
+// exactly the refusals the listing did, and every match lies in a listed file.
+// Otherwise the whole of listing,
+// partitioning and search runs again, up to grepRaceAttempts times, so the
+// reply that finally stands is the reply a file refused at listing time would
+// have produced, for every pattern alike. A tree that keeps changing fails with
+// one error that depends on the refusals alone. Deciding on the matches (an
+// error only when a refused file matched) would hand a concurrent writer one bit
+// per pattern about a file the partition withholds.
+func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
+	for range grepRaceAttempts {
+		out, refused, listed, err := r.searchAttempt(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
+		unchanged, checkErr := r.treeUnchanged(ctx, req, listed, refused, out.matches)
+		if checkErr != nil {
+			return nil, nil, checkErr
+		}
+		if unchanged {
+			return out, refused, nil
+		}
+	}
+	return nil, nil, errors.New("the tree changed under the search repeatedly; retry")
+}
+
+// treeUnchanged reports whether the listing's verdicts still hold after a
+// search. The tree is listed again, through the same walk, and every name in
+// that second listing is judged with candidateRefusals, the first listing's own
+// judgement. The outcome therefore depends on names and inodes and never on the
+// pattern or on what the files hold. It is false if the set of names differs (a
+// new name for an inode, even one for a file that was already withheld, is a new
+// file the search may have read), if any verdict differs (a file refused now, or
+// no longer refused), or if a match lies in a name the first listing did not
+// hold. Judging only the first listing's names would miss a new link to a file
+// that was refused already: no listed verdict moves, yet the search read it, and
+// the retry's withheld report names it where the reply of a pattern that did not
+// match it would not. The second listing and its judgement cost about as much
+// as the first, 4 ms per 1,000 files and 9 microseconds a file on top.
+//
+// revalidateMatches stays as a further gate on the matched files only, and a
+// disagreement there takes the same route (another attempt, then the same
+// error), so it cannot make the outcome depend on content. For a listed name it
+// can add nothing: the listing guarantees a regular file reached without a
+// symlink inside the root, which is everything candidateRefusal shortcuts, and
+// every name it cannot show that for it judges with readRefusal itself.
+//
+// A name created during the search and removed again before this listing is
+// not seen by any check that runs after the search; no check outside the
+// engine can see it.
+func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, listed []string, refused map[string]string, matches []dcgrep.Match) (bool, error) {
+	again, err := r.deps.Grep.List(ctx, dcgrep.ListRequest{
+		Path:           req.Path,
+		MaxResults:     grepListCeiling,
+		IncludeIgnored: req.IncludeIgnored,
+	})
+	if err != nil {
+		return false, err
+	}
+	if again.Truncated || len(again.Paths) != len(listed) {
+		return false, nil
+	}
+	known := make(map[string]struct{}, len(listed))
+	for _, name := range listed {
+		known[name] = struct{}{}
+	}
+	for _, name := range again.Paths {
+		if _, ok := known[name]; !ok {
+			return false, nil
+		}
+	}
+	now := r.candidateRefusals(again.Paths)
+	if len(now) != len(refused) {
+		return false, nil
+	}
+	for name, rule := range now {
+		if refused[name] != rule {
+			return false, nil
+		}
+	}
+	for _, m := range matches {
+		if _, ok := known[m.Path]; !ok {
+			return false, nil
+		}
+	}
+	return r.revalidateMatches(matches) == nil, nil
+}
+
+// searchAttempt is one pass of searchUnrefused: a search that never reads a file the read gate refuses,
 // and returns those files alongside it, computed from the candidate set.
 //
 // The engine takes no exclude list, so refused files cannot be removed from
@@ -744,9 +844,9 @@ type grepOutcome struct {
 // refused, that speculative search is discarded without being read: it did open
 // the refused files, but nothing of its result, not a count, not an error,
 // reaches the reply, and the partitioned path below runs instead.
-func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
+func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, []string, error) {
 	if req.MaxResults < 0 {
-		return nil, nil, fmt.Errorf("max_results must not be negative, got %d", req.MaxResults)
+		return nil, nil, nil, fmt.Errorf("max_results must not be negative, got %d", req.MaxResults)
 	}
 	type speculative struct {
 		res *dcgrep.Result
@@ -773,13 +873,13 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 	})
 	if err != nil {
 		discard()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if listing.Truncated {
 		discard()
 		// Not a sample to search: a search over a tree whose refused files
 		// cannot all be named would have to guess which of them it may touch.
-		return nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
+		return nil, nil, nil, fmt.Errorf("the path holds more than %d files, so the files the read gate "+
 			"withholds cannot all be identified; search a narrower path", grepListCeiling)
 	}
 	refused := r.candidateRefusals(listing.Paths)
@@ -791,7 +891,7 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 	if len(refused) == 0 {
 		s := <-spec
 		if s.err != nil {
-			return nil, nil, s.err
+			return nil, nil, nil, s.err
 		}
 		res := s.res
 		out.matches, out.truncated, out.limit = res.Matches, res.Truncated, res.Limit
@@ -806,7 +906,7 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 		}
 		targets := searchTargets(req.Path, listing.Paths, refused)
 		if len(targets) > grepMaxSubsearches {
-			return nil, nil, fmt.Errorf("working around %d withheld file(s) would take %d separate "+
+			return nil, nil, nil, fmt.Errorf("working around %d withheld file(s) would take %d separate "+
 				"searches, over the limit of %d; search a narrower path",
 				len(refused), len(targets), grepMaxSubsearches)
 		}
@@ -818,7 +918,7 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 			sub.Path, sub.MaxResults = target, limit
 			res, searchErr := r.deps.Grep.Search(ctx, sub)
 			if searchErr != nil {
-				return nil, nil, searchErr
+				return nil, nil, nil, searchErr
 			}
 			out.matches = append(out.matches, res.Matches...)
 			out.truncated = out.truncated || res.Truncated
@@ -843,25 +943,16 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 		out.limit = limit
 	}
 
-	// The listing and the search are two walks. A file that became refused
-	// between them (a hard link made in the gap) is caught here, loudly: this
-	// is the one place the reply could still depend on a refused file, so it
-	// fails rather than filtering. The error names neither the file nor the
-	// rule that refused it: both are what the listing's partition withholds, and
-	// a concurrent writer who can link a secret under a new name would
-	// otherwise read back whether the pattern matched it.
-	if err := r.revalidateMatches(out.matches); err != nil {
-		return nil, nil, err
-	}
-	return out, refused, nil
+	return out, refused, listing.Paths, nil
 }
 
-// revalidateMatches judges the files a finished search matched in, and fails if
-// any is refused now. Each file is judged once, after the search has finished:
-// that verdict is the one that counts and is never taken from anything earlier,
-// so a file refused during the search is withheld as before. Up to
-// grepMaxLimit matches can share a few files, and the full judgement is far
-// dearer than the search it gates.
+// revalidateMatches judges the files a finished search matched in with the full
+// readRefusal, once per file, and fails if any is refused now. It is the second
+// gate of treeUnchanged, whose caller turns a failure into another attempt and
+// never into a reply, so what it finds cannot reach the caller as an error that
+// depends on the matches. Up to grepMaxLimit matches can share a few files, and
+// the full judgement is far dearer than the search it gates, so each file is
+// judged once, after the search has finished and never from an earlier verdict.
 func (r *Registry) revalidateMatches(matches []dcgrep.Match) error {
 	judged := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
@@ -870,7 +961,7 @@ func (r *Registry) revalidateMatches(matches []dcgrep.Match) error {
 		}
 		judged[m.Path] = struct{}{}
 		if r.readRefusal(m.Path) != "" {
-			return errors.New("a file the search matched became unreadable while the search ran; retry")
+			return errors.New("a file the search matched is refused now")
 		}
 	}
 	return nil

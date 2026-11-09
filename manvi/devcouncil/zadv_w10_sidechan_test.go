@@ -454,9 +454,13 @@ func TestAdvCandidateRefusalsNeverMoreLenientThanReadRefusal(t *testing.T) {
 }
 
 // G4 check 4 (gap race): a file that becomes a second name for an inode between
-// the listing and the search must be caught loudly, not filtered. A wrapper
-// binary makes the link deterministically after the listing returns.
-func TestAdvGrepHardLinkCreatedBetweenListingAndSearchFailsLoudly(t *testing.T) {
+// the listing and the search must never be read into the reply. Since ft-d01ecfde
+// round 2 it is not an error either, because an error that exists only when the
+// refused file matched is a per-pattern answer: every listed file is judged again
+// after the search, and a change runs the whole search again, so the reply is the
+// one a file refused at listing time gives. A wrapper binary makes the link
+// deterministically after the listing returns.
+func TestAdvGrepHardLinkCreatedBetweenListingAndSearchIsWithheldOnRetry(t *testing.T) {
 	f := newFixture(t)
 	real := testsupport.DCGrep(t)
 	writeRepoFile(t, f.root, "token.txt", "needle LATE\n")
@@ -480,21 +484,21 @@ exec "$REAL" "$@"
 	}
 	f.reg.deps.Grep = dcgrep.New(wrapper, f.root)
 
-	res := f.call("devcouncil_grep", map[string]any{"pattern": "needle LATE", "include_ignored": true})
-	if !res.IsError || !strings.Contains(res.Text, "became unreadable") {
-		t.Fatalf("a file hard-linked in the gap was not refused loudly: isError=%v %s", res.IsError, res.Text)
+	res := f.call("devcouncil_grep", map[string]any{"pattern": "needle", "include_ignored": true})
+	if res.IsError {
+		t.Fatalf("a file hard-linked in the gap made the call fail, which only a match in it could cause: %s", res.Text)
 	}
 	if strings.Contains(res.Text, "LATE") {
-		t.Errorf("refused content reached the error: %s", res.Text)
+		t.Errorf("refused content reached the reply: %s", res.Text)
 	}
-	// The listing's partition withholds which files are refused, and the error
-	// is the one place a match in a file refused after it could say. It must
-	// name neither the new link nor the original, nor the rule that refused it:
-	// a writer who can link a secret under a new name would otherwise read back
-	// whether the pattern matched it.
-	for _, leak := range []string{"alias.txt", "token.txt", "link", "credential"} {
-		if strings.Contains(res.Text, leak) {
-			t.Errorf("the error names %q, which the partition withholds: %s", leak, res.Text)
+	if !strings.Contains(res.Text, "needle visible") {
+		t.Errorf("the readable match is missing from the reply: %s", res.Text)
+	}
+	// The retry lists the tree with the link in place, so both names are in the
+	// withheld report, exactly as for a link made before the call.
+	for _, want := range []string{"alias.txt", "token.txt"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("the withheld report does not name %q: %s", want, res.Text)
 		}
 	}
 }
