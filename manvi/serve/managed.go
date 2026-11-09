@@ -397,31 +397,79 @@ func checkoutsOverlap(aInfo os.FileInfo, aPath string, bInfo os.FileInfo, bPath 
 // outer is found by sameCheckout as well as by spelling, because inner may reach it
 // through a case variant on a case-insensitive volume, and a walk that stepped past
 // it would read the repository's own .git as a boundary. The path of D below outer
-// is built from the names walked, never from a string comparison of the two paths.
+// is built from the names of the chain between them, outer's child first and D
+// last, each in the spelling the file system stores (onDiskName), never from a
+// string comparison of the two paths. The chain is complete before any D is
+// judged, and the candidates are then judged from inner outward. A component
+// whose stored spelling cannot be settled (no entry, or two that differ only by
+// case) is overlap.
 func hasGitBoundary(outerInfo os.FileInfo, outer, inner string) bool {
-	var below []string // names from outer down to dir, built as the walk climbs
-	for dir := inner; dir != outer; {
+	// First climb from inner to outer, so that the names of the whole chain are
+	// known: the path of D below outer is its ancestors' names down to D, which a
+	// climb from inner cannot know until it arrives.
+	var chain []string // directories from inner up to, not including, outer
+	for dir := inner; ; {
 		if info, err := os.Stat(dir); err == nil && sameCheckout(outerInfo, info) {
-			return false
+			break
 		}
-		_, err := os.Lstat(filepath.Join(dir, ".git"))
-		switch {
-		case err == nil:
-			rel := filepath.Join(append([]string{filepath.Base(dir)}, below...)...)
-			if wellFormedGitMarker(dir) && !indexTracksUnder(outer, filepath.ToSlash(rel)) {
-				return true
-			}
-		case !errors.Is(err, os.ErrNotExist):
-			return false
+		if dir == outer {
+			break
 		}
-		below = append([]string{filepath.Base(dir)}, below...)
+		chain = append(chain, dir)
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return false
 		}
 		dir = parent
 	}
+	for i, dir := range chain {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case err == nil:
+			names := make([]string, 0, len(chain)-i)
+			for j := len(chain) - 1; j >= i; j-- {
+				name, ok := onDiskName(chain[j])
+				if !ok {
+					return false
+				}
+				names = append(names, name)
+			}
+			rel := filepath.ToSlash(filepath.Join(names...))
+			if wellFormedGitMarker(dir) && !indexTracksUnder(outer, rel) {
+				return true
+			}
+		case !errors.Is(err, os.ErrNotExist):
+			return false
+		}
+	}
 	return false
+}
+
+// onDiskName is the name the file system stores for dir within its parent. inner
+// may spell dir in another case on a case-insensitive volume, and the outer index
+// is queried case-sensitively, so the query must carry the stored spelling. An
+// entry spelled exactly like dir wins (on a case-sensitive volume it is the one
+// directory, and on a case-insensitive one it is the stored name). Otherwise
+// exactly one entry may match with its case folded; none, several, or a parent
+// that cannot be read is not answerable, and the caller fails closed.
+func onDiskName(dir string) (string, bool) {
+	name := filepath.Base(dir)
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		return "", false
+	}
+	folded := ""
+	matches := 0
+	for _, e := range entries {
+		if e.Name() == name {
+			return name, true
+		}
+		if strings.EqualFold(e.Name(), name) {
+			folded = e.Name()
+			matches++
+		}
+	}
+	return folded, matches == 1
 }
 
 // gitMarkerMax bounds how much of a .git file wellFormedGitMarker reads.
