@@ -80,7 +80,9 @@ func readRegular(path string, limit int64, open func(string) (*os.File, error)) 
 //     raw bytes from the marker (or from `~/.claude.json` or
 //     `~/.claude-accounts`) never do; those are named by file and byte length.
 //     A marker with no usable `$HOME` fails closed too; the filesystem root
-//     (and a Windows volume or share root) is not a usable `$HOME`.
+//     (and a Windows volume or share root) is not a usable `$HOME`, nor on
+//     Unix is one that cannot be resolved, is not owned by this user, or is
+//     group- or world-writable; HOME is resolved once and used resolved.
 //  2. Every launch drops the nested-session markers `CLAUDECODE` and
 //     `CLAUDE_CODE_ENTRYPOINT`. Only when multi-seat routing is active
 //     (`.claude-account` is present or `$HOME/.claude-accounts` exists) are
@@ -101,48 +103,20 @@ func readRegular(path string, limit int64, open func(string) (*os.File, error)) 
 //     `<seatDir>/.claude.json` has a non-empty `oauthAccount.emailAddress`,
 //     `<home>/.claude.json` is checked: malformed JSON or a case-insensitive
 //     email match against any named seat fails closed.
-//
-// usableClaudeHome reports whether home can anchor seat routing: a non-empty
-// absolute path that is not a filesystem root, spelled or reached through a
-// symlink. A root HOME would make every ancestor of a checkout "under home",
-// so a marker in a shared directory (/tmp, /Users) could pin a seat.
-func usableClaudeHome(home string) bool {
-	if home == "" || !filepath.IsAbs(home) || filesystemRoot(home) {
-		return false
-	}
-	if resolved, err := filepath.EvalSymlinks(home); err == nil && filesystemRoot(resolved) {
-		return false
-	}
-	return true
-}
-
-// filesystemRoot reports whether p is the root of its volume: "/", a drive
-// root such as C:\, or a UNC share root. The test uses only filepath, so it
-// answers for the host's own spellings on every GOOS.
-func filesystemRoot(p string) bool {
-	c := filepath.Clean(p)
-	if filepath.Dir(c) == c {
-		return true
-	}
-	rest := c[len(filepath.VolumeName(c)):]
-	return rest == "" || (len(rest) == 1 && os.IsPathSeparator(rest[0]))
-}
-
-// seatIOError drops the path from a file error so only the cause remains
-// (a seat directory is spelled by ~/.claude-accounts, which is operator content).
-func seatIOError(err error) error {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
-	}
-	return err
-}
-
 func claudeSeatOverrides(cwd string) (envOverrides, error) {
 	nestedSessionMarkers := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 
 	home, err := os.UserHomeDir()
-	if err != nil || !usableClaudeHome(home) {
+	homeProblem := homeUnusable
+	if err == nil {
+		// Resolve HOME exactly once; everything below reads through the resolved path.
+		var problem string
+		if home, problem = resolveClaudeHome(home); problem != "" {
+			err = errors.New(problem)
+			homeProblem = problem
+		}
+	}
+	if err != nil {
 		// Without a usable home directory there is no ~/.claude-accounts to map
 		// a seat from, so an operator with no seats gets the unrouted launch. A
 		// checkout that pins a seat does not: launching it on the ambient account
@@ -152,7 +126,7 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 			return envOverrides{}, markerErr
 		}
 		if pinned {
-			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but HOME is not a usable absolute path; refusing to launch on the default account")
+			return envOverrides{}, errors.New(".claude-account pins this checkout to a seat, but " + homeProblem + "; refusing to launch on the default account")
 		}
 		return envOverrides{unsetKeys: nestedSessionMarkers}, nil
 	}
@@ -209,6 +183,70 @@ func claudeSeatOverrides(cwd string) (envOverrides, error) {
 	}
 
 	return envOverrides{unsetKeys: unset}, nil
+}
+
+// Reasons a HOME cannot anchor seat routing. Each names the variable and the
+// property that failed, never the path, because the path is operator content.
+const (
+	homeUnusable     = "HOME is not a usable absolute path"
+	homeNotOwned     = "HOME not owned by this user"
+	homeWorldWrtable = "HOME is group- or world-writable"
+)
+
+// resolveClaudeHome resolves home once and returns the resolved path, or a
+// non-empty problem when it cannot anchor seat routing: it must be absolute,
+// exist, resolve to something other than a filesystem root, and (on Unix) be
+// owned by this user and not writable by group or others. A shared parent of
+// many users' trees (/Users, /home, /tmp) fails the last two, so a marker in
+// another user's tree cannot steer a daemon started with that HOME. Callers use
+// the returned path, not the spelling they passed, so a symlink swapped after
+// this call cannot change where anything reads. A HOME that cannot be resolved
+// is unusable, never "unresolved but usable".
+//
+// Residual: under `sudo -E`, or where an NFS-mapped uid makes the user's own
+// home appear owned by another uid, HOME fails the ownership test and a
+// checkout that pins a seat is refused. That refusal is deliberate and
+// documented: an unpinned checkout still runs unrouted.
+func resolveClaudeHome(home string) (resolved, problem string) {
+	if home == "" || !filepath.IsAbs(home) || filesystemRoot(home) {
+		return "", homeUnusable
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil || !filepath.IsAbs(resolved) || filesystemRoot(resolved) {
+		return "", homeUnusable
+	}
+	if problem := homeDirProblem(resolved); problem != "" {
+		return "", problem
+	}
+	return resolved, ""
+}
+
+// usableClaudeHome reports whether home can anchor seat routing.
+func usableClaudeHome(home string) bool {
+	_, problem := resolveClaudeHome(home)
+	return problem == ""
+}
+
+// filesystemRoot reports whether p is the root of its volume: "/", a drive
+// root such as C:\, or a UNC share root. The test uses only filepath, so it
+// answers for the host's own spellings on every GOOS.
+func filesystemRoot(p string) bool {
+	c := filepath.Clean(p)
+	if filepath.Dir(c) == c {
+		return true
+	}
+	rest := c[len(filepath.VolumeName(c)):]
+	return rest == "" || (len(rest) == 1 && os.IsPathSeparator(rest[0]))
+}
+
+// seatIOError drops the path from a file error so only the cause remains
+// (a seat directory is spelled by ~/.claude-accounts, which is operator content).
+func seatIOError(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 type seatLoginEmail struct {
@@ -302,9 +340,10 @@ func verifyDefaultLoginNotPinnedSeat(home string, seats map[string]string) error
 // nearest ancestor holding a .git: a marker in some shared parent directory is
 // not something the operator placed for this checkout.
 func markerSearchDirs(cwd, home string) []string {
+	// A root or unresolvable home is no home: never walk up to shared ancestors.
 	var homeInfo os.FileInfo
-	if home != "" {
-		homeInfo, _ = os.Stat(home)
+	if resolved, problem := resolveClaudeHome(home); problem == "" {
+		homeInfo, _ = os.Stat(resolved)
 	}
 	var chain []string
 	underHome := false

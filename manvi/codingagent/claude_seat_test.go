@@ -455,8 +455,8 @@ func TestClaudeSeatUsableHomeRefusesFilesystemRoots(t *testing.T) {
 		{"empty", "", false},
 		{"relative", "home/x", false},
 		{"dot", ".", false},
-		{"user home", "/Users/x", true},
-		{"user home trailing slash", "/Users/x/", true},
+		{"nonexistent user home", "/Users/x", false},
+		{"nonexistent user home trailing slash", "/Users/x/", false},
 		{"real temp dir", real, true},
 		{"symlink to a real home", dirLink, true},
 	}
