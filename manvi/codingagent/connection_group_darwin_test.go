@@ -25,3 +25,14 @@ func TestGroupMembersListsTheRealMembersWithAStartTime(t *testing.T) {
 		t.Fatalf("groupMembers of an unused number = %+v, %v, want none", empty, err)
 	}
 }
+
+// BenchmarkGroupMembers is the cost close() pays once per run on Darwin: one
+// listing at the sweep and one per probe while the group answers.
+func BenchmarkGroupMembers(b *testing.B) {
+	pid := 1 // launchd's group is the largest a test can rely on existing
+	for b.Loop() {
+		if _, err := groupMembers(pid); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
