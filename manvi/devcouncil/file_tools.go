@@ -2,6 +2,7 @@ package devcouncil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -845,13 +846,34 @@ func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*gr
 	// The listing and the search are two walks. A file that became refused
 	// between them (a hard link made in the gap) is caught here, loudly: this
 	// is the one place the reply could still depend on a refused file, so it
-	// fails rather than filtering.
-	for _, m := range out.matches {
-		if rule := r.readRefusal(m.Path); rule != "" {
-			return nil, nil, fmt.Errorf("%s became unreadable (%s) while the search ran; retry", m.Path, rule)
-		}
+	// fails rather than filtering. The error names neither the file nor the
+	// rule that refused it: both are what the listing's partition withholds, and
+	// a concurrent writer who can link a secret under a new name would
+	// otherwise read back whether the pattern matched it.
+	if err := r.revalidateMatches(out.matches); err != nil {
+		return nil, nil, err
 	}
 	return out, refused, nil
+}
+
+// revalidateMatches judges the files a finished search matched in, and fails if
+// any is refused now. Each file is judged once, after the search has finished:
+// that verdict is the one that counts and is never taken from anything earlier,
+// so a file refused during the search is withheld as before. Up to
+// grepMaxLimit matches can share a few files, and the full judgement is far
+// dearer than the search it gates.
+func (r *Registry) revalidateMatches(matches []dcgrep.Match) error {
+	judged := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		if _, done := judged[m.Path]; done {
+			continue
+		}
+		judged[m.Path] = struct{}{}
+		if r.readRefusal(m.Path) != "" {
+			return errors.New("a file the search matched became unreadable while the search ran; retry")
+		}
+	}
+	return nil
 }
 
 // candidateRefusals is readRefusal for names the walk itself produced, which is

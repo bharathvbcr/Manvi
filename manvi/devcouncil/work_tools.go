@@ -695,7 +695,11 @@ func (a *workAPI) list(ctx context.Context, _ *Session, call tools.Call) tools.R
 	if err != nil {
 		return unavailable("task list", err)
 	}
-	return tools.Result{Text: fenceUntrusted(string(out))}
+	framed, err := frameBoardRead(string(out))
+	if err != nil {
+		return unavailable("the task read", err)
+	}
+	return tools.Result{Text: framed}
 }
 
 type idArgs struct {
@@ -723,7 +727,11 @@ func (a *workAPI) readByID(ctx context.Context, call tools.Call, read func(item 
 	if err != nil {
 		return storeRefusal("the task read", err)
 	}
-	return tools.Result{Text: fenceUntrusted(string(out))}
+	framed, err := frameBoardRead(string(out))
+	if err != nil {
+		return unavailable("the task read", err)
+	}
+	return tools.Result{Text: framed}
 }
 
 func (a *workAPI) get(ctx context.Context, _ *Session, call tools.Call) tools.Result {

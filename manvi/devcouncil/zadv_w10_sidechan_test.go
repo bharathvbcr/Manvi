@@ -487,6 +487,16 @@ exec "$REAL" "$@"
 	if strings.Contains(res.Text, "LATE") {
 		t.Errorf("refused content reached the error: %s", res.Text)
 	}
+	// The listing's partition withholds which files are refused, and the error
+	// is the one place a match in a file refused after it could say. It must
+	// name neither the new link nor the original, nor the rule that refused it:
+	// a writer who can link a secret under a new name would otherwise read back
+	// whether the pattern matched it.
+	for _, leak := range []string{"alias.txt", "token.txt", "link", "credential"} {
+		if strings.Contains(res.Text, leak) {
+			t.Errorf("the error names %q, which the partition withholds: %s", leak, res.Text)
+		}
+	}
 }
 
 // G4 check 5: the fan-out refusal is pattern-independent, and carries no content.

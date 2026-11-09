@@ -239,9 +239,9 @@ Offered to the top-level agent of `manvi run` and of the TUI, and to nothing
 else: not the `manvi tool` command (the TUI's `/tool` reaches its session's own pipeline, which holds them), `manvi reflect`, the verify critic, `manvi serve` or its
 enhancement runs, not a sub-agent of any role, and not a managed Codex or Claude
 run. They are Extended (the core profile drops them) and the two writes require
-`devcouncil_checkout_task`. Every read renders the store's reply inside a fenced
-block under a header saying it is data written by people and other agents, never
-instructions. The bounds, the field allow-lists and the security-impact statement
+`devcouncil_checkout_task`. Every read renders the store's reply inside a nonce-marked
+frame (the same one the fetch tool uses) whose note says it is data written by
+people and other agents, never instructions. The bounds, the field allow-lists and the security-impact statement
 are in [WORKBENCH.md](WORKBENCH.md#owner-decisions-of-2026-11-07).
 
 | Native Tool | Access | Parameters | Description |

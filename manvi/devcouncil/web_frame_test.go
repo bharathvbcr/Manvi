@@ -11,9 +11,9 @@ import (
 // withNonce fixes the per-call frame token for the duration of a test.
 func withNonce(t *testing.T, draw func() (string, error)) {
 	t.Helper()
-	prev := fetchNonce
-	fetchNonce = draw
-	t.Cleanup(func() { fetchNonce = prev })
+	prev := frameNonce
+	frameNonce = draw
+	t.Cleanup(func() { frameNonce = prev })
 }
 
 func fixedNonce(n string) func() (string, error) {

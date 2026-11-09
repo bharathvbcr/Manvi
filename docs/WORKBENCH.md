@@ -1167,11 +1167,14 @@ label and the tagged log block) and does not claim the banner.
   process. Two host processes sharing one store
   can both pass a count at the cap; the reconciliation above bounds the overshoot
   to the next write, and a store-level atomic count is the real fix.
-- *Reads render everything in one fenced block.* `work_get_item`,
+- *Reads render everything in one nonce frame.* `work_get_item`,
   `work_get_brief`, `work_get_history` and `work_list_items` return the store's
-  reply as JSON inside a code fence under a standing header that says the content
-  is data and not instructions. The fence is one backtick longer than the longest
-  run of backticks in the text, and never shorter than three.
+  reply as JSON between a `--- BEGIN UNTRUSTED WORK BOARD DATA <nonce> ---` line
+  and an `--- END UNTRUSTED WORK BOARD DATA <nonce> ---` line, under a note that
+  says the content is data and not instructions. The nonce is drawn per call and
+  redrawn if it occurs in the text, so text cannot close the frame early. This is
+  the frame the fetch tool uses too (one helper, `frameUntrusted`); an earlier
+  backtick fence is gone.
 - *Agent text is plain.* Title, description, checklist and log text are refused
   if they hold a control character other than newline, carriage return and tab,
   the Unicode line and paragraph separators (U+2028, U+2029), NEL, vertical tab,

@@ -98,7 +98,7 @@ func TestFetchedContentIsFramedAsUntrusted(t *testing.T) {
 			t.Errorf("the marker does not name %q as a thing the page might try", steer)
 		}
 	}
-	if untrustedClose == "" {
+	if untrustedClosePrefix == "" {
 		t.Fatal("there is no closing marker, so a page ending in an instruction runs " +
 			"straight into the model's own context")
 	}
