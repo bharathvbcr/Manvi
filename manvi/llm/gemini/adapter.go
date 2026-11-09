@@ -544,9 +544,13 @@ type (
 		} `json:"content"`
 	}
 	wireEventUsage = struct {
-		TotalInputTokens        int `json:"total_input_tokens"`
-		TotalOutputTokens       int `json:"total_output_tokens"`
-		ThoughtTokens           int `json:"total_thought_tokens"`
+		TotalInputTokens  int `json:"total_input_tokens"`
+		TotalOutputTokens int `json:"total_output_tokens"`
+		ThoughtTokens     int `json:"total_thought_tokens"`
+		// TotalCachedTokens is the Interactions API field (aistudio.google.com/api-reference/interactions-api,
+		// read 2026-11-09). CachedContentTokenCount is the generateContent usageMetadata
+		// name this adapter read before; it stays as a fallback until a live response settles it.
+		TotalCachedTokens       int `json:"total_cached_tokens,omitempty"`
 		CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
 	}
 	wireEventInteraction = struct {
@@ -869,7 +873,10 @@ func (s *stream) apply(kind string, ev wireEvent) (llm.Chunk, bool, error) {
 				s.usage.InputTokens = u.TotalInputTokens
 				s.usage.OutputTokens = u.TotalOutputTokens
 				s.usage.ReasoningTokens = u.ThoughtTokens
-				s.usage.CacheReadTokens = u.CachedContentTokenCount
+				s.usage.CacheReadTokens = u.TotalCachedTokens
+				if s.usage.CacheReadTokens == 0 {
+					s.usage.CacheReadTokens = u.CachedContentTokenCount
+				}
 			}
 			s.stopReason = mapStatus(ev.Interaction.Status)
 		}
