@@ -152,7 +152,7 @@ func TestAdvW18NeutraliseSavedOutputDoesNotEscapeAgainWhatTheSeamEscaped(t *test
 	// What the seam produced for the agent's `a\b`, ESC and a bidi mark.
 	job.tools = []codingagent.Tool{{
 		ID: `i\\d\x1b`, Name: `n\\\u{202E}`, Status: `s\\`, ParentID: `p\\`, Output: `o\\x1b \x1b`,
-		Input: "{\"k\":\"a\\\\b ‮\"}",
+		Input: "{\"k\":\"a\\\\b \u202e\"}",
 	}}
 	first, _ := savedOutput(job)
 	second, _ := savedOutput(job)
@@ -172,10 +172,10 @@ func TestAdvW18NeutraliseSavedOutputDoesNotEscapeAgainWhatTheSeamEscaped(t *test
 		t.Fatalf("the snapshot escaped the seam's output again:\n got %+v\nwant %+v", got, want)
 	}
 	var in map[string]string
-	if err := json.Unmarshal([]byte(got.Input), &in); err != nil || in["k"] != "a\\b ‮" {
+	if err := json.Unmarshal([]byte(got.Input), &in); err != nil || in["k"] != "a\\b \u202e" {
 		t.Fatalf("Input changed meaning: %v %q", err, got.Input)
 	}
-	if strings.Contains(got.Input, "‮") {
+	if strings.Contains(got.Input, "\u202e") {
 		t.Fatalf("Input still carries a raw bidi rune: %q", got.Input)
 	}
 }
@@ -212,7 +212,7 @@ func TestAdvW18NeutraliseWorstCaseToolFloodKeepsTheSavedOutputWithinItsCap(t *te
 func TestAdvW18NeutraliseOneWorstCaseToolFitsAndRoundTrips(t *testing.T) {
 	job := &managedJob{}
 	esc := func(n int) string { return strings.Repeat(`\x1b`, n) }
-	tool := codingagent.Tool{ID: esc(60), Name: esc(60), Status: esc(60), ParentID: esc(60), Input: strings.Repeat("‮", 1365), Output: esc(2048)}
+	tool := codingagent.Tool{ID: esc(60), Name: esc(60), Status: esc(60), ParentID: esc(60), Input: strings.Repeat("\u202e", 1365), Output: esc(2048)}
 	noteTools(job, []codingagent.Tool{tool})
 	out, _ := savedOutput(job)
 	_, snapshot, ok := strings.Cut(out, toolsMarker)

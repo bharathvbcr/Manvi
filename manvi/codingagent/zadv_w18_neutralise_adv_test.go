@@ -57,7 +57,7 @@ func decodeNeutralised(out string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
-			b.WriteRune(rune(v))
+			b.WriteRune(rune(v)) //nolint:gosec // a rune below U+10FFFF parsed from at most 8 hex digits
 			i += j + 1
 		default:
 			return "", false
@@ -93,7 +93,7 @@ func TestAdvW18NeutraliseRenderingIsInjectiveOnRandomInput(t *testing.T) {
 		"\u0080", "\xa0", "\xc3", "\xe2", "\xff", "\xed\xa0", "\x80", "\x85", "\x9f", // invalid UTF-8, including 0x80-0x9f
 		`\x1b`, `\u{202E}`, `<U+202E>`,
 	}
-	rng := rand.New(rand.NewPCG(18, 4242))
+	rng := rand.New(rand.NewPCG(18, 4242)) //nolint:gosec // a fixed seed: a reproducible stream, not a source of secrets
 	seen := map[string]string{}
 	for n := 0; n < 20000; n++ {
 		var b strings.Builder
@@ -120,7 +120,7 @@ func TestAdvW18NeutraliseRenderingIsInjectiveOnRandomInput(t *testing.T) {
 // one after the other reads the same as the text of the joined event, except for
 // a CR that ends one chunk and a LF that starts the next (kept as `\x0d` + LF).
 func TestAdvW18NeutraliseConcatenationDecodesToConcatenation(t *testing.T) {
-	rng := rand.New(rand.NewPCG(7, 7))
+	rng := rand.New(rand.NewPCG(7, 7)) //nolint:gosec // a fixed seed: a reproducible stream, not a source of secrets
 	parts := []string{"\\", "x1b", "\x1b", "\u202e", "a", "\r", "\n", "{", "\U000e0041", "\\x", "u{"}
 	for n := 0; n < 5000; n++ {
 		var a, b strings.Builder
