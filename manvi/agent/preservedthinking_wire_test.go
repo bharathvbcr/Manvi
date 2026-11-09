@@ -334,10 +334,30 @@ func TestAnthropicHistoryIsNotEditedClientSide(t *testing.T) {
 // left it: three tool rounds, each opening with signed reasoning, then the
 // first result shortened to note (no shortening when note is empty), then one
 // more round whose reasoning was produced after the shortening, then an answer.
+//
+// The conversation opens with the frame its requests carried (the loop's own
+// prompt and tool), so what these tests pin is how an edit strips reasoning. A
+// conversation with no recorded frame at all is a boundary of its own
+// (TestAFrameOpenedOnAConversationThatPredatesFramesStripsEarlierReasoning).
 func legacyConversation(t *testing.T, note string) func(*session.Log) {
+	t.Helper()
+	return legacyConversationFrom(t, note, true)
+}
+
+// legacyConversationFrom is legacyConversation with the opening frame optional:
+// unframed is the log a build from before frames were recorded wrote.
+func legacyConversationFrom(t *testing.T, note string, framed bool) func(*session.Log) {
 	t.Helper()
 	return func(log *session.Log) {
 		t.Helper()
+		if framed {
+			if _, err := log.Append(session.WireFrame, session.FrameData{
+				System: "p", Why: session.WhyOpened,
+				Tools: []llm.ToolSchema{{Name: "echo", Description: "echo", InputSchema: []byte(`{"type":"object","properties":{"v":{"type":"integer"}}}`)}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		appendMsg := func(typ session.Type, msg llm.Message) {
 			t.Helper()
 			if _, err := log.Append(typ, session.MessageData{Message: msg}); err != nil {

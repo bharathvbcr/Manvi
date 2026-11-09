@@ -593,15 +593,21 @@ func openSession(notes io.Writer, store *session.Store, opts runOptions) (string
 	_, _ = fmt.Fprintf(notes, "manvi: resumed session %s — %d event(s) across %d turn(s), last written %s\n",
 		report.ID, report.Events, report.Turns, report.UpdatedAt.Format(time.RFC3339))
 	if report.TrimmedTurns > 0 {
-		_, _ = fmt.Fprintf(notes,
-			"manvi: this session's %d oldest turn(s) were dropped to keep it within its size bound — "+
-				"the history below that point is gone\n", report.TrimmedTurns)
+		_, _ = fmt.Fprintf(notes, "manvi: %s\n", trimNote(report.TrimmedTurns))
 	}
 	if report.Oversize {
 		_, _ = fmt.Fprintf(notes,
 			"manvi: this session's most recent turn alone exceeds the size bound; it was kept whole\n")
 	}
 	return id, log, nil
+}
+
+// trimNote says what a retention trim cost, in the one wording every surface
+// uses: the turns it removed, and the reasoning that was signed behind them,
+// which the next request no longer replays (session.StripStaleReasoning).
+func trimNote(turns int) string {
+	return fmt.Sprintf("%d oldest turn(s) were dropped to keep the session within its size bound; "+
+		"the history before that point is gone, and reasoning from before it is no longer replayed", turns)
 }
 
 // saveSession writes the log back and says what the retention bound cost.
@@ -611,9 +617,7 @@ func saveSession(notes io.Writer, store *session.Store, id string, log *session.
 		return err
 	}
 	if report.TrimmedTurns > 0 {
-		_, _ = fmt.Fprintf(notes,
-			"manvi: %d oldest turn(s) were dropped from session %s to keep it within its size bound\n",
-			report.TrimmedTurns, id)
+		_, _ = fmt.Fprintf(notes, "manvi: session %s: %s\n", id, trimNote(report.TrimmedTurns))
 	}
 	if report.Oversize {
 		_, _ = fmt.Fprintf(notes,

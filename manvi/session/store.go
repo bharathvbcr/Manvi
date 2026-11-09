@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -493,6 +494,11 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		}
 	}
 
+	// Turns dropped before the log's first event, which the log never held. The
+	// in-memory log keeps every event it was given, so a second save of it trims the
+	// same turns again; counting them on top of the file's count made a cached
+	// store disagree with a fresh one that loaded the trimmed file.
+	droppedBefore := log.droppedBefore()
 	from, droppedTurns, oversize := trimEncoded(events, perEvent, s.maxBytes)
 	// The wire frame lives in the first turn, which is the first one a trim
 	// drops, so the file states it again at the front of what is kept; the
@@ -529,13 +535,17 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 	// The events were each encoded to be measured; joined, those encodings
 	// are byte-for-byte what marshalling the kept slice produces.
 	encoded := joinArray(keptEncoded)
+	cumulative := saturatingAdd(droppedBefore, droppedTurns)
+	// What this save dropped, for the report: against the previous file when there
+	// is one, and against the log's own events when there is not.
+	reported := reportedDrops(generation > 0, cumulative, trimmedBefore, droppedTurns)
 	body, err := json.Marshal(header{
 		Version:      FormatVersion,
 		ID:           id,
 		CreatedAt:    createdAt,
 		UpdatedAt:    time.Now().UTC(),
 		Turns:        countTurns(kept),
-		TrimmedTurns: trimmedBefore + droppedTurns,
+		TrimmedTurns: cumulative,
 		Oversize:     oversize,
 		Checksum:     digest(encoded),
 		Events:       encoded,
@@ -556,7 +566,7 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 		return SaveReport{}, err
 	}
 	s.seen[id] = digest(body)
-	s.rememberMeta(id, headerMeta{CreatedAt: createdAt, TrimmedTurns: trimmedBefore + droppedTurns})
+	s.rememberMeta(id, headerMeta{CreatedAt: createdAt, TrimmedTurns: cumulative})
 
 	// Pruning is best-effort on purpose: the session is already durable, and
 	// failing the run because an old generation could not be unlinked would
@@ -568,8 +578,17 @@ func (s *Store) Save(id string, log *Log) (SaveReport, error) {
 
 	return SaveReport{
 		ID: id, Path: target, Generation: generation + 1,
-		Events: len(kept), TrimmedTurns: droppedTurns, Oversize: oversize,
+		Events: len(kept), TrimmedTurns: reported, Oversize: oversize,
 	}, nil
+}
+
+// saturatingAdd is a+b for non-negative counts, held at the largest int rather
+// than wrapping negative when a header already sits at the limit.
+func saturatingAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // rememberMeta records what the file just read or written says about itself.
@@ -997,4 +1016,14 @@ func joinArray(elements []json.RawMessage) json.RawMessage {
 		out = append(out, e...)
 	}
 	return append(out, ']')
+}
+
+// reportedDrops is what a save reports as dropped. A negative delta means the
+// previous header claimed more turns than the cumulative count holds, so the header
+// lied; it only affects what is reported, so it reads as nothing dropped.
+func reportedDrops(hadFile bool, cumulative, before, dropped int) int {
+	if !hadFile {
+		return dropped
+	}
+	return max(cumulative-before, 0)
 }

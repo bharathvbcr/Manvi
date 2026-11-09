@@ -39,6 +39,24 @@ import (
 //     expresses a same-name change without a beta this adapter does not send
 //     (causes.md, row tool_schema_changed).
 //
+// Why the frame opens with the tools the first Loop offers, not the registry's
+// full set (ft-9a5710b6 item 1, ruled 2026-11-09: keep). A ChatOnly or ReadOnly
+// first turn declares the filtered set, so the first turn that wants more is a
+// tools_added growth and strips the reasoning before it. That is the documented
+// removal, a leading run, and it is clean (TestAdvChatOnlyFirstTurnThenTools
+// StripsCleanlyInsteadOfBreaking). Opening with tools.Registry.Schemas() would
+// avoid the strip, but it declares tools the conversation may never be offered,
+// puts them in every request's cached prefix, and adds a tools notice for a
+// ReadOnly agent on its first turn. The strip costs the reasoning of one narrow
+// first turn; the declaration costs every request. Reopen if first turns that
+// narrow turn out to carry reasoning worth more than that.
+//
+// A conversation whose log already holds an assistant message when the frame
+// first opens (a log from before frames were recorded, or from a target that
+// sent none) has no record of what its blocks were signed under. Its frame is
+// recorded as a growth from nothing, so everything before it is stripped rather
+// than replayed (see planFrame).
+//
 // Only where the model accepts a role:"system" message
 // (llm.Capability.MidConversationSystem) and the provider binds thinking.
 // Everything else keeps sending what the Loop assembled.
@@ -63,52 +81,128 @@ func (l *Loop) settleFrame() error {
 	if !l.freezes() {
 		return nil
 	}
-	state := l.log.Wire()
-	wanted := l.schemas()
-	if state.Frame == nil {
-		system := l.log.SystemPrompt()
-		if system == "" {
-			system = l.cfg.SystemPrompt
-		}
-		if _, err := l.log.Append(session.WireFrame, session.FrameData{
-			System: system, Tools: sortedTools(wanted), Why: session.WhyOpened,
-		}); err != nil {
+	next, err := l.planFrame()
+	if err != nil {
+		return err
+	}
+	if next != nil {
+		if _, err := l.log.Append(session.WireFrame, *next); err != nil {
 			return err
 		}
-	} else if err := l.growFrame(state.Frame, wanted); err != nil {
-		return err
 	}
 	l.wire = l.log.Wire()
 	return nil
 }
 
-// growFrame re-declares the frame with the wanted tools it lacks, at a turn
-// boundary.
-func (l *Loop) growFrame(frame *session.FrameData, wanted []llm.ToolSchema) error {
-	added := undeclared(frame.Tools, wanted)
-	if len(added) == 0 {
-		return nil
+// planFrame is the one rule for what settleFrame records: the frame event to
+// append, or nil when the log's frame already holds (or, mid tool round, must
+// wait). It records nothing, so Draft asks it too and sizes the request from the
+// frame the turn will send.
+//
+//   - No frame, no assistant message yet: the frame opens with the prompt and the
+//     tools the Loop wants.
+//   - No frame, but an assistant message already in the log: the conversation
+//     predates the frame, and which system prompt and tools its signed blocks were
+//     produced under was never recorded. The frame is recorded as a growth of the
+//     tool set from nothing, so it is a boundary: the reasoning before it is
+//     stripped (a leading run, session.StripStaleReasoning) instead of being
+//     replayed behind a prefix nobody can vouch for. Mid tool round it waits for
+//     the turn to end, as a growth does.
+//   - A frame, and wanted tools it lacks: a growth, at a turn boundary.
+func (l *Loop) planFrame() (*session.FrameData, error) {
+	state := l.log.Wire()
+	wanted := l.schemas()
+	if state.Frame != nil {
+		return l.growFrame(state.Frame, wanted)
 	}
 	history, err := l.log.DeriveMessages()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	system := l.log.SystemPrompt()
+	if system == "" {
+		// The log records the scrubbed form, and the request carries what it
+		// recorded, so the frame is planned in that form too.
+		system = l.log.Scrubbed(l.cfg.SystemPrompt)
+	}
+	if !slices.ContainsFunc(history, func(m llm.Message) bool { return m.Role == llm.RoleAssistant }) {
+		return &session.FrameData{System: system, Tools: sortedTools(wanted), Why: session.WhyOpened}, nil
+	}
+	if !AtTurnBoundary(history) {
+		return nil, nil
+	}
+	return &session.FrameData{
+		System: system, Tools: sortedTools(wanted), Why: session.WhyToolsAdded, Added: toolNames(wanted),
+	}, nil
+}
+
+// growFrame is the frame that re-declares frame with the wanted tools it lacks,
+// at a turn boundary; nil when there is nothing to add or the turn is not over.
+func (l *Loop) growFrame(frame *session.FrameData, wanted []llm.ToolSchema) (*session.FrameData, error) {
+	added := undeclared(frame.Tools, wanted)
+	if len(added) == 0 {
+		return nil, nil
+	}
+	history, err := l.log.DeriveMessages()
+	if err != nil {
+		return nil, err
 	}
 	// Mid tool round the assistant turn awaiting its result keeps its signed
 	// reasoning, so the growth waits for the turn to end.
 	if !AtTurnBoundary(history) {
-		return nil
+		return nil, nil
 	}
-	names := make([]string, len(added))
-	for i, s := range added {
+	return &session.FrameData{
+		System: frame.System,
+		Tools:  sortedTools(append(slices.Clone(frame.Tools), added...)),
+		Why:    session.WhyToolsAdded, Added: toolNames(added),
+	}, nil
+}
+
+// toolNames is the names of schemas, sorted.
+func toolNames(schemas []llm.ToolSchema) []string {
+	names := make([]string, len(schemas))
+	for i, s := range schemas {
 		names[i] = s.Name
 	}
 	slices.Sort(names)
-	_, err = l.log.Append(session.WireFrame, session.FrameData{
-		System: frame.System,
-		Tools:  sortedTools(append(slices.Clone(frame.Tools), added...)),
-		Why:    session.WhyToolsAdded, Added: names,
-	})
-	return err
+	return names
+}
+
+// draftFrame is the system prompt and tools the next request of this
+// conversation will carry where the frame is sent: the log's frame, as the turn's
+// settleFrame would leave it. ok is false where no frame is sent, and the caller
+// sizes from the Loop's own prompt and tools.
+//
+// Where the frame cannot be planned (the history cannot be read) Draft has no
+// error to return, and sizing from the Loop's own prompt and tools would size a
+// request nobody sends. It sizes from the larger of the two instead: the longer
+// system prompt, and the frame's tools together with the Loop's own. That
+// over-estimates, which a spend cap answers by admitting fewer children, never
+// more.
+func (l *Loop) draftFrame() (system string, tools []llm.ToolSchema, ok bool) {
+	if !l.freezes() {
+		return "", nil, false
+	}
+	next, err := l.planFrame()
+	if err != nil {
+		known := l.log.Wire().Frame
+		if known == nil {
+			return "", nil, false
+		}
+		system = known.System
+		if own := l.log.Scrubbed(l.cfg.SystemPrompt); len(own) > len(system) {
+			system = own
+		}
+		return system, append(slices.Clone(known.Tools), undeclared(known.Tools, l.schemas())...), true
+	}
+	if next == nil {
+		next = l.log.Wire().Frame
+	}
+	if next == nil {
+		return "", nil, false
+	}
+	return next.System, next.Tools, true
 }
 
 // frozenFrame is the conversation's frame when this Loop sends it.

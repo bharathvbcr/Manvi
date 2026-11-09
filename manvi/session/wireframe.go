@@ -116,7 +116,12 @@ type wireState struct {
 	WireState
 	boundaries int
 	through    int
-	awaiting   *WireState
+	// dropped is the whole turns the file this log was loaded from had already
+	// lost off its front (its header's trimmed_turns), zero for a log that was
+	// never loaded. The log holds none of them, so a save that trims further adds
+	// only what it drops from the events the log has.
+	dropped  int
+	awaiting *WireState
 	// stale is set only when the state is recomputed for a log that has been
 	// edited (Log.Wire): the sequence numbers of the messages whose signed
 	// reasoning StripStale removes. A reply that strip empties does not answer a
@@ -217,6 +222,16 @@ func wireCarry(dropped []Event, through int) (Event, bool, error) {
 // is the documented recovery, and a block is never sent behind a prefix that is
 // gone. Nothing is appended: Load returns exactly the events the file holds.
 //
+// The price is permanent until the next trim: the reasoning a resumed run
+// produces is stale again on every reload, because nothing in the file says where
+// the trim fell (ft-9a5710b6 item 6; TestAdvBFramelessTrimmedFileIsFullyStaleOnEveryLoad
+// measures it). It cannot be repaired from what the file already holds: a
+// tools_added frame after the trim does not mark where it fell, since a file from
+// a build that trimmed without a carried frame can hold one whose later blocks
+// were produced before the trim, and trusting them is a 400. A durable Through
+// for such a file needs a new on-disk record (a header field, say), which is a
+// format change and waits for a decision.
+//
 // A trim is detected by either of two durable facts. The header's trimmed_turns
 // counts whole turns, but a trim that drops only the events ahead of the first
 // turn/start (a frame-less log's opening user message, say) counts none, and
@@ -226,12 +241,22 @@ func wireCarry(dropped []Event, through int) (Event, bool, error) {
 func (l *Log) assumeTrimmedThrough(droppedTurns int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.wire.dropped = droppedTurns
 	if l.wire.through != 0 || len(l.events) == 0 {
 		return
 	}
 	if droppedTurns > 0 || l.events[0].Seq > 1 {
 		l.wire.through = l.events[len(l.events)-1].Seq
 	}
+}
+
+// droppedBefore is how many whole turns the file this log was loaded from had
+// lost before its first event: the part of the store's cumulative trim count that
+// is not in the log.
+func (l *Log) droppedBefore() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.wire.dropped
 }
 
 // Scrubbed is text as the log would hold it: what a payload string becomes on
