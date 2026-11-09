@@ -715,6 +715,23 @@ func TestSavedOutputNeutralisesToolInputWhereItIsRendered(t *testing.T) {
 	}
 }
 
+// A tool whose strings the adapter's seam has escaped (100 raw ESC bytes in the
+// ID become 400) is kept, not dropped or cut by a second bound at the raw limits.
+func TestNoteToolsKeepsAToolWhoseEscapedFieldsExceedTheRawLimits(t *testing.T) {
+	id := strings.Repeat(`\x1b`, 100)
+	out := strings.Repeat(`\x1b`, 2500) // 10000 bytes: raw 2500 fits maxToolOutput, escaped does not
+	job := &managedJob{}
+	if !noteTools(job, []codingagent.Tool{{ID: id, Name: id, ParentID: id, Output: out}}) {
+		t.Fatal("tool dropped")
+	}
+	if len(job.tools) != 1 || job.tools[0].ID != id || job.tools[0].Name != id || job.tools[0].ParentID != id || job.tools[0].Output != out {
+		t.Fatalf("tool changed: %+v", job.tools)
+	}
+	if snapshot, _ := savedOutput(job); !strings.Contains(snapshot, toolsMarker) {
+		t.Fatal("snapshot omitted")
+	}
+}
+
 func TestManagedToolSnapshotIsCheckpointedWhileTheTurnRuns(t *testing.T) {
 	previous := outputCheckpoint
 	outputCheckpoint = 0

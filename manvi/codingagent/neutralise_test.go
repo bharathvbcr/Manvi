@@ -42,6 +42,11 @@ func TestNeutraliseText(t *testing.T) {
 			if !utf8.ValidString(got) {
 				t.Fatalf("output is not valid UTF-8: %q", got)
 			}
+			// Not idempotent by design (a second pass escapes the first pass's
+			// backslashes); instead every backslash must start exactly one escape.
+			if !wellFormedEscapes(got) {
+				t.Fatalf("output %q holds a backslash that starts no escape", got)
+			}
 		})
 	}
 }

@@ -1505,8 +1505,13 @@ func savedOutput(job *managedJob) (string, bool) {
 func noteTools(job *managedJob, incoming []codingagent.Tool) bool {
 	changed := false
 	for _, tool := range incoming {
-		tool, ok := codingagent.BoundTool(tool)
-		if !ok {
+		// The adapters bound each tool (codingagent.BoundTool) before the neutralising
+		// seam grows its strings by up to 4x, so it is not bounded again here: a
+		// second pass at the raw limits would drop or cut a tool whose escaped ID,
+		// name or output is longer than its raw bytes. The snapshot as a whole stays
+		// under maxManagedOutput (savedOutput) and maxManagedTools.
+		if tool.ID == "" {
+			job.truncated = true
 			continue
 		}
 		idx := -1

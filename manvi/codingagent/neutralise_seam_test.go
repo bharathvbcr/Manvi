@@ -273,6 +273,19 @@ func TestNeutraliseSeamApprovalWithHostilePayloadStillValidatesAndDelivers(t *te
 	if callbackStale(req, retained.source, false, false) {
 		t.Fatal("approval is stale against the adapter's retained copy")
 	}
+	// Delivery: Respond writes exactly one control_response naming the provider's
+	// request id, and a second answer to the same callback is refused.
+	sink := &w18aRecorder{}
+	s.wire.stdin = sink
+	if err := s.Respond(context.Background(), req, Response{Decision: "allow_once"}); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if sink.writes() != 1 || !strings.Contains(sink.data[0], `"request_id":"r1"`) || !strings.Contains(sink.data[0], `"behavior":"allow"`) {
+		t.Fatalf("delivered frames = %q", sink.data)
+	}
+	if err := s.Respond(context.Background(), req, Response{Decision: "allow_once"}); err == nil {
+		t.Fatal("a second answer to the same callback was accepted")
+	}
 }
 
 // Tool.Input rendered for a record keeps a JSON document parseable and equal in
