@@ -561,7 +561,15 @@ func (s *Claude) backlogged() bool {
 	return false
 }
 
+// Next returns the next provider event with every agent-authored string in it
+// neutralised (neutraliseEvent): the one seam all of this adapter's events leave
+// through, so no event-building path can bypass it.
 func (s *Claude) Next(ctx context.Context) (Event, error) {
+	e, err := s.next(ctx)
+	return neutraliseEvent(e), err
+}
+
+func (s *Claude) next(ctx context.Context) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.deferred) > 0 {
@@ -697,7 +705,7 @@ func (s *Claude) system(f claudeFrame) (Event, bool, error) {
 		if json.Unmarshal(f.Message, &reason) != nil || !opaque(reason) {
 			reason = "no reason given"
 		}
-		return Event{Text: neutraliseText(fmt.Sprintf("\n[permission denied: %s — %s]\n", tool, reason))}, true, nil
+		return Event{Text: fmt.Sprintf("\n[permission denied: %s — %s]\n", tool, reason)}, true, nil
 	}
 	return Event{}, false, nil
 }
@@ -768,7 +776,7 @@ func (s *Claude) assistant(f claudeFrame) (Event, bool, error) {
 	if turn == "" && text.Len() == 0 && len(tools) == 0 {
 		return Event{}, false, nil
 	}
-	return Event{TurnID: turn, Text: neutraliseText(text.String()), Tools: tools}, true, nil
+	return Event{TurnID: turn, Text: text.String(), Tools: tools}, true, nil
 }
 
 // userResults keeps tool_result blocks that name the call they finish. A user
@@ -839,7 +847,7 @@ func (s *Claude) result(f claudeFrame) (Event, bool, error) {
 	if status != "completed" || !s.sawText {
 		text = f.Result
 	}
-	return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: status, Text: neutraliseText(text)})), true, nil
+	return leadWith(&s.deferred, append(s.withdrawPending(), Event{Status: status, Text: text})), true, nil
 }
 
 // withdrawPending forgets every unanswered permission and returns one

@@ -532,7 +532,16 @@ func (s *Codex) call(ctx context.Context, method string, params json.RawMessage)
 		s.queue = append(s.queue, p)
 	}
 }
+
+// Next returns the next provider event with every agent-authored string in it
+// neutralised (neutraliseEvent): the one seam all of this adapter's events leave
+// through, so no event-building path can bypass it.
 func (s *Codex) Next(ctx context.Context) (Event, error) {
+	e, err := s.next(ctx)
+	return neutraliseEvent(e), err
+}
+
+func (s *Codex) next(ctx context.Context) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.deferred) > 0 {
@@ -676,7 +685,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 			// A completed agent message is the turn's text. It is not also a
 			// tool row, and neither is each outputDelta below.
 			if item.Type == "agentMessage" {
-				return Event{Text: neutraliseText(item.Text)}, true, nil
+				return Event{Text: item.Text}, true, nil
 			}
 		}
 		var described struct {
@@ -697,7 +706,7 @@ func (s *Codex) event(p packet) (Event, bool, error) {
 		}
 		return Event{Tools: []Tool{tool}}, true, nil
 	case "item/commandExecution/outputDelta":
-		return Event{Text: neutraliseText(v.Delta)}, true, nil
+		return Event{Text: v.Delta}, true, nil
 	}
 	return Event{}, false, nil
 }

@@ -1481,7 +1481,14 @@ func savedOutput(job *managedJob) (string, bool) {
 	if len(job.tools) == 0 {
 		return text, truncated
 	}
-	payload, err := json.Marshal(job.tools)
+	// Tool.Input stays raw in the Event (see codingagent.neutraliseEvent); it is
+	// neutralised here, where it is rendered, on a copy so merging keeps the raw value.
+	rendered := make([]codingagent.Tool, len(job.tools))
+	for i, tool := range job.tools {
+		tool.Input = codingagent.NeutraliseToolInput(tool.Input)
+		rendered[i] = tool
+	}
+	payload, err := json.Marshal(rendered)
 	if err != nil {
 		return text, true
 	}

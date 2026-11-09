@@ -13,8 +13,8 @@ import (
 )
 
 // Adversarial tests for lane w17-agy (ft-f37eab2c, ft-47905b10), by the
-// independent tester. Tests named ...Gap... log a finding and pass; a test that
-// fails marks a BREAK and says so in its message.
+// independent tester. The former ...Gap... tests became asserting tests with
+// ft-bf52b840 (they logged while the gap was open).
 
 // ---- neutraliseText --------------------------------------------------------
 
@@ -47,44 +47,44 @@ func TestAdvW17NeutraliseEdgeEncodings(t *testing.T) {
 	}
 }
 
-// Invisible and line-separator characters outside the criterion's list. They
-// pass through unchanged today. GAP (out of the stated criterion): U+2028/2029,
-// U+FEFF, U+00AD, the deprecated U+206A..206F formatters, U+2060..2064, the Unicode
-// tag block (U+E0000..E007F, which can smuggle invisible ASCII) and U+FFF9..FFFB
-// are not neutralised. The test pins that so a later change is deliberate.
-func TestAdvW17NeutraliseGapInvisibleCharsPassThrough(t *testing.T) {
+// Invisible and line-separator characters are rendered visibly (ft-bf52b840):
+// U+2028/2029, U+FEFF, U+00AD, U+180E, U+2060..2064, U+206A..206F, U+FFF9..FFFB
+// and the Unicode tag block (which can smuggle invisible ASCII).
+func TestAdvW17NeutraliseInvisibleCharsAreRendered(t *testing.T) {
 	for _, r := range []rune{0x2028, 0x2029, 0xFEFF, 0x00AD, 0x180E, 0x2060, 0x2062, 0x206A, 0x206F, 0xFFF9, 0xFFFB, 0xE0001, 0xE0041, 0xE007F} {
 		in := "a" + string(r) + "b"
-		if got := neutraliseText(in); got == in {
-			t.Logf("GAP: %U passes through neutraliseText unchanged", r)
-		} else {
-			t.Errorf("%U is now neutralised (%q); update this pin", r, got)
+		want := fmt.Sprintf(`a\u{%04X}b`, r)
+		if got := neutraliseText(in); got != want {
+			t.Errorf("%U: neutraliseText = %q, want %q", r, got, want)
 		}
 	}
 }
 
-// The output is ambiguous: text the agent wrote as a literal backslash escape is
-// the same string as text neutralised from the real control. A reader of the
-// record cannot tell `\x1b` (agent wrote a backslash) from ESC. GAP, not a
-// criterion break: the criterion asks only that the control not reach the host.
-func TestAdvW17NeutraliseGapLiteralEscapesSpoofNeutralisedOnes(t *testing.T) {
+// Text the agent wrote as a literal escape is distinguishable from text
+// neutralised from the real control: the backslash is itself escaped.
+func TestAdvW17NeutraliseLiteralEscapesAreDistinguishable(t *testing.T) {
 	pairs := [][2]string{
 		{"\x1b[2J", `\x1b[2J`},
+		{"\u202eevil", `\u{202E}evil`},
 		{"\u202eevil", `<U+202E>evil`},
 		{"\xff", `\xff`},
 	}
 	for _, p := range pairs {
 		if neutraliseText(p[0]) == neutraliseText(p[1]) {
-			t.Logf("GAP: %q and %q neutralise to the same record text %q", p[0], p[1], neutraliseText(p[0]))
-		} else {
-			t.Errorf("%q and %q are now distinguishable; update this pin", p[0], p[1])
+			t.Errorf("%q and %q neutralise to the same record text %q", p[0], p[1], neutraliseText(p[0]))
 		}
+	}
+	if got := neutraliseText(`\x1b[2J`); got != `\\x1b[2J` {
+		t.Errorf("literal backslash-x1b renders as %q", got)
 	}
 }
 
 // Property: for arbitrary bytes the output is valid UTF-8, holds no rune the
-// function is meant to remove, is a fixed point (double neutralisation is a
-// no-op), never grows past 4x, and keeps every newline and tab.
+// function is meant to remove, writes every backslash as part of exactly one
+// escape (a doubled backslash, `\xNN` or `\u{X...}`) so no literal can imitate one, never grows
+// past 4x, and keeps every newline and tab. It is deliberately not idempotent:
+// a second pass escapes the first pass's backslashes, so each field is
+// neutralised once, at neutraliseEvent.
 func TestAdvW17NeutraliseProperties(t *testing.T) {
 	state := uint64(17)
 	next := func(n int) int { // a fixed xorshift stream: reproducible, not a source of secrets
@@ -115,8 +115,8 @@ func TestAdvW17NeutraliseProperties(t *testing.T) {
 			}
 			j += n
 		}
-		if neutraliseText(out) != out {
-			t.Fatalf("not a fixed point: %q -> %q -> %q", in, out, neutraliseText(out))
+		if !wellFormedEscapes(out) {
+			t.Fatalf("output %q for %q holds a backslash that starts no escape", out, in)
 		}
 		if len(out) > 4*len(in) {
 			t.Fatalf("grew %d -> %d for %q", len(in), len(out), in)
@@ -128,6 +128,38 @@ func TestAdvW17NeutraliseProperties(t *testing.T) {
 			t.Fatalf("control left in place for %q", in)
 		}
 	}
+}
+
+// wellFormedEscapes reports whether every backslash in out starts exactly one
+// escape: a doubled backslash, `\xNN` with two lowercase hex digits, or `\u{`
+// followed by uppercase hex digits and `}`.
+func wellFormedEscapes(out string) bool {
+	hex := func(c byte, upper bool) bool {
+		return c >= '0' && c <= '9' || (upper && c >= 'A' && c <= 'F') || (!upper && c >= 'a' && c <= 'f')
+	}
+	for i := 0; i < len(out); i++ {
+		if out[i] != '\\' {
+			continue
+		}
+		switch {
+		case i+1 < len(out) && out[i+1] == '\\':
+			i++
+		case i+3 < len(out) && out[i+1] == 'x' && hex(out[i+2], false) && hex(out[i+3], false):
+			i += 3
+		case i+2 < len(out) && out[i+1] == 'u' && out[i+2] == '{':
+			j := i + 3
+			for j < len(out) && hex(out[j], true) {
+				j++
+			}
+			if j == i+3 || j >= len(out) || out[j] != '}' {
+				return false
+			}
+			i = j
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Worst-case 1 MiB inputs stay linear in allocations: one builder grown a few
@@ -149,44 +181,46 @@ func TestAdvW17NeutraliseWorstCaseAllocatesBoundedly(t *testing.T) {
 	}
 }
 
-// ---- unneutralised paths (reported, not criterion) --------------------------
+// ---- fields other than Event.Text ---------------------------------------------
 
-// GAP: only Event.Text is neutralised. Tool.Name/Input/Output/ParentID/Status,
-// CancelledID/ResolvedID (opaque ids) and Request.Payload (a JSON document shown
-// to the approver) carry agent bytes unchanged. serve/managed.go records Tool
-// fields into the run output (the "[tools]" snapshot) and Payload into the
-// decision row. This test only logs which fields keep a raw control or bidi rune.
-func TestAdvW17NeutraliseGapNonTextFieldsCarryRawAgentBytes(t *testing.T) {
-	raw := func(s string) bool { return neutraliseText(s) != s }
+// Tool.Name/Output and the other tool strings leave Next neutralised; Tool.Input
+// and Request.Payload stay raw (the digest and callbackStale are over the raw
+// bytes) and are neutralised only where rendered. The frames go through Next,
+// the one seam, not through the adapter's internal decoders.
+func TestAdvW17NeutraliseNonTextFieldsAreNeutralisedAtNext(t *testing.T) {
+	cl := w18aClaude(t)
+	next := func(frame string) Event {
+		t.Helper()
+		cl.wire.frames <- wireRead{raw: []byte(frame)}
+		ev, err := cl.Next(context.Background())
+		if err != nil {
+			t.Fatalf("Next(%s): %v", frame, err)
+		}
+		return ev
+	}
+	ev := next(`{"type":"assistant","session_id":"S","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash\u001b[2J","input":{"command":"\u001b]0;x\u0007"}}]}}`)
+	if len(ev.Tools) != 1 {
+		t.Fatalf("tools = %d", len(ev.Tools))
+	}
+	if ev.Tools[0].Name != `Bash\x1b[2J` {
+		t.Errorf("Tool.Name = %q", ev.Tools[0].Name)
+	}
+	if got := NeutraliseToolInput(ev.Tools[0].Input); strings.ContainsRune(got, 0x1b) || !json.Valid([]byte(got)) {
+		t.Errorf("rendered Tool.Input = %q, want valid JSON with no raw ESC", got)
+	}
+	ev = next(`{"type":"user","session_id":"S","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"\u001b[31mboom\u202e"}]}}`)
+	if len(ev.Tools) != 1 || ev.Tools[0].Output != `\x1b[31mboom\u{202E}` {
+		t.Errorf("Tool.Output = %+v", ev.Tools)
+	}
 
-	cl := &Claude{sessionID: "S", started: true}
-	ev, ok, err := cl.assistant(claudeFrame{Message: json.RawMessage(`{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash\u001b[2J","input":{"command":"\u001b]0;x\u0007"}}]}`)})
-	if err != nil || !ok || len(ev.Tools) != 1 {
-		t.Fatalf("assistant frame: ok=%v err=%v tools=%d", ok, err, len(ev.Tools))
+	// A permission request's payload is the provider's JSON and stays raw: it is
+	// what the approver's digest is over.
+	ev = next(`{"type":"control_request","request_id":"r1","session_id":"S","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls \u202e gnp.exe"}}}`)
+	if ev.Request == nil {
+		t.Fatal("no request captured")
 	}
-	if raw(ev.Tools[0].Name) {
-		t.Log("GAP: Claude Tool.Name keeps a raw ESC")
-	}
-	if raw(ev.Tools[0].Input) {
-		t.Log("GAP: Claude Tool.Input keeps raw control bytes (JSON-escaped input is decoded by claudeRaw only for string inputs)")
-	}
-	ev, ok, err = cl.userResults(claudeFrame{Message: json.RawMessage(`{"content":[{"type":"tool_result","tool_use_id":"t1","content":"\u001b[31mboom\u202e"}]}`)})
-	if err != nil || !ok {
-		t.Fatalf("user frame: ok=%v err=%v", ok, err)
-	}
-	if raw(ev.Tools[0].Output) {
-		t.Log("GAP: Claude Tool.Output keeps raw ESC and bidi bytes")
-	}
-
-	// A permission request's payload is the provider's JSON, passed through.
-	cl.turnID = "T"
-	cl.pending, cl.seen = map[string]*claudePending{}, map[string]bool{}
-	ev, ok, err = cl.capture(claudeFrame{RequestID: "r1", Request: json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls \u202e gnp.exe"}}`)})
-	if err != nil || !ok || ev.Request == nil {
-		t.Fatalf("capture: ok=%v err=%v", ok, err)
-	}
-	if strings.ContainsRune(ev.Request.Payload, 0x202e) {
-		t.Log("GAP: Request.Payload carries a raw U+202E to the approver")
+	if ev.Request.Digest != payloadDigest(ev.Request.Payload) {
+		t.Error("Request.Digest no longer matches Request.Payload")
 	}
 }
 

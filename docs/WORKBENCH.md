@@ -536,7 +536,14 @@ and 64 KiB effective configuration. The retained output is the turn text. When
 a tool snapshot fits entirely in what remains of that cap it is appended after
 a `[tools]` line as one JSON array, replaced by tool id rather than logged, and
 a snapshot that would be cut mid-JSON is omitted and the record marked
-truncated. A permission denial stays one text line and is not a tool row. Run
+truncated. Agent-authored strings are neutralised once, where the adapter hands
+an event to the host: a terminal control, a bidi control or an invisible rune
+(line and paragraph separators, BOM, soft hyphen, word joiners, Unicode tags)
+is shown as `\xNN` or `\u{XXXX}`, and a literal backslash is written `\\`, so
+`\x1b` in the record is agent text and `\\x1b` is a literal backslash-x1b.
+Tool input is neutralised when the snapshot is written and stays valid JSON
+(the same escapes as `\uXXXX`); an approval's payload is kept as the provider
+sent it, because its digest is over those bytes. A permission denial stays one text line and is not a tool row. Run
 history excludes the output and the effective configuration; GitPulse loads one
 detailed record on demand. Output truncation is explicit.
 

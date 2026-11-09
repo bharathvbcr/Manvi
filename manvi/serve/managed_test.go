@@ -681,6 +681,40 @@ func TestSavedOutputKeepsAFittingSnapshotAndDropsOneThatDoesNot(t *testing.T) {
 	}
 }
 
+// Tool.Input stays raw in the job (merging and callbackStale never see a
+// rewrite) and is neutralised where the snapshot is rendered: the recorded
+// snapshot carries no raw bidi or invisible rune, and the input inside it is
+// still a JSON document with the same meaning.
+func TestSavedOutputNeutralisesToolInputWhereItIsRendered(t *testing.T) {
+	raw := "{\"command\":\"ls \u202e \u2028 \U000E0041 \\\"q\\\" C:\\\\dir\"}"
+	job := &managedJob{}
+	job.tools = []codingagent.Tool{{ID: "t1", Name: "Bash", Status: "started", Input: raw}}
+	out, _ := savedOutput(job)
+	if job.tools[0].Input != raw {
+		t.Fatal("savedOutput rewrote the job's raw Tool.Input")
+	}
+	_, snapshot, ok := strings.Cut(out, toolsMarker)
+	if !ok {
+		t.Fatalf("no snapshot in %q", out)
+	}
+	for _, r := range []rune{0x202e, 0x2028, 0xE0041} {
+		if strings.ContainsRune(snapshot, r) {
+			t.Fatalf("snapshot carries raw %U: %q", r, snapshot)
+		}
+	}
+	var tools []codingagent.Tool
+	if err := json.Unmarshal([]byte(snapshot), &tools); err != nil || len(tools) != 1 {
+		t.Fatalf("snapshot is not parseable: %v %q", err, snapshot)
+	}
+	var input map[string]string
+	if err := json.Unmarshal([]byte(tools[0].Input), &input); err != nil {
+		t.Fatalf("Tool.Input is no longer valid JSON: %v %q", err, tools[0].Input)
+	}
+	if !strings.Contains(input["command"], `C:\dir`) || !strings.Contains(input["command"], `"q"`) {
+		t.Fatalf("Tool.Input changed meaning: %q", input["command"])
+	}
+}
+
 func TestManagedToolSnapshotIsCheckpointedWhileTheTurnRuns(t *testing.T) {
 	previous := outputCheckpoint
 	outputCheckpoint = 0

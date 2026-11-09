@@ -469,7 +469,15 @@ func (s *Agy) drain() error {
 		func(next wireRead) packet { return next.value }, s.event)
 }
 
+// Next returns the next provider event with every agent-authored string in it
+// neutralised (neutraliseEvent): the one seam all of this adapter's events leave
+// through, so no event-building path can bypass it.
 func (s *Agy) Next(ctx context.Context) (Event, error) {
+	e, err := s.next(ctx)
+	return neutraliseEvent(e), err
+}
+
+func (s *Agy) next(ctx context.Context) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.deferred) > 0 {
@@ -591,7 +599,7 @@ func (s *Agy) event(p packet) (Event, bool, error) {
 		if chunk.Type != "text" || chunk.Text == "" {
 			return Event{}, false, nil
 		}
-		return Event{Text: neutraliseText(chunk.Text)}, true, nil
+		return Event{Text: chunk.Text}, true, nil
 	case "tool_call", "tool_call_update":
 		name := update.Name
 		if !opaque(name) {

@@ -753,57 +753,192 @@ func callbackStale(request, source Request, sent, finished bool) bool {
 		request.Kind != source.Kind
 }
 
-// neutraliseText is the one place agent-authored text is made safe to record and
-// to show: a terminal or a bidi control in it would otherwise reach the host's
-// record, its terminal and its UI as an instruction rather than as what the agent
-// said. Nothing is dropped, so the record still shows what the agent sent: ESC
-// becomes the literal `\x1b`, every other C0 or C1 control and DEL becomes
-// `\xNN`, a bidi override, isolate or mark becomes `<U+202E>`, and a byte that is
-// not UTF-8 becomes `\xNN`. Newline, tab and a carriage return that starts a CRLF are kept. A valid multi-byte rune is
-// copied whole. Text with nothing to neutralise is returned as it came, without
-// allocating; otherwise one linear pass writes one buffer.
-func neutraliseText(s string) string {
-	first := -1
-	for i := 0; i < len(s); {
-		r, n := utf8.DecodeRuneInString(s[i:])
-		if mustNeutralise(r, n) && (r != '\r' || !crlfAt(s, i)) {
-			first = i
-			break
-		}
-		i += n
+// neutraliseText makes agent-authored text safe to record and to show: a terminal
+// or a bidi control in it would otherwise reach the host's record, its terminal
+// and its UI as an instruction rather than as what the agent said. Nothing is
+// dropped, so the record still shows what the agent sent. The rendering has one
+// escape character, the backslash, and the backslash itself is escaped, so a
+// reader can always tell a neutralised byte from text the agent wrote:
+//
+//   - a doubled backslash is one literal backslash;
+//   - `\xNN` is ESC, another C0 or C1 control, DEL, or a byte that is not UTF-8
+//     (so a literal `\x1b` in agent text reads `\\x1b`);
+//   - `\u{XXXX}` is an invisible, line-separator or bidi rune (U+00AD, U+061C,
+//     U+180E, U+200E/F, U+2028/2029, U+202A-202E, U+2060-2064, U+2066-2069,
+//     U+206A-206F, U+FEFF, U+FFF9-FFFB and the Unicode tag block U+E0000-E007F).
+//
+// Newline, tab and a carriage return that starts a CRLF are kept. A valid
+// multi-byte rune is copied whole. Text with nothing to neutralise is returned
+// as it came, without allocating; otherwise one linear pass writes one buffer.
+// The mapping is not idempotent (a second pass escapes the first pass's
+// backslashes), so each field is neutralised exactly once, at neutraliseEvent.
+func neutraliseText(s string) string { return neutralise(s, false) }
+
+// neutraliseJSON is neutraliseText for a field that is a JSON document: it keeps
+// the document parseable and meaning-preserving by writing each offending rune as
+// the JSON escape of that rune (\u001b, \u202e, a surrogate pair above U+FFFF)
+// and leaving every backslash alone. Whitespace between tokens is kept.
+func neutraliseJSON(s string) string { return neutralise(s, true) }
+
+// NeutraliseToolInput renders Tool.Input, which the adapters keep raw in the
+// Event, for a host record. A valid JSON document stays valid JSON; anything
+// else (a string input, or a document cut at the byte cap) is neutralised as text.
+func NeutraliseToolInput(s string) string {
+	if json.Valid([]byte(s)) {
+		return neutraliseJSON(s)
 	}
+	return neutraliseText(s)
+}
+
+func neutralise(s string, asJSON bool) string {
+	first := nextEscape(s, 0, asJSON)
 	if first < 0 {
 		return s
 	}
-	const hexDigits, lowerHex = "0123456789ABCDEF", "0123456789abcdef"
 	var b strings.Builder
 	b.Grow(len(s) + 3*(len(s)-first)/4 + 16)
-	b.WriteString(s[:first])
-	for i := first; i < len(s); {
+	i := 0
+	for first >= 0 {
+		b.WriteString(s[i:first])
+		r, n := utf8.DecodeRuneInString(s[first:])
+		writeEscape(&b, s[first:first+n], r, asJSON)
+		i = first + n
+		first = nextEscape(s, i, asJSON)
+	}
+	b.WriteString(s[i:])
+	return b.String()
+}
+
+// asciiSpecial marks the ASCII bytes needsEscape must look at: C0 controls other
+// than newline and tab, DEL, and the backslash. Everything else below 0x80 is
+// copied without decoding, which keeps the clean path a byte scan.
+var asciiSpecial = func() (t [utf8.RuneSelf]bool) {
+	for c := range t {
+		t[c] = (c < 0x20 && c != '\n' && c != '\t') || c == 0x7f || c == '\\'
+	}
+	return t
+}()
+
+// nextEscape returns the index of the first rune at or after from that must be
+// rewritten, or -1.
+func nextEscape(s string, from int, asJSON bool) int {
+	for i := from; i < len(s); {
+		if c := s[i]; c < utf8.RuneSelf {
+			if asciiSpecial[c] && needsEscape(s, i, rune(c), 1, asJSON) {
+				return i
+			}
+			i++
+			continue
+		}
 		r, n := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case !mustNeutralise(r, n) || (r == '\r' && crlfAt(s, i)):
-			b.WriteString(s[i : i+n])
-		case r == utf8.RuneError || r < 0x100:
-			// Invalid input is the byte itself (n == 1); a C0, DEL or C1 rune is
-			// below U+0100 and is shown by its code point.
-			v := r
-			if r == utf8.RuneError {
-				v = rune(s[i])
-			}
-			b.WriteString(`\x`)
-			b.WriteByte(lowerHex[v>>4])
-			b.WriteByte(lowerHex[v&0xf])
-		default:
-			b.WriteString("<U+")
-			for shift := 12; shift >= 0; shift -= 4 {
-				b.WriteByte(hexDigits[(r>>shift)&0xf])
-			}
-			b.WriteByte('>')
+		if mustNeutralise(r, n) {
+			return i
 		}
 		i += n
 	}
-	return b.String()
+	return -1
+}
+
+// writeEscape writes the rewritten form of the rune r, whose source text is raw.
+func writeEscape(b *strings.Builder, raw string, r rune, asJSON bool) {
+	const upperHex, lowerHex = "0123456789ABCDEF", "0123456789abcdef"
+	switch {
+	case r == '\\' && !asJSON:
+		b.WriteString(`\\`)
+	case asJSON:
+		writeJSONEscape(b, r, len(raw))
+	case r == utf8.RuneError || r < 0xa0:
+		// Invalid input is the byte itself (one byte); a C0, DEL or C1 rune is
+		// below U+00A0 and is shown by its code point.
+		v := r
+		if r == utf8.RuneError {
+			v = rune(raw[0])
+		}
+		b.WriteString(`\x`)
+		b.WriteByte(lowerHex[v>>4])
+		b.WriteByte(lowerHex[v&0xf])
+	default:
+		b.WriteString(`\u{`)
+		for shift := 20; shift >= 0; shift -= 4 {
+			if d := (r >> shift) & 0xf; d != 0 || shift <= 12 || r>>(shift+4) != 0 {
+				b.WriteByte(upperHex[d])
+			}
+		}
+		b.WriteByte('}')
+	}
+}
+
+// neutraliseEvent is the one seam agent-authored strings leave codingagent
+// through: every adapter's Next returns its event via this function (a source
+// test fails if one does not). It neutralises each string the host records or
+// shows, once:
+//
+//	neutralised: Event.Text, Event.Status; Tool.ID, Name, Status, ParentID, Output
+//	             (the same mapping on ID and ParentID, so a child still names its parent)
+//	raw by design, with the reason:
+//	  Tool.Input      a JSON document the host merges and truncates; serve renders it
+//	                  through NeutraliseToolInput when it writes the [tools] snapshot
+//	  Request         the whole value is the approval's evidence: callbackStale compares
+//	                  it with the adapter's retained copy and the digest is over the raw
+//	                  Payload, so any rewrite would stale every approval; its ID, Kind,
+//	                  ThreadID, TurnID, Questions[].ID are keys the provider matches on
+//	  TurnID, ResolvedID, CancelledID   opaque provider ids the host matches on
+//
+// The Tools slice is copied before a change, so adapter state is never mutated.
+func neutraliseEvent(e Event) Event {
+	e.Text = neutraliseText(e.Text)
+	e.Status = neutraliseText(e.Status)
+	var copied bool
+	for i, t := range e.Tools {
+		n := t
+		n.ID, n.Name, n.Status = neutraliseText(t.ID), neutraliseText(t.Name), neutraliseText(t.Status)
+		n.ParentID, n.Output = neutraliseText(t.ParentID), neutraliseText(t.Output)
+		if n == t {
+			continue
+		}
+		if !copied {
+			e.Tools = append([]Tool(nil), e.Tools...)
+			copied = true
+		}
+		e.Tools[i] = n
+	}
+	return e
+}
+
+// writeJSONEscape writes r as the JSON escape of that rune. An invalid byte
+// (n == 1) becomes U+FFFD, as encoding/json writes it.
+func writeJSONEscape(b *strings.Builder, r rune, n int) {
+	const lowerHex = "0123456789abcdef"
+	if r == utf8.RuneError && n == 1 {
+		r = 0xfffd
+	}
+	unit := func(u rune) {
+		b.WriteString(`\u`)
+		for shift := 12; shift >= 0; shift -= 4 {
+			b.WriteByte(lowerHex[(u>>shift)&0xf])
+		}
+	}
+	if r >= 0x10000 {
+		r -= 0x10000
+		unit(0xd800 + r>>10)
+		unit(0xdc00 + r&0x3ff)
+		return
+	}
+	unit(r)
+}
+
+// needsEscape reports whether the rune at s[i] (decoded with width n) must be
+// rewritten. In text mode a backslash is escaped and a carriage return is kept
+// only when it starts a CRLF; in JSON mode backslashes are the document's own
+// and every carriage return is inter-token whitespace.
+func needsEscape(s string, i int, r rune, n int, asJSON bool) bool {
+	switch r {
+	case '\\':
+		return !asJSON
+	case '\r':
+		return !asJSON && !crlfAt(s, i)
+	}
+	return mustNeutralise(r, n)
 }
 
 // crlfAt reports whether s[i] is a carriage return immediately followed by a
@@ -813,9 +948,9 @@ func crlfAt(s string, i int) bool {
 }
 
 // mustNeutralise reports whether r (decoded with width n) is invalid UTF-8, a
-// C0 control other than newline and tab, DEL, a C1 control, or a bidi control.
-// A carriage return is reported here; neutraliseText keeps the one that starts a
-// CRLF (crlfAt) before it asks.
+// C0 control other than newline and tab, DEL, a C1 control, or an invisible,
+// line-separator or bidi rune (the list is on neutraliseText). A carriage return
+// is reported here; needsEscape keeps the one that starts a CRLF.
 func mustNeutralise(r rune, n int) bool {
 	switch {
 	case r == utf8.RuneError:
@@ -824,11 +959,11 @@ func mustNeutralise(r rune, n int) bool {
 		return r != '\n' && r != '\t'
 	case r < 0x7f:
 		return false
-	case r <= 0x9f:
+	case r <= 0x9f, r == 0x00ad, r == 0x061c, r == 0x180e, r == 0x200e, r == 0x200f:
 		return true
-	case r == 0x061c, r == 0x200e, r == 0x200f:
+	case r == 0x2028, r == 0x2029, r >= 0x202a && r <= 0x202e, r >= 0x2060 && r <= 0x2064, r >= 0x2066 && r <= 0x206f:
 		return true
-	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+	case r == 0xfeff, r >= 0xfff9 && r <= 0xfffb, r >= 0xe0000 && r <= 0xe007f:
 		return true
 	}
 	return false

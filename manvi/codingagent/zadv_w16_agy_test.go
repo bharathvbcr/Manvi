@@ -912,7 +912,7 @@ func requireNeutralised(t *testing.T, events []Event) {
 		}
 		all.WriteString(e.Text)
 	}
-	for _, want := range []string{`\x1b]0;pwned\x07\x1b[2J`, "<U+202E>evil<U+2066>"} {
+	for _, want := range []string{`\x1b]0;pwned\x07\x1b[2J`, `\u{202E}evil\u{2066}`} {
 		if !strings.Contains(all.String(), want) {
 			t.Fatalf("the record does not show %q: %q", want, all.String())
 		}

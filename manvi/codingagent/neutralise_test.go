@@ -18,7 +18,11 @@ func TestNeutraliseText(t *testing.T) {
 		{"esc", "a\x1b[31mred", `a\x1b[31mred`},
 		{"osc and bell", "\x1b]0;t\x07", `\x1b]0;t\x07`},
 		{"all controls", "\x00\x01\x08\x0d\x1b\x7f\u0080\u009f", `\x00\x01\x08\x0d\x1b\x7f\x80\x9f`},
-		{"bidi", "a\u202ab\u202ec\u2066d\u2069e\u200ef\u200fg\u061ch", "a<U+202A>b<U+202E>c<U+2066>d<U+2069>e<U+200E>f<U+200F>g<U+061C>h"},
+		{"bidi", "a\u202ab\u202ec\u2066d\u2069e\u200ef\u200fg\u061ch", `a\u{202A}b\u{202E}c\u{2066}d\u{2069}e\u{200E}f\u{200F}g\u{061C}h`},
+		{"invisible", "a\u2028b\u2029c\ufeffd\u00ade\u180ef\u2060g\u2064h\u206ai\u206fj\ufff9k\ufffbl", `a\u{2028}b\u{2029}c\u{FEFF}d\u{00AD}e\u{180E}f\u{2060}g\u{2064}h\u{206A}i\u{206F}j\u{FFF9}k\u{FFFB}l`},
+		{"tag block", "a\U000E0001\U000E0041\U000E007Fb", `a\u{E0001}\u{E0041}\u{E007F}b`},
+		{"backslash is escaped", `C:\dir \x1b \u{202E} <U+202E>`, `C:\\dir \\x1b \\u{202E} <U+202E>`},
+		{"escape beside literal escape", "\x1b" + `\x1b`, `\x1b\\x1b`},
 		{"keeps newline tab and a real replacement char", "a\n\tb�c", "a\n\tb�c"},
 		{"invalid utf8", "a\xffb\xc3", `a\xffb\xc3`},
 		{"truncated multibyte then control", "\xe2\x82\x1b", `\xe2\x82\x1b`},
@@ -37,9 +41,6 @@ func TestNeutraliseText(t *testing.T) {
 			}
 			if !utf8.ValidString(got) {
 				t.Fatalf("output is not valid UTF-8: %q", got)
-			}
-			if neutraliseText(got) != got {
-				t.Fatalf("not idempotent on %q", got)
 			}
 		})
 	}
@@ -74,6 +75,7 @@ func BenchmarkNeutraliseText1MiB(b *testing.B) {
 	for _, tc := range []struct{ name, text string }{
 		{"clean", benchText("The quick brown fox, jumps over the lazy dog \u2603.\n")},
 		{"controls", benchText("ab\x1b[31mcd\u202eef gh ij kl mn op qr st uv\n")},
+		{"backslashes", benchText(`C:\Users\agent\src\main.go: printf("%d\n")` + "\n")},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.SetBytes(int64(len(tc.text)))
