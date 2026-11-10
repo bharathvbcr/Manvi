@@ -1033,6 +1033,7 @@ pub fn execute(request: WorkerRequest) -> Result<Value> {
                 },
                 &window,
                 ATTACH_SETTLE,
+                attach.focus,
             )?;
             window.foreground = exact_foreground(&app, &window)?;
             serde_json::to_value(window)

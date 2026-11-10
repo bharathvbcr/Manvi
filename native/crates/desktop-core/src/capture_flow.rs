@@ -121,18 +121,29 @@ pub struct SettlePolicy {
 /// (undelivered, so the host's bounded attach retry applies); a partial tree is
 /// never returned as ready. Every walk re-checks the process and window
 /// identity, so a window that changed identity fails instead of settling.
+/// `focus_raised` only words the refusal; it does not change the reads.
 pub fn settle_attach<S: CaptureSource>(
     src: &mut S,
     window: &Window,
     policy: SettlePolicy,
+    focus_raised: bool,
 ) -> Result<TreeRead> {
     let started = src.now_ms();
     let mut previous = src.tree(window)?;
     loop {
         if src.now_ms().saturating_sub(started) >= policy.deadline_ms {
+            // Settling follows the focus step on purpose (an unfocused window's
+            // tree is not the tree that will be observed), so a refusal here
+            // can come after the window was already raised. Still undelivered:
+            // no input was sent; the host's bounded retry applies.
             return Err(err(
                 "accessibility_pending",
-                "The accessibility tree was still changing when attach checked it",
+                if focus_raised {
+                    "The accessibility tree was still changing when attach checked it; \
+                     the window focus had already been raised by this attempt"
+                } else {
+                    "The accessibility tree was still changing when attach checked it"
+                },
             ));
         }
         src.pause_ms(policy.interval_ms);
@@ -209,6 +220,7 @@ mod tests {
         walks: usize,
         images: usize,
         pauses: Vec<u64>,
+        log: Vec<String>,
         clock: u64,
         walk_cost_ms: u64,
         image_window: Window,
@@ -222,6 +234,7 @@ mod tests {
                 walks: 0,
                 images: 0,
                 pauses: vec![],
+                log: vec![],
                 clock: 1_000,
                 walk_cost_ms: 0,
                 image_window: window(),
@@ -230,10 +243,12 @@ mod tests {
     }
     impl CaptureSource for Fake {
         fn window(&mut self) -> Result<Window> {
+            self.log.push("window".into());
             self.enumerations += 1;
             Ok(window())
         }
         fn tree(&mut self, _window: &Window) -> Result<TreeRead> {
+            self.log.push("tree".into());
             self.walks += 1;
             self.clock += self.walk_cost_ms;
             if let Some(next) = self.trees.pop_front() {
@@ -242,6 +257,7 @@ mod tests {
             Ok(self.last.clone().expect("script has a tree"))
         }
         fn image(&mut self, _window: &Window) -> Result<(Window, Screenshot)> {
+            self.log.push("image".into());
             self.enumerations += 1;
             self.images += 1;
             Ok((self.image_window.clone(), shot()))
@@ -250,9 +266,51 @@ mod tests {
             self.clock
         }
         fn pause_ms(&mut self, ms: u64) {
+            self.log.push(format!("pause:{ms}"));
             self.pauses.push(ms);
             self.clock += ms;
         }
+    }
+
+    #[test]
+    fn observe_reads_in_exactly_this_order() {
+        // The image sits between the two walks and after the pause; moving it
+        // outside them, or pausing after it, breaks what masking relies on.
+        let mut src = Fake::new(vec![read(20)]);
+        observe_bracketed(&mut src, "7:1:2:/x").unwrap();
+        assert_eq!(
+            src.log,
+            ["window", "tree", "pause:150", "image", "tree"],
+            "window read, walk, pause, window read and image, walk"
+        );
+    }
+
+    #[test]
+    fn attach_settle_reads_in_exactly_this_order() {
+        let mut src = Fake::new(vec![read(19), read(20), read(20)]);
+        settle_attach(&mut src, &window(), POLICY, false).unwrap();
+        assert_eq!(
+            src.log,
+            ["tree", "pause:150", "tree", "pause:150", "tree"],
+            "walks only, one pause between each pair"
+        );
+    }
+
+    #[test]
+    fn an_unsettled_attach_after_focus_says_that_focus_had_moved() {
+        let growing: Vec<_> = (1..200).map(read).collect();
+        let mut src = Fake::new(growing.clone());
+        let plain = settle_attach(&mut src, &window(), POLICY, false).unwrap_err();
+        assert!(!plain.message.contains("focus"), "{}", plain.message);
+        let mut src = Fake::new(growing);
+        let raised = settle_attach(&mut src, &window(), POLICY, true).unwrap_err();
+        assert_eq!(raised.code, "accessibility_pending");
+        assert_eq!(raised.delivery, crate::Delivery::NotSent);
+        assert!(
+            raised.message.contains("already been raised"),
+            "{}",
+            raised.message
+        );
     }
 
     const POLICY: SettlePolicy = SettlePolicy {
@@ -305,7 +363,7 @@ mod tests {
     fn attach_waits_out_a_tree_that_is_still_growing() {
         // The recorded first-observation failure: 19 nodes, then 20.
         let mut src = Fake::new(vec![read(19), read(20), read(20)]);
-        let ready = settle_attach(&mut src, &window(), POLICY).unwrap();
+        let ready = settle_attach(&mut src, &window(), POLICY, false).unwrap();
         assert_eq!(
             ready.nodes.len(),
             20,
@@ -321,7 +379,7 @@ mod tests {
         let growing: Vec<_> = (1..200).map(read).collect();
         let mut src = Fake::new(growing);
         src.walk_cost_ms = 40;
-        let failure = settle_attach(&mut src, &window(), POLICY).unwrap_err();
+        let failure = settle_attach(&mut src, &window(), POLICY, false).unwrap_err();
         assert_eq!(failure.code, "accessibility_pending");
         assert_eq!(failure.delivery, crate::Delivery::NotSent);
         assert!(
@@ -334,7 +392,7 @@ mod tests {
     #[test]
     fn attach_accepts_an_already_stable_tree_after_one_interval() {
         let mut src = Fake::new(vec![read(5)]);
-        let ready = settle_attach(&mut src, &window(), POLICY).unwrap();
+        let ready = settle_attach(&mut src, &window(), POLICY, false).unwrap();
         assert_eq!(ready.nodes.len(), 5);
         assert_eq!(src.walks, 2);
         assert_eq!(src.pauses, vec![POLICY.interval_ms]);
@@ -345,7 +403,7 @@ mod tests {
         let mut partial = read(5);
         partial.complete = false;
         let mut src = Fake::new(vec![read(5), partial.clone(), partial]);
-        let ready = settle_attach(&mut src, &window(), POLICY).unwrap();
+        let ready = settle_attach(&mut src, &window(), POLICY, false).unwrap();
         assert!(!ready.complete, "completeness comes from the stable pair");
         assert_eq!(src.walks, 3);
     }

@@ -37,7 +37,7 @@ func waitForAttachment(ctx context.Context, attach func(context.Context) (Sessio
 	var diagnostics AttachmentReadiness
 	for {
 		if err := ctx.Err(); err != nil {
-			return Session{}, diagnostics, err
+			return Session{}, diagnostics, budgetError(err, diagnostics)
 		}
 		diagnostics.Attempts++
 		s, err := attach(ctx)
@@ -45,7 +45,7 @@ func waitForAttachment(ctx context.Context, attach func(context.Context) (Sessio
 			return s, diagnostics, nil
 		}
 		if ctx.Err() != nil {
-			return s, diagnostics, ctx.Err()
+			return s, diagnostics, budgetError(ctx.Err(), diagnostics)
 		}
 		var native *BrokerError
 		if s.ID != "" || s.Epoch != 0 || !errors.As(err, &native) || native.Delivery != "not_sent" ||
@@ -60,8 +60,24 @@ func waitForAttachment(ctx context.Context, attach func(context.Context) (Sessio
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return s, diagnostics, ctx.Err()
+			return s, diagnostics, budgetError(ctx.Err(), diagnostics)
 		case <-timer.C:
 		}
+	}
+}
+
+// budgetError keeps the context error (errors.Is still matches Canceled and
+// DeadlineExceeded, and it is still not a *BrokerError) and adds why the last
+// attempt was retried, so a target whose tree never settled does not surface as
+// a bare "context deadline exceeded". With no transient reason there is nothing
+// to add and the context error is returned as it was.
+func budgetError(ctxErr error, d AttachmentReadiness) error {
+	switch d.LastTransientCode {
+	case "":
+		return ctxErr
+	case "accessibility_pending":
+		return fmt.Errorf("native attachment not ready after %d attempt(s): the accessibility tree kept changing (%s): %w", d.Attempts, d.LastTransientCode, ctxErr)
+	default:
+		return fmt.Errorf("native attachment not ready after %d attempt(s): last reason %s: %w", d.Attempts, d.LastTransientCode, ctxErr)
 	}
 }

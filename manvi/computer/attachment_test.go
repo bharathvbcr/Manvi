@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,6 +128,42 @@ func TestAttachmentReadinessWaitsForRegistrationButNotDisabledAccessibility(t *t
 				t.Fatalf("inactive accessibility retried: calls=%d err=%v", calls, err)
 			}
 		})
+	}
+}
+
+// A busy application whose tree never settles used to end as a bare "context
+// deadline exceeded": the budget cut the backoff and the last transient reason
+// survived only in the diagnostics struct. The error now says why, while it
+// still is the context error and is not a *BrokerError, so nothing that matches
+// either changes.
+func TestAttachmentReadinessNamesTheLastTransientReasonWhenTheBudgetRunsOut(t *testing.T) {
+	for _, tc := range []struct {
+		code string
+		want string
+	}{
+		{"accessibility_pending", "accessibility tree kept changing"},
+		{"window_missing", "window_missing"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			_, admission, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
+				return Session{}, &BrokerError{Code: tc.code, Delivery: "not_sent"}
+			}, attachmentAttempts, time.Hour)
+			var native *BrokerError
+			if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &native) ||
+				!strings.Contains(err.Error(), tc.want) || admission.LastTransientCode != tc.code {
+				t.Fatalf("budget exhaustion hid the reason: %+v %v", admission, err)
+			}
+		})
+	}
+	// Caller cancellation with no transient reason stays the bare context error.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := waitForAttachment(ctx, func(context.Context) (Session, error) {
+		return Session{}, nil
+	}, 1, time.Hour); err != context.Canceled {
+		t.Fatalf("decorated an error with no reason to add: %v", err)
 	}
 }
 

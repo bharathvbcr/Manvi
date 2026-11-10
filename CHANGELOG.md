@@ -118,8 +118,13 @@ under **Unreleased** in the same commit as the code.
   two accessibility walks 150 ms apart to be equal before it reports the window
   ready; a tree still changing then is `accessibility_pending` (not sent), which
   the host's bounded attach retry already handles, instead of a ready window
-  whose first observation then fails with `observation_inconsistent`. No wire
-  field changed, and no screenshot is taken that is not returned.
+  whose first observation then fails with `observation_inconsistent`. When the
+  host's ten second attach budget ends first, the error now names the last
+  transient reason (still the context error, still not a `BrokerError`). No wire
+  field changed, and no screenshot is taken that is not returned. Privacy note:
+  attach now reads the full accessibility tree, text values included, at least
+  twice and discards it in memory (the fingerprint comparison is all that is
+  kept); before, attach read only window metadata. Nothing is logged or stored.
 - **Record format change: neutralised agent text is now unambiguous**
   (ft-bf52b840). Every agent-authored string a managed run records is
   neutralised once, at the adapters' `Next`, and rendered so that no input
