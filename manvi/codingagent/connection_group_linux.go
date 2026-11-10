@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"golang.org/x/sys/unix"
 )
 
 // groupMembers lists the processes whose process group is pgid with each one's
@@ -49,7 +51,21 @@ func anyMemberInGroup(pgid int, was []groupMember) bool {
 	return false
 }
 
+// readProcStat reads one /proc/<pid>/stat with three syscalls and no
+// allocation beyond the string: os.ReadFile would stat the file and try to
+// register it with the runtime's poller first, which this poll, run every
+// groupPoll for every snapshotted member, does not need. The errno is returned
+// as is, for memberInGroup to classify.
 func readProcStat(pid int) (string, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	return string(raw), err
+	fd, err := unix.Open("/proc/"+strconv.Itoa(pid)+"/stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", err
+	}
+	defer unix.Close(fd) //nolint:errcheck // a read-only descriptor
+	var buf [1024]byte
+	n, err := unix.Read(fd, buf[:])
+	if err != nil {
+		return "", err
+	}
+	return string(buf[:n]), nil
 }

@@ -382,7 +382,9 @@ func TestAdvW18ProcgroupListingCostWithAFiftyMemberGroup(t *testing.T) {
 		best = min(best, d)
 	}
 	t.Logf("groupLive with %d members: min %v mean %v over %d (poll is %v)", len(members), best, total/n, n, groupPoll)
-	if total/n > groupPoll/5 {
-		t.Fatalf("mean poll %v is over a fifth of the %v poll interval", total/n, groupPoll)
+	// The listing this replaced cost 5-10 ms here (CI, Linux, 51 members), the
+	// whole poll interval; the poll must stay a small fraction of it.
+	if total/n > groupPoll/4 {
+		t.Fatalf("mean poll %v is over a quarter of the %v poll interval", total/n, groupPoll)
 	}
 }

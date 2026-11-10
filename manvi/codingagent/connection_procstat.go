@@ -19,7 +19,8 @@ import (
 func memberInGroup(read func(pid int) (string, error), pgid int, m groupMember) bool {
 	raw, err := read(m.pid)
 	if err != nil {
-		return !(errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH))
+		gone := errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+		return !gone
 	}
 	group, start, ok := parseProcStat(raw)
 	if !ok {

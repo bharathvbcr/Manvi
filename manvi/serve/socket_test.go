@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -734,6 +735,13 @@ func TestSocketTwoTakeoversAtOnceLeaveExactlyOneController(t *testing.T) {
 	var wins int
 	for i, client := range []*socketClient{b, c} {
 		resp, err := client.read(10 * time.Second)
+		if errors.Is(err, io.EOF) {
+			// Replaced by the other takeover before its own answer was written:
+			// a takeover closes whoever controls, and this one controlled for
+			// no time at all. The ends of the run still hold (one winner, one
+			// writer); only a hang or a wrong answer is a failure here.
+			continue
+		}
 		if err != nil || resp.ID != ids[i] {
 			t.Fatalf("takeover %d: %+v %v", i, resp, err)
 		}
