@@ -66,6 +66,9 @@ type RunOptions struct {
 	Session  Session
 	Privacy  PrivacyPolicy
 	OnRecord func(Record) error
+	// reduce replaces workflow.Reduce; tests set it to drive the loop with a
+	// reducer they control. Nil means workflow.Reduce.
+	reduce func(*workflow.Program, workflow.State, workflow.Event, map[string]workflow.Value) (workflow.State, []workflow.Command, error)
 }
 type RunResult struct {
 	Initial workflow.State   `json:"initial"`
@@ -265,16 +268,8 @@ func (r *Run) Wait(ctx context.Context) (RunResult, error) {
 		return out, r.err
 	}
 }
-func (r *Run) Done() <-chan struct{} { return r.done }
-func ownedState(s workflow.State) workflow.State {
-	s.Observation = s.Observation.Clone()
-	m := make(map[string]workflow.Value, len(s.Outputs))
-	for k, v := range s.Outputs {
-		m[k] = v
-	}
-	s.Outputs = m
-	return s
-}
+func (r *Run) Done() <-chan struct{}             { return r.done }
+func ownedState(s workflow.State) workflow.State { return s.Clone() }
 func ownedObservation(o Observation) Observation {
 	nodes := make([]Node, len(o.Nodes))
 	for i, n := range o.Nodes {
@@ -315,6 +310,58 @@ type workResult struct {
 	receipt             *Receipt
 	fingerprint         [32]byte
 	takeoverFingerprint [32]byte
+	// retain is set by a successful observe or observe_after so the next step may
+	// resolve against it instead of capturing the same screen again.
+	retain *retainedObservation
+}
+
+// reuseMaxAge bounds how old a retained observation may be when a later step
+// resolves against it. It is far below the broker's own 120 s observation TTL:
+// the broker only refuses an observation that is long dead, while this keeps a
+// step's decision close to the screen the previous step left behind.
+const reuseMaxAge = 5 * time.Second
+
+// captureKeeper holds the one capture a later read step may resolve against, and
+// enforces the reuse invariant from the acts this loop actually launched,
+// independently of the reducer: the first frame taken after any dispatch is never
+// kept, whatever kind of capture it is (a step's post-action capture, the one
+// after a recovery click, the first one after a resume), so that a reducer fault
+// cannot make the runner keep one. Only a frame that follows another frame since
+// the last dispatch is kept.
+type captureKeeper struct {
+	since int
+	kept  *retainedObservation
+}
+
+// screenChanged is called for everything the loop does that can change what is on
+// screen, other than capturing or looking up: every act, every control, and every
+// window activation (a command that refocuses). Not for "dispatch" as the
+// implementation happens to define it: for anything that reaches the desktop and
+// is not a pure capture or lookup.
+func (k *captureKeeper) screenChanged() { k.since, k.kept = 0, nil }
+
+// captured is called for every capture the loop took; got is nil when the
+// capture produced no usable frame.
+func (k *captureKeeper) captured(got *retainedObservation) {
+	k.kept = nil
+	if got == nil {
+		return
+	}
+	k.since++
+	if k.since >= 2 {
+		k.kept = got
+	}
+}
+
+// retainedObservation is the sanitized result of the latest capture plus the
+// executor-private digests computed from the raw frame. Raw pixels are not kept:
+// reuse is limited to semantic locators, which need only the sanitized tree and
+// the semantic digest. It lives in the run goroutine and is never recorded.
+type retainedObservation struct {
+	safe     Observation
+	semantic [32]byte
+	takeover [32]byte
+	at       time.Time
 }
 
 func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.State) {
@@ -329,10 +376,15 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	var assistedUsed bool
 	var reviewed [32]byte
 	var reviewedTakeover [32]byte
+	var keeper captureKeeper
 	var apply func(workflow.Event) ([]workflow.Command, error)
 	lastClock := time.Now()
 	interventionStart := time.Time{}
 	var elapsed time.Duration
+	reduce := opts.reduce
+	if reduce == nil {
+		reduce = workflow.Reduce
+	}
 	onRecord := opts.OnRecord
 	var recordMu sync.Mutex
 	record := func(rec Record) error {
@@ -371,6 +423,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				s.Phase = workflow.Failed
 			}
 			s.Reason = opts.Privacy.Scrub(executionErr.Error())
+			// This state was set without Reduce (the error event itself could not be
+			// journaled), so the clearing Reduce does must be done here: a finished
+			// state carries neither field, which a strict decoder would reject.
+			s.Reuse, s.Captures = "", 0
 		}
 		r.mu.Lock()
 		r.state = ownedState(s)
@@ -415,7 +471,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		if safe.Observation.Value.Type == "string" {
 			safe.Observation.Value.Text = opts.Privacy.Scrub(safe.Observation.Value.Text)
 		}
-		next, commands, err := workflow.Reduce(opts.Program, s, safe, opts.Inputs)
+		next, commands, err := reduce(opts.Program, s, safe, opts.Inputs)
 		if err != nil {
 			return nil, err
 		}
@@ -450,7 +506,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			executionErr = errors.New("execution attempted overlapping native requests")
 			return
 		}
-		if command.Kind == "act" || (command.Kind == "observe" && (command.Step.Kind == "extract" || command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait")) {
+		if command.Kind == "act" || ((command.Kind == "observe" || command.Kind == "resolve") && (command.Step.Kind == "extract" || command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait")) {
 			actor := "automation"
 			if command.RecoveryID != "" {
 				actor = "recovery"
@@ -462,13 +518,20 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		}
 		pending = true
 		inputPending = command.Kind == "act"
+		if inputPending || command.Refocus {
+			// An act outdates every earlier capture; a refocus activates the window
+			// before it captures. Either way the next frame is the first one taken
+			// after something that can change the screen.
+			keeper.screenChanged()
+		}
+		retained := keeper.kept
 		workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		cancelWork = cancel
 		capturedSession := session
 		outputs := ownedState(s).Outputs
 		review := reviewed
 		go func() {
-			result := perform(workCtx, opts, capturedSession, outputs, command, review)
+			result := perform(workCtx, opts, capturedSession, outputs, command, review, retained)
 			select {
 			case results <- result:
 			case <-ctx.Done():
@@ -509,6 +572,20 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				continue
 			}
 			pending = false
+			// The reuse invariant, derived here from the acts this loop actually
+			// launched, independently of the reducer: the first frame taken after a
+			// dispatch is never kept, whatever kind of capture it is (a step's
+			// post-action capture, the capture after a recovery click, the first one
+			// after a resume). Only a frame that follows another frame since the
+			// last dispatch is.
+			switch result.command.Kind {
+			case "observe", "observe_after":
+				keeper.captured(result.retain)
+			case "resolve":
+				// Keeps the capture it resolved against, and its age.
+			default:
+				keeper.screenChanged()
+			}
 			inputPending = result.human && result.receipt != nil && result.receipt.Delivery != "not_sent"
 			if cancelWork != nil {
 				cancelWork()
@@ -666,6 +743,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			if control.reply != nil {
 				control.reply <- nil
 			}
+			// Any control (a pause, a takeover, a human or assisted action, a
+			// resume) can change the screen or the epoch under a kept capture and
+			// can itself be a dispatch, so none survives one.
+			keeper.screenChanged()
 			switch control.Kind {
 			case "approve", "deny":
 				event := workflow.Event{Kind: control.Kind, ActionID: control.ActionID, Observation: workflow.Observation{ID: control.ObservationID}}
@@ -925,7 +1006,97 @@ func resolveLadder(ctx context.Context, d Desktop, s Session, observationID stri
 	return ResolvedTarget{}, 0, lastErr
 }
 
-func perform(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, reviewed [32]byte) workResult {
+// performResolve decides a step against the capture the previous step left
+// behind, in place of a new one. It is an optimisation that may only confirm: a
+// stale or foreign capture, a failed resolve, or anything the reducer would
+// have to guess about answers reuse_declined, and the run observes afresh
+// exactly as it did before captures were reused. Only context errors are
+// returned as errors, because those must stop the run, not retry it; a timeout of
+// the step's own context is a decline.
+func performResolve(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, kept *retainedObservation) workResult {
+	r := workResult{epoch: session.Epoch, command: command}
+	decline := func(code, reason string) workResult {
+		// A timeout of this step's own context is only a reason not to trust the
+		// reused capture; a caller cancellation still stops the run.
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return workResult{epoch: session.Epoch, command: command, err: err}
+		}
+		return workResult{epoch: session.Epoch, command: command, event: workflow.Event{Kind: "reuse_declined", ActionID: command.ActionID, FailureCode: code, Reason: reason}}
+	}
+	switch {
+	case kept == nil || kept.safe.ID == "" || kept.safe.ID != command.ObservationID:
+		return decline("stale_observation", "no retained capture matches the observation to resolve against")
+	case kept.safe.Epoch != session.Epoch || !kept.safe.Complete:
+		return decline("stale_observation", "retained capture belongs to another epoch or is incomplete")
+	case time.Since(kept.at) > reuseMaxAge:
+		return decline("stale_observation", "retained capture is too old to decide this step")
+	}
+	for _, rung := range command.Selector.Ladder() {
+		if rung.Visual != nil {
+			return decline("unsupported", "visual locators are resolved against a fresh capture")
+		}
+	}
+	safe := ownedObservation(kept.safe)
+	r.observation = &safe
+	r.fingerprint, r.takeoverFingerprint = kept.semantic, kept.takeover
+	o := workflow.Observation{ID: safe.ID, Complete: true, Target: command.Step.Target}
+	target, index, err := resolveLadder(ctx, opts.Desktop, session, safe.ID, command.Selector)
+	if err != nil {
+		return decline("unresolved", err.Error())
+	}
+	if target.Node == nil {
+		return decline("unresolved", "resolve returned no node")
+	}
+	node := *target.Node
+	o.Matches, o.StrategyIndex, o.TargetID, o.Actionable = 1, index, node.ID, node.Enabled
+	o.Value, err = observedValue(opts, outputs, command, safe, node)
+	if err != nil {
+		return decline("unresolved", err.Error())
+	}
+	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
+	return r
+}
+
+// observedValue derives the typed value an observation exports for node from the
+// sanitized tree. Merely scrubbing the serialized string event misses numeric
+// projections.
+func observedValue(opts RunOptions, outputs map[string]workflow.Value, command workflow.Command, safe Observation, node Node) (workflow.Value, error) {
+	var visible *Node
+	for i := range safe.Nodes {
+		if safe.Nodes[i].ID == node.ID {
+			visible = &safe.Nodes[i]
+			break
+		}
+	}
+	if visible == nil {
+		return workflow.Value{}, errors.New("resolved target missing from sanitized observation")
+	}
+	text := visible.Name
+	if visible.Value != nil {
+		text = *visible.Value
+	}
+	typ := "string"
+	currency := ""
+	if command.Step.Kind == "extract" {
+		typ = command.Step.OutputType
+		currency = command.Step.Currency
+	} else if command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait" {
+		if command.Step.Predicate.Op != "exists" {
+			expected, err := workflow.Resolve(command.Step.Predicate.Expected, opts.Inputs, outputs)
+			if err != nil {
+				return workflow.Value{}, err
+			}
+			typ = expected.Type
+			currency = expected.Currency
+		}
+	}
+	return ParseValue(text, typ, currency)
+}
+
+func perform(ctx context.Context, opts RunOptions, session Session, outputs map[string]workflow.Value, command workflow.Command, reviewed [32]byte, kept *retainedObservation) workResult {
+	if command.Kind == "resolve" {
+		return performResolve(ctx, opts, session, outputs, command, kept)
+	}
 	r := workResult{epoch: session.Epoch, command: command}
 	if command.DelayMillis > 0 {
 		timer := time.NewTimer(time.Duration(command.DelayMillis) * time.Millisecond)
@@ -1021,11 +1192,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 				r.err = err
 				return r
 			}
-			r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
-			if err != nil {
-				r.err = err
-				return r
-			}
+			r.fingerprint = r.approval(raw, command.Selector.Primary())
 			if r.fingerprint != reviewed {
 				r.err = &approvalChanged{}
 				return r
@@ -1075,6 +1242,10 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			return r
 		}
 	}
+	// A monotonic reading taken before the call, so the frame is never dated later
+	// than it was taken and a wall-clock step cannot stretch or shrink its age.
+	// The broker's own frame stamps are wall-clock and are not used.
+	capturedAt := time.Now()
 	raw, err := opts.Desktop.Observe(ctx, session)
 	if err != nil {
 		r.err = err
@@ -1085,11 +1256,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		return r
 	}
 	safe := *r.observation
-	r.fingerprint, err = approvalFingerprint(raw, command.Selector.Primary())
-	if err != nil {
-		r.err = err
-		return r
-	}
+	r.fingerprint = r.approval(raw, command.Selector.Primary())
 	o := workflow.Observation{ID: raw.ID, Complete: raw.Complete, Reason: raw.TruncatedReason, Target: command.Step.Target}
 	if command.Kind != "observe_after" {
 		if err := validateVisualPrivacy(raw, opts.Privacy, command.Selector.Primary().Visual); err != nil {
@@ -1125,40 +1292,7 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 			node := *target.Node
 			o.TargetID = node.ID
 			o.Actionable = node.Enabled
-			// Derive every exported typed value from the sanitized tree. Merely
-			// scrubbing the serialized string event misses numeric projections.
-			var visible *Node
-			for i := range safe.Nodes {
-				if safe.Nodes[i].ID == node.ID {
-					visible = &safe.Nodes[i]
-					break
-				}
-			}
-			if visible == nil {
-				r.err = errors.New("resolved target missing from sanitized observation")
-				return r
-			}
-			text := visible.Name
-			if visible.Value != nil {
-				text = *visible.Value
-			}
-			typ := "string"
-			currency := ""
-			if command.Step.Kind == "extract" {
-				typ = command.Step.OutputType
-				currency = command.Step.Currency
-			} else if command.Step.Kind == "assert" || command.Step.Kind == "branch" || command.Step.Kind == "wait" {
-				if command.Step.Predicate.Op != "exists" {
-					expected, e := workflow.Resolve(command.Step.Predicate.Expected, opts.Inputs, outputs)
-					if e != nil {
-						r.err = e
-						return r
-					}
-					typ = expected.Type
-					currency = expected.Currency
-				}
-			}
-			o.Value, err = ParseValue(text, typ, currency)
+			o.Value, err = observedValue(opts, outputs, command, safe, node)
 			if err != nil {
 				r.err = err
 				return r
@@ -1166,6 +1300,11 @@ func perform(ctx context.Context, opts RunOptions, session Session, outputs map[
 		}
 	}
 	r.event = workflow.Event{Kind: "observed", ActionID: command.ActionID, Observation: o}
+	// Offered to the run loop, which keeps it only if it is not the first frame
+	// taken since the last dispatch (see the result handler).
+	if raw.Complete {
+		r.retain = &retainedObservation{safe: ownedObservation(safe), semantic: semanticFingerprint(raw), takeover: r.takeoverFingerprint, at: capturedAt}
+	}
 	return r
 }
 

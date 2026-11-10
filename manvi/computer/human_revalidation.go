@@ -5,20 +5,28 @@ import (
 	"errors"
 	"slices"
 	"strings"
+
+	"github.com/bharathvbcr/Manvi/manvi/workflow"
 )
 
 func (r *workResult) capture(raw Observation, privacy PrivacyPolicy) error {
-	safe, err := Sanitize(raw, privacy)
-	if err != nil {
-		return err
-	}
-	fingerprint, err := frameFingerprint(raw)
+	safe, fingerprint, err := sanitizeFrame(raw, privacy, true)
 	if err != nil {
 		return err
 	}
 	r.observation = &safe
 	r.takeoverFingerprint = fingerprint
 	return nil
+}
+
+// approval is approvalFingerprint of the frame capture just took. The frame
+// digest of a visual step is the takeover fingerprint capture already holds, so
+// that step does not decode the same frame a further time.
+func (r *workResult) approval(raw Observation, s workflow.Selector) [32]byte {
+	if s.Visual != nil {
+		return r.takeoverFingerprint
+	}
+	return semanticFingerprint(raw)
 }
 
 // A review is captured before focus invalidates the native observation and HID

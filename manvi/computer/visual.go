@@ -190,11 +190,18 @@ func approvalFingerprint(o Observation, s workflow.Selector) ([32]byte, error) {
 // frameFingerprint remains executor-private: even masked regions participate in
 // review revalidation, without exporting a digest of potentially guessable data.
 func frameFingerprint(o Observation) ([32]byte, error) {
-	semantic := semanticFingerprint(o)
 	rgba, err := frameRGBA(o)
 	if err != nil {
 		return [32]byte{}, err
 	}
+	return frameDigest(o, rgba)
+}
+
+// frameDigest binds the semantic state, the unmasked NRGBA pixels and the window
+// geometry. Callers that already hold the decoded frame pass its pixels instead
+// of decoding the same bytes again.
+func frameDigest(o Observation, rgba []byte) ([32]byte, error) {
+	semantic := semanticFingerprint(o)
 	h := sha256.New()
 	h.Write(semantic[:])
 	h.Write(rgba)
@@ -226,9 +233,18 @@ func frameRGBA(o Observation) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return nrgbaPix(img), nil
+}
+
+// nrgbaPix is img as tightly packed NRGBA bytes. A decoded NRGBA frame already
+// is that, so it is returned without a copy; anything else is converted.
+func nrgbaPix(img image.Image) []byte {
+	if n, ok := img.(*image.NRGBA); ok && n.Stride == 4*n.Rect.Dx() {
+		return n.Pix[:4*n.Rect.Dx()*n.Rect.Dy()]
+	}
 	rgba := image.NewNRGBA(img.Bounds())
 	draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
-	return rgba.Pix, nil
+	return rgba.Pix
 }
 
 // Public matches bind the pixels a human actually sees. Native raw frame hashes

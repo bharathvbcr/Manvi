@@ -153,8 +153,16 @@ type State struct {
 	Attempts    int   `json:"attempts"`
 	// ActionAttempt advances only after explicit recoverable not_sent input.
 	// It stays monotonic across pauses so a native deduplication ID is never reused.
-	ActionAttempt  int              `json:"action_attempt,omitempty"`
-	Observation    Observation      `json:"observation"`
+	ActionAttempt int         `json:"action_attempt,omitempty"`
+	Observation   Observation `json:"observation"`
+	// Reuse is the id of an observation the pending "resolve" command was told
+	// to resolve against. It is set only between that command and its answer;
+	// empty in every terminal state and in every trace written before it existed.
+	Reuse string `json:"reuse,omitempty"`
+	// Captures counts the complete frames taken since the last thing that can
+	// change what is on screen (an act, a resume, a window activation). It exists only
+	// while the run is observing; see Reduce.
+	Captures       int              `json:"captures,omitempty"`
 	Outputs        map[string]Value `json:"outputs"`
 	Outcome        string           `json:"outcome,omitempty"`
 	RecoveryCounts map[string]int   `json:"recovery_counts,omitempty"`
@@ -249,7 +257,11 @@ func (s State) ActionID(p *Program) string {
 	}
 	return id
 }
-func copyState(s State) State {
+
+// Clone returns a State that shares no map or pointer with s. It is the one
+// complete copy: Reduce works on a clone, and callers that hand a State to
+// others clone it so their writes cannot reach the run.
+func (s State) Clone() State {
 	s.Observation = s.Observation.Clone()
 	m := make(map[string]Value, len(s.Outputs))
 	for k, v := range s.Outputs {
@@ -269,6 +281,39 @@ func copyState(s State) State {
 // Reduce is pure. A rejected envelope leaves the caller's state untouched.
 // Clock advances, observations and human decisions must arrive as events.
 func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (State, []Command, error) {
+	next, commands, err := reduce(p, previous, event, inputs)
+	if err == nil {
+		if next.Phase != Observing {
+			// Reuse names a resolve that is pending, which only an observing run has.
+			// Whatever ended or paused the run, the state it leaves behind carries no
+			// trace of one, so a reader of the encoded state never meets the field.
+			next.Reuse = ""
+		}
+		if next.Phase != Observing && next.Phase != PostAction {
+			// Captures counts frames since the last dispatch, and a run only
+			// observes between dispatches. An act command is emitted only with the
+			// phase Acting (the three sites that assign it: a step's action, an
+			// approved action, a recovery), and a human or assisted action is taken
+			// while paused; every one of those phases is outside Observing and
+			// PostAction, so every dispatch starts the count again. Nothing re-enters
+			// Observing from Acting or Paused with a count in hand.
+			next.Captures = 0
+		}
+		for _, c := range commands {
+			if c.Refocus {
+				// A command that activates the window first changes what is on
+				// screen as surely as an act does: the frame it takes is the first
+				// since a screen-affecting call, with no settle in between. Refocus
+				// is the only flag a command carries that reaches the desktop other
+				// than to capture or look up.
+				next.Captures = 0
+			}
+		}
+	}
+	return next, commands, err
+}
+
+func reduce(p *Program, previous State, event Event, inputs map[string]Value) (State, []Command, error) {
 	event.Observation = event.Observation.Clone()
 	if p == nil || previous.CapabilitySHA256 != p.Digest() {
 		return previous, nil, errors.New("program identity mismatch")
@@ -286,7 +331,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if event.NextEpoch <= previous.Epoch {
 			return previous, nil, errors.New("fence requires a newer broker epoch")
 		}
-		next := copyState(previous)
+		next := previous.Clone()
 		next.Epoch = event.NextEpoch
 		next.Sequence = event.Sequence
 		next.ElapsedMillis = event.ElapsedMillis
@@ -298,7 +343,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 	if previous.StepIndex < 0 || previous.StepIndex >= len(p.spec.Steps) {
 		return previous, nil, errors.New("invalid step state")
 	}
-	s := copyState(previous)
+	s := previous.Clone()
 	s.Sequence = event.Sequence
 	s.ElapsedMillis = event.ElapsedMillis
 	if s.ElapsedMillis > int64(p.spec.Limits.ActiveSeconds)*1000 {
@@ -326,6 +371,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		}
 		s.Epoch = event.NextEpoch
 		s.Observation = Observation{}
+		s.Reuse = ""
 		if s.Phase == PostAction {
 			s.ResumePhase = PostAction
 		} else if s.Phase != Paused {
@@ -394,6 +440,18 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		if event.ActionID != s.ActionID(p) || event.Observation.ID == "" {
 			return previous, nil, errors.New("observation action binding missing")
 		}
+		reused := s.Reuse
+		if (reused == "" || event.Observation.ID != reused) && event.Observation.Complete {
+			// A complete frame was taken (an incomplete one is not a usable frame
+			// and is not counted, as in the runner); a reused answer is not a frame.
+			s.Captures++
+		}
+		if s.Reuse != "" {
+			s.Reuse = ""
+			if event.Observation.ID == reused && !reuseAccepted(p, step, event.Observation, inputs, s.Outputs) {
+				return declineReuse(s, command("observe"))
+			}
+		}
 		if !event.Observation.Complete {
 			if s.Phase != PostAction {
 				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -403,7 +461,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return retryObservation(p, s, command("observe"), FailureIncompleteObserve, "incomplete observation: "+event.Observation.Reason)
 		}
 		if s.Phase == PostAction {
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		}
 		if event.Observation.Matches != 1 || event.Observation.TargetID == "" {
 			if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -437,7 +495,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				return fail(s, FailureCheckpoint, "observed currency differs")
 			}
 			s.Outputs[step.Output] = event.Observation.Value
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		case "assert", "branch", "wait":
 			var expected Value
 			if step.Predicate.Op != "exists" {
@@ -450,9 +508,9 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			passed := Compare(event.Observation.Value, step.Predicate.Op, expected)
 			if step.Kind == "branch" {
 				if passed {
-					return advance(p, s, step.Next)
+					return advance(p, s, step.Next, s.settled(event.Observation.ID))
 				}
-				return advance(p, s, step.Otherwise)
+				return advance(p, s, step.Otherwise, s.settled(event.Observation.ID))
 			}
 			if !passed {
 				if step.Kind == "wait" {
@@ -460,7 +518,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 				}
 				return fail(s, FailureCheckpoint, "checkpoint predicate failed")
 			}
-			return advance(p, s, step.Next)
+			return advance(p, s, step.Next, s.settled(event.Observation.ID))
 		default:
 			if !event.Observation.Actionable {
 				if next, cmds, applied, err := consultRecovery(p, s, step, event.Observation, inputs); applied {
@@ -477,6 +535,11 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			s.Phase = Acting
 			return s, []Command{command("act")}, nil
 		}
+	case "reuse_declined":
+		if s.Phase != Observing || s.Reuse == "" || event.ActionID != s.ActionID(p) {
+			return previous, nil, errors.New("reuse decline does not match a pending resolve")
+		}
+		return declineReuse(s, command("observe"))
 	case "approve":
 		if s.Phase != AwaitingApproval || event.ActionID != s.ActionID(p) || event.Observation.ID != s.Observation.ID {
 			return previous, nil, errors.New("approval does not match pending action and observation")
@@ -565,6 +628,7 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 		s.ResumePhase = s.Phase
 		s.Phase = Paused
 		s.Observation = Observation{}
+		s.Reuse = ""
 		s.settle(FailureExternalInteraction, "external interaction requires human reconciliation: "+event.Reason)
 		return s, nil, nil
 	case "human_unknown":
@@ -680,13 +744,101 @@ func retryObservation(p *Program, s State, cmd Command, cause FailureCode, reaso
 	cmd.DelayMillis = 200
 	return s, []Command{cmd}, nil
 }
-func advance(p *Program, s State, next string) (State, []Command, error) {
+
+// declineReuse abandons a pending resolve and asks for a fresh observation, the
+// same command the step boundary emitted before observations were reused. It
+// consumes no attempt and adds no delay: nothing was wrong with the screen, the
+// reused observation just could not be trusted to decide this step.
+func declineReuse(s State, fresh Command) (State, []Command, error) {
+	s.Reuse = ""
+	s.Observation = Observation{}
+	fresh.ObservationID, fresh.TargetID = "", ""
+	return s, []Command{fresh}, nil
+}
+
+// The reuse invariant. The first capture taken after anything that can change
+// what is on screen is never reusable, whatever kind of capture it is and
+// whatever caused the change: a step's action, a recovery, an approved action, a
+// human action, a resume, or a window activation (a command carrying Refocus).
+// It is taken with no settle delay, so it can still show the screen as it was
+// before the application repainted, and a value, a wait or a branch decided on
+// it can be wrong. A capture is reusable only if at least one other capture was
+// taken after the last such change and before it, which is exactly the settle
+// every read got when each step observed afresh. A step may then resolve against such a
+// capture only if it is itself a read step with no dispatch in between: one
+// consistent snapshot read more than once. State.Captures counts the frames
+// since the last dispatch; observe_after, the observe after a recovery click and
+// the first observe after a resume are all "the first capture" by that count,
+// with no case of their own.
+//
+// reusable reports whether step is one that may read such a snapshot: a read
+// step (extract, assert, branch, wait) with read effect and only semantic
+// locators. Approval steps are shown the freshest screen, and visual anchors are
+// validated against the frame they were captured with.
+func reusable(p *Program, step Step) bool {
+	switch step.Kind {
+	case "extract", "assert", "branch", "wait":
+	default:
+		return false
+	}
+	if step.Effect != "read" || step.Target == "" {
+		return false
+	}
+	for _, rung := range p.spec.Targets[step.Target].Ladder() {
+		if rung.Visual != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// settled is id when the capture just taken is not the first since the last
+// dispatch, and "" when it is: only a settled capture may be offered to a
+// following read step.
+func (s State) settled(id string) string {
+	if s.Captures >= 2 {
+		return id
+	}
+	return ""
+}
+
+// reuseAccepted is true when a resolve against a reused observation answered
+// cleanly enough to decide the step. Anything else (ambiguity, a missing or
+// disabled target, a predicate that did not hold) is re-decided on a fresh
+// observation, at no cost in attempts.
+func reuseAccepted(p *Program, step Step, o Observation, inputs, outputs map[string]Value) bool {
+	if !o.Complete || o.Matches != 1 || o.TargetID == "" {
+		return false
+	}
+	switch step.Kind {
+	case "extract":
+		return true
+	case "assert", "branch", "wait":
+		var expected Value
+		if step.Predicate.Op != "exists" {
+			var err error
+			if expected, err = Resolve(step.Predicate.Expected, inputs, outputs); err != nil {
+				return false
+			}
+		}
+		return Compare(o.Value, step.Predicate.Op, expected)
+	}
+	return o.Actionable
+}
+
+// advance moves to the step after next. observed is the id of the fresh
+// observation a read step was just decided on, or "" when the step was decided
+// on a post-action capture, which is never reused (see reusable). A following
+// read step resolves against observed instead of photographing the same screen
+// again.
+func advance(p *Program, s State, next, observed string) (State, []Command, error) {
 	i := s.StepIndex + 1
 	if next != "" {
 		i = p.positions[next]
 	}
 	s.StepIndex = i
 	s.Observation = Observation{}
+	s.Reuse = ""
 	s.Attempts = 0
 	s.ActionAttempt = 0
 	s.settle("", "")
@@ -703,7 +855,12 @@ func advance(p *Program, s State, next string) (State, []Command, error) {
 		return finishConclude(p, s, step)
 	}
 	s.Phase = Observing
-	return s, []Command{{Kind: "observe", ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), Epoch: s.Epoch}}, nil
+	cmd := Command{Kind: "observe", ActionID: s.ActionID(p), Step: step, Selector: p.spec.Targets[step.Target].Clone(), Epoch: s.Epoch}
+	if observed != "" && reusable(p, step) {
+		cmd.Kind, cmd.ObservationID = "resolve", observed
+		s.Reuse = observed
+	}
+	return s, []Command{cmd}, nil
 }
 
 // Replay reconstructs recorded transitions. It has no executor to dispatch the
