@@ -181,7 +181,13 @@ func TestZAdvW9AtomicAliasSwapNeverReadsOutside(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(base, "alias")
-	targets := []string{repo, filepath.Join(base, "REPO"), filepath.Join(repo, ".")}
+	// Spellings of one repository that resolve on every file system. The case
+	// variant is one only where the volume folds case; on a case-sensitive one
+	// base/REPO is a different, absent path and a dangling alias is rightly outside.
+	targets := []string{repo, filepath.Join(repo, "."), filepath.Join(repo, "sub", "..")}
+	if _, err := os.Stat(filepath.Join(base, "REPO")); err == nil {
+		targets = append(targets, filepath.Join(base, "REPO"))
+	}
 	if err := os.Symlink(targets[0], alias); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}

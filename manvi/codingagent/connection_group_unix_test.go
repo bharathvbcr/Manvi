@@ -272,9 +272,7 @@ func TestAZombieOrphanedInTheGroupByAParentOutsideItIsReportedLive(t *testing.T)
 // the product reads as a free number.
 func listStubMember(t *testing.T) {
 	t.Helper()
-	old := snapshotGroup
-	snapshotGroup = func(int) ([]groupMember, error) { return []groupMember{{pid: 1, start: 1}}, nil }
-	t.Cleanup(func() { snapshotGroup = old })
+	stubSnapshot(t, func(int) ([]groupMember, error) { return []groupMember{{pid: 1, start: 1}}, nil })
 }
 
 // A member that outlives SIGKILL cannot be produced with a real process, so the

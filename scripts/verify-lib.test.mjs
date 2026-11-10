@@ -79,6 +79,41 @@ test("the suite run reports its failing packages and returns 2", () => {
   assert.doesNotMatch(r.err, /ok {2}p\/good/);
 });
 
+test("a failed test's own output survives a later test that floods the package output", () => {
+  const events = [
+    { Action: "output", Package: "p/bad", Test: "TestX", Output: "    x_test.go:9: the real reason\n" },
+    { Action: "fail", Package: "p/bad", Test: "TestX" },
+    ...Array.from({ length: 500 }, (_, i) => ({ Action: "output", Package: "p/bad", Test: "TestLater", Output: `noise ${i}\n` })),
+    { Action: "pass", Package: "p/bad", Test: "TestLater" },
+    { Action: "fail", Package: "p/bad" },
+  ].map((e) => JSON.stringify(e));
+  const r = gate(capture(`gate_go_test_json . "$PWD/events.json" ./...`), {
+    go: `${events.map((e) => `echo '${e}'`).join("\n")}\nexit 1`,
+  });
+  assert.match(r.out, /^status=2$/m, r.out + r.err);
+  assert.match(r.err, /the real reason/);
+  assert.match(r.err, /failed tests:\n {2}p\/bad\.TestX/);
+  assert.doesNotMatch(r.err, /noise 499/);
+});
+
+test("failed-test output is bounded to 60 lines per test and 20 tests", () => {
+  const events = [];
+  for (let t = 0; t < 25; t++) {
+    for (let i = 0; i < 100; i++) events.push({ Action: "output", Package: "p/bad", Test: `T${t}`, Output: `T${t} line ${i}\n` });
+    events.push({ Action: "fail", Package: "p/bad", Test: `T${t}` });
+  }
+  events.push({ Action: "fail", Package: "p/bad" });
+  const lines = events.map((e) => JSON.stringify(e));
+  const r = gate(capture(`gate_go_test_json . "$PWD/events.json" ./...`), {
+    go: `${lines.map((e) => `echo '${e}'`).join("\n")}\nexit 1`,
+  });
+  assert.match(r.err, /T0 line 99/);
+  assert.doesNotMatch(r.err, /T0 line 39\b/);
+  assert.match(r.err, /T0 line 40\b/);
+  assert.match(r.err, /5 more failed tests not shown/);
+  assert.doesNotMatch(r.err, /T20 line 99/);
+});
+
 test("the event report counts top-level passes per package, skips and observed results", () => {
   const ev = [
     ["pass", "m/manvi/devcouncil", "TestA"],

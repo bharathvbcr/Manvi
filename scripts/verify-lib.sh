@@ -124,7 +124,7 @@ gate_go_test_json() {
   if (( status != 0 )); then
     python3 - "$json" <<'PY' >&2
 import json, sys
-failed, tests, out = set(), [], []
+failed, tests, out, by_test = set(), [], [], {}
 for line in open(sys.argv[1], errors="replace"):
     line = line.strip()
     if not line.startswith("{"):
@@ -133,17 +133,29 @@ for line in open(sys.argv[1], errors="replace"):
         e = json.loads(line)
     except ValueError:
         continue
-    if e.get("Action") == "fail" and not e.get("Test"):
-        failed.add(e.get("Package"))
-    if e.get("Action") == "fail" and e.get("Test"):
-        tests.append(e["Package"] + "." + e["Test"])
-    if e.get("Action") == "output":
-        out.append((e.get("Package"), e.get("Output", "")))
-shown = [text for pkg, text in out if pkg in failed]
+    pkg, test, action = e.get("Package"), e.get("Test"), e.get("Action")
+    if action == "fail" and not test:
+        failed.add(pkg)
+    if action == "fail" and test:
+        tests.append((pkg, test))
+    if action == "output":
+        out.append((pkg, e.get("Output", "")))
+        if test:
+            by_test.setdefault((pkg, test), []).append(e.get("Output", ""))
+# A package's own output is dominated by whatever test ran last, so a failure
+# is read from the failing test's output. Packages that failed without a
+# failing test (build error, panic, timeout) fall back to their tail.
+with_tests = {pkg for pkg, _ in tests}
+shown = [text for pkg, text in out if pkg in failed and pkg not in with_tests]
 print("".join(shown[-400:]), end="")
+for pkg, test in tests[:20]:
+    print("--- failed %s.%s (last 60 output lines):" % (pkg, test))
+    print("".join(by_test.get((pkg, test), [])[-60:]), end="")
+if len(tests) > 20:
+    print("... %d more failed tests not shown" % (len(tests) - 20))
 if tests:
     print("failed tests:")
-    print("\n".join("  " + t for t in tests[:50]))
+    print("\n".join("  " + pkg + "." + test for pkg, test in tests[:50]))
 PY
     tail -n 50 "$err" >&2
     printf 'go test -json exited %d\n' "$status" >&2

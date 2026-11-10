@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // groupMembers lists the processes whose process group is pgid with each one's
@@ -38,25 +39,33 @@ func groupMembers(pgid int) ([]groupMember, error) {
 	return members, nil
 }
 
-// parseProcStat returns the process group (field 5) and start time (field 22)
-// of one /proc/<pid>/stat line.
-func parseProcStat(line string) (pgrp int, start int64, ok bool) {
-	end := strings.LastIndexByte(line, ')')
-	if end < 0 {
-		return 0, 0, false
+// anyMemberInGroup says whether any of was is still in process group pgid,
+// reading only those processes' /proc/<pid>/stat. Cost is the snapshot's size,
+// not the machine's process count.
+func anyMemberInGroup(pgid int, was []groupMember) bool {
+	for _, m := range was {
+		if memberInGroup(readProcStat, pgid, m) {
+			return true
+		}
 	}
-	// After ")": state is field 3, so field n is index n-3.
-	fields := strings.Fields(line[end+1:])
-	if len(fields) < 20 {
-		return 0, 0, false
-	}
-	pgrp, err := strconv.Atoi(fields[2])
+	return false
+}
+
+// readProcStat reads one /proc/<pid>/stat with three syscalls and no
+// allocation beyond the string: os.ReadFile would stat the file and try to
+// register it with the runtime's poller first, which this poll, run every
+// groupPoll for every snapshotted member, does not need. The errno is returned
+// as is, for memberInGroup to classify.
+func readProcStat(pid int) (string, error) {
+	fd, err := unix.Open("/proc/"+strconv.Itoa(pid)+"/stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return 0, 0, false
+		return "", err
 	}
-	start, err = strconv.ParseInt(fields[19], 10, 64)
+	defer unix.Close(fd) //nolint:errcheck // a read-only descriptor
+	var buf [1024]byte
+	n, err := unix.Read(fd, buf[:])
 	if err != nil {
-		return 0, 0, false
+		return "", err
 	}
-	return pgrp, start, true
+	return string(buf[:n]), nil
 }
