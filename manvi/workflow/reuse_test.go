@@ -196,9 +196,9 @@ func answerWith(t *testing.T, p *Program, s State, e Event) (State, []Command) {
 func atSnapshot(t *testing.T) (*Program, State) {
 	t.Helper()
 	p := twoReads(t)
-	s, cmds := atBoundary(t, p)
+	s, _ := atBoundary(t, p)
 	money := Value{Type: "money", Integer: 5, Currency: "USD"}
-	s, cmds = answerWith(t, p, s, Event{Kind: "observed", Observation: Observation{ID: "snap1", Complete: true, Matches: 1, TargetID: "n", Actionable: true, Value: money}})
+	s, cmds := answerWith(t, p, s, Event{Kind: "observed", Observation: Observation{ID: "snap1", Complete: true, Matches: 1, TargetID: "n", Actionable: true, Value: money}})
 	if len(cmds) != 1 || cmds[0].Kind != "resolve" || cmds[0].ObservationID != "snap1" || s.Reuse != "snap1" {
 		t.Fatalf("the second read step must resolve against the first one's fresh capture: %+v %+v", s, cmds)
 	}

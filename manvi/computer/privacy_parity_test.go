@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"reflect"
 	"testing"
 
@@ -40,7 +41,7 @@ func oracleSanitize(raw Observation, policy PrivacyPolicy) (Observation, error) 
 	if err != nil {
 		return Observation{}, errors.New("invalid PNG screenshot")
 	}
-	if config.Width < 1 || config.Height < 1 || int64(config.Width)*int64(config.Height) > 8_000_000 || uint32(config.Width) != raw.Screenshot.Width || uint32(config.Height) != raw.Screenshot.Height {
+	if config.Width < 1 || config.Height < 1 || int64(config.Width)*int64(config.Height) > 8_000_000 || int64(config.Width) != int64(raw.Screenshot.Width) || int64(config.Height) != int64(raw.Screenshot.Height) {
 		return Observation{}, errors.New("screenshot dimensions are invalid")
 	}
 	w := raw.Window.Bounds
@@ -106,7 +107,7 @@ func oracleFrameFingerprint(o Observation) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width < 1 || cfg.Height < 1 || uint64(cfg.Width)*uint64(cfg.Height) > 8_000_000 || uint32(cfg.Width) != o.Screenshot.Width || uint32(cfg.Height) != o.Screenshot.Height {
+	if err != nil || cfg.Width < 1 || cfg.Height < 1 || uint64(cfg.Width)*uint64(cfg.Height) > 8_000_000 || int64(cfg.Width) != int64(o.Screenshot.Width) || int64(cfg.Height) != int64(o.Screenshot.Height) {
 		return [32]byte{}, errors.New("invalid frame dimensions")
 	}
 	img, err := png.Decode(bytes.NewReader(raw))
@@ -149,11 +150,27 @@ func encodePNG(t testing.TB, img image.Image) string {
 	return base64.StdEncoding.EncodeToString(b.Bytes())
 }
 
+// byteOf narrows a test-chosen pixel value that is already within 0..255.
+func byteOf(n int) uint8 {
+	if n < 0 || n > 255 {
+		panic("pixel value out of byte range")
+	}
+	return uint8(n)
+}
+
+// dim32 narrows a test-chosen image dimension.
+func dim32(n int) uint32 {
+	if n < 0 || int64(n) > math.MaxUint32 {
+		panic("image dimension out of range")
+	}
+	return uint32(n)
+}
+
 // patterned returns a frame with structure at every scale, so it compresses like
 // a real window rather than like noise or like a flat colour.
 func patterned(w, h int, kind string) image.Image {
 	set := func(x, y int) color.NRGBA {
-		v := uint8((x*7 + y*3) % 251)
+		v := byteOf((x*7 + y*3) % 251)
 		if (x/32+y/32)%2 == 0 {
 			v = 255 - v
 		}
@@ -161,7 +178,7 @@ func patterned(w, h int, kind string) image.Image {
 		if kind == "alpha" && (x+y)%5 == 0 {
 			a = 128
 		}
-		return color.NRGBA{v, uint8(x % 256), uint8(y % 256), a}
+		return color.NRGBA{v, byteOf(x % 256), byteOf(y % 256), a}
 	}
 	switch kind {
 	case "rgba":
@@ -185,7 +202,7 @@ func patterned(w, h int, kind string) image.Image {
 		m := image.NewPaletted(image.Rect(0, 0, w, h), pal)
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
-				m.SetColorIndex(x, y, uint8((x/8+y/8)%4))
+				m.SetColorIndex(x, y, byteOf((x/8+y/8)%4))
 			}
 		}
 		return m
@@ -205,7 +222,7 @@ func parityObservation(t testing.TB, w, h int, kind string, nodes []Node) Observ
 	return Observation{ID: "o", Epoch: 1, Complete: true,
 		Window:     Window{PID: 1, ID: 2, Title: "Bank - synthetic-secret", Bounds: Bounds{0, 0, float64(w), float64(h)}, Scale: 1},
 		Nodes:      nodes,
-		Screenshot: Screenshot{MIMEType: "image/png", Base64: encodePNG(t, patterned(w, h, kind)), Width: uint32(w), Height: uint32(h)}}
+		Screenshot: Screenshot{MIMEType: "image/png", Base64: encodePNG(t, patterned(w, h, kind)), Width: dim32(w), Height: dim32(h)}}
 }
 
 func sensitiveNode(id, name string, x, y, w, h float64) Node {

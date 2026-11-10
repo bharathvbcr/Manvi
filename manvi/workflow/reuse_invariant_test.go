@@ -148,7 +148,7 @@ func TestIncompleteFramesDoNotCountTowardsReuse(t *testing.T) {
 // dispatched). No resolve may name a capture from an earlier era or the first
 // complete one in its era. Deterministic: a fixed seed, bounded size.
 func TestPropertyNoResolveNamesAFirstOrOlderCapture(t *testing.T) {
-	rng := rand.New(rand.NewSource(20261109))
+	rng := rand.New(rand.NewSource(20261109)) //nolint:gosec // a fixed seed makes the generated programs reproducible; this is not a security use
 	var resolves, recoveries, humans, resumes, refocuses, incompletes, branchResolves int
 	for i := 0; i < 600; i++ {
 		p := randomProgram(t, rng)
