@@ -25,30 +25,31 @@ func TestMemberInGroupClassifiesEveryStatOutcome(t *testing.T) {
 		name string
 		stat string
 		err  error
-		// procGone makes the read of this process's own entry fail as absent too,
-		// which is what an unmounted /proc looks like.
-		procGone bool
-		want     bool
+		// selfErr makes the read of this process's own entry fail: absent is what
+		// an unmounted /proc looks like; any other failure proves nothing either.
+		selfErr error
+		want    bool
 	}{
-		{"still the same member", stat(pgid, start), nil, false, true},
-		{"ENOENT means gone", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.ENOENT}, false, false},
-		{"fs.ErrNotExist means gone", "", fs.ErrNotExist, false, false},
-		{"ESRCH means gone", "", &fs.PathError{Op: "read", Path: "/proc/4242/stat", Err: syscall.ESRCH}, false, false},
-		{"EACCES fails closed", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.EACCES}, false, true},
-		{"EPERM fails closed", "", os.ErrPermission, false, true},
-		{"an unrecognised error fails closed", "", errors.New("boom"), false, true},
-		{"a stat that does not parse fails closed", "garbage", nil, false, true},
-		{"an empty stat fails closed", "", nil, false, true},
-		{"member ENOENT but /proc missing counts live", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.ENOENT}, true, true},
-		{"member ESRCH but /proc missing counts live", "", &fs.PathError{Op: "read", Path: "/proc/4242/stat", Err: syscall.ESRCH}, true, true},
-		{"moved to another group", stat(pgid+1, start), nil, false, false},
-		{"same pid, different start (pid reuse)", stat(pgid, start+1), nil, false, false},
+		{"still the same member", stat(pgid, start), nil, nil, true},
+		{"ENOENT means gone", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.ENOENT}, nil, false},
+		{"fs.ErrNotExist means gone", "", fs.ErrNotExist, nil, false},
+		{"ESRCH means gone", "", &fs.PathError{Op: "read", Path: "/proc/4242/stat", Err: syscall.ESRCH}, nil, false},
+		{"EACCES fails closed", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.EACCES}, nil, true},
+		{"EPERM fails closed", "", os.ErrPermission, nil, true},
+		{"an unrecognised error fails closed", "", errors.New("boom"), nil, true},
+		{"a stat that does not parse fails closed", "garbage", nil, nil, true},
+		{"an empty stat fails closed", "", nil, nil, true},
+		{"member ENOENT but /proc missing counts live", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.ENOENT}, &fs.PathError{Op: "open", Path: "/proc/self/stat", Err: syscall.ENOENT}, true},
+		{"member ESRCH but /proc missing counts live", "", &fs.PathError{Op: "read", Path: "/proc/4242/stat", Err: syscall.ESRCH}, &fs.PathError{Op: "open", Path: "/proc/self/stat", Err: syscall.ENOENT}, true},
+		{"member ENOENT but this process's own /proc read fails otherwise (EACCES) counts live", "", &fs.PathError{Op: "open", Path: "/proc/4242/stat", Err: syscall.ENOENT}, &fs.PathError{Op: "open", Path: "/proc/self/stat", Err: syscall.EACCES}, true},
+		{"moved to another group", stat(pgid+1, start), nil, nil, false},
+		{"same pid, different start (pid reuse)", stat(pgid, start+1), nil, nil, false},
 	}
 	for _, tc := range cases {
 		read := func(pid int) (string, error) {
 			if pid == os.Getpid() {
-				if tc.procGone {
-					return "", &fs.PathError{Op: "open", Path: "/proc/self/stat", Err: syscall.ENOENT}
+				if tc.selfErr != nil {
+					return "", tc.selfErr
 				}
 				return stat(os.Getpid(), 1), nil
 			}

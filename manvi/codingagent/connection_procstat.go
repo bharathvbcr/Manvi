@@ -27,8 +27,11 @@ func memberInGroup(read func(pid int) (string, error), pgid int, m groupMember) 
 		if !isAbsent(err) {
 			return true
 		}
+		// The member is gone only if /proc demonstrably works: this process's own
+		// entry must read. Any failure there (absent, EACCES, EIO) proves nothing,
+		// so the member counts as present and the group fails closed.
 		_, selfErr := read(os.Getpid())
-		return isAbsent(selfErr)
+		return selfErr != nil
 	}
 	group, start, ok := parseProcStat(raw)
 	if !ok {
