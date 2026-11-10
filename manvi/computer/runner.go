@@ -66,6 +66,9 @@ type RunOptions struct {
 	Session  Session
 	Privacy  PrivacyPolicy
 	OnRecord func(Record) error
+	// reduce replaces workflow.Reduce; tests set it to drive the loop with a
+	// reducer they control. Nil means workflow.Reduce.
+	reduce func(*workflow.Program, workflow.State, workflow.Event, map[string]workflow.Value) (workflow.State, []workflow.Command, error)
 }
 type RunResult struct {
 	Initial workflow.State   `json:"initial"`
@@ -330,9 +333,12 @@ type captureKeeper struct {
 	kept  *retainedObservation
 }
 
-// dispatched is called for every act launched and every control that can act or
-// change the epoch.
-func (k *captureKeeper) dispatched() { k.since, k.kept = 0, nil }
+// screenChanged is called for everything the loop does that can change what is on
+// screen, other than capturing or looking up: every act, every control, and every
+// window activation (a command that refocuses). Not for "dispatch" as the
+// implementation happens to define it: for anything that reaches the desktop and
+// is not a pure capture or lookup.
+func (k *captureKeeper) screenChanged() { k.since, k.kept = 0, nil }
 
 // captured is called for every capture the loop took; got is nil when the
 // capture produced no usable frame.
@@ -375,6 +381,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 	lastClock := time.Now()
 	interventionStart := time.Time{}
 	var elapsed time.Duration
+	reduce := opts.reduce
+	if reduce == nil {
+		reduce = workflow.Reduce
+	}
 	onRecord := opts.OnRecord
 	var recordMu sync.Mutex
 	record := func(rec Record) error {
@@ -413,6 +423,10 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 				s.Phase = workflow.Failed
 			}
 			s.Reason = opts.Privacy.Scrub(executionErr.Error())
+			// This state was set without Reduce (the error event itself could not be
+			// journaled), so the clearing Reduce does must be done here: a finished
+			// state carries neither field, which a strict decoder would reject.
+			s.Reuse, s.Captures = "", 0
 		}
 		r.mu.Lock()
 		r.state = ownedState(s)
@@ -457,7 +471,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		if safe.Observation.Value.Type == "string" {
 			safe.Observation.Value.Text = opts.Privacy.Scrub(safe.Observation.Value.Text)
 		}
-		next, commands, err := workflow.Reduce(opts.Program, s, safe, opts.Inputs)
+		next, commands, err := reduce(opts.Program, s, safe, opts.Inputs)
 		if err != nil {
 			return nil, err
 		}
@@ -504,10 +518,11 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 		}
 		pending = true
 		inputPending = command.Kind == "act"
-		if inputPending {
-			// A dispatch outdates every earlier capture, and the next frame is the
-			// first one taken after it.
-			keeper.dispatched()
+		if inputPending || command.Refocus {
+			// An act outdates every earlier capture; a refocus activates the window
+			// before it captures. Either way the next frame is the first one taken
+			// after something that can change the screen.
+			keeper.screenChanged()
 		}
 		retained := keeper.kept
 		workCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -569,7 +584,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			case "resolve":
 				// Keeps the capture it resolved against, and its age.
 			default:
-				keeper.dispatched()
+				keeper.screenChanged()
 			}
 			inputPending = result.human && result.receipt != nil && result.receipt.Delivery != "not_sent"
 			if cancelWork != nil {
@@ -731,7 +746,7 @@ func (r *Run) execute(ctx context.Context, opts RunOptions, initial workflow.Sta
 			// Any control (a pause, a takeover, a human or assisted action, a
 			// resume) can change the screen or the epoch under a kept capture and
 			// can itself be a dispatch, so none survives one.
-			keeper.dispatched()
+			keeper.screenChanged()
 			switch control.Kind {
 			case "approve", "deny":
 				event := workflow.Event{Kind: control.Kind, ActionID: control.ActionID, Observation: workflow.Observation{ID: control.ObservationID}}

@@ -2,43 +2,52 @@ package computer
 
 import "testing"
 
-// The runner derives the reuse invariant itself, from the acts it launched. This
-// test drives that rule with sequences the reducer is never asked about, so a
-// reducer fault cannot make the runner keep a first-after-dispatch frame.
-func TestCaptureKeeperNeverKeepsTheFirstFrameAfterADispatch(t *testing.T) {
-	frame := func(id string) *retainedObservation { return &retainedObservation{safe: Observation{ID: id}} }
-	var k captureKeeper
-
-	k.captured(frame("start-1"))
-	if k.kept != nil {
-		t.Fatal("the first frame of a run was kept")
+// The runner derives the reuse invariant itself, from what it did to the
+// desktop. These cases drive that rule with sequences the reducer is never asked
+// about, so a reducer fault cannot make the runner keep a frame that was taken
+// right after something that can change the screen.
+func TestCaptureKeeperKeepsOnlyAFrameThatFollowsAnotherSinceTheLastScreenChange(t *testing.T) {
+	type step string
+	const (
+		change step = "screen change" // an act, a control, a window activation
+		frame  step = "frame"         // a usable capture
+		failed step = "failed"        // a capture that produced no frame
+	)
+	cases := []struct {
+		name  string
+		steps []step
+		kept  bool // is the last frame kept
+	}{
+		{"the first frame of a run", []step{frame}, false},
+		{"a second frame", []step{frame, frame}, true},
+		{"the first frame after a screen change", []step{frame, frame, change, frame}, false},
+		{"the second frame after a screen change", []step{frame, frame, change, frame, frame}, true},
+		{"a failed capture between a change and a frame", []step{frame, frame, change, failed, frame}, false},
+		{"a failed capture does not settle the screen", []step{change, failed, failed, frame}, false},
+		{"a failed capture between two frames", []step{change, frame, failed, frame}, true},
+		{"back to back changes", []step{frame, frame, change, change, frame}, false},
 	}
-	k.captured(frame("start-2"))
-	if k.kept == nil || k.kept.safe.ID != "start-2" {
-		t.Fatal("a frame that follows another since the last dispatch should be kept")
-	}
-
-	for name, dispatch := range map[string]func(){
-		"a step's act":        k.dispatched,
-		"a recovery click":    k.dispatched,
-		"a human action":      k.dispatched,
-		"a control or resume": k.dispatched,
-	} {
-		dispatch()
-		if k.kept != nil {
-			t.Fatalf("%s left a capture kept", name)
-		}
-		k.captured(frame(name + "-first"))
-		if k.kept != nil {
-			t.Fatalf("the first frame after %s was kept", name)
-		}
-		k.captured(nil) // a capture that produced no frame is not a frame
-		if k.kept != nil {
-			t.Fatalf("a failed capture after %s made a frame look settled", name)
-		}
-		k.captured(frame(name + "-second"))
-		if k.kept == nil || k.kept.safe.ID != name+"-second" {
-			t.Fatalf("the second frame after %s should be kept", name)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var k captureKeeper
+			n := 0
+			for _, s := range c.steps {
+				switch s {
+				case change:
+					k.screenChanged()
+					if k.kept != nil {
+						t.Fatal("a screen change left a capture kept")
+					}
+				case failed:
+					k.captured(nil)
+				case frame:
+					n++
+					k.captured(&retainedObservation{safe: Observation{ID: string(rune('a' + n))}})
+				}
+			}
+			if got := k.kept != nil; got != c.kept {
+				t.Fatalf("kept = %v, want %v", got, c.kept)
+			}
+		})
 	}
 }

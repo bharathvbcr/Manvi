@@ -60,27 +60,68 @@ type brokerDesktop struct {
 	script    func(nodes []Node, acts int, first bool) []Node
 	acts      int
 	lastNodes []Node
+	focused   bool
+	focuses   int
+	// actErr, when set, may refuse an act as not sent.
+	actErr func(a Action) error
+	// obsErr, when set, may fail a capture before it produces a frame.
+	obsErr    func() error
+	failedAct bool
+	// log is what the desktop saw, in order: "change" for every act and window
+	// activation, the capture id for every frame it handed out.
+	log []string
 }
+
+// actFailed reports whether an act has been refused as not sent.
+func (d *brokerDesktop) actFailed() bool { return d.failedAct }
 
 func (d *brokerDesktop) Act(ctx context.Context, s Session, a Action) (Receipt, error) {
 	d.mu2.Lock()
 	d.acted = true
 	d.acts++
 	d.current = "" // a dispatch outdates the broker's current observation
+	d.log = append(d.log, "change")
+	actErr := d.actErr
 	d.mu2.Unlock()
+	if actErr != nil {
+		if err := actErr(a); err != nil {
+			d.mu2.Lock()
+			d.failedAct = true
+			d.mu2.Unlock()
+			return Receipt{ActionID: a.ActionID, Delivery: "not_sent"}, err
+		}
+	}
 	return d.testDesktop.Act(ctx, s, a)
 }
 
+// Focus activates the window: like an act it can change what is on screen, and
+// it outdates the broker's current observation.
+func (d *brokerDesktop) Focus(_ context.Context, s Session) (Session, error) {
+	d.mu2.Lock()
+	defer d.mu2.Unlock()
+	d.focused = true
+	d.focuses++
+	d.current = ""
+	d.log = append(d.log, "change")
+	return s, nil
+}
+
 func (d *brokerDesktop) Observe(ctx context.Context, s Session) (Observation, error) {
+	if d.obsErr != nil {
+		if err := d.obsErr(); err != nil {
+			return Observation{}, err
+		}
+	}
 	o, err := d.testDesktop.Observe(ctx, s)
 	d.mu2.Lock()
 	defer d.mu2.Unlock()
 	d.observes++
 	d.current = o.ID
+	d.log = append(d.log, o.ID)
 	if d.afterAct == nil {
 		d.afterAct = map[string]bool{}
 	}
-	d.afterAct[o.ID], d.acted = d.acted, false
+	d.afterAct[o.ID], d.acted, d.focused = d.acted || d.focused, false, false
 	if d.script != nil {
 		o.Nodes = d.script(o.Nodes, d.acts, d.afterAct[o.ID])
 	}

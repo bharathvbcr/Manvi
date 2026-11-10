@@ -159,7 +159,8 @@ type State struct {
 	// to resolve against. It is set only between that command and its answer;
 	// empty in every terminal state and in every trace written before it existed.
 	Reuse string `json:"reuse,omitempty"`
-	// Captures counts the frames taken since the last dispatch. It exists only
+	// Captures counts the complete frames taken since the last thing that can
+	// change what is on screen (an act, a resume, a window activation). It exists only
 	// while the run is observing; see Reduce.
 	Captures       int              `json:"captures,omitempty"`
 	Outputs        map[string]Value `json:"outputs"`
@@ -298,6 +299,16 @@ func Reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			// Observing from Acting or Paused with a count in hand.
 			next.Captures = 0
 		}
+		for _, c := range commands {
+			if c.Refocus {
+				// A command that activates the window first changes what is on
+				// screen as surely as an act does: the frame it takes is the first
+				// since a screen-affecting call, with no settle in between. Refocus
+				// is the only flag a command carries that reaches the desktop other
+				// than to capture or look up.
+				next.Captures = 0
+			}
+		}
 	}
 	return next, commands, err
 }
@@ -430,8 +441,10 @@ func reduce(p *Program, previous State, event Event, inputs map[string]Value) (S
 			return previous, nil, errors.New("observation action binding missing")
 		}
 		reused := s.Reuse
-		if reused == "" || event.Observation.ID != reused {
-			s.Captures++ // a frame was taken; a reused answer is not one
+		if (reused == "" || event.Observation.ID != reused) && event.Observation.Complete {
+			// A complete frame was taken (an incomplete one is not a usable frame
+			// and is not counted, as in the runner); a reused answer is not a frame.
+			s.Captures++
 		}
 		if s.Reuse != "" {
 			s.Reuse = ""
@@ -743,14 +756,15 @@ func declineReuse(s State, fresh Command) (State, []Command, error) {
 	return s, []Command{fresh}, nil
 }
 
-// The reuse invariant. The first capture taken after any dispatch is never
-// reusable, whatever kind of capture it is and whatever caused the dispatch (a
-// step's action, a recovery, an approved action, a human action): it is taken
-// with no settle delay, so it can still show the screen as it was before the
-// application repainted, and a value, a wait or a branch decided on it can be
-// wrong. A capture is reusable only if at least one other capture was taken
-// after the last dispatch and before it, which is exactly the settle every read
-// got when each step observed afresh. A step may then resolve against such a
+// The reuse invariant. The first capture taken after anything that can change
+// what is on screen is never reusable, whatever kind of capture it is and
+// whatever caused the change: a step's action, a recovery, an approved action, a
+// human action, a resume, or a window activation (a command carrying Refocus).
+// It is taken with no settle delay, so it can still show the screen as it was
+// before the application repainted, and a value, a wait or a branch decided on
+// it can be wrong. A capture is reusable only if at least one other capture was
+// taken after the last such change and before it, which is exactly the settle
+// every read got when each step observed afresh. A step may then resolve against such a
 // capture only if it is itself a read step with no dispatch in between: one
 // consistent snapshot read more than once. State.Captures counts the frames
 // since the last dispatch; observe_after, the observe after a recovery click and

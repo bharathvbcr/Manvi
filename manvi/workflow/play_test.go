@@ -48,17 +48,17 @@ type playResult struct {
 
 // captureInfo is what the desktop knows about a capture it handed out.
 type captureInfo struct {
-	kind       string // the command that took it
-	dispatches int    // dispatches before it was taken
-	sinceLast  int    // 1 for the first capture after a dispatch, 2 for the next, ...
-	frame      frame
+	kind      string // the command that took it
+	era       int    // the oracle's era when it was taken
+	sinceLast int    // 1 for the first capture after a dispatch, 2 for the next, ...
+	frame     frame
 }
 
 // desk scripts a desktop. frameFor sees how many dispatches (acts of any kind,
 // recoveries included) came before the capture and whether it is the first
 // capture after one.
 type desk struct {
-	frameFor      func(dispatches int, firstAfterDispatch bool, fresh int) frame
+	frameFor      func(era int, firstInEra bool, fresh int, target string) frame
 	failWaitFirst int
 	// mishap, when set, may spoil a command: "failed" (a capture fails),
 	// "ambiguous", "declined" (a resolve is refused), "not_sent" or "external"
@@ -80,7 +80,7 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 		t.Fatal(err)
 	}
 	res := playResult{counts: map[string]int{}, captures: map[string]captureInfo{}}
-	dispatches, sinceLast, fresh, waitFails := 0, 0, 0, 0
+	era, sinceLast, fresh, waitFails := 0, 0, 0, 0
 	ev := Event{Kind: "start"}
 	for guard := 0; guard < 400 && !s.Terminal(); guard++ {
 		ev.Sequence, ev.RunID, ev.SessionID, ev.Epoch = s.Sequence+1, s.RunID, s.SessionID, s.Epoch
@@ -95,10 +95,13 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 		s = next
 		if len(cmds) == 0 {
 			if s.Phase == Paused {
-				if d.humanDispatch != nil && d.humanDispatch() {
-					dispatches++
-					sinceLast = 0
+				if d.humanDispatch != nil {
+					d.humanDispatch() // whether a person acted is not the oracle's business
 				}
+				// A resume restarts the oracle whether or not a person dispatched:
+				// the run was paused, so anything may have changed on screen.
+				era++
+				sinceLast = 0
 				ev = Event{Kind: "resume", NextEpoch: s.Epoch + 1}
 			}
 			continue
@@ -108,15 +111,21 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 		res.counts[c.Kind]++
 		switch c.Kind {
 		case "observe", "observe_after", "resolve":
+			if c.Refocus {
+				// The command activates the window first: the oracle's own rule, read
+				// off the command stream, not off the reducer's state.
+				era++
+				sinceLast = 0
+			}
 			if c.Kind == "resolve" {
 				info, ok := res.captures[c.ObservationID]
 				switch {
 				case !ok:
 					res.violations = append(res.violations, fmt.Sprintf("resolve names unknown capture %q", c.ObservationID))
-				case info.dispatches != dispatches:
-					res.violations = append(res.violations, fmt.Sprintf("resolve names %q, taken before the last dispatch", c.ObservationID))
+				case info.era != era:
+					res.violations = append(res.violations, fmt.Sprintf("resolve names %q, taken before the last screen change", c.ObservationID))
 				case info.sinceLast < 2:
-					res.violations = append(res.violations, fmt.Sprintf("resolve names %q, the first capture after a dispatch (%s)", c.ObservationID, info.kind))
+					res.violations = append(res.violations, fmt.Sprintf("resolve names %q, the first capture after a screen change (%s)", c.ObservationID, info.kind))
 				}
 			}
 			if c.Kind == "observe" && c.Step.ID == "settle" && waitFails < d.failWaitFirst {
@@ -124,7 +133,7 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 				ev = Event{Kind: "observe_failed", ActionID: c.ActionID, FailureCode: "capture_failed", Reason: "transient"}
 				continue
 			}
-			ambiguous := false
+			ambiguous, incomplete := false, false
 			if d.mishap != nil {
 				switch d.mishap(c) {
 				case "failed":
@@ -140,14 +149,18 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 					}
 				case "ambiguous":
 					ambiguous = true
+				case "incomplete":
+					incomplete = true
 				}
 			}
 			id := c.ObservationID
 			if c.Kind != "resolve" {
 				fresh++
-				sinceLast++
+				if !incomplete {
+					sinceLast++ // an incomplete frame is not a usable frame
+				}
 				id = fmt.Sprintf("obs-%d", fresh)
-				res.captures[id] = captureInfo{kind: c.Kind, dispatches: dispatches, sinceLast: sinceLast, frame: d.frameFor(dispatches, sinceLast == 1, fresh)}
+				res.captures[id] = captureInfo{kind: c.Kind, era: era, sinceLast: sinceLast, frame: d.frameFor(era, sinceLast == 1, fresh, c.Step.Target)}
 			}
 			f := res.captures[id].frame
 			o := Observation{ID: id, Complete: true, Matches: 1, TargetID: "node-" + c.Step.Target, Actionable: true, Target: c.Step.Target}
@@ -156,16 +169,18 @@ func play(t *testing.T, p *Program, inputs map[string]Value, d desk) playResult 
 				o.Value = Value{Type: "money", Integer: f.balance, Currency: "USD"}
 			case "assert", "branch", "wait":
 				o.Value = Value{Type: "string", Text: f.status}
-				if f.blocked {
-					o.Matches, o.TargetID, o.Value = 0, "", Value{Type: "string", Text: "blocked"}
-				}
+			}
+			if f.blocked {
+				// An overlay hides the target of whatever step this is.
+				o.Matches, o.TargetID, o.Value = 0, "", Value{Type: "string", Text: "blocked"}
 			}
 			if ambiguous {
 				o.Matches, o.TargetID = 2, ""
 			}
+			o.Complete = !incomplete
 			ev = Event{Kind: "observed", ActionID: c.ActionID, Observation: o}
 		case "act":
-			dispatches++ // counted when sent, whether or not it went out
+			era++ // any act restarts the oracle, whether or not it went out
 			sinceLast = 0
 			ev = Event{Kind: "receipt", ActionID: c.ActionID, Delivery: "sent"}
 			if d.mishap != nil {
