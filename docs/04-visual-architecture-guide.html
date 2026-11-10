@@ -863,7 +863,7 @@
 
   <section id="build-deps">
     <h2>8. Build, Dependencies &amp; Failure Modes</h2>
-    <p class="lead">A full source build needs Go 1.26, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
+    <p class="lead">A full source build needs Go 1.27.3, Rust 1.85+ and a C compiler (<code>dc-store</code> compiles SQLite from source rather than trusting the host's <code>libsqlite3</code>). The dependency set is a gate: <code>verify.sh</code> fails on any Go package outside the allowlist.</p>
 
     <div class="cards">
       <div class="card"><span class="tag">Go module</span><h4>Small, audited surface</h4><p><code>memguard</code> seals credentials at rest, and the ruleguard DSL is lint-only and excluded from every build. Everything else is the standard library, plus the pinned DevCouncil and Gusset modules.</p></div>

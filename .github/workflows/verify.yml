@@ -37,7 +37,7 @@ permissions:
 # Actions are pinned by commit SHA, not by tag. A tag is mutable: `@v7` is a
 # reference the action's owner can move, so a workflow that trusts one runs
 # whatever that reference points at on the day it runs. This repository does not
-# accept that anywhere else — the Go plane pins go 1.26.6 rather than 1.26, and
+# accept that anywhere else — the Go plane pins go 1.27.3 rather than 1.27, and
 # the Rust dependency tree is audited on every run — and CI is the one place
 # where an unnoticed substitution would have a credential-bearing token in
 # scope. The version each SHA corresponds to is in the comment beside it so a

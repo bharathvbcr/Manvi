@@ -488,7 +488,7 @@ else
   notcovered "golangci-lint is not installed — the lint debt ratchet did not run"
 fi
 
-# go.mod pins go 1.26.6 rather than 1.26 because of this gate. The looser
+# go.mod pins go 1.27.3 rather than 1.27 because of this gate. The looser
 # directive resolved to a toolchain with seven reachable standard-library
 # vulnerabilities, among them a root escape via symlink in os that safefs.go
 # calls directly through os.Root.OpenFile. Nothing here imports a third-party
