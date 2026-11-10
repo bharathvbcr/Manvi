@@ -305,7 +305,11 @@ func TestZadvW17CaseVariantOuterIsNotSteppedPast(t *testing.T) {
 func TestZadvW17CaseVariantLinkedWorktreeStaysSeparate(t *testing.T) {
 	root, lane, _ := nestedRepo(t)
 	base := filepath.Dir(root)
-	if _, err := os.Stat(filepath.Join(base, strings.ToUpper(filepath.Base(root)))); err != nil {
+	// Probe the volume with a name that has letters: root's own basename may
+	// have none (Linux t.TempDir() ends in "001"), and then its upper-case
+	// spelling is the same path and proves nothing. root always holds a real
+	// .git directory, so .GIT resolves exactly when the volume folds case.
+	if _, err := os.Stat(filepath.Join(root, ".GIT")); err != nil {
 		t.Skip("volume is case-sensitive")
 	}
 	variantRoot := filepath.Join(base, strings.ToUpper(filepath.Base(root)))
