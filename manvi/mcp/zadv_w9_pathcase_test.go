@@ -184,9 +184,18 @@ func TestZAdvW9AtomicAliasSwapNeverReadsOutside(t *testing.T) {
 	// Spellings of one repository that resolve on every file system. The case
 	// variant is one only where the volume folds case; on a case-sensitive one
 	// base/REPO is a different, absent path and a dangling alias is rightly outside.
-	targets := []string{repo, filepath.Join(repo, "."), filepath.Join(repo, "sub", "..")}
+	// filepath.Join cleans, so the unclean spellings are built by concatenation.
+	sep := string(filepath.Separator)
+	targets := []string{repo, repo + sep + ".", repo + sep + "sub" + sep + ".."}
 	if _, err := os.Stat(filepath.Join(base, "REPO")); err == nil {
 		targets = append(targets, filepath.Join(base, "REPO"))
+	}
+	for i := range targets {
+		for j := i + 1; j < len(targets); j++ {
+			if targets[i] == targets[j] {
+				t.Fatalf("alias spellings %d and %d are the same string %q, so the swap would prove nothing", i, j, targets[i])
+			}
+		}
 	}
 	if err := os.Symlink(targets[0], alias); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
