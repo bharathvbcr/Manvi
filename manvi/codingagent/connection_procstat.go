@@ -5,28 +5,41 @@ package codingagent
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
 )
 
 // memberInGroup says whether m, as snapshotted, is still in group pgid, from its
-// /proc/<pid>/stat as read by read. ENOENT and ESRCH mean the process is gone.
-// A different group or start time means the pid is gone or was reused. Any other
-// failure (EACCES under hidepid, a stat that does not parse) proves nothing
-// either way, so the member counts as present: the group reads live, as the bare
-// probe did.
+// /proc/<pid>/stat as read by read. ENOENT and ESRCH mean the process is gone,
+// but only while /proc itself is readable: the same read of this process's own
+// entry must succeed or fail with something other than "absent", otherwise an
+// unmounted or unreachable /proc would make every member look gone. A different
+// group or start time means the pid is gone or was reused. Any other failure
+// (EACCES under hidepid=1, a stat that does not parse) proves nothing either
+// way, so the member counts as present: the group reads live, as the bare probe
+// did. Under hidepid=2 another user's member also reads ENOENT, which is what the
+// bare listing reported on main.
 func memberInGroup(read func(pid int) (string, error), pgid int, m groupMember) bool {
 	raw, err := read(m.pid)
 	if err != nil {
-		gone := errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
-		return !gone
+		if !isAbsent(err) {
+			return true
+		}
+		_, selfErr := read(os.Getpid())
+		return isAbsent(selfErr)
 	}
 	group, start, ok := parseProcStat(raw)
 	if !ok {
 		return true
 	}
 	return group == pgid && start == m.start
+}
+
+// isAbsent reports whether err says the /proc entry does not exist.
+func isAbsent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }
 
 // parseProcStat returns the process group (field 5) and start time (field 22)
