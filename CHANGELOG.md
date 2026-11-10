@@ -109,6 +109,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **Platform change: Manvi's Go modules now target Go 1.27.3, and the minimum
+  macOS for Manvi releases rises from 12 to 13.** Go 1.27 no longer supports
+  macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.3 (the
+  redundant `toolchain` line is gone) and the darwin deployment target in
+  `scripts/release-build.sh` and `scripts/.dev-build.sh` moves from 12.0 to
+  13.0. CI and the release workflow follow `go.mod`. A macOS 12 user should stay
+  on the last release built with Go 1.26.
 - **Record format change: neutralised agent text is now unambiguous**
   (ft-bf52b840). Every agent-authored string a managed run records is
   neutralised once, at the adapters' `Next`, and rendered so that no input
