@@ -467,22 +467,64 @@ func (c *connection) sendRaw(ctx context.Context, data []byte) error {
 	}
 	done := make(chan error, 1)
 	go func() { _, err := c.stdin.Write(append(data, '\n')); done <- err }()
+	// Once the connection has failed, the outcome does not depend on which of
+	// several ready cases select picks. The rules, in order: a frame the write
+	// delivered was delivered (the next read reports the failure); otherwise the
+	// recorded failure is the reason. A plain cancel (Close, an interrupt) that
+	// lands as the write completes may still report either the cancel or the
+	// delivery; both end the run on the next read.
 	select {
 	case err := <-done:
-		if err != nil {
-			c.cancel()
-		}
-		return err
+		return c.written(err)
 	case <-ctx.Done():
-		if err := c.failure(); err != nil {
-			return err
+		if c.failure() == nil {
+			// A plain caller cancel: the connection is cancelled with it, unless
+			// the write has already reported.
+			select {
+			case err := <-done:
+				return c.written(err)
+			default:
+			}
+			c.cancel()
+			return ctx.Err()
 		}
-		c.cancel()
-		return ctx.Err()
+		// The caller's context is done because the connection failed (a caller
+		// may pass the connection's own context): the failure rule below decides.
 	case <-c.ctx.Done():
-		return c.err()
 	}
+	// The connection ended while the write was in flight, for example because the
+	// agent read the frame and answered with one the reader refused. The write's
+	// own result decides. A failed connection's process is killed and a closed
+	// one's stdin is closed, either of which ends a write still blocked on its
+	// pipe; writeSettle bounds the wait regardless.
+	select {
+	case err := <-done:
+		if err == nil {
+			return nil
+		}
+	case <-time.After(writeSettle):
+	}
+	return c.err()
 }
+
+// written is sendRaw's answer once the write has reported: nil for a delivered
+// frame; for a failed write, the connection's recorded failure when there is
+// one (it says why the pipe broke), else the pipe's error, ending the
+// connection.
+func (c *connection) written(err error) error {
+	if err == nil {
+		return nil
+	}
+	if failure := c.failure(); failure != nil {
+		return failure
+	}
+	c.cancel()
+	return err
+}
+
+// writeSettle is how long sendRaw waits, once the connection has ended, for an
+// in-flight write to report whether it delivered its frame.
+const writeSettle = time.Second
 
 // err is why the connection ended: the error recorded by fail when a frame was
 // refused, else the context's own (Canceled for a close or an interrupt).
