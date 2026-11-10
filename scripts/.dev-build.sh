@@ -5,7 +5,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 rev="$(git rev-parse --short HEAD)"
 out="dist/manvi-${rev}-darwin-arm64"
-export MACOSX_DEPLOYMENT_TARGET=12.0
+export MACOSX_DEPLOYMENT_TARGET=13.0
 export CC="clang -arch arm64"
 exports="$("$root/../DevCouncil/rust/gusset-engine/cgo-env.sh" --export --target=aarch64-apple-darwin)"
 eval "$exports"
