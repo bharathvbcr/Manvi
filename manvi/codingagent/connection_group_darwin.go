@@ -4,6 +4,7 @@ package codingagent
 
 import (
 	"fmt"
+	"slices"
 
 	"golang.org/x/sys/unix"
 )
@@ -25,4 +26,21 @@ func groupMembers(pgid int) ([]groupMember, error) {
 		members = append(members, groupMember{pid: int(p.Proc.P_pid), start: p.Proc.P_starttime.Sec*1_000_000 + int64(p.Proc.P_starttime.Usec)})
 	}
 	return members, nil
+}
+
+// anyMemberInGroup says whether any of was is still in process group pgid. On
+// darwin one kern.proc.pgrp call answers for the whole group, which costs the
+// same as a per-pid lookup and is already the listing the sweep trusts. A
+// failed listing fails closed: the group reads live.
+func anyMemberInGroup(pgid int, was []groupMember) bool {
+	now, err := snapshotGroup(pgid)
+	if err != nil {
+		return true
+	}
+	for _, m := range was {
+		if slices.Contains(now, m) {
+			return true
+		}
+	}
+	return false
 }

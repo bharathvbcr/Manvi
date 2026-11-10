@@ -16,3 +16,6 @@ func groupAlive(pid int) bool { return false }
 func groupMembers(pgid int) ([]groupMember, error) {
 	return nil, errors.New("process groups are not supported on this platform")
 }
+
+// anyMemberInGroup is never reached off unix, for the same reason.
+func anyMemberInGroup(int, []groupMember) bool { return true }

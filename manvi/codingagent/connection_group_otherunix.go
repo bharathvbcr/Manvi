@@ -10,3 +10,7 @@ import "errors"
 func groupMembers(pgid int) ([]groupMember, error) {
 	return nil, errors.New("listing process group members is not supported on this platform")
 }
+
+// anyMemberInGroup fails closed: with no listing, nothing proves a snapshotted
+// member left.
+func anyMemberInGroup(int, []groupMember) bool { return true }

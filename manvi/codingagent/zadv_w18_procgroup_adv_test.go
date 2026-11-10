@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,12 +37,22 @@ func waitPidFile(t *testing.T, path string) int {
 	return 0
 }
 
-// stubSnapshot swaps the member listing for the test.
+// stubSnapshot swaps the member listing for the test, and the poll's per-member
+// check with it: the poll asks "is any snapshotted member still in the group",
+// which the stub answers from the same listing on every platform (a listing
+// error reads live, as the product does).
 func stubSnapshot(t *testing.T, f func(int) ([]groupMember, error)) {
 	t.Helper()
-	old := snapshotGroup
+	oldList, oldPoll := snapshotGroup, membersInGroup
 	snapshotGroup = f
-	t.Cleanup(func() { snapshotGroup = old })
+	membersInGroup = func(pgid int, was []groupMember) bool {
+		now, err := f(pgid)
+		if err != nil {
+			return true
+		}
+		return slices.ContainsFunc(was, func(m groupMember) bool { return slices.Contains(now, m) })
+	}
+	t.Cleanup(func() { snapshotGroup, membersInGroup = oldList, oldPoll })
 }
 
 // shortBudget shortens reapBudget for the test.
@@ -328,8 +339,10 @@ func TestAdvW18ProcgroupRealGrandchildIsKilledAndReportedGone(t *testing.T) {
 	}
 }
 
-// Cost: groupLive lists the group every groupPoll while it answers. With ~50
-// members, log the per-listing time and bound it well under the poll.
+// Cost: groupLive runs every groupPoll while the group answers. With ~50
+// members it must check the snapshotted members only, not scan the machine's
+// processes. The worst case for the poll is the one measured: the only member
+// still in the group is the last one checked, so every earlier check is made.
 func TestAdvW18ProcgroupListingCostWithAFiftyMemberGroup(t *testing.T) {
 	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), "/bin/sh", "-c", `i=0; while [ $i -lt 50 ]; do sleep 60 & i=$((i+1)); done; wait`)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -349,19 +362,27 @@ func TestAdvW18ProcgroupListingCostWithAFiftyMemberGroup(t *testing.T) {
 	if len(members) < 51 {
 		t.Fatalf("only %d members listed", len(members))
 	}
+	// Every member but the last was replaced by a pid reuse (wrong start time), so
+	// the poll checks all 51 before it finds the one that is still there.
+	was := make([]groupMember, len(members))
+	for i, m := range members {
+		was[i] = groupMember{pid: m.pid, start: m.start + 1}
+	}
+	was[len(was)-1] = members[len(members)-1]
+	c := &connection{pid: pid, members: was, membersKnown: true}
 	const n = 200
 	best, total := time.Hour, time.Duration(0)
 	for i := 0; i < n; i++ {
 		start := time.Now()
-		if _, err := groupMembers(pid); err != nil {
-			t.Fatal(err)
+		if !c.groupLive() {
+			t.Fatal("groupLive read a group with a snapshotted member in it as free")
 		}
 		d := time.Since(start)
 		total += d
 		best = min(best, d)
 	}
-	t.Logf("groupMembers with %d members: min %v mean %v over %d (poll is %v)", len(members), best, total/n, n, groupPoll)
+	t.Logf("groupLive with %d members: min %v mean %v over %d (poll is %v)", len(members), best, total/n, n, groupPoll)
 	if total/n > groupPoll/5 {
-		t.Fatalf("mean listing %v is over a fifth of the %v poll", total/n, groupPoll)
+		t.Fatalf("mean poll %v is over a fifth of the %v poll interval", total/n, groupPoll)
 	}
 }

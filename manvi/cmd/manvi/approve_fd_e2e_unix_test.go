@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -208,6 +209,11 @@ func TestApproveFDIsClosedToEverythingSpawnedBeforeTheTurn(t *testing.T) {
 // A descriptor number that is not open must be refused, not accepted because
 // opening the configuration reissued it as the runtime's own poller.
 func TestApproveFDClosedDescriptorIsRefusedAtStartup(t *testing.T) {
+	// The child is exec'd with no ExtraFiles, but exec passes on any descriptor
+	// this process inherited without close-on-exec. A CI runner can leave one at
+	// 3 (observed on ubuntu-latest: the child read a line from it), and then
+	// "closed" is not what the child sees. Close-on-exec makes it so.
+	syscall.CloseOnExec(3)
 	model := &e2eModel{reply: func(int) (map[string]any, string) {
 		return map[string]any{"content": "done"}, "stop"
 	}}

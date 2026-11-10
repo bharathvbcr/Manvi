@@ -193,9 +193,10 @@ func startConnectionEnv(parent context.Context, program string, args []string, c
 // to stand in for a member that outlives SIGKILL, which a real process cannot be
 // made to do, and to count the signals sent.
 var (
-	probeGroup    = groupAlive
-	signalGroup   = proc.KillGroup
-	snapshotGroup = groupMembers
+	probeGroup     = groupAlive
+	signalGroup    = proc.KillGroup
+	snapshotGroup  = groupMembers
+	membersInGroup = anyMemberInGroup
 )
 
 // groupMember is one process of the agent's group: its pid and the time it
@@ -264,7 +265,10 @@ func unionMembers(a, b []groupMember) []groupMember {
 }
 
 // groupLive says whether the agent's process group, as sweepGroup left it, still
-// has a member that is the agent's own.
+// has a member that is the agent's own. It runs every groupPoll, so it asks about
+// the snapshotted members only (anyMemberInGroup) and never lists the group: the
+// full listing is a /proc scan on Linux and belongs to the two sweep-time
+// snapshots.
 func (c *connection) groupLive() bool {
 	if !probeGroup(c.pid) {
 		return false
@@ -272,16 +276,7 @@ func (c *connection) groupLive() bool {
 	if !c.membersKnown {
 		return true
 	}
-	now, err := snapshotGroup(c.pid)
-	if err != nil {
-		return true
-	}
-	for _, was := range c.members {
-		if slices.Contains(now, was) {
-			return true
-		}
-	}
-	return false
+	return membersInGroup(c.pid, c.members)
 }
 
 // reapBudget bounds how long close() waits for the agent to be reaped, and,
