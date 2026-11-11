@@ -33,6 +33,24 @@ type Options struct {
 	// recorded. The new process still accepts exactly one turn. Callers pass
 	// the id the adapter stored, never a value a renderer invented.
 	Resume string
+	// McpServers configures explicit stdio MCP servers for providers (such as
+	// `agy acp --include-default-customizations=false`) that accept per-session
+	// MCP definitions during session creation and resumption.
+	McpServers []McpServer
+}
+
+// McpEnvVar is a single environment variable passed to an explicit ACP MCP server.
+type McpEnvVar struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// McpServer describes a stdio MCP server passed in ACP `session/new` or `session/resume`.
+type McpServer struct {
+	Name    string      `json:"name"`
+	Command string      `json:"command"`
+	Args    []string    `json:"args"`
+	Env     []McpEnvVar `json:"env"`
 }
 
 // ManagedProviders are the providers with a managed adapter in this package.

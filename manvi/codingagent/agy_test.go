@@ -85,6 +85,9 @@ func TestAgyProtocolChild(t *testing.T) {
 			}
 
 		case "session/new":
+			if logPath := os.Getenv("AGY_FIXTURE_LOG"); logPath != "" {
+				_ = os.WriteFile(logPath, append([]byte("new:"), append(in.Params, '\n')...), 0o600)
+			}
 			if scenario == "resume-expected" {
 				os.Exit(9)
 			}
@@ -113,6 +116,9 @@ func TestAgyProtocolChild(t *testing.T) {
 				in.ID, sessionID, modelField, currentMode, modes)
 
 		case "session/resume":
+			if logPath := os.Getenv("AGY_FIXTURE_LOG"); logPath != "" {
+				_ = os.WriteFile(logPath, append([]byte("resume:"), append(in.Params, '\n')...), 0o600)
+			}
 			var req struct {
 				SessionID string `json:"sessionId"`
 			}
@@ -198,6 +204,16 @@ func TestAgyProtocolChild(t *testing.T) {
 				emit(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","name":"run_command","status":"completed","rawOutput":{"output":"README.md"}}}}`, sessionID)
 				emit(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"AGY_OK mode=%s"}}}}`, sessionID, currentMode)
 				emit(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
+			}
+		case "session/cancel", "session/close":
+			if logPath := os.Getenv("AGY_FIXTURE_CLOSE_LOG"); logPath != "" {
+				if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil { //nolint:gosec // test temp log
+					_, _ = fmt.Fprintf(f, "%s:%s\n", in.Method, in.Params)
+					_ = f.Close()
+				}
+			}
+			if in.Method == "session/close" && len(in.ID) > 0 {
+				emit(`{"jsonrpc":"2.0","id":%s,"result":{}}`, in.ID)
 			}
 		}
 	}
@@ -309,10 +325,11 @@ func TestAgyNegotiatesAllSixModesAndStreamsToolsAndText(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
 			args := agyArgs(tc.mode)
-			if !strings.Contains(strings.Join(args, " "), "--include-default-customizations=false") {
-				t.Fatalf("agyArgs(%q) omitted customization isolation: %v", tc.mode, args)
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "--stdio") || !strings.Contains(joined, "--include-default-customizations=false") {
+				t.Fatalf("agyArgs(%q) omitted --stdio or customization isolation: %v", tc.mode, args)
 			}
-			if (tc.mode == "bypass") != strings.Contains(strings.Join(args, " "), "--dangerously-skip-permissions") {
+			if (tc.mode == "bypass") != strings.Contains(joined, "--dangerously-skip-permissions") {
 				t.Fatalf("agyArgs(%q) bypass flag mismatch: %v", tc.mode, args)
 			}
 
@@ -652,5 +669,73 @@ func TestAgyRealBinaryACPHandshakeAndCrossProcessResume(t *testing.T) {
 	eff2 := s2.Effective()
 	if eff2.Thread.ID != eff1.Thread.ID || eff2.ApprovalPolicy != "never" {
 		t.Fatalf("resumed effective = %+v, want thread %q and approval never", eff2, eff1.Thread.ID)
+	}
+}
+
+func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+
+	// Pre-spawn MCP server validation rejects invalid entries without spawning.
+	for name, servers := range map[string][]McpServer{
+		"relative-command": {{Name: "gitpulse", Command: "gitpulse-mcp"}},
+		"duplicate-name":   {{Name: "gp", Command: bin}, {Name: "gp", Command: bin}},
+		"invalid-env-key":  {{Name: "gp", Command: bin, Env: []McpEnvVar{{Name: "A=B", Value: "1"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, err := StartAgy(t.Context(), Options{
+				Program:    bin,
+				Cwd:        root,
+				Mode:       "ask",
+				McpServers: servers,
+			})
+			if s != nil || err == nil || !NoProcessStarted(err) {
+				t.Fatalf("expected pre-spawn MCP validation refusal, got s=%v err=%v", s, err)
+			}
+		})
+	}
+
+	// Verify session/new and session/resume serialize explicit mcpServers with non-null slices,
+	// and Close() sends session/cancel + session/close when a prompt turn is active.
+	fixtureLog := filepath.Join(t.TempDir(), "session-params.log")
+	closeLog := filepath.Join(t.TempDir(), "close.log")
+	t.Setenv("AGY_FIXTURE_LOG", fixtureLog)
+	t.Setenv("AGY_FIXTURE_CLOSE_LOG", closeLog)
+
+	s, err := openAgy(t.Context(), Options{
+		Program: bin,
+		Cwd:     root,
+		Mode:    "ask",
+		McpServers: []McpServer{{
+			Name:    "gitpulse",
+			Command: bin,
+		}},
+	}, agyFixtureArgs("silent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loggedNew, err := os.ReadFile(fixtureLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(loggedNew), `"name":"gitpulse"`) || !strings.Contains(string(loggedNew), `"args":[]`) || !strings.Contains(string(loggedNew), `"env":[]`) {
+		t.Fatalf("unexpected session/new mcpServers payload: %s", string(loggedNew))
+	}
+
+	if err := s.StartTurn(t.Context(), "stay in flight"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(); err != nil {
+		t.Fatalf("Close active turn: %v", err)
+	}
+	loggedClose, err := os.ReadFile(closeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(loggedClose), "session/cancel:") || !strings.Contains(string(loggedClose), "session/close:") {
+		t.Fatalf("expected session/cancel and session/close on active turn Close(), got %q", string(loggedClose))
 	}
 }
