@@ -14,7 +14,7 @@ in [TRADE_OFFS.md](docs/TRADE_OFFS.md#2-two-toolchains-because-two-invariants-ha
 
 | Requirement | Why |
 |---|---|
-| **Go 1.27.3** (`manvi/go.mod`) | The execution plane. Built and tested with `CGO_ENABLED=0`, which the gate exports for you. |
+| **Go 1.27.4** (`manvi/go.mod`) | The execution plane. Built and tested with `CGO_ENABLED=0`, which the gate exports for you. |
 | **Rust, stable** | The analysis plane. `crates/Cargo.toml` declares edition 2024 with resolver 3, so 1.85 or newer. |
 | **A C compiler (`cc`)** | `dc-store` takes `rusqlite` with the `bundled` feature and compiles SQLite from source, rather than linking whatever `libsqlite3` the host ships. |
 | **`python3`** | Runs the benchmark rig's eight suites and parses the test run's skip report inside `verify.sh`. |

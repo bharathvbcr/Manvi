@@ -268,7 +268,7 @@ the same values.
 | cargo-audit | `0.22.2` |
 | Rust toolchain | `1.99.0` (components clippy, rustfmt) |
 | node | `22.22.2` |
-| Go | `go.mod`'s `go 1.27.3`, through `go-version-file` |
+| Go | `go.mod`'s `go 1.27.4`, through `go-version-file` |
 
 Each is the version that was resolving when it was pinned (2026-10-10). A
 floating reference made the debt ratchet and the `nilaway` ceiling a measurement
