@@ -13,7 +13,7 @@ import (
 // canDenyRead reports whether chmod 000 stops this process from opening p (it
 // does not when the tests run as root).
 func canDenyRead(p string) bool {
-	f, err := os.Open(p)
+	f, err := os.Open(p) // #nosec G304 -- a file this test made.
 	if err == nil {
 		_ = f.Close()
 		return false
@@ -26,7 +26,7 @@ func denied(t *testing.T, p string) {
 	if err := os.Chmod(p, 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(p, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(p, 0o700) }) // #nosec G302 -- restores a file this test made so the temp dir can be removed.
 }
 
 // A ref-shaped file git dir that cannot be opened refuses the command before it
