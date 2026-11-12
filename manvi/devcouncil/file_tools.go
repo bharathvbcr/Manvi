@@ -733,25 +733,38 @@ const grepRaceAttempts = 3
 //
 // The listing and the search are two walks, so a file can become refused
 // between them (a hard link made in the gap). Whether the reply may still stand
-// is therefore decided after every search, and decided without looking at what
-// the search found: the tree is listed again and every name in it judged again,
-// with the same judgement the listing used (candidateRefusals: name and inode,
-// no content), and the pass is accepted only if that gives the same names and
-// exactly the refusals the listing did. Otherwise the whole of listing,
-// partitioning and search runs again, up to grepRaceAttempts times, so the
-// reply that finally stands is the reply a file refused at listing time would
-// have produced, for every pattern alike. A tree that keeps changing fails with
-// one error that depends on the listings alone.
+// is therefore decided after every search: the tree is listed again and every
+// name in it judged again, with the same judgement the listing used
+// (candidateRefusals: name and inode, no content), and the pass is accepted only
+// if that gives the same names and exactly the refusals the listing did.
+// Otherwise the whole of listing, partitioning and search runs again, up to
+// grepRaceAttempts times. A tree that keeps changing fails with one error. That
+// decision reads the two listings and the matched files' refusal state
+// (revalidateMatches, below), never the matches' content.
 //
-// What the matches decide is not whether the reply is an error but only what
-// it holds: a match in a name that is not a listed, unrefused file (a name that
-// existed only while the engine walked, such as a hard link to a withheld file
-// made and removed around the search) is dropped from the reply, never reported
-// and never turned into a retry. Deciding on the matches (an error only when
-// such a file matched) would hand a concurrent writer one bit per pattern about
-// a file the partition withholds. The one thing a dropped match can still move
-// is the cap: it may have taken a slot that a listed match would have had, so
-// a reply truncated at the cap is not guaranteed independent of it.
+// What is closed. A name that existed only while the engine walked (a hard link
+// or symlink to a withheld file made just before the search and removed just
+// after) is in neither listing. Its match is dropped from the reply by path
+// (keepListedMatches), so it can no longer turn into an error or a retry: the
+// isError-versus-withheld split that told a matching pattern from a
+// non-matching one under such a writer is gone.
+//
+// What is not. The outcome is not decided from the listing alone, because the
+// engine's answer is computed over a tree walk that includes names the listing
+// did not hold, and three of its fields are shaped by what it read there:
+//   - the result cap: a dropped match can take a slot a listed match would
+//     have had, so a reply truncated at the cap can still differ with whether
+//     the withheld file matched;
+//   - files_searched and the skipped counts, which the engine reports as
+//     aggregates over every file it opened, so they move with the transient
+//     name and with the class of the file it linked to (binary, too large,
+//     unreadable); no per-path data comes back to filter them by;
+//   - a listed name swapped for a link to a withheld file only while the
+//     engine reads it, and restored before either listing, whose match line
+//     is the withheld file's content and stands as a listed, unrefused match.
+//
+// Those need the engine to search only the listed set and to check the
+// identity of each file it opens; Manvi cannot do either from outside.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
 		out, refused, tree, err := r.searchAttempt(ctx, req)
@@ -880,9 +893,10 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, tree *
 }
 
 // keepListedMatches drops the matches that lie in a name the listing did not
-// hold, or held as refused. It looks at paths only, so what it keeps and drops
-// is decided by where the engine read, and the order of what it keeps is the
-// engine's.
+// hold, or held as refused. It looks at paths only and keeps the engine's order.
+// It removes matches from the reply and does not make the reply independent of
+// them: the cap and the engine's counters still saw the dropped names (see
+// searchUnrefused).
 func keepListedMatches(listed []string, refused map[string]string, matches []dcgrep.Match) []dcgrep.Match {
 	if len(matches) == 0 {
 		return matches
