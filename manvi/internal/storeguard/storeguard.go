@@ -5,11 +5,15 @@
 // and forgets to close it leaves one process per use behind, and a long
 // -count run accumulates thousands of them.
 //
-// Two halves close that: NewClient registers the Close with the test's
-// cleanup, so a fixture cannot forget it, and Run, called from TestMain, fails
-// the binary when any dcstore child of the test process is still alive after
-// the last test, so a construction that bypasses NewClient is caught instead
-// of leaking quietly.
+// NewClient registers the Close with the test's cleanup, so a fixture cannot
+// forget it. TestEveryTestStoreClientIsBuiltThroughNewClient fails on any test
+// in the module that calls store.New directly, which is what holds that
+// routing. Run, called from TestMain, fails the binary when a dcstore child of
+// the test process is still alive after the last test.
+//
+// Run is the weaker half. DevCouncil's client ends an idle child a minute after
+// its last use (serveIdleTTL), so Run sees only a leak made in roughly the last
+// minute of the package's run; the static test sees every one.
 package storeguard
 
 import (
