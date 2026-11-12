@@ -737,20 +737,28 @@ const grepRaceAttempts = 3
 // the search found: the tree is listed again and every name in it judged again,
 // with the same judgement the listing used (candidateRefusals: name and inode,
 // no content), and the pass is accepted only if that gives the same names and
-// exactly the refusals the listing did, and every match lies in a listed file.
-// Otherwise the whole of listing,
+// exactly the refusals the listing did. Otherwise the whole of listing,
 // partitioning and search runs again, up to grepRaceAttempts times, so the
 // reply that finally stands is the reply a file refused at listing time would
 // have produced, for every pattern alike. A tree that keeps changing fails with
-// one error that depends on the refusals alone. Deciding on the matches (an
-// error only when a refused file matched) would hand a concurrent writer one bit
-// per pattern about a file the partition withholds.
+// one error that depends on the listings alone.
+//
+// What the matches decide is not whether the reply is an error but only what
+// it holds: a match in a name that is not a listed, unrefused file (a name that
+// existed only while the engine walked, such as a hard link to a withheld file
+// made and removed around the search) is dropped from the reply, never reported
+// and never turned into a retry. Deciding on the matches (an error only when
+// such a file matched) would hand a concurrent writer one bit per pattern about
+// a file the partition withholds. The one thing a dropped match can still move
+// is the cap: it may have taken a slot that a listed match would have had, so
+// a reply truncated at the cap is not guaranteed independent of it.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
 		out, refused, tree, err := r.searchAttempt(ctx, req)
 		if err != nil {
 			return nil, nil, err
 		}
+		out.matches = keepListedMatches(tree.paths, refused, out.matches)
 		unchanged, checkErr := r.treeUnchanged(ctx, req, tree, refused, out.matches)
 		if checkErr != nil {
 			return nil, nil, checkErr
@@ -815,24 +823,26 @@ type listedTree struct {
 // that second listing is judged with candidateRefusals, the first listing's own
 // judgement. It is false if the set of names differs (a new name for an inode,
 // even one for a file that was already withheld, is a new file the search may
-// have read), if any verdict differs, or if a match lies in a name the first
-// listing did not hold. Judging only the first listing's names would miss a new
+// have read), or if any verdict differs. Judging only the first listing's names would miss a new
 // link to a file that was refused already: no listed verdict moves, yet the
 // search read it, and a retry's withheld report names it where the reply of a
 // pattern that did not match it would not.
 //
 // revalidateMatches stays as a further gate on the matched files only on both
 // paths, and a disagreement there takes the same route (another attempt, then
-// the same error), so it cannot make the outcome depend on content. For a listed
-// name it can add nothing: the listing guarantees a regular file reached without
-// a symlink inside the root, which is everything candidateRefusal shortcuts, and
-// every name it cannot show that for it judges with readRefusal itself.
+// the same error). It is a gate on listed, unrefused names only (the caller has
+// dropped the rest), and for those it can add nothing while the listing holds:
+// the listing guarantees a regular file reached without a symlink inside the
+// root, which is everything candidateRefusal shortcuts, and every name it cannot
+// show that for it judges with readRefusal itself. It can disagree only if a
+// listed file is changed after the second look and before this one, a fact
+// about a file the search was allowed to read and not about a withheld one.
 //
 // A name created during the search and removed again before either check is not
 // seen by either; no check outside the engine can see it.
 func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, tree *listedTree, refused map[string]string, matches []dcgrep.Match) (bool, error) {
 	if tree.snap.holds(r, tree.paths) {
-		return r.matchesStandAfterListing(tree.paths, matches), nil
+		return r.revalidateMatches(matches) == nil, nil
 	}
 	if grepFullRecheck != nil {
 		grepFullRecheck()
@@ -866,26 +876,38 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, tree *
 			return false, nil
 		}
 	}
-	return r.matchesStandAfterListing(tree.paths, matches), nil
+	return r.revalidateMatches(matches) == nil, nil
 }
 
-// matchesStandAfterListing is the part of the post-search decision that is
-// about the matches: each lies in a listed name, and none is refused now.
-func (r *Registry) matchesStandAfterListing(listed []string, matches []dcgrep.Match) bool {
+// keepListedMatches drops the matches that lie in a name the listing did not
+// hold, or held as refused. It looks at paths only, so what it keeps and drops
+// is decided by where the engine read, and the order of what it keeps is the
+// engine's.
+func keepListedMatches(listed []string, refused map[string]string, matches []dcgrep.Match) []dcgrep.Match {
 	if len(matches) == 0 {
-		return true
+		return matches
 	}
-	wanted := make(map[string]struct{}, len(matches))
+	stands := make(map[string]bool, len(matches))
 	for _, m := range matches {
-		wanted[m.Path] = struct{}{}
+		stands[m.Path] = false
 	}
 	for _, name := range listed {
-		delete(wanted, name)
+		if _, ok := stands[name]; ok {
+			stands[name] = true
+		}
 	}
-	if len(wanted) > 0 {
-		return false
+	for name := range refused {
+		if _, ok := stands[name]; ok {
+			stands[name] = false
+		}
 	}
-	return r.revalidateMatches(matches) == nil
+	kept := matches[:0:0]
+	for _, m := range matches {
+		if stands[m.Path] {
+			kept = append(kept, m)
+		}
+	}
+	return kept
 }
 
 // searchAttempt is one pass of searchUnrefused: a search that never reads a file the read gate refuses,

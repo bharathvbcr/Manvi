@@ -303,6 +303,7 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- `devcouncil_grep` no longer lets a concurrent writer learn, one bit per pattern, whether a withheld file matched. A name that existed only while the engine walked (a hard link to `.env` made and removed around the search) used to turn a matching pattern into "the tree changed under the search repeatedly" while a non-matching one got a normal answer. Matches in a name the listing did not hold, or held as withheld, are now dropped from the reply and never decide its outcome. One residue remains: a dropped match can still take a slot at the result cap.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
