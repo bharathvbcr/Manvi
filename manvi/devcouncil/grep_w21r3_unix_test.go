@@ -27,7 +27,7 @@ func TestGrepLegitFileInAnEmptyDirectoryIsNotDroppedOnTheFastPath(t *testing.T) 
 	}, w21Writer{
 		searchPre: `echo "needle fresh" > "$ROOT/src/empty/new.txt"`,
 	})
-	if err := os.MkdirAll(filepath.Join(f.root, "src", "empty"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(f.root, "src", "empty"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	grepNow = func() time.Time { return time.Now().Add(time.Hour) }
