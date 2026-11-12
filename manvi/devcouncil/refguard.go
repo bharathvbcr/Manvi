@@ -76,9 +76,13 @@ import (
 //     non-repository (not guarded), `mv .gitx .git`, then the commit. Same class
 //     as commit-and-push: the guard looks at refs around one command, not at what
 //     happens between two;
-//   - an admin directory of a linked worktree that git cannot read and itself
-//     lists as prunable with its directory gone is skipped with a note; every
-//     other unreadable one refuses the command (see snapshotRefs);
+//   - an admin directory of a linked worktree that git cannot read, that git
+//     itself lists as prunable with its directory gone, and that holds no ref
+//     file, is skipped with a note; every other unreadable one refuses the
+//     command (see snapshotRefs, which lists the namespaces covered);
+//   - pseudo-refs (ORIG_HEAD, MERGE_HEAD, FETCH_HEAD, CHERRY_PICK_HEAD and the
+//     like, of any worktree): git resolves `main-worktree/ORIG_HEAD` and pushes
+//     it, and the guard has never snapshotted them;
 //   - rollback is per Registry, not per author. Overlap with another writer is
 //     detected only between exec_command calls of one Registry, so a leaking
 //     commit that an operator or a sub-agent of another Registry made during
@@ -135,7 +139,7 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		return nil, fmt.Errorf("listing worktrees: %w", err)
 	}
 	entries := parseWorktrees(list)
-	admins, err := r.adminDirs(ctx)
+	admins, mainGit, err := r.adminDirs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -154,32 +158,50 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 			}
 		}
 	}
-	// A linked worktree's own refs (HEAD, refs/bisect, refs/worktree,
-	// refs/rewritten) live in its admin directory <common>/worktrees/<id>, and
-	// `git --git-dir=<that>` reads and writes them with no working tree at all.
-	// So that is how they are read, for EVERY admin directory that exists, listed
-	// or not: whether the working tree still exists, was moved, lost its .git or
-	// has a garbage one changes nothing about where those refs are or who can
-	// move them. (An earlier version read them from inside the working tree and
-	// skipped one that was unreadable; a command could then move such a ref
-	// through the admin directory and the guard never looked.)
+	// The per-worktree refs git resolves from this root, by namespace:
+	//   - this root's own refs/worktree, refs/bisect, refs/rewritten and HEAD: in
+	//     the root listing above;
+	//   - the main worktree's, when the root is a linked worktree (every GitPulse
+	//     and Manvi lane): `main-worktree/refs/<ns>/...` resolves to them, the root
+	//     listing does not show them, so they are read through the common git
+	//     directory (mainGit);
+	//   - each other linked worktree's: `worktrees/<id>/refs/<ns>/...`, read
+	//     through its admin directory <common>/worktrees/<id> for EVERY one that
+	//     exists, listed or not, prunable-looking or not.
+	// `git --git-dir=<dir>` reads and writes them with no working tree at all, so
+	// whether the working tree exists, was moved, lost its .git or has a garbage
+	// one changes nothing about where those refs are or who can move them.
 	//
-	// Why a skip cannot hide a leak. An admin directory is skipped only when git
-	// cannot read its refs AND git itself lists that worktree as prunable with
-	// its directory gone: git has then abandoned it, no git command resolves
-	// refs through it for a checkout, push or commit, and `git worktree prune`
-	// removes it. Anything else unreadable is an error and the command is not
-	// run, before it and after it. A skipped one that was readable before the
-	// command is reported unscanned (unreadableNow), so a command that breaks an
-	// admin directory after parking a leak in it is blocked. One that becomes
-	// readable again is read as new refs against a snapshot that lacked them and
-	// scanned. A leak therefore needs a ref git can read to be reachable at all,
-	// and any ref git can read is in a snapshot.
+	// The guarantee. Every ref in those namespaces that git can list is in the
+	// snapshot. An admin directory git cannot list (no HEAD, a broken HEAD) is
+	// still a ref source if it holds a ref file under those namespaces, because
+	// git resolves `worktrees/<id>/refs/<ns>/x` through it regardless
+	// (hasRefSource); that is an error, so the command is not run, and one made by
+	// a command is reported unscanned after it. It is skipped only when git has
+	// abandoned it (prunable, directory gone) AND it holds no ref source, which is
+	// a directory `git worktree prune` would remove and no ref can be read from.
+	// Not covered: pseudo-refs (ORIG_HEAD, MERGE_HEAD, FETCH_HEAD and the like),
+	// which are not ref namespaces and which this guard has never snapshotted for
+	// any worktree; see the residuals in the package comment.
+	// A skipped one that was readable before the command is reported unscanned
+	// (unreadableNow). One that becomes readable again is read as new refs against
+	// a snapshot that lacked them and scanned.
+	if mainGit != "" {
+		own, err := runGit(ctx, r.deps.Root, "--git-dir="+mainGit, "for-each-ref", "--format=%(objectname) %(refname)",
+			"refs/worktree", "refs/bisect", "refs/rewritten")
+		if err != nil {
+			return nil, fmt.Errorf("listing the main worktree's own refs in %s: %w", mainGit, err)
+		}
+		if err := addRefRecords(snap, mainGit, own); err != nil {
+			return nil, err
+		}
+		snap.scanned[mainGit] = true
+	}
 	for _, admin := range admins {
 		own, err := runGit(ctx, r.deps.Root, "--git-dir="+admin, "for-each-ref", "--format=%(objectname) %(refname)",
 			"refs/worktree", "refs/bisect", "refs/rewritten")
 		if err != nil {
-			if why := prunableAndGone(entries, admin); why != "" {
+			if why := prunableAndGone(entries, admin); why != "" && !hasRefSource(admin) {
 				snap.skipped[admin] = why
 				continue
 			}
@@ -194,31 +216,35 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 }
 
 // adminDirs lists <common git dir>/worktrees/*: the administrative directory of
-// every linked worktree, whether or not git still lists it.
-func (r *Registry) adminDirs(ctx context.Context) ([]string, error) {
+// every linked worktree, whether or not git still lists it. When the root is a
+// linked worktree it also returns the common git directory, where the main
+// worktree keeps its own refs; "" otherwise.
+func (r *Registry) adminDirs(ctx context.Context) (admins []string, mainGit string, err error) {
 	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
 	if err != nil {
-		return nil, fmt.Errorf("finding the common git directory: %w", err)
+		return nil, "", fmt.Errorf("finding the common git directory: %w", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
-		return nil, fmt.Errorf("git named no common directory: %q", out)
+		return nil, "", fmt.Errorf("git named no common directory: %q", out)
 	}
 	common, own := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	ownReal := realPath(own)
+	if realPath(common) != ownReal {
+		mainGit = common
+	}
 	dir := filepath.Join(common, "worktrees")
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, mainGit, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("listing %s: %w", dir, err)
+		return nil, "", fmt.Errorf("listing %s: %w", dir, err)
 	}
 	// When the root is itself a linked worktree, the root listing already shows
 	// that worktree's own refs under their plain names, so its admin directory
 	// (its own git dir) is left out: read twice, one leak would be two entries
 	// and the second rollback would fail its compare-and-swap.
-	ownReal := realPath(own)
-	var admins []string
 	for _, e := range ents {
 		if !e.IsDir() {
 			continue
@@ -230,7 +256,41 @@ func (r *Registry) adminDirs(ctx context.Context) ([]string, error) {
 		admins = append(admins, a)
 	}
 	sort.Strings(admins)
-	return admins, nil
+	return admins, mainGit, nil
+}
+
+// hasRefSource reports whether an admin directory holds anything git resolves a
+// ref from: a file or link under refs/worktree, refs/bisect or refs/rewritten, a
+// packed-refs file, or a reftable directory. It errs toward "yes": an entry it
+// cannot examine counts, because the answer decides whether an unreadable admin
+// directory may be skipped.
+func hasRefSource(admin string) bool {
+	for _, name := range []string{"packed-refs", "reftable"} {
+		if _, err := os.Lstat(filepath.Join(admin, name)); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	for _, ns := range []string{"worktree", "bisect", "rewritten"} {
+		found := false
+		err := filepath.WalkDir(filepath.Join(admin, "refs", ns), func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				found = true
+				return fs.SkipAll
+			}
+			if !d.IsDir() {
+				found = true
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if found || err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func realPath(p string) string {

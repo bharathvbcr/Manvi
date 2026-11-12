@@ -303,6 +303,16 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The shell ref guard now snapshots the main worktree's own refs
+  (`refs/worktree`, `refs/bisect`, `refs/rewritten`) when the root is a linked
+  worktree, and no longer skips a prunable-looking admin directory that still
+  holds a ref git resolves (`worktrees/<id>/refs/<ns>/x`): such a directory
+  refuses the command, and one a command creates blocks it as `ref.unscanned`.
+  Before, a leaking commit parked there could be pushed. `ref.unscanned` is the
+  guard's own rule id and is not in the `contracts/verdict.schema.json` enum
+  (that enum mirrors DevCouncil's policy rules); anything filtering ref-guard
+  blocks on `path.secret` must also match `ref.unscanned`. Pseudo-refs
+  (`ORIG_HEAD`, `MERGE_HEAD`, `FETCH_HEAD`) remain unsnapshotted.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
