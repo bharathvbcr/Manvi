@@ -80,9 +80,11 @@ import (
 //     itself lists as prunable with its directory gone, and that holds no ref
 //     file, is skipped with a note; every other unreadable one refuses the
 //     command (see snapshotRefs, which lists the namespaces covered);
-//   - pseudo-refs (ORIG_HEAD, MERGE_HEAD, FETCH_HEAD, CHERRY_PICK_HEAD and the
-//     like, of any worktree): git resolves `main-worktree/ORIG_HEAD` and pushes
-//     it, and the guard has never snapshotted them;
+//   - a ref git resolves from a file below objects/, logs/ or modules/ of a git
+//     directory (`git push <remote> logs/x:refs/heads/z` delivers): those trees
+//     are not walked, see refguard_rootfiles.go;
+//   - a pseudo-ref file that held several object ids before the command and
+//     leaks is reported, not put back: its content cannot be rebuilt from the ids;
 //   - rollback is per Registry, not per author. Overlap with another writer is
 //     detected only between exec_command calls of one Registry, so a leaking
 //     commit that an operator or a sub-agent of another Registry made during
@@ -109,6 +111,9 @@ type refSnapshot struct {
 	// ones that were not, with why. See snapshotRefs.
 	scanned map[string]bool
 	skipped map[string]string
+	// files is the object ids of each ref-source file (ORIG_HEAD, FETCH_HEAD and
+	// the like), by path; refs holds one entry per id. See refguard_rootfiles.go.
+	files map[string][]string
 }
 
 func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
@@ -126,7 +131,7 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		}
 		return nil, fmt.Errorf("listing refs: %w", err)
 	}
-	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{}}
+	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{}, files: map[string][]string{}}
 	if err := addRefRecords(snap, "", out); err != nil {
 		return nil, err
 	}
@@ -139,10 +144,11 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		return nil, fmt.Errorf("listing worktrees: %w", err)
 	}
 	entries := parseWorktrees(list)
-	admins, mainGit, err := r.adminDirs(ctx)
+	dirs, err := r.adminDirs(ctx)
 	if err != nil {
 		return nil, err
 	}
+	admins, mainGit := dirs.admins, dirs.mainGit()
 	adminOf := map[string]string{} // working-tree path -> admin dir, from the gitdir files
 	for _, a := range admins {
 		if p := adminWorktreePath(a); p != "" {
@@ -180,9 +186,9 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 	// a command is reported unscanned after it. It is skipped only when git has
 	// abandoned it (prunable, directory gone) AND it holds no ref source, which is
 	// a directory `git worktree prune` would remove and no ref can be read from.
-	// Not covered: pseudo-refs (ORIG_HEAD, MERGE_HEAD, FETCH_HEAD and the like),
-	// which are not ref namespaces and which this guard has never snapshotted for
-	// any worktree; see the residuals in the package comment.
+	// Ref-source files (ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, any name a command
+	// creates in a git directory) are read directly, below; see
+	// refguard_rootfiles.go for what is and is not read.
 	// A skipped one that was readable before the command is reported unscanned
 	// (unreadableNow). One that becomes readable again is read as new refs against
 	// a snapshot that lacked them and scanned.
@@ -212,34 +218,66 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		}
 		snap.scanned[admin] = true
 	}
+	// Ref-source files (ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, any root name a command
+	// creates): the root's own git directory, the common one when the root is a
+	// linked worktree, and every admin directory git did not abandon.
+	scan := []string{dirs.own}
+	if mainGit != "" {
+		scan = append(scan, mainGit)
+	}
+	for _, admin := range admins {
+		if _, skipped := snap.skipped[admin]; !skipped {
+			scan = append(scan, admin)
+		}
+	}
+	for _, dir := range scan {
+		files, err := walkRootFiles(dir)
+		if err != nil {
+			return nil, err
+		}
+		addRootFiles(snap, files)
+	}
 	return snap, nil
 }
 
-// adminDirs lists <common git dir>/worktrees/*: the administrative directory of
-// every linked worktree, whether or not git still lists it. When the root is a
-// linked worktree it also returns the common git directory, where the main
-// worktree keeps its own refs; "" otherwise.
-func (r *Registry) adminDirs(ctx context.Context) (admins []string, mainGit string, err error) {
+// gitDirs is every git directory a ref can be read from at the root.
+type gitDirs struct {
+	// own is the root's git directory; common is the shared one (the same
+	// directory unless the root is a linked worktree).
+	own, common string
+	// admins is <common>/worktrees/*, the administrative directory of every
+	// linked worktree git still has a directory for, whether or not it lists it,
+	// without the root's own.
+	admins []string
+}
+
+// mainGit is the common git directory when the root is a linked worktree, where
+// the main worktree keeps its own refs; "" otherwise.
+func (d gitDirs) mainGit() string {
+	if realPath(d.common) != realPath(d.own) {
+		return d.common
+	}
+	return ""
+}
+
+func (r *Registry) adminDirs(ctx context.Context) (gitDirs, error) {
 	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
 	if err != nil {
-		return nil, "", fmt.Errorf("finding the common git directory: %w", err)
+		return gitDirs{}, fmt.Errorf("finding the common git directory: %w", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
-		return nil, "", fmt.Errorf("git named no common directory: %q", out)
+		return gitDirs{}, fmt.Errorf("git named no common directory: %q", out)
 	}
-	common, own := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
-	ownReal := realPath(own)
-	if realPath(common) != ownReal {
-		mainGit = common
-	}
-	dir := filepath.Join(common, "worktrees")
+	dirs := gitDirs{common: strings.TrimSpace(lines[0]), own: strings.TrimSpace(lines[1])}
+	ownReal := realPath(dirs.own)
+	dir := filepath.Join(dirs.common, "worktrees")
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, mainGit, nil
+		return dirs, nil
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("listing %s: %w", dir, err)
+		return gitDirs{}, fmt.Errorf("listing %s: %w", dir, err)
 	}
 	// When the root is itself a linked worktree, the root listing already shows
 	// that worktree's own refs under their plain names, so its admin directory
@@ -253,15 +291,16 @@ func (r *Registry) adminDirs(ctx context.Context) (admins []string, mainGit stri
 		if realPath(a) == ownReal {
 			continue
 		}
-		admins = append(admins, a)
+		dirs.admins = append(dirs.admins, a)
 	}
-	sort.Strings(admins)
-	return admins, mainGit, nil
+	sort.Strings(dirs.admins)
+	return dirs, nil
 }
 
 // hasRefSource reports whether an admin directory holds anything git resolves a
 // ref from: a file or link under refs/worktree, refs/bisect or refs/rewritten, a
-// packed-refs file, or a reftable directory. It errs toward "yes": an entry it
+// packed-refs file, a reftable directory, or a ref-source file (see
+// refguard_rootfiles.go). It errs toward "yes": an entry it
 // cannot examine counts, because the answer decides whether an unreadable admin
 // directory may be skipped.
 func hasRefSource(admin string) bool {
@@ -290,7 +329,10 @@ func hasRefSource(admin string) bool {
 			return true
 		}
 	}
-	return false
+	// A ref-source file at the top of it (ORIG_HEAD and the like) is read the
+	// same way: git resolves `worktrees/<id>/ORIG_HEAD` through it as well.
+	files, err := walkRootFiles(admin)
+	return err != nil || len(files) > 0
 }
 
 func realPath(p string) string {
@@ -524,7 +566,11 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 	}
 	base := before.oids()
 	verdicts := map[string][]stagedLeak{}
+	restoredFiles := map[string]bool{}
 	for _, name := range moved {
+		if path := filePathOfKey(name); path != "" && restoredFiles[path] {
+			continue // another line of a file already put back
+		}
 		now := after.refs[name]
 		g := guardedRef{Ref: name, Was: before.refs[name], Now: now}
 		commits, err := r.newCommits(ctx, now, base)
@@ -567,8 +613,12 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 						g.RestoreTo = strings.TrimSpace(parent)
 					}
 				}
-				r.restoreRef(ctx, &g, v)
-				if g.Restored {
+				if filePathOfKey(name) != "" {
+					restoreRootFile(before, after, name, &g, v, restoredFiles)
+				} else {
+					r.restoreRef(ctx, &g, v)
+				}
+				if g.Restored && filePathOfKey(name) == "" {
 					if g.Was == "" && g.RestoreTo == "" {
 						delete(after.refs, name)
 					} else if g.Was == "" {

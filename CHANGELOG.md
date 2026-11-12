@@ -311,8 +311,16 @@ under **Unreleased** in the same commit as the code.
   Before, a leaking commit parked there could be pushed. `ref.unscanned` is the
   guard's own rule id and is not in the `contracts/verdict.schema.json` enum
   (that enum mirrors DevCouncil's policy rules); anything filtering ref-guard
-  blocks on `path.secret` must also match `ref.unscanned`. Pseudo-refs
-  (`ORIG_HEAD`, `MERGE_HEAD`, `FETCH_HEAD`) remain unsnapshotted.
+  blocks on `path.secret` must also match `ref.unscanned`.
+  The guard also reads the files git resolves as refs by name (`ORIG_HEAD`,
+  `FETCH_HEAD`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, any root name a command makes
+  with `git update-ref` or a redirect, and nested ones like `foo/bar`) in the
+  root's git directory, the common one (`main-worktree/NAME`) and each linked
+  worktree's (`worktrees/<id>/NAME`); each object id on a line counts. A leaking
+  one is put back (removed, or rewritten with its old id) and blocked as
+  `path.secret`; a multi-line file that existed before is reported for manual
+  repair. Still not read: files below `objects/`, `logs/` and `modules/` of a
+  git directory, which git also resolves by name.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
