@@ -1,8 +1,10 @@
 package devcouncil
 
 import (
+	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -148,6 +150,86 @@ func (r *Registry) snapshotTree(listed []string, known []stampedName, started ti
 		}
 	}
 	return snap
+}
+
+// grepMaxWalkedDirs bounds the directories stampSearchTree will stamp. A tree
+// with more gets no snapshot and the call takes the full path, which is the
+// answer for a tree whose directories cannot all be stamped.
+const grepMaxWalkedDirs = 50_000
+
+// stampSearchTree adds to a snapshot every directory the search covers that the
+// listing named no file under: an empty directory, or one whose files were all
+// ignored. dirsAbove stamps only the directories above listed files, so a name
+// created in any other directory changed nothing the snapshot reads and the fast
+// path could not see it. The directories are found by reading the tree under the
+// search path (names and entry kinds only; a symlink is not followed, as the
+// engine does not follow one), so a new name anywhere in the searched tree moves
+// the mtime of its directory, and the call takes the full relist, which decides
+// from the listings alone. nil in, or a tree that cannot be walked or holds more
+// than grepMaxWalkedDirs directories, means no snapshot.
+func (r *Registry) stampSearchTree(snap *listingStamps, scope string, started time.Time) *listingStamps {
+	if snap == nil {
+		return nil
+	}
+	scope = strings.Trim(strings.TrimPrefix(scope, "./"), "/")
+	if scope == "." {
+		scope = ""
+	}
+	known := make(map[string]struct{}, len(snap.dirNames))
+	for _, name := range snap.dirNames {
+		known[name] = struct{}{}
+	}
+	top := scope
+	if top == "" {
+		top = "."
+	}
+	var added []string
+	pending := []string{top}
+	for len(pending) > 0 {
+		dir := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		entries, err := os.ReadDir(filepath.Join(r.deps.Root, filepath.FromSlash(dir)))
+		if err != nil {
+			if dir == top {
+				// Not a directory (a single file, or nothing there): the
+				// listing holds what there is and no directory is missing.
+				return snap
+			}
+			return nil
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			sub := e.Name()
+			if dir != "." {
+				sub = dir + "/" + sub
+			}
+			if _, seen := known[sub]; !seen {
+				known[sub] = struct{}{}
+				added = append(added, sub)
+				if len(known) > grepMaxWalkedDirs {
+					return nil
+				}
+			}
+			pending = append(pending, sub)
+		}
+	}
+	if len(added) == 0 {
+		return snap
+	}
+	stamps, ok := r.stampAll(added)
+	if !ok {
+		return nil
+	}
+	limit := started.Add(-grepStampSlack).UnixNano()
+	out := *snap
+	out.dirNames = append(append([]string(nil), snap.dirNames...), added...)
+	out.dirs = append(append([]fsStamp(nil), snap.dirs...), stamps...)
+	for _, st := range stamps {
+		out.fresh = out.fresh || st.mtime >= limit || st.ctime >= limit
+	}
+	return &out
 }
 
 // holds reports whether every recorded entry still reads back the same.
