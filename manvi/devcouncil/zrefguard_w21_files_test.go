@@ -97,8 +97,8 @@ func TestW21PseudoRefsParkedFromALinkedRootAreRolledBack(t *testing.T) {
 	}
 }
 
-// A pseudo-ref a command moves onto a leaking commit is put back to the single
-// object id it held; one that held several is reported and left.
+// A pseudo-ref a command moves onto a leaking commit is put back to the exact
+// bytes it held, a multi-line one included.
 func TestW21PseudoRefThatExistedBeforeIsRestoredOrReported(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	common := gitCommon(t, f.root)
@@ -123,8 +123,12 @@ func TestW21PseudoRefThatExistedBeforeIsRestoredOrReported(t *testing.T) {
 	}
 	write(t, f.root, "park2.sh", parkLeak+"printf '%s\\t\\tbranch a of x\\n' $c > $d/FETCH_HEAD\n")
 	res = shell(f, "sh park2.sh")
-	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) || !strings.Contains(res.Text, "MANUAL INTERVENTION") {
-		t.Fatalf("a moved multi-line FETCH_HEAD was not reported for manual repair: %+v", res)
+	if !res.IsError || !res.Blocked || res.Rule != string(policy.RuleSecretPath) || strings.Contains(res.Text, "MANUAL INTERVENTION") {
+		t.Fatalf("a moved multi-line FETCH_HEAD was not rolled back cleanly: %+v", res)
+	}
+	back, err := os.ReadFile(filepath.Join(common, "FETCH_HEAD")) // #nosec G304 -- a file in the git dir this test created.
+	if err != nil || string(back) != multi {
+		t.Fatalf("FETCH_HEAD was not put back byte for byte:\n got %q\nwant %q (%v)", back, multi, err)
 	}
 }
 

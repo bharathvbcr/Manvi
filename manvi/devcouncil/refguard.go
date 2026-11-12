@@ -114,11 +114,15 @@ type refSnapshot struct {
 	// files is the object ids of each ref-source file (ORIG_HEAD, FETCH_HEAD and
 	// the like), by path; refs holds one entry per id. See refguard_rootfiles.go.
 	files map[string][]string
+	// raw is each such file's bytes, so a rollback writes back exactly what was
+	// there; viaLink marks the files reached through a symbolic link.
+	raw     map[string][]byte
+	viaLink map[string]bool
 }
 
 func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
-	out, err := runGit(ctx, r.deps.Root, "for-each-ref", "--format=%(objectname) %(refname)")
-	if err != nil {
+	dirs, derr := r.adminDirs(ctx)
+	if derr != nil {
 		// Whether this is a repository is not read from git's message, which is
 		// translated by locale (and by the fake or wrapper a PATH may supply). It
 		// is read from the tree: git finds a repository through a .git entry in
@@ -129,9 +133,21 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		if !insideRepository(r.deps.Root) {
 			return nil, nil
 		}
+		return nil, derr
+	}
+	args := []string{"for-each-ref", "--format=%(objectname) %(refname) %(symref)"}
+	if dirs.reftable {
+		// A reftable repository keeps its root refs (ORIG_HEAD and any name a command
+		// makes) in the stack, where neither the namespaces below nor a file walk
+		// sees them; git lists them with this flag.
+		args = append(args, "--include-root-refs")
+	}
+	out, err := runGit(ctx, r.deps.Root, args...)
+	if err != nil {
 		return nil, fmt.Errorf("listing refs: %w", err)
 	}
-	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{}, files: map[string][]string{}}
+	snap := &refSnapshot{refs: map[string]string{}, scanned: map[string]bool{}, skipped: map[string]string{},
+		files: map[string][]string{}, raw: map[string][]byte{}, viaLink: map[string]bool{}}
 	if err := addRefRecords(snap, "", out); err != nil {
 		return nil, err
 	}
@@ -144,10 +160,6 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		return nil, fmt.Errorf("listing worktrees: %w", err)
 	}
 	entries := parseWorktrees(list)
-	dirs, err := r.adminDirs(ctx)
-	if err != nil {
-		return nil, err
-	}
 	admins, mainGit := dirs.admins, dirs.mainGit()
 	adminOf := map[string]string{} // working-tree path -> admin dir, from the gitdir files
 	for _, a := range admins {
@@ -193,8 +205,7 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 	// (unreadableNow). One that becomes readable again is read as new refs against
 	// a snapshot that lacked them and scanned.
 	if mainGit != "" {
-		own, err := runGit(ctx, r.deps.Root, "--git-dir="+mainGit, "for-each-ref", "--format=%(objectname) %(refname)",
-			"refs/worktree", "refs/bisect", "refs/rewritten")
+		own, err := r.listPerWorktreeRefs(ctx, mainGit, dirs.reftable)
 		if err != nil {
 			return nil, fmt.Errorf("listing the main worktree's own refs in %s: %w", mainGit, err)
 		}
@@ -204,10 +215,9 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		snap.scanned[mainGit] = true
 	}
 	for _, admin := range admins {
-		own, err := runGit(ctx, r.deps.Root, "--git-dir="+admin, "for-each-ref", "--format=%(objectname) %(refname)",
-			"refs/worktree", "refs/bisect", "refs/rewritten")
+		own, err := r.listPerWorktreeRefs(ctx, admin, dirs.reftable)
 		if err != nil {
-			if why := prunableAndGone(entries, admin); why != "" && !hasRefSource(admin) {
+			if why := prunableAndGone(entries, admin); why != "" && !hasRefSource(admin, dirs.hashLen) {
 				snap.skipped[admin] = why
 				continue
 			}
@@ -231,13 +241,45 @@ func (r *Registry) snapshotRefs(ctx context.Context) (*refSnapshot, error) {
 		}
 	}
 	for _, dir := range scan {
-		files, err := walkRootFiles(dir)
+		files, err := walkRootFiles(dir, dirs.hashLen)
 		if err != nil {
 			return nil, err
 		}
 		addRootFiles(snap, files)
 	}
+	if err := r.markAbsent(ctx, snap, dirs.common); err != nil {
+		return nil, err
+	}
 	return snap, nil
+}
+
+// listPerWorktreeRefs lists the refs a git directory keeps for its worktree:
+// refs/worktree, refs/bisect and refs/rewritten. A reftable stack has no such
+// namespaces to ask for and holds the root refs too, so it is listed whole with
+// --include-root-refs and narrowed here to those, which is dearer and only for
+// reftable repositories.
+func (r *Registry) listPerWorktreeRefs(ctx context.Context, gitDir string, reftable bool) (string, error) {
+	if !reftable {
+		return runGit(ctx, r.deps.Root, "--git-dir="+gitDir, "for-each-ref", "--format=%(objectname) %(refname) %(symref)",
+			"refs/worktree", "refs/bisect", "refs/rewritten")
+	}
+	out, err := runGit(ctx, r.deps.Root, "--git-dir="+gitDir, "for-each-ref", "--format=%(objectname) %(refname) %(symref)", "--include-root-refs")
+	if err != nil {
+		return "", err
+	}
+	var keep []string
+	for _, line := range strings.Split(out, "\n") {
+		_, rest, _ := strings.Cut(line, " ")
+		name, _, _ := strings.Cut(rest, " ")
+		if name == "" || name == "HEAD" {
+			continue // HEAD is read through `worktree list`.
+		}
+		if !strings.HasPrefix(name, "refs/") || strings.HasPrefix(name, "refs/worktree/") ||
+			strings.HasPrefix(name, "refs/bisect/") || strings.HasPrefix(name, "refs/rewritten/") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n"), nil
 }
 
 // gitDirs is every git directory a ref can be read from at the root.
@@ -249,6 +291,10 @@ type gitDirs struct {
 	// linked worktree git still has a directory for, whether or not it lists it,
 	// without the root's own.
 	admins []string
+	// hashLen is the length of an object id in hex digits (40, or 64 for sha256),
+	// and reftable says the repository keeps its refs in reftable.
+	hashLen  int
+	reftable bool
 }
 
 // mainGit is the common git directory when the root is a linked worktree, where
@@ -261,15 +307,37 @@ func (d gitDirs) mainGit() string {
 }
 
 func (r *Registry) adminDirs(ctx context.Context) (gitDirs, error) {
-	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
+	dirs := gitDirs{hashLen: 40}
+	out, err := runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir", "--show-object-format", "--show-ref-format")
 	if err != nil {
-		return gitDirs{}, fmt.Errorf("finding the common git directory: %w", err)
+		// A git that does not know --show-ref-format (before 2.46) has no reftable
+		// repositories either, and --show-object-format came with 2.29.
+		out, err = runGit(ctx, r.deps.Root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir")
+		if err != nil {
+			return gitDirs{}, fmt.Errorf("finding the common git directory: %w", err)
+		}
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 2 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
+	if len(lines) < 2 || len(lines) > 4 || strings.TrimSpace(lines[0]) == "" || strings.TrimSpace(lines[1]) == "" {
 		return gitDirs{}, fmt.Errorf("git named no common directory: %q", out)
 	}
-	dirs := gitDirs{common: strings.TrimSpace(lines[0]), own: strings.TrimSpace(lines[1])}
+	dirs.common, dirs.own = strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	if len(lines) == 4 {
+		switch strings.TrimSpace(lines[2]) {
+		case "sha1":
+		case "sha256":
+			dirs.hashLen = 64
+		default:
+			return gitDirs{}, fmt.Errorf("git named an object format this guard does not know: %q", lines[2])
+		}
+		switch strings.TrimSpace(lines[3]) {
+		case "files":
+		case "reftable":
+			dirs.reftable = true
+		default:
+			return gitDirs{}, fmt.Errorf("git named a ref format this guard does not know: %q", lines[3])
+		}
+	}
 	ownReal := realPath(dirs.own)
 	dir := filepath.Join(dirs.common, "worktrees")
 	ents, err := os.ReadDir(dir)
@@ -303,7 +371,7 @@ func (r *Registry) adminDirs(ctx context.Context) (gitDirs, error) {
 // refguard_rootfiles.go). It errs toward "yes": an entry it
 // cannot examine counts, because the answer decides whether an unreadable admin
 // directory may be skipped.
-func hasRefSource(admin string) bool {
+func hasRefSource(admin string, hashLen int) bool {
 	for _, name := range []string{"packed-refs", "reftable"} {
 		if _, err := os.Lstat(filepath.Join(admin, name)); !errors.Is(err, fs.ErrNotExist) {
 			return true
@@ -331,7 +399,7 @@ func hasRefSource(admin string) bool {
 	}
 	// A ref-source file at the top of it (ORIG_HEAD and the like) is read the
 	// same way: git resolves `worktrees/<id>/ORIG_HEAD` through it as well.
-	files, err := walkRootFiles(admin)
+	files, err := walkRootFiles(admin, hashLen)
 	return err != nil || len(files) > 0
 }
 
@@ -412,9 +480,13 @@ func addRefRecords(snap *refSnapshot, worktree, out string) error {
 		if line == "" {
 			continue
 		}
-		oid, name, ok := strings.Cut(line, " ")
+		oid, rest, ok := strings.Cut(line, " ")
 		if !ok {
 			return fmt.Errorf("git answered an unreadable ref record: %q", line)
+		}
+		name, sym, _ := strings.Cut(rest, " ")
+		if name == "HEAD" || sym != "" && !strings.HasPrefix(name, "refs/") {
+			continue // a symbolic root ref is its target, which is listed itself.
 		}
 		if worktree != "" {
 			name = adminKey(worktree, name)
@@ -482,7 +554,11 @@ func parseWorktrees(out string) []worktreeEntry {
 func (s *refSnapshot) oids() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, oid := range s.refs {
+	for _, v := range s.refs {
+		oid := entryOID(v)
+		if strings.HasSuffix(v, absentMark) {
+			continue // an object that is not there is not a base to walk from.
+		}
 		if !seen[oid] {
 			seen[oid] = true
 			out = append(out, oid)
@@ -540,6 +616,104 @@ func (r *Registry) verifyRefs(ctx context.Context, before *refSnapshot, command 
 	return v, after
 }
 
+// moveVerdict is what scanning the commits a ref gained came to. It depends on
+// the new object id alone, so it is made once for every entry that carries it:
+// a fetch of a thousand branches writes the same tip into a thousand
+// refs/remotes entries and into FETCH_HEAD, and judging each again is the
+// difference between a minute and many.
+type moveVerdict struct {
+	newCommits []string
+	leaking    []string
+	files      []string
+	problem    string
+	manual     bool
+}
+
+func (r *Registry) judgeOID(ctx context.Context, set secretFileSet, now string, base []string, verdicts map[string][]stagedLeak) *moveVerdict {
+	mv := &moveVerdict{}
+	commits, err := r.newCommits(ctx, now, base)
+	switch {
+	case err != nil:
+		mv.problem = fmt.Sprintf("the commits it added could not be listed: %v", err)
+		mv.manual = true
+	case len(commits) > maxGuardCommits:
+		mv.problem = fmt.Sprintf("it added more than %d commits, too many to scan; none were scanned", maxGuardCommits)
+		mv.manual = true
+	default:
+		mv.newCommits = commits
+		files := map[string]bool{}
+		for _, c := range commits {
+			leaks, seen := verdicts[c]
+			if !seen {
+				leaks, err = r.commitLeaks(ctx, set, c)
+				if err != nil {
+					mv.problem = fmt.Sprintf("commit %s could not be scanned: %v", c, err)
+					mv.manual = true
+					break
+				}
+				verdicts[c] = leaks
+			}
+			if len(leaks) > 0 {
+				mv.leaking = append(mv.leaking, c)
+				for _, l := range leaks {
+					files[l.Path] = true
+				}
+			}
+		}
+		for f := range files {
+			mv.files = append(mv.files, f)
+		}
+		sort.Strings(mv.files)
+	}
+	return mv
+}
+
+// newDanglingAdminHEAD says whether key is the HEAD of an admin directory that
+// the command itself created (it was not read before) and whose working tree
+// does not exist. Such a HEAD is a ref source git resolves
+// (`worktrees/<id>/HEAD`) and, unlike a real worktree's, can be removed.
+func newDanglingAdminHEAD(before *refSnapshot, key string) (string, bool) {
+	rest, ok := strings.CutPrefix(key, "worktree:@")
+	if !ok {
+		return "", false
+	}
+	i := strings.LastIndex(rest, ":")
+	if i < 0 || rest[i+1:] != "HEAD" {
+		return "", false
+	}
+	admin := rest[:i]
+	if before.scanned[admin] {
+		return "", false
+	}
+	if _, skipped := before.skipped[admin]; skipped {
+		return "", false
+	}
+	if p := adminWorktreePath(admin); p != "" {
+		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+			return "", false
+		}
+	}
+	return admin, true
+}
+
+// removeAdminHEAD removes the HEAD file of a dangling admin directory the command
+// created, compare-and-swap on the id it holds.
+func removeAdminHEAD(admin string, g *guardedRef, v *refViolation) {
+	path := filepath.Join(admin, "HEAD")
+	b, err := os.ReadFile(path) // #nosec G304 -- the HEAD of an admin directory git listed under the common dir.
+	if err != nil || strings.Fields(string(b) + " ")[0] != g.Now {
+		g.Problem = "the HEAD of the worktree administered here could not be removed: it changed since it was read, or cannot be read"
+		v.manual = true
+		return
+	}
+	if err := os.Remove(path); err != nil { // #nosec G122 -- compared with what was scanned just above.
+		g.Problem = fmt.Sprintf("the HEAD of the worktree administered here could not be removed (%v)", err)
+		v.manual = true
+		return
+	}
+	g.Restored = true
+}
+
 // judgeMoves scans the commits that appeared on every ref that differs between
 // two snapshots. With rollback it restores the leaking refs and updates after to
 // match; without it the leak is only reported.
@@ -567,65 +741,51 @@ func (r *Registry) judgeMoves(ctx context.Context, before, after *refSnapshot, r
 	base := before.oids()
 	verdicts := map[string][]stagedLeak{}
 	restoredFiles := map[string]bool{}
+	judged := map[string]*moveVerdict{}
 	for _, name := range moved {
 		if path := filePathOfKey(name); path != "" && restoredFiles[path] {
 			continue // another line of a file already put back
 		}
+		if strings.HasSuffix(after.refs[name], absentMark) {
+			continue // names no object: nothing is reachable from it until one exists, and then it moves.
+		}
 		now := after.refs[name]
-		g := guardedRef{Ref: name, Was: before.refs[name], Now: now}
-		commits, err := r.newCommits(ctx, now, base)
-		switch {
-		case err != nil:
-			g.Problem = fmt.Sprintf("the commits it added could not be listed: %v", err)
-			v.manual = v.manual || rollback
-		case len(commits) > maxGuardCommits:
-			g.Problem = fmt.Sprintf("it added more than %d commits, too many to scan; none were scanned", maxGuardCommits)
-			v.manual = v.manual || rollback
-		default:
-			files := map[string]bool{}
-			for _, c := range commits {
-				leaks, seen := verdicts[c]
-				if !seen {
-					leaks, err = r.commitLeaks(ctx, set, c)
-					if err != nil {
-						g.Problem = fmt.Sprintf("commit %s could not be scanned: %v", c, err)
-						v.manual = v.manual || rollback
-						break
-					}
-					verdicts[c] = leaks
-				}
-				if len(leaks) > 0 {
-					g.Commits = append(g.Commits, c)
-					for _, l := range leaks {
-						files[l.Path] = true
-					}
+		g := guardedRef{Ref: name, Was: entryOID(before.refs[name]), Now: now}
+		mv := judged[now]
+		if mv == nil {
+			mv = r.judgeOID(ctx, set, now, base, verdicts)
+			judged[now] = mv
+		}
+		g.Problem, g.Commits, g.Files = mv.problem, mv.leaking, mv.files
+		v.manual = v.manual || (rollback && mv.manual)
+		if len(g.Commits) > 0 && g.Problem == "" && rollback {
+			commits := mv.newCommits
+			if _, _, refName := r.refLocation(name); g.Was == "" && refName == "HEAD" && len(commits) > 0 {
+				// A worktree created by the command: its HEAD cannot be deleted,
+				// so it goes back to the commit the new ones were built on.
+				if parent, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", commits[len(commits)-1]+"^"); err == nil {
+					g.RestoreTo = strings.TrimSpace(parent)
 				}
 			}
-			for f := range files {
-				g.Files = append(g.Files, f)
-			}
-			sort.Strings(g.Files)
-			if len(g.Commits) > 0 && g.Problem == "" && rollback {
-				if _, _, refName := r.refLocation(name); g.Was == "" && refName == "HEAD" && len(commits) > 0 {
-					// A worktree created by the command: its HEAD cannot be deleted,
-					// so it goes back to the commit the new ones were built on.
-					if parent, err := runGit(ctx, r.deps.Root, "rev-parse", "--verify", "--quiet", commits[len(commits)-1]+"^"); err == nil {
-						g.RestoreTo = strings.TrimSpace(parent)
-					}
+			admin, dangling := newDanglingAdminHEAD(before, name)
+			switch {
+			case filePathOfKey(name) != "":
+				restoreRootFile(before, after, name, &g, v, restoredFiles)
+			case dangling && g.Was == "":
+				removeAdminHEAD(admin, &g, v)
+				if g.Restored {
+					g.RestoreTo = ""
 				}
-				if filePathOfKey(name) != "" {
-					restoreRootFile(before, after, name, &g, v, restoredFiles)
+			default:
+				r.restoreRef(ctx, &g, v)
+			}
+			if g.Restored && filePathOfKey(name) == "" {
+				if g.Was == "" && g.RestoreTo == "" {
+					delete(after.refs, name)
+				} else if g.Was == "" {
+					after.refs[name] = g.RestoreTo
 				} else {
-					r.restoreRef(ctx, &g, v)
-				}
-				if g.Restored && filePathOfKey(name) == "" {
-					if g.Was == "" && g.RestoreTo == "" {
-						delete(after.refs, name)
-					} else if g.Was == "" {
-						after.refs[name] = g.RestoreTo
-					} else {
-						after.refs[name] = g.Was
-					}
+					after.refs[name] = g.Was
 				}
 			}
 		}
@@ -749,6 +909,24 @@ func (r *Registry) commitLeaks(ctx context.Context, set secretFileSet, commit st
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// runGitStdin runs one git command with its standard input, bounded like the
+// others.
+func runGitStdin(ctx context.Context, root, in string, args ...string) (string, error) {
+	spec := gitSpec(root, "", args)
+	spec.stdin = strings.NewReader(in)
+	spec.stdoutLimit = maxGitCaptureBytes
+	res := runProc(ctx, spec)
+	switch {
+	case res.timedOut:
+		return "", fmt.Errorf("git %s: timed out", strings.Join(args, " "))
+	case res.stdoutNote != "":
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), res.stdoutNote)
+	case res.err != nil:
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), res.err)
+	}
+	return string(res.stdout), nil
 }
 
 // restoreRef puts a leaking ref back, compare-and-swap on the current value.
@@ -942,6 +1120,11 @@ type refGuard struct {
 	active   map[*guardRun]bool
 	baseline *refSnapshot
 	note     string
+	// stuck is each leak a call's rollback detected and could not put back, by
+	// snapshot key, with the object id it holds. Until the key no longer holds it
+	// no call runs: the next snapshot would otherwise take the leak as part of
+	// its own starting refs, and a push of it would deliver (see guardBegin).
+	stuck map[string]string
 }
 
 // guardRun is one exec_command call's guard state.
@@ -966,6 +1149,19 @@ func (r *Registry) guardBegin(ctx context.Context) (*guardRun, error) {
 	}
 	if snap == nil {
 		return &guardRun{}, nil
+	}
+	var still []string
+	for key, oid := range g.stuck {
+		if snap.refs[key] == oid {
+			still = append(still, key)
+		} else {
+			delete(g.stuck, key)
+		}
+	}
+	if len(still) > 0 {
+		sort.Strings(still)
+		return nil, fmt.Errorf("a leaking commit that an earlier command left, and that could not be put back, is still reachable from %s: "+
+			"no command runs until it is removed (MANUAL INTERVENTION NEEDED)", strings.Join(still, ", "))
 	}
 	run := &guardRun{before: snap}
 	for _, path := range sortedKeys(snap.skipped) {
@@ -1002,6 +1198,16 @@ func (r *Registry) guardFinish(ctx context.Context, run *guardRun, command strin
 	g := &r.guard
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if v != nil {
+		for _, ref := range v.refs {
+			if len(ref.Commits) > 0 && !ref.Restored {
+				if g.stuck == nil {
+					g.stuck = map[string]string{}
+				}
+				g.stuck[ref.Ref] = ref.Now
+			}
+		}
+	}
 	delete(g.active, run)
 	switch {
 	case run.overlapped:

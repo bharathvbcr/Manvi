@@ -31,22 +31,28 @@ func TestW21RootFileParsing(t *testing.T) {
 	null := strings.Repeat("0", 40)
 	for _, tc := range []struct {
 		name, in string
+		hashLen  int
 		want     int
 	}{
-		{"single", oid + "\n", 1},
-		{"no newline", oid, 1},
-		{"trailing words", oid + "\t\tbranch 'x' of y\n", 1},
-		{"sha256", sha256 + "\n", 1},
-		{"multi", oid + "\n" + sha256 + "\t\tx\n", 2},
-		{"symbolic", "ref: refs/heads/main\n", 0},
-		{"config", "[core]\n\tbare = false\n", 0},
-		{"message", "fix the thing\n" + oid + "\n", 0},
-		{"null id", null + "\n", 0},
-		{"glued", oid + "x\n", 0},
-		{"41 hex", oid + "a\n", 0},
-		{"later junk is skipped", oid + "\nnot an id\n" + oid + "\n", 2},
+		{"single", oid + "\n", 40, 1},
+		{"no newline", oid, 40, 1},
+		{"trailing words", oid + "\t\tbranch 'x' of y\n", 40, 1},
+		{"NUL after the id", oid + "\x00junk", 40, 1},
+		{"sha256 repo", sha256 + "\n", 64, 1},
+		{"sha256 id in a sha1 repo", sha256 + "\n", 40, 0},
+		{"sha256sum line in a sha1 repo", sha256 + "  app.js\n", 40, 0},
+		{"sha1 id in a sha256 repo", oid + "\n", 64, 0},
+		{"multi", oid + "\n" + oid + "\t\tx\n", 40, 2},
+		{"symbolic", "ref: refs/heads/main\n", 40, 0},
+		{"config", "[core]\n\tbare = false\n", 40, 0},
+		{"message", "fix the thing\n" + oid + "\n", 40, 0},
+		{"leading space", " " + oid + "\n", 40, 0},
+		{"null id", null + "\n", 40, 0},
+		{"glued", oid + "x\n", 40, 0},
+		{"41 hex", oid + "a\n", 40, 0},
+		{"later junk is skipped", oid + "\nnot an id\n" + oid + "\n", 40, 2},
 	} {
-		if got := len(parseRootFile(tc.in)); got != tc.want {
+		if got := len(parseRootFile(tc.in, tc.hashLen)); got != tc.want {
 			t.Errorf("%s: %d ids, want %d", tc.name, got, tc.want)
 		}
 	}
