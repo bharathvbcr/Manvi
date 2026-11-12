@@ -109,9 +109,9 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
-- **Platform change: Manvi's Go modules now target Go 1.27.3, and the minimum
+- **Platform change: Manvi's Go modules now target Go 1.27.4, and the minimum
   macOS for Manvi releases rises from 12 to 13.** Go 1.27 no longer supports
-  macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.3 (the
+  macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.4 (the
   redundant `toolchain` line is gone) and the darwin deployment target in
   `scripts/release-build.sh` and `scripts/.dev-build.sh` moves from 12.0 to
   13.0. CI and the release workflow follow `go.mod`. A macOS 12 user should stay
@@ -303,6 +303,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- **Go 1.27.3 → 1.27.4, for GO-2026-6859.** `govulncheck` found a reachable
+  standard-library vulnerability under go1.27.3: an HTTP/1 server crash in
+  `net/http` caused by a `MaxBytesReader` header race, fixed in go1.27.4. The
+  `go` line in `manvi/go.mod` now names 1.27.4, and so do the docs and gate
+  comments that quote it. CI and the release workflow follow `go.mod`. Manvi's
+  own exposure is the `geminiproxy` server and test servers; the gate fails on
+  reachability regardless.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
