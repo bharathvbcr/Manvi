@@ -14,9 +14,9 @@ import (
 	"time"
 
 	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 func TestManagedRunnerParallelDistinctWorktreesAndSameCheckoutBusy(t *testing.T) {
@@ -47,8 +47,7 @@ func TestManagedRunnerParallelDistinctWorktreesAndSameCheckoutBusy(t *testing.T)
 	}
 	commonDir := filepath.Join(wtA, ".git")
 
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	t.Cleanup(func() { client.Close() })
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(
 		`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+commonDir))

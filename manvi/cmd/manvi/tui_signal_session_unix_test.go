@@ -17,6 +17,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/session"
 )
 
@@ -67,7 +68,7 @@ func newStateFixture(t *testing.T, baseURL string) *stateFixture {
 	testsupport.SeedTask(t, db, testsupport.TaskSeed{ID: "TASK-001", Title: "t",
 		Scope: `{"planned_files":[{"path":"src/calc.go","allowed_change":"modify"}]}`})
 	bin := testsupport.DCStore(t)
-	f.leases = store.New(bin, db)
+	f.leases = storeguard.NewClient(t, bin, db)
 	f.env = []string{
 		"MANVI_STATE_DIR=" + f.stateDir,
 		"MANVI_STORE_DB=" + db,

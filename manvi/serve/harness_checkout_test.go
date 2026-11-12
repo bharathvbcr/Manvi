@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // Store-free tests of what a managed attempt does about its checkout: one live
@@ -193,7 +194,7 @@ func busyAlways(string) *Error {
 func TestVerifyRefusesWhileAHarnessBlockIsLive(t *testing.T) {
 	root := scanRepo(t, map[string]string{"AGENTS.md": "rules\n"})
 	runner, err := NewVerifyRunner(VerifyDeps{
-		Client: store.New("/does/not/exist/dcstore", filepath.Join(t.TempDir(), "p.sqlite")), Critic: &scriptedCritic{},
+		Client: storeguard.NewClient(t, "/does/not/exist/dcstore", filepath.Join(t.TempDir(), "p.sqlite")), Critic: &scriptedCritic{},
 		Devmap: func(string) DevmapClient { return &fakeDevmap{} }, Busy: busyAlways,
 	})
 	if err != nil {

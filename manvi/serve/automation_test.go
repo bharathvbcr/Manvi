@@ -14,12 +14,13 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func automaticFixture(t *testing.T) *store.Client {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	enhancementCall(t, client, "repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 	enhancementCall(t, client, "items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"Investigate E42","description":"Keep the original task evidence.","repository_ids":["r"],"primary_repository_id":"r"}`)
@@ -171,7 +172,7 @@ func TestAutomaticRestartResumesPreparedWorkButDoesNotRepeatAClaimedAttempt(t *t
 				enhancementCall(t, client, "enhancements.claim", `{"id":"prepared","request_id":"claim","expected_revision":1,"worker_id":"previous-host"}`)
 			}
 			client.Close()
-			reopened := store.New(client.Binary, client.DB)
+			reopened := storeguard.NewClient(t, client.Binary, client.DB)
 			t.Cleanup(reopened.Close)
 			var calls atomic.Int32
 			runner := enhancementTestRunner(t, reopened, automaticProvider(&calls))
@@ -301,7 +302,7 @@ func TestAutomaticDisableDuringInferenceWaitsForProviderAcknowledgement(t *testi
 
 func TestTwoAutomaticHostsShareOneDurableProviderSlot(t *testing.T) {
 	client := automaticFixture(t)
-	other := store.New(client.Binary, client.DB)
+	other := storeguard.NewClient(t, client.Binary, client.DB)
 	t.Cleanup(other.Close)
 	var calls atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
@@ -339,7 +340,7 @@ func TestTwoAutomaticHostsShareOneDurableProviderSlot(t *testing.T) {
 }
 
 func TestAutomaticControlsRejectPayloadsWithoutOpeningStorage(t *testing.T) {
-	client := store.New("must-not-run", t.TempDir()+"/absent.sqlite")
+	client := storeguard.NewClient(t, "must-not-run", t.TempDir()+"/absent.sqlite")
 	t.Cleanup(client.Close)
 	var calls atomic.Int32
 	runner := enhancementTestRunner(t, client, automaticProvider(&calls))

@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // managedLifecycle is a prepared managed run over a real store and a runner
@@ -35,8 +36,7 @@ func newManagedLifecycle(t *testing.T, build func(context.Context, codingagent.O
 // a real git work tree.
 func newManagedLifecycleAt(t *testing.T, root, provider string, build func(context.Context, codingagent.Options) *managedTestSession) *managedLifecycle {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	t.Cleanup(func() { client.Close() })
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
 	enhancementCall(t, client, "items.put", `{"id":"t","request_id":"t","expected_revision":0,"title":"Inspect fixture","repository_ids":["r"],"primary_repository_id":"r"}`)

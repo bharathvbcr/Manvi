@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 type managedTestSession struct {
@@ -211,8 +211,7 @@ func (s *managedTestSession) Respond(_ context.Context, request codingagent.Requ
 func TestManagedInitializationFailurePreservesBirthAndOnlyReapedAttemptsReleaseCapacity(t *testing.T) {
 	for _, unreaped := range []bool{false, true} {
 		t.Run(fmt.Sprint(unreaped), func(t *testing.T) {
-			client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-			defer client.Close()
+			client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 			root := t.TempDir()
 			common := filepath.Join(root, ".git")
 			enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -303,8 +302,7 @@ func TestManagedInitializationFailurePreservesBirthAndOnlyReapedAttemptsReleaseC
 func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t *testing.T) {
 	for _, withRequest := range []bool{false, true} {
 		t.Run(fmt.Sprint(withRequest), func(t *testing.T) {
-			client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-			defer client.Close()
+			client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 			root := t.TempDir()
 			common := filepath.Join(root, ".git")
 			enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -475,8 +473,7 @@ func TestManagedTurnScopesTheAttemptAndKeepsTheBriefVerbatim(t *testing.T) {
 // spawned. A brief that fits on its own but not with the preface must be
 // refused at preparation, before anything is claimed or started.
 func TestManagedPreparationBoundsTheTurnNotJustTheBrief(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	defer client.Close()
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -528,8 +525,7 @@ func TestManagedPreparationBoundsTheTurnNotJustTheBrief(t *testing.T) {
 }
 
 func TestManagedMissingExecutableEndsTheAttemptAndReleasesItsRepository(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	defer client.Close()
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -570,8 +566,7 @@ func TestManagedMissingExecutableEndsTheAttemptAndReleasesItsRepository(t *testi
 func TestManagedRunnerAdmitsEveryProviderWithAnAdapterAndNoOthers(t *testing.T) {
 	for _, provider := range []string{"codex", "claude", "grok", "agy", "shell"} {
 		t.Run(provider, func(t *testing.T) {
-			client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-			defer client.Close()
+			client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 			root := t.TempDir()
 			common := filepath.Join(root, ".git")
 			enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -620,8 +615,7 @@ func TestManagedRunnerAdmitsEveryProviderWithAnAdapterAndNoOthers(t *testing.T) 
 }
 
 func TestManagedUncertainFactoryFailureRetainsItsClaimWithoutCallingANilSession(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	defer client.Close()
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))

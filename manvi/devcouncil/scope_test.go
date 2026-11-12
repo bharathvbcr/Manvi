@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/flags"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/gate"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -25,7 +25,7 @@ import (
 // only way to tell those apart is to throw the ledger away and try again.
 func (f *fixture) secondSession(t *testing.T) *fixture {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), f.db)
+	client := storeguard.NewClient(t, testsupport.DCStore(t), f.db)
 
 	regFlags := flags.New()
 	if err := flags.DefineHarnessFlags(regFlags); err != nil {
@@ -149,7 +149,7 @@ func TestAWideningNeedsTheLease(t *testing.T) {
 	}
 
 	// And nothing was written to the task that was never checked out.
-	client := store.New(testsupport.DCStore(t), f.db)
+	client := storeguard.NewClient(t, testsupport.DCStore(t), f.db)
 	task, err := client.Task(context.Background(), "TASK-001")
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestWideningIsBoundedPerTask(t *testing.T) {
 		}
 	}
 
-	client := store.New(testsupport.DCStore(t), f.db)
+	client := storeguard.NewClient(t, testsupport.DCStore(t), f.db)
 	task, err := client.Task(context.Background(), "TASK-001")
 	if err != nil {
 		t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/dcgrep"
 	mapclient "github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/devmap"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 func goodStatus() *mapclient.Status {
@@ -718,7 +719,7 @@ func (errBoard) Workbench(context.Context, string, json.RawMessage) (json.RawMes
 
 func TestScanOpsAreServedOnTheirOwnLaneAndRefuseBadRoots(t *testing.T) {
 	h := newScanHarness(t, 0)
-	client := store.New(filepath.Join(t.TempDir(), "missing-store"), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, filepath.Join(t.TempDir(), "missing-store"), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	module := WorkbenchModule{Client: client, Scan: h.runner}
 	responses := roundTrip(t, Options{Modules: []Module{module}},

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // capacityRunner is a runner whose store holds no runs, so any preparation
@@ -21,8 +21,7 @@ import (
 // test tells "refused for capacity" from "admitted, then refused for cause".
 func capacityRunner(t *testing.T) *ManagedRunner {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	t.Cleanup(func() { client.Close() })
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	runner, err := NewManagedRunner(client, func(context.Context, codingagent.Options) (ManagedSession, error) {
 		t.Error("a capacity probe must never start a provider")
 		return nil, fmt.Errorf("no provider in a capacity probe")

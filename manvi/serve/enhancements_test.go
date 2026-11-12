@@ -12,12 +12,13 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func enhancementFixture(t *testing.T) *store.Client {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	enhancementCall(t, client, "repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 	enhancementCall(t, client, "items.put", `{"request_id":"t","id":"t","expected_revision":0,"title":"fix E42","description":"Keep the original task evidence.","repository_ids":["r"],"primary_repository_id":"r"}`)
@@ -106,7 +107,7 @@ func TestEnhancementGenerationIsAsyncDurableAndDoesNotRepeatModelCalls(t *testin
 		t.Fatal("worker ended while provider was blocked")
 	}
 	// A second host shares the database, but cannot start a second model call.
-	otherClient := store.New(client.Binary, client.DB)
+	otherClient := storeguard.NewClient(t, client.Binary, client.DB)
 	t.Cleanup(otherClient.Close)
 	otherRunner := enhancementTestRunner(t, otherClient, provider)
 	for _, host := range []*EnhancementRunner{runner, otherRunner} {
@@ -134,7 +135,7 @@ func TestEnhancementGenerationIsAsyncDurableAndDoesNotRepeatModelCalls(t *testin
 		t.Fatalf("generation modified the task without acceptance: %s", task)
 	}
 	client.Close()
-	reopened := store.New(client.Binary, client.DB)
+	reopened := storeguard.NewClient(t, client.Binary, client.DB)
 	t.Cleanup(reopened.Close)
 	if got := enhancementCall(t, reopened, "enhancements.get", `{"id":"e"}`); string(got) != string(ready) {
 		t.Fatal("restart lost the generated proposal")

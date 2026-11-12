@@ -11,6 +11,7 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // sqlite runs the sqlite3 shell against a profile: the tests need to age a
@@ -45,8 +46,7 @@ func schemaOf(t *testing.T, db string) int {
 func currentWorkbenchSchema(t *testing.T) int {
 	t.Helper()
 	db := filepath.Join(t.TempDir(), "fresh.sqlite")
-	client := store.New(testsupport.DCStore(t), db)
-	defer client.Close()
+	client := storeguard.NewClient(t, testsupport.DCStore(t), db)
 	if _, err := client.Workbench(t.Context(), "repositories.put", json.RawMessage(`{"request_id":"r","id":"r","expected_revision":0,"name":"Manvi","identity_key":"local:r"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func currentWorkbenchSchema(t *testing.T) int {
 func agedProfile(t *testing.T) (db string, client *store.Client) {
 	t.Helper()
 	db = filepath.Join(t.TempDir(), "profile.sqlite")
-	client = store.New(testsupport.DCStore(t), db)
+	client = storeguard.NewClient(t, testsupport.DCStore(t), db)
 	t.Cleanup(client.Close)
 	if _, err := client.Workbench(t.Context(), "repositories.put", json.RawMessage(`{"request_id":"r","id":"r","expected_revision":0,"name":"Manvi","identity_key":"local:r"}`)); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func agedProfile(t *testing.T) (db string, client *store.Client) {
 	// The 11 -> 12 step only moves the version, so this is a real older profile.
 	sqlite(t, db, "UPDATE work_meta SET version=11 WHERE id=1")
 	// A closed client is closed for good: the host under test gets its own.
-	client = store.New(testsupport.DCStore(t), db)
+	client = storeguard.NewClient(t, testsupport.DCStore(t), db)
 	t.Cleanup(client.Close)
 	return db, client
 }

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
@@ -160,7 +160,7 @@ func opsOf(t *testing.T, opts Options) []string {
 
 func currentContract(t *testing.T) serveContract {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	failure := func(err error) string { return err.Error() }
 	managed, err := NewManagedRunner(client, func(context.Context, codingagent.Options) (ManagedSession, error) {

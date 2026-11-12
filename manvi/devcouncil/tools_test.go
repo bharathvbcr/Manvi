@@ -20,6 +20,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/policy"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/core/bus"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -81,7 +82,7 @@ func newFixtureFull(t testing.TB, settings map[string]string, runner SubAgentRun
 
 	binary := storeBinary(t)
 	db := filepath.Join(t.TempDir(), "state.sqlite")
-	client := store.New(binary, db)
+	client := storeguard.NewClient(t, binary, db)
 
 	// Create the schema by touching the store, then insert a task directly —
 	// planning is DevCouncil's job, not the harness's.
@@ -399,7 +400,7 @@ func TestEmptyDiffIsNotAPass(t *testing.T) {
 // boundary.
 func TestUnreachableStoreNeverReportsSuccess(t *testing.T) {
 	f := newFixture(t)
-	f.reg.deps.Store = store.New(filepath.Join(t.TempDir(), "absent"), f.db)
+	f.reg.deps.Store = storeguard.NewClient(t, filepath.Join(t.TempDir(), "absent"), f.db)
 
 	res := f.call("devcouncil_next_task", map[string]any{})
 	if !res.IsError {
@@ -853,7 +854,7 @@ func TestAnExpiredLeaseStaysHardInEveryPosture(t *testing.T) {
 	// Steal the lease out from under the session, which is what an expiry or a
 	// forced hand-off looks like from inside the tool: the token it holds is
 	// still well-formed, and is no longer the one the store recognises.
-	client := store.New(storeBinary(t), f.db)
+	client := storeguard.NewClient(t, storeBinary(t), f.db)
 	if _, err := client.Acquire(context.Background(), store.AcquireRequest{
 		TaskID: "TASK-001", Owner: "someone-else", TTL: 10 * time.Minute, Force: true,
 	}); err != nil {

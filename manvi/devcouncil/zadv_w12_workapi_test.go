@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/tools"
 )
 
@@ -593,7 +594,7 @@ func TestAdvWorkChecklistAndTextCaps(t *testing.T) {
 // is created beside the real ones.
 func TestAdvWorkLocalRepositoryIsReadNeverCreated(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "profile.sqlite")
-	client := store.New(storeBinary(t), db)
+	client := storeguard.NewClient(t, storeBinary(t), db)
 	if _, err := client.ActiveLeases(context.Background()); err != nil {
 		t.Fatal(err)
 	}

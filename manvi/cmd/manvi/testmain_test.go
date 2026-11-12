@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // projectRootOverrides are the variables findProjectRoot honours ahead of any
@@ -43,7 +45,7 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv(envUserConfig, filepath.Join(isolated, "config.yaml")); err != nil {
 		panic("isolating the user config: " + err.Error())
 	}
-	code := m.Run()
+	code := storeguard.Run(m)
 	_ = os.RemoveAll(isolated)
 	os.Exit(code)
 }

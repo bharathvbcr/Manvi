@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // ctxOnlySession is a ManagedSession that is not process-backed: it owns no
@@ -54,8 +54,7 @@ func (s *ctxOnlySession) Close() (codingagent.Exit, error) {
 // stopFixture is a store holding one prepared managed run named "run".
 func stopFixture(t *testing.T, factory ManagedFactory) *ManagedRunner {
 	t.Helper()
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	t.Cleanup(func() { client.Close() })
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))
@@ -125,8 +124,7 @@ func requireStopped(t *testing.T, r *ManagedRunner, job *managedJob, wantProvide
 // WorkbenchModule, while the real Prepare is blocked inside the factory.
 // Under serial dispatch that stop was answered only after the factory returned.
 func TestStopIsAnsweredWhileARealManagedPrepareBlocks(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
-	t.Cleanup(func() { client.Close() })
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	root := t.TempDir()
 	common := filepath.Join(root, ".git")
 	enhancementCall(t, client, "repositories.put", fmt.Sprintf(`{"id":"r","request_id":"r","expected_revision":0,"name":"Repo","identity_key":%q}`, "local:"+common))

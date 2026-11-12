@@ -19,6 +19,7 @@ import (
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
 	"github.com/bharathvbcr/Manvi/manvi/devcouncil"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // These tests drive the verification op against a real git repository and the
@@ -161,7 +162,7 @@ func newVerifyHarness(t *testing.T, criteria []string, configure func(*VerifyDep
 	gitIn(t, repo, "commit", "-q", "-m", "base")
 	base := gitIn(t, repo, "rev-parse", "HEAD")
 
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	enhancementCall(t, client, "repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 	encoded, _ := json.Marshal(criteria)

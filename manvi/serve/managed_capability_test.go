@@ -7,9 +7,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
 	"github.com/bharathvbcr/Manvi/manvi/codingagent"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // The op list cannot answer "which coding agents can this build actually
@@ -25,7 +25,7 @@ import (
 // `codingagent.ManagedProviders` rather than restated, because a transcribed
 // list is the drift this is here to stop.
 func TestHelloPublishesTheManagedAdapterSetSoAHostNeedNotGuess(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	runner, err := NewManagedRunner(client, func(context.Context, codingagent.Options) (ManagedSession, error) {
 		return nil, context.Canceled
@@ -86,7 +86,7 @@ func TestHelloPublishesTheManagedAdapterSetSoAHostNeedNotGuess(t *testing.T) {
 // "this harness said none" — the first is a check that could not run, and a
 // check that could not run must never report what a passing one would.
 func TestHelloOmitsTheAdapterSetEntirelyWhenNoManagedLaneExists(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 
 	resp := roundTrip(t, Options{Modules: []Module{WorkbenchModule{Client: client}}},

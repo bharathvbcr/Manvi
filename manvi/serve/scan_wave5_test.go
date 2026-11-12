@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 )
 
 // contractViolations reports every way a JSON value departs from the committed
@@ -241,7 +241,7 @@ func TestScanStartedAfterCancelIsAFreshScanNotTheCancelledJob(t *testing.T) {
 // cards omit descriptions, so the manvi-scan: line in a description is a trace
 // for people and is never read back.
 func TestScanBoardIndexHoldsOnlyOpenCardsAndReadsLabels(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	enhancementCall(t, client, "repositories.put", `{"request_id":"r","id":"r","expected_revision":0,"name":"repo","identity_key":"r"}`)
 	put := func(id, status string, archived bool, labels string, description string) {

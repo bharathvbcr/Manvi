@@ -11,12 +11,13 @@ import (
 
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/dc/store"
 	"github.com/bharathvbcr/DevCouncil/backend/go_orchestrator/testsupport"
+	"github.com/bharathvbcr/Manvi/manvi/internal/storeguard"
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 )
 
 func TestEnhancementConfigurationIsNegotiatedWithoutOpeningStorageOrProviders(t *testing.T) {
 	root := t.TempDir()
-	client := store.New(filepath.Join(root, "missing-store"), filepath.Join(root, "profile.sqlite"))
+	client := storeguard.NewClient(t, filepath.Join(root, "missing-store"), filepath.Join(root, "profile.sqlite"))
 	t.Cleanup(client.Close)
 	providerCalls := 0
 	runner, err := NewEnhancementRunner(client, func(context.Context, string, string) (llm.Provider, error) {
@@ -63,7 +64,7 @@ func TestEnhancementConfigurationIsNegotiatedWithoutOpeningStorageOrProviders(t 
 }
 
 func TestWorkbenchHostProtocolReachesTheRealPersistentStore(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	options := Options{HardRules: true, Modules: []Module{WorkbenchModule{Client: client}}}
 	responses := roundTrip(t, options,
@@ -110,7 +111,7 @@ func TestWorkbenchRequiresAnExplicitHostModule(t *testing.T) {
 }
 
 func TestEnhancementLifecycleUsesTheHostBoundaryAndPreservesTaskEvidence(t *testing.T) {
-	client := store.New(testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
+	client := storeguard.NewClient(t, testsupport.DCStore(t), filepath.Join(t.TempDir(), "profile.sqlite"))
 	t.Cleanup(client.Close)
 	responses := roundTrip(t, Options{HardRules: true, Modules: []Module{WorkbenchModule{Client: client}}},
 		Request{ID: "repo", Op: "work.repositories.put", Params: json.RawMessage(`{"request_id":"r","id":"r","expected_revision":0,"name":"Manvi","identity_key":"local:r"}`)},
