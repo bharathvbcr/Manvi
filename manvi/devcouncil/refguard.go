@@ -83,8 +83,14 @@ import (
 //   - a ref git resolves from a file below objects/, logs/ or modules/ of a git
 //     directory (`git push <remote> logs/x:refs/heads/z` delivers): those trees
 //     are not walked, see refguard_rootfiles.go;
-//   - a pseudo-ref file that held several object ids before the command and
-//     leaks is reported, not put back: its content cannot be rebuilt from the ids;
+//   - a leak behind a symbolic link in a git directory (a link to a file, or a
+//     file below a link to a directory) is reported and blocks every later
+//     command, but is not put back: the link target is the user's, so a rollback
+//     never replaces or writes through it;
+//   - a git directory with more than maxRootWalkFiles entries or nested deeper
+//     than maxRootWalkDepth refuses the command instead of being read in part;
+//   - a repository on a git too old to say its ref format (before 2.46) is read as
+//     the files backend, which is the only one such a git can have;
 //   - rollback is per Registry, not per author. Overlap with another writer is
 //     detected only between exec_command calls of one Registry, so a leaking
 //     commit that an operator or a sub-agent of another Registry made during

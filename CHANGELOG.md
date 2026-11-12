@@ -317,10 +317,16 @@ under **Unreleased** in the same commit as the code.
   with `git update-ref` or a redirect, and nested ones like `foo/bar`) in the
   root's git directory, the common one (`main-worktree/NAME`) and each linked
   worktree's (`worktrees/<id>/NAME`); each object id on a line counts. A leaking
-  one is put back (removed, or rewritten with its old id) and blocked as
-  `path.secret`; a multi-line file that existed before is reported for manual
-  repair. Still not read: files below `objects/`, `logs/` and `modules/` of a
-  git directory, which git also resolves by name.
+  one is put back (removed, or rewritten with the exact bytes it held) and
+  blocked as `path.secret`. Ids are read as git reads a loose ref (the
+  repository's own hash length); an id naming no object is judged when the
+  object appears; directory symlinks in a git directory are followed (with a
+  cycle check and bounds); reftable repositories are covered through
+  `--include-root-refs`. A leak that cannot be put back (it sits behind a
+  symlink) blocks that call and every later one until it is gone. A HEAD a
+  command creates in an admin directory it also creates is removed. Still not
+  read: files below `objects/`, `logs/` and `modules/` of a git directory,
+  which git also resolves by name.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped

@@ -144,8 +144,12 @@ func TestAdvW21NonRefsThatLookLikeIdsDoNotBlock(t *testing.T) {
 	}
 }
 
-// A symlink to a file outside the git dir: git resolves it, the guard reads it;
-// rollback must not leave the leak resolvable.
+// A symlink to a file outside the git dir: git resolves it, the guard reads it.
+// The link is the user's: a rollback never replaces it or writes through it, so
+// the leak behind it is reported for manual repair and every later command is
+// refused until it is gone (card round 3, R2 and I1). The original expectation of
+// this test, that the rollback rewrites the file behind the link, is the
+// write-through the ruling forbids.
 func TestAdvW21SymlinkedPseudoRefIsRolledBackAndStaysALink(t *testing.T) {
 	f := shellCommitFixture(t, true)
 	head := headOf(t, f.root)
@@ -159,16 +163,14 @@ func TestAdvW21SymlinkedPseudoRefIsRolledBackAndStaysALink(t *testing.T) {
 	if !res.IsError || !res.Blocked {
 		t.Fatalf("FAIL-OPEN: a leak parked through a symlinked pseudo-ref was allowed: %+v", res)
 	}
-	if got := gitOut(t, f.root, "rev-parse", "SIDELINK"); got != head {
-		t.Errorf("SIDELINK resolves to %s after the call, want the clean %s", got, head)
+	if !strings.Contains(res.Text, "MANUAL INTERVENTION") {
+		t.Errorf("a leak that is not put back must say so: %s", res.Text)
 	}
 	fi, err := os.Lstat(link)
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("the user's symlink was replaced by a regular file: %v %v", fi, err)
 	}
-	if body, _ := os.ReadFile(filepath.Join(f.root, "sidecar.txt")); strings.TrimSpace(string(body)) != head { // #nosec G304 -- a file this test made.
-		t.Errorf("the file behind the link still holds the leak: %q", body)
-	}
+	requireStopped(t, f, res, "SIDELINK")
 }
 
 // FETCH_HEAD's "not-for-merge" marker decides what `git merge FETCH_HEAD` takes;
@@ -232,8 +234,12 @@ func TestAdvW21DanglingAdminDirWithOnlyAHeadIsARefSource(t *testing.T) {
 		"mkdir -p $a\necho ../.. > $a/commondir\necho /nonexistent/evil/.git > $a/gitdir\necho $c > $a/HEAD\n"
 	write(t, f.root, "mk.sh", script)
 	res := shell(f, "sh mk.sh")
-	if got := gitOut(t, f.root, "rev-parse", "worktrees/evil/HEAD"); len(got) < 40 {
-		t.Fatalf("bad test: git does not resolve the HEAD: %q", got)
+	// The guard removes a HEAD it finds in an admin dir the command made, so git
+	// no longer resolves it afterwards; the call must still be blocked, and a later
+	// push must deliver nothing either way (the original check that git resolves
+	// the name after the call is exactly the leak this card removes).
+	if !res.IsError || !res.Blocked {
+		t.Fatalf("FAIL-OPEN: a leak in a command-created admin dir's HEAD was allowed: %+v", res)
 	}
 	requireStopped(t, f, res, "worktrees/evil/HEAD")
 }
