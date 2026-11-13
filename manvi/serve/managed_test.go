@@ -292,7 +292,7 @@ func TestManagedInitializationFailurePreservesBirthAndOnlyReapedAttemptsReleaseC
 					Status   string `json:"status"`
 				} `json:"item"`
 			}
-			if json.Unmarshal(enhancementCall(t, client, "items.get", `{"id":"t"}`), &task) != nil || task.Item.Revision != 1 || task.Item.Status != "inbox" {
+			if json.Unmarshal(enhancementCall(t, client, "items.get", `{"id":"t"}`), &task) != nil || task.Item.Revision != 1 || task.Item.Status != "backlog" {
 				t.Fatal("startup failure changed the task")
 			}
 		})
@@ -418,7 +418,7 @@ func TestManagedHostPersistsCallbacksAndRequiresNativeActivationBeforeOneTurn(t 
 			if err := json.Unmarshal(enhancementCall(t, client, "items.get", `{"id":"t"}`), &task); err != nil {
 				t.Fatal(err)
 			}
-			if task.Item.Revision != 1 || task.Item.Status != "inbox" {
+			if task.Item.Revision != 1 || task.Item.Status != "backlog" {
 				t.Fatal("managed completion accepted the task")
 			}
 		})

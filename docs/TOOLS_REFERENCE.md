@@ -21,7 +21,7 @@ MANVI implements the DevCouncil development tool suite natively in Go and Rust â
 | **Artifacts** | 3 | Create, list, and revise persistent structured artifacts under `.devcouncil/artifacts/`. |
 | **Interactive Questions** | 1 | Ask the operator to resolve underspecified requirements or pick between options. |
 | **MCP 2.0 & Open Plugins** | 4 | List and call tools, and list and read resources, on external MCP servers over stateless JSON-RPC. |
-| **Board (`work_*`)** | 6 | Read this repository's task board, propose inbox tasks, and update the one task the session holds. Offered by `manvi run` and the TUI only; see [section 14](#14-board-work_-tools). |
+| **Board (`work_*`)** | 6 | Read this repository's task board, propose backlog tasks, and update the one task the session holds. Offered by `manvi run` and the TUI only; see [section 14](#14-board-work_-tools). |
 
 One further tool, `devcouncil_fetch_url`, is **conditional and not counted above**:
 it is registered only when an operator sets `MANVI_FETCH_HOSTS`, so an
@@ -250,7 +250,7 @@ are in [WORKBENCH.md](WORKBENCH.md#owner-decisions-of-2026-11-07).
 | `work_get_item` | Read-only | `id` (string) | Reads one task of this repository. An id that is absent, deleted or not linked to exactly this repository answers an identical `not_found`. |
 | `work_get_brief` | Read-only | `id` (string) | Reads one such task's handoff brief. |
 | `work_get_history` | Read-only | `id` (string) | Reads one such task's revision history. |
-| `work_create_item` | Write | `title` (string, at most 200 characters), `description` (string, at most 16 KiB, optional), `checklist` (array of plain-text strings, optional) | Proposes a task: an inbox task labelled `agent-proposed`, with title and description locked against automatic rewriting. Every other field is fixed by the host; any other argument is rejected. Bounded: 5 created tasks and 30 writes per held task, 10 per hour and 50 open proposals per repository. |
+| `work_create_item` | Write | `title` (string, at most 200 characters), `description` (string, at most 16 KiB, optional), `checklist` (array of plain-text strings, optional) | Proposes a task: a backlog task labelled `agent-proposed`, with title and description locked against automatic rewriting. Every other field is fixed by the host; any other argument is rejected. Bounded: 5 created tasks and 30 writes per held task, 10 per hour and 50 open proposals per repository. |
 | `work_update_own_item` | Write | `expected_revision` (integer, required), `status` (`in_progress` or `review`), `tick` (array of checklist indexes), `log` (string), `related_item_id` (string) | Updates the one task the session holds, and no other: moves its status (never to `done`), ticks checklist entries, appends a note to the tagged agent log, or adds a `related` link to another task of this repository. |
 
 ---

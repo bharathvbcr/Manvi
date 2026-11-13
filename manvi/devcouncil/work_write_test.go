@@ -78,7 +78,7 @@ func TestWorkCreateSavesOnlyTheAllowListAndFixesTheRest(t *testing.T) {
 	})
 	out := env.success(res)
 	id, _ := out["id"].(string)
-	if !strings.HasPrefix(id, "agt-") || out["status"] != "inbox" {
+	if !strings.HasPrefix(id, "agt-") || out["status"] != "backlog" {
 		t.Fatalf("unexpected receipt: %v", out)
 	}
 
@@ -90,7 +90,7 @@ func TestWorkCreateSavesOnlyTheAllowListAndFixesTheRest(t *testing.T) {
 		}
 		return v
 	}
-	if str("status") != "inbox" || str("kind") != "task" || str("title") != "Add retry to the sync" {
+	if str("status") != "backlog" || str("kind") != "task" || str("title") != "Add retry to the sync" {
 		t.Errorf("status/kind/title wrong: %s %s %s", str("status"), str("kind"), str("title"))
 	}
 	if string(raw["priority"]) != "2" {
@@ -126,7 +126,7 @@ func TestWorkCreateSavesOnlyTheAllowListAndFixesTheRest(t *testing.T) {
 		t.Errorf("the new task has no tagged origin entry: %q", it.Logs)
 	}
 	// The own task records the creation in its tagged region.
-	if own := env.item("TASK-001"); !strings.Contains(own.Logs, "created inbox task "+id) {
+	if own := env.item("TASK-001"); !strings.Contains(own.Logs, "created backlog task "+id) {
 		t.Errorf("the own task's agent log does not record the creation: %q", own.Logs)
 	}
 
@@ -542,7 +542,7 @@ func TestWorkRequestIDIsHostMintedDurableAndFailsClosedOnReplay(t *testing.T) {
 // Criterion: the path-to-repository and lease-to-item gaps, own-task side. A
 // lease on a task that is not linked to exactly the session's repository leaves
 // the agent no own task: own-task writes refuse naming the missing mapping, and
-// inbox creation still works.
+// backlog proposal creation still works.
 func TestWorkWithoutAnOwnTaskRefusesOwnWritesButStillCreates(t *testing.T) {
 	env := newWorkEnv(t, "run1")
 	env.addRepository("other")
@@ -792,9 +792,9 @@ func TestWorkRepositoryCapsHoldAcrossRestartAndConcurrentCreates(t *testing.T) {
 		if p := restarted.refusal(restarted.call("work_create_item", map[string]string{"title": "p4"})); p.Cap != "open_proposed_per_repository" {
 			t.Errorf("after a restart the cap answered %+v", p)
 		}
-		// A person moving a proposal out of the inbox frees a slot.
+		// A person moving a proposal out of the backlog frees a slot.
 		first := restarted.agentProposed()[0]
-		restarted.hostPut(first.ID, map[string]any{"status": "backlog"})
+		restarted.hostPut(first.ID, map[string]any{"status": "ready"})
 		restarted.success(restarted.call("work_create_item", map[string]string{"title": "p5"}))
 	})
 	t.Run("per hour", func(t *testing.T) {
@@ -804,9 +804,9 @@ func TestWorkRepositoryCapsHoldAcrossRestartAndConcurrentCreates(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			env.success(env.call("work_create_item", map[string]string{"title": "p" + strconv.Itoa(i)}))
 		}
-		// Moving them out of the inbox does not hide them from the hourly count.
+		// Moving them out of the backlog does not hide them from the hourly count.
 		for _, it := range env.agentProposed() {
-			env.hostPut(it.ID, map[string]any{"status": "backlog"})
+			env.hostPut(it.ID, map[string]any{"status": "ready"})
 		}
 		p := env.refusal(env.call("work_create_item", map[string]string{"title": "p3"}))
 		if p.Error != "cap_exceeded" || p.Cap != "created_per_repository_per_hour" || p.Limit != 3 || p.Got != 3 {
@@ -849,4 +849,71 @@ func TestWorkRepositoryCapsHoldAcrossRestartAndConcurrentCreates(t *testing.T) {
 			t.Errorf("%d agent-proposed tasks exist, want 3", n)
 		}
 	})
+}
+
+// The open-proposal cap counts the open tasks in the backlog that still carry
+// the agent-proposed label, and nothing else: an unlabelled backlog task and a
+// labelled task that has moved on to Ready are not proposals waiting in the
+// backlog. A proposal a person parked in the backlog keeps counting.
+func TestWorkOpenProposalCapCountsLabelledBacklogTasks(t *testing.T) {
+	env := newWorkEnv(t, "run1")
+	env.api.caps.openProposed, env.api.caps.createsPerTask, env.api.caps.writesPerTask = 2, 100, 100
+	env.checkout("TASK-001")
+
+	env.seed("plain-backlog", "")
+	env.hostPut("plain-backlog", map[string]any{"status": "backlog"})
+	env.seed("proposed-ready", `,"labels":["agent-proposed"]`)
+	env.seed("parked", `,"labels":["agent-proposed"]`)
+	env.hostPut("parked", map[string]any{"status": "backlog"})
+
+	// One labelled backlog task exists, so one more fits. Were the unlabelled
+	// backlog task or the labelled ready task counted, this would already refuse.
+	out := env.success(env.call("work_create_item", map[string]string{"title": "fits"}))
+	if out["status"] != "backlog" {
+		t.Fatalf("the receipt reports status %v, want backlog", out["status"])
+	}
+	if it := env.item(out["id"].(string)); it.Status != "backlog" {
+		t.Fatalf("the stored proposal has status %q, want backlog", it.Status)
+	}
+
+	p := env.refusal(env.call("work_create_item", map[string]string{"title": "over"}))
+	if p.Error != "cap_exceeded" || p.Cap != "open_proposed_per_repository" || p.Limit != 2 || p.Got != 2 {
+		t.Fatalf("two labelled backlog tasks at a cap of 2 answered %+v, want both numbers", p)
+	}
+	if !strings.Contains(p.Message, "backlog tasks") || strings.Contains(strings.ToLower(p.Message), "inbox") {
+		t.Errorf("the refusal names the wrong status: %q", p.Message)
+	}
+
+	// Losing the label frees the slot, as does moving the task to Ready.
+	env.hostPut("parked", map[string]any{"labels": []string{}})
+	env.success(env.call("work_create_item", map[string]string{"title": "after the label went"}))
+	if p := env.refusal(env.call("work_create_item", map[string]string{"title": "full again"})); p.Cap != "open_proposed_per_repository" {
+		t.Fatalf("expected the open-proposal cap again, got %+v", p)
+	}
+	for _, it := range env.agentProposed() {
+		if it.Status == "backlog" {
+			env.hostPut(it.ID, map[string]any{"status": "ready"})
+			break
+		}
+	}
+	env.success(env.call("work_create_item", map[string]string{"title": "after a move to ready"}))
+}
+
+// A backlog too large to count completely refuses creation rather than being
+// guessed at, and says "backlog".
+func TestWorkOpenProposalCountRefusesAnIncompleteBacklog(t *testing.T) {
+	env := newWorkEnv(t, "run1")
+	env.api.caps.listLimit, env.api.caps.countPages = 2, 1
+	env.checkout("TASK-001")
+	for _, id := range []string{"b1", "b2", "b3"} {
+		env.seed(id, "")
+		env.hostPut(id, map[string]any{"status": "backlog"})
+	}
+	p := env.refusal(env.call("work_create_item", map[string]string{"title": "x"}))
+	if p.Error != "count_unavailable" || p.Cap != "open_proposed_per_repository" {
+		t.Fatalf("an uncountable backlog answered %+v, want count_unavailable", p)
+	}
+	if !strings.Contains(p.Message, "backlog") || strings.Contains(strings.ToLower(p.Message), "inbox") {
+		t.Errorf("the refusal names the wrong status: %q", p.Message)
+	}
 }

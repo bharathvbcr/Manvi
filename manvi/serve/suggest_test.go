@@ -123,12 +123,12 @@ func suggestIDs(r SuggestResult) []string {
 func TestSuggestRanksPriorityThenDueThenSeverity(t *testing.T) {
 	day := int64(86400)
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("low", "inbox", 3, nil),
-		sItem("normal", "inbox", 2, nil),
+		sItem("low", "backlog", 3, nil),
+		sItem("normal", "backlog", 2, nil),
 		sItem("high", "backlog", 1, nil),
 		sItem("urgent", "ready", 0, nil),
-		sItem("normal-overdue", "inbox", 2, map[string]any{"due_at": suggestTestNow - 3*day}),
-		sItem("normal-critical", "inbox", 2, map[string]any{"severity": "Critical"}),
+		sItem("normal-overdue", "backlog", 2, map[string]any{"due_at": suggestTestNow - 3*day}),
+		sItem("normal-critical", "backlog", 2, map[string]any{"severity": "Critical"}),
 	}}
 	res := suggestRun(t, f, `{"limit":20}`)
 	want := []string{"urgent", "normal-overdue", "normal-critical", "high", "normal", "low"}
@@ -146,7 +146,7 @@ func TestSuggestRanksPriorityThenDueThenSeverity(t *testing.T) {
 func TestSuggestTiesAreDeterministicAndOrderIndependent(t *testing.T) {
 	var items []map[string]any
 	for _, id := range []string{"d", "b", "a", "c"} {
-		items = append(items, sItem(id, "inbox", 2, nil))
+		items = append(items, sItem(id, "backlog", 2, nil))
 	}
 	first := suggestIDs(suggestRun(t, &suggestFakeStore{withLinks: true, items: items}, `{}`))
 	slices.Reverse(items)
@@ -159,8 +159,8 @@ func TestSuggestTiesAreDeterministicAndOrderIndependent(t *testing.T) {
 func TestSuggestEarlierDueBreaksTieOnEqualScore(t *testing.T) {
 	day := int64(86400)
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("later", "inbox", 2, map[string]any{"due_at": suggestTestNow + 6*day}),
-		sItem("sooner", "inbox", 2, map[string]any{"due_at": suggestTestNow + 5*day}),
+		sItem("later", "backlog", 2, map[string]any{"due_at": suggestTestNow + 6*day}),
+		sItem("sooner", "backlog", 2, map[string]any{"due_at": suggestTestNow + 5*day}),
 	}}
 	if got := suggestIDs(suggestRun(t, f, `{}`)); !slices.Equal(got, []string{"sooner", "later"}) {
 		t.Fatalf("got %v", got)
@@ -169,9 +169,9 @@ func TestSuggestEarlierDueBreaksTieOnEqualScore(t *testing.T) {
 
 func TestSuggestExcludesDoneArchivedStartedAndReview(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("ok", "inbox", 3, nil),
+		sItem("ok", "backlog", 3, nil),
 		sItem("done", "done", 0, map[string]any{"completed_at": 5}),
-		sItem("archived", "inbox", 0, map[string]any{"archived": true}),
+		sItem("archived", "backlog", 0, map[string]any{"archived": true}),
 		sItem("doing", "in_progress", 0, nil),
 		sItem("reviewing", "review", 0, nil),
 	}}
@@ -186,9 +186,9 @@ func TestSuggestExcludesDoneArchivedStartedAndReview(t *testing.T) {
 
 func TestSuggestBlockedTaskIsHeldBackAndBlockerIsBoosted(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("blocker", "inbox", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "blocked"}}}),
-		sItem("blocked", "inbox", 0, nil),
-		sItem("other", "inbox", 2, nil),
+		sItem("blocker", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "blocked"}}}),
+		sItem("blocked", "backlog", 0, nil),
+		sItem("other", "backlog", 2, nil),
 	}}
 	res := suggestRun(t, f, `{}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"blocker", "other"}) {
@@ -205,7 +205,7 @@ func TestSuggestBlockedTaskIsHeldBackAndBlockerIsBoosted(t *testing.T) {
 func TestSuggestFinishedBlockerNoLongerBlocks(t *testing.T) {
 	// The blocker is Done, so it is not on the open board: nothing blocks.
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("was-blocked", "inbox", 1, nil),
+		sItem("was-blocked", "backlog", 1, nil),
 		sItem("finished", "done", 3, map[string]any{"completed_at": 5, "links": []map[string]string{{"kind": "blocks", "item_id": "was-blocked"}}}),
 	}}
 	if got := suggestIDs(suggestRun(t, f, `{}`)); !slices.Equal(got, []string{"was-blocked"}) {
@@ -215,8 +215,8 @@ func TestSuggestFinishedBlockerNoLongerBlocks(t *testing.T) {
 
 func TestSuggestDuplicateOfOpenTaskIsLeftOut(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("orig", "inbox", 2, nil),
-		sItem("dupe", "inbox", 0, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "orig"}}}),
+		sItem("orig", "backlog", 2, nil),
+		sItem("dupe", "backlog", 0, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "orig"}}}),
 	}}
 	res := suggestRun(t, f, `{}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"orig"}) || res.Excluded.Duplicate != 1 {
@@ -226,8 +226,8 @@ func TestSuggestDuplicateOfOpenTaskIsLeftOut(t *testing.T) {
 
 func TestSuggestReadsLinksWhenListCardsCarryNone(t *testing.T) {
 	f := &suggestFakeStore{withLinks: false, items: []map[string]any{
-		sItem("blocker", "inbox", 3, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "blocked"}}}),
-		sItem("blocked", "inbox", 0, nil),
+		sItem("blocker", "backlog", 3, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "blocked"}}}),
+		sItem("blocked", "backlog", 0, nil),
 	}}
 	res := suggestRun(t, f, `{}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"blocker"}) || f.getCalls != 2 {
@@ -237,7 +237,7 @@ func TestSuggestReadsLinksWhenListCardsCarryNone(t *testing.T) {
 
 func TestSuggestUnreadableLinksFailClosed(t *testing.T) {
 	// items.get fails for this card, so a blocker or duplicate cannot be ruled out.
-	f := &suggestFakeStore{withLinks: false, items: []map[string]any{sItem("a", "inbox", 0, nil)}}
+	f := &suggestFakeStore{withLinks: false, items: []map[string]any{sItem("a", "backlog", 0, nil)}}
 	f.items[0]["id"] = "a"
 	broken := &brokenGetStore{suggestFakeStore: f}
 	suggestNow = func() time.Time { return time.Unix(suggestTestNow, 0) }
@@ -262,10 +262,10 @@ func (b *brokenGetStore) Workbench(ctx context.Context, method string, in json.R
 
 func TestSuggestFiltersAndLimit(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("a", "inbox", 0, nil),
-		sItem("b", "inbox", 1, nil),
-		sItem("c", "inbox", 3, nil),
-		sItem("other-repo", "inbox", 0, map[string]any{"repository_ids": []string{"r2"}, "primary_repository_id": "r2"}),
+		sItem("a", "backlog", 0, nil),
+		sItem("b", "backlog", 1, nil),
+		sItem("c", "backlog", 3, nil),
+		sItem("other-repo", "backlog", 0, map[string]any{"repository_ids": []string{"r2"}, "primary_repository_id": "r2"}),
 	}}
 	res := suggestRun(t, f, `{"limit":1}`)
 	if len(res.Suggestions) != 1 || res.Candidates != 4 {
@@ -306,7 +306,7 @@ func TestSuggestBoardReadFailureIsAnError(t *testing.T) {
 func TestSuggestPagedBoardIsReadWhole(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, pageSize: 2}
 	for i := 0; i < 5; i++ {
-		f.items = append(f.items, sItem(fmt.Sprintf("t%d", i), "inbox", 2, nil))
+		f.items = append(f.items, sItem(fmt.Sprintf("t%d", i), "backlog", 2, nil))
 	}
 	res := suggestRun(t, f, `{"limit":20}`)
 	if res.Board.Scanned != 5 || !res.Board.Complete || len(res.Suggestions) != 5 {
@@ -334,7 +334,7 @@ func TestSuggestVerificationStateMovesTheOrder(t *testing.T) {
 func TestSuggestVerificationReadsAreBounded(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true}
 	for i := 0; i < suggestMaxVerifyProbes+8; i++ {
-		f.items = append(f.items, sItem(fmt.Sprintf("t%02d", i), "inbox", 2, nil))
+		f.items = append(f.items, sItem(fmt.Sprintf("t%02d", i), "backlog", 2, nil))
 	}
 	res := suggestRun(t, f, `{"limit":20}`)
 	if len(f.evidenceHit) != suggestMaxVerifyProbes || res.Verification.Unchecked != 8 {
@@ -343,7 +343,7 @@ func TestSuggestVerificationReadsAreBounded(t *testing.T) {
 }
 
 func TestSuggestVerificationFailureDoesNotHideTheRanking(t *testing.T) {
-	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "inbox", 0, nil)}, evidenceErr: errors.New("down")}
+	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "backlog", 0, nil)}, evidenceErr: errors.New("down")}
 	res := suggestRun(t, f, `{}`)
 	if len(res.Suggestions) != 1 || res.Verification.Unchecked != 1 || res.Verification.Checked != 0 {
 		t.Fatalf("an unreadable record must count as unchecked, not as clean: %+v", res)
@@ -352,8 +352,8 @@ func TestSuggestVerificationFailureDoesNotHideTheRanking(t *testing.T) {
 
 func TestSuggestScanFindingIsAHint(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("plain", "inbox", 2, nil),
-		sItem("scanned", "inbox", 2, map[string]any{"labels": []string{"scan:0123456789abcdef"}}),
+		sItem("plain", "backlog", 2, nil),
+		sItem("scanned", "backlog", 2, map[string]any{"labels": []string{"scan:0123456789abcdef"}}),
 	}}
 	res := suggestRun(t, f, `{}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"scanned", "plain"}) {
@@ -364,7 +364,7 @@ func TestSuggestScanFindingIsAHint(t *testing.T) {
 func TestSuggestCancelledContextIsAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f := &suggestFakeStore{withLinks: false, items: []map[string]any{sItem("a", "inbox", 0, nil)}}
+	f := &suggestFakeStore{withLinks: false, items: []map[string]any{sItem("a", "backlog", 0, nil)}}
 	cf := &cancelStore{suggestFakeStore: f}
 	if _, err := Suggest(ctx, cf, nil); err == nil {
 		t.Fatal("a cancelled request must not return a ranking")
@@ -394,10 +394,10 @@ func listStore(items []map[string]any) *suggestFakeStore {
 
 func TestSuggestLargeBoardRanksReadyUrgentsFirst(t *testing.T) {
 	var items []map[string]any
-	// 200 low-priority inbox cards come first in board-read order and would
+	// 200 low-priority backlog cards come first in board-read order and would
 	// spend the whole 150-read budget before any Ready card was reached.
 	for i := 0; i < 200; i++ {
-		items = append(items, sItem(fmt.Sprintf("inbox%03d", i), "inbox", 3, nil))
+		items = append(items, sItem(fmt.Sprintf("backlog%03d", i), "backlog", 3, nil))
 	}
 	for i := 0; i < 6; i++ {
 		items = append(items, sItem(fmt.Sprintf("urgent%d", i), "ready", 0, nil))
@@ -424,7 +424,7 @@ func TestSuggestLargeBoardRanksReadyUrgentsFirst(t *testing.T) {
 			t.Fatalf("items.get spent on %s, which can never be suggested", id)
 		}
 	}
-	// 60 in_progress/review cards plus the inbox cards past the budget are unread.
+	// 60 in_progress/review cards plus the backlog cards past the budget are unread.
 	if res.Board.Unhydrated != 60+(200+6-suggestMaxHydrate) || res.Board.Complete {
 		t.Fatalf("unread not reported: %+v", res.Board)
 	}
@@ -435,7 +435,7 @@ func TestSuggestLargeBoardRanksReadyUrgentsFirst(t *testing.T) {
 
 func TestSuggestSignalsSerializeAsEmptyArray(t *testing.T) {
 	// A low-priority task with no due date, severity or age earns no points.
-	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("plain", "inbox", 3, nil)}}
+	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("plain", "backlog", 3, nil)}}
 	res := suggestRun(t, f, `{}`)
 	out, err := json.Marshal(res)
 	if err != nil {
@@ -458,14 +458,14 @@ func TestSuggestScopeAppliesToEveryCountAndTheBlockedList(t *testing.T) {
 		return a
 	}
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("mine", "inbox", 1, nil),
-		sItem("mine-blocked", "inbox", 1, nil),
-		sItem("mine-blocker", "inbox", 2, link("blocks", "mine-blocked")),
+		sItem("mine", "backlog", 1, nil),
+		sItem("mine-blocked", "backlog", 1, nil),
+		sItem("mine-blocker", "backlog", 2, link("blocks", "mine-blocked")),
 		sItem("x-doing", "in_progress", 1, other),
 		sItem("x-review", "review", 1, other),
-		sItem("x-blocked", "inbox", 1, other),
-		sItem("x-blocker", "inbox", 2, merge(link("blocks", "x-blocked"), other)),
-		sItem("x-dupe", "inbox", 1, merge(link("duplicate_of", "x-blocker"), other)),
+		sItem("x-blocked", "backlog", 1, other),
+		sItem("x-blocker", "backlog", 2, merge(link("blocks", "x-blocked"), other)),
+		sItem("x-dupe", "backlog", 1, merge(link("duplicate_of", "x-blocker"), other)),
 	}}
 	res := suggestRun(t, f, `{"repository_id":"r1","limit":20}`)
 	if res.Excluded != (SuggestCounts{Blocked: 1}) {
@@ -484,7 +484,7 @@ func TestSuggestUnreadOpenTaskMayBlockAndIsReported(t *testing.T) {
 	// and in_progress cards are never read. B must not be presented as a
 	// complete, trustworthy answer.
 	items := []map[string]any{
-		sItem("B", "inbox", 0, nil),
+		sItem("B", "backlog", 0, nil),
 		sItem("C", "in_progress", 0, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "B"}}}),
 	}
 	f := listStore(items)
@@ -508,7 +508,7 @@ func TestSuggestMutualDuplicatePairYieldsOne(t *testing.T) {
 			if id == "a" {
 				other = "b"
 			}
-			items = append(items, sItem(id, "inbox", 2, dup(other)))
+			items = append(items, sItem(id, "backlog", 2, dup(other)))
 		}
 		res := suggestRun(t, &suggestFakeStore{withLinks: true, items: items}, `{}`)
 		if got := suggestIDs(res); !slices.Equal(got, []string{"a"}) || res.Excluded.Duplicate != 1 {
@@ -517,8 +517,8 @@ func TestSuggestMutualDuplicatePairYieldsOne(t *testing.T) {
 	}
 	// A three-cycle and a tail into it also leave exactly one.
 	items := []map[string]any{
-		sItem("a", "inbox", 2, dup("b")), sItem("b", "inbox", 2, dup("c")), sItem("c", "inbox", 2, dup("a")),
-		sItem("tail", "inbox", 2, dup("c")),
+		sItem("a", "backlog", 2, dup("b")), sItem("b", "backlog", 2, dup("c")), sItem("c", "backlog", 2, dup("a")),
+		sItem("tail", "backlog", 2, dup("c")),
 	}
 	res := suggestRun(t, &suggestFakeStore{withLinks: true, items: items}, `{"limit":20}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"a"}) {
@@ -528,7 +528,7 @@ func TestSuggestMutualDuplicatePairYieldsOne(t *testing.T) {
 
 func TestSuggestSelfReferentialLinksAreIgnored(t *testing.T) {
 	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
-		sItem("a", "inbox", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "a"}, {"kind": "duplicate_of", "item_id": "a"}}}),
+		sItem("a", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "a"}, {"kind": "duplicate_of", "item_id": "a"}}}),
 	}}
 	res := suggestRun(t, f, `{}`)
 	if got := suggestIDs(res); !slices.Equal(got, []string{"a"}) || res.Excluded.Blocked != 0 || res.Excluded.Duplicate != 0 {
@@ -544,7 +544,7 @@ func TestSuggestAdversarialBoards(t *testing.T) {
 		}
 	})
 	t.Run("all unreadable", func(t *testing.T) {
-		f := listStore([]map[string]any{sItem("a", "inbox", 0, nil), sItem("b", "ready", 0, nil)})
+		f := listStore([]map[string]any{sItem("a", "backlog", 0, nil), sItem("b", "ready", 0, nil)})
 		res, err := Suggest(context.Background(), &brokenGetStore{f}, json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatal(err)
@@ -570,7 +570,7 @@ func TestSuggestAdversarialBoards(t *testing.T) {
 		}
 	})
 	t.Run("duplicate ids across columns", func(t *testing.T) {
-		f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "inbox", 2, nil), sItem("a", "ready", 0, nil)}}
+		f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "backlog", 2, nil), sItem("a", "ready", 0, nil)}}
 		res := suggestRun(t, f, `{}`)
 		if res.Board.Scanned != 1 || len(res.Suggestions) != 1 {
 			t.Fatalf("%+v", res)
@@ -579,7 +579,7 @@ func TestSuggestAdversarialBoards(t *testing.T) {
 }
 
 func TestSuggestOverdueByZeroDaysHasNoCount(t *testing.T) {
-	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "inbox", 2, map[string]any{"due_at": suggestTestNow - 60})}}
+	f := &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "backlog", 2, map[string]any{"due_at": suggestTestNow - 60})}}
 	res := suggestRun(t, f, `{}`)
 	if strings.Contains(res.Suggestions[0].Reason, "0 days") || !strings.Contains(res.Suggestions[0].Reason, "overdue") {
 		t.Fatalf("reason: %q", res.Suggestions[0].Reason)
@@ -587,7 +587,7 @@ func TestSuggestOverdueByZeroDaysHasNoCount(t *testing.T) {
 }
 
 func TestSuggestTruncatedEvidenceCountsAsUnchecked(t *testing.T) {
-	f := &truncatedEvidenceStore{suggestFakeStore: &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "inbox", 2, nil)}}}
+	f := &truncatedEvidenceStore{suggestFakeStore: &suggestFakeStore{withLinks: true, items: []map[string]any{sItem("a", "backlog", 2, nil)}}}
 	res := suggestRun(t, f, `{}`)
 	if res.Verification.Unchecked != 1 || res.Verification.Checked != 0 {
 		t.Fatalf("a cut evidence read must not look like a clean one: %+v", res.Verification)
@@ -598,4 +598,24 @@ type truncatedEvidenceStore struct{ *suggestFakeStore }
 
 func (s *truncatedEvidenceStore) EvidenceList(context.Context, string) ([]store.EvidenceRow, bool, error) {
 	return nil, true, nil
+}
+
+// "inbox" is not a task status: the store merged it into backlog and never
+// returns it. The board read does not ask for it, and a card that still carried
+// the word (a store older than the merge) is neither read nor suggested.
+func TestSuggestDoesNotKnowTheInboxStatus(t *testing.T) {
+	if want := []string{"backlog", "ready", "in_progress", "review"}; !slices.Equal(suggestOpenStatuses, want) {
+		t.Fatalf("suggestOpenStatuses = %v, want %v", suggestOpenStatuses, want)
+	}
+	if suggestStatuses["inbox"] {
+		t.Fatal(`suggestStatuses lists "inbox"`)
+	}
+	f := &suggestFakeStore{withLinks: true, items: []map[string]any{
+		sItem("old-inbox", "inbox", 0, nil),
+		sItem("in-backlog", "backlog", 2, nil),
+	}}
+	res := suggestRun(t, f, `{"limit":20}`)
+	if got, want := suggestIDs(res), []string{"in-backlog"}; !slices.Equal(got, want) {
+		t.Fatalf("suggestions = %v, want %v", got, want)
+	}
 }

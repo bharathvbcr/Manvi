@@ -24,7 +24,7 @@ import (
 
 // work.scan.gaps is a deterministic repository audit. It asks DevMap, the text
 // searcher, git and the verification store questions and turns the answers
-// into proposals for the GitPulse inbox. It calls no model and never writes the
+// into proposals for the GitPulse backlog. It calls no model and never writes the
 // board: the host files a proposal when a person accepts it, with the
 // fingerprint label below, which is what later scans dedupe on (open cards only),
 // and the marker line below in its description, which is a trace for people:
@@ -181,7 +181,7 @@ type ScanSignal struct {
 	Result string `json:"result"`
 }
 
-// ScanProposal is a candidate inbox task.
+// ScanProposal is a candidate backlog task.
 type ScanProposal struct {
 	Fingerprint string `json:"fingerprint"`
 	Category    string `json:"category"`
