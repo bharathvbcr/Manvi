@@ -148,6 +148,13 @@ under **Unreleased** in the same commit as the code.
   so a new lockfile entry never resolves a version published in the last three
   days. No script reads cargo's intermediate build directory; the uplifted
   `crates/target/<profile>/<bin>` paths `verify.sh` uses are unchanged.
+- **Sibling pins move to the Rust 1.100 DevCouncil and gusset** (owner
+  decision 2026-11-12). `scripts/module-pins.txt` moves DevCouncil `d890d437`
+  to `9658b687` (Rust 1.100, `rusqlite` 0.41.1, Go 1.27.4 in
+  `backend/go_orchestrator`, setup-gusset at `19383ad1`) and gusset `e561435a`
+  to `19383ad1` (Rust 1.100, allocator API always on). `crates/Cargo.toml`
+  follows DevCouncil's `rusqlite` 0.41.1 (`libsqlite3-sys` 0.38.2 to 0.39.1 in
+  `crates/Cargo.lock`), which `TestCratePinsMatchDevCouncil` requires.
 - **Behaviour change: plain managed runs now hold their checkout while the
   agent's process group lives** (owner decision 2026-11-06, ft-43e7cb92
   criterion 3). A managed run with no harness block whose Close finds a member of
