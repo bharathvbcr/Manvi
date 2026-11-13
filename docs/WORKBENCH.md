@@ -770,8 +770,13 @@ the scope of every task it saves.
 Fifteen admits CI results: `signals.record` (a GitPulse write through the Rust
 store, not a Go or `manvi serve` op) stores `run_ci_passed`, `run_ci_failed` and
 `run_ci_cancelled` attention rows that a schema fourteen host cannot read. It
-changes no table, and is a hard fence for that reason. The release pin
-(`scripts/module-pins.txt`, DevCouncil) carries workbench 15 with
+changes no table, and is a hard fence for that reason.
+Sixteen merges the `inbox` task status into `backlog`, leaving five statuses
+(`backlog`, `ready`, `in_progress`, `review`, `done`). Its upgrade rewrites
+every stored `inbox` to `backlog` in items, revisions, enhancements, events and
+request responses without bumping a revision; a host that still sends `inbox`
+has it read as `backlog`. The release pin
+(`scripts/module-pins.txt`, DevCouncil) carries workbench 16 with
 `dc-store` 11, as recorded in `CHANGELOG.md`; a Manvi built before that move
 refuses an upgraded profile.
 
