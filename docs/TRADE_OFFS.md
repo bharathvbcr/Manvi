@@ -26,8 +26,8 @@ Thus, `dev` is not an escape hatch for exploration (which never needed one). It 
 ## 2. Two Toolchains, Because Two Invariants Have One Owner Each
 
 A full source build requires:
-- **Go 1.27.3** (`manvi/go.mod`)
-- **Rust 1.85+** (`crates/Cargo.toml` declaring edition 2024 with resolver 3)
+- **Go 1.27.4** (`manvi/go.mod`)
+- **Rust 1.100+** (`rust-version` in `crates/Cargo.toml` and `native/Cargo.toml`; edition 2024 with resolver 3)
 - **A working C compiler** (`cc`): `dc-store` depends on `rusqlite` with the `bundled` feature, compiling SQLite from source rather than linking against whatever dynamic `libsqlite3` the host happens to ship.
 
 ### The Zero-Cgo Guarantee

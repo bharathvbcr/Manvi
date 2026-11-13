@@ -1,6 +1,6 @@
 module github.com/bharathvbcr/Manvi/manvi
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/awnumar/memguard v0.23.0

@@ -109,9 +109,9 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
-- **Platform change: Manvi's Go modules now target Go 1.27.3, and the minimum
+- **Platform change: Manvi's Go modules now target Go 1.27.4, and the minimum
   macOS for Manvi releases rises from 12 to 13.** Go 1.27 no longer supports
-  macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.3 (the
+  macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.4 (the
   redundant `toolchain` line is gone) and the darwin deployment target in
   `scripts/release-build.sh` and `scripts/.dev-build.sh` moves from 12.0 to
   13.0. CI and the release workflow follow `go.mod`. A macOS 12 user should stay
@@ -140,6 +140,21 @@ under **Unreleased** in the same commit as the code.
 
   Under `sudo -E` or an NFS uid mismatch, fix HOME's ownership; there is no
   bypass.
+- **Rust toolchain moves to 1.100.0** (owner decision 2026-11-12).
+  `RUST_TOOLCHAIN` in `scripts/tool-versions.env` and `release.yml` is
+  `1.100.0`; `rust-version` is `"1.100"` in `crates/Cargo.toml` (was 1.99) and
+  `native/Cargo.toml` (was 1.92). `crates/.cargo/config.toml` and
+  `native/.cargo/config.toml` set `registry.global-min-publish-age = "3 days"`
+  so a new lockfile entry never resolves a version published in the last three
+  days. No script reads cargo's intermediate build directory; the uplifted
+  `crates/target/<profile>/<bin>` paths `verify.sh` uses are unchanged.
+- **Sibling pins move to the Rust 1.100 DevCouncil and gusset** (owner
+  decision 2026-11-12). `scripts/module-pins.txt` moves DevCouncil `d890d437`
+  to `9658b687` (Rust 1.100, `rusqlite` 0.41.1, Go 1.27.4 in
+  `backend/go_orchestrator`, setup-gusset at `19383ad1`) and gusset `e561435a`
+  to `19383ad1` (Rust 1.100, allocator API always on). `crates/Cargo.toml`
+  follows DevCouncil's `rusqlite` 0.41.1 (`libsqlite3-sys` 0.38.2 to 0.39.1 in
+  `crates/Cargo.lock`), which `TestCratePinsMatchDevCouncil` requires.
 - **Behaviour change: plain managed runs now hold their checkout while the
   agent's process group lives** (owner decision 2026-11-06, ft-43e7cb92
   criterion 3). A managed run with no harness block whose Close finds a member of
@@ -303,6 +318,13 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- **Go 1.27.3 → 1.27.4, for GO-2026-6859.** `govulncheck` found a reachable
+  standard-library vulnerability under go1.27.3: an HTTP/1 server crash in
+  `net/http` caused by a `MaxBytesReader` header race, fixed in go1.27.4. The
+  `go` line in `manvi/go.mod` now names 1.27.4, and so do the docs and gate
+  comments that quote it. CI and the release workflow follow `go.mod`. Manvi's
+  own exposure is the `geminiproxy` server and test servers; the gate fails on
+  reachability regardless.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped

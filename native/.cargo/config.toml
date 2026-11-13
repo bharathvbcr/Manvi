@@ -1,0 +1,4 @@
+# Hold back crate versions published in the last 3 days, so a freshly
+# compromised release is not resolved into a new lockfile entry.
+[registry]
+global-min-publish-age = "3 days"
