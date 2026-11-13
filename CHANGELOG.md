@@ -140,6 +140,14 @@ under **Unreleased** in the same commit as the code.
 
   Under `sudo -E` or an NFS uid mismatch, fix HOME's ownership; there is no
   bypass.
+- **Rust toolchain moves to 1.100.0** (owner decision 2026-11-12).
+  `RUST_TOOLCHAIN` in `scripts/tool-versions.env` and `release.yml` is
+  `1.100.0`; `rust-version` is `"1.100"` in `crates/Cargo.toml` (was 1.99) and
+  `native/Cargo.toml` (was 1.92). `crates/.cargo/config.toml` and
+  `native/.cargo/config.toml` set `registry.global-min-publish-age = "3 days"`
+  so a new lockfile entry never resolves a version published in the last three
+  days. No script reads cargo's intermediate build directory; the uplifted
+  `crates/target/<profile>/<bin>` paths `verify.sh` uses are unchanged.
 - **Behaviour change: plain managed runs now hold their checkout while the
   agent's process group lives** (owner decision 2026-11-06, ft-43e7cb92
   criterion 3). A managed run with no harness block whose Close finds a member of

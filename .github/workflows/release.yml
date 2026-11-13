@@ -51,7 +51,7 @@ permissions:
 env:
   # One Rust, the same on every runner and every re-run, so a release can be
   # rebuilt. Keep in step with verify.yml (docs/VERIFICATION_AND_PARITY.md).
-  RUST_TOOLCHAIN: "1.99.0"
+  RUST_TOOLCHAIN: "1.100.0"
 
 concurrency:
   group: release-${{ github.ref }}
