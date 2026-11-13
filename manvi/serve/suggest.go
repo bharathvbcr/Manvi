@@ -49,11 +49,11 @@ const (
 // suggestOpenStatuses are the columns read: everything not Done. Done and
 // archived cards are not work, and a blocker that is not in this set is not
 // blocking.
-var suggestOpenStatuses = []string{"inbox", "backlog", "ready", "in_progress", "review"}
+var suggestOpenStatuses = []string{"backlog", "ready", "in_progress", "review"}
 
 // suggestStatuses are the columns a task may be suggested from. in_progress is
 // already being worked and review is waiting on a person.
-var suggestStatuses = map[string]bool{"inbox": true, "backlog": true, "ready": true}
+var suggestStatuses = map[string]bool{"backlog": true, "ready": true}
 
 // SuggestParams is the work.tasks.suggest request.
 type SuggestParams struct {

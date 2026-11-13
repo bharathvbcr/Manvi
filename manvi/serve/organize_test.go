@@ -186,21 +186,21 @@ func TestOrganizeProposesTheFirstNamedRule(t *testing.T) {
 	day := int64(86400)
 	now := suggestTestNow
 	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
-		oItem("critical", "inbox", 2, map[string]any{"severity": "Critical"}),
-		oItem("high-sev", "inbox", 3, map[string]any{"severity": "High"}),
+		oItem("critical", "backlog", 2, map[string]any{"severity": "Critical"}),
+		oItem("high-sev", "backlog", 3, map[string]any{"severity": "High"}),
 		oItem("overdue-week", "backlog", 2, map[string]any{"due_at": now - 7*day}),
 		oItem("overdue-short", "backlog", 3, map[string]any{"due_at": now - 3*day}),
-		oItem("overdue-already", "inbox", 1, map[string]any{"due_at": now - 3*day}),
+		oItem("overdue-already", "backlog", 1, map[string]any{"due_at": now - 3*day}),
 		oItem("due-soon", "ready", 2, map[string]any{"due_at": now + day}),
-		oItem("blocker", "inbox", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "other"}}}),
-		oItem("other", "inbox", 2, nil),
-		oItem("stale", "inbox", 0, map[string]any{"updated_at": now - 90*day}),
+		oItem("blocker", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "other"}}}),
+		oItem("other", "backlog", 2, nil),
+		oItem("stale", "backlog", 0, map[string]any{"updated_at": now - 90*day}),
 		oItem("stale-high", "backlog", 1, map[string]any{"updated_at": now - 100*day}),
-		oItem("stale-young", "inbox", 0, map[string]any{"updated_at": now - 89*day}),
-		oItem("stale-medium", "inbox", 0, map[string]any{"severity": "medium", "updated_at": now - 120*day}),
+		oItem("stale-young", "backlog", 0, map[string]any{"updated_at": now - 89*day}),
+		oItem("stale-medium", "backlog", 0, map[string]any{"severity": "medium", "updated_at": now - 120*day}),
 		oItem("stale-doing", "in_progress", 0, map[string]any{"updated_at": now - 200*day}),
 		oItem("stale-review", "review", 0, map[string]any{"updated_at": now - 200*day}),
-		oItem("already", "inbox", 0, map[string]any{"severity": "critical"}),
+		oItem("already", "backlog", 0, map[string]any{"severity": "critical"}),
 		oItem("done-target", "done", 2, map[string]any{"completed_at": int64(5)}),
 	}}
 	res := organizeRun(t, f, `{"request_id":"q"}`)
@@ -271,13 +271,13 @@ func changeIDs(res OrganizeResult) []string {
 func TestOrganizeColumnOrderUsesTheProposedPriority(t *testing.T) {
 	day := int64(86400)
 	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
-		oItem("low", "inbox", 3, nil),
-		oItem("soon", "inbox", 3, map[string]any{"due_at": suggestTestNow + day}),
-		oItem("later", "inbox", 2, map[string]any{"due_at": suggestTestNow + 5*day}),
-		oItem("plain", "inbox", 2, nil),
+		oItem("low", "backlog", 3, nil),
+		oItem("soon", "backlog", 3, map[string]any{"due_at": suggestTestNow + day}),
+		oItem("later", "backlog", 2, map[string]any{"due_at": suggestTestNow + 5*day}),
+		oItem("plain", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
-	if len(res.Order) != 1 || res.Order[0].Status != "inbox" {
+	if len(res.Order) != 1 || res.Order[0].Status != "backlog" {
 		t.Fatalf("order = %+v", res.Order)
 	}
 	// soon becomes high (due within 2 days); later and plain stay normal, later due first; low last.
@@ -288,11 +288,11 @@ func TestOrganizeColumnOrderUsesTheProposedPriority(t *testing.T) {
 
 func TestOrganizeGroupsDuplicatesWithoutMerging(t *testing.T) {
 	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
-		oItem("a", "inbox", 2, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "b"}}}),
-		oItem("b", "inbox", 2, nil),
+		oItem("a", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "b"}}}),
+		oItem("b", "backlog", 2, nil),
 		oItem("c", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "d"}}}),
 		oItem("d", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "duplicate_of", "item_id": "c"}}}),
-		oItem("alone", "inbox", 2, nil),
+		oItem("alone", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if len(res.Groups) != 2 {
@@ -318,7 +318,7 @@ func TestOrganizeCoversFiveHundred(t *testing.T) {
 		if i == 0 {
 			extra["severity"] = "critical"
 		}
-		items[i] = oItem(id, "inbox", 2, extra)
+		items[i] = oItem(id, "backlog", 2, extra)
 	}
 	f := &organizeFakeStore{withLinks: true, items: items}
 	res := organizeRun(t, f, `{}`)
@@ -339,7 +339,7 @@ func TestOrganizeCoversFiveHundred(t *testing.T) {
 func TestOrganizeReportsExactUnreadPastTheCap(t *testing.T) {
 	items := make([]map[string]any, 2500)
 	for i := range items {
-		items[i] = oItem(fmt.Sprintf("t%04d", i), "inbox", 2, nil)
+		items[i] = oItem(fmt.Sprintf("t%04d", i), "backlog", 2, nil)
 	}
 	f := &organizeFakeStore{withLinks: true, items: items}
 	res := organizeRun(t, f, `{}`)
@@ -354,7 +354,7 @@ func TestOrganizeReportsExactUnreadPastTheCap(t *testing.T) {
 func TestOrganizeFailsWhenACutReadHasNoTotal(t *testing.T) {
 	items := make([]map[string]any, 2001)
 	for i := range items {
-		items[i] = oItem(fmt.Sprintf("t%04d", i), "inbox", 2, nil)
+		items[i] = oItem(fmt.Sprintf("t%04d", i), "backlog", 2, nil)
 	}
 	err := organizeErr(t, &organizeFakeStore{withLinks: true, omitTotal: true, items: items})
 	var refusal *store.WorkbenchError
@@ -366,8 +366,8 @@ func TestOrganizeFailsWhenACutReadHasNoTotal(t *testing.T) {
 func TestOrganizeFailsWhenTotalIsBelowTheRowsRead(t *testing.T) {
 	total := 1
 	err := organizeErr(t, &organizeFakeStore{withLinks: true, totalOverride: &total, items: []map[string]any{
-		oItem("a", "inbox", 2, nil),
-		oItem("b", "inbox", 2, nil),
+		oItem("a", "backlog", 2, nil),
+		oItem("b", "backlog", 2, nil),
 	}})
 	var refusal *store.WorkbenchError
 	if !errors.As(err, &refusal) || refusal.Code != "unreadable_remainder" || !strings.Contains(refusal.Message, "less than") {
@@ -378,9 +378,9 @@ func TestOrganizeFailsWhenTotalIsBelowTheRowsRead(t *testing.T) {
 func TestOrganizeUnreadWhenTheListEndsShortOfItsTotal(t *testing.T) {
 	total := 10
 	f := &organizeFakeStore{withLinks: true, totalOverride: &total, items: []map[string]any{
-		oItem("a", "inbox", 2, nil),
-		oItem("b", "inbox", 2, nil),
-		oItem("c", "inbox", 2, nil),
+		oItem("a", "backlog", 2, nil),
+		oItem("b", "backlog", 2, nil),
+		oItem("c", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if res.Coverage.Read != 3 || res.Coverage.Unread != 7 || res.Coverage.Complete {
@@ -390,7 +390,7 @@ func TestOrganizeUnreadWhenTheListEndsShortOfItsTotal(t *testing.T) {
 
 func TestOrganizeAllowsAFinishedReadWithoutTotal(t *testing.T) {
 	f := &organizeFakeStore{withLinks: true, omitTotal: true, items: []map[string]any{
-		oItem("a", "inbox", 2, nil),
+		oItem("a", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if res.Coverage.Read != 1 || res.Coverage.Unread != 0 || !res.Coverage.Complete {
@@ -401,8 +401,8 @@ func TestOrganizeAllowsAFinishedReadWithoutTotal(t *testing.T) {
 func TestOrganizeStuckCursorUsesTotal(t *testing.T) {
 	total := 5
 	f := &organizeFakeStore{withLinks: true, stuck: true, totalOverride: &total, items: []map[string]any{
-		oItem("a", "inbox", 2, nil),
-		oItem("b", "inbox", 2, nil),
+		oItem("a", "backlog", 2, nil),
+		oItem("b", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if res.Coverage.Read != 2 || res.Coverage.Unread != 3 || res.Coverage.Complete {
@@ -412,7 +412,7 @@ func TestOrganizeStuckCursorUsesTotal(t *testing.T) {
 
 func TestOrganizeBareCutWithoutTotalIsAnError(t *testing.T) {
 	err := organizeErr(t, &organizeFakeStore{withLinks: true, bareCut: true, omitTotal: true, items: []map[string]any{
-		oItem("a", "inbox", 2, nil),
+		oItem("a", "backlog", 2, nil),
 	}})
 	var refusal *store.WorkbenchError
 	if !errors.As(err, &refusal) || refusal.Code != "unreadable_remainder" {
@@ -425,9 +425,9 @@ func TestOrganizeHydrateCapLeavesTheRestUnjudged(t *testing.T) {
 	organizeMaxHydrate = 1
 	t.Cleanup(func() { organizeMaxHydrate = prev })
 	f := &organizeFakeStore{items: []map[string]any{
-		oItem("blocker", "inbox", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "other"}}}),
-		oItem("second", "inbox", 2, nil),
-		oItem("other", "inbox", 2, nil),
+		oItem("blocker", "backlog", 2, map[string]any{"links": []map[string]string{{"kind": "blocks", "item_id": "other"}}}),
+		oItem("second", "backlog", 2, nil),
+		oItem("other", "backlog", 2, nil),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if res.Coverage.Unhydrated != 2 || res.Coverage.Complete {
@@ -444,7 +444,7 @@ func TestOrganizeHydrateCapLeavesTheRestUnjudged(t *testing.T) {
 
 func TestOrganizeCopiesRevisionFromGet(t *testing.T) {
 	f := &organizeFakeStore{hideRevision: true, items: []map[string]any{
-		oItem("crit", "inbox", 2, map[string]any{"severity": "critical", "revision": 7}),
+		oItem("crit", "backlog", 2, map[string]any{"severity": "critical", "revision": 7}),
 	}}
 	res := organizeRun(t, f, `{}`)
 	got, ok := changeByID(res, "crit")
@@ -455,8 +455,8 @@ func TestOrganizeCopiesRevisionFromGet(t *testing.T) {
 
 func TestOrganizeLeavesAnUnrevisionedTaskOut(t *testing.T) {
 	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
-		oItem("none", "inbox", 2, map[string]any{"severity": "critical", "revision": 0}),
-		oItem("kept", "inbox", 2, map[string]any{"severity": "critical", "revision": 4}),
+		oItem("none", "backlog", 2, map[string]any{"severity": "critical", "revision": 0}),
+		oItem("kept", "backlog", 2, map[string]any{"severity": "critical", "revision": 4}),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if _, ok := changeByID(res, "none"); ok {
@@ -474,15 +474,15 @@ func TestOrganizeLeavesAnUnrevisionedTaskOut(t *testing.T) {
 
 func TestOrganizeRepositoryFilterDoesNotHideBlockers(t *testing.T) {
 	items := make([]map[string]any, 0, 2500)
-	items = append(items, oItem("mine", "inbox", 2, map[string]any{
+	items = append(items, oItem("mine", "backlog", 2, map[string]any{
 		"links": []map[string]string{{"kind": "blocks", "item_id": "theirs"}},
 	}))
-	items = append(items, oItem("theirs", "inbox", 2, map[string]any{
+	items = append(items, oItem("theirs", "backlog", 2, map[string]any{
 		"repository_ids": []string{"r2"}, "primary_repository_id": "r2",
 		"severity": "critical",
 	}))
 	for i := 0; i < 2498; i++ {
-		items = append(items, oItem(fmt.Sprintf("other%04d", i), "inbox", 2, map[string]any{
+		items = append(items, oItem(fmt.Sprintf("other%04d", i), "backlog", 2, map[string]any{
 			"repository_ids": []string{"r2"}, "primary_repository_id": "r2",
 		}))
 	}
@@ -541,8 +541,8 @@ func TestOrganizeLaneIsWork(t *testing.T) {
 
 func TestOrganizeArchivedRowsAreReadNotUnread(t *testing.T) {
 	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
-		oItem("open", "inbox", 2, nil),
-		oItem("old", "inbox", 0, map[string]any{"archived": true}),
+		oItem("open", "backlog", 2, nil),
+		oItem("old", "backlog", 0, map[string]any{"archived": true}),
 	}}
 	res := organizeRun(t, f, `{}`)
 	if res.Coverage.Read != 1 || res.Coverage.Unread != 0 || !res.Coverage.Complete {
@@ -555,8 +555,8 @@ func TestOrganizeDoesNotLowerWhenLinksWereNotRead(t *testing.T) {
 	organizeMaxHydrate = 0
 	t.Cleanup(func() { organizeMaxHydrate = prev })
 	f := &organizeFakeStore{items: []map[string]any{
-		oItem("raise", "inbox", 2, map[string]any{"severity": "critical"}),
-		oItem("stale", "inbox", 0, map[string]any{"updated_at": suggestTestNow - 100*86400}),
+		oItem("raise", "backlog", 2, map[string]any{"severity": "critical"}),
+		oItem("stale", "backlog", 0, map[string]any{"updated_at": suggestTestNow - 100*86400}),
 	}}
 	res := organizeRun(t, f, `{}`)
 	// Severity does not need links, so the raise still happens. The lower does not.
@@ -571,7 +571,7 @@ func TestOrganizeDoesNotLowerWhenLinksWereNotRead(t *testing.T) {
 func TestOrganizeSameBoardIsTheSameProposal(t *testing.T) {
 	day := int64(86400)
 	items := []map[string]any{
-		oItem("b", "inbox", 2, map[string]any{"due_at": suggestTestNow - 8*day}),
+		oItem("b", "backlog", 2, map[string]any{"due_at": suggestTestNow - 8*day}),
 		oItem("a", "ready", 3, map[string]any{"severity": "high"}),
 	}
 	first, err := json.Marshal(organizeRun(t, &organizeFakeStore{withLinks: true, items: items}, `{}`))
@@ -585,5 +585,21 @@ func TestOrganizeSameBoardIsTheSameProposal(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Fatalf("not reproducible\n%s\n%s", first, second)
+	}
+}
+
+// stale_high acts on backlog tasks only. "inbox" is no longer a status, so a
+// stale card still carrying the word is not read, and the same card in the
+// backlog is proposed.
+func TestOrganizeStaleHighIsBacklogOnly(t *testing.T) {
+	now := suggestTestNow
+	day := int64(86400)
+	f := &organizeFakeStore{withLinks: true, items: []map[string]any{
+		oItem("old-inbox", "inbox", 0, map[string]any{"updated_at": now - 100*day}),
+		oItem("old-backlog", "backlog", 0, map[string]any{"updated_at": now - 100*day}),
+	}}
+	res := organizeRun(t, f, `{"request_id":"q"}`)
+	if got, want := changeIDs(res), []string{"old-backlog"}; !slices.Equal(got, want) {
+		t.Fatalf("changes = %v, want %v", got, want)
 	}
 }

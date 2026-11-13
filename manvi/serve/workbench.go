@@ -22,7 +22,7 @@ type WorkbenchModule struct {
 	// ungrounded and says so.
 	Devmap func(root string) DevmapClient
 	// Scan enables work.scan.gaps, .get and .cancel: a deterministic repository
-	// audit that proposes inbox tasks and never writes the board itself.
+	// audit that proposes backlog tasks and never writes the board itself.
 	Scan *ScanRunner
 	// Verify enables work.verify.task and work.verify.get. Nil leaves them
 	// unregistered, so a build with no critic never offers a verdict it cannot

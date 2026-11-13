@@ -109,6 +109,21 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- The task board's `inbox` status is merged into `backlog`: five statuses
+  (`backlog`, `ready`, `in_progress`, `review`, `done`) instead of six, on
+  DevCouncil's workbench schema 16. `work_create_item` creates the agent-proposed
+  task in `backlog` and its receipt reports `backlog`; the label, the locked
+  title and description and the untrusted trailer are unchanged. The
+  open-proposal cap (50 per repository) now counts open `agent-proposed` tasks in
+  `backlog`. That does not widen agent access and is stricter than the inbox
+  count: a proposal a person parks in the backlog keeps counting until it moves
+  to Ready or Done or loses the label. The count pages the whole backlog (20
+  pages of 30, so 600 tasks) and still refuses with `count_unavailable` when it
+  cannot finish, now saying "backlog". `work.tasks.suggest` and
+  `work.tasks.organize` no longer read or name `inbox`; Ready's suggestion
+  signal and the `stale_high` rule (backlog only) are otherwise unchanged. The
+  vendored `contracts/lease.schema.md` says a refine split becomes a `backlog`
+  task, and `contracts/CHECKSUMS` is refreshed to match.
 - **Platform change: Manvi's Go modules now target Go 1.27.3, and the minimum
   macOS for Manvi releases rises from 12 to 13.** Go 1.27 no longer supports
   macOS 12 (Monterey), so the `go` line in `manvi/go.mod` names 1.27.3 (the

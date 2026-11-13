@@ -252,7 +252,7 @@ func Organize(ctx context.Context, board SuggestStore, raw json.RawMessage) (Org
 
 // organizeTarget is the first rule whose target priority differs from the
 // task's current one. Rules only raise a priority, except stale_high, which
-// lowers an inbox or backlog task by one step and is still only a proposal.
+// lowers a backlog task by one step and is still only a proposal.
 func organizeTarget(item *suggestItem, unblocks int, now time.Time) (to int, rule, reason string, ok bool) {
 	from := item.priority()
 	sev := ""
@@ -288,7 +288,7 @@ func organizeTarget(item *suggestItem, unblocks int, now time.Time) (to int, rul
 	if item.Links != nil && unblocks >= 1 && from > 1 {
 		return 1, "blocks_work", "blocks " + plural(unblocks, "open task"), true
 	}
-	if (from == 0 || from == 1) && (item.Status == "inbox" || item.Status == "backlog") && item.Links != nil && unblocks == 0 {
+	if (from == 0 || from == 1) && item.Status == "backlog" && item.Links != nil && unblocks == 0 {
 		noDue := item.DueAt == nil || *item.DueAt <= 0
 		if noDue && sev != "critical" && sev != "high" && sev != "medium" && item.UpdatedAt > 0 {
 			idle := now.Unix() - item.UpdatedAt

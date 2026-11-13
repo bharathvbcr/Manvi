@@ -161,8 +161,9 @@ pasted `logs` (up to 256 KiB), and the schema 11 fields below: `archived`,
 `checklist`, `links` and the store-maintained `completed_at`.
 Saved items need 1–64 distinct registered repositories, including their primary
 repository. A home workspace is optional. Titles are limited to 300 characters
-and 1,200 UTF-8 bytes; descriptions to 64 KiB. Status is one of `inbox`, `backlog`,
-`ready`, `in_progress`, `review`, `done`; priority is 0–3. Due dates are optional
+and 1,200 UTF-8 bytes; descriptions to 64 KiB. Status is one of `backlog`,
+`ready`, `in_progress`, `review`, `done` (the former `inbox` status is merged into
+`backlog`: the store accepts `inbox` on input and reads it as `backlog`); priority is 0–3. Due dates are optional
 nonnegative epoch integers. Dates and revisions must fit the supported exact
 integer range. Custom nonblank kind strings are accepted.
 
@@ -950,8 +951,8 @@ before its model call, completes the record with the proposal and its grounding,
 and returns `enhancement_id`; a failed or cancelled run records the failure and
 frees the slot. `enhancements.accept` applies it additively through the
 revisioned task update: criteria are appended, `duplicate_of` links merged into
-`links`, and each split (`split_ids` supplies the new identifiers) becomes an
-inbox task in the same repositories with a `parent` link. It is never automatic
+`links`, and each split (`split_ids` supplies the new identifiers) becomes a
+backlog task in the same repositories with a `parent` link. It is never automatic
 and cannot be revised or undone. Schema twelve is a hard fence like eleven:
 Manvi's pin must move to a DevCouncil that carries it, and a build that knows
 only eleven refuses an upgraded profile. See the changelog entry for the output
@@ -1165,9 +1166,11 @@ label and the tagged log block) and does not claim the banner.
   open and hourly counts page the repository's tasks and filter on the
   `agent-proposed` label client-side (`items.list` has no label filter; the
   interim does not use a label query). The hourly count is an upper bound, because
-  a task's update time moves forward on an edit; a person moving a proposal out of
-  the inbox frees an open slot but not an hourly one. A count that cannot be made
-  complete within twenty pages refuses (`count_unavailable`); it is never read as
+  a task's update time moves forward on an edit. The open count reads the
+  `backlog` status: a proposal a person parks there keeps counting until it moves
+  to `ready` or `done` or loses its label, which frees an open slot but not an
+  hourly one. A count that cannot be made complete within twenty pages (twenty
+  pages of 30, so 600 tasks) refuses (`count_unavailable`); it is never read as
   zero. A person who clears the log block clears that task's budget with it.
 - *Host mutex, not a store-level atomic count.* Count-then-create is serialised by
   one process-wide mutex per (store, repository), shared by every Registry in the
@@ -1238,7 +1241,7 @@ label and the tagged log block) and does not claim the banner.
     Until then the wired surface is useful on a repository-local store and inert
     on a profile board.
   - *What an agent can do there.* Read live tasks linked to exactly this
-    repository; create inbox tasks (caps: 5 per held task, 10 per hour and 50 open
+    repository; create backlog tasks (caps: 5 per held task, 10 per hour and 50 open
     per repository, title and description locked, `agent-proposed` label); and move
     the one task it holds the lease on to `in_progress` or `review`, tick its
     checklist, append to its tagged log region or add a `related` link, never
@@ -1293,7 +1296,7 @@ or remove other people's records and are not argued into scope.
 **Create allow-list.** An agent-created task carries `title`, `description` and
 an optional checklist of plain-text entries (each `done:false`), and nothing else.
 The adapter, not the agent, fixes every other `items.put` field: `expected_revision`
-zero, status `inbox`, priority 2, kind `task`, no severity, owner or due date,
+zero, status `backlog`, priority 2, kind `task`, no severity, owner or due date,
 no `acceptance_criteria`, no `scope`, no `links`, no home workspace, one
 repository link (the session's, also primary), `locked_fields` of both `title`
 and `description`, and the `agent-proposed` label. A call that carries any other
@@ -1349,10 +1352,10 @@ parameters:
 
 | Action | Agent | Human host |
 |---|---|---|
-| Create a task | Yes, inbox only, closed allow-list, bounded (below) | Yes |
+| Create a task | Yes, backlog only, closed allow-list, bounded (below) | Yes |
 | Edit its **own** task | `status` to `in_progress` or `review`, tick existing `checklist` entries, append to `logs`, add a `related` link | Everything |
 | **Complete** its own task | Move to `review` only. Never `done`. | Moves to `done` |
-| Edit **another** task | No write at all. It proposes by creating an inbox task. | Everything |
+| Edit **another** task | No write at all. It proposes by creating a backlog task. | Everything |
 | Delete or restore | No | Yes |
 | Merge | No | Yes |
 
@@ -1410,7 +1413,7 @@ Bounds the agent surface adds (acceptance criteria for the implementation card):
   follow-up run on the same task shares them: at most 5 tasks created and 30
   writes per (repository, task).
 - **Repository-wide creation rate cap**: at most 10 agent-created tasks per
-  repository per hour, and at most 50 open `agent-proposed` inbox tasks per
+  repository per hour, and at most 50 open `agent-proposed` backlog tasks per
   repository, refused beyond either with both numbers reported.
 - **Serialised and persisted.** Count-then-create runs behind a per-repository host
   mutex so concurrent creates cannot both pass the check. The counters are
@@ -1647,7 +1650,7 @@ X), up to 36; 10 when already `ready`; 8 when a repository gap scan raised it;
 a newest stored verification that failed or degraded adds 15 and one that
 passed takes 25 off. Ties break on priority, then the earlier due date, then id.
 
-Only `inbox`, `backlog` and `ready` tasks are suggested. Done and archived
+Only `backlog` and `ready` tasks are suggested. Done and archived
 cards are not read; `in_progress` and `review` tasks are counted, not suggested;
 a task that duplicates an open task or is blocked by one is left out, listed
 under `blocked` with its blockers, and counted. A card whose links could not be
@@ -1672,7 +1675,7 @@ and it does not store a column order.
 A rule raises priority: critical severity to urgent, high severity to high, a
 due date a week or more overdue to urgent, a shorter overdue or a due date
 within two days to high, and a task that blocks other open work to high. The
-only rule that lowers a priority is `stale_high`: an inbox or backlog task that
+only rule that lowers a priority is `stale_high`: a backlog task that
 is urgent or high, untouched for 90 days, with no due date, no high or critical
 or medium severity, and nothing blocked on it, drops one step. `in_progress`
 and `review` are never lowered. A task whose links were not read is not lowered

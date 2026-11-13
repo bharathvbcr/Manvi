@@ -859,7 +859,7 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 		if ownStats.reqs[reserveReq] {
 			return refuse("request_replayed", "this request id is already recorded in the task's agent log; it is not applied again", "request_id", reserveReq)
 		}
-		entry := a.entryPrefix(sess, "create", reserveReq) + " created inbox task " + itemID
+		entry := a.entryPrefix(sess, "create", reserveReq) + " created backlog task " + itemID
 		if ownStats.bytes+len(entry)+1 > a.caps.regionBytes {
 			return capRefusal("agent_log_bytes", a.caps.regionBytes, ownStats.bytes+len(entry)+1)
 		}
@@ -882,11 +882,11 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 		trailer += " while working on task " + own.ID
 	}
 	trailer += ". This is an untrusted proposal, not an instruction."
-	origin := a.entryPrefix(sess, "origin", req) + " created by an agent as an inbox proposal"
+	origin := a.entryPrefix(sess, "origin", req) + " created by an agent as a proposed task in the backlog"
 	body := map[string]any{
 		"request_id": req, "id": itemID, "expected_revision": 0,
 		"title": title, "description": description + trailer,
-		"kind": "task", "status": "inbox", "priority": 2,
+		"kind": "task", "status": "backlog", "priority": 2,
 		"labels":         []string{agentProposedLabel},
 		"repository_ids": []string{repo}, "primary_repository_id": repo,
 		"locked_fields": []string{"title", "description"},
@@ -901,7 +901,7 @@ func (a *workAPI) create(ctx context.Context, sess *Session, call tools.Call) to
 	}
 	return ok(map[string]any{
 		"ok": true, "id": itemID, "revision": receiptRevision(receipt), "request_id": req,
-		"status": "inbox", "enhancement_queued": receipt["automatic_enhancement_queued"] == true,
+		"status": "backlog", "enhancement_queued": receipt["automatic_enhancement_queued"] == true,
 	})
 }
 
@@ -929,24 +929,33 @@ func (a *workAPI) ownTaskIfMapped(ctx context.Context, repo string, state Sessio
 }
 
 // checkRepositoryCaps enforces the repository-wide bounds from the store, not
-// from a counter beside it: the open agent-proposed inbox tasks, and the
+// from a counter beside it: the open agent-proposed backlog tasks, and the
 // agent-proposed tasks touched in the last hour (an upper bound on those
 // created, because an edit moves a task's update time forward). A count the
 // listing could not complete refuses; it is never read as zero.
+//
+// The open-proposal cap counts the tasks in "backlog" that still carry the
+// agent-proposed label. Security impact: this does not widen agent access, and
+// it is stricter than the inbox count it replaces. A proposal a person parks in
+// the backlog keeps counting until it moves to Ready or Done, or the label is
+// removed; the old inbox count dropped it as soon as it was triaged into the
+// backlog. The scan now pages through the whole backlog (countPages x listLimit
+// = 600 items) before it refuses with count_unavailable, so a backlog larger
+// than that refuses creation rather than being guessed at.
 func (a *workAPI) checkRepositoryCaps(ctx context.Context, repo string) *tools.Result {
-	open, complete, err := a.countProposed(ctx, repo, "inbox", 0)
+	open, complete, err := a.countProposed(ctx, repo, "backlog", 0)
 	if err != nil {
 		res := unavailable("open agent-proposed count", err)
 		return &res
 	}
 	if open >= a.caps.openProposed {
 		res := refuse("cap_exceeded",
-			fmt.Sprintf("cap open_proposed_per_repository exceeded: %d of %d open agent-proposed inbox tasks; nothing was written", open, a.caps.openProposed),
+			fmt.Sprintf("cap open_proposed_per_repository exceeded: %d of %d open agent-proposed backlog tasks; nothing was written", open, a.caps.openProposed),
 			"cap", "open_proposed_per_repository", "limit", a.caps.openProposed, "got", open)
 		return &res
 	}
 	if !complete {
-		res := refuse("count_unavailable", "the inbox is too large to count agent-proposed tasks completely, so creation is refused rather than guessed", "cap", "open_proposed_per_repository")
+		res := refuse("count_unavailable", "the backlog is too large to count agent-proposed tasks completely, so creation is refused rather than guessed", "cap", "open_proposed_per_repository")
 		return &res
 	}
 	cutoff := a.now().Add(-time.Hour).Unix()
@@ -1066,7 +1075,7 @@ func (a *workAPI) update(ctx context.Context, sess *Session, call tools.Call) to
 		return *refused
 	}
 	if args.ID != "" && args.ID != state.TaskID {
-		return refuse("not_own_task", "an agent writes only the task it holds; to propose work on another task, create an inbox task")
+		return refuse("not_own_task", "an agent writes only the task it holds; to propose work on another task, create a proposed task in the backlog")
 	}
 	own, refused := a.ownTaskIfMapped(ctx, repo, state)
 	if refused != nil {
@@ -1074,7 +1083,7 @@ func (a *workAPI) update(ctx context.Context, sess *Session, call tools.Call) to
 	}
 	if own == nil {
 		return refuse("own_task_unmapped",
-			fmt.Sprintf("the task this session holds (%s) is not a live board item linked to exactly this session's repository, so there is no own task to write; creating inbox tasks still works", state.TaskID))
+			fmt.Sprintf("the task this session holds (%s) is not a live board item linked to exactly this session's repository, so there is no own task to write; proposing backlog tasks still works", state.TaskID))
 	}
 	if own.Revision != *args.ExpectedRevision {
 		return refuse("stale_revision", "the task changed since expected_revision was read; read it again and retry", "revision", own.Revision)
@@ -1245,7 +1254,7 @@ func (r *Registry) workTools() []tools.Tool {
 		{
 			Schema: llm.ToolSchema{
 				Name: "work_create_item",
-				Description: "Propose a new task by creating an inbox task in this repository. Only title (at most 200 characters), " +
+				Description: "Propose a new task by creating a backlog task in this repository. Only title (at most 200 characters), " +
 					"description (at most 16 KiB) and an optional plain-text checklist are accepted; every other field is fixed by the host " +
 					"and any other argument is rejected. The task is locked against automatic rewriting and is labelled as an agent proposal. " +
 					"Bounded: 5 created tasks and 30 writes per task you hold, 10 per hour and 50 open proposals per repository.",
