@@ -77,11 +77,10 @@ const (
 	maxPatchReadBytes = 64 << 20
 )
 
-// run feeds a diff to the verifier and returns its findings.
-//
-// An unparseable diff is an error rather than an empty result, and the caller
-// turns that into a named degradation. The distinction is the whole contract:
-// an empty finding list means these gates ran and found nothing.
+// effectiveTimeout is the dcverify deadline. An explicit Timeout wins. With
+// DC_VERIFY_LEAN_KERNEL on (auto, require, 1 or true) it is the Lean kernel
+// step (DC_LEAN_KERNEL_TIMEOUT_MS clamped to 50ms..600s, 180s when unset or
+// unparseable) plus 60s, and never under 240s. Otherwise it is 30s.
 func (c rigorClient) effectiveTimeout() time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
@@ -108,6 +107,11 @@ func (c rigorClient) effectiveTimeout() time.Duration {
 	return 30 * time.Second
 }
 
+// run feeds a diff to the verifier and returns its findings.
+//
+// An unparseable diff is an error rather than an empty result, and the caller
+// turns that into a named degradation. The distinction is the whole contract:
+// an empty finding list means these gates ran and found nothing.
 func (c rigorClient) run(ctx context.Context, diff string, planned []string, coverage string) (*rigorResult, error) {
 	if c.Binary == "" {
 		return nil, errors.New("no dcverify binary configured")

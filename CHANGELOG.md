@@ -385,6 +385,16 @@ under **Unreleased** in the same commit as the code.
 
   Under `sudo -E` or an NFS uid mismatch, fix HOME's ownership; there is no
   bypass.
+- **The DevCouncil rigor check waits longer when the Lean kernel check is on,
+  and names two more findings.** With `DC_VERIFY_LEAN_KERNEL` set to `auto`,
+  `require`, `1` or `true`, the default `dcverify` deadline rises from 30s to
+  the Lean step (`DC_LEAN_KERNEL_TIMEOUT_MS`, clamped to 50ms..600s, 180s when
+  unset or unparseable) plus 60s, and at least 240s. An explicit timeout still
+  wins, and with the variable unset nothing changes. A `runner_hijack` finding
+  (a test-runner bypass such as `os._exit`, `os.Exit(0)` or a `TestMain` that
+  skips `m.Run()`) and a `lean_tcb` finding (`sorry`, `admit`, `native_decide`,
+  an `axiom`, or a metaprogramming escape in a Lean proof) now each get their
+  own blocking next action instead of the raw finding message.
 - **Rust toolchain moves to 1.100.0** (owner decision 2026-11-12).
   `RUST_TOOLCHAIN` in `scripts/tool-versions.env` and `release.yml` is
   `1.100.0`; `rust-version` is `"1.100"` in `crates/Cargo.toml` (was 1.99) and
