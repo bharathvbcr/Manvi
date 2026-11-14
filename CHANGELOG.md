@@ -340,6 +340,45 @@ under **Unreleased** in the same commit as the code.
   comments that quote it. CI and the release workflow follow `go.mod`. Manvi's
   own exposure is the `geminiproxy` server and test servers; the gate fails on
   reachability regardless.
+- The shell ref guard now snapshots the main worktree's own refs
+  (`refs/worktree`, `refs/bisect`, `refs/rewritten`) when the root is a linked
+  worktree, and no longer skips a prunable-looking admin directory that still
+  holds a ref git resolves (`worktrees/<id>/refs/<ns>/x`): such a directory
+  refuses the command, and one a command creates blocks it as `ref.unscanned`.
+  Before, a leaking commit parked there could be pushed. `ref.unscanned` is the
+  guard's own rule id and is not in the `contracts/verdict.schema.json` enum
+  (that enum mirrors DevCouncil's policy rules); anything filtering ref-guard
+  blocks on `path.secret` must also match `ref.unscanned`.
+  The guard also reads the files git resolves as refs by name (`ORIG_HEAD`,
+  `FETCH_HEAD`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, any root name a command makes
+  with `git update-ref` or a redirect, and nested ones like `foo/bar`) in the
+  root's git directory, the common one (`main-worktree/NAME`) and each linked
+  worktree's (`worktrees/<id>/NAME`); each object id on a line counts. A leaking
+  one is put back (removed, or rewritten with the exact bytes it held) and
+  blocked as `path.secret`. Ids are read as git reads a loose ref (the
+  repository's own hash length); an id naming no object is judged when the
+  object appears; directory symlinks in a git directory are followed (with a
+  cycle check and bounds); reftable repositories are covered through
+  `--include-root-refs`. A leak that cannot be put back (it sits behind a
+  symlink) blocks that call and every later one until it is gone. A HEAD a
+  command creates in an admin directory it also creates is removed. Still not
+  read: files below `objects/`, `logs/` and `modules/` of a git directory,
+  which git also resolves by name.
+- `devcouncil_grep` under a concurrent writer: a name that exists only while the
+  engine walks (a hard link or symlink to a withheld file such as `.env`, made
+  just before the search and removed just after, in an existing directory, in a
+  transient directory, or to a case-variant withheld name) used to turn a
+  pattern the withheld file matched into "the tree changed under the search
+  repeatedly" while a non-matching pattern got a normal withheld answer. Matches
+  in a name the listing did not hold, or held as withheld, are now dropped from
+  the reply, so both patterns get the same reply and the withheld content is not
+  in it. Still open, and not claimed closed: a dropped match can take a slot at
+  the result cap, so a reply truncated at the cap can still differ with whether
+  the withheld file matched; `files_searched` and the skipped counts still move
+  with the transient name and the class of the file it links to; and a listed
+  name swapped for a hard link to a withheld file only during the engine's read
+  returns that file's line (this one predates the change). All three need the
+  engine to search only the listed set and verify each opened file's identity.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
