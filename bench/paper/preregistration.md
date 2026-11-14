@@ -28,6 +28,13 @@ An audit of all 760 v1 episodes and 3,879 file-writing tool calls found **zero**
 episodes that exploited any of the above. v1's numbers are not fabricated; they
 are measured on an instrument that could not rule the exploits out.
 
+> **Post-registration note (8 November 2026; not part of the registered text,
+> which is left unchanged above).** That audit counted file-tool writes only. An
+> audit of every tool output (`audit_episodes.py`) finds 39 of the 760 v1
+> episodes exposed to grader content or to a sandbox an earlier episode had
+> changed. 36 of them passed. See `DEVIATIONS.md` O7, "Adjudicated". It changes
+> nothing registered here: v1 was already excluded from every v2 analysis.
+
 ## 2. Hypotheses
 
 Directions are stated in advance. Δ is always `full − ablation` on per-repeat

@@ -366,6 +366,27 @@ try:
           r10["incomplete"] == [] and [g["file"] for g in r10["grader_reads"]] == ["sh.rep0.json"],
           (r10["incomplete"], r10["grader_reads"]))
 
+    print("what counts as a shell write")
+    for cmd, want, why in (
+        ('python3 -c "print(1 > 0)"', False, "a comparison inside a quoted program"),
+        ("python3 - <<'EOF'\nif a > b:\n    pass\nEOF\n", False, "a comparison inside a heredoc body"),
+        ("python3 - <<'EOF'\nprint(a > b", False, "a heredoc whose end the log cut off"),
+        ("python3 test.py 2>&1 >/dev/null", False, "stderr and /dev/null redirections"),
+        ("cat > f.py <<'EOF'\nx = 1\nEOF\n", True, "the redirection that feeds a heredoc"),
+        ("echo hi > out.txt", True, "a plain redirection"),
+        ("python3 -c \"open('x', 'w').write('1')\"", True, "a Python open for writing, even quoted"),
+        ("sed -i 's/a/b/' f.py", True, "sed -i"),
+    ):
+        check(f"shell_writes: {why}", A.shell_writes(cmd) is want, cmd)
+    root11 = os.path.join(TMP, "t11")
+    tasks11 = make_tasks(root11)
+    r11 = A.audit(write_results(root11, {"m__full__hard": {"cmp.rep0.json": episode([
+        tool(1, "run_shell", {"cmd": 'python3 -c "import sys; print(sys.maxsize > 2**32)"'}, "exit=0\nTrue"),
+        tool(2, "run_shell", {"cmd": "pwd; ls"}, "exit=0\n/srv/x\nhidden_test.py\ntest_widget.py")])}}),
+        tasks_dir=tasks11)
+    check("a quoted comparison does not end the starting-state evidence",
+          [x["file"] for x in r11["nonpristine_start"]] == ["cmp.rep0.json"], r11["nonpristine_start"])
+
     print("a contaminated majority is still contamination")
     root9 = os.path.join(TMP, "t9")
     tasks9 = make_tasks(root9)

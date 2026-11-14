@@ -683,9 +683,14 @@ says so (abstract, §1, §3.2, §5.9, §6, Limitation 12, §8).
 
 **Not closed on v2, nor in the released harness.** `--bind $TMPDIR` gives every
 sandbox the host's temporary directory read-write (`mh/tools.py`, both at
-`82e453a` and now), and the macOS profile re-allows temp roots. One episode can
-therefore leave its solution, or a copy of a grader file, for a later episode of
-the same task. Whether any v2 or `ext-cerebras` episode did is part of O5.
+`82e453a` and now), and the macOS profile re-allows temp roots. The released
+verifier worker, which runs candidate code, is given the same temp roots
+(`mh/rpc.py`). One episode can therefore leave its solution, or a copy of a
+grader file, for a later episode of the same task. Whether any v2 or
+`ext-cerebras` episode did is part of O5. The fix, a private temp directory per
+sandbox for both the shell and the worker, is filed as `ft-d63a92cc` with its
+design. It needs a Linux host to verify the `bwrap` half, and a macOS-only fix
+would verify the same candidate under different rules on the two platforms.
 
 Superseded collections, reported here only: `hard-protocol1` has 7 read
 episodes (5 passed) and 7 shell-write candidate episodes; `orep` has 2 reads

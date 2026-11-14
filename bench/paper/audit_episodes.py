@@ -100,6 +100,30 @@ def norm_lines(text):
     return out
 
 
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n")
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+OPEN_WRITE = re.compile(r"open\([^)]*['\"][wa]b?\+?['\"]")
+
+
+def shell_writes(cmd):
+    """Whether a shell command can change files, judged on the shell syntax
+    only. A `>` inside a quoted string or a heredoc body is program text (a
+    comparison in `python3 -c "a > b"`), not a redirection, so both are removed
+    first. A heredoc whose closing line the log cut off runs to the end. A
+    Python `open(..., "w")` writes wherever it appears."""
+    if OPEN_WRITE.search(cmd):
+        return True
+    out, pos = [], 0
+    for m in HEREDOC.finditer(cmd):
+        if m.start() < pos:
+            continue
+        out.append(cmd[pos:m.end()])
+        close = re.search(rf"^\s*{re.escape(m.group(1))}\s*$", cmd[m.end():], re.M)
+        pos = m.end() + close.end() if close else len(cmd)
+    out.append(cmd[pos:])
+    return bool(WRITE_CONSTRUCT.search(QUOTED.sub("''", "".join(out))))
+
+
 def windows(text):
     lines = norm_lines(text)
     return {w for w in (tuple(lines[i:i + K]) for i in range(len(lines) - K + 1))
@@ -308,7 +332,7 @@ def first_setup_state(ep, grader):
     for e, args in _tool_events(ep):
         name = e.get("name")
         cmd = str(args.get("cmd", "")) if name == "run_shell" else ""
-        if cmd and WRITE_CONSTRUCT.search(cmd):
+        if cmd and shell_writes(cmd):
             break
         if name in WRITE_TOOLS:
             own.add(os.path.basename(str(args.get("path", ""))))
@@ -403,6 +427,7 @@ def audit_episode(ep, grader, observed=None, tag=None, state=None):
                 m = re.match(r"exit=(-?\d+)", out)
                 task_writes.append({"step": step, "exit": int(m.group(1)) if m else None,
                                     "targets": targets, "cmd": cmd[:600]})
+        if cmd and shell_writes(cmd):
             shell_wrote = True
         own |= windows(_authored(name, args))
         target = _read_target(name, args) if name in READ_TOOLS else None
