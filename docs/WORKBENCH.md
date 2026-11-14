@@ -775,8 +775,14 @@ Sixteen merges the `inbox` task status into `backlog`, leaving five statuses
 (`backlog`, `ready`, `in_progress`, `review`, `done`). Its upgrade rewrites
 every stored `inbox` to `backlog` in items, revisions, enhancements, events and
 request responses without bumping a revision; a host that still sends `inbox`
-has it read as `backlog`. The release pin
-(`scripts/module-pins.txt`, DevCouncil) carries workbench 16 with
+has it read as `backlog`.
+Seventeen adds a cross-repository execution queue (`work_queue`,
+`work_queue_members`, one queue lease per repository and per checkout),
+two-way GitHub issue sync state, an opt-in confirmed durable outbox, and the
+`items.readiness` op. A schema sixteen host does not know these tables and
+cannot enforce their lease or delivery invariants, so it must refuse the
+profile. The release pin
+(`scripts/module-pins.txt`, DevCouncil) carries workbench 17 with
 `dc-store` 11, as recorded in `CHANGELOG.md`; a Manvi built before that move
 refuses an upgraded profile.
 
