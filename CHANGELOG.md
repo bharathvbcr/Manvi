@@ -390,6 +390,10 @@ under **Unreleased** in the same commit as the code.
   engine's read returns that file's line (this predates the change). All three
   need the engine to search only the listed set and verify each opened file's
   identity.
+- `native/` locks `rustix` 1.1.6 instead of 1.1.4: RUSTSEC-2026-0486 (xattr
+  functions mark unwritten bytes as initialized given a zero-length buffer) is an
+  unsound advisory, and verify denies unsound crates in `native/`. Lockfile only;
+  no Manvi code calls the affected functions directly.
 - A managed run parked between turns noticed its provider process dying only when
   the ten-minute idle budget ran out, and then recorded the run as `completed`.
   `ManagedSession` has a `Done` channel, closed when the process is reaped
