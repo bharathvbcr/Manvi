@@ -214,6 +214,8 @@ is still honoured, because naming a root is a deliberate act.
 | Variable | Effect |
 |---|---|
 | `MANVI_COVERAGE` | A Go coverprofile or LCOV report for the diff-coverage gate. Unset, every changed file is reported unmeasured and the run says so, rather than reading as covered. `--coverage` is the per-invocation form. |
+| `DC_VERIFY_LEAN_KERNEL` | DevCouncil's switch for the Lean kernel check, read here only to size the `dcverify` deadline. `auto`, `require`, `1` or `true` (any case) raises the default deadline from 30s to the Lean step plus 60s, and at least 240s, so the kernel replay is not cut off. Any other value, or unset, leaves 30s. An explicit timeout always wins. |
+| `DC_LEAN_KERNEL_TIMEOUT_MS` | The Lean step in that sum, in milliseconds, clamped to 50..600000. Unset or not a whole number means 180000. Read only when `DC_VERIFY_LEAN_KERNEL` is on. |
 
 **Terminal and display.** Conventions of the terminal, not of this harness, except
 `MANVI_FX`, `MANVI_TERM_TITLE` and `MANVI_TERM_PROGRESS`.
