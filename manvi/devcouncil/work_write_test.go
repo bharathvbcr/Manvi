@@ -872,7 +872,11 @@ func TestWorkOpenProposalCapCountsLabelledBacklogTasks(t *testing.T) {
 	if out["status"] != "backlog" {
 		t.Fatalf("the receipt reports status %v, want backlog", out["status"])
 	}
-	if it := env.item(out["id"].(string)); it.Status != "backlog" {
+	id, ok := out["id"].(string)
+	if !ok {
+		t.Fatalf("the receipt's id is %T %v, want a string", out["id"], out["id"])
+	}
+	if it := env.item(id); it.Status != "backlog" {
 		t.Fatalf("the stored proposal has status %q, want backlog", it.Status)
 	}
 
