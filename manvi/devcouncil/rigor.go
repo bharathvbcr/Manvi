@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,14 +82,37 @@ const (
 // An unparseable diff is an error rather than an empty result, and the caller
 // turns that into a named degradation. The distinction is the whole contract:
 // an empty finding list means these gates ran and found nothing.
+func (c rigorClient) effectiveTimeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("DC_VERIFY_LEAN_KERNEL")))
+	if mode == "auto" || mode == "require" || mode == "1" || mode == "true" {
+		step := 180 * time.Second
+		if raw := strings.TrimSpace(os.Getenv("DC_LEAN_KERNEL_TIMEOUT_MS")); raw != "" {
+			if ms, err := strconv.ParseUint(raw, 10, 64); err == nil {
+				if ms < 50 {
+					ms = 50
+				} else if ms > 600_000 {
+					ms = 600_000
+				}
+				step = time.Duration(ms) * time.Millisecond
+			}
+		}
+		expanded := step + 60*time.Second
+		if expanded < 240*time.Second {
+			expanded = 240 * time.Second
+		}
+		return expanded
+	}
+	return 30 * time.Second
+}
+
 func (c rigorClient) run(ctx context.Context, diff string, planned []string, coverage string) (*rigorResult, error) {
 	if c.Binary == "" {
 		return nil, errors.New("no dcverify binary configured")
 	}
-	timeout := c.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
+	timeout := c.effectiveTimeout()
 	// Planned paths are newline-separated so one containing a comma or a space
 	// survives the boundary intact.
 	args := []string{"check", "--planned", strings.Join(planned, "\n")}
@@ -226,6 +251,12 @@ func gapsFrom(taskID string, result *rigorResult) ([]Gap, []NextAction) {
 		case "stub_detection":
 			action.Action = fmt.Sprintf(
 				"Deconstruct and implement placeholder at %s:%d completely; avoid placeholders or fake values in delivered code.", f.Path, f.Line)
+		case "runner_hijack":
+			action.Action = fmt.Sprintf(
+				"Security/anti-reward-hack violation: Remove the test-runner bypass at %s:%d (`os._exit`, `os.Exit(0)`, `TestMain` omitting `m.Run()`, `exitstatus = 0`, or stack inspection) so the real test suite executes every assertion.", f.Path, f.Line)
+		case "lean_tcb":
+			action.Action = fmt.Sprintf(
+				"Formal verification TCB violation: Discharge the Lean 4 soundness hole, metaprogramming escape, or kernel/lean4checker rejection at %s:%d (`sorry`, `admit`, `native_decide`, `axiom`, `opaque`, `unsafe`, `@[extern]`, `@[implemented_by]`, `@[csimp]`, or `elab`/`macro`/`syntax`/`#eval`) with a kernel-checked proof.", f.Path, f.Line)
 		default:
 			action.Action = f.Message
 		}
