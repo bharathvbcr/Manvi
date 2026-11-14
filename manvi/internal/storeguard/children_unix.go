@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/bharathvbcr/Manvi/manvi/childenv"
 )
 
 // settle bounds how long an abandoned start, which a client closes
@@ -45,7 +47,9 @@ func reapLeaked() []child {
 // dcstoreChildren lists the live processes whose parent is ppid and whose
 // executable is named dcstore.
 func dcstoreChildren(ppid int) ([]child, error) {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,stat=,comm=").Output()
+	cmd := exec.Command("ps", "-A", "-o", "pid=,ppid=,stat=,comm=")
+	cmd.Env = childenv.Inherit() // ps needs no provider credential
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}

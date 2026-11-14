@@ -333,6 +333,11 @@ under **Unreleased** in the same commit as the code.
 
 ### Fixed
 
+- The `ps` listing the test-support store guard (`internal/storeguard`) runs to
+  find leaked `dcstore` children started with a nil `Env`, so it inherited every
+  provider credential in the test process's environment, and
+  `TestNoChildInheritsThisProcessEnvironment` failed on it. It now gets
+  `childenv.Inherit()`, as the CLI's own `ps` listing does.
 - **Go 1.27.3 → 1.27.4, for GO-2026-6859.** `govulncheck` found a reachable
   standard-library vulnerability under go1.27.3: an HTTP/1 server crash in
   `net/http` caused by a `MaxBytesReader` header race, fixed in go1.27.4. The
