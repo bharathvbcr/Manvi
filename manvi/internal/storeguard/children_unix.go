@@ -4,6 +4,7 @@ package storeguard
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,9 @@ import (
 // settle bounds how long an abandoned start, which a client closes
 // asynchronously, gets to finish ending before the children count as leaked.
 const settle = 5 * time.Second
+
+// psTimeout bounds one process listing.
+const psTimeout = 10 * time.Second
 
 // reapLeaked waits up to settle for this process's dcstore children to
 // disappear. Any that remain are returned and sent SIGTERM; they are this
@@ -47,8 +51,13 @@ func reapLeaked() []child {
 // dcstoreChildren lists the live processes whose parent is ppid and whose
 // executable is named dcstore.
 func dcstoreChildren(ppid int) ([]child, error) {
-	cmd := exec.Command("ps", "-A", "-o", "pid=,ppid=,stat=,comm=")
+	// Bounded like every other exec boundary: a ps that never returns must not
+	// hold TestMain. A timeout is an error, which reapLeaked reports as a leak.
+	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,stat=,comm=")
 	cmd.Env = childenv.Inherit() // ps needs no provider credential
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
