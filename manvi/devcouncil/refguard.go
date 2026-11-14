@@ -61,8 +61,11 @@ import (
 //     remote-tracking ref, and says so when the command mentions push or
 //     send-pack. A plain `git push` is allowed by the command policy (only
 //     force pushes are denied); the guard cannot un-send it.
-//   - dangling objects and the reflog entry of the rolled-back update keep the
-//     secret until git expires them;
+//   - after a rollback the leaking object is still in the object database, and
+//     `git push <remote> <sha>:refs/heads/x` on a later call delivers it: git
+//     takes a raw object id as a push source, and no ref reaches it for the guard
+//     to snapshot. The reflog entry of the rolled-back update names it too, and
+//     both stay until git expires them;
 //   - a repository other than the one at Registry root (a fresh `git init`, a
 //     clone elsewhere); linked worktrees share refs and are covered;
 //   - an object written but never referenced (hash-object -w, commit-tree
@@ -91,6 +94,24 @@ import (
 //     than maxRootWalkDepth refuses the command instead of being read in part;
 //   - a repository on a git too old to say its ref format (before 2.46) is read as
 //     the files backend, which is the only one such a git can have;
+//   - the admin-directory shapes that are refused rather than read (a link or
+//     other non-directory, non-regular entry under worktrees/, a HEAD without a
+//     gitdir file, a file below an admin directory's refs/ outside refs/worktree,
+//     refs/bisect or refs/rewritten, and any file below its worktrees/; see
+//     checkAdminDir) have no rollback: the command that made one is blocked as
+//     ref.unscanned and the file stays, and every later command is refused before
+//     it runs until the operator removes it;
+//   - a leak committed in the same command as one of those refused shapes is
+//     never rolled back: the after-snapshot fails, the baseline is cleared, and
+//     once the operator removes the shape the next call runs with the leaking ref
+//     in place. The refused shapes are cheap for a command to make;
+//   - ref.unscanned blocks only the call that caused it: an over-cap, timed-out
+//     or unreadable outcome is not rolled back, and the unscanned tip joins the
+//     next call's baseline, so a push of it on the next call delivers. A restart,
+//     or a sub-agent Registry (ForWorktree builds a new one), starts with no
+//     baseline at all. Nothing in the harness can scan an over-cap set;
+//   - the raw-sha push, the objects/logs/modules trees and the two entries just
+//     before are tracked by card ft-fec1ac5b;
 //   - rollback is per Registry, not per author. Overlap with another writer is
 //     detected only between exec_command calls of one Registry, so a leaking
 //     commit that an operator or a sub-agent of another Registry made during
@@ -358,10 +379,20 @@ func (r *Registry) adminDirs(ctx context.Context) (gitDirs, error) {
 	// (its own git dir) is left out: read twice, one leak would be two entries
 	// and the second rollback would fail its compare-and-swap.
 	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
 		a := filepath.Join(dir, e.Name())
+		if !e.IsDir() {
+			if e.Type().IsRegular() {
+				continue // git ignores a plain file there.
+			}
+			// A symbolic link, or on Windows a junction (reported as irregular since Go
+			// 1.23): git resolves worktrees/<id>/... through it as through a directory.
+			return gitDirs{}, fmt.Errorf("the administrative directory %s is a link or other non-directory entry; the refs reached through it are not read", a)
+		}
+		// The root's own admin directory is checked too: git resolves
+		// worktrees/<own-id>/refs/heads/y through it by that literal path.
+		if err := checkAdminDir(a); err != nil {
+			return gitDirs{}, err
+		}
 		if realPath(a) == ownReal {
 			continue
 		}
@@ -369,6 +400,67 @@ func (r *Registry) adminDirs(ctx context.Context) (gitDirs, error) {
 	}
 	sort.Strings(dirs.admins)
 	return dirs, nil
+}
+
+// maxAdminEntries bounds what checkAdminDir looks at in one admin directory.
+const maxAdminEntries = 10000
+
+// checkAdminDir refuses an admin directory holding a ref source the snapshot
+// does not read, so that nothing git resolves through it is left unexamined:
+//   - a HEAD but no gitdir file: `git worktree list` omits the directory, and git
+//     still resolves worktrees/<id>/HEAD through it;
+//   - a file below refs/ outside the per-worktree namespaces the snapshot lists,
+//     or below worktrees/: `git update-ref worktrees/<id>/refs/heads/y` writes
+//     <admin>/refs/heads/y and git resolves it by that literal path. The
+//     ref-source walk (refguard_rootfiles.go) skips both trees.
+//
+// There is no rollback for these: the command is not run when one exists before
+// it, and one a command makes is reported unscanned, with the file left for the
+// operator. A real admin directory holds neither.
+func checkAdminDir(admin string) error {
+	if _, err := os.Lstat(filepath.Join(admin, "gitdir")); errors.Is(err, fs.ErrNotExist) {
+		if _, herr := os.Lstat(filepath.Join(admin, "HEAD")); !errors.Is(herr, fs.ErrNotExist) {
+			return fmt.Errorf("the administrative directory %s has a HEAD but no gitdir file: git does not list its worktree and resolves worktrees/<id>/HEAD through it", admin)
+		}
+	} else if err != nil {
+		return fmt.Errorf("examining the administrative directory %s: %w", admin, err)
+	}
+	if err := checkLiteralRefTree(filepath.Join(admin, "refs"), true); err != nil {
+		return err
+	}
+	return checkLiteralRefTree(filepath.Join(admin, "worktrees"), false)
+}
+
+// checkLiteralRefTree errors when dir holds a file (or link), or more than
+// maxAdminEntries entries. With perWorktree, dir is an admin directory's refs/
+// and the subtrees worktree, bisect and rewritten are left out: git lists those.
+func checkLiteralRefTree(dir string, perWorktree bool) error {
+	count := 0
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if count++; count > maxAdminEntries {
+			return fmt.Errorf("more than %d entries", maxAdminEntries)
+		}
+		if d.IsDir() {
+			if perWorktree && filepath.Dir(p) == dir {
+				switch d.Name() {
+				case "worktree", "bisect", "rewritten":
+					return fs.SkipDir
+				}
+			}
+			return nil
+		}
+		return fmt.Errorf("%s is a ref git resolves by its literal path (worktrees/<id>/refs/... or worktrees/<id>/worktrees/...), which the snapshot does not read", p)
+	})
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", dir, err)
+	}
+	return nil
 }
 
 // hasRefSource reports whether an admin directory holds anything git resolves a
@@ -1104,7 +1196,7 @@ func (v *refViolation) unscannedReason() string {
 	if v.manual {
 		reason += "MANUAL INTERVENTION NEEDED: inspect the refs named before relying on them. "
 	}
-	return reason + "Until it is scanned this stays blocked (an unexamined commit is not a clean one); scan it with the devcouncil git tools or have the operator review it."
+	return reason + "This blocks only the call that caused it: nothing here can scan a set this large, so the operator has to review the refs named (or the objects they reach) before relying on them, and remove them if they should not be there."
 }
 
 // guardTimeout bounds the snapshot taken before the command.

@@ -364,6 +364,23 @@ under **Unreleased** in the same commit as the code.
   command creates in an admin directory it also creates is removed. Still not
   read: files below `objects/`, `logs/` and `modules/` of a git directory,
   which git also resolves by name.
+  The guard also refuses, before the command or (for one a command makes) as
+  `ref.unscanned` after it, the admin-directory shapes git resolves refs
+  through and the snapshot does not read: a file below an admin directory's
+  `refs/` outside the three per-worktree namespaces
+  (`git update-ref worktrees/<id>/refs/heads/y`, the root's own admin directory
+  included), or below its `worktrees/`; a link or other non-directory entry
+  under `.git/worktrees` (a symlink, or a junction on Windows); and an admin
+  directory with a `HEAD` and no `gitdir` file, which `git worktree list` omits.
+  Before, a leaking commit parked in any of them could be pushed. There is no
+  rollback for these: the file stays, and every later command is refused until
+  the operator removes it, and a leak committed in the same command as one of
+  them is not rolled back. `ref.unscanned` blocks only the call that caused it
+  (the unscanned tip joins the next call's baseline, and a restart or a
+  sub-agent registry starts with none); its message now says so instead of
+  claiming the block stays. After a rollback the leaking object is still in the
+  object database, and a push of it by its raw id on a later call delivers.
+  These residuals are tracked by card ft-fec1ac5b.
 - `devcouncil_grep` under a concurrent writer. Closed: a name that exists only
   while the engine walks (a hard link to a withheld file such as `.env`, made
   just before the search and removed just after, in an existing directory, in a
