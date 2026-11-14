@@ -117,7 +117,9 @@ under **Unreleased** in the same commit as the code.
   together. `dc-store`'s own schema stays 11 and the devmap store stays 29. The
   pin also brings dc-redact's Google OAuth shapes: a bare `ya29.` access token,
   `1//` refresh token or `GOCSPX-` client secret is now redacted, and blocks
-  the commit secret gate, with no label in front of it.
+  the commit secret gate, with no label in front of it. The pin then moves on
+  to `649094c0`, a layout-only rustfmt commit under Rust 1.100.0: at
+  `d9c7a512` the linked crates failed `verify.sh`'s `cargo fmt --check`.
 - The task board's `inbox` status is merged into `backlog`: five statuses
   (`backlog`, `ready`, `in_progress`, `review`, `done`) instead of six, on
   DevCouncil's workbench schema 16. `work_create_item` creates the agent-proposed
