@@ -25,20 +25,49 @@ import (
 // relist (relistPre/relistPost). The speculative whole-tree search (path ".")
 // is left alone, as in grep_transient_link_unix_test.go. No sleeps.
 
-// w21Markers maps a fixture to the file the wrapper creates when the writer's
-// relist hook ran, so a relist test can prove the writer fired (the relist only
-// happens when the snapshot does not vouch for the tree).
+// w21Marks are the files a fixture's wrapper writes so a test can prove its
+// writer ran: relist when the relist hook ran (the relist only happens when the
+// snapshot does not vouch for the tree), fired when a search hook ran, failed
+// when any hook command exited non-zero (a writer whose link command failed
+// exercised nothing).
+type w21Marks struct{ relist, fired, failed string }
+
 var w21Markers sync.Map
+
+func w21MarksOf(t *testing.T, f *fixture) w21Marks {
+	t.Helper()
+	m, ok := w21Markers.Load(f)
+	marks, isMarks := m.(w21Marks)
+	if !ok || !isMarks {
+		t.Fatal("no writer markers are registered for this fixture")
+	}
+	return marks
+}
 
 func w21RelistRan(t *testing.T, f *fixture) {
 	t.Helper()
-	m, _ := w21Markers.Load(f)
-	mark, isPath := m.(string)
-	if !isPath {
-		t.Fatal("no relist marker is registered for this fixture")
-	}
-	if _, err := os.Stat(mark); err != nil {
+	marks := w21MarksOf(t, f)
+	if _, err := os.Stat(marks.relist); err != nil {
 		t.Fatalf("the relist hook never ran, so this test proved nothing: %v", err)
+	}
+	w21WriterCommandsSucceeded(t, marks)
+}
+
+// w21WriterRan fails the test unless the fixture's search hook ran at least once
+// and no hook command failed.
+func w21WriterRan(t *testing.T, f *fixture) {
+	t.Helper()
+	marks := w21MarksOf(t, f)
+	if _, err := os.Stat(marks.fired); err != nil {
+		t.Fatalf("the writer never ran around a search, so this test proved nothing: %v", err)
+	}
+	w21WriterCommandsSucceeded(t, marks)
+}
+
+func w21WriterCommandsSucceeded(t *testing.T, marks w21Marks) {
+	t.Helper()
+	if _, err := os.Stat(marks.failed); err == nil {
+		t.Fatal("a writer command failed, so the tree was not changed the way the test describes")
 	}
 }
 
@@ -65,9 +94,16 @@ func w21Fixture(t *testing.T, files map[string]string, w w21Writer) *fixture {
 	}
 	dir := t.TempDir()
 	mark := filepath.Join(dir, "relist.ran")
+	fired := filepath.Join(dir, "search.fired")
+	failed := filepath.Join(dir, "writer.failed")
 	w.relistPre = `touch "` + mark + `"; ` + w.relistPre
+	if w.searchPre != "" {
+		w.searchPre = `touch "` + fired + `"; ` + w.searchPre
+	}
+	// Each hook runs in its own subshell and a non-zero exit leaves a marker the
+	// test reads, so a failed ln is a failed test and not a quiet no-op.
 	for _, c := range []*string{&w.searchPre, &w.searchPost, &w.relistPre, &w.relistPost} {
-		*c = ": ; " + *c
+		*c = `( : ; ` + *c + ` ) || touch "` + failed + `"`
 	}
 	counter := filepath.Join(dir, "lists")
 	wrapper := filepath.Join(dir, "w")
@@ -110,18 +146,18 @@ exec "$REAL" "$@"
 		t.Fatal(err)
 	}
 	f.reg.deps.Grep = dcgrep.New(wrapper, f.root)
-	w21Markers.Store(f, mark)
+	w21Markers.Store(f, w21Marks{relist: mark, fired: fired, failed: failed})
 	return f
 }
 
-// W21 (a), writers other than a new hard link or symlink in an existing
-// directory: a directory symlink to the withheld directory, a link in a
-// directory made only for the search, and a link to a case-variant withheld
-// name. Matching and non-matching patterns must produce the same reply.
+// W21 (a), writers other than a new hard link in an existing directory: a
+// directory symlink to the withheld directory (a behaviour test, not a
+// regression test: the engine does not follow symlinks), a link in a directory
+// made only for the search, and a link to a case-variant withheld name. Matching and non-matching patterns must produce the same reply.
 func TestW21GrepOtherTransientShapesArePatternIndependent(t *testing.T) {
 	shapes := map[string]w21Writer{
 		"directory symlink": {
-			searchPre:  `ln -s "$ROOT/sec" "$ROOT/src/d" 2>/dev/null`,
+			searchPre:  `ln -s "$ROOT/sec" "$ROOT/src/d"`,
 			searchPost: `rm -f "$ROOT/src/d"`,
 		},
 		"link in a transient directory": {
@@ -129,7 +165,7 @@ func TestW21GrepOtherTransientShapesArePatternIndependent(t *testing.T) {
 			searchPost: `rm -rf "$ROOT/src/tmpd"`,
 		},
 		"case-variant withheld name": {
-			searchPre:  `ln "$ROOT/.ENV.local" "$ROOT/src/alias.txt" 2>/dev/null`,
+			searchPre:  `ln "$ROOT/.ENV.local" "$ROOT/src/alias.txt"`,
 			searchPost: `rm -f "$ROOT/src/alias.txt"`,
 		},
 		"both secrets linked": {
@@ -148,7 +184,9 @@ func TestW21GrepOtherTransientShapesArePatternIndependent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var replies []string
 			for _, p := range []string{"needle (ONE|TWO|THREE|visible)", "needle (zzz|visible)", "needle (ONE|visible)", "needle (TWO|visible)", "needle (THREE|visible)"} {
-				replies = append(replies, advGrepRaw(t, w21Fixture(t, files, w), p, map[string]any{"include_ignored": true}))
+				f := w21Fixture(t, files, w)
+				replies = append(replies, advGrepRaw(t, f, p, map[string]any{"include_ignored": true}))
+				w21WriterRan(t, f)
 			}
 			for i, r := range replies[1:] {
 				if r != replies[0] {
@@ -221,14 +259,16 @@ func TestW21GrepRenameOverBeforeRelistIsPatternIndependent(t *testing.T) {
 	}
 }
 
-// W21 (a)/(b), the window between the relist and revalidateMatches that the
-// fix's comment calls safe: a listed file becomes a hard link to the withheld
-// file right after the relist and stays one. Neither reply may carry the
-// withheld file's content. Observed on 54263e9: the two replies are identical,
-// because the full recheck re-judges every relisted name and the new link count
-// trips the refusal comparison for both patterns, so both are retried. The
-// replies are logged for the record.
-func TestW21GrepSwapAfterRelistNeverReturnsWithheldContent(t *testing.T) {
+// W21 (a)/(b). A listed file becomes a hard link to the withheld file right
+// after the engine's second listing returns and stays one. This is the window
+// between the engine's relist and Go judging it (candidateRefusals reads the
+// link count then), not the later one between the relist and revalidateMatches:
+// the hook runs before Go looks at the relist, so reaching revalidateMatches
+// with a changed file would need a seam between the two and there is none. The
+// changed link count makes the relist's verdicts differ from the listing's for
+// both patterns, so both are retried and both replies must be equal and free of
+// the withheld content.
+func TestW21GrepLinkMadeAfterTheEnginesRelistIsRejudgedPatternIndependent(t *testing.T) {
 	build := func() *fixture {
 		return w21Fixture(t, map[string]string{
 			".env":      "API=needle SECRETVALUE\n",
@@ -241,12 +281,13 @@ func TestW21GrepSwapAfterRelistNeverReturnsWithheldContent(t *testing.T) {
 	b := advGrepRaw(t, fb, "needle (zzz|visible)", map[string]any{"include_ignored": true})
 	w21RelistRan(t, fa)
 	w21RelistRan(t, fb)
-	t.Logf("pattern matches the readable b.txt: %s", a)
-	t.Logf("pattern does not match b.txt:       %s", b)
 	for _, r := range []string{a, b} {
 		if strings.Contains(r, "SECRETVALUE") {
 			t.Errorf("withheld content in the reply: %s", r)
 		}
+	}
+	if a != b {
+		t.Fatalf("the reply depends on the pattern:\nmatching b.txt: %s\nnot matching: %s", a, b)
 	}
 }
 

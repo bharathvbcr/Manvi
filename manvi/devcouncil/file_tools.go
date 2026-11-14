@@ -743,35 +743,44 @@ const grepRaceAttempts = 3
 // (revalidateMatches, below), never the matches' content.
 //
 // What is closed. A name that existed only while the engine walked (a hard link
-// or symlink to a withheld file made just before the search and removed just
-// after) is in neither listing. Its match is dropped from the reply by path
-// (keepListedMatches), so it can no longer turn into an error or a retry: the
-// isError-versus-withheld split that told a matching pattern from a
-// non-matching one under such a writer is gone.
+// to a withheld file made just before the search and removed just after) is in
+// neither listing. Its match is dropped from the reply by path (listedFilter),
+// applied to each search's result before the results are merged and cut to the
+// limit, so it can no longer turn into an error or a retry, and no longer takes
+// one of Manvi's own result slots: the isError-versus-withheld split that told a
+// matching pattern from a non-matching one under such a writer is gone. The same
+// drop covers a name the listing held as refused that the engine read anyway
+// (the search target directory renamed and a symlink put in its place, which the
+// engine canonicalises, so it walks a withheld directory and reads a withheld
+// file under its own listed name): its match content never reaches the reply.
+// A symlink alias on its own never leaked, because the engine does not follow
+// links, skips non-regular files and opens without following.
 //
 // What is not. The outcome is not decided from the listing alone, because the
 // engine's answer is computed over a tree walk that includes names the listing
-// did not hold, and three of its fields are shaped by what it read there:
-//   - the result cap: a dropped match can take a slot a listed match would
-//     have had, so a reply truncated at the cap can still differ with whether
-//     the withheld file matched;
+// did not hold, and some of what it returns is shaped by what it read there:
+//   - the engine's own per-search cut. A search that is cut at its limit (the
+//     speculative whole-tree search, or a sub-search that also reads a withheld
+//     file) returns the smallest keys, so a withheld match that sorts first takes
+//     one of its slots. The reply then holds fewer listed matches by exactly the
+//     number of the withheld file's matching lines inside the cut, and reports
+//     truncated. That is a count, not a bit: limit minus count is how many lines
+//     of the withheld file matched. It needs the engine to search only the
+//     listed set; Manvi cannot see or undo that cut;
 //   - files_searched and the skipped counts, which the engine reports as
-//     aggregates over every file it opened, so they move with the transient
-//     name and with the class of the file it linked to (binary, too large,
+//     aggregates over every file it opened, so they move with a transient name
+//     and with the class of the file it links to (binary, too large,
 //     unreadable); no per-path data comes back to filter them by;
-//   - a listed name swapped for a link to a withheld file only while the
-//     engine reads it, and restored before either listing, whose match line
-//     is the withheld file's content and stands as a listed, unrefused match.
-//
-// Those need the engine to search only the listed set and to check the
-// identity of each file it opens; Manvi cannot do either from outside.
+//   - a listed name swapped for a hard link to a withheld file only while the
+//     engine reads it, and restored before either listing: its match line is the
+//     withheld file's content and stands as a listed, unrefused match. It needs
+//     the engine to check the identity of each file it opens.
 func (r *Registry) searchUnrefused(ctx context.Context, req dcgrep.Request) (*grepOutcome, map[string]string, error) {
 	for range grepRaceAttempts {
 		out, refused, tree, err := r.searchAttempt(ctx, req)
 		if err != nil {
 			return nil, nil, err
 		}
-		out.matches = keepListedMatches(tree.paths, refused, out.matches)
 		unchanged, checkErr := r.treeUnchanged(ctx, req, tree, refused, out.matches)
 		if checkErr != nil {
 			return nil, nil, checkErr
@@ -822,11 +831,13 @@ type listedTree struct {
 // What the judgement reads that the stamps do not cover: nothing about a listed
 // file (the credential-name rule reads the name, which is the key of the stamp;
 // the alias rule reads the link count, which is in it; the on-disk spelling is
-// directory membership, covered by the parents). What the stamps cannot see is a
-// name that appears in a directory the listing holds no file in, such as an empty
-// directory or one whose files were all ignored: nothing in it was recorded, so
-// a new name there is invisible to this path (the full path would see it, since
-// the engine's second listing walks it). A stamp is also only as exact as the
+// directory membership, covered by the parents). A directory the listing holds
+// no file in (an empty one, or one whose files were all ignored) would be
+// invisible to that, so stampSearchTree adds every directory under the search
+// path to the snapshot: a name created in any of them moves its directory's
+// mtime. What no stamp can see is a name created and removed again before the
+// check, or an entry under a directory beyond grepMaxWalkedDirs (no snapshot is
+// kept then, and the full path runs). A stamp is also only as exact as the
 // filesystem's clock, so a time within grepStampSlack of the search start, or
 // ahead of it, marks the snapshot fresh and sends the call down the full path,
 // which handles a change in the same tick as the recording. Without stamps on
@@ -836,8 +847,8 @@ type listedTree struct {
 // that second listing is judged with candidateRefusals, the first listing's own
 // judgement. It is false if the set of names differs (a new name for an inode,
 // even one for a file that was already withheld, is a new file the search may
-// have read), or if any verdict differs. Judging only the first listing's names would miss a new
-// link to a file that was refused already: no listed verdict moves, yet the
+// have read), or if any verdict differs. Judging only the first listing's names
+// would miss a new link to a file that was refused already: no listed verdict moves, yet the
 // search read it, and a retry's withheld report names it where the reply of a
 // pattern that did not match it would not.
 //
@@ -848,8 +859,11 @@ type listedTree struct {
 // the listing guarantees a regular file reached without a symlink inside the
 // root, which is everything candidateRefusal shortcuts, and every name it cannot
 // show that for it judges with readRefusal itself. It can disagree only if a
-// listed file is changed after the second look and before this one, a fact
-// about a file the search was allowed to read and not about a withheld one.
+// listed file changes after the second look and before this one. That is not
+// only a fact about a file the search was allowed to read: under the hard-link
+// swap described on searchUnrefused a listed name's matches can be a withheld
+// file's content, so a disagreement here can depend on what matched. It is not a
+// closed channel; it is the part of the swap residue that fails closed.
 //
 // A name created during the search and removed again before either check is not
 // seen by either; no check outside the engine can see it.
@@ -892,32 +906,33 @@ func (r *Registry) treeUnchanged(ctx context.Context, req dcgrep.Request, tree *
 	return r.revalidateMatches(matches) == nil, nil
 }
 
-// keepListedMatches drops the matches that lie in a name the listing did not
-// hold, or held as refused. It looks at paths only and keeps the engine's order.
-// It removes matches from the reply and does not make the reply independent of
-// them: the cap and the engine's counters still saw the dropped names (see
-// searchUnrefused).
-func keepListedMatches(listed []string, refused map[string]string, matches []dcgrep.Match) []dcgrep.Match {
+// listedFilter drops the matches that lie in a name the listing did not hold, or
+// held as refused. It looks at paths only and keeps the engine's order. It is
+// applied to each search's result before the results are merged and cut to the
+// limit, so a dropped match never takes one of Manvi's own slots. The set of
+// names that may match is built on the first result that has a match, so a
+// search that matched nothing costs nothing.
+type listedFilter struct {
+	listed  []string
+	refused map[string]string
+	allowed map[string]struct{}
+}
+
+func (f *listedFilter) keep(matches []dcgrep.Match) []dcgrep.Match {
 	if len(matches) == 0 {
 		return matches
 	}
-	stands := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		stands[m.Path] = false
-	}
-	for _, name := range listed {
-		if _, ok := stands[name]; ok {
-			stands[name] = true
-		}
-	}
-	for name := range refused {
-		if _, ok := stands[name]; ok {
-			stands[name] = false
+	if f.allowed == nil {
+		f.allowed = make(map[string]struct{}, len(f.listed))
+		for _, name := range f.listed {
+			if _, withheld := f.refused[name]; !withheld {
+				f.allowed[name] = struct{}{}
+			}
 		}
 	}
 	kept := matches[:0:0]
 	for _, m := range matches {
-		if stands[m.Path] {
+		if _, ok := f.allowed[m.Path]; ok {
 			kept = append(kept, m)
 		}
 	}
@@ -985,6 +1000,8 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 	}
 	refused, stamps := r.judgeListing(listing.Paths)
 	tree := &listedTree{paths: listing.Paths, snap: r.snapshotTree(listing.Paths, stamps, started)}
+	tree.snap = r.stampSearchTree(tree.snap, req.Path, started)
+	keep := &listedFilter{listed: listing.Paths, refused: refused}
 	if len(refused) > 0 {
 		discard()
 	}
@@ -996,7 +1013,7 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 			return nil, nil, nil, s.err
 		}
 		res := s.res
-		out.matches, out.truncated, out.limit = res.Matches, res.Truncated, res.Limit
+		out.matches, out.truncated, out.limit = keep.keep(res.Matches), res.Truncated, res.Limit
 		out.filesSearched, out.skipped, out.ignoreRules = res.FilesSearched, res.Skipped, res.IgnoreRulesApplied
 	} else {
 		limit := req.MaxResults
@@ -1022,7 +1039,7 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 			if searchErr != nil {
 				return nil, nil, nil, searchErr
 			}
-			out.matches = append(out.matches, res.Matches...)
+			out.matches = append(out.matches, keep.keep(res.Matches)...)
 			out.truncated = out.truncated || res.Truncated
 			out.filesSearched += res.FilesSearched
 			out.ignoreRules = out.ignoreRules && res.IgnoreRulesApplied
@@ -1051,10 +1068,9 @@ func (r *Registry) searchAttempt(ctx context.Context, req dcgrep.Request) (*grep
 // revalidateMatches judges the files a finished search matched in with the full
 // readRefusal, once per file, and fails if any is refused now. It is the second
 // gate of treeUnchanged, whose caller turns a failure into another attempt and
-// never into a reply, so what it finds cannot reach the caller as an error that
-// depends on the matches. Up to grepMaxLimit matches can share a few files, and
-// the full judgement is far dearer than the search it gates, so each file is
-// judged once, after the search has finished and never from an earlier verdict.
+// then one error (see treeUnchanged for what that does and does not close). Up
+// to grepMaxLimit matches can share a few files, and the full judgement is far
+// dearer than the search it gates, so each file is judged once, after the search has finished and never from an earlier verdict.
 func (r *Registry) revalidateMatches(matches []dcgrep.Match) error {
 	judged := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
