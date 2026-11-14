@@ -109,6 +109,15 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **The DevCouncil pin moves to the workbench schema 17 store** (`d9c7a512`,
+  from `c6788883`). Schema 17 adds a cross-repository execution queue, two-way
+  GitHub issue sync state, an opt-in confirmed durable outbox and the
+  `items.readiness` op. A profile a schema 17 host upgrades is refused by a
+  Manvi built at the previous pin, so move every host that shares a profile
+  together. `dc-store`'s own schema stays 11 and the devmap store stays 29. The
+  pin also brings dc-redact's Google OAuth shapes: a bare `ya29.` access token,
+  `1//` refresh token or `GOCSPX-` client secret is now redacted, and blocks
+  the commit secret gate, with no label in front of it.
 - The task board's `inbox` status is merged into `backlog`: five statuses
   (`backlog`, `ready`, `in_progress`, `review`, `done`) instead of six, on
   DevCouncil's workbench schema 16. `work_create_item` creates the agent-proposed
