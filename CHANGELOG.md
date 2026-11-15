@@ -121,7 +121,9 @@ under **Unreleased** in the same commit as the code.
   to `649094c0`, a layout-only rustfmt commit under Rust 1.100.0: at
   `d9c7a512` the linked crates failed `verify.sh`'s `cargo fmt --check`.
   It then moves to `436aea73`, which clears the ten clippy errors the schema
-  17 code had under Rust 1.100.0 without changing behaviour.
+  17 code had under Rust 1.100.0 without changing behaviour, and then to
+  `230bbf04`, where dc-proc's dead-stdin tests wait for the pipe's reader to
+  be gone rather than for the child's reap, which on macOS can come first.
 - The task board's `inbox` status is merged into `backlog`: five statuses
   (`backlog`, `ready`, `in_progress`, `review`, `done`) instead of six, on
   DevCouncil's workbench schema 16. `work_create_item` creates the agent-proposed
