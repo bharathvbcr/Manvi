@@ -287,6 +287,16 @@ flowchart TB
 | `Ctrl+C` | Agent Turn | Cancel currently executing turn (releasing all held leases) |
 | `Ctrl+Z` | Shell | Suspend TUI and restore host terminal |
 
+### The Mark, the Tab Title and Progress
+
+**The mark in motion (`manvi/ui/logo`).** The empty screen draws the Fold M from quadrant block characters. It unfolds along the ribbon when the screen opens, a light crosses it every nine seconds, and a keypress sends one. Motion is a pure function of the frame tick, so a frame can be reproduced from its tick alone.
+
+**Busy indicator.** While a turn runs, the status bar shows the one-line mark (`▞▚▞▚`) with a light lapping it in place of the spinner, and it turns amber once the turn has gone thirty seconds without progress. The spinner is the fallback when `MANVI_FX` is off, at 16 colours (one red cannot show a light crossing), without block characters, or when the status row would not fit whole. The tab strip's badge is unchanged.
+
+**Terminal tab title (`manvi/ui/term`, `manvi/ui/tui`).** After each frame the runner hands the terminal a title and a progress state, and each is written only when it changes. The title is the still mark, a state and the session, for example `▞▚▞▚ working · session two (+1)`. With several sessions the most urgent state wins: approval, then failed, stalled, running, done.
+
+**Progress.** OSC 9;4: busy while a turn runs, paused on a pending approval, error after a failed turn. Unless `MANVI_TERM_PROGRESS` says otherwise, it is sent only to terminals known to draw it and not inside tmux or GNU screen. Title and progress are both put back when the TUI stops or suspends. `MANVI_TERM_TITLE` and `MANVI_TERM_PROGRESS` are documented in [CLI & Configuration](CLI_AND_CONFIGURATION.md).
+
 ---
 
 ## 3. Zero-Allocation Damage-Diffed Painter

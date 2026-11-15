@@ -37,7 +37,7 @@ This document provides a complete reference for MANVI's command-line interface, 
 | **Code Graph Rebuild** | `manvi map rebuild` | Discard existing derived index and regenerate the code graph from scratch. |
 | **Code Graph Status** | `manvi map status` | Report code graph freshness, indexed symbols, areas, and rule permissiveness. |
 | **Wire Probe** | `manvi probe PROVIDER` | Dispatch a live test request with a real tool call to certify provider wire contracts. |
-| **Module Mark** | `manvi logo [--svg]` | Render the 7×7 module mark to the terminal or export pure SVG. |
+| **Mark** | `manvi logo [--svg]` | Draw the Fold M mark in the terminal from block characters, or print the published SVG. |
 
 ---
 
