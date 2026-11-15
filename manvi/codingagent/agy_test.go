@@ -86,7 +86,7 @@ func TestAgyProtocolChild(t *testing.T) {
 
 		case "session/new":
 			if logPath := os.Getenv("AGY_FIXTURE_LOG"); logPath != "" {
-				_ = os.WriteFile(logPath, append([]byte("new:"), append(in.Params, '\n')...), 0o600)
+				_ = os.WriteFile(logPath, append([]byte("new:"), append(in.Params, '\n')...), 0o600) //nolint:gosec // G703: AGY_FIXTURE_LOG is a temp path the test itself set
 			}
 			if scenario == "resume-expected" {
 				os.Exit(9)
@@ -117,7 +117,7 @@ func TestAgyProtocolChild(t *testing.T) {
 
 		case "session/resume":
 			if logPath := os.Getenv("AGY_FIXTURE_LOG"); logPath != "" {
-				_ = os.WriteFile(logPath, append([]byte("resume:"), append(in.Params, '\n')...), 0o600)
+				_ = os.WriteFile(logPath, append([]byte("resume:"), append(in.Params, '\n')...), 0o600) //nolint:gosec // G703: AGY_FIXTURE_LOG is a temp path the test itself set
 			}
 			var req struct {
 				SessionID string `json:"sessionId"`
@@ -717,7 +717,7 @@ func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loggedNew, err := os.ReadFile(fixtureLog)
+	loggedNew, err := os.ReadFile(fixtureLog) //nolint:gosec // G304: reads a path the test built
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +731,7 @@ func TestAgyMcpServersAndGracefulCancelCloseOnShutdown(t *testing.T) {
 	if _, err := s.Close(); err != nil {
 		t.Fatalf("Close active turn: %v", err)
 	}
-	loggedClose, err := os.ReadFile(closeLog)
+	loggedClose, err := os.ReadFile(closeLog) //nolint:gosec // G304: reads a path the test built
 	if err != nil {
 		t.Fatal(err)
 	}
