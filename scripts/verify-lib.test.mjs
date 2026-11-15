@@ -317,6 +317,16 @@ test("the workflow installs no tool from a floating reference", () => {
   }
 });
 
+test("every job that runs verify.sh installs ruff at the pinned version", () => {
+  // verify.sh's Python lint reports "ruff is not installed" without it, and
+  // check-verify-log.sh rejects that as a provisioning failure, so a job that
+  // runs the script and does not install ruff cannot pass. The gate and the
+  // deep jobs run it; the windows job does not.
+  assert.equal([...WORKFLOW.matchAll(/pipx install "ruff==\$RUFF_VERSION"/g)].length, 2);
+  assert.doesNotMatch(WORKFLOW, /ruff(==|@)(?!\$RUFF_VERSION)/, "ruff must be installed from the pin, not a literal or a float");
+  assert.match(VERSIONS.RUFF_VERSION, /^\d+\.\d+\.\d+$/);
+});
+
 test("the pinned values are real versions, and node matches the workflow", () => {
   assert.match(VERSIONS.GOLANGCI_LINT_VERSION, /^v\d+\.\d+\.\d+$/);
   assert.match(VERSIONS.GOVULNCHECK_VERSION, /^v\d+\.\d+\.\d+$/);

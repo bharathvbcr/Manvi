@@ -89,8 +89,26 @@ GO_TEST_JSON="$(mktemp -t manvi-gotest.XXXXXX)"
 # a covered one, which is the failure this whole file exists to prevent.
 GO_COVER_FLOOR=78
 
+# Per-step wall time, opt-in. When MANVI_STEP_TIMES names a file, each step
+# appends "<seconds><TAB><name>" to it as the next step (or the exit) closes it.
+# It is a side file and not a log line on purpose: check-verify-log.sh, the
+# verdict summary and the node tests all read verify.log, and a new line in it
+# is a change to every one of them. CI sets it so the job summary can say which
+# steps the minutes went to; without it this is a no-op. A failed append never
+# fails the gate — timing is a diagnostic, not a check.
+STEP_NAME=""
+STEP_START=0
+step_mark() {
+  if [[ -n "${MANVI_STEP_TIMES:-}" && -n "$STEP_NAME" ]]; then
+    { printf '%d\t%s\n' "$(( SECONDS - STEP_START ))" "$STEP_NAME" >>"$MANVI_STEP_TIMES"; } 2>/dev/null || true
+  fi
+  STEP_START=$SECONDS
+}
+
 on_exit() {
   local code=$?
+  step_mark
+  STEP_NAME=""
   # Guarded rather than `rm -f "${VAR:-}"`. An empty argument is an error to
   # rm on some platforms even under -f, and a trap that fails partway through
   # never reaches the verdict below — which is the one message this trap exists
@@ -99,6 +117,12 @@ on_exit() {
     rm -f "$GO_COVER_PROFILE"
   fi
   if [[ -n "${GO_TEST_JSON:-}" ]]; then
+    # Opt-in, for the same reason as MANVI_STEP_TIMES: CI keeps the event stream
+    # so scripts/go-test-report.mjs can say which tests were slow. It is copied
+    # before the removal below and a failed copy never fails the gate.
+    if [[ -n "${MANVI_GO_TEST_JSON_OUT:-}" && -s "$GO_TEST_JSON" ]]; then
+      cp "$GO_TEST_JSON" "$MANVI_GO_TEST_JSON_OUT" 2>/dev/null || true
+    fi
     rm -f "$GO_TEST_JSON"
   fi
   if (( VERDICT_REACHED == 0 )); then
@@ -160,7 +184,7 @@ fuzz_seconds() {
 export CGO_ENABLED=0
 
 fail() { printf '\n\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
-step() { printf '\n\033[36m==>\033[0m %s\n' "$1"; }
+step() { step_mark; STEP_NAME="$1"; printf '\n\033[36m==>\033[0m %s\n' "$1"; }
 
 # A gate that could not run must not be indistinguishable from a gate that ran
 # and passed. The steps below need tools this repository cannot vendor, so a
@@ -205,7 +229,7 @@ in_manvi() { (cd manvi && "$@"); }
 
 step "Release — notes, assets and workflow"
 if have node; then
-  node --test scripts/check-release.test.mjs scripts/release-scripts.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs scripts/verify-gates-cannot-run.test.mjs || fail "release checks"
+  node --test scripts/check-release.test.mjs scripts/release-scripts.test.mjs scripts/check-verify-gaps.test.mjs scripts/verify-lib.test.mjs scripts/verify-gates-cannot-run.test.mjs scripts/go-test-report.test.mjs || fail "release checks"
   # No array: macOS /bin/bash is 3.2, and an empty "${arr[@]}" under set -u
   # is an unbound variable that fails the gate before it checks anything.
   if [[ -n "${GITHUB_ACTIONS:-}${MANVI_REQUIRE_MODULE_PINS:-}" ]]; then

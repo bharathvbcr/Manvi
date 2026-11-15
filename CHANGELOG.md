@@ -145,6 +145,22 @@ under **Unreleased** in the same commit as the code.
 
 ### Changed
 
+- **CI caches save even when the job is red.** `actions/cache` and setup-go's
+  cache save in a post step that runs only when the whole job succeeded, so on a
+  red branch nothing was ever saved and every run recompiled the lint tools, the
+  Rust workspace and the Go tree. Each cache is now a restore and a save step,
+  and a job saves only after `verify.sh` itself succeeded. The analysis tools
+  are cached too, and `native/target` joins the Rust cache.
+- **The Windows CI job is bounded and says where its time went.** It prebuilds
+  `dcstore`, `dcverify` and `dcgrep` in their own step, runs `go test -json`
+  with a 20 minute limit per package, and its summary names every package and
+  test that started and never finished (`scripts/go-test-report.mjs`). Each
+  gate job's summary carries a per-step time table, and `go-test` adds the
+  slowest packages and tests.
+- **CI installs ruff.** The bench leg ended `ruff is not installed` on every run
+  and the log guard rejected that, so no run could be green. `RUFF_VERSION` was
+  already pinned in `scripts/tool-versions.env`; the bench leg now installs it
+  with `pipx`.
 - **The DevCouncil pin moves to the workbench schema 17 store** (`d9c7a512`,
   from `c6788883`). Schema 17 adds a cross-repository execution queue, two-way
   GitHub issue sync state, an opt-in confirmed durable outbox and the
