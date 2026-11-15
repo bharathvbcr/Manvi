@@ -53,6 +53,10 @@ type Terminal struct {
 	motion bool
 	paste  bool
 	focus  bool
+
+	// status is the title and progress indicator this run has written, so
+	// both can be taken back. See status.go.
+	status status
 }
 
 // New builds a terminal over the given files, normally os.Stdin and os.Stdout.
@@ -160,9 +164,10 @@ func (t *Terminal) Start(opts Options) error {
 		// it, all in one sequence the terminal undoes on the matching reset.
 		b.WriteString("\x1b[?1049h")
 	}
-	if opts.Title != "" {
+	t.status = newStatus(opts.Title, osGetenv)
+	if t.status.base != "" {
 		b.WriteString("\x1b[22;0t") // push the current title so it can be restored
-		b.WriteString("\x1b]0;" + sanitizeTitle(opts.Title) + "\x07")
+		b.WriteString(titleSequence(t.status.base))
 	}
 	if opts.Mouse {
 		// 1000 button events, 1002 drag, 1006 SGR encoding.
@@ -260,7 +265,8 @@ func (t *Terminal) restoreLocked() error {
 	b.WriteString("\x1b[0m")     // drop any style the last frame left set
 	b.WriteString("\x1b[?25h")   // show the cursor again
 	b.WriteString("\x1b[?1049l") // leave the alternate screen
-	b.WriteString("\x1b[23;0t")  // pop the window title
+	b.WriteString(t.settleStatusLocked())
+	b.WriteString("\x1b[23;0t") // pop the window title
 	_, writeErr := io.WriteString(t.out, b.String())
 
 	var restoreErr error
@@ -323,6 +329,13 @@ func (t *Terminal) Suspend() error {
 
 	t.mu.Lock()
 	saved, mouse, paste := t.saved, t.mouse, t.paste
+	// The tab must not go on saying an agent is running while the process is
+	// stopped and a shell has the terminal. Settling also forgets what was
+	// written, so the first frame after the resume writes both again.
+	settle := ""
+	if saved != nil {
+		settle = t.settleStatusLocked()
+	}
 	t.mu.Unlock()
 	if saved == nil {
 		return nil
@@ -330,7 +343,7 @@ func (t *Terminal) Suspend() error {
 
 	// Hand the terminal back before stopping. A process suspended while the tty
 	// is raw leaves the shell with no echo and no line editing.
-	_, _ = io.WriteString(t.out, "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l")
+	_, _ = io.WriteString(t.out, "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l"+settle)
 	if err := setState(t.in.Fd(), saved); err != nil {
 		return err
 	}
@@ -415,10 +428,14 @@ func (t *Terminal) watchSignals() {
 // sanitizeTitle strips anything that could terminate the OSC string early or
 // smuggle a further sequence. A window title is set from a task title, which is
 // content out of the store, and content must not be able to author escapes.
+//
+// Both control ranges go. The second, U+0080 to U+009F, holds the one-character
+// forms of the same controls: U+009C ends a string and U+009D starts one, and a
+// terminal that honours them would read a title carrying them as two sequences.
 func sanitizeTitle(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			continue
 		}
 		b.WriteRune(r)

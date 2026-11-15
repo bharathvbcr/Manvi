@@ -214,11 +214,13 @@ is still honoured, because naming a root is a deliberate act.
 | `MANVI_COVERAGE` | A Go coverprofile or LCOV report for the diff-coverage gate. Unset, every changed file is reported unmeasured and the run says so, rather than reading as covered. `--coverage` is the per-invocation form. |
 
 **Terminal and display.** Conventions of the terminal, not of this harness, except
-`MANVI_FX`.
+`MANVI_FX`, `MANVI_TERM_TITLE` and `MANVI_TERM_PROGRESS`.
 
 | Variable | Effect |
 |---|---|
 | `MANVI_FX` | `off`, `0`, `false`, `no` or `disabled` turns ambient animation off. Anything else leaves it on. |
+| `MANVI_TERM_TITLE` | `off` (or `0`, `false`, `no`, `disabled`) keeps the one static tab title, `manvi`. `on` (or `1`, `true`, `yes`, `enabled`) lets the title follow the run even where it is held back by default. Unset, `manvi tui` changes the title when the agent's state changes (thinking, running a tool, needs approval, no progress, failed, done) and puts the plain title back on exit and on suspend. The title leads with the mark, `▞▚▞▚`, or the letter `M` where block characters are not used, then the state, then the session; nothing in it animates. It stays static inside GNU screen (`STY` set), on the Linux console (`TERM=linux`) and when `TERM` is `dumb` or empty. |
+| `MANVI_TERM_PROGRESS` | `on` sends the terminal's progress indicator (OSC 9;4) to any terminal, `off` to none. Unset, it is sent only to terminals known to draw it: Windows Terminal (`WT_SESSION` set), ConEmu (`ConEmuANSI=ON`) and Ghostty 1.2.0 or later (`TERM_PROGRAM=ghostty` with `TERM_PROGRAM_VERSION`), and never inside tmux (`TMUX` set) or GNU screen. Other terminals draw it too; some read the same sequence as "post a notification", which is why they are not on by default. The indicator is indeterminate while a turn runs, paused while one waits for approval or has made no progress for 30 seconds, an error after a failed turn, and cleared otherwise. It is never a percentage. |
 | `NO_COLOR` | Any value, set at all, turns colour off. It outranks every capability check. |
 | `TERM` | `dumb` or empty turns colour off; a name containing `256`, `truecolor` or `direct` selects the colour depth. |
 | `COLORTERM` | `truecolor` or `24bit` selects 24-bit colour. |

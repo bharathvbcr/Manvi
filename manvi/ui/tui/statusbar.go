@@ -132,7 +132,7 @@ func DrawStatusBar(b *render.Buffer, r render.Rect, th Theme, st Status, tick in
 			label = label + " (no progress " + itoa(st.StallSecs) + "s)"
 		}
 		busyFg := th.Accent
-		if st.StallSecs >= 30 {
+		if st.StallSecs >= stallWarnSecs {
 			busyFg = th.Warning
 		}
 		if fxOn {
@@ -280,7 +280,7 @@ func busyRibbon(th Theme, st Status, bg render.Color, tick int, fxOn bool) rende
 	// The ribbon's slanted blocks are half empty, so each face is drawn on the
 	// row's own background, which here is not the pane's.
 	faces.Lit.Bg, faces.Shade.Bg = bg, bg
-	if st.StallSecs >= 30 {
+	if st.StallSecs >= stallWarnSecs {
 		// A turn that has stopped making progress turns the spinner the
 		// warning colour, and the mark follows: brand red running happily
 		// beside "no progress" would be two answers to one question.

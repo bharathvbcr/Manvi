@@ -235,6 +235,17 @@ func Ribbon(c Colors, m Motion) render.Line {
 	return cellLine(compactCells, c, m, foldLegs)
 }
 
+// RibbonText is the one-line ribbon as bare characters, for the places that
+// take text and no colour, such as a terminal's tab title. It is read off the
+// same four cells Ribbon draws, so the two cannot come to differ.
+func RibbonText() string {
+	text := make([]rune, len(compactCells))
+	for i, cl := range compactCells {
+		text[i] = cl.r
+	}
+	return string(text)
+}
+
 // ground is the style of a cell the mark leaves empty: a space on the
 // background the caller lent the ribbon.
 //

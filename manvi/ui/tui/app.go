@@ -285,6 +285,11 @@ func (a *App) Dispatch(act Action) []Effect {
 	switch act.(type) {
 	case ActionKey, ActionRune, ActionPaste, ActionClick, ActionScroll:
 		a.noteOverlayInput()
+		// The operator is here, so how the last turn of the session in front
+		// of them ended is no longer news for the tab to carry.
+		if v := a.Current(); v != nil {
+			v.outcome = outcomeNone
+		}
 		// Input on the empty screen nudges the mark. Not while an overlay is
 		// open: the operator is then typing into the overlay, which is drawn
 		// over the mark, and a glint behind it would be motion with no reader.
@@ -469,7 +474,9 @@ func (a *App) turnEnded(t ActionTurnEnded) []Effect {
 		return nil
 	}
 	v.SetBusy(false, "")
+	v.outcome = outcomeDone
 	if t.Err != nil {
+		v.outcome = outcomeFailed
 		v.Apply(ui.Event{Kind: ui.KindError, At: time.Now().UTC(), Text: t.Err.Error()})
 	}
 	// A follow-up typed during the turn goes now. It is sent rather than
