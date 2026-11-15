@@ -14,7 +14,8 @@ import (
 // hello, the policy checks, chat bookkeeping, stopping a managed run, and
 // waking one — are answered inline, in arrival order. Everything else runs on
 // a lane: one
-// goroutine per operation family, taking its requests in arrival order.
+// goroutine per operation family, taking its requests in arrival order (assist,
+// whose calls are independent, has a few: see laneWidth).
 //
 // This replaced fully serial dispatch, under which one slow call held every
 // other one: a capability.probe allowed ten minutes, or a managed.prepare
@@ -63,6 +64,11 @@ func laneFor(op string) string {
 		// One model call that outlives the work lane's minute: on its own lane it
 		// cannot hold the board reads and writes queued behind it.
 		return "refine"
+	case op == OpWorkAssistComplete:
+		// A model call of the host's own, independent of the refine and
+		// enhancement slots. Its lane runs assistLaneWidth calls at once (see
+		// laneWidth), so the second does not wait for the first.
+		return "assist"
 	case op == opManagedContinue:
 		// It waits for the drive loop to write the follow-up, which is bounded by
 		// continueSendBudget. Behind a prepare's handshake (up to three minutes) it
@@ -105,6 +111,18 @@ const opManagedWake = "work.runs.managed.wake"
 // miss the moment the turn ends.
 const opManagedFollow = "work.runs.managed.follow"
 
+// laneWidth is how many requests a lane runs at once. Every lane but assist is
+// one: that is what keeps order within a family. Assist calls are independent
+// model calls with no order to keep, and the runner bounds them to
+// maxAssistInFlight; the lane is one wider so the call over the bound reaches
+// the handler and is refused at once rather than queued behind the others.
+func laneWidth(name string) int {
+	if name == "assist" {
+		return assistLaneWidth
+	}
+	return 1
+}
+
 // deadlineFor bounds one lane request. A variable so a test can shorten it.
 var deadlineFor = opDeadline
 
@@ -122,6 +140,9 @@ func opDeadline(op string) time.Duration {
 		return 3 * time.Minute
 	case op == OpWorkRefine:
 		// The model call (enhancementJobTimeout) plus the grounding and board reads around it.
+		return enhancementJobTimeout + 30*time.Second
+	case op == OpWorkAssistComplete:
+		// The model call (enhancementJobTimeout) plus provider resolution around it.
 		return enhancementJobTimeout + 30*time.Second
 	case op == OpServeStopAll:
 		// The longest wait the op accepts (maxStopAllWait) plus the cancels around it.
@@ -164,10 +185,12 @@ func (l *lanes) submit(ctx context.Context, name string, req Request) bool {
 	if !ok {
 		q = make(chan laneJob, laneQueue)
 		l.queues[name] = q
-		l.wg.Add(1)
 		// The lane outlives the request that started it and serves every later
 		// job on it; each job carries its own ctx, which run honours.
-		go l.run(q) //nolint:contextcheck // server-lifetime worker; see above
+		for range laneWidth(name) {
+			l.wg.Add(1)
+			go l.run(q) //nolint:contextcheck // server-lifetime worker; see above
+		}
 	}
 	select {
 	case q <- laneJob{ctx: ctx, req: req}:

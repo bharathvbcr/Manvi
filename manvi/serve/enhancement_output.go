@@ -173,26 +173,78 @@ func (r *EnhancementRunner) infer(ctx context.Context, record enhancementRecord)
 	return decodeEnhancement([]byte(text), record)
 }
 
-// completeText runs one text-only, tool-free, bounded provider call and
-// returns the visible text. It is the single owner of the stream budget, the
-// context-window check and the stop-reason rules, so title/description
-// enhancement and refinement cannot drift apart on them.
-func (r *EnhancementRunner) completeText(ctx context.Context, providerName, model, system string, prompt []byte) (text string, err error) {
+// completionLimits tunes the one completion core. The zero value is the
+// enhancement rule: an 8192-token bound, a max_tokens stop refused, and the
+// enhancement wording for the two refusals that name a cause.
+type completionLimits struct {
+	// MaxTokens is the requested output bound. Zero means the enhancement
+	// default, 8192; either is lowered to the model's own cap.
+	MaxTokens int
+	// AllowTruncation returns a max_tokens stop as a result for the caller to
+	// report, instead of refusing it as an incomplete answer.
+	AllowTruncation bool
+	// Unavailable and OverBudget build the refusal for a model the provider has
+	// no capability entry for, and for a prompt that cannot fit its window.
+	Unavailable func(provider, model string) error
+	OverBudget  func(promptTokens, outputTokens, window int) error
+}
+
+// completion is what one bounded provider call settled into.
+type completion struct {
+	Capability llm.Capability
+	// Text is the visible answer; Reasoning is kept apart and is never part of it.
+	Text, Reasoning string
+	Stop            llm.StopReason
+	Usage           llm.Usage
+	// MaxTokens is the output bound the request carried.
+	MaxTokens int
+}
+
+// resolveModel resolves the selected provider and reads the model's static
+// capability. It makes no model call and fails closed: a provider that is not
+// the one named, or a model with no declared context window, is an error
+// rather than a substitute or a guess.
+func (r *EnhancementRunner) resolveModel(ctx context.Context, providerName, model string, unavailable func(provider, model string) error) (llm.Provider, llm.Capability, error) {
 	provider, err := r.provider(ctx, providerName, model)
 	if err != nil {
-		return "", enhancementProviderFailure(err, model)
+		return nil, llm.Capability{}, enhancementProviderFailure(err, model)
 	}
 	if nilInterface(provider) || provider.Name() != providerName {
-		return "", errors.New("provider resolution did not match the selected provider")
+		return nil, llm.Capability{}, errors.New("provider resolution did not match the selected provider")
 	}
 	capability, available := provider.Capability(model)
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return nil, llm.Capability{}, err
 	}
 	if !available || capability.ContextWindow <= 0 {
-		return "", fmt.Errorf("selected model %q is not available on provider %q; pick a served model in Local model servers", model, providerName)
+		if unavailable != nil {
+			return nil, llm.Capability{}, unavailable(providerName, model)
+		}
+		return nil, llm.Capability{}, fmt.Errorf("selected model %q is not available on provider %q; pick a served model in Local model servers", model, providerName)
 	}
-	maxTokens := 8192
+	return provider, capability, nil
+}
+
+// completeText runs one text-only, tool-free, bounded provider call and
+// returns the visible text. It is the enhancement rule of complete: title and
+// description enhancement and refinement cannot drift apart on it.
+func (r *EnhancementRunner) completeText(ctx context.Context, providerName, model, system string, prompt []byte) (string, error) {
+	done, err := r.complete(ctx, providerName, model, system, prompt, completionLimits{})
+	return done.Text, err
+}
+
+// complete is the single owner of the stream budget, the context-window check
+// and the stop-reason rules for a text-only call. Reasoning is returned beside
+// the text and never promoted into it.
+func (r *EnhancementRunner) complete(ctx context.Context, providerName, model, system string, prompt []byte, limits completionLimits) (done completion, err error) {
+	provider, capability, err := r.resolveModel(ctx, providerName, model, limits.Unavailable)
+	if err != nil {
+		return done, err
+	}
+	maxTokens := limits.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
 	if capability.MaxOutputTokens > 0 && capability.MaxOutputTokens < maxTokens {
 		maxTokens = capability.MaxOutputTokens
 	}
@@ -200,7 +252,10 @@ func (r *EnhancementRunner) completeText(ctx context.Context, providerName, mode
 	// truncation cannot silently erase a task constraint.
 	promptTokens := (len(prompt) + len(system) + 2) / 3
 	if promptTokens+maxTokens > capability.ContextWindow {
-		return "", errors.New("task does not fit the selected model's declared context budget; narrow the task fields and retry")
+		if limits.OverBudget != nil {
+			return done, limits.OverBudget(promptTokens, maxTokens, capability.ContextWindow)
+		}
+		return done, errors.New("task does not fit the selected model's declared context budget; narrow the task fields and retry")
 	}
 	request := llm.Request{Model: model, System: system, MaxTokens: maxTokens,
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: string(prompt)}}}}}
@@ -212,69 +267,72 @@ func (r *EnhancementRunner) completeText(ctx context.Context, providerName, mode
 		request.Temperature = &temperature
 	}
 	if err := capability.Validate(request); err != nil {
-		return "", err
+		return done, err
 	}
 	stream, err := provider.Stream(ctx, request)
 	if err != nil {
-		return "", enhancementProviderFailure(err, model)
+		return done, enhancementProviderFailure(err, model)
 	}
 	if nilInterface(stream) {
-		return "", errors.New("provider returned no stream")
+		return done, errors.New("provider returned no stream")
 	}
 	defer func() { err = errors.Join(err, stream.Close()) }()
 	bytesSeen := 0
 	for chunks := 0; ; chunks++ {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return done, err
 		}
 		chunk, err := stream.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return "", err
+			return done, err
 		}
 		bytesSeen += len(chunk.Text) + len(chunk.ArgumentsRaw) + len(chunk.ToolName) + len(chunk.ToolCallID)
 		if chunks >= 8192 || bytesSeen > 256<<10 {
-			return "", errors.New("provider output exceeded the enhancement stream budget")
+			return done, errors.New("provider output exceeded the enhancement stream budget")
 		}
 		if chunk.Kind == llm.ChunkToolCallStart || chunk.Kind == llm.ChunkToolCallDelta {
-			return "", errors.New("provider requested a tool during text-only enhancement")
+			return done, errors.New("provider requested a tool during text-only enhancement")
 		}
 	}
 	response, err := stream.Response()
 	if err != nil {
-		return "", err
+		return done, err
 	}
-	if response.StopReason == llm.StopMaxTokens {
-		return "", errors.New("model hit the output token limit before finishing the enhancement JSON; narrow the requested fields or raise the model output cap, then retry")
+	truncated := response.StopReason == llm.StopMaxTokens
+	if truncated && !limits.AllowTruncation {
+		return done, errors.New("model hit the output token limit before finishing the enhancement JSON; narrow the requested fields or raise the model output cap, then retry")
 	}
-	if response.StopReason != llm.StopEndTurn || len(response.Malformed) != 0 {
-		return "", errors.New("provider did not return a complete text-only result")
+	if (response.StopReason != llm.StopEndTurn && !truncated) || len(response.Malformed) != 0 {
+		return done, errors.New("provider did not return a complete text-only result")
 	}
 	if response.MaxTokensApplied <= 0 || response.MaxTokensApplied > maxTokens {
-		return "", errors.New("provider did not confirm the requested output bound")
+		return done, errors.New("provider did not confirm the requested output bound")
 	}
-	var visible strings.Builder
+	var visible, reasoning strings.Builder
 	contentBytes := 0
 	for _, block := range response.Message.Content {
 		switch block := block.(type) {
 		case llm.TextBlock:
 			contentBytes += len(block.Text)
 			if contentBytes > 256<<10 {
-				return "", errors.New("provider result exceeded the enhancement byte budget")
+				return done, errors.New("provider result exceeded the enhancement byte budget")
 			}
 			visible.WriteString(block.Text)
 		case llm.ReasoningBlock:
 			contentBytes += len(block.Text) + len(block.Signature)
 			if contentBytes > 256<<10 {
-				return "", errors.New("provider result exceeded the enhancement byte budget")
+				return done, errors.New("provider result exceeded the enhancement byte budget")
 			}
+			reasoning.WriteString(block.Text)
 		default:
-			return "", errors.New("provider returned non-text enhancement content")
+			return done, errors.New("provider returned non-text enhancement content")
 		}
 	}
-	return visible.String(), nil
+	return completion{Capability: capability, Text: visible.String(), Reasoning: reasoning.String(),
+		Stop: response.StopReason, Usage: response.Usage, MaxTokens: maxTokens}, nil
 }
 
 func enhancementProviderFailure(err error, model string) error {

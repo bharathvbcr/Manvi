@@ -243,6 +243,19 @@ func (m WorkbenchModule) Configure(r *Router) error {
 			}); err != nil {
 				return err
 			}
+			if err := r.Register(OpWorkAssistComplete, func(ctx context.Context, raw json.RawMessage) (any, *Error) {
+				params, refused := decodeAssistParams(raw)
+				if refused != nil {
+					return nil, refused
+				}
+				result, err := m.Runner.Assist(ctx, params, configuration)
+				if err != nil {
+					return nil, workbenchHostError("assist completion", err)
+				}
+				return result, nil
+			}); err != nil {
+				return err
+			}
 			if err := r.Register("work.enhancements.configuration", func(_ context.Context, raw json.RawMessage) (any, *Error) {
 				if len(raw) == 0 {
 					raw = json.RawMessage(`{}`)

@@ -121,7 +121,7 @@ func TestEnhancementRunHoldsNoWorkTool(t *testing.T) {
 	// Structural: the files that build an enhancement request do not import the
 	// package that defines the agent tools, so no path through them can put one
 	// in a request. (Other files here, the chat harness for one, do import it.)
-	files := []string{"enhancements.go", "enhancement_output.go", "automation.go", "refine.go"}
+	files := []string{"enhancements.go", "enhancement_output.go", "automation.go", "refine.go", "assist.go"}
 	for _, file := range files {
 		file = filepath.Clean(file)
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)

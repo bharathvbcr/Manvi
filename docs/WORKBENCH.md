@@ -969,6 +969,46 @@ Manvi's pin must move to a DevCouncil that carries it, and a build that knows
 only eleven refuses an upgraded profile. See the changelog entry for the output
 contract and caps.
 
+### Assist completion
+
+`work.assist.complete` (host-only, registered beside `work.enhancements.refine`
+and served only where an enhancement selection is configured) is one plain,
+tool-free model completion for the host's own AI features: explaining a commit,
+writing a commit message, suggesting a branch name. The host never holds the
+model's credential, so the call is made here, on the provider and model the
+enhancement selection names; with no selection it is refused and no backend is
+substituted. It reads and writes no board state and stores nothing, and it is
+never offered to an agent.
+
+Params are decoded strictly (`encoding/json/v2`: unknown, case-variant and
+duplicate members, invalid UTF-8 and trailing content are refused):
+`system` (at most 32,768 bytes), `user` (at most 2,097,152 bytes),
+`max_output_tokens` (1 to 16,384) and optional `dry_run`. Outside a dry run both
+prompts are required and non-empty. The result is
+`{ok, provider, model, context_window, max_output_tokens, text, reasoning,
+stop_reason, truncated, input_tokens, output_tokens, redactions}`.
+`max_output_tokens` is the applied bound, the lower of the request and the
+model's cap; `context_window` and the cap come from the provider's static
+capability, with no network call, and a model with no declared window is an
+error rather than a guess. A dry run makes no model call and returns the
+capability with empty text and zero counts. Reasoning is returned apart and is
+never part of `text`. `truncated` is true when the model stopped at the output
+cap; the partial text is still returned. A refusal, a tool request or any other
+stop is an error. A prompt whose size (estimated as bytes/3, rounded up, plus the
+output bound) exceeds the window is refused before any call.
+
+It does not use the enhancement runner's single generation slot, so an explain
+call never answers busy because a task enhancement is running. It has its own
+`assist` lane with a deadline of `enhancementJobTimeout + 30s`, runs at most two
+calls at once across every connection (a third is answered `E_BUSY`, retryable,
+at once), and a cancelled request or a closed runner cancels the provider
+stream. Errors pass through the runner's redacted failure text.
+
+`redactions` is always zero. The enhancement path has no prompt-redaction owner:
+the only scrubber on it removes known credential values from error text, and the
+prompt reaches the provider as the host wrote it. The host must not send a
+secret it does not want the provider to see.
+
 The CLI's explicitly enabled workbench module also advertises
 `work.enhancements.generate`. Storage-only embedders advertise this method only
 when supplied an `EnhancementRunner` sharing the module's profile client.

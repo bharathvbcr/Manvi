@@ -66,6 +66,9 @@ var contractTypes = map[string]reflect.Type{
 	"ServeStopAllParams":  reflect.TypeFor[ServeStopAllParams](),
 	"ServeStopAllResult":  reflect.TypeFor[ServeStopAllResult](),
 	"ServeTakeoverResult": reflect.TypeFor[ServeTakeoverResult](),
+	// The host-only one-shot completion: work.assist.complete.
+	"AssistCompleteParams": reflect.TypeFor[AssistParams](),
+	"AssistCompleteResult": reflect.TypeFor[AssistResult](),
 }
 
 // noServerControl stands in for a socket server where the contract only needs

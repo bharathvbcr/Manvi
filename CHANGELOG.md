@@ -23,6 +23,25 @@ under **Unreleased** in the same commit as the code.
 
 ### Added
 
+- `work.assist.complete`: a host-only one-shot completion for the host's own AI
+  features (explain a commit, write a commit message, suggest a branch name),
+  made by the provider and model the enhancement selection names, so the host
+  never holds the credential. Params `{system, user, max_output_tokens,
+  dry_run?}` are decoded strictly (system at most 32 KiB, user at most 2 MiB,
+  1 to 16384 output tokens; both prompts required outside a dry run); the result
+  is `{ok, provider, model, context_window, max_output_tokens, text, reasoning,
+  stop_reason, truncated, input_tokens, output_tokens, redactions}`. The window
+  and output cap come from the provider's static capability; a dry run makes no
+  model call; reasoning is never part of `text`; `truncated` is a stop at the
+  output cap. It has its own `assist` lane (deadline `enhancementJobTimeout +
+  30s`), at most two calls in flight (a third is `E_BUSY`, retryable) and does
+  not use the enhancement runner's generation slot. `redactions` is always 0: the
+  enhancement path has no prompt-redaction owner. Optional within protocol 1;
+  `contracts/serve.ops.schema.json` declares the op and its types
+  (`AssistCompleteParams`, `AssistCompleteResult`) and `contracts/CHECKSUMS` is
+  refreshed. The completion core in `serve/enhancement_output.go` is now shared
+  (`complete`) and `lanes` gains a per-lane width; enhancement and refinement
+  behaviour is unchanged. Documented in `docs/WORKBENCH.md`.
 - Follow-up turns for a managed run (additive within protocol 1). The optional
   op `work.runs.managed.continue` takes `{id, request_id, message?}` and delivers
   one follow-up to a run whose previous turn completed, in the same provider

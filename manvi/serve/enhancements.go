@@ -36,6 +36,7 @@ type EnhancementRunner struct {
 	automatic   *automaticWorker
 	closed      bool
 	refines     refineState
+	assist      assistState
 }
 
 type enhancementJob struct {
@@ -309,6 +310,7 @@ func (r *EnhancementRunner) Close() error {
 	r.mu.Lock()
 	r.closed = true
 	r.refines.cancelAll()
+	r.assist.cancelAll()
 	job := r.active
 	automatic := r.automatic
 	r.mu.Unlock()
