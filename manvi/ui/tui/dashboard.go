@@ -152,7 +152,7 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 		blockedStyle := th.Status(StatusWarn).With(render.Bold)
 		if fxOn {
 			// The one number on this screen that asks for hands: it breathes.
-			blockedStyle.Fg = th.Warning.Blend(th.FgOn, fx.Pulse(tick, 18)*0.5)
+			blockedStyle.Fg = th.Fg.Blend(th.FgSubtle, fx.Pulse(tick, 18)*0.5)
 		}
 		render.Styled("  "+g.Warn+" "+itoa(blocked)+" session(s) blocked on you", blockedStyle).
 			DrawIn(b, render.Rect{X: header.X, Y: header.Y + 1, W: header.W, H: 1})
@@ -222,10 +222,10 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 		switch {
 		case v.Approval() != nil:
 			chip = "blocked"
-			chipStyle = render.Style{Fg: th.FgOn, Bg: th.Warning, Attrs: render.Bold}
+			chipStyle = render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold}
 		case v.Error() != "":
 			chip = "error"
-			chipStyle = render.Style{Fg: th.FgOn, Bg: th.Danger, Attrs: render.Bold}
+			chipStyle = render.Style{Fg: th.Danger, Bg: bg, Attrs: render.Bold}
 		case v.Status.Busy:
 			chip = render.Spinner(g.Spinner, tick) + " busy"
 			chipStyle = render.Style{Fg: th.Accent, Bg: bg, Attrs: render.Bold}
@@ -255,15 +255,20 @@ func (d *Dashboard) Draw(b *render.Buffer, r render.Rect, th Theme, views []*Age
 		}
 		if v.Status.Grants > 0 {
 			meta = meta.Append(g.Granted+" "+itoa(v.Status.Grants)+" granted  ",
-				render.Style{Fg: th.Granted, Bg: bg, Attrs: render.Bold})
+				render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Bold})
 		}
 		if len(v.Status.Degraded) > 0 {
 			meta = meta.Append(g.Degraded+" "+itoa(len(v.Status.Degraded))+" unrun  ",
-				render.Style{Fg: th.Degraded, Bg: bg})
+				render.Style{Fg: th.Fg, Bg: bg, Attrs: render.Italic | render.Underline})
 		}
 		if !v.Activity().IsZero() {
-			meta = meta.Append(shortDuration(now.Sub(v.Activity()))+" ago",
-				render.Style{Fg: th.FgSubtle, Bg: bg})
+			// shortDuration answers "just now" under a second, which is already
+			// a whole phrase: with the suffix it read "just now ago".
+			age := shortDuration(now.Sub(v.Activity()))
+			if age != "just now" {
+				age += " ago"
+			}
+			meta = meta.Append(age, render.Style{Fg: th.FgSubtle, Bg: bg})
 		}
 		if v.Error() != "" {
 			meta = meta.Append("  "+render.TruncateWidth(v.Error(), 40, "…"),

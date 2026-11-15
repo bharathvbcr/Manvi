@@ -210,20 +210,20 @@ var bindings = []Binding{
 	// Global. Ctrl+C is deliberately not quit: in raw mode it is the only way
 	// to interrupt a turn, and a harness that exits on it loses the transcript
 	// of whatever the operator was trying to stop.
-	{Keys: []string{"ctrl+c"}, Cmd: CmdCancel, Ctx: CtxGlobal, Label: "cancel turn", Hint: true},
+	{Keys: []string{"ctrl+c"}, Cmd: CmdCancel, Ctx: CtxGlobal, Label: "cancel turn"},
 	{Keys: []string{"tab"}, Cmd: CmdFocusToggle, Ctx: CtxGlobal, Label: "focus", Hint: true},
 	{Keys: []string{"ctrl+p"}, Cmd: CmdPalette, Ctx: CtxGlobal, Label: "commands", Hint: true},
 	{Keys: []string{"f1", "ctrl+x"}, Cmd: CmdHelp, Ctx: CtxGlobal, Label: "keys"},
-	{Keys: []string{"ctrl+q", "ctrl+d"}, Cmd: CmdQuit, Ctx: CtxGlobal, Label: "quit", Hint: true},
+	{Keys: []string{"ctrl+q", "ctrl+d"}, Cmd: CmdQuit, Ctx: CtxGlobal, Label: "quit"},
 	{Keys: []string{"ctrl+n"}, Cmd: CmdNewSession, Ctx: CtxGlobal, Label: "new session"},
-	{Keys: []string{"ctrl+g"}, Cmd: CmdDashboard, Ctx: CtxGlobal, Label: "dashboard", Hint: true},
+	{Keys: []string{"ctrl+g"}, Cmd: CmdDashboard, Ctx: CtxGlobal, Label: "dashboard"},
 	{Keys: []string{"ctrl+t"}, Cmd: CmdNextSession, Ctx: CtxGlobal, Label: "next session"},
 	// Shift+Tab is the one "previous" chord every terminal encodes (CSI Z);
 	// ctrl+shift+t exists only on keyboards the wire protocol cannot see.
 	// The command it binds existed from the start but had no key, so the
 	// strip advertised "next" and offered no way back.
 	{Keys: []string{"shift+tab"}, Cmd: CmdPrevSession, Ctx: CtxGlobal, Label: "prev session"},
-	{Keys: []string{"ctrl+s"}, Cmd: CmdSessions, Ctx: CtxGlobal, Label: "sessions", Hint: true},
+	{Keys: []string{"ctrl+s"}, Cmd: CmdSessions, Ctx: CtxGlobal, Label: "sessions"},
 	{Keys: []string{"ctrl+y"}, Cmd: CmdTheme, Ctx: CtxGlobal, Label: "theme"},
 	{Keys: []string{"ctrl+z"}, Cmd: CmdSuspend, Ctx: CtxGlobal, Label: "suspend"},
 	{Keys: []string{"ctrl+l"}, Cmd: CmdRedraw, Ctx: CtxGlobal, Label: "redraw"},

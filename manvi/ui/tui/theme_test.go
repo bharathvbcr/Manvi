@@ -122,11 +122,9 @@ func TestAccentStaysSeparableFromDanger(t *testing.T) {
 			t.Run(th.Name+"/"+prof.name, func(t *testing.T) {
 				accent := sequenceFor(t, th.Accent, prof.p)
 				for name, other := range map[string]render.Color{
-					"danger":   th.Danger,
-					"warning":  th.Warning,
-					"granted":  th.Granted,
-					"degraded": th.Degraded,
-					"success":  th.Success,
+					"danger":  th.Danger,
+					"info":    th.Info,
+					"success": th.Success,
 				} {
 					if accent == sequenceFor(t, other, prof.p) {
 						t.Fatalf("the accent and %s reduce to the same sequence %q at %s",

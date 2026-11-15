@@ -96,11 +96,14 @@ func TestStallDetection(t *testing.T) {
 		BusyLabel: "run_command",
 		StallSecs: 45,
 	}
+	// The stall is reported where the turn is: on the working row above the
+	// composer, which is where a running turn is drawn since it left the
+	// status bar.
 	b := render.NewBuffer(120, 1)
-	DrawStatusBar(b, render.Rect{X: 0, Y: 0, W: 120, H: 1}, th, st, 0, nil, false)
+	DrawActivity(b, render.Rect{X: 0, Y: 0, W: 120, H: 1}, th, st, 0, false)
 	out := bufferString(b)
 	if !strings.Contains(out, "run_command (no progress 45s)") {
-		t.Fatalf("expected stall indicator in status bar, got: %q", out)
+		t.Fatalf("expected stall indicator on the working row, got: %q", out)
 	}
 }
 

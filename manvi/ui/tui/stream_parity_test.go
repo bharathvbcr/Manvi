@@ -78,6 +78,9 @@ var (
 	openMarkupPieces = []string{
 		"`", "``", "```", "`code`", "`unclosed ", "**", "**bold**", "*", "\n", "\n\n", "\r\n",
 		"```go\n", " - ", "- item\n", "* item\n", "# head\n", "+added\n", "-removed\n", "@@ -1 +1 @@\n", "> quote ",
+		// A diff fence, a numbered item and a rule: what a line is then depends
+		// on the fence it is in, which a delta boundary must not change.
+		"```diff\n", "```patch\n", "1. item\n", "---\n", "diff --git a/x b/x\n",
 	}
 	// openStarts are how a reply may begin: some settle at once, and some are
 	// something else for a while — a list item, a heading, a diff, a fence.
@@ -114,7 +117,9 @@ func growOpenLine(rng *rand.Rand, n int, markupRate int, otherBlanks bool) strin
 func rs(cps ...rune) string { return string(cps) }
 
 func wholeLines(e *Entry, th Theme, width int) []render.Line {
-	fresh := &Entry{Event: e.Event, Folded: e.Folded, Foldable: e.Foldable, whole: true}
+	fresh := &Entry{Event: e.Event, Folded: e.Folded, Foldable: e.Foldable, whole: true,
+		live: e.live, until: e.until, foldSet: e.foldSet,
+		call: e.call, absorbed: e.absorbed, under: e.under, result: e.result}
 	fresh.Body.WriteString(e.Body.String())
 	return fresh.Lines(th, width)
 }
@@ -131,11 +136,19 @@ func openCached(e *Entry, th Theme, width int) (int, bool) {
 	return 0, false
 }
 
-// TestMDKindIsTheOriginalClassification holds the refactor that moved the
-// branches of mdState.line into mdState.kind to the branches as they were:
-// the same rows and the same state, over random lines that hit every
-// construct, its near misses, and fences opening and closing.
-func TestMDKindIsTheOriginalClassification(t *testing.T) {
+// TestMDLinesFitThePaneAndOnlyAFenceChangesState runs mdState.line over random
+// lines that hit every construct, its near misses, and fences opening and
+// closing, and holds it to the two properties the incremental render is built
+// on: every row fits the width it was laid out for, and the only state a line
+// leaves behind is whether a fence is open.
+//
+// It replaces a test that compared line against a copy of its branches as they
+// were before the classification moved into kind. That copy pinned the old
+// rendering — a diff recognised ahead of a list, so "- item" drew as a removed
+// line, and a fence drawn as a box — which is the rendering this package no
+// longer has. What each construct now draws is pinned by name in
+// cleanui_test.go.
+func TestMDLinesFitThePaneAndOnlyAFenceChangesState(t *testing.T) {
 	th := Dark()
 	lines := 0
 	for seed := int64(1); seed <= 60; seed++ {
@@ -154,17 +167,29 @@ func TestMDKindIsTheOriginalClassification(t *testing.T) {
 		}
 		width := 8 + rng.Intn(120)
 		var st mdState
-		var or mdOracle
 		for _, raw := range strings.Split(b.String(), "\n") {
-			got, want := st.line(nil, raw, th, width), or.line(nil, raw, th, width)
-			if !reflect.DeepEqual(got, want) || st.inCode != or.inCode || st.lang != or.lang {
-				t.Fatalf("seed %d: line %q at width %d\n got: %q (code %v, lang %q)\nwant: %q (code %v, lang %q)",
-					seed, raw, width, lineText(got), st.inCode, st.lang, lineText(want), or.inCode, or.lang)
+			wasCode := st.inCode
+			fence := strings.HasPrefix(strings.TrimSpace(raw), "```")
+			rows := st.line(nil, raw, th, width)
+			for _, r := range rows {
+				if r.Width() > width {
+					t.Fatalf("seed %d: line %q at width %d laid out a row %d wide: %q",
+						seed, raw, width, r.Width(), r.Text())
+				}
+			}
+			if (st.inCode != wasCode) != fence {
+				t.Fatalf("seed %d: line %q moved the fence state %v -> %v", seed, raw, wasCode, st.inCode)
+			}
+			if st.pre || st.diff {
+				t.Fatalf("seed %d: line %q of a reply set tool-output state", seed, raw)
+			}
+			if fence && len(rows) != 0 {
+				t.Fatalf("seed %d: fence line %q drew %d row(s)", seed, raw, len(rows))
 			}
 			lines++
 		}
 	}
-	t.Logf("%d lines over 60 seeds: rows and state identical to the original branches", lines)
+	t.Logf("%d lines over 60 seeds", lines)
 }
 
 // TestSettledMeansForGood: a line settled calls a paragraph stays one, and
